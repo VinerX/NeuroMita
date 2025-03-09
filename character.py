@@ -485,6 +485,9 @@ class ShortHairMita(Character):
     def init(self):
         self.mita_prompts()
 
+        self.secretExposed = False
+        self.secretExposedFirst = False   
+
     def mita_prompts(self):
         Prompts = []
 
@@ -511,6 +514,65 @@ class ShortHairMita(Character):
 
         for prompt in Prompts:
             self.add_prompt_part(prompt)
+        
+    #TODO Секрет Коротковолосой миты
+    def process_logic(self, messages: dict = None):
+        # Логика для раскрытия секрета
+        if self.secretExposed and not self.secretExposedFirst:
+            self._reveal_secret()
+
+    def process_response(self, response: str):
+        response = super().process_response(response)
+        response = self._detect_secret_exposure(response)
+        return response
+
+    def _reveal_secret(self):
+        """Логика раскрытия секрета"""
+        print("Перестала играть вообще")
+        self.secretExposedFirst = True
+        self.secretExposed = True
+        #self.replace_prompt("main", "mainCrazy")
+        #self.replace_prompt("mainPlaying", "mainCrazy")
+        #self.replace_prompt("examplesLong", "examplesLongCrazy") #я хз что тут менять на что
+
+        self.find_float("SecretExposedText").active = True
+
+    def _detect_secret_exposure(self, response):
+        """
+        Проверяем, содержит ли ответ маркер <Secret!>, и удаляем его.
+        """
+        if "<Secret!>" in response:
+
+            if not self.secretExposedFirst:
+                self.secretExposed = True
+                print(f"Секрет раскрыт")
+                self.attitude = 15
+                self.boredom = 20
+
+            response = response.replace("<Secret!>", "")
+
+        return response
+    
+    def current_variables(self):
+        return {
+            "role": "system",
+            "content": (f"Твои характеристики:"
+                        f"Отношение: {self.attitude}/100."
+                        f"Скука: {self.boredom}/100."
+                        f"Стресс: {self.stress}/100."
+                        f"Состояние секрета: {self.secretExposed}")
+                }
+    
+    def current_variables_string(self) -> str:
+        characteristics = {
+            "Отношение": self.attitude,
+            "Стресс": self.stress,
+            "Скука": self.boredom,
+            "Состояние секрета": self.secretExposed,
+        }
+        return f"характеристики {self.name}:\n" + "\n".join(
+            f"- {key}: {value} " for key, value in characteristics.items()
+        )
 
 
 class CappyMita(Character):
