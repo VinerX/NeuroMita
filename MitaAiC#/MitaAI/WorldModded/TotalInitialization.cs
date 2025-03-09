@@ -758,54 +758,33 @@ namespace MitaAI
             try
             {
                 MitaCore.SleepyObject = GameObject.Instantiate(Utils.TryfindChild(worldDreamer, "General/Mita Dreamer"), MitaCore.worldHouse);
-                GameObject neck1Obj = Utils.TryfindChild(MitaCore.SleepyObject.transform, "Mita Dream/Armature/Hips/Spine/Chest/Neck2/Neck1");
-                if (neck1Obj != null)
+                
+                // Деактивируем Particle Sleep который отвечает за эффект сна   
+                GameObject particleSleep = Utils.TryfindChild(MitaCore.SleepyObject.transform, "Mita Dream/Armature/Hips/Spine/Chest/Neck2/Neck1/Head/Particle Sleep");
+                if (particleSleep != null)
                 {
-                    MelonLogger.Msg($"Found Neck1 object: {neck1Obj.name}");
-                    
-                    // Получаем все аудио компоненты, включая дочерние объекты
-                    AudioSource[] audioSources = neck1Obj.GetComponentsInChildren<AudioSource>(true);
-                    MelonLogger.Msg($"Found {audioSources.Length} audio sources in hierarchy");
-                    
-                    foreach(var audioSource in audioSources)
-                    {
-                        MelonLogger.Msg($"Removing audio source from: {audioSource.gameObject.name}");
-                        audioSource.enabled = false;
-                        audioSource.clip = null;
-                        GameObject.Destroy(audioSource);
-                    }
-                    
-                    // Дополнительно проверим компоненты на самом объекте
-                    AudioSource[] directAudioSources = neck1Obj.GetComponents<AudioSource>();
-                    foreach(var audioSource in directAudioSources)
-                    {
-                        MelonLogger.Msg($"Removing direct audio source from: {neck1Obj.name}");
-                        audioSource.enabled = false;
-                        audioSource.clip = null;
-                        GameObject.Destroy(audioSource);
-                    }
-                    
-                    MelonLogger.Msg($"Total removed audio sources: {audioSources.Length + directAudioSources.Length}");
+                    particleSleep.SetActive(false);
+                    MelonLogger.Msg("Successfully deactivated Particle Sleep");
                 }
                 else
                 {
-                    MelonLogger.Error("Failed to find Neck1 object in the hierarchy");
+                    MelonLogger.Error("Failed to find Particle Sleep object");
                 }
-                
-                MitaCore.SleepyObject.active = false;
 
-                AudioControl.addMusicObject(worldDreamer.Find("Audio/MusicWorld").gameObject, "Music calm comfort");
+                MitaCore.SleepyObject.SetActive(false);
             }
             catch (Exception ex)
             {
                 MelonLogger.Error($"{worldDreamer.name} founding error: {ex}");
             }
-            //yield return new WaitForSeconds(1f);
+            
             SceneManager.UnloadScene(sceneToLoad);
         }
 
         private static IEnumerator AfterAllLoadded()
         {
+            
+
             MelonLogger.Msg("After all loaded");
             MitaCore.character MitaToStart = Settings.Get<MitaCore.character>("MitaType");
             MelonLogger.Msg($"Mita from settings {MitaToStart}");
@@ -814,17 +793,11 @@ namespace MitaAI
                 MelonLogger.Msg($"Run change Mita");
                 MitaCore.Instance.changeMita(null,character : MitaToStart);
             }
-            yield return new WaitForSeconds(0.25f);
+            yield return new WaitForSeconds(1f);
 
-            string HelloMessage = "Игрок только что загрузился в твой уровень";
+            EventsModded.sceneEnter(MitaToStart);
 
-            if (Utils.Random(1, 4)) HelloMessage += ", подбери музыку для его встречи";
-            if (Utils.Random(1, 7)) HelloMessage += ", можешь удивить его новым костюмом";
-            if (Utils.Random(1, 7)) HelloMessage += ", можешь удивить его новым цветом волос";
-
-
-            MitaCore.Instance.sendSystemMessage(HelloMessage, MitaToStart);
-            
+            MitaCore.AllLoaded = true;
             TestingGround();
         }
         
