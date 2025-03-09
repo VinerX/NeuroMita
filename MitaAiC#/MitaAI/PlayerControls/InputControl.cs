@@ -1,4 +1,4 @@
-﻿using Il2Cpp;
+using Il2Cpp;
 using MelonLoader;
 using System;
 using System.Collections;
@@ -33,8 +33,8 @@ namespace MitaAI.PlayerControls
             inputField.text = inputField.text.Insert(caretPos, userInput);
 
             // Обновляем позиции курсора и выделения
-            //int newCaretPos = caretPos + userInput.Length;
-            //inputField.caretPosition = newCaretPos;
+            int newCaretPos = caretPos + userInput.Length;
+            inputField.caretPosition = newCaretPos;
             //inputField.selectionAnchorPosition = newCaretPos;
             //inputField.selectionFocusPosition = newCaretPos;           
         }
@@ -51,6 +51,8 @@ namespace MitaAI.PlayerControls
 
         public static void processInpute()
         {
+            if (!MitaCore.isRequiredScene()) return;
+
             // Обработка блокировки движения при активном вводе
             if (isInputActive != wasInputActive) // Проверяем, изменилось ли состояние ввода
             {
@@ -136,6 +138,12 @@ namespace MitaAI.PlayerControls
                 }
                 else // Активирую ентером
                 {
+
+                    if (InputFieldComponent != null)
+                    {
+                        if (!InputFieldComponent.active) InputFieldComponent.SetActive(true);
+                    }
+                        
                     inputField.Select();
                     inputField.ActivateInputField();
 
@@ -211,9 +219,70 @@ namespace MitaAI.PlayerControls
             {
                 changeMitaButtons();
             }
-
-
-
+            else if (Input.GetKeyDown(KeyCode.Insert))
+            {
+                try
+                {
+                    // Находим игрока
+                    GameObject player = GameObject.Find("GameController/Player");
+                    if (player != null)
+                    {
+                        // Телепортируем на указанные координаты
+                        player.transform.position = new Vector3(10.8995f, -2.9825f, -10.6286f);
+                        
+                        // Деактивируем FixPosition так как в клетку не пустит
+                        Transform rightWrist = player.transform.Find("RightWrist FixPosition");
+                        if (rightWrist != null)
+                        {
+                            rightWrist.gameObject.SetActive(false);
+                        }
+                        
+                        Transform leftWrist = player.transform.Find("LeftWrist FixPosition");
+                        if (leftWrist != null)
+                        {
+                            leftWrist.gameObject.SetActive(false);
+                        }
+                        
+                        MelonLogger.Msg("Player teleported and wrist positions deactivated");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Error($"Error during Insert key handling: {ex}");
+                }
+            }
+            else if (Input.GetKeyDown(KeyCode.Delete))
+            {
+                try
+                {
+                    // Находим игрока
+                    GameObject player = GameObject.Find("GameController/Player");
+                    if (player != null)
+                    {
+                        // Телепортируем на новые координаты
+                        player.transform.position = new Vector3(12.532f, -2.9825f, -10.612f);
+                        
+                        // Активируем FixPosition
+                        Transform rightWrist = player.transform.Find("RightWrist FixPosition");
+                        if (rightWrist != null)
+                        {
+                            rightWrist.gameObject.SetActive(true);
+                        }
+                        
+                        Transform leftWrist = player.transform.Find("LeftWrist FixPosition");
+                        if (leftWrist != null)
+                        {
+                            leftWrist.gameObject.SetActive(true);
+                        }
+                        
+                        MelonLogger.Msg("Player teleported and wrist positions activated");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Error($"Error during Delete key handling: {ex}");
+                }
+            }
 
             // Постоянно возвращаем фокус на поле ввода, если оно активно
             if (isInputActive && inputField != null)
