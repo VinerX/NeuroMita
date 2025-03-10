@@ -679,38 +679,24 @@ namespace MitaAI
             {
                 // Инициализация CreepyMita и удаление аудио компонентов
                 MitaCore.CreepyObject = GameObject.Instantiate(Utils.TryfindChild(world, "Acts/CreepyMita/CreepyMita"), MitaCore.worldHouse);
-                GameObject chestObj = Utils.TryfindChild(MitaCore.CreepyObject.transform, "Acts/CreepyMita/CreepyMita/Armature/Hips/Spine/Chest");
-                if (chestObj != null)
+                // Отключаем звук CreepyMita Teeth
+                GameObject audioTeeth = Utils.TryfindChild(MitaCore.CreepyObject.transform, "Armature/Hips/Spine/Chest/Neck2/Neck1/Head/AudioTeeth");
+                if (audioTeeth != null)
                 {
-                    MelonLogger.Msg($"Found Chest object in CreepyMita: {chestObj.name}");
-                    
-                    // Получаем все аудио компоненты, включая дочерние объекты
-                    AudioSource[] audioSources = chestObj.GetComponentsInChildren<AudioSource>(true);
-                    MelonLogger.Msg($"Found {audioSources.Length} audio sources in CreepyMita hierarchy");
-                    
-                    foreach(var audioSource in audioSources)
+                    AudioSource audioSource = audioTeeth.GetComponent<AudioSource>();
+                    if (audioSource != null && audioSource.clip != null && audioSource.clip.name == "CreepyMita Teeth")
                     {
-                        MelonLogger.Msg($"Removing audio source from CreepyMita: {audioSource.gameObject.name}");
-                        audioSource.enabled = false;
                         audioSource.clip = null;
-                        GameObject.Destroy(audioSource);
+                        MelonLogger.Msg("Successfully removed 'CreepyMita Teeth' audio clip from AudioTeeth");
                     }
-                    
-                    // Дополнительно проверим компоненты на самом объекте
-                    AudioSource[] directAudioSources = chestObj.GetComponents<AudioSource>();
-                    foreach(var audioSource in directAudioSources)
+                    else
                     {
-                        MelonLogger.Msg($"Removing direct audio source from CreepyMita chest: {chestObj.name}");
-                        audioSource.enabled = false;
-                        audioSource.clip = null;
-                        GameObject.Destroy(audioSource);
+                        MelonLogger.Msg($"Audio clip is either null or not 'CreepyMita Teeth' (current: {(audioSource != null && audioSource.clip != null ? audioSource.clip.name : "null")})");
                     }
-                    
-                    MelonLogger.Msg($"Total removed audio sources from CreepyMita: {audioSources.Length + directAudioSources.Length}");
                 }
                 else
                 {
-                    MelonLogger.Error("Failed to find Chest object in CreepyMita hierarchy");
+                    MelonLogger.Error("Failed to find AudioTeeth object");
                 }
                 
                 MitaCore.CreepyObject.active = false;
@@ -759,6 +745,14 @@ namespace MitaAI
             {
                 MitaCore.SleepyObject = GameObject.Instantiate(Utils.TryfindChild(worldDreamer, "General/Mita Dreamer"), MitaCore.worldHouse);
                 
+                // Включаем коллайдер
+                Collider[] colliders = MitaCore.SleepyObject.GetComponentsInChildren<Collider>(true);
+                foreach (Collider collider in colliders)
+                {
+                    collider.enabled = true;
+                    MelonLogger.Msg($"Enabled collider on: {collider.gameObject.name}");
+                }
+                
                 // Деактивируем Particle Sleep который отвечает за эффект сна   
                 GameObject particleSleep = Utils.TryfindChild(MitaCore.SleepyObject.transform, "Mita Dream/Armature/Hips/Spine/Chest/Neck2/Neck1/Head/Particle Sleep");
                 if (particleSleep != null)
@@ -769,6 +763,26 @@ namespace MitaAI
                 else
                 {
                     MelonLogger.Error("Failed to find Particle Sleep object");
+                }
+
+                // Отключаем аудио клип Mita Sleep 1
+                GameObject audioSoundsLoop = Utils.TryfindChild(MitaCore.SleepyObject.transform, "Mita Dream/Armature/Hips/Spine/Chest/Neck2/Neck1/Head/AudioSoundsLoop");
+                if (audioSoundsLoop != null)
+                {
+                    AudioSource audioSource = audioSoundsLoop.GetComponent<AudioSource>();
+                    if (audioSource != null && audioSource.clip != null && audioSource.clip.name == "Mita Sleep 1")
+                    {
+                        audioSource.clip = null;
+                        MelonLogger.Msg("Successfully removed 'Mita Sleep 1' audio clip from AudioSoundsLoop");
+                    }
+                    else
+                    {
+                        MelonLogger.Msg($"Audio clip is either null or not 'Mita Sleep 1' (current: {(audioSource != null && audioSource.clip != null ? audioSource.clip.name : "null")})");
+                    }
+                }
+                else
+                {
+                    MelonLogger.Error("Failed to find AudioSoundsLoop object");
                 }
 
                 MitaCore.SleepyObject.SetActive(false);
