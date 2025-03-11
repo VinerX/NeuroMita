@@ -1461,15 +1461,16 @@ namespace MitaAI
             textDialogueMemory.text = dialogue_3DText.textPrint;
             if (dialogue_3DText.themeDialogue == Dialogue_3DText.Dialogue3DTheme.Mita)
             {
-                textDialogueMemory.clr = new Color(0.515f, 0f, 1f);
-                textDialogueMemory.clr2 = new Color(0.5f, 0f, 0.9f);
-                textDialogueMemory.clr1 = new Color(1, 1, 1);
+                Color characterColor = GetCharacterTextColor(currentCharacter);
+                textDialogueMemory.clr = characterColor;
+                textDialogueMemory.clr2 = new Color(characterColor.r * 0.9f, characterColor.g * 0.9f, characterColor.b * 0.9f);
+                textDialogueMemory.clr1 = Color.white;
             }
             else
             {
                 textDialogueMemory.clr = new Color(1f, 0.6f, 0f);
                 textDialogueMemory.clr2 = new Color(0.9f, 0.5f, 0f);
-                textDialogueMemory.clr1 = new Color(1, 1, 1);
+                textDialogueMemory.clr1 = Color.white;
             }
             //textDialogueMemory.clr = dialogue_3DText.
             playerController.dialoguesMemory.Add(textDialogueMemory);
@@ -2213,7 +2214,28 @@ namespace MitaAI
             
         }
 
-
+        public static Color GetCharacterTextColor(character character)
+        {
+            switch (character)
+            {
+                case character.Crazy:
+                    return new Color(1f, 0.2f, 0.2f); // Красный
+                case character.Cappy:
+                    return new Color(0.2f, 0.8f, 1f); // Голубой
+                case character.Kind:
+                    return new Color(0.2f, 1f, 0.2f); // Зеленый
+                case character.ShortHair:
+                    return new Color(1f, 0.8f, 0.2f); // Золотой
+                case character.Mila:
+                    return new Color(1f, 0.4f, 0.8f); // Розовый
+                case character.Sleepy:
+                    return new Color(0.6f, 0.6f, 1f); // Фиолетовый
+                case character.Creepy:
+                    return new Color(0.8f, 0.2f, 0.8f); // Темно-фиолетовый
+                default:
+                    return Color.white;
+            }
+        }
 
     }
 
