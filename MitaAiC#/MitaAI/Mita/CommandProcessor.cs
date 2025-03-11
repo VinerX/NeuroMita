@@ -1,4 +1,4 @@
-﻿using Il2Cpp;
+using Il2Cpp;
 using MelonLoader;
 using MitaAI.WorldModded;
 using System;
@@ -184,6 +184,13 @@ namespace MitaAI.Mita
                         MelonLogger.Warning("tryied 4 continue");
                         mitaCore.sendSystemInfo("Ты не смогла продолжить фразу сразу, так как лимит в 3 continue подряд был превышен");
                     }
+                    break;
+
+                case "Надеть очки":
+                    mitaCore.GlassesObj(true);
+                    break;
+                case "Снять очки":
+                    mitaCore.GlassesObj(false);
                     break;
 
                 // Дополнительные команды...
