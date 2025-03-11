@@ -2131,6 +2131,22 @@ namespace MitaAI
 
                 info += $"Current emotion anim: {currentEmotion}\n";
 
+                try 
+                {
+                    var glasses = MitaPersonObject.transform.Find("World/Acts/Mita/MitaPerson/Head/Mita'sGlasses").gameObject;
+                    info += $"Очки: {(glasses.activeSelf ? "надеты" : "сняты")}\n";
+                    // хз что то попробовал ниже но не уверен
+                if (glasses.activeSelf)
+                {
+                    info += "you put on glasses, if you want to take them off use the command remove glasses.\n";
+                }
+                else
+                {
+                    info += "you took off glasses, if you want to put them on use the command put on glasses.\n";
+                }
+                }
+                catch (Exception) { }
+
                 MelonLogger.Msg("CurrentInfo 2");
 
 
@@ -2234,6 +2250,25 @@ namespace MitaAI
                     return new Color(0.8f, 0.2f, 0.8f); // Темно-фиолетовый
                 default:
                     return Color.white;
+            }
+        }
+
+        public void GlassesObj()
+        {
+            MitaPersonObject.transform.Find("World/Acts/Mita/MitaPerson/Head/Mita'sGlasses").gameObject.SetActive(true);
+        }
+
+        public void GlassesObj(bool state)
+        {
+            try 
+            {
+                var glasses = MitaPersonObject.transform.Find("World/Acts/Mita/MitaPerson/Head/Mita'sGlasses").gameObject;
+                glasses.SetActive(state);
+                sendSystemInfo(state ? "Очки надеты" : "Очки сняты");
+            }
+            catch (Exception ex)
+            {
+                LoggerInstance.Error($"Ошибка при работе с очками: {ex.Message}");
             }
         }
 
