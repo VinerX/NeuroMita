@@ -15,6 +15,12 @@ class Character:
         self.silero_command = silero_command
         self.silero_turn_off_video = silero_turn_off_video
 
+        # Добавляем атрибуты для управления очередью
+        self.character_queue = []
+        self.current_character_index = 0
+        self.is_active = True
+        self.other_characters_info = {}
+
         self.fixed_prompts: List[PromptPart] = []
         self.float_prompts: List[PromptPart] = []
         self.temp_prompts: List[PromptPart] = []
@@ -35,6 +41,16 @@ class Character:
         """
         self.LongMemoryRememberCount = 0
         self.MitaLongMemory = ""
+
+        # Добавляем атрибуты для событий и синхронизации
+        self.events_queue = []
+        self.shared_context = {}
+        self.character_states = {}
+        self.interaction_history = []
+
+        # Добавляем атрибуты для диалогов
+        self.last_response = ""
+        self.dialogue_context = []
 
         self.init()
 
@@ -85,11 +101,113 @@ class Character:
         else:
             print(f"Промпт '{name_next}' не существует")
 
-    def prepare_fixed_messages(self) -> List[Dict]:
-        """Создает фиксированные начальные установки
-        :return: сообщения до
-        """
+    def add_character_to_queue(self, character):
+        """Добавляет персонажа в очередь"""
+        if character not in self.character_queue:
+            self.character_queue.append(character)
+            print(f"Персонаж {character.name} добавлен в очередь")
 
+    def remove_character_from_queue(self, character):
+        """Удаляет персонажа из очереди"""
+        if character in self.character_queue:
+            self.character_queue.remove(character)
+            print(f"Персонаж {character.name} удален из очереди")
+
+    def get_current_character(self):
+        """Возвращает текущего активного персонажа"""
+        if not self.character_queue:
+            return self
+        return self.character_queue[self.current_character_index]
+
+    def next_character(self):
+        """Переключает на следующего персонажа в очереди"""
+        if not self.character_queue:
+            return
+        self.current_character_index = (self.current_character_index + 1) % len(self.character_queue)
+        print(f"Переключение на персонажа: {self.get_current_character().name}")
+
+    def update_other_characters_info(self, character, info):
+        """Обновляет информацию о других персонажах"""
+        self.other_characters_info[character.name] = info
+
+    def get_other_characters_context(self):
+        """Возвращает контекст других персонажей"""
+        context = []
+        for char_name, info in self.other_characters_info.items():
+            context.append(f"Информация о {char_name}: {info}")
+        return "\n".join(context)
+
+    def add_event(self, event_type: str, data: dict):
+        """Добавляет событие в очередь"""
+        event = {
+            "type": event_type,
+            "data": data,
+            "timestamp": datetime.datetime.now(),
+            "source": self.name
+        }
+        self.events_queue.append(event)
+        print(f"Добавлено событие: {event_type} от {self.name}")
+
+    def process_events(self):
+        """Обрабатывает события в очереди"""
+        while self.events_queue:
+            event = self.events_queue.pop(0)
+            self._handle_event(event)
+
+    def _handle_event(self, event: dict):
+        """Обрабатывает конкретное событие"""
+        event_type = event["type"]
+        data = event["data"]
+
+        if event_type == "character_speak":
+            # Добавляем информацию о том, что сказал другой персонаж
+            self.update_other_characters_info(
+                data["character"],
+                f"Сказал: {data['message']}"
+            )
+        elif event_type == "character_action":
+            # Обновляем информацию о действиях другого персонажа
+            self.update_other_characters_info(
+                data["character"],
+                f"Действие: {data['action']}"
+            )
+        elif event_type == "state_change":
+            # Обновляем состояние персонажа
+            self.character_states[data["character"]] = data["state"]
+
+    def update_shared_context(self, key: str, value: any):
+        """Обновляет общий контекст для всех персонажей"""
+        self.shared_context[key] = value
+        # Оповещаем других персонажей
+        for character in self.character_queue:
+            character.shared_context[key] = value
+
+    def get_interaction_context(self) -> str:
+        """Возвращает контекст взаимодействия для текущего диалога"""
+        context = []
+        
+        # Добавляем последние взаимодействия
+        if self.interaction_history:
+            context.append("Недавние взаимодействия:")
+            for interaction in self.interaction_history[-3:]:  # Последние 3 взаимодействия
+                context.append(f"- {interaction}")
+        
+        # Добавляем текущие состояния персонажей
+        if self.character_states:
+            context.append("\nСостояния персонажей:")
+            for char_name, state in self.character_states.items():
+                context.append(f"- {char_name}: {state}")
+        
+        # Добавляем общий контекст
+        if self.shared_context:
+            context.append("\nОбщий контекст:")
+            for key, value in self.shared_context.items():
+                context.append(f"- {key}: {value}")
+                
+        return "\n".join(context)
+
+    def prepare_fixed_messages(self) -> List[Dict]:
+        """Создает фиксированные начальные установки с учетом диалогов"""
         messages = []
 
         for part in self.fixed_prompts:
@@ -98,8 +216,22 @@ class Character:
                 messages.append(m)
 
         memory_message = {"role": "system", "content": self.memory_system.get_memories_formatted()}
-
         messages.append(memory_message)
+
+        # Добавляем информацию о других персонажах
+        other_characters_context = self.get_other_characters_context()
+        if other_characters_context:
+            messages.append({"role": "system", "content": other_characters_context})
+
+        # Добавляем контекст диалога
+        dialogue_context = self.get_dialogue_context()
+        if dialogue_context:
+            messages.append({"role": "system", "content": dialogue_context})
+
+        # Добавляем контекст взаимодействия
+        interaction_context = self.get_interaction_context()
+        if interaction_context:
+            messages.append({"role": "system", "content": interaction_context})
 
         return messages
 
@@ -154,10 +286,60 @@ class Character:
         print("Персонаж без изменяемой логики промптов")
 
     def process_response(self, response: str):
+        """Обработка ответа с учетом других персонажей"""
         response = self.extract_and_process_memory_data(response)
         response = self._process_behavior_changes(response)
-        """То, как должно что-то меняться в результате ответа"""
+        
+        # Сохраняем ответ
+        self.last_response = response
+        
+        # Оповещаем других персонажей о том, что было сказано
+        self.notify_other_characters_about_response(response)
+        
         return response
+
+    def notify_other_characters_about_response(self, response: str):
+        """Оповещает других персонажей о сказанном"""
+        for character in self.character_queue:
+            # Добавляем событие говорения
+            character.add_event("character_speak", {
+                "character": self,
+                "message": response
+            })
+            
+            # Обновляем контекст диалога для других персонажей
+            character.update_dialogue_context(self, response)
+
+    def update_dialogue_context(self, speaker, message: str):
+        """Обновляет контекст диалога с учетом нового сообщения"""
+        dialogue_entry = {
+            "speaker": speaker.name,
+            "message": message,
+            "timestamp": datetime.datetime.now()
+        }
+        self.dialogue_context.append(dialogue_entry)
+        
+        # Ограничиваем размер контекста
+        if len(self.dialogue_context) > 5:  # Храним только последние 5 сообщений
+            self.dialogue_context.pop(0)
+        
+        # Обновляем информацию о других персонажах
+        self.update_other_characters_info(
+            speaker,
+            f"Последнее сообщение: {message}"
+        )
+
+    def get_dialogue_context(self) -> str:
+        """Возвращает контекст диалога в формате для промптов"""
+        if not self.dialogue_context:
+            return ""
+            
+        context_lines = ["Текущий диалог:"]
+        for entry in self.dialogue_context:
+            timestamp = entry["timestamp"].strftime("%H:%M:%S")
+            context_lines.append(f"[{timestamp}] {entry['speaker']}: {entry['message']}")
+        
+        return "\n".join(context_lines)
 
     def _process_behavior_changes(self, response):
         """
@@ -309,6 +491,12 @@ class Character:
 
     def get_path(self, path):
         return f"Prompts/{self.name}/{path}"
+
+    def record_interaction(self, interaction: str):
+        """Записывает взаимодействие в историю"""
+        self.interaction_history.append(interaction)
+        if len(self.interaction_history) > 10:  # Храним только последние 10 взаимодействий
+            self.interaction_history.pop(0)
 
 
 class CrazyMita(Character):
