@@ -4,12 +4,17 @@ using UnityEngine;
 using System.Text.RegularExpressions;
 using System.Reflection;
 using System.Collections;
+using System.Globalization;
 using Il2CppInterop.Runtime.InteropTypes;
 using UnityEngine.AI;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using MitaAI.Mita;
 using MitaAI.PlayerControls;
+using UnityEngine.Events;
 using UnityEngine.UI;
+using UnityEngine.Networking.Match;
+using System.Text.Json;
+using UnityEngine.Playables;
 
 
 [assembly: MelonInfo(typeof(MitaAI.MitaCore), "MitaAI", "1.0.0", "Dmitry", null)]
@@ -47,38 +52,38 @@ namespace MitaAI
         Animator_FunctionsOverride MitaAnimatorFunctions;
         public Character_Look MitaLook;
         public static GameObject Console;
-        static public GameObject getMitaByEnum(character character, bool getMitaPersonObject = false)
+        static public GameObject getMitaByEnum(MitaAI.character character, bool getMitaPersonObject = false)
         {
             GameObject mitaObject;
             switch (character)
             {
-                case character.Crazy:
+                case MitaAI.character.Crazy:
                     mitaObject = CrazyObject;
                     break;
-                case character.Kind:
+                case MitaAI.character.Kind:
                     mitaObject = KindObject;
                     break;
-                case character.ShortHair:
+                case MitaAI.character.ShortHair:
                     mitaObject = ShortHairObject;
                     break;
-                case character.Cappy:
+                case MitaAI.character.Cappy:
                     mitaObject = CappyObject;
                     break;
-                case character.Mila:
+                case MitaAI.character.Mila:
                     mitaObject = MilaObject;
                     break;
-                case character.Sleepy:
+                case MitaAI.character.Sleepy:
                     mitaObject = SleepyObject;
                     break;
-                case character.Creepy:
+                case MitaAI.character.Creepy:
                     mitaObject = CreepyObject;
                     break;
 
                 // Cartdiges
-                case character.Cart_divan:
+                case MitaAI.character.Cart_divan:
                     mitaObject = Console;
                     break;
-                case character.Cart_portal:
+                case MitaAI.character.Cart_portal:
                     mitaObject = Console;
                     break;
 
@@ -112,7 +117,7 @@ namespace MitaAI
             return MitaPersonObject;
         }
 
-        public void addChangeMita(GameObject NewMitaObject = null,character character = character.Crazy, bool ChangeAnimationControler = true, bool turnOfOld = true,bool changePosition = true,bool changeAnimation = true)
+        public void addChangeMita(GameObject NewMitaObject = null,MitaAI.character character = MitaAI.character.Crazy, bool ChangeAnimationControler = true, bool turnOfOld = true,bool changePosition = true,bool changeAnimation = true)
         {
             if (NewMitaObject == null)
             {
@@ -173,11 +178,11 @@ namespace MitaAI
                 {
                     MitaLook.forwardPerson = MitaPersonObject.transform;
                 }
-                if (character == character.Creepy)
+                if (character == MitaAI.character.Creepy)
                 {
                     LogicCharacter.Instance.Initialize(MitaPersonObject, character);
                 }
-                if (character == character.Creepy)
+                if (character == MitaAI.character.Creepy)
                 {
                     LogicCharacter.Instance.Initialize(MitaPersonObject, character);
                 }
@@ -361,7 +366,7 @@ namespace MitaAI
 
         
 
-        public character currentCharacter = character.Crazy;
+        public MitaAI.character currentCharacter = MitaAI.character.Crazy;
 
         public static MovementStyles movementStyle = MovementStyles.walkNear;
 
@@ -417,7 +422,7 @@ namespace MitaAI
         public string playerMessage = "";
         //static public Queue<string> playerMessages = new Queue<string>();
 
-        public List<character> playerMessageCharacters = new List<character>();
+        public List<MitaAI.character> playerMessageCharacters = new List<MitaAI.character>();
 
 
         
@@ -456,6 +461,8 @@ namespace MitaAI
             MelonLogger.Msg("OnInitializeMelon patch");
             MitaClothesModded.init(harmony);
             NetworkController.Initialize();
+            CustomUI customUI = new CustomUI();
+            customUI.StartCustomUI();
         }
 
         public override void OnLateInitializeMelon()
@@ -557,7 +564,6 @@ namespace MitaAI
             float posY = position.y;
 
             if (Utils.getDistanceBetweenObjects(worldHouse.gameObject,playerPersonObject)>50f) return Rooms.Unknown;
-
             if (posY <= -0.2f)
                 return Rooms.Basement;
 
@@ -604,9 +610,9 @@ namespace MitaAI
 
 
             var comp = MitaPersonObject.AddComponent<Character>();
-            comp.init(character.Crazy);
+            comp.init(MitaAI.character.Crazy);
 
-            currentCharacter = character.Crazy;
+            currentCharacter = MitaAI.character.Crazy;
 
             MitaLook = MitaObject.transform.Find("MitaPerson Mita/IKLifeCharacter").gameObject.GetComponent<Character_Look>();
             MitaAnimatorFunctions = MitaPersonObject.GetComponent<Animator_FunctionsOverride>();
@@ -1208,7 +1214,7 @@ namespace MitaAI
             try
             {
                 // Проверка на наличие объекта Mita перед применением эмоции
-                if (Mita == null || Mita.gameObject == null || currentCharacter!=character.Crazy)
+                if (Mita == null || Mita.gameObject == null || currentCharacter!=MitaAI.character.Crazy)
                 {
                     MelonLogger.Error("Mita object is null or Mita.gameObject is not active.");
                     return cleanedResponse; // Возвращаем faceStyle и очищенный текст
@@ -1267,26 +1273,26 @@ namespace MitaAI
             
         }
 
-        public static Color GetCharacterTextColor(character character)
+        public static Color GetCharacterTextColor(MitaAI.character character)
         {
             switch (character)
             {
-                case character.Crazy:
+                case MitaAI.character.Crazy:
                     return new Color(1f, 0.4f, 0.8f); // розовый
-                case character.Cappy:
+                case MitaAI.character.Cappy:
                     return new Color(1f, 1f, 0.1f); // мягкий оранжевый 
-                case character.Kind:
+                case MitaAI.character.Kind:
                     return new Color(0.80f, 0.9f, 1f); // Бирюзовый
                     
-                case character.ShortHair:
+                case MitaAI.character.ShortHair:
                     return new Color(1f, 0.9f, 0.4f); // мягкий желтый
-                case character.Mila:
+                case MitaAI.character.Mila:
                     return new Color(0.4f, 0.6f, 1f); // голубой
-                case character.Sleepy:
+                case MitaAI.character.Sleepy:
                     return new Color(1f, 1f, 1f); // мягкий розовый
-                case character.Creepy:
+                case MitaAI.character.Creepy:
                     return new Color(1f, 0f, 0f); // красный
-                case character.GameMaster:
+                case MitaAI.character.GameMaster:
                     return Color.black;
                 default:
                     return Color.white;
@@ -1312,5 +1318,68 @@ namespace MitaAI
             }
         }
 
+
+                public void setCharacterState(MitaAI.character targetChar, MitaAI.character newState) // не доделано, будет отрубать персонажа
+                {
+            try
+            {
+                if (targetChar == MitaAI.character.None) return;
+                
+                GameObject charObj = getMitaByEnum(targetChar);
+                if (charObj == null) return;
+                
+                var navMesh = charObj.GetComponent<NavMeshAgent>();
+                if (navMesh != null) navMesh.enabled = false;
+                
+                var animator = charObj.GetComponent<Animator>();
+                if (animator != null) animator.enabled = false;
+                
+                charObj.SetActive(false);
+                
+                if (newState == MitaAI.character.None)
+                {
+                    MelonLogger.Msg($"Fully deactivated character: {targetChar}");
+                    currentCharacter = MitaAI.character.None;
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Error($"Error in setCharacterState: {ex.Message}");
+            }
+        }
+
+        public void removeMita(GameObject mitaObject, MitaAI.character character)
+        {
+            try
+            {
+                if (mitaObject != null)
+                {
+                    mitaObject.SetActive(false);
+                    
+                    var navMesh = mitaObject.GetComponent<NavMeshAgent>();
+                    if (navMesh != null) navMesh.enabled = false;
+                    
+                    var animator = mitaObject.GetComponent<Animator>();
+                    if (animator != null) animator.enabled = false;
+                    
+                    MelonLogger.Msg($"Character {character} removed");
+                }
+                currentCharacter = MitaAI.character.None;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Error($"Error removing character: {ex.Message}");
+            }
+        }
+
+        public void sendSystemMessage(string message, MitaAI.character character)
+        {
+            MelonLogger.Msg($"[System] {message} for {character}");
+        }
+
+        public void sendInfoListeners(string message, GameObject sender, MitaAI.character character, string listener)
+        {
+            MelonLogger.Msg($"[Info] {message} from {sender?.name} to {listener} for {character}");
+        }
     }
 }
