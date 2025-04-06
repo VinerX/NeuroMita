@@ -56,7 +56,10 @@ namespace MitaAI
             // Если состояние изменилось, выводим сообщение
             if (wasPauseMenu != isPauseMenu)
             {
-                MelonLogger.Msg($"Меню паузы: {isPauseMenu}");
+                if (CustomUI.Instance != null)
+                {
+                    CustomUI.Instance.SetMenuVisible(isPauseMenu);
+                }
             }
         }
 
