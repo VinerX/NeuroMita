@@ -326,6 +326,7 @@
 		<Compile Include="Characters\CharacterMessages.cs" />
 		<Compile Include="Characters\CharacterControl.cs" />
 		<Compile Include="Characters\Character.cs" />
+		<Compile Include="CustomUI.cs" />
 		<Compile Include="Enums.cs" />
 		<Compile Include="Mita\CharacterLookOld.cs" />
 		<Compile Include="Characters\LogicCharacter.cs" />
