@@ -487,6 +487,8 @@ class ChatGUI:
 
         self.setup_mita_controls(settings_frame)
 
+        self.setup_general_settings_control(settings_frame)
+
         # Передаем settings_frame как родителя
 
         # Настройка элементов управления
@@ -829,15 +831,10 @@ class ChatGUI:
     def setup_model_controls(self, parent):
         # Основные настройки
         mita_config = [
-            {'label': _('Использовать gpt4free','Use gpt4free'), 'key': 'gpt4free', 'type': 'checkbutton', 'default_checkbutton': False},
-            {'label': _('gpt4free | Модель gpt4free','gpt4free | model gpt4free'), 'key': 'gpt4free_model', 'type': 'entry', 'default': "gemini-1.5-flash"},
-            # gpt-4o-mini тоже подходит
-            {'label': _('Настройки ВСЕХ моделей', 'All models settings'), 'type': 'text'},
-            {'label': _('Лимит сообщений','Message limit'), 'key': 'MODEL_MESSAGE_LIMIT', 'type': 'entry', 'default': 40,
-             'tooltip':_('Сколько сообщений будет помнить мита','How much messages Mita will remember')},
-            {'label': _('Кол-во попыток','Attempt count'), 'key': 'MODEL_MESSAGE_ATTEMPTS_COUNT', 'type': 'entry', 'default': 3},
-            {'label': _('Время между попытками','time between attempts'), 'key': 'MODEL_MESSAGE_ATTEMPTS_TIME', 'type': 'entry', 'default': 0.20}
-
+            {'label': _('Использовать gpt4free','Use gpt4free'), 'key': 'gpt4free', 'type': 'checkbutton', 
+             'default_checkbutton': False},
+            {'label': _('gpt4free | Модель gpt4free','gpt4free | model gpt4free'), 'key': 'gpt4free_model', 
+             'type': 'entry', 'default': "gemini-1.5-flash"}
         ]
 
         self.create_settings_section(parent, _("Настройки модели","Model settings"), mita_config)
@@ -891,6 +888,22 @@ class ChatGUI:
                                      _("Настройки API", "API settings"),
                                      common_config)
 
+    def setup_general_settings_control(self, parent):
+        general_config = [
+            # здесь настройки из setup_model_controls
+            {'label': _('Настройки сообщений', 'Message settings'), 'type': 'text'},
+            {'label': _('Лимит сообщений','Message limit'), 'key': 'MODEL_MESSAGE_LIMIT', 
+             'type': 'entry', 'default': 40,
+             'tooltip':_('Сколько сообщений будет помнить мита','How much messages Mita will remember')},
+            {'label': _('Кол-во попыток','Attempt count'), 'key': 'MODEL_MESSAGE_ATTEMPTS_COUNT', 
+             'type': 'entry', 'default': 3},
+            {'label': _('Время между попытками','time between attempts'), 
+             'key': 'MODEL_MESSAGE_ATTEMPTS_TIME', 'type': 'entry', 'default': 0.20}
+        ]
+
+        self.create_settings_section(parent,
+                                   _("Общие настройки моделей", "General settings for models"), 
+                                   general_config)
 
     #endregion
 
