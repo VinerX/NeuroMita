@@ -337,37 +337,42 @@ namespace MitaAI
             {
                 case "ButtonLoad":
                     StartMenu.Active(true);
-                    //MitaCore.MainMenu.ButtonLoadScene(MitaCore.Instance.requiredSave);
+					//MitaCore.MainMenu.ButtonLoadScene(MitaCore.Instance.requiredSave);
                     break;
                 case "MitaShortButton":
                     Settings.MitaType.Value = characterType.ShortHair;
                     Settings.Save();
                     StartMenu.Active(false);
                     MainMenu.ButtonLoadScene(MitaCore.Instance.requiredSave);
+                    CustomUI.Instance.SetToggleState(characterType.ShortHair, true);
                     break;
                 case "MitaCrazyButton":
                     Settings.MitaType.Value = characterType.Crazy;
                     Settings.Save();
                     StartMenu.Active(false);
                     MainMenu.ButtonLoadScene(MitaCore.Instance.requiredSave);
+                    CustomUI.Instance.SetToggleState(characterType.Crazy, true);
                     break;
                 case "MitaKindButton":
                     Settings.MitaType.Value = characterType.Kind;
                     Settings.Save();
                     StartMenu.Active(false);
                     MainMenu.ButtonLoadScene(MitaCore.Instance.requiredSave);
+                    CustomUI.Instance.SetToggleState(characterType.Kind, true);
                     break;
                 case "MitaCappyButton":
                     Settings.MitaType.Value = characterType.Cappy;
                     Settings.Save();
                     StartMenu.Active(false);
                     MainMenu.ButtonLoadScene(MitaCore.Instance.requiredSave);
+                    CustomUI.Instance.SetToggleState(characterType.Cappy, true);
                     break;
                 case "MilaButton":
                     Settings.MitaType.Value = characterType.Mila;
                     Settings.Save();
                     StartMenu.Active(false);
                     MainMenu.ButtonLoadScene(MitaCore.Instance.requiredSave);
+                    CustomUI.Instance.SetToggleState(characterType.Mila, true);
                     break;
                 case "ButtonReturn":
                     StartMenu.Active(false);
@@ -378,12 +383,14 @@ namespace MitaAI
                     Settings.Save();
                     StartMenu.Active(false);
                     MainMenu.ButtonLoadScene(MitaCore.Instance.requiredSave);
+                    CustomUI.Instance.SetToggleState(characterType.Sleepy, true);
                     break;
                 case "CreepyMitaButton":
                     Settings.MitaType.Value = characterType.Creepy;
                     Settings.Save();
                     StartMenu.Active(false);
                     MainMenu.ButtonLoadScene(MitaCore.Instance.requiredSave);
+                    CustomUI.Instance.SetToggleState(characterType.Creepy, true);
                     break;
                 default:
                     MelonLogger.Warning($"Unhandled button {eventName}");

@@ -179,5 +179,41 @@ namespace MitaAI
                 MelonLogger.Msg("CustomMenu Деактивировано");
             }
         }
+
+        public void SetToggleState(characterType character, bool state)
+        {
+            if (characterStates.ContainsKey(character))
+            {
+                characterStates[character] = state;
+                
+                if (state)
+                {
+                    GameObject mitaObject = MitaCore.getMitaByEnum(character);
+                    if (mitaObject != null)
+                    {
+                        MitaCore.Instance?.addChangeMita(mitaObject, character, true, false);
+                        mitaObject.SetActive(true);
+                        CharacterMessages.sendSystemMessage($"{character} активирована", character);
+                        CharacterMessages.sendInfoListeners($"{character} появилась на уровне", null, character, "Nobody");
+                    }
+                }
+                else
+                {
+                    GameObject mitaObject = MitaCore.getMitaByEnum(character);
+                    if (mitaObject != null)
+                    {
+                        MitaCore.Instance?.removeMita(mitaObject, character);
+                        CharacterMessages.sendSystemMessage($"{character} полностью деактивирована", character);
+                        CharacterMessages.sendInfoListeners($"{character} удалена с уровня", null, character, "Nobody");
+                    }
+                }
+                
+                MelonLogger.Msg($"Toggle state for {character} set to {state}");
+            }
+            else
+            {
+                MelonLogger.Error($"Character type {character} not found in characterStates");
+            }
+        }
     }
 }
