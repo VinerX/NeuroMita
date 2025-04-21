@@ -105,7 +105,7 @@ namespace MitaAI
         }
         public static string getObjectName(Character character)
         {
-            GameObject Mita = MitaCore.getMitaByEnum(character.characterType, true);
+            GameObject Mita = MitaCore.getMitaPersonObjectByEnum(character.characterType, true);
             string objectName = "";
             if (Mita != null) objectName += $", its game object {Mita.name}";
 
@@ -113,7 +113,7 @@ namespace MitaAI
         }
         public static string getObjectName(characterType character)
         {
-            GameObject Mita = MitaCore.getMitaByEnum(character, true);
+            GameObject Mita = MitaCore.getMitaPersonObjectByEnum(character, true);
             string objectName = "";
             if (Mita != null) objectName += $", its game object {Mita.name}";
 

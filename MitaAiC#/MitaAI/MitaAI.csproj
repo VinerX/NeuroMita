@@ -18,6 +18,9 @@
 	  <EmbeddedResource Remove="Vosk\**" />
 	  <None Remove="Vosk\**" />
 	</ItemGroup>
+	<ItemGroup>
+	  <None Remove="Characters\Character.cs~RF300e9e17.TMP" />
+	</ItemGroup>
 
 	<ItemGroup>
 		<Reference Include="Assembly-CSharp-firstpass">

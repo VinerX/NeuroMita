@@ -101,7 +101,7 @@ namespace MitaAI
                 bool newState = !characterStates[character];
                 characterStates[character] = newState;
                 
-                GameObject mitaObject = MitaCore.getMitaByEnum(character);
+                GameObject mitaObject = MitaCore.getMitaPersonObjectByEnum(character);
                 if (mitaObject == null)
                 {
                     MelonLogger.Error($"Failed to find character object for {character}");
@@ -115,7 +115,7 @@ namespace MitaAI
                         if (character == characterType.Crazy)
                         {
                             MelonLogger.Msg($"Attempting to activate {label} character");
-                            GameObject crazyChar = MitaCore.getMitaByEnum(characterType.Crazy);
+                            GameObject crazyChar = MitaCore.getMitaPersonObjectByEnum(characterType.Crazy);
                             if (crazyChar != null)
                             {
                                 MelonLogger.Msg($"Found Crazy character object: {crazyChar.name}");
@@ -196,7 +196,7 @@ namespace MitaAI
                 
                 if (state)
                 {
-                    GameObject mitaObject = MitaCore.getMitaByEnum(character);
+                    GameObject mitaObject = MitaCore.getMitaPersonObjectByEnum(character);
                     if (mitaObject != null)
                     {
                         MitaCore.Instance?.addChangeMita(mitaObject, character, true, false);
@@ -207,7 +207,7 @@ namespace MitaAI
                 }
                 else
                 {
-                    GameObject mitaObject = MitaCore.getMitaByEnum(character);
+                    GameObject mitaObject = MitaCore.getMitaPersonObjectByEnum(character);
                     if (mitaObject != null)
                     {
                         MitaCore.Instance?.removeMita(mitaObject, character);

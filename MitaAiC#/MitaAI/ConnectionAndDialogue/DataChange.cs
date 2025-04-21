@@ -164,7 +164,7 @@ namespace MitaAI
             {
                 if (characterToSend != characterType.GameMaster)
                 {
-                    var MitaObj = MitaCore.getMitaByEnum(characterToSend);
+                    var MitaObj = MitaCore.getMitaPersonObjectByEnum(characterToSend);
                     if (MitaObj.GetComponentInChildren<Character>().enabled) MitaCore.Instance.addChangeMita(MitaObj,characterToSend, false, false, false, false);
                 }
                 else

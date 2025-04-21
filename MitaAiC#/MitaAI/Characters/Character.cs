@@ -15,19 +15,37 @@ namespace MitaAI
     public class Character : MonoBehaviour
     {
         public characterType characterType;
+        public GameObject mitaPersonObject;
+        public MitaPerson mitaPerson;
+
+
+
         public bool isCartdige;
         public int PointsOrder = 0;
 
-        public void init(characterType character)
+        public static Character getMitaByEnum(characterType character)
+        {
+            foreach (var item in Component.FindObjectsOfType<Character>())
+            {
+                if (item.characterType == character) return item;
+            }
+
+            return null;
+
+        }
+
+        public void Init(characterType character, GameObject _mitaPersonObject, MitaPerson _mitaPerson)
         {
             this.characterType = character;
+            mitaPersonObject = _mitaPersonObject;
+            mitaPerson = _mitaPerson;
             CharacterControl.Characters.Add(this);
         }
         public void init_cartridge()
         {
 
-            this.isCartdige = true;
-            init(CharacterControl.get_cart());
+            isCartdige = true;
+            characterType = CharacterControl.get_cart();
 
         }
         public void changeActivation()

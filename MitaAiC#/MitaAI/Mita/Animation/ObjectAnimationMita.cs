@@ -103,7 +103,7 @@ namespace MitaAI
         public CommonInteractableObject commonInteractableObject;
 
         public GameObject AmimatedObject;
-        public GameObject mitaPerson;
+        Character Mita;
 
         MitaAnimationModded mitaAnimationModded;
 
@@ -192,9 +192,10 @@ namespace MitaAI
             allOAMs[name] = this;
 
             // Дебаг, так проще вернуть
-            
-   
-            mitaPerson = MitaCore.Instance.MitaPersonObject;
+
+
+
+            Mita = Character.getMitaByEnum(MitaCore.Instance.currentCharacter);
             AmimatedObject = transform.parent.gameObject;
 
             aiMovePoint = new GameObject();
@@ -362,7 +363,7 @@ namespace MitaAI
             mitaAIMovePoint.eventFinish.RemoveAllListeners();
         }
 
-        public void Play()
+        public void Play(Character _mita = null)
         {
             try
             {
@@ -384,9 +385,11 @@ namespace MitaAI
                     MelonLogger.Error($"Error Play Anim Object Mita {ex1}"); 
                 }
 
+                if (_mita != null) Mita = _mita;
+
                 currentOAMc = this;
                 MitaCore.Instance.Mita.MagnetOff();
-                MitaCore.Instance.MitaPersonObject.GetComponent<Rigidbody>().isKinematic = true;
+                Mita.mitaPersonObject.GetComponent<Rigidbody>().isKinematic = true;
                 MitaState.SetCurrentState(MitaCore.Instance.currentCharacter, MitaStateType.interaction);
 
                 mitaAnimationModded = MitaAnimationModded.getMitaAnimationModded(MitaCore.Instance.currentCharacter);
@@ -459,8 +462,8 @@ namespace MitaAI
 
             mitaAnimationModded.setIdleAnimation(mitaAmimatedNameIdle);
             mitaAnimationModded.checkCanMoveRotateLook(ignoreInteractionCondition: true);
-            if (NeedMovingToIdle) Utils.StartObjectAnimation(MitaCore.Instance.MitaPersonObject, transform.position, transform.eulerAngles, AnimationTransitionDuration+0.5f, false);
-            MelonCoroutines.Start(MagnetAfterDelay(MitaCore.Instance.Mita, gameObject.transform, waitingAfterWalk, !magnetAfter));
+            if (NeedMovingToIdle) Utils.StartObjectAnimation(Mita.mitaPersonObject, transform.position, transform.eulerAngles, AnimationTransitionDuration+0.5f, false);
+            //MelonCoroutines.Start(MagnetAfterDelay(Mita.mitaPerson, gameObject.transform, waitingAfterWalk, !magnetAfter));
         }
 
         void ResetIdleAnimation()
@@ -518,38 +521,37 @@ namespace MitaAI
         #region Other
 
 
-        IEnumerator MagnetAfterDelay(MitaPerson mita, Transform transform, float seconds = 0f, bool offAfter = true, float secondsAfter = 5f)
-        {
+       //static IEnumerator MagnetAfterDelay(MitaPerson mita, Transform transform, float seconds = 0f, bool offAfter = true, float secondsAfter = 5f)
+       //{
 
-            yield return new WaitForSeconds(seconds);
-            mita.MagnetToTarget(transform);
+       //     yield return new WaitForSeconds(seconds);
+       //     mita.MagnetToTarget(transform);
 
-            if (offAfter)
-            {
-                yield return new WaitForSeconds(seconds);
-                mita.MagnetOff();
-            }
+       //     if (offAfter)
+       //     {
+       //         yield return new WaitForSeconds(seconds);
+       //         mita.MagnetOff();
+       //     }
+
+       // }
 
 
-        }
+       // // IEnumerator brootforceMagnetToOAM(MitaPerson mita, Transform transform, float seconds = 1f, float repeatTimer = 0.1f, bool offMagnetAfter = false)
+        //{
 
+        //    int i = 0;
+        //    float times = (seconds / repeatTimer);
 
-        IEnumerator brootforceMagnetToOAM(MitaPerson mita, Transform transform, float seconds = 1f, float repeatTimer = 0.1f, bool offMagnetAfter = false)
-        {
+        //    mita.MagnetToTarget(transform);
+        //    while (i < times)
+        //    {
+        //        i++;
+        //        yield return new WaitForSeconds(repeatTimer);
+        //        mita.MagnetToTarget(transform);
+        //    }
+        //    if (offMagnetAfter) MitaCore.Instance.Mita.MagnetOff();
 
-            int i = 0;
-            float times = (seconds / repeatTimer);
-
-            mita.MagnetToTarget(transform);
-            while (i < times)
-            {
-                i++;
-                yield return new WaitForSeconds(repeatTimer);
-                mita.MagnetToTarget(transform);
-            }
-            if (offMagnetAfter) MitaCore.Instance.Mita.MagnetOff();
-
-        }
+        //}
 
 
         #endregion
@@ -574,7 +576,7 @@ namespace MitaAI
             setIdleAnimation(idleAnim);
 
 
-            Play();
+            Play(Character.getMitaByEnum(MitaCore.Instance.currentCharacter));
         }
 
 

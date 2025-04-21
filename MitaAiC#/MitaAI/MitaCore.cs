@@ -15,6 +15,7 @@ using UnityEngine.UI;
 using UnityEngine.Networking.Match;
 using System.Text.Json;
 using UnityEngine.Playables;
+using Il2CppInterop.Runtime.Injection;
 
 
 [assembly: MelonInfo(typeof(MitaAI.MitaCore), "MitaAI", "1.0.0", "Dmitry", null)]
@@ -25,6 +26,10 @@ namespace MitaAI
     
     public class MitaCore : MelonMod
     {
+
+
+
+
         public static bool experimentalFunctionsOn = true;
 
         // Ссылка на экземпляр MitaCore, если он нужен
@@ -54,7 +59,8 @@ namespace MitaAI
         Animator_FunctionsOverride MitaAnimatorFunctions;
         public Character_Look MitaLook;
         public static GameObject Console;
-        static public GameObject getMitaByEnum(characterType character, bool getMitaPersonObject = false)
+
+        static public GameObject getMitaPersonObjectByEnum(characterType character, bool getMitaPersonObject = false)
         {
             GameObject mitaObject;
             switch (character)
@@ -123,7 +129,7 @@ namespace MitaAI
         {
             if (NewMitaObject == null)
             {
-                NewMitaObject = getMitaByEnum(character);
+                NewMitaObject = getMitaPersonObjectByEnum(character);
 
             }
 
@@ -165,7 +171,7 @@ namespace MitaAI
                 if (characterComponent == null)
                 {
                     characterComponent = MitaPersonObject.AddComponent<Character>();
-                    characterComponent.init(character);
+                    characterComponent.Init(character,MitaPersonObject,Mita);
                 }
                 characterComponent.enabled = true;
 
@@ -445,7 +451,10 @@ namespace MitaAI
         HarmonyLib.Harmony harmony;
         public override void OnInitializeMelon()
         {
+            ClassInjector.RegisterTypeInIl2Cpp<Character>();
+
             base.OnInitializeMelon();
+
             characterLogic = LogicCharacter.Instance;
             harmony = new HarmonyLib.Harmony("NeuroMita");
             harmony.PatchAll(System.Reflection.Assembly.GetExecutingAssembly());
@@ -606,7 +615,7 @@ namespace MitaAI
 
 
             var comp = MitaPersonObject.AddComponent<Character>();
-            comp.init(characterType.Crazy);
+            comp.Init(characterType.Crazy,MitaPersonObject,Mita);
 
             currentCharacter = characterType.Crazy;
 
@@ -1033,7 +1042,7 @@ namespace MitaAI
             {
                 if (targetChar == MitaAI.characterType.None) return;
                 
-                GameObject charObj = getMitaByEnum(targetChar);
+                GameObject charObj = getMitaPersonObjectByEnum(targetChar);
                 if (charObj == null) return;
                 
                 var navMesh = charObj.GetComponent<NavMeshAgent>();

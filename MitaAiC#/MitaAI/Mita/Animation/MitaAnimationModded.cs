@@ -5,25 +5,22 @@ using System.Collections;
 using UnityEngine;
 using System.Text.RegularExpressions;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
-using UnityEngine.Playables;
 using UnityEngine.AI;
-using Il2CppRootMotion.FinalIK;
-using UnityEngine.Events;
-using Harmony;
-using System.Linq;
-using System.ComponentModel.Design;
-namespace MitaAI.Mita
+
+
+namespace MitaAI
 {
 
 
     public class MitaAnimationModded
     {
        
-        static private Il2CppAssetBundle bundle;
+        static Il2CppAssetBundle bundle;
         static AnimationClip idleAnimation;
         static AnimationClip idleWalkAnimation;
 
         static Dictionary<Character,MitaAnimationModded> allMitaAnimationModded = new Dictionary<Character, MitaAnimationModded> { };
+
         public static MitaAnimationModded getMitaAnimationModded(Character character) {
              
             if (!allMitaAnimationModded.ContainsKey(character))
@@ -60,6 +57,8 @@ namespace MitaAI.Mita
         public Animator animator;
         NavMeshAgent mitaNavMeshAgent;
         Character_Look mitaLook;
+
+        Character MitaCharacter;
         ///public static LookAtIK = 
 
         static public GameObject bat;
@@ -82,6 +81,7 @@ namespace MitaAI.Mita
             mitaAnimationModded.mitaAnimatorFunctions = _mitaAnimatorFunctions;
             mitaAnimationModded.location34_Communication = _location34_Communication;
             mitaAnimationModded.mitaLook = _mitaLook;
+            mitaAnimationModded.MitaCharacter = character;
             if (bundle == null)
             {
                 bundle = MitaCore.bundle; //AssetBundleLoader.LoadAssetBundle("assetbundle");
@@ -722,7 +722,7 @@ namespace MitaAI.Mita
         {
             ObjectAnimationMita objectAnimationMita = animObject.ObjectAnimationMita;
             MelonLogger.Msg($"Now playing OAM: {objectAnimationMita.name} {objectAnimationMita.tip}");
-            objectAnimationMita.Play();
+            objectAnimationMita.Play(MitaCharacter);
 
 
             float beforeWalk = Time.unscaledTime;
