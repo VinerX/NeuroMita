@@ -8,14 +8,14 @@ from openai import OpenAI
 #from mistralai import Mistral as MistralClient
 
 import re
+import os
 
 from Logger import logger
 from characters import *
 from character import GameMaster,SpaceCartridge,DivanCartridge
 from utils.PipInstaller import PipInstaller
 import importlib 
-from utils import *
-
+from utils import SH, save_combined_messages, calculate_cost_for_combined_messages, replace_numbers_with_words
 
 class ChatModel:
     def __init__(self, gui, api_key, api_key_res, api_url, api_model, api_make_request, pip_installer: PipInstaller):
@@ -309,10 +309,41 @@ class ChatModel:
                 logger.warning("Пустая генерация")
                 return response
 
+            # ТУТ немного надо всё поменять.
+            try:
+                use_command_replacer = self.gui.settings.get("USE_COMMAND_REPLACER", False)
+                if use_command_replacer and os.environ.get("ENABLE_COMMAND_REPLACER_BY_DEFAULT", "0") == "1":
+                    
+                    ### ПОКА ПОМЕЩАЮ СЮДА МОДЕЛЬ ДЛЯ СОЗДАНИЯ ВЕКТОРОВ : НАЧАЛО
+                    if not hasattr(self, 'embedder'):
+                        from utils.embedding_handler import EmbeddingModelHandler
+                        self.model_handler = EmbeddingModelHandler()
+                    ### КОНЕЦ
+
+                    if not hasattr(self, 'parser'):
+                        from utils.command_parser import CommandParser
+                        self.parser = CommandParser(model_handler=self.model_handler)
+                    
+                    # Get threshold parameters from settings with defaults
+                    min_similarity = self.gui.settings.get("MIN_SIMILARITY_THRESHOLD", 0.40)
+                    category_threshold = self.gui.settings.get("CATEGORY_SWITCH_THRESHOLD", 0.18)
+                    skip_comma = self.gui.settings.get("SKIP_COMMA_PARAMETERS", True)
+                    
+                    logger.error(response)
+                    response, _ = self.parser.parse_and_replace(
+                        response,
+                        min_similarity_threshold=min_similarity,
+                        category_switch_threshold=category_threshold,
+                        skip_comma_params=skip_comma
+                    )
+            except Exception as exi:
+                logger.error("НЕ УДАЛОСЬ ИСПОЛЬЗОВАТЬ МОДЕЛЬ ДЛЯ ЭМБЕДДИНГОВ:", exi)
+
             response_message = {
                 "role": "assistant",
                 "content": response
             }
+
             messages.append(response_message)
 
             # Процессинг ответа: изменяем показатели и сохраняем историю

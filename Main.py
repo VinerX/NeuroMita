@@ -27,7 +27,8 @@ import win32file
 import pyworld
 import cProfile
 import filecmp
-import transformers.models.auto.modeling_auto
+if os.environ.get("ENABLE_COMMAND_REPLACER_BY_DEFAULT", "0") != "1":
+    import transformers.models.auto.modeling_auto
 import modulefinder
 import sunau
 import xml.etree

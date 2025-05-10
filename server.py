@@ -4,7 +4,6 @@ from datetime import datetime
 
 from Logger import logger
 
-
 class ChatServer:
     def __init__(self, gui, chat_model, host='127.0.0.1', port=12345):
         # Инициализация сервера с GUI, моделью чата и сетевыми параметрами
@@ -19,6 +18,7 @@ class ChatServer:
         self.messages_to_say = []  # Очередь сообщений для отправки
         self.text_wait_limit_enabled = False
         self.voice_wait_limit_enabled = False
+        
 
     def start(self):
         """Инициализирует и запускает сервер, создавая TCP-сокет."""
@@ -201,6 +201,7 @@ class ChatServer:
             self.gui.waiting_answer = True
 
             response = self.chat_model.generate_response(input_text, system_input_text)
+
             if input_text != "":
                 self.gui.insertDialog(input_text, response, system_input_text)
 
