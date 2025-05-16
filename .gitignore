@@ -175,3 +175,8 @@ vec-768-layer-12.onnx
 ffmpeg.exe
 ffmpeg_download_temp.zip
 /Prompts_backup
+
+.DS_Store
+
+# VTT
+web/vtt/models/*
