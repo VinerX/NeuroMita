@@ -3,7 +3,6 @@ from AudioHandler import AudioHandler
 from Logger import logger
 from SettingsManager import SettingsManager, CollapsibleSection
 from chat_model import ChatModel
-from web.client import MikuTTSClient
 from server import ChatServer
 
 from Silero import TelegramBotHandler
@@ -184,6 +183,8 @@ class ChatGUI:
         self.waiting_answer = False
 
         self.root = tk.Tk()
+        self.root.wm_iconphoto(False, tk.PhotoImage(file = 'icon.png'))
+        
         self.root.title(_("Чат с NeuroMita","NeuroMita Chat"))
 
         self.ffmpeg_install_popup = None 

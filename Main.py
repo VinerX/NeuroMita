@@ -1,6 +1,7 @@
 ### main.py
 
 import pydantic.fields
+import uvicorn
 from gui import ChatGUI
 import os
 import sys
@@ -22,8 +23,8 @@ import timeit
 import pickletools
 import logging.config
 import fileinput
-import pywintypes
-import win32file
+# import pywintypes
+# import win32file
 import pyworld
 import cProfile
 import filecmp
@@ -191,7 +192,18 @@ ensure_project_root()
 
 # Не забудь рядом папку промптов и ffmpeg
 
+import threading
+
+
 def main():
+    
+    server_thread = threading.Thread(
+        target=lambda: uvicorn.run("web.server:app", host="0.0.0.0", port=8000),
+        daemon=True
+    )
+    server_thread.start()
+    
+    # Запуск GUI в основном потоке
     gui = ChatGUI()
     gui.run()
 
