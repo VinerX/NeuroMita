@@ -38,6 +38,10 @@ import os
 
 # os.environ["TEST_AS_AMD"] = "TRUE"
 
+if os.environ.get("VERBOSE_TRITON_LOGS", "0") == "1":
+    os.environ["TORCH_LOGS"] = "+dynamo"
+    os.environ["TORCHDYNAMO_VERBOSE"] = "1"
+
 libs_dir = os.path.join(os.path.dirname(sys.executable), "Lib")
 if not os.path.exists(libs_dir):
     os.makedirs(libs_dir)
@@ -116,6 +120,9 @@ else:
 
 
 build_py_path = os.path.join(libs_dir, "triton", "runtime", "build.py")
+
+os.environ["CC"] = os.path.join(os.path.abspath(libs_dir), "triton", "runtime", "tcc", "tcc.exe")
+
 if os.path.exists(compiler_path):
     with open(build_py_path, "r", encoding="utf-8") as f:
         source = f.read()

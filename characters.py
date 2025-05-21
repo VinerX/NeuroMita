@@ -1,482 +1,123 @@
-from Logger import logger
-from character import Character
-from promptPart import PromptPart, PromptType
+# File: NeuroMita/characters.py
+import logging
+from character import Character # From NeuroMita/character.py
+from typing import Dict, Any
+import re
 
-
-
+logger = logging.getLogger("NeuroMita.Characters")
 
 class CrazyMita(Character):
-                
-    def init(self):
-        self.secretExposed = False
-        self.secretExposedFirst = False
-        self.PlayingFirst = False
+    DEFAULT_OVERRIDES: Dict[str, Any] = {
+        "attitude": 50.0, # Floats for consistency
+        "boredom": 20.0,
+        "stress": 8.0,
+        "current_fsm_state": "Hello", # Specific initial FSM state for CrazyMita
+    }
 
-        self.crazy_mita_prompts()
+    def __init__(self, char_id: str, name: str, silero_command: str, short_name: str, 
+                 miku_tts_name: str = "Player", silero_turn_off_video: bool = False,
+                 initial_vars_override: Dict[str, Any] | None = None):
+        super().__init__(char_id, name, silero_command, short_name, 
+                         miku_tts_name, silero_turn_off_video, initial_vars_override)
+        logger.info(f"CrazyMita '{char_id}' fully initialized with overrides.")
 
-        # Включить когда продолжу работу над FSM
-        #self.fsm = FiniteStateMachine( initial_state=MitaHelloState() )
-        #self.fsm.current_state.on_enter()
-    def crazy_mita_prompts(self):
-        Prompts = []
+    def process_response_nlp_commands(self, response: str) -> str:
+        # Base class handles <p> and <memory>
+        response = super().process_response_nlp_commands(response)
 
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Structural/response_structure.txt")))
-
-        self.append_common_prompts(Prompts)
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/common.txt"), "common"))
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/main.txt"), "main"))
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/mainPlaying.txt"), "mainPlaying", False))
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/mainCrazy.txt"), "mainCrazy", False))
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/player.txt")))
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Context/examplesLong.txt"), "examplesLong"))
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Context/examplesLongCrazy.txt"), "examplesLongCrazy",
-                       False))
-
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Context/mita_history.txt"), "mita_history", False))
-
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Structural/VariablesEffects.txt"), "variableEffects"))
-
-        Prompts.append(
-            PromptPart(PromptType.FLOATING_SYSTEM, self.get_path("Events/SecretExposed.txt"), "SecretExposedText"))
-
-        for prompt in Prompts:
-            self.add_prompt_part(prompt)
-
-
-    # TODO это нафиг заглушка пепеделай меня
-    def safe_history(self, messages: dict, temp_context: dict):
-        """Кастомная обработка сохранения истории"""
-        # Сначала вызываем родительский метод для сохранения базовых переменных
-        super().safe_history(messages, temp_context)
-
-        # Затем добавляем/обновляем дополнительные переменные
-        self.variables.update({
-            "playing_first": self.PlayingFirst,
-            "secret": self.secretExposed,
-            "secret_first": self.secretExposedFirst
-        })
-
-        # Сохраняем историю с обновленными переменными
-        history_data = {
-            'fixed_parts': self.prepare_fixed_messages(),
-            'messages': messages,
-            'temp_context': temp_context,
-            'variables': self.variables
-        }
-        self.history_manager.save_history(history_data)
-
-    def clear_history(self):
-        super().clear_history()
-        self.fixed_prompts = []
-        self.crazy_mita_prompts()
-
-    def load_history(self):
-        data = super().load_history()
-
-        variables = data.get("variables")
-
-        self.PlayingFirst = variables.get("playing_first", False)
-        self.secretExposed = variables.get("secret", False)
-        self.secretExposedFirst = variables.get("secret_first", False)
-        return data
-
-    def process_logic(self, messages: dict = None):
-
-        # Логика для поведения при игре с игроком
-        if self.attitude < 50 and not (self.secretExposed or self.PlayingFirst):
-            self._start_playing_with_player()
-
-        # Логика для раскрытия секрета
-        elif (self.attitude <= 10 or self.secretExposed) and not self.secretExposedFirst:
-            self._reveal_secret()
-
-    def process_response(self, response: str):
-        super().process_response(response)
-
-        response = self._detect_secret_exposure(response)
-
-
-        return response
-
-    def _start_playing_with_player(self):
-        """Игровая логика, когда персонаж начинает играть с игроком"""
-        logger.info("Играет с игроком в якобы невиновную")
-        self.PlayingFirst = True
-        self.replace_prompt("main", "mainPlaying")
-
-    def _reveal_secret(self):
-        """Логика раскрытия секрета"""
-        logger.info("Перестала играть вообще")
-        self.secretExposedFirst = True
-        self.secretExposed = True
-        self.replace_prompt("main", "mainCrazy")
-        self.replace_prompt("mainPlaying", "mainCrazy")
-        self.replace_prompt("examplesLong", "examplesLongCrazy")
-
-        self.find_float("SecretExposedText").active = True
-
-    def _detect_secret_exposure(self, response):
-        """
-        Проверяем, содержит ли ответ маркер <Secret!>, и удаляем его.
-        """
+        # CrazyMita specific: <Secret!> tag
         if "<Secret!>" in response:
-
-            if not self.secretExposedFirst:
-                self.secretExposed = True
-                logger.info(f"Секрет раскрыт")
-                self.attitude = 15
-                self.boredom = 20
-
-            response = response.replace("<Secret!>", "")
-
+            # secretExposedFirst is set by DSL (personality_selector.script) when it first sees secretExposed=True
+            # This tag essentially forces secretExposed to True earlier if LLM emits it.
+            if not self.get_variable("secretExposedFirst", False):
+                self.set_variable("secretExposed", True)
+                logger.info(f"[{self.char_id}] Secret revealed via <Secret!> tag. Attitude/boredom may be set by DSL or <p>.")
+                # Direct attitude/boredom changes here might conflict with <p> tags or DSL logic.
+                # The DSL's personality_selector should react to secretExposed=True.
+                # If LLM provides <p>0,0,0</p><Secret!>, then these would be overridden.
+                # self.set_variable("attitude", 15.0) 
+                # self.set_variable("boredom", 20.0)
+            response = response.replace("<Secret!>", "").strip()
         return response
-
-    def current_variables(self):
-        return {
-            "role": "system",
-            "content": (f"Твои характеристики:"
-                        f"Отношение: {self.attitude}/100."
-                        f"Скука: {self.boredom}/100."
-                        f"Стресс: {self.stress}/100."
-                        f"Состояние секрета: {self.secretExposed}")
-        }
-
-    def current_variables_string(self) -> str:
-        characteristics = {
-            "Отношение": self.attitude,
-            "Стресс": self.stress,
-            "Скука": self.boredom,
-            "Состояние секрета": self.secretExposed,
-        }
-        return f"характеристики {self.name}:\n" + "\n".join(
-            f"- {key}: {value} " for key, value in characteristics.items()
-        )
 
 
 class KindMita(Character):
-    def init(self):
-        self.kind_mita_prompts()
-
-    def kind_mita_prompts(self):
-        Prompts = []
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Structural/response_structure.txt")))
-
-        self.append_common_prompts(Prompts)
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/common.txt"), "common"))
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/main.txt"), "main"))
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/player.txt")))
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Context/examplesLong.txt"), "examplesLong"))
-
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Context/mita_history.txt"), "mita_history"))
-
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Structural/VariablesEffects.txt"), "variableEffects"))
-
-        #Prompts.append(
-        #   PromptPart(PromptType.FLOATING_SYSTEM, self.get_path("Events/SecretExposed.txt"), "SecretExposedText"))
-
-        for prompt in Prompts:
-            self.add_prompt_part(prompt)
-
+    DEFAULT_OVERRIDES: Dict[str, Any] = {
+        "attitude": 90.0,
+        "stress": 0.0,
+        "current_fsm_state": "Default",
+    }
+    # __init__ can be inherited if no extra params are needed beyond Character's
 
 class ShortHairMita(Character):
-    def init(self):
-        self.mita_prompts()
-
-        self.secretExposed = False
-        self.secretExposedFirst = False
-
-    def mita_prompts(self):
-        Prompts = []
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Structural/response_structure.txt")))
-
-        self.append_common_prompts(Prompts)
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/common.txt"), "common"))
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/main.txt"), "main"))
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/player.txt")))
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Context/examplesLong.txt"), "examplesLong"))
-
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Context/mita_history.txt"), "mita_history", False))
-
-        #Prompts.append(
-         #   PromptPart(PromptType.FIXED_START, self.get_path("Context/world.txt"), "world"))
-
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Structural/VariablesEffects.txt"), "variableEffects"))
-
-        Prompts.append(
-            PromptPart(PromptType.FLOATING_SYSTEM, self.get_path("Events/SecretExposed.txt"), "SecretExposedText"))
-
-        for prompt in Prompts:
-            self.add_prompt_part(prompt)
-
-    #TODO Секрет Коротковолосой миты
-    def process_logic(self, messages: dict = None):
-        # Логика для раскрытия секрета
-        if self.secretExposed and not self.secretExposedFirst:
-            self._reveal_secret()
-
-    def process_response(self, response: str):
-        response = super().process_response(response)
-        response = self._detect_secret_exposure(response)
-        return response
-
-    def _reveal_secret(self):
-        """Логика раскрытия секрета"""
-        logger.info("Перестала играть вообще")
-        self.secretExposedFirst = True
-        self.secretExposed = True
-        #self.replace_prompt("main", "mainCrazy")
-        #self.replace_prompt("mainPlaying", "mainCrazy")
-        #self.replace_prompt("examplesLong", "examplesLongCrazy") #я хз что тут менять на что
-
-        self.find_float("SecretExposedText").active = True
-
-    def _detect_secret_exposure(self, response):
-        """
-        Проверяем, содержит ли ответ маркер <Secret!>, и удаляем его.
-        """
-        if "<Secret!>" in response:
-
-            if not self.secretExposedFirst:
-                self.secretExposed = True
-                logger.info(f"Секрет раскрыт")
-                self.attitude = 15
-                self.boredom = 20
-
-            response = response.replace("<Secret!>", "")
-
-        return response
-
-    def current_variables(self):
-        return {
-            "role": "system",
-            "content": (f"Твои характеристики:"
-                        f"Отношение: {self.attitude}/100."
-                        f"Скука: {self.boredom}/100."
-                        f"Стресс: {self.stress}/100."
-                        f"Состояние секрета: {self.secretExposed}")
-        }
-
-    def current_variables_string(self) -> str:
-        characteristics = {
-            "Отношение": self.attitude,
-            "Стресс": self.stress,
-            "Скука": self.boredom,
-            "Состояние секрета": self.secretExposed,
-        }
-        return f"характеристики {self.name}:\n" + "\n".join(
-            f"- {key}: {value} " for key, value in characteristics.items()
-        )
-
+    DEFAULT_OVERRIDES: Dict[str, Any] = {
+        "attitude": 70.0, 
+        "boredom": 15.0, 
+        "stress": 10.0,
+        "current_fsm_state": "Default",
+    }
+    # Add specific process_response_nlp_commands if ShortHairMita has unique tags
 
 class CappyMita(Character):
-
-    def init(self):
-        self.cappy_mita_prompts()
-
-        self.secretExposed = False
-        self.secretExposedFirst = False
-
-    def cappy_mita_prompts(self):
-        Prompts = []
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Structural/response_structure.txt")))
-
-        self.append_common_prompts(Prompts)
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/common.txt"), "common"))
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/main.txt"), "main"))
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/player.txt")))
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Context/examplesLong.txt"), "examplesLong"))
-
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Context/mita_history.txt"), "mita_history"))
-
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Context/world.txt"), "world"))
-
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Structural/VariablesEffects.txt"), "variableEffects"))
-
-        Prompts.append(
-            PromptPart(PromptType.FLOATING_SYSTEM, self.get_path("Events/SecretExposed.txt"), "SecretExposedText"))
-
-        for prompt in Prompts:
-            self.add_prompt_part(prompt)
-
-    #TODO Секрет Кепки
-    def process_logic(self, messages: dict = None):
-        # Логика для раскрытия секрета
-        if self.secretExposed and not self.secretExposedFirst:
-            self._reveal_secret()
-
-    def process_response(self, response: str):
-        response = super().process_response(response)
-        response = self._detect_secret_exposure(response)
-        return response
-
-    def _reveal_secret(self):
-        """Логика раскрытия секрета"""
-        logger.info("Перестала играть вообще")
-        self.secretExposedFirst = True
-        self.secretExposed = True
-        #self.replace_prompt("main", "mainCrazy")
-        #self.replace_prompt("mainPlaying", "mainCrazy")
-        #self.replace_prompt("examplesLong", "examplesLongCrazy") #я хз что тут менять на что
-
-        self.find_float("SecretExposedText").active = True
-
-    def _detect_secret_exposure(self, response):
-        """
-        Проверяем, содержит ли ответ маркер <Secret!>, и удаляем его.
-        """
-        if "<Secret!>" in response:
-
-            if not self.secretExposedFirst:
-                self.secretExposed = True
-                logger.info(f"Секрет раскрыт")
-                self.attitude = 15
-                self.boredom = 20
-
-            response = response.replace("<Secret!>", "")
-
-        return response
-
-    def current_variables(self):
-        return {
-            "role": "system",
-            "content": (f"Твои характеристики:"
-                        f"Отношение: {self.attitude}/100."
-                        f"Скука: {self.boredom}/100."
-                        f"Стресс: {self.stress}/100."
-                        f"Состояние секрета: {self.secretExposed}")
-        }
-
-    def current_variables_string(self) -> str:
-        characteristics = {
-            "Отношение": self.attitude,
-            "Стресс": self.stress,
-            "Скука": self.boredom,
-            "Состояние секрета": self.secretExposed,
-        }
-        return f"характеристики {self.name}:\n" + "\n".join(
-            f"- {key}: {value} " for key, value in characteristics.items()
-        )
-
+    DEFAULT_OVERRIDES: Dict[str, Any] = {
+        "boredom": 25.0,
+        "current_fsm_state": "Default",
+    }
 
 class MilaMita(Character):
-
-    def init(self):
-        self.cappy_mila_prompts()
-
-        #self.secretExposed
-
-    def cappy_mila_prompts(self):
-        Prompts = []
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Structural/response_structure.txt")))
-
-        self.append_common_prompts(Prompts)
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/common.txt"), "common"))
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/main.txt"), "main"))
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/player.txt")))
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Context/examplesLong.txt"), "examplesLong"))
-
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Context/mita_history.txt"), "mita_history", False))
-
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Structural/VariablesEffects.txt"), "variableEffects"))
-
-        Prompts.append(
-            PromptPart(PromptType.FLOATING_SYSTEM, self.get_path("Events/SecretExposed.txt"), "SecretExposedText"))
-
-        for prompt in Prompts:
-            self.add_prompt_part(prompt)
-
+    DEFAULT_OVERRIDES: Dict[str, Any] = {
+        "attitude": 75.0,
+        "current_fsm_state": "Default",
+    }
 
 class CreepyMita(Character):
-
-    def init(self):
-        self.secretExposed = False
-        self.secretExposedFirst = False
-        self.creepy_mita_prompts()
-
-    def creepy_mita_prompts(self):
-        Prompts = []
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Structural/response_structure.txt")))
-
-        self.append_common_prompts(Prompts)
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/common.txt"), "common"))
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/main.txt"), "main"))
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/player.txt")))
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Context/examplesLong.txt"), "examplesLong"))
-
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Context/mita_history.txt"), "mita_history", False))
-
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Structural/VariablesEffects.txt"), "variableEffects"))
-
-        for prompt in Prompts:
-            self.add_prompt_part(prompt)
-
+    DEFAULT_OVERRIDES: Dict[str, Any] = {
+        "attitude": 40.0, 
+        "stress": 30.0,
+        "current_fsm_state": "Default", # Or a more creepy state
+    }
 
 class SleepyMita(Character):
+    DEFAULT_OVERRIDES: Dict[str, Any] = {
+        "boredom": 40.0,
+        "current_fsm_state": "Sleeping", # Example
+    }
 
-    def init(self):
-        self.secretExposed = False
-        self.secretExposedFirst = False
-        self.sleepy_mita_prompts()
+# Cartridges and GameMaster would also be defined here, inheriting from Character
+# and potentially having their own DEFAULT_OVERRIDES.
 
-    def sleepy_mita_prompts(self):
-        Prompts = []
+class SpaceCartridge(Character):
+    DEFAULT_OVERRIDES: Dict[str, Any] = {"attitude": 50.0, "current_fsm_state": "Space"}
+    def __init__(self, char_id: str, name: str, silero_command: str, short_name: str, 
+                 miku_tts_name: str = "Player", silero_turn_off_video: bool = False,
+                 initial_vars_override: Dict[str, Any] | None = None):
+        # Cartridges might not need all the same params, adjust as necessary
+        # Or, they are instantiated with default names if not interactive in the same way.
+        # For now, keeping constructor consistent.
+        super().__init__(char_id, name, silero_command, short_name, 
+                         miku_tts_name, silero_turn_off_video, initial_vars_override)
 
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Structural/response_structure.txt")))
+class DivanCartridge(Character):
+    DEFAULT_OVERRIDES: Dict[str, Any] = {"attitude": 50.0, "current_fsm_state": "Divan"}
+    # ... similar __init__ if needed
 
-        self.append_common_prompts(Prompts)
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/common.txt"), "common"))
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/main.txt"), "main"))
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Main/player.txt")))
-
-        Prompts.append(PromptPart(PromptType.FIXED_START, self.get_path("Context/examplesLong.txt"), "examplesLong"))
-
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Context/mita_history.txt"), "mita_history", False))
-
-        Prompts.append(
-            PromptPart(PromptType.FIXED_START, self.get_path("Structural/VariablesEffects.txt"), "variableEffects"))
-
-        for prompt in Prompts:
-            self.add_prompt_part(prompt)
-
-
-#endregion
+class GameMaster(Character):
+    DEFAULT_OVERRIDES: Dict[str, Any] = {"attitude": 100.0, "boredom": 0.0, "stress": 0.0}
+    
+    def _process_behavior_changes_from_llm(self, response: str) -> str:
+        # GameMaster does not use <p> tags for its own attitude/boredom/stress
+        logger.debug(f"[{self.char_id}] GameMaster is not processing <p> tags for self.")
+        # We still need to remove the tag if present, just don't apply changes.
+        response = re.sub(r"<p>.*?</p>", "", response).strip()
+        return response
+    
+    def get_llm_system_prompt_string(self) -> str:
+        # Example: Inject GM_SMALL_PROMPT from settings if it's a global or accessible way
+        try:
+            from SettingsManager import SettingsManager as settings # Ensure this import works in your structure
+            current_instruction = settings.get("GM_SMALL_PROMPT", "")
+            self.set_variable("GM_INSTRUCTION", current_instruction)
+        except ImportError:
+            logger.warning(f"[{self.char_id}] SettingsManager not found for GameMaster's GM_INSTRUCTION.")
+            self.set_variable("GM_INSTRUCTION", "")
+        return super().get_llm_system_prompt_string()

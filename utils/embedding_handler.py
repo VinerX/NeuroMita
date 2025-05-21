@@ -24,7 +24,7 @@ from Logger import logger
 
 try:
     pip_installer = PipInstaller(
-        script_path="libs\python\python.exe",
+        script_path=r"libs\python\python.exe",
         libs_path="Lib",
         update_log=logger.info
     )

@@ -2997,8 +2997,21 @@ class LocalVoice:
                     self.add_to_initialized(model_id)
                     return True
                 except Exception as e:
-                    logger.info(f"Ошибка при инициализации Fish Speech+ + RVC: {e}")
-                    return False
+                    # Get the full traceback information
+                    tb_str = traceback.format_exc()
+
+                    # Log the original concise error message AND the full traceback
+                    logger.error(f"Ошибка при инициализации Fish Speech+ + RVC: {e}") # Log the specific error
+                    logger.error("Full Traceback:")
+                    logger.error(tb_str) # Log the detailed traceback
+
+                    # Optionally print to console as well during debugging
+                    print(f"ERROR: Ошибка при инициализации Fish Speech+ + RVC: {e}")
+                    print("--- Full Traceback ---")
+                    print(tb_str)
+                    print("--- End Traceback ---")
+
+                    return False # Or handle the error as appropriate
         
         except Exception as e:
             import traceback

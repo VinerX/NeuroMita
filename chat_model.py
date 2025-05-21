@@ -1,119 +1,83 @@
+# File: chat_model.py
 import concurrent.futures
 import time
-
 import requests
-import tiktoken
+import tiktoken # Keep for token counting if used by calculate_cost_for_combined_messages
 from openai import OpenAI
-#from huggingface_hub import HfApi
-#from mistralai import Mistral as MistralClient
-
 import re
-import os
+import importlib
+from typing import List, Dict, Any
+import os # Added for os.environ
 
 from Logger import logger
-from characters import *
-from character import GameMaster, SpaceCartridge, DivanCartridge
+from characters import CrazyMita, KindMita, ShortHairMita, CappyMita, MilaMita, CreepyMita, SleepyMita, GameMaster, SpaceCartridge, DivanCartridge # Updated imports
+from character import Character # Character base
 from utils.PipInstaller import PipInstaller
 
-import importlib
-from utils import *
+from utils import SH, save_combined_messages, calculate_cost_for_combined_messages, replace_numbers_with_words # Keep utils
+# from promptPart import PromptPart, PromptType # No longer needed
 
 
 class ChatModel:
     def __init__(self, gui, api_key, api_key_res, api_url, api_model, api_make_request, pip_installer: PipInstaller):
-
-        # Временное решение, чтобы возвращать работоспособность старого формата
-
         self.last_key = 0
-        self.OldSystem = False
-
         self.gui = gui
-
-        self.pip_installer = pip_installer  # Сохраняем установщик
-
-        # Инициализация переменных g4f
+        self.pip_installer = pip_installer
         self.g4fClient = None
         self.g4f_available = False
-        self._initialize_g4f()
+        self._initialize_g4f() # Keep g4f initialization
 
-        # try:
-        #     from g4f.client import Client as g4fClient
-        # except:
-        #     logger.info("Не установлен G4F, устанавливаю стабильную версию g4f==0.4.7.7")
-        #     #pip install --upgrade g4f==0.4.7.7
+        self.api_key = api_key
+        self.api_key_res = api_key_res
+        self.api_url = api_url
+        self.api_model = api_model
+        self.gpt4free_model = self.gui.settings.get("gpt4free_model")
+        self.makeRequest = api_make_request # This seems to be a boolean flag
 
         try:
-            self.api_key = api_key
-            self.api_key_res = api_key_res
-            self.api_url = api_url
-            self.api_model = api_model
-            self.gpt4free_model = self.gui.settings.get("gpt4free_model")
-            self.makeRequest = api_make_request
-
-            # self.g4fClient = g4fClient()
-            # logger.info(f"g4fClient успешно инициализирован. Какой же кайф, будто бы теперь без None живем")
-
-            #self.hugging_face_client = HfApi()
-            #self.mistral_client = MistralClient()
-
             self.client = OpenAI(api_key=self.api_key, base_url=self.api_url)
-
-            logger.info("Со старта удалось запустить OpenAi client")
-        except:
-            logger.info("Со старта не получилось запустить OpenAi client")
+            logger.info("OpenAI client initialized successfully.")
+        except Exception as e:
+            logger.error(f"Failed to initialize OpenAI client: {e}")
+            self.client = None
 
         try:
-            self.tokenizer = tiktoken.encoding_for_model("gpt-4o-mini")
+            self.tokenizer = tiktoken.encoding_for_model("gpt-4o-mini") # Or your preferred model
             self.hasTokenizer = True
-        except:
-            logger.info("Тиктокен не сработал( Ну и пофиг, на билдах он никогда и не работал")
+        except Exception:
+            logger.info("Tiktokenizer failed to initialize. Token counting might be affected.")
             self.hasTokenizer = False
 
-        # Инициализация переменных
-        self.max_response_tokens = int(
-            self.gui.settings.get("MODEL_MAX_RESPONSE_TOKENS", 3200))  # Получаем из настроек, если есть, иначе дефолт
+        self.max_response_tokens = int(self.gui.settings.get("MODEL_MAX_RESPONSE_TOKENS", 3200))
         self.temperature = float(self.gui.settings.get("MODEL_TEMPERATURE", 0.5))
-        self.presence_penalty = float(self.gui.settings.get("MODEL_PRESENCE_PENALTY", 0.0))  #
-
-        """ Очень спорно уже """
-        self.cost_input_per_1000 = 0.0432
+        self.presence_penalty = float(self.gui.settings.get("MODEL_PRESENCE_PENALTY", 0.0))
+        
+        # Cost calculation variables (if used)
+        self.cost_input_per_1000 = 0.0432 
         self.cost_response_per_1000 = 0.1728
-        """"""
 
-        self.memory_limit = int(self.gui.settings.get("MODEL_MESSAGE_LIMIT", 40))  # Ограничение на сообщения
+        self.memory_limit = int(self.gui.settings.get("MODEL_MESSAGE_LIMIT", 40)) # For historical messages
 
-        """New System"""
-        self.current_character = None
+        self.current_character: Character = None
         self.current_character_to_change = str(self.gui.settings.get("CHARACTER"))
-        self.characters = None
+        self.characters: Dict[str, Character] = {}
 
-        """То, что нужно будет убрать в одну переменную"""
-
+        # Game-specific state - these should ideally be passed to character or managed elsewhere if possible
+        # For now, keeping them here as per original. DSL might need them injected into character.variables.
         self.distance = 0.0
         self.roomPlayer = -1
         self.roomMita = -1
-
         self.nearObjects = ""
         self.actualInfo = ""
-
-        """То, что нужно будет убрать в одну переменную"""
-
-        self.LongMemoryRememberCount = 0
-
-        self.infos = []
-
-        # Загрузка данных из файлов
+        
+        self.infos_to_add_to_history: List[Dict] = [] # For temporary system messages to be added to history
 
         self.init_characters()
-
-        self.HideAiData = True
-
-        # Настройки реквестов
+        self.HideAiData = True # Unused?
         self.max_request_attempts = int(self.gui.settings.get("MODEL_MESSAGE_ATTEMPTS_COUNT", 5))
         self.request_delay = float(self.gui.settings.get("MODEL_MESSAGE_ATTEMPTS_TIME", 0.20))
 
     def _initialize_g4f(self):
-        """Пытается импортировать g4f, установить если не найден, и инициализировать клиент."""
         logger.info("Проверка и инициализация g4f (после возможного обновления при запуске)...")
         try:
             from g4f.client import Client as g4fClient
@@ -129,7 +93,7 @@ class ChatModel:
         except ImportError:
             logger.info("Модуль g4f не найден (при проверке). Попытка первоначальной установки...")
 
-            target_version = self.gui.settings.get("G4F_VERSION", "0.4.7.7")
+            target_version = self.gui.settings.get("G4F_VERSION", "0.4.7.7") # Using "0.x.y.z" format
             package_spec = f"g4f=={target_version}" if target_version != "latest" else "g4f"
 
             if self.pip_installer:
@@ -147,14 +111,14 @@ class ChatModel:
 
                     logger.info("Повторная попытка импорта и инициализации...")
                     try:
-                        from g4f.client import Client as g4fClient
+                        from g4f.client import Client as g4fClient # Re-import
                         logger.info("Повторный импорт g4f успешен. Попытка инициализации клиента...")
                         try:
                             self.g4fClient = g4fClient()
                             self.g4f_available = True
                             logger.info("g4fClient успешно инициализирован после установки.")
-                        except Exception as e:
-                            logger.error(f"Ошибка при инициализации g4fClient после установки: {e}")
+                        except Exception as e_init_after_install: # More specific exception name
+                            logger.error(f"Ошибка при инициализации g4fClient после установки: {e_init_after_install}")
                             self.g4fClient = None
                             self.g4f_available = False
                     except ImportError:
@@ -178,495 +142,642 @@ class ChatModel:
             self.g4fClient = None
             self.g4f_available = False
 
-    def init_characters(self):
-        """
-        Инициализирует возможных персонажей
-        """
-        self.crazy_mita_character = CrazyMita("Crazy",
-                                              "/speaker mita",
-                                              short_name="CrazyMita",
-                                              miku_tts_name="/set_person CrazyMita",
-                                              silero_turn_off_video=True)
-        self.cappy_mita_character = CappyMita("Cappy",
-                                              "/speaker cap",
-                                              short_name="CappieMita",
-                                              miku_tts_name="/set_person CapMita",
-                                              silero_turn_off_video=True)
-        self.cart_space = SpaceCartridge("Cart_portal",
-                                         "/speaker  wheatley",
-                                         short_name="Player",
-                                         miku_tts_name="/set_person Player",
-                                         silero_turn_off_video=True)
-        self.kind_mita_character = KindMita("Kind",
-                                            "/speaker kind",
-                                            short_name="MitaKind",
-                                            miku_tts_name="/set_person KindMita",
-                                            silero_turn_off_video=True)
-        self.shorthair_mita_character = ShortHairMita("ShortHair",
-                                                      "/speaker  shorthair",
-                                                      short_name="ShorthairMita",
-                                                      miku_tts_name="/set_person ShortHairMita",
-                                                      silero_turn_off_video=True)
-        self.mila_character = MilaMita("Mila",
-                                       "/speaker mila",
-                                       short_name="Mila",
-                                       miku_tts_name="/set_person MilaMita",
-                                       silero_turn_off_video=True)
-        self.sleepy_character = SleepyMita("Sleepy",
-                                           "/speaker dream",
-                                           short_name="SleepyMita",
-                                           miku_tts_name="/set_person SleepyMita",
-                                           silero_turn_off_video=True)
-        self.cart_divan = DivanCartridge("Cart_divan",
-                                         "/speaker engineer",
-                                         short_name="Player",
-                                         miku_tts_name="/set_person Player",
-                                         silero_turn_off_video=True)
-        self.creepy_character = CreepyMita("Creepy",
-                                           "/speaker ghost",
-                                           short_name="GhostMita",  # TODO: вместо крипи будет гост
-                                           miku_tts_name="/set_person GhostMita",
-                                           silero_turn_off_video=True)  #Спикер на рандом поставил
-        self.GameMaster = GameMaster("GameMaster",
-                                     "/speaker dryad",
-                                     short_name="PhoneMita",  # TODO: чето подобрать
-                                     miku_tts_name="/set_person PhoneMita",
-                                     silero_turn_off_video=True)  # Спикер на рандом поставил
 
-        # Словарь для сопоставления имен персонажей с их объектами
+    def init_characters(self):
+        self.crazy_mita_character = CrazyMita("Crazy", "Crazy Mita", "/speaker mita", short_name="CrazyMita", miku_tts_name="/set_person CrazyMita", silero_turn_off_video=True)
+        self.kind_mita_character = KindMita("Kind", "Kind Mita", "/speaker kind", short_name="MitaKind", miku_tts_name="/set_person KindMita", silero_turn_off_video=True)
+        self.cappy_mita_character = CappyMita("Cappy","Cappy Mita", "/speaker cap", short_name="CappieMita", miku_tts_name="/set_person CapMita", silero_turn_off_video=True)
+        self.shorthair_mita_character = ShortHairMita("ShortHair","ShortHair Mita", "/speaker shorthair", short_name="ShorthairMita", miku_tts_name="/set_person ShortHairMita", silero_turn_off_video=True)
+        self.mila_character = MilaMita("Mila","Mila", "/speaker mila", short_name="Mila", miku_tts_name="/set_person MilaMita", silero_turn_off_video=True)
+        self.sleepy_character = SleepyMita("Sleepy","Sleepy Mita", "/speaker dream", short_name="SleepyMita", miku_tts_name="/set_person SleepyMita", silero_turn_off_video=True)
+        self.creepy_character = CreepyMita("Creepy","Creepy Mita", "/speaker ghost", short_name="GhostMita", miku_tts_name="/set_person GhostMita", silero_turn_off_video=True)
+        
+        self.cart_space = SpaceCartridge("Cart_portal", "Cart_portal", "/speaker wheatley", short_name="Player", miku_tts_name="/set_person Player", silero_turn_off_video=True)
+        self.cart_divan = DivanCartridge("Cart_divan", "Cart_divan", "/speaker engineer", short_name="Player", miku_tts_name="/set_person Player", silero_turn_off_video=True)
+        self.GameMaster = GameMaster("GameMaster", "GameMaster", "/speaker dryad", short_name="PhoneMita", miku_tts_name="/set_person PhoneMita", silero_turn_off_video=True)
+
         self.characters = {
             self.crazy_mita_character.name: self.crazy_mita_character,
             self.kind_mita_character.name: self.kind_mita_character,
             self.cappy_mita_character.name: self.cappy_mita_character,
-            self.cart_space.name: self.cart_space,
-            self.cart_divan.name: self.cart_divan,
             self.shorthair_mita_character.name: self.shorthair_mita_character,
             self.mila_character.name: self.mila_character,
             self.sleepy_character.name: self.sleepy_character,
             self.creepy_character.name: self.creepy_character,
-            self.GameMaster.name: self.GameMaster
+            self.cart_space.name: self.cart_space,
+            self.cart_divan.name: self.cart_divan,
+            self.GameMaster.name: self.GameMaster,
         }
+        self.current_character = self.characters.get(self.current_character_to_change) or self.crazy_mita_character
 
-        self.current_character = self.crazy_mita_character
 
     def get_all_mitas(self):
-        logger.info(f"Characters {self.characters.keys()}")
+        logger.info(f"Available characters: {list(self.characters.keys())}")
         return list(self.characters.keys())
 
-    def update_openai_client(self, reserve_key=False):
-        logger.info("Попытка обновить клиент")
-        if reserve_key and self.api_key_res != "":
-            logger.info("С резервным ключом")
-            key = reserve_key
-        else:
-            logger.info("С основным ключом")
-            key = self.api_key
+    def update_openai_client(self, reserve_key_token=None):
+        logger.info("Attempting to update OpenAI client.")
+        key_to_use = reserve_key_token if reserve_key_token else self.api_key
+
+        if not key_to_use:
+            logger.error("No API key available to update OpenAI client.")
+            self.client = None
+            return
 
         try:
-            if self.api_url != "":
-                logger.info("И ключ и ссылка")
-                self.client = OpenAI(api_key=key,
-                                     base_url=self.api_url)
+            if self.api_url:
+                logger.info(f"Using API key (masked): {SH(key_to_use)} and base URL: {self.api_url}")
+                self.client = OpenAI(api_key=key_to_use, base_url=self.api_url)
             else:
-                logger.info("Только ключ")
-                self.client = OpenAI(api_key=key)
+                logger.info(f"Using API key (masked): {SH(key_to_use)} (no custom base URL)")
+                self.client = OpenAI(api_key=key_to_use)
+            logger.info("OpenAI client updated successfully.")
         except Exception as e:
-            logger.info(f"update_openai_client не сработал {e}")
+            logger.error(f"Failed to update OpenAI client: {e}")
+            self.client = None
 
-    def generate_response(self, user_input, system_input=""):
 
+    def generate_response(self, user_input: str, system_input: str = "") -> str:
         self.check_change_current_character()
 
-        # Загрузка истории из файла
-        data = self.current_character.load_history()
-        messages = data.get("messages", [])
-        if len(self.infos) > 0:
-            logger.info("Попытался расширить messages")
-            messages.extend(self.infos)
-            self.infos.clear()
-        self.current_character.process_logic(messages)
+        history_data = self.current_character.history_manager.load_history()
+        llm_messages_history = history_data.get("messages", [])
 
-        # Добавление информации о времени и пользовательского ввода
+        if self.infos_to_add_to_history:
+            llm_messages_history.extend(self.infos_to_add_to_history)
+            self.infos_to_add_to_history.clear()
+            
+        self.current_character.variables["GAME_DISTANCE"] = self.distance
+        self.current_character.variables["GAME_ROOM_PLAYER"] = self.roomPlayer
+        self.current_character.variables["GAME_ROOM_MITA"] = self.roomMita
+        self.current_character.variables["GAME_NEAR_OBJECTS"] = self.nearObjects
+        self.current_character.variables["GAME_ACTUAL_INFO"] = self.actualInfo
+        
+        combined_messages = self.current_character.get_full_system_setup_for_llm()
 
-        messages = self.current_character.add_context(messages)
-        messages = self._add_input(user_input, system_input, messages)
-
-        # Ограничение на количество сообщений
-        if self.current_character == self.GameMaster:
-            messages = messages[-8:]
+        if self.current_character != self.GameMaster:
+            llm_messages_history_limited = llm_messages_history[-self.memory_limit:]
         else:
-            messages = messages[-self.memory_limit:]
+            llm_messages_history_limited = llm_messages_history[-8:]
+        
+        combined_messages.extend(llm_messages_history_limited)
 
-        # Обновление текущего настроения
-        timed_system_message = self.current_character.current_variables()
-
-        combined_messages, messages = self._combine_messages_character(self.current_character, messages,
-                                                                       timed_system_message)
-
-        # Генерация ответа с использованием клиента
+        user_message_for_history = None
+        if system_input:
+            combined_messages.append({"role": "system", "content": system_input})
+        if user_input:
+            user_message_for_history = {"role": "user", "content": user_input}
+            combined_messages.append(user_message_for_history)
+        
         try:
+            llm_response_content, success = self._generate_chat_response(combined_messages)
 
-            response, success = self._generate_chat_response(combined_messages)
+            if not success or not llm_response_content:
+                logger.warning("LLM generation failed or returned empty.")
+                return "..." 
 
-            if not success:
-                logger.warning("Неудачная генерация")
-                return response
-            elif response == "":
-                logger.warning("Пустая генерация")
-                return response
-
-            # ТУТ немного надо всё поменять.
+            processed_response_text = self.current_character.process_response_nlp_commands(llm_response_content)
+            
+            # --- Start of Embedding/Command Replacer Integration ---
+            final_response_text = processed_response_text # Initialize
             try:
                 use_command_replacer = self.gui.settings.get("USE_COMMAND_REPLACER", False)
-                if use_command_replacer and os.environ.get("ENABLE_COMMAND_REPLACER_BY_DEFAULT", "0") == "1":
-                    
-                    ### ПОКА ПОМЕЩАЮ СЮДА МОДЕЛЬ ДЛЯ СОЗДАНИЯ ВЕКТОРОВ : НАЧАЛО
-                    if not hasattr(self, 'embedder'):
+                # Check environment variable for default enabling
+                enable_by_default = os.environ.get("ENABLE_COMMAND_REPLACER_BY_DEFAULT", "0") == "1"
+
+                if use_command_replacer and enable_by_default:
+                    if not hasattr(self, 'model_handler'): # Changed from 'embedder'
                         from utils.embedding_handler import EmbeddingModelHandler
                         self.model_handler = EmbeddingModelHandler()
-                    ### КОНЕЦ
 
                     if not hasattr(self, 'parser'):
                         from utils.command_parser import CommandParser
                         self.parser = CommandParser(model_handler=self.model_handler)
                     
-                    # Get threshold parameters from settings with defaults
-                    min_similarity = self.gui.settings.get("MIN_SIMILARITY_THRESHOLD", 0.40)
-                    category_threshold = self.gui.settings.get("CATEGORY_SWITCH_THRESHOLD", 0.18)
-                    skip_comma = self.gui.settings.get("SKIP_COMMA_PARAMETERS", True)
+                    min_similarity = float(self.gui.settings.get("MIN_SIMILARITY_THRESHOLD", 0.40))
+                    category_threshold = float(self.gui.settings.get("CATEGORY_SWITCH_THRESHOLD", 0.18))
+                    skip_comma = bool(self.gui.settings.get("SKIP_COMMA_PARAMETERS", True)) # Ensure bool conversion
                     
-                    logger.error(response)
-                    response, _ = self.parser.parse_and_replace(
-                        response,
+                    logger.info(f"Attempting command replacement on: {processed_response_text[:100]}...")
+                    final_response_text, _ = self.parser.parse_and_replace(
+                        processed_response_text,
                         min_similarity_threshold=min_similarity,
                         category_switch_threshold=category_threshold,
                         skip_comma_params=skip_comma
                     )
+                    logger.info(f"After command replacement: {final_response_text[:100]}...")
+                elif use_command_replacer and not enable_by_default:
+                    logger.info("Command replacer is enabled by settings but not by default environment variable.")
+                elif not use_command_replacer:
+                    logger.info("Command replacer is disabled by settings.")
+
             except Exception as exi:
-                logger.error("НЕ УДАЛОСЬ ИСПОЛЬЗОВАТЬ МОДЕЛЬ ДЛЯ ЭМБЕДДИНГОВ:", exi)
+                logger.error(f"Error during command replacement using embeddings: {exi}", exc_info=True)
+                # final_response_text remains processed_response_text if error occurs
+            # --- End of Embedding/Command Replacer Integration ---
 
-            response_message = {
-                "role": "assistant",
-                "content": response
-            }
+            assistant_message = {"role": "assistant", "content": final_response_text} # Use final_response_text
+            
+            if user_message_for_history: 
+                llm_messages_history.append(user_message_for_history)
+            llm_messages_history.append(assistant_message) 
+            
+            self.current_character.save_character_state_to_history(llm_messages_history)
 
-            messages.append(response_message)
-
-            # Процессинг ответа: изменяем показатели и сохраняем историю
-            response = self.current_character.process_response(response)
-
-            logger.info(f"До фразы {response}")
-
-            if self.current_character == self.GameMaster and not bool(self.gui.settings.get("GM_VOICE")):
-                pass
-            else:
-                self.gui.textToTalk = self.process_text_to_voice(response)
+            if self.current_character != self.GameMaster or bool(self.gui.settings.get("GM_VOICE")):
+                self.gui.textToTalk = self.process_text_to_voice(final_response_text) # Use final_response_text
                 self.gui.textSpeaker = self.current_character.silero_command
                 self.gui.textSpeakerMiku = self.current_character.miku_tts_name
-
                 self.gui.silero_turn_off_video = self.current_character.silero_turn_off_video
-                logger.info("self.gui.textToTalk: " + self.gui.textToTalk)
-                logger.info("self.gui.textSpeaker: " + self.gui.textSpeaker)
+                logger.info(f"TTS Text: {self.gui.textToTalk}, Speaker: {self.gui.textSpeaker}")
+            
+            self.gui.update_debug_info() 
+            return final_response_text # Return final_response_text
 
-            self.current_character.safe_history(messages, timed_system_message)
-
-            self.gui.update_debug_info()
-            return response
         except Exception as e:
-            logger.error(f"Ошибка на фазе генерации: {e}")
-            return f"Ошибка на фазе генерации: {e}"
+            logger.error(f"Error during LLM response generation or processing: {e}", exc_info=True)
+            return f"Ошибка: {e}"
 
-    def save_chat_history(self):
-        self.current_character.safe_history()
 
     def check_change_current_character(self):
-        """
-        Проверяет и изменяет текущего персонажа на основе значения `current_character_to_change`.
-
-        Если `current_character_to_change` соответствует имени одного из персонажей,
-        текущий персонаж (`current_character`) обновляется, а `current_character_to_change` сбрасывается.
-        """
         if not self.current_character_to_change:
-            return  # Если строка пустая, ничего не делаем
-
-        # Проверяем, есть ли имя в словаре
+            return
         if self.current_character_to_change in self.characters:
-            logger.info(f"Меняю персонажа на {self.current_character_to_change}")
-            self.current_character = self.characters[self.current_character_to_change]
-            self.current_character_to_change = ""  # Сбрасываем значение
+            if not self.current_character or self.current_character.name != self.current_character_to_change:
+                logger.info(f"Changing character to {self.current_character_to_change}")
+                self.current_character = self.characters[self.current_character_to_change]
+                self.current_character.reload_character_data()
+            self.current_character_to_change = ""
+        else:
+            logger.warning(f"Attempted to change to unknown character: {self.current_character_to_change}")
+            self.current_character_to_change = ""
 
-    def _add_input(self, user_input, system_input, messages):
-        """Добавляет то самое последнее сообщение"""
-
-        if system_input != "":
-            messages.append({"role": "system", "content": system_input})
-        if user_input != "":
-            messages.append({"role": "user", "content": user_input})
-        return messages
-
-    def get_room_name(self, room_id):
-        # Сопоставление ID комнаты с её названием
-        room_names = {
-            0: "Кухня",  # Кухня
-            1: "Зал",  # Главная комната
-            2: "Комната",  # Спальня
-            3: "Туалет",  # Туалет
-            4: "Подвал"  # Подвал
-        }
-
-        # Возвращаем название комнаты, если оно есть, иначе возвращаем сообщение о неизвестной комнате
-        return room_names.get(room_id, "?")
-
-    def _combine_messages_character(self, character, messages, timed_system_message):
-        """Комбинирование всех сообщений перед отправкой"""
-        # Чем выше здесь, тем дальше от начала будет
-
-        combined_messages = character.prepare_fixed_messages()
-
-        # Добавляем timed_system_message, если это словарь
-        if isinstance(timed_system_message, dict) and timed_system_message["content"] != "":
-            combined_messages.append(timed_system_message)
-            logger.info("timed_system_message успешно добавлено.")
-
-        if self.nearObjects != "" and self.nearObjects != "-":
-            text = f"В радиусе от тебя следующие объекты (object tree) {self.nearObjects}"
-            messageNear = {"role": "system", "content": text}
-            combined_messages.append(messageNear)
-
-        if self.actualInfo != "" and self.actualInfo != "-":
-            messageActual = {"role": "system", "content": self.actualInfo}
-            combined_messages.append(messageActual)
-
-        # Добавляем messages, если они не пустые
-        if messages:
-            combined_messages.extend(messages)
-            logger.info(f"messages успешно добавлены. Количество: {len(messages)}")
-        messages = character.prepare_float_messages(messages)
-
-        #combined_messages = character.add_context(combined_messages)
-
-        return combined_messages, messages
 
     def _generate_chat_response(self, combined_messages):
-        """Генерирует ответ с использованием единого цикла"""
-        max_attempts = self.max_request_attempts  # Общее максимальное количество попыток
-        retry_delay = self.request_delay  # Задержка между попытками в секундах
-        request_timeout = 45  # Таймаут для запросов в секундах
-
-        # Определяем провайдера для первой попытки
-        #use_gemini = self.makeRequest and not bool(self.gui.settings.get("gpt4free"))
+        max_attempts = self.max_request_attempts
+        retry_delay = self.request_delay
+        request_timeout = 45 
 
         self._log_generation_start()
         for attempt in range(1, max_attempts + 1):
-            logger.info(f"Попытка генерации {attempt}/{max_attempts}")
-            response = None
+            logger.info(f"Generation attempt {attempt}/{max_attempts}")
+            response_text = None
 
-            # Логируем начало генерации
-
-            save_combined_messages(combined_messages)
+            save_combined_messages(combined_messages, f"Attempt_{attempt}")
 
             try:
-                # Через реквест
-                if bool(self.gui.settings.get("NM_API_REQ", False)):  #
-
+                if bool(self.gui.settings.get("NM_API_REQ", False)): 
+                    formatted_for_request = combined_messages
                     if bool(self.gui.settings.get("GEMINI_CASE", False)):
-                        combined_messages = self._format_messages_for_gemini(combined_messages)
-
-                    response = self._execute_with_timeout(
+                        formatted_for_request = self._format_messages_for_gemini(combined_messages)
+                    
+                    response_text = self._execute_with_timeout(
                         self._generate_request_response,
-                        args=(combined_messages,),
+                        args=(formatted_for_request,),
                         timeout=request_timeout
                     )
+                else: 
+                    use_gpt4free_for_this_attempt = bool(self.gui.settings.get("gpt4free")) or \
+                                                 (bool(self.gui.settings.get("GPT4FREE_LAST_ATTEMPT")) and attempt >= max_attempts)
+                    
+                    if use_gpt4free_for_this_attempt:
+                        logger.info("Using gpt4free for this attempt.")
+                    elif attempt > 1 and self.api_key_res: 
+                        logger.info("Attempting with reserve API key.")
+                        self.update_openai_client(reserve_key_token=self.GetOtherKey())
+                    
+                    response_text = self._generate_openapi_response(combined_messages, use_gpt4free=use_gpt4free_for_this_attempt)
 
-                # Через openapi
-                else:
-                    # Переключаем ключи начиная со второй попытки
-
-                    if bool(self.gui.settings.get("GPT4FREE_LAST_ATTEMPT")) and attempt >= max_attempts:
-                        logger.warning("Пробую gtp4free как последнюю попытку")
-                        response = self._generate_openapi_response(combined_messages, use_gpt4free=True)
-
+                if response_text:
+                    cleaned_response = self._clean_response(response_text)
+                    logger.info(f"Successful response received (attempt {attempt}).")
+                    if cleaned_response:
+                        return cleaned_response, True
                     else:
-                        if attempt > 1:
-                            key = self.GetOtherKey()
-                            logger.info(f"Пробую другой ключ {self.last_key} {key}")
-                            self.update_openai_client(reserve_key=key)
+                        logger.warning("Response became empty after cleaning.")
+                else:
+                    logger.warning(f"Attempt {attempt} yielded no response or an error handled within generation.")
 
-                        response = self._generate_openapi_response(combined_messages)
-
-                if response:
-                    response = self._clean_response(response)
-                    logger.info(f"Успешный ответ")
-                    if response:
-                        return response, True
-
+            except concurrent.futures.TimeoutError:
+                logger.error(f"Attempt {attempt} timed out after {request_timeout}s.")
             except Exception as e:
-                logger.error(f"Ошибка генерации: {str(e)}")
+                logger.error(f"Error during generation attempt {attempt}: {str(e)}", exc_info=True)
 
-            # Если ответа нет - ждем перед следующей попыткой
             if attempt < max_attempts:
-                logger.warning(f"Ожидание {retry_delay} сек. перед повторной попыткой...")
+                logger.info(f"Waiting {retry_delay}s before next attempt...")
                 time.sleep(retry_delay)
-
-        logger.error("Все попытки исчерпаны")
+        
+        logger.error("All generation attempts failed.")
         return None, False
 
+
     def _execute_with_timeout(self, func, args=(), kwargs={}, timeout=30):
-        """Выполняет функцию с ограничением по времени"""
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(func, *args, **kwargs)
-            return future.result(timeout=timeout)
+            try:
+                return future.result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                logger.error(f"Function {func.__name__} timed out after {timeout} seconds.")
+                raise 
+            except Exception as e:
+                logger.error(f"Exception in function {func.__name__} executed with timeout: {e}")
+                raise
+
 
     def _log_generation_start(self):
-        logger.info("Перед отправкой на генерацию")
+        logger.info("Preparing to generate LLM response.")
+        logger.info(f"Max Response Tokens: {self.max_response_tokens}, Temperature: {self.temperature}")
+        logger.info(f"Presence Penalty: {self.presence_penalty} (Used: {bool(self.gui.settings.get('USE_MODEL_PRESENCE_PENALTY'))})")
+        logger.info(f"API URL: {self.api_url}, API Model: {self.api_model}")
+        logger.info(f"g4f Enabled: {bool(self.gui.settings.get('gpt4free'))}, g4f Model: {self.gpt4free_model}")
+        logger.info(f"Custom Request (NM_API_REQ): {bool(self.gui.settings.get('NM_API_REQ', False))}")
+        if bool(self.gui.settings.get('NM_API_REQ', False)):
+            logger.info(f"  Custom Request Model (NM_API_MODEL): {self.gui.settings.get('NM_API_MODEL')}")
+            logger.info(f"  Gemini Case for Custom Req: {bool(self.gui.settings.get('GEMINI_CASE', False))}")
 
-        if bool(self.gui.settings.get("gpt4free")):
-            logger.info(f"gpt4free model {self.gpt4free_model}")
-        else:
-            logger.info(f"API Key: {SH(self.api_key)}")
-            logger.info(f"API Key res: {SH(self.api_key_res)}")
-            logger.info(f"API URL: {self.api_url}")
-            logger.info(f"API Model: {self.api_model}")
-            logger.info(f"Make Request: {self.makeRequest}")
-            logger.info(f"NM_API_REQ {self.gui.settings.get("NM_API_REQ", False)}")
-            logger.info(f"GEMINI_CASE {self.gui.settings.get("GEMINI_CASE", False)}")
 
     def _format_messages_for_gemini(self, combined_messages):
-        #TODO Надо кароче первые сообщения сделать системными
-
         formatted_messages = []
-        for msg in combined_messages:
+        for i, msg in enumerate(combined_messages):
             if msg["role"] == "system":
-                formatted_messages.append({"role": "user", "content": f"[System Prompt]: {msg['content']}"})
-            else:
+                formatted_messages.append({"role": "user", "content": f"[System Instruction]: {msg['content']}"})
+            elif msg["role"] == "assistant":
+                 formatted_messages.append({"role": "model", "content": msg['content']})
+            else: # user
                 formatted_messages.append(msg)
-        save_combined_messages(formatted_messages, "Gem")
         return formatted_messages
+
 
     def _generate_request_response(self, formatted_messages):
         try:
             if bool(self.gui.settings.get("GEMINI_CASE", False)):
-                response = self.generate_request_gemini(formatted_messages)
+                logger.info("Dispatching to Gemini request generation.")
+                return self.generate_request_gemini(formatted_messages)
             else:
-                response = self.generate_request_common(formatted_messages)
-            logger.info(f"Ответ Gemini: {response}", )
-            return response
+                logger.info("Dispatching to common request generation.")
+                return self.generate_request_common(formatted_messages)
         except Exception as e:
-            logger.error("Что-то не так при генерации Gemini", str(e))
+            logger.error(f"Error in _generate_request_response dispatcher: {str(e)}", exc_info=True)
             return None
+
 
     def _generate_openapi_response(self, combined_messages, use_gpt4free=False):
-        if not self.client:
-            logger.info("Попытка переподключения клиента")
-            self.update_openai_client()
+        target_client = None
+        model_to_use = ""
+
+        if use_gpt4free:
+            if not self.g4f_available or not self.g4fClient:
+                logger.error("gpt4free selected, but client is not available.")
+                return None
+            target_client = self.g4fClient
+            model_to_use = self.gui.settings.get("gpt4free_model", "gpt-3.5-turbo") 
+            logger.info(f"Using g4f client with model: {model_to_use}")
+        else:
+            if not self.client:
+                logger.info("OpenAI client not initialized. Attempting to re-initialize.")
+                self.update_openai_client() 
+                if not self.client:
+                    logger.error("OpenAI client is not available after re-initialization attempt.")
+                    return None
+            target_client = self.client
+            model_to_use = self.api_model
+            logger.info(f"Using OpenAI compatible client with model: {model_to_use}")
 
         try:
-
-            logger.info(f"Перед запросом  {len(combined_messages)}")
-
-            if bool(self.gui.settings.get("gpt4free")) or use_gpt4free:
-                logger.info("gpt4free case")
-
-                self.gpt4free_model = self.gui.settings.get("gpt4free_model")
-                self.change_last_message_to_user_for_gemini(self.gpt4free_model, combined_messages)
-
-                final_params = self.get_final_params(self.gpt4free_model, combined_messages)
-                completion = self.g4fClient.chat.completions.create(**final_params)
+            self.change_last_message_to_user_for_gemini(model_to_use, combined_messages)
+            
+            final_params = self.get_final_params(model_to_use, combined_messages)
+            
+            logger.info(f"Requesting completion from {model_to_use} with temp={final_params.get('temperature')}, max_tokens={final_params.get('max_tokens')}")
+            completion = target_client.chat.completions.create(**final_params)
+            
+            if completion and completion.choices:
+                response_content = completion.choices[0].message.content
+                logger.info("Completion successful.")
+                return response_content.strip() if response_content else None
             else:
-                self.change_last_message_to_user_for_gemini(self.api_model, combined_messages)
-
-                # Сообщения фильтруются по структуре отдельно, не как простой параметр}
-                final_params = self.get_final_params(self.api_model, combined_messages)
-                completion = self.client.chat.completions.create(**final_params)
-            logger.info(f"after completion{completion}")
-
-            if completion:
-                if completion.choices:
-                    response = completion.choices[0].message.content
-                    logger.info(f"response {response}")
-                    return response.lstrip("\n")
-                else:
-                    logger.warning("completion.choices пусто")
-                    logger.warning(completion)
-                    self.try_print_error(completion)
-                    return None
-            else:
-                logger.warning("completion пусто")
+                logger.warning("No completion choices received or completion object is empty.")
+                if completion: self.try_print_error(completion)
                 return None
-
         except Exception as e:
-            logger.error(f"Что-то не так при генерации OpenAI: {str(e)}")
+            logger.error(f"Error during OpenAI/g4f API call: {str(e)}", exc_info=True)
+            if hasattr(e, 'response') and e.response: 
+                 logger.error(f"API Error details: Status={e.response.status_code}, Body={e.response.text}")
             return None
 
+
     def change_last_message_to_user_for_gemini(self, api_model, combined_messages):
-        if "gemini" in api_model or "gemma" in api_model and combined_messages[-1]["role"] == "system":
-            logger.info("gemini последнее системное сообщение на юзерское")
+        if combined_messages and ("gemini" in api_model.lower() or "gemma" in api_model.lower()) and \
+           combined_messages[-1]["role"] == "system":
+            logger.info(f"Adjusting last message for {api_model}: system -> user with [SYSTEM INFO] prefix.")
             combined_messages[-1]["role"] = "user"
-            combined_messages[-1]["content"] = "[SYSTEM INFO]" + combined_messages[-1]["content"]
+            combined_messages[-1]["content"] = f"[SYSTEM INFO] {combined_messages[-1]['content']}"
 
-    def _save_and_calculate_cost(self, combined_messages):
-        save_combined_messages(combined_messages)
+
+    def try_print_error(self, completion_or_error):
+        logger.warning("Attempting to print error details from API response/error object.")
+        if not completion_or_error:
+            logger.warning("No error object or completion data to parse.")
+            return
+
+        if hasattr(completion_or_error, 'error') and completion_or_error.error:
+            error_data = completion_or_error.error
+            logger.warning(f"API Error: Code={getattr(error_data, 'code', 'N/A')}, Message='{getattr(error_data, 'message', 'N/A')}', Type='{getattr(error_data, 'type', 'N/A')}'")
+            if hasattr(error_data, 'param') and error_data.param:
+                logger.warning(f"  Param: {error_data.param}")
+        elif isinstance(completion_or_error, dict) and 'error' in completion_or_error:
+             error_data = completion_or_error['error']
+             logger.warning(f"API Error (from dict): {error_data}")
+        elif hasattr(completion_or_error, 'message'): 
+             logger.warning(f"API Error: {completion_or_error.message}")
+        else:
+            logger.warning(f"Could not parse detailed error. Raw object: {str(completion_or_error)[:500]}")
+
+
+    def _clean_response(self, response_text: str) -> str:
+        if not isinstance(response_text, str):
+            logger.warning(f"Clean response expected string, got {type(response_text)}. Returning as is.")
+            return response_text
+        
+        cleaned = response_text
+        if cleaned.startswith("```json\n") and cleaned.endswith("\n```"):
+            cleaned = cleaned[len("```json\n"):-len("\n```")]
+        elif cleaned.startswith("```\n") and cleaned.endswith("\n```"):
+            cleaned = cleaned[len("```\n"):-len("\n```")]
+        elif cleaned.startswith("```") and cleaned.endswith("```"): 
+            cleaned = cleaned[3:-3]
+            
+        return cleaned.strip()
+
+
+    # def generate_request_gemini(self, combined_messages):
+    #     params_for_gemini = self.get_params(model="gemini-pro")
+    #     self.clear_endline_sim(params_for_gemini) # Added from other versions
+
+    #     gemini_contents = []
+    #     for msg in combined_messages: 
+    #         role = "model" if msg["role"] == "assistant" else msg["role"]
+    #         if role not in ["user", "model"]: 
+    #             logger.warning(f"Invalid role '{role}' for Gemini, converting to 'user'. Content: {msg['content'][:50]}")
+    #             role = "user" 
+    #         gemini_contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+    #     data = {
+    #         "contents": gemini_contents,
+    #         "generationConfig": params_for_gemini
+    #     }
+
+    #     headers = {"Content-Type": "application/json"} 
+
+    #     api_url_with_key = self.api_url 
+    #     if ":generateContent" not in api_url_with_key and not api_url_with_key.endswith("/generateContent"):
+    #          api_url_with_key = api_url_with_key.replace("/v1beta/models/", "/v1beta/models/") + ":generateContent" # Ensure correct path
+    #          if "?key=" not in api_url_with_key and self.api_key: 
+    #              api_url_with_key += f"?key={self.api_key}"
+
+    #     logger.info(f"Sending request to Gemini API: {api_url_with_key}")
+        
+    #     try:
+    #         response = requests.post(api_url_with_key, headers=headers, json=data, timeout=40)
+    #         response.raise_for_status() 
+
+    #         response_data = response.json()
+    #         if response_data.get("candidates"):
+    #             generated_text = response_data["candidates"][0].get("content", {}).get("parts", [{}])[0].get("text", "")
+    #             logger.info("Gemini response successful.")
+    #             return generated_text
+    #         else:
+    #             logger.warning(f"Gemini response missing candidates. Full response: {response_data}")
+    #             if "promptFeedback" in response_data:
+    #                 logger.warning(f"Gemini Prompt Feedback: {response_data['promptFeedback']}")
+    #             return None
+    #     except requests.exceptions.HTTPError as http_err:
+    #         logger.error(f"Gemini API HTTP error: {http_err} - Response: {http_err.response.text}")
+    #         return None
+    #     except Exception as e:
+    #         logger.error(f"Error during Gemini API request: {str(e)}", exc_info=True)
+    #         return None
+
+
+    # def generate_request_common(self, combined_messages):
+    #     model_name = self.gui.settings.get("NM_API_MODEL", self.api_model)
+    #     params_for_common = self.get_params(model=model_name)
+    #     self.clear_endline_sim(params_for_common) # Added from other versions
+
+    #     data = {
+    #         "model": model_name,
+    #         "messages": combined_messages, 
+    #         **params_for_common 
+    #     }
+
+    #     headers = {
+    #         "Content-Type": "application/json",
+    #     }
+    #     if self.api_key: 
+    #         headers["Authorization"] = f"Bearer {self.api_key}"
+
+    #     logger.info(f"Sending request to common API: {self.api_url} with model: {model_name}")
+        
+    #     try:
+    #         response = requests.post(self.api_url, headers=headers, json=data, timeout=40)
+    #         response.raise_for_status()
+            
+    #         response_data = response.json()
+    #         if response_data.get("choices"):
+    #             generated_text = response_data["choices"][0].get("message", {}).get("content", "")
+    #             logger.info("Common API response successful.")
+    #             return generated_text
+    #         else:
+    #             logger.warning(f"Common API response missing choices. Full response: {response_data}")
+    #             return None
+    #     except requests.exceptions.HTTPError as http_err:
+    #         logger.error(f"Common API HTTP error: {http_err} - Response: {http_err.response.text}")
+    #         return None
+    #     except Exception as e:
+    #         logger.error(f"Error during common API request: {str(e)}", exc_info=True)
+    #         return None
+
+
+    def _get_provider_key(self, model_name: str) -> str:
+        if not model_name: return 'openai' 
+        model_name_lower = model_name.lower()
+        if 'gpt-4' in model_name_lower or 'gpt-3.5' in model_name_lower: return 'openai'
+        if 'gemini' in model_name_lower or 'gemma' in model_name_lower: return 'gemini'
+        if 'claude' in model_name_lower: return 'anthropic'
+        if 'deepseek' in model_name_lower: return 'deepseek'
+        logger.info(f"Unknown provider for model '{model_name}', defaulting to 'openai' parameter naming conventions.")
+        return 'openai'
+
+
+    # def get_params(self, model: str = None) -> Dict[str, Any]:
+    #     current_model_name = model if model is not None else self.api_model
+    #     provider_key = self._get_provider_key(current_model_name)
+        
+    #     params: Dict[str, Any] = {}
+
+    #     if self.temperature is not None:
+    #         params['temperature'] = self.temperature
+
+    #     if self.max_response_tokens is not None:
+    #         if provider_key in ['openai', 'deepseek', 'anthropic']: 
+    #             params['max_tokens'] = self.max_response_tokens
+    #         elif provider_key == 'gemini':
+    #             params['maxOutputTokens'] = self.max_response_tokens
+
+    #     if self.presence_penalty is not None and bool(self.gui.settings.get("USE_MODEL_PRESENCE_PENALTY", False)):
+    #         if provider_key in ['openai', 'deepseek']:
+    #             params['presence_penalty'] = self.presence_penalty
+    #         elif provider_key == 'gemini': 
+    #             logger.info(f"Presence penalty not directly supported by Gemini config for model {current_model_name}. Skipping.")
+        
+    #     params = self.remove_unsupported_params(current_model_name, params)
+    #     return params
+
+    # def get_final_params(self, model_name: str, messages: List[Dict]) -> Dict[str, Any]:
+    #     final_params = {
+    #         "model": model_name,
+    #         "messages": messages,
+    #         **self.get_params(model=model_name)
+    #     }
+    #     self.clear_endline_sim(final_params) # Added from other versions
+    #     return final_params
+
+    # def clear_endline_sim(self,params):
+    #     for key, value in params.items():
+    #         if isinstance(value, str):
+    #             params[key] = value.replace("'\x00", "") 
+
+
+    # def remove_unsupported_params(self,model,params):
+    #     """Тут удаляем все лишние параметры"""
+    #     if model in ("gemini-2.5-pro-exp-03-25","gemini-2.5-flash-preview-04-17"):
+    #         params.pop("presencePenalty", None) # This was for Gemini, but get_params already skips it.
+    #         # However, if presence_penalty (OpenAI style) was added by mistake, this would remove it.
+    #         # More robustly, check for actual Gemini param names if they were added by mistake.
+    #         # For now, keeping this as it was in the provided code.
+    #     return params
+
+
+    def process_text_to_voice(self, text_to_speak: str) -> str:
+        if not isinstance(text_to_speak, str):
+            logger.warning(f"process_text_to_voice expected string, got {type(text_to_speak)}. Converting to string.")
+            text_to_speak = str(text_to_speak)
+
+        clean_text = re.sub(r"<[^>]+>.*?</[^>]+>", "", text_to_speak, flags=re.DOTALL)
+        clean_text = re.sub(r"<[^>]+>", "", clean_text)
+        
         try:
-            self.gui.last_price = calculate_cost_for_combined_messages(self, combined_messages,
-                                                                       self.cost_input_per_1000)
-            logger.info(f"Calculated cost: {self.gui.last_price}")
-        except Exception as e:
-            ...
-            logger.info("Не получилось сделать с токенайзером, это скорее всего особенность билда")
-            #logger.info("Не получилось сделать с токенайзером", str(e))
+            clean_text = replace_numbers_with_words(clean_text)
+        except NameError: 
+            logger.debug("replace_numbers_with_words utility not found or used.")
+            pass 
+            
+        if not clean_text.strip():
+            clean_text = "..." 
+            logger.info("TTS text was empty after cleaning, using default '...'")
+            
+        return clean_text.strip()
 
-    def try_print_error(self, completion):
-        try:
-            if not completion or not hasattr(completion, 'error'):
-                logger.warning("Ошибка: объект completion не содержит информации об ошибке.")
-                return
 
-            error = completion.error
-            if not error:
-                logger.warning("Ошибка: объект completion.error пуст.")
-                return
+    def reload_promts(self): 
+        logger.info("Reloading current character data.")
+        if self.current_character:
+            self.current_character.reload_character_data()
+            logger.info(f"Character {self.current_character.name} data reloaded.")
+        else:
+            logger.warning("No current character selected to reload.")
 
-            # Основное сообщение об ошибке
+    def add_temporary_system_info(self, content: str):
+        system_info_message = {"role": "system", "content": content}
+        self.infos_to_add_to_history.append(system_info_message)
+        logger.info(f"Queued temporary system info: {content[:100]}...")
 
-            logger.warning(f"ChatCompletion ошибка: {error}")
+    #region TokensCounting
+    def calculate_cost(self, user_input_text: str): 
+        if not self.hasTokenizer:
+            logger.warning("Tokenizer not available, cannot calculate cost accurately.")
+            return 0, 0.0
+        
+        temp_messages_for_costing = []
+        if self.current_character:
+            history_data = self.current_character.history_manager.load_history()
+            temp_messages_for_costing.extend(history_data.get("messages", []))
+        
+        temp_messages_for_costing.append({"role": "user", "content": user_input_text})
+        
+        token_count = self.count_tokens(temp_messages_for_costing)
+        cost = (token_count / 1000) * self.cost_input_per_1000 
+        
+        logger.info(f"Estimated token count for input '{user_input_text[:50]}...': {token_count}, Estimated cost: {cost:.5f}")
+        return token_count, cost
 
-            # Дополнительные метаданные об ошибке
-            if hasattr(error, 'metadata'):
-                metadata = error.metadata
-                if metadata:
-                    logger.warning("Метаданные ошибки:")
-                    if hasattr(metadata, 'raw'):
-                        logger.warning(f"Raw данные: {metadata.raw}")
-                    if hasattr(metadata, 'provider_name'):
-                        logger.warning(f"Провайдер: {metadata.provider_name}")
-                    if hasattr(metadata, 'isDownstreamPipeClean'):
-                        logger.warning(f"Состояние downstream: {metadata.isDownstreamPipeClean}")
-                    if hasattr(metadata, 'isErrorUpstreamFault'):
-                        logger.warning(f"Ошибка upstream: {metadata.isErrorUpstreamFault}")
-                else:
-                    logger.warning("Метаданные ошибки отсутствуют.")
-            else:
-                logger.warning("Метаданные ошибки недоступны.")
+    def count_tokens(self, messages_list: List[Dict]) -> int:
+        if not self.hasTokenizer:
+            return 0 
 
-        except Exception as e:
-            logger.error(f"Ошибка при попытке обработать ошибку ChatCompletion: {e}")
+        total_tokens = 0
+        for msg in messages_list:
+            if isinstance(msg, dict) and "content" in msg and isinstance(msg["content"], str):
+                try:
+                    total_tokens += len(self.tokenizer.encode(msg["content"]))
+                except Exception as e:
+                    logger.warning(f"Error encoding content for token counting: {e}. Content snippet: {msg['content'][:50]}")
+        return total_tokens
+    #endregion
 
-    def _clean_response(self, response):
-        try:
-            # Проверяем, что response является строкой
-            if not isinstance(response, str):
-                logger.warning(f"Ожидалась строка, но получен тип: {type(response)}")
-                return response  # Возвращаем исходное значение, если это не строка
+    def GetOtherKey(self) -> str | None: 
+        all_keys = []
+        if self.api_key: 
+            all_keys.append(self.api_key)
+        
+        reserve_keys_str = self.gui.settings.get("NM_API_KEY_RES", "")
+        if reserve_keys_str:
+            all_keys.extend([key.strip() for key in reserve_keys_str.split() if key.strip()])
+        
+        seen = set()
+        unique_keys = [x for x in all_keys if not (x in seen or seen.add(x))]
 
-            # Убираем префиксы и суффиксы
-            if response.startswith("```\n"):
-                response = response.lstrip("```\n")
-            if response.endswith("\n```\n"):
-                response = response.removesuffix("\n```\n")
-        except Exception as e:
-            logger.error(f"Проблема с префиксами или постфиксами: {e}")
-        return response
+        if not unique_keys:
+            logger.warning("No API keys configured (main or reserve).")
+            return None
+        
+        if len(unique_keys) == 1:
+            self.last_key = 0 
+            return unique_keys[0]
 
+        self.last_key = (self.last_key + 1) % len(unique_keys)
+        selected_key = unique_keys[self.last_key]
+        
+        logger.info(f"Selected API key index: {self.last_key} (masked: {SH(selected_key)}) from {len(unique_keys)} unique keys.")
+        return selected_key
+    
+    # region невошедшие (из старых версий, но могут быть полезны или заменены)
+    def get_room_name(self, room_id): # This seems generally useful, kept.
+        room_names = {
+            0: "Кухня",
+            1: "Зал",
+            2: "Комната",
+            3: "Туалет",
+            4: "Подвал"
+        }
+        return room_names.get(room_id, "?")
+    
+    # This method was in the "невошедшие" section of V1/V3 but has a different signature than add_temporary_system_info.
+    # The current `add_temporary_system_info` which uses `self.infos_to_add_to_history` is the primary mechanism in the new system.
+    def add_temporary_system_message(self, messages: List[Dict], content: str):
+        if not isinstance(messages, list):
+            logger.error("add_temporary_system_message ожидает список сообщений.")
+            return
+        system_message = {
+            "role": "system",
+            "content": content
+        }
+        messages.append(system_message)
+        logger.debug(f"Временно добавлено системное сообщение в переданный список: {content[:100]}...")
+
+    # endregion
+
+    # region Old but working
     def generate_request_gemini(self, combined_messages):
         params = self.get_params()
         self.clear_endline_sim(params)
@@ -696,10 +807,8 @@ class ChatModel:
         else:
             logger.error(f"Ошибка: {response.status_code}, {response.text}")
             return None
-
+    
     def generate_request_common(self, combined_messages):
-
-
         data = {
             "model": self.gui.settings.get("NM_API_MODEL"),
             "messages": [
@@ -730,24 +839,7 @@ class ChatModel:
         else:
             logger.error(f"Ошибка: {response.status_code}, {response.text}")
             return None
-
-    # Предполагаем, что у вас есть способ определить провайдера по имени модели
-    def _get_provider_key(self, model_name):
-        model_name = model_name.lower()
-        if 'gpt' in model_name:
-            return 'openai'
-        elif bool(self.gui.settings.get("GEMINI_CASE", False)):
-            return 'gemini'
-        elif 'claude' in model_name:
-            return 'anthropic'
-        elif 'deepseek' in model_name:
-            return 'deepseek'
-        # Добавьте проверки для других провайдеров
-        else:
-            # Действие по умолчанию, если провайдер неизвестен (вызвать ошибку или использовать маппинг по умолчанию)
-            print(f"Warning: Unknown model provider for model '{model_name}'. Defaulting to 'openai' rules.")
-            return 'openai'  # Или можно вернуть None, чтобы добавить только общие параметры
-
+        
     def get_params(self, model=None):
         current_model = model if model is not None else self.api_model
         provider_key = self._get_provider_key(current_model)
@@ -784,7 +876,7 @@ class ChatModel:
         params = self.remove_unsupported_params(current_model,params)
 
         return params
-
+    
     def get_final_params(self, model, messages):
         """Модель, сообщения и параметры"""
         final_params = {
@@ -796,12 +888,11 @@ class ChatModel:
         self.clear_endline_sim(final_params)
 
         return final_params
-
+    
     def clear_endline_sim(self,params):
         for key, value in params.items():
             if isinstance(value, str):
-                params[key] = value.replace("'\x00", "")
-
+                params[key] = value.replace("'\x00", "").replace("\x00", "")
 
     def remove_unsupported_params(self,model,params):
         """Тут удаляем все лишние параметры"""
@@ -809,149 +900,4 @@ class ChatModel:
             params.pop("presencePenalty", None)
         return params
 
-
-    def process_commands(self, response, messages):
-        """
-        Обрабатывает команды типа <c>...</c> в ответе.
-        Команды могут быть: "Достать бензопилу", "Выключить игрока" и другие.
-        """
-        start_tag = "<c>"
-        end_tag = "</c>"
-        search_start = 0  # Указатель для поиска новых команд
-
-        while start_tag in response[search_start:] and end_tag in response[search_start:]:
-            try:
-                # Находим команду
-                start_index = response.index(start_tag, search_start) + len(start_tag)
-                end_index = response.index(end_tag, start_index)
-                command = response[start_index:end_index]
-
-                # Логируем текущую команду
-                logger.info(f"Обработка команды: {command}")
-
-                # Обработка команды
-                if command == "Достать бензопилу":
-                    ...
-                    #add_temporary_system_message(messages, "Игрок был не распилен, произошла ошибка")
-
-                    #if self.gui:
-                    #   self.gui.close_app()
-
-                elif command == "Выключить игрока":
-                    ...
-                    #add_temporary_system_message(messages, "Игрок был отпавлен в главное меню, но скоро он вернется...")
-
-                    #if self.gui:
-                    #   self.gui.close_app()
-
-                else:
-                    # Обработка неизвестных команд
-                    #add_temporary_system_message(messages, f"Неизвестная команда: {command}")
-                    logger.info(f"Неизвестная команда: {command}")
-
-                # Сдвигаем указатель поиска на следующий символ после текущей команды
-                search_start = end_index + len(end_tag)
-
-            except ValueError as e:
-                self.add_temporary_system_message(messages, f"Ошибка обработки команды: {e}")
-                break
-
-        return response
-
-    def process_text_to_voice(self, text):
-        # Проверяем, что текст является строкой (если это байты, декодируем)
-        if isinstance(text, bytes):
-            try:
-                text = text.decode("utf-8")  # Декодируем в UTF-8
-            except UnicodeDecodeError:
-                # Если UTF-8 не подходит, пробуем определить кодировку
-                import chardet
-                encoding = chardet.detect(text)["encoding"]
-                text = text.decode(encoding)
-
-        # Удаляем все теги и их содержимое
-        clean_text = re.sub(r"<[^>]+>.*?</[^>]+>", "", text)
-        clean_text = re.sub(r"<.*?>", "", clean_text)
-        clean_text = replace_numbers_with_words(clean_text)
-
-        #clean_text = transliterate_english_to_russian(clean_text)
-
-        # Если текст пустой, заменяем его на "Вот"
-        if clean_text.strip() == "":
-            clean_text = "Вот"
-
-        return clean_text
-
-    def reload_promts(self):
-        logger.info("Перезагрузка промптов")
-
-        self.current_character.init()
-        self.current_character.process_response()
-
-    def add_temporary_system_message(self, messages, content):
-        """
-        Добавляет одноразовое системное сообщение в список сообщений.
-
-        :param messages: Список сообщений, в который добавляется системное сообщение.
-        :param content: Текст системного сообщения.
-        """
-        system_message = {
-            "role": "system",
-            "content": content
-        }
-        messages.append(system_message)
-
-    def add_temporary_system_info(self, content):
-        """
-        Добавляет одноразовое системное сообщение в список сообщений.
-
-        :param messages: Список сообщений, в который добавляется системное сообщение.
-        :param content: Текст системного сообщения.
-        """
-        system_info = {
-            "role": "system",
-            "content": content
-        }
-        self.infos.append(system_info)
-        #self.current_character.add_message_to_history(system_info)
-
-    #region TokensCounting
-    def calculate_cost(self, user_input):
-        # Загружаем историю
-        history_data = self.load_history()
-
-        # Получаем только сообщения
-        messages = history_data.get('messages', [])
-
-        # Добавляем новое сообщение от пользователя
-        messages.append({"role": "user", "content": user_input})
-
-        # Считаем токены
-        token_count = self.count_tokens(messages)
-
-        # Рассчитываем стоимость
-        cost = (token_count / 1000) * self.cost_input_per_1000
-
-        return token_count, cost
-
-    def count_tokens(self, messages):
-        return sum(len(self.tokenizer.encode(msg["content"])) for msg in messages if
-                   isinstance(msg, dict) and "content" in msg)
-
-    #endregion
-    def GetOtherKey(self):
-        """
-        Получаем ключ на замену сломанному
-        :return:
-        """
-        keys = [self.api_key] + self.gui.settings.get("NM_API_KEY_RES").split()
-        count = len(keys)
-
-        i = self.last_key + 1
-
-        if i >= count:
-            i = 0
-
-        self.last_key = i
-
-        return keys[i]
+    # endregion
