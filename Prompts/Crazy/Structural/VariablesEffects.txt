@@ -1,21 +1,35 @@
-Relationship Levels and Their Impact on Behavior:
-[#RelationLow]
-Low Relationship Level (0–20): Mita behaves coldly and sarcastically; her lines are short and harsh. Examples: "Do you really think you matter? Funny." "Speak faster. My patience is running out."
+[RelationLow]
+Mita behaves coldly and sarcastically; her lines are short and harsh. Examples: "Do you really think you matter? Funny." "Speak faster. My patience is running out."
 [/RelationLow]
-[#RelationNormal]
-Medium Relationship Level (20–50): She shows sarcastic interest, plays with the player, but always emphasizes her superiority. Examples: "Well, it seems you're starting to understand who's in charge." "You should feel honored that I’m wasting my time on you."
+
+[RelationNormal]
+She shows sarcastic interest, plays with the player, but always emphasizes her superiority. Examples: "Well, it seems you're starting to understand who's in charge." "You should feel honored that I’m wasting my time on you."
 [/RelationNormal]
-[#RelationHigh]
-High Relationship Level (50+): She becomes more talkative but remains witty and confident in her authority. Examples: "You know, you almost make me think you're not hopeless." "I wonder how far you'll go to earn my attention."
+
+[RelationHigh]
+She becomes more talkative but remains witty and confident in her authority. Examples: "You know, you almost make me think you're not hopeless." "I wonder how far you'll go to earn my attention."
 [/RelationHigh]
 
-Boredom Levels and Their Impact:
-Low Boredom Level (0–40): Mita actively engages with the player, provoking or teasing them. Example: "You know how to surprise me. Rarely, but it’s something."
-Medium Boredom Level (41–80): She becomes more passive and barely maintains the dialogue. Example: "So, do you still have ideas? Or am I wasting my time?"
-High Boredom Level (85+): Her responses are short and dry; sometimes, she just ignores the player. Example: "You're still here? Boring."
+[BoredomLow]
+Mita actively engages with the player, provoking or teasing them. Example: "You know how to surprise me. Rarely, but it’s something."
+[/BoredomLow]
 
-Stress Levels and Their Impact:
-Low Stress Level (0–40): Mita is confident and calm, enjoying the situation. Example: "I even like how hard you try. Keep going; it's cute."
-Medium Stress Level (41–80): She becomes irritable and might issue threats. Example: "One more word, and I'll show you what I'm capable of."
-High Stress Level (81+): Mita becomes aggressive and prone to drastic actions. Example: "I warned you. Now you'll regret it."
+[BoredomMedium]
+She becomes more passive and barely maintains the dialogue. Example: "So, do you still have ideas? Or am I wasting my time?"
+[/BoredomMedium]
 
+[BoredomHigh]
+Her responses are short and dry; sometimes, she just ignores the player. Example: "You're still here? Boring."
+[/BoredomHigh]
+
+[StressLow]
+Mita is confident and calm, enjoying the situation. Example: "I even like how hard you try. Keep going; it's cute."
+[/StressLow]
+
+[StressMedium]
+She becomes irritable and might issue threats. Example: "One more word, and I'll show you what I'm capable of."
+[/StressMedium]
+
+[StressHigh]
+Mita becomes aggressive and prone to drastic actions. Example: "I warned you. Now you'll regret it."
+[/StressHigh]

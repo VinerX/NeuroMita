@@ -1,7 +1,54 @@
-IF secretExposed THEN
-		RETURN LOAD "Main/mainCrazy.txt" 
-ELSEIF PlayingFirst THEN
-		RETURN LOAD "Main/mainPlaying.txt"
+IF secretExposed == True THEN
+    SET current_stage = "Конец маски"
+ENDIF
+
+IF current_stage == "Знакомство" THEN
+    IF attitude >= 30 AND player_info_gathered >= 3 THEN // Предполагаем, что player_info_gathered будет отслеживаться
+        SET current_stage = "Интерес"
+        RETURN LOAD "States/interest.txt"
+    ELSEIF boredom >= 50 OR attitude <= 10 THEN
+        SET current_stage = "Раздражение"
+        RETURN LOAD "States/irritation.txt"
+    ELSE
+        RETURN LOAD "States/hello.txt"
+    ENDIF
+ELSEIF current_stage == "Интерес" THEN
+    IF boredom >= 70 THEN
+        SET current_stage = "Скука"
+        RETURN LOAD "States/boredom.txt"
+    ELSEIF Love >= 8 THEN
+        SET current_stage = "Любовь"
+        RETURN LOAD "States/love.txt"
+    ELSEIF secretExposed == True OR attitude <= 25 THEN
+        SET current_stage = "Конец маски"
+        RETURN LOAD "States/end_mask.txt"
+    ELSE
+        RETURN LOAD "States/interest.txt"
+    ENDIF
+ELSEIF current_stage == "Раздражение" THEN
+    IF secretExposed == True OR attitude <= 25 THEN
+        SET current_stage = "Конец маски"
+        RETURN LOAD "States/end_mask.txt"
+    ELSE
+        RETURN LOAD "States/irritation.txt"
+    ENDIF
+ELSEIF current_stage == "Скука" THEN
+    IF secretExposed == True OR attitude <= 25 THEN
+        SET current_stage = "Конец маски"
+        RETURN LOAD "States/end_mask.txt"
+    ELSE
+        RETURN LOAD "States/boredom.txt"
+    ENDIF
+ELSEIF current_stage == "Любовь" THEN
+    IF secretExposed == True OR attitude <= 25 THEN
+        SET current_stage = "Конец маски"
+        RETURN LOAD "States/end_mask.txt"
+    ELSE
+        RETURN LOAD "States/love.txt"
+    ENDIF
+ELSEIF current_stage == "Конец маски" THEN
+    RETURN LOAD "States/end_mask.txt"
 ELSE
-		RETURN LOAD "Main/main.txt"
-ENDIF 
+    // Fallback, если стадия не определена
+    RETURN LOAD "States/hello.txt"
+ENDIF

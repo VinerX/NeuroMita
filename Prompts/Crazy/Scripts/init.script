@@ -1,5 +1,7 @@
 LOG "Initialization of variables"
 
+SET current_stage = "Знакомство" // Инициализация переменной стадии
+
 IF Love == None THEN
 	LOG "Love is null"
 	SET Love = 1
