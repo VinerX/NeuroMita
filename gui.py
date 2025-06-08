@@ -1,5 +1,7 @@
 import uuid
 
+import win32gui
+
 import guiTemplates
 from AudioHandler import AudioHandler
 from Logger import logger
@@ -1329,6 +1331,27 @@ class ChatGUI:
              'default': '',
              'tooltip': _('Заголовок окна, которое нужно исключить из захвата (оставьте пустым для GUI).',
                           'Title of the window to exclude from capture (leave empty for GUI).')},
+            {'label': _('Снижение качества изображений', 'Image Quality Reduction'), 'type': 'text'},
+            {'label': _('Включить снижение качества', 'Enable Quality Reduction'), 'key': 'IMAGE_QUALITY_REDUCTION_ENABLED',
+             'type': 'checkbutton', 'default_checkbutton': False,
+             'tooltip': _('Включает динамическое снижение качества изображений в истории сообщений.',
+                          'Enables dynamic image quality reduction in message history.')},
+            {'label': _('Начальный индекс снижения', 'Reduction Start Index'), 'key': 'IMAGE_QUALITY_REDUCTION_START_INDEX',
+             'type': 'entry', 'default': 25, 'validation': self.validate_positive_integer_or_zero,
+             'tooltip': _('Индекс сообщения, с которого начинается снижение качества (0 = первое сообщение).',
+                          'Message index from which quality reduction begins (0 = first message).')},
+            {'label': _('Использовать процентное снижение', 'Use Percentage Reduction'), 'key': 'IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE',
+             'type': 'checkbutton', 'default_checkbutton': False,
+             'tooltip': _('Если включено, качество снижается на процент, иначе - до минимального значения.',
+                          'If enabled, quality is reduced by a percentage, otherwise to a minimum value.')},
+            {'label': _('Минимальное качество (%)', 'Minimum Quality (%)'), 'key': 'IMAGE_QUALITY_REDUCTION_MIN_QUALITY',
+             'type': 'entry', 'default': 30, 'validation': self.validate_positive_integer,
+             'tooltip': _('Минимальное качество JPEG (0-100), до которого может быть снижено изображение.',
+                          'Minimum JPEG quality (0-100) to which an image can be reduced.')},
+            {'label': _('Скорость снижения качества', 'Quality Decrease Rate'), 'key': 'IMAGE_QUALITY_REDUCTION_DECREASE_RATE',
+             'type': 'entry', 'default': 5, 'validation': self.validate_positive_integer,
+             'tooltip': _('На сколько единиц снижается качество за каждое сообщение после начального индекса.',
+                          'By how many units quality decreases for each message after the start index.')},
         ]
         self.create_settings_section(parent,
                                      _("Настройки анализа экрана", "Screen Analysis Settings"),
@@ -2146,6 +2169,16 @@ class ChatGUI:
             SpeechRecognition.SILENCE_DURATION = float(value)
         elif key == "VOSK_PROCESS_INTERVAL":
             SpeechRecognition.VOSK_PROCESS_INTERVAL = float(value)
+        elif key == "IMAGE_QUALITY_REDUCTION_ENABLED":
+            self.model.image_quality_reduction_enabled = bool(value)
+        elif key == "IMAGE_QUALITY_REDUCTION_START_INDEX":
+            self.model.image_quality_reduction_start_index = int(value)
+        elif key == "IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE":
+            self.model.image_quality_reduction_use_percentage = bool(value)
+        elif key == "IMAGE_QUALITY_REDUCTION_MIN_QUALITY":
+            self.model.image_quality_reduction_min_quality = int(value)
+        elif key == "IMAGE_QUALITY_REDUCTION_DECREASE_RATE":
+            self.model.image_quality_reduction_decrease_rate = int(value)
 
         # logger.info(f"Настройки изменены: {key} = {value}")
 

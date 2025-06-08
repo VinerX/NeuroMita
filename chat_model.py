@@ -10,6 +10,8 @@ import importlib
 from typing import List, Dict, Any, Optional
 import queue
 import os  # Added for os.environ
+from PIL import Image # Добавлено для обработки изображений
+from io import BytesIO # Добавлено для обработки изображений
 
 from Logger import logger
 from characters import CrazyMita, KindMita, ShortHairMita, CappyMita, MilaMita, CreepyMita, SleepyMita, GameMaster, \
@@ -73,6 +75,13 @@ class ChatModel:
         self.current_character: Character = None
         self.current_character_to_change = str(self.gui.settings.get("CHARACTER"))
         self.characters: Dict[str, Character] = {}
+
+        # Настройки для снижения качества изображений в истории
+        self.image_quality_reduction_enabled = bool(self.gui.settings.get("IMAGE_QUALITY_REDUCTION_ENABLED", False))
+        self.image_quality_reduction_start_index = int(self.gui.settings.get("IMAGE_QUALITY_REDUCTION_START_INDEX", 25))
+        self.image_quality_reduction_use_percentage = bool(self.gui.settings.get("IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE", False))
+        self.image_quality_reduction_min_quality = int(self.gui.settings.get("IMAGE_QUALITY_REDUCTION_MIN_QUALITY", 30))
+        self.image_quality_reduction_decrease_rate = int(self.gui.settings.get("IMAGE_QUALITY_REDUCTION_DECREASE_RATE", 5))
 
 
         # Game-specific state - these should ideally be passed to character or managed elsewhere if possible
@@ -383,6 +392,10 @@ class ChatModel:
         else:
             llm_messages_history_limited = llm_messages_history[-8:]
 
+        # Применяем снижение качества к изображениям в истории, если включено
+        if self.image_quality_reduction_enabled:
+            llm_messages_history_limited = self._apply_history_image_quality_reduction(llm_messages_history_limited)
+
         combined_messages.extend(llm_messages_history_limited)
 
         # 6. Добавляем system_input -----------------------------------------------------
@@ -679,6 +692,134 @@ class ChatModel:
             cleaned = cleaned[3:-3]
 
         return cleaned.strip()
+
+    def _process_image_quality(self, image_bytes: bytes, target_quality: int) -> bytes | None:
+        """
+        Обрабатывает байты изображения, изменяя его качество JPEG.
+        Если target_quality == 0, возвращает None (для удаления изображения).
+        """
+        if not image_bytes:
+            return None
+
+        if target_quality <= 0:
+            logger.info("Изображение будет удалено (target_quality <= 0).")
+            return None
+
+        try:
+            original_size = len(image_bytes)
+            img = Image.open(BytesIO(image_bytes))
+            # Конвертируем в RGB, если режим не RGB (например, RGBA), чтобы избежать ошибок при сохранении JPEG
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+
+            byte_arr = BytesIO()
+            img.save(byte_arr, format='JPEG', quality=target_quality)
+            processed_bytes = byte_arr.getvalue()
+            processed_size = len(processed_bytes)
+            logger.debug(f"Качество изображения изменено на {target_quality}. Размер: {original_size} байт -> {processed_size} байт.")
+            return processed_bytes
+        except Exception as e:
+            logger.error(f"Ошибка при обработке качества изображения: {e}", exc_info=True)
+            return image_bytes # Возвращаем исходные байты в случае ошибки
+
+    def _apply_history_image_quality_reduction(self, messages: List[Dict]) -> List[Dict]:
+        """
+        Применяет снижение качества к изображениям в истории сообщений на основе настроек.
+        """
+        if not messages:
+            return messages
+
+        history_length = len(messages)
+        actual_start_index = 0
+
+        if self.image_quality_reduction_use_percentage:
+            actual_start_index = int(history_length * (self.image_quality_reduction_start_index / 100.0))
+        else:
+            actual_start_index = self.image_quality_reduction_start_index
+
+        # Убедимся, что start_index не выходит за пределы истории
+        actual_start_index = max(0, min(actual_start_index, history_length))
+
+        logger.info(f"Применение снижения качества изображений: длина истории {history_length}, фактический старт {actual_start_index}")
+
+        updated_messages = []
+        for i, msg in enumerate(messages):
+            # Сообщения до actual_start_index остаются без изменений
+            if i < actual_start_index:
+                updated_messages.append(msg)
+                continue
+
+            # Обрабатываем только сообщения, которые содержат изображения
+            if msg.get("role") in ["user", "assistant"] and isinstance(msg.get("content"), list):
+                new_content_chunks = []
+                image_processed = False
+                for item in msg["content"]:
+                    if item.get("type") == "image_url" and item.get("image_url") and item["image_url"].get("url"):
+                        image_processed = True
+                        base64_url = item["image_url"]["url"]
+                        # Извлекаем только base64 данные
+                        if "," in base64_url:
+                            img_base64 = base64_url.split(',')[1]
+                        else:
+                            img_base64 = base64_url # Если нет префикса, предполагаем, что это чистый base64
+
+                        try:
+                            img_bytes = base64.b64decode(img_base64)
+
+                            # Вычисляем целевое качество
+                            # Индекс сообщения относительно начала зоны снижения качества
+                            relative_index = i - actual_start_index
+                            
+                            # Начальное качество для снижения (можно взять 100 или текущее качество захвата)
+                            # Для простоты, предположим, что исходное качество 100, если не указано иное.
+                            # Или можно использовать self.gui.settings.get("SCREEN_CAPTURE_QUALITY", 75)
+                            initial_quality = 75 # Предполагаемое исходное качество изображений
+
+                            calculated_quality = initial_quality - (self.image_quality_reduction_decrease_rate * relative_index)
+                            
+                            # Ограничиваем качество минимальным значением
+                            target_quality = max(self.image_quality_reduction_min_quality, calculated_quality)
+                            
+                            logger.debug(f"Сообщение {i}: относительный индекс {relative_index}, рассчитанное качество {calculated_quality}, целевое качество {target_quality}")
+
+                            processed_bytes = self._process_image_quality(img_bytes, target_quality)
+
+                            if processed_bytes:
+                                new_content_chunks.append({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{base64.b64encode(processed_bytes).decode('utf-8')}"
+                                    }
+                                })
+                            else:
+                                logger.info(f"Изображение в сообщении {i} удалено (качество <= 0).")
+                                # Если processed_bytes None, изображение удаляется, не добавляем его в new_content_chunks
+                        except Exception as e:
+                            logger.error(f"Ошибка при обработке изображения в истории сообщения {i}: {e}", exc_info=True)
+                            new_content_chunks.append(item) # В случае ошибки оставляем исходный элемент
+                    else:
+                        new_content_chunks.append(item) # Добавляем текстовые части и другие типы контента
+
+                if image_processed: # Если в сообщении были изображения, обновляем его
+                    if new_content_chunks:
+                        new_msg = msg.copy()
+                        new_msg["content"] = new_content_chunks
+                        updated_messages.append(new_msg)
+                    else:
+                        # Если все изображения были удалены и нет другого контента, можно удалить сообщение
+                        # Или оставить его только с текстом, если он был
+                        if any(item.get("type") == "text" for item in msg["content"]):
+                            new_msg = msg.copy()
+                            new_msg["content"] = [item for item in msg["content"] if item.get("type") == "text"]
+                            updated_messages.append(new_msg)
+                        else:
+                            logger.info(f"Сообщение {i} полностью удалено, так как все изображения были удалены и нет текста.")
+                else:
+                    updated_messages.append(msg) # Если изображений не было, добавляем сообщение как есть
+            else:
+                updated_messages.append(msg) # Добавляем сообщения без изображений как есть
+
+        return updated_messages
 
     # def generate_request_gemini(self, combined_messages):
     #     params_for_gemini = self.get_params(model="gemini-pro")
