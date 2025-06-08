@@ -122,9 +122,9 @@ class ScreenCapture:
                             f"mss: Захватывается sct.monitors[0], т.к. len(sct.monitors) <= 1. Детали: {monitor_to_capture}")
                     # -----------------------------------------
 
-                    logger.info("before grab")
+                    #logger.info("before grab")
                     sct_img = sct.grab(monitor_to_capture)
-                    logger.info("After grab")
+                    #logger.info("After grab")
 
                     img = Image.frombytes("RGB", (sct_img.width, sct_img.height),
                                           sct_img.rgb)  # Используем sct_img.width, sct_img.height
