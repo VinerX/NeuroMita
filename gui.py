@@ -1,3 +1,4 @@
+import io
 import uuid
 
 import win32gui
@@ -28,6 +29,7 @@ import binascii
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
+from PIL import Image, ImageTk
 
 from utils import SH
 import sys
@@ -180,6 +182,12 @@ class ChatGUI:
         self.id_sound = -1
         self.instant_send = False
         self.waiting_answer = False
+
+        # Параметры для ленивой загрузки
+        self.lazy_load_batch_size = 50  # Количество сообщений для загрузки за раз
+        self.total_messages_in_history = 0  # Общее количество сообщений в истории
+        self.loaded_messages_offset = 0  # Смещение для загрузки сообщений
+        self.loading_more_history = False  # Флаг, чтобы избежать повторной загрузки
 
         self.root = tk.Tk()
         self.root.wm_iconphoto(False, tk.PhotoImage(file='icon.png'))
@@ -516,6 +524,16 @@ class ChatGUI:
         input_frame = tk.Frame(left_frame, bg="#2c2c2c")
         input_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=(20, 10))  # pady=(20, 10) — отступ сверху 20px
 
+        # Метка для отображения количества токенов
+        self.token_count_label = tk.Label(
+            input_frame,
+            text=_("Токены: 0/0 | Стоимость: 0.00 ₽", "Tokens: 0/0 | Cost: 0.00 ₽"),
+            bg="#2c2c2c",
+            fg="#ffffff",
+            font=("Arial", 10)
+        )
+        self.token_count_label.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 5)) # Размещаем сверху
+
         self.user_entry = tk.Text(
             input_frame, height=3, width=50, bg="#151515", fg="#ffffff",
             insertbackground="white", font=("Arial", 12)
@@ -527,6 +545,18 @@ class ChatGUI:
             bg="#9370db", fg="#ffffff", font=("Arial", 12)
         )
         self.send_button.pack(side=tk.RIGHT, padx=5)
+
+        self.clear_chat_button = tk.Button(
+            input_frame, text=_("Очистить", "Clear"), command=self.clear_chat_display,
+            bg="#8a2be2", fg="#ffffff", font=("Arial", 12)
+        )
+        self.clear_chat_button.pack(side=tk.RIGHT, padx=5)
+
+        self.load_history_button = tk.Button(
+            input_frame, text=_("Взять из истории (по текущему персонажу)", "Load from history (current character)"), command=self.load_chat_history,
+            bg="#8a2be2", fg="#ffffff", font=("Arial", 12)
+        )
+        self.load_history_button.pack(side=tk.RIGHT, padx=5)
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -637,29 +667,97 @@ class ChatGUI:
 
         self.load_chat_history()
 
-    def insert_message(self, role, content):
-        processed_content = ""
+    def insert_message(self, role, content, insert_at_start=False):
+        # Создаем список для хранения ссылок на изображения, чтобы они не были удалены сборщиком мусора
+        if not hasattr(self, '_images_in_chat'):
+            self._images_in_chat = []
+
+        processed_content_parts = []
+        has_image_content = False
 
         if isinstance(content, list):
-            # Если content - это список, извлекаем только текстовые части
             for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    processed_content += item.get("text", "")
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        processed_content_parts.append({"type": "text", "content": item.get("text", "")})
+                    elif item.get("type") == "image_url":
+                        image_data_base64 = item.get("image_url", {}).get("url", "")
+                        if image_data_base64.startswith("data:image/jpeg;base64,"):
+                            image_data_base64 = image_data_base64.replace("data:image/jpeg;base64,", "")
+                        elif image_data_base64.startswith("data:image/png;base64,"):
+                            image_data_base64 = image_data_base64.replace("data:image/png;base64,", "")
+                        
+                        try:
+                            image_bytes = base64.b64decode(image_data_base64)
+                            image = Image.open(io.BytesIO(image_bytes))
+                            
+                            # Изменение размера изображения
+                            max_width = 400
+                            max_height = 300
+                            original_width, original_height = image.size
+
+                            if original_width > max_width or original_height > max_height:
+                                ratio = min(max_width / original_width, max_height / original_height)
+                                new_width = int(original_width * ratio)
+                                new_height = int(original_height * ratio)
+                                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+                            photo = ImageTk.PhotoImage(image)
+                            self._images_in_chat.append(photo) # Сохраняем ссылку
+                            processed_content_parts.append({"type": "image", "content": photo})
+                            has_image_content = True
+                        except Exception as e:
+                            logger.error(f"Ошибка при декодировании или обработке изображения: {e}")
+                            processed_content_parts.append({"type": "text", "content": _("<Ошибка загрузки изображения>", "<Image load error>")})
+                
+            if has_image_content and not any(part["type"] == "text" and part["content"].strip() for part in processed_content_parts):
+                # Если есть только изображения и нет текста, добавляем метку
+                processed_content_parts.insert(0, {"type": "text", "content": _("<Изображение экрана>", "<Screen Image>") + "\n"})
+
         elif isinstance(content, str):
-            # Если content - это строка, используем ее как есть
-            processed_content = content
+            processed_content_parts.append({"type": "text", "content": content})
         else:
-            # Если content не является ни списком, ни строкой, игнорируем
             return
 
-        if role == "user":
-            # Вставляем имя пользователя с зеленым цветом, а текст — обычным
-            self.chat_window.insert(tk.END, _("Вы: ", "You: "), "Player")
-            self.chat_window.insert(tk.END, f"{processed_content}\n")
-        elif role == "assistant":
-            # Вставляем имя Миты с синим цветом, а текст — обычным
-            self.chat_window.insert(tk.END, f"{self.model.current_character.name}: ", "Mita")
-            self.chat_window.insert(tk.END, f"{processed_content}\n\n")
+        # Вставка сообщений
+        if insert_at_start:
+            if role == "user":
+                self.chat_window.insert(1.0, "\n")
+                for part in reversed(processed_content_parts):
+                    if part["type"] == "text":
+                        self.chat_window.insert(1.0, part["content"])
+                    elif part["type"] == "image":
+                        self.chat_window.image_create(1.0, image=part["content"])
+                        self.chat_window.insert(1.0, "\n") # Добавляем перенос строки после изображения
+                self.chat_window.insert(1.0, _("Вы: ", "You: "), "Player")
+            elif role == "assistant":
+                self.chat_window.insert(1.0, "\n\n")
+                for part in reversed(processed_content_parts):
+                    if part["type"] == "text":
+                        self.chat_window.insert(1.0, part["content"])
+                    elif part["type"] == "image":
+                        self.chat_window.image_create(1.0, image=part["content"])
+                        self.chat_window.insert(1.0, "\n") # Добавляем перенос строки после изображения
+                self.chat_window.insert(1.0, f"{self.model.current_character.name}: ", "Mita")
+        else:
+            if role == "user":
+                self.chat_window.insert(tk.END, _("Вы: ", "You: "), "Player")
+                for part in processed_content_parts:
+                    if part["type"] == "text":
+                        self.chat_window.insert(tk.END, part["content"])
+                    elif part["type"] == "image":
+                        self.chat_window.image_create(tk.END, image=part["content"])
+                        self.chat_window.insert(tk.END, "\n") # Добавляем перенос строки после изображения
+                self.chat_window.insert(tk.END, "\n") # Добавляем перенос строки после сообщения пользователя
+            elif role == "assistant":
+                self.chat_window.insert(tk.END, f"{self.model.current_character.name}: ", "Mita")
+                for part in processed_content_parts:
+                    if part["type"] == "text":
+                        self.chat_window.insert(tk.END, part["content"])
+                    elif part["type"] == "image":
+                        self.chat_window.image_create(tk.END, image=part["content"])
+                        self.chat_window.insert(tk.END, "\n") # Добавляем перенос строки после изображения
+                self.chat_window.insert(tk.END, "\n\n") # Добавляем два переноса строки после сообщения ассистента
 
     # region секция g4f
     def _check_and_perform_pending_update(self):
@@ -959,16 +1057,36 @@ class ChatGUI:
         # save_history_button.pack(side=tk.LEFT, padx=10)
 
     def load_chat_history(self):
+        self.chat_window.delete(1.0, tk.END)  # Очищаем чат перед загрузкой
+        self.loaded_messages_offset = 0
+        self.total_messages_in_history = 0
+        self.loading_more_history = False
 
         chat_history = self.model.current_character.load_history()
-        for entry in chat_history["messages"]:
+        all_messages = chat_history["messages"]
+        self.total_messages_in_history = len(all_messages)
+        logger.info(f"Всего сообщений в истории: {self.total_messages_in_history}")
+
+        # Загружаем последние N сообщений
+        start_index = max(0, self.total_messages_in_history - self.lazy_load_batch_size)
+        messages_to_load = all_messages[start_index:]
+
+        for entry in messages_to_load:
             role = entry["role"]
             content = entry["content"]
-            self.insert_message(role, content)
-        # Прокручиваем вниз
-        self.chat_window.see(tk.END)
+            self.insert_message(role, content)  # Вставляем в конец, как обычно
+
+        self.loaded_messages_offset = len(messages_to_load)
+        logger.info(f"Загружено {self.loaded_messages_offset} последних сообщений.")
+
+        # Привязываем событие прокрутки
+        self.chat_window.bind("<MouseWheel>", self.on_chat_scroll)
+        self.chat_window.bind("<Button-4>", self.on_chat_scroll)  # Linux
+        self.chat_window.bind("<Button-5>", self.on_chat_scroll)  # Linux
 
         self.update_debug_info()
+        self.update_token_count() # Вызываем после загрузки истории
+        self.update_token_count() # Вызываем после загрузки истории
 
     #region SetupControls
 
@@ -1627,13 +1745,22 @@ class ChatGUI:
         self.debug_window.insert(tk.END, debug_info)
 
     def update_token_count(self, event=None):
-        if False and self.model.hasTokenizer:
-            user_input = self.user_entry.get("1.0", "end-1c")
-            token_count, cost = self.model.calculate_cost(user_input)
+        if self.model.hasTokenizer:
+            # Получаем текущий контекст из модели
+            current_context_tokens = self.model.get_current_context_token_count()
+
+            cost = self.model.calculate_cost_for_current_context() # Предполагаем, что этот метод существует или будет создан
+
             self.token_count_label.config(
-                text=f"ВЫКЛЮЧЕНО!! Токенов: {token_count}/{self.model.max_input_tokens} | Ориент. стоимость: {cost:.4f} ₽"
+                text=_("Токены: {}/{} | Ориент. стоимость: {:.4f} ₽", "Tokens: {}/{} | Approx. cost: {:.4f} ₽").format(
+                    current_context_tokens, 5000, cost
+                )
             )
-            self.update_debug_info()
+        else:
+            self.token_count_label.config(
+                text=_("Токены: Токенизатор недоступен", "Tokens: Tokenizer not available")
+            )
+        self.update_debug_info()
 
     def insertDialog(self, input_text="", response="", system_text=""):
         MitaName = self.model.current_character.name
@@ -1647,6 +1774,11 @@ class ChatGUI:
         if response != "":
             self.chat_window.insert(tk.END, f"{MitaName}: ", "Mita")
             self.chat_window.insert(tk.END, f"{response}\n\n")
+
+    def clear_chat_display(self):
+        """Очищает отображаемую историю чата в GUI."""
+        self.chat_window.delete(1.0, tk.END)
+        logger.info("Отображаемая история чата очищена.")
 
     def send_message(self, system_input: str = "", image_data: list[bytes] = None):
         user_input = self.user_entry.get("1.0", "end-1c").strip()  # Убираем пробелы сразу
@@ -1691,6 +1823,7 @@ class ChatGUI:
             )
             self.root.after(0, lambda: self.insert_message("assistant", response))
             self.root.after(0, self.updateAll)
+            self.root.after(0, self.update_token_count) # Обновляем счетчик токенов после получения ответа
             if self.server:
                 try:
                     if self.server.client_socket:
@@ -1752,6 +1885,63 @@ class ChatGUI:
             character.clear_history()
         self.chat_window.delete(1.0, tk.END)
         self.update_debug_info()
+
+    def on_chat_scroll(self, event):
+        """Обработчик события прокрутки чата."""
+        if self.loading_more_history:
+            return
+
+        # Проверяем, прокрутил ли пользователь к началу
+        if self.chat_window.yview()[0] == 0:
+            logger.info("Достигнуто начало чата, попытка загрузить больше истории.")
+            self.load_more_history()
+
+    def load_more_history(self):
+        """Загружает предыдущие сообщения в чат."""
+        if self.loaded_messages_offset >= self.total_messages_in_history:
+            logger.info("Все сообщения уже загружены.")
+            return
+
+        self.loading_more_history = True
+        try:
+            chat_history = self.model.current_character.load_history()
+            all_messages = chat_history["messages"]
+
+            # Определяем диапазон сообщений для загрузки
+            end_index = self.total_messages_in_history - self.loaded_messages_offset
+            start_index = max(0, end_index - self.lazy_load_batch_size)
+
+            messages_to_prepend = all_messages[start_index:end_index]
+            messages_to_prepend.reverse()  # Вставляем в обратном порядке, чтобы сохранить порядок в чате
+
+            # Сохраняем текущую позицию прокрутки
+            current_scroll_pos = self.chat_window.yview()
+            # Сохраняем высоту содержимого до вставки
+            old_height = self.chat_window.winfo_height()
+
+            for entry in messages_to_prepend:
+                role = entry["role"]
+                content = entry["content"]
+                self.insert_message(role, content, insert_at_start=True)
+
+            self.loaded_messages_offset += len(messages_to_prepend)
+            logger.info(f"Загружено еще {len(messages_to_prepend)} сообщений. Всего загружено: {self.loaded_messages_offset}")
+
+            # Корректируем прокрутку, чтобы пользователь остался на том же месте
+            self.root.update_idletasks() # Обновляем виджет, чтобы получить новые размеры
+            new_height = self.chat_window.winfo_height()
+            height_diff = new_height - old_height
+
+            # Прокручиваем на разницу в высоте, чтобы сохранить относительную позицию
+            # Это может потребовать более сложной логики для точного позиционирования
+            # В простейшем случае, если мы вставляем в начало, просто прокручиваем на высоту добавленного контента
+            self.chat_window.yview_scroll(-1, "pages") # Прокручиваем вверх на одну "страницу"
+            # Или можно попробовать более точно:
+            # self.chat_window.yview_moveto(current_scroll_pos[0] * (old_height / new_height))
+
+
+        finally:
+            self.loading_more_history = False
 
     def reload_prompts(self):
         """Скачивает свежие промпты с GitHub и перезагружает их для текущего персонажа."""

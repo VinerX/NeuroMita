@@ -50,10 +50,15 @@ class ChatModel:
             self.client = None
 
         try:
-            #  self.tokenizer = tiktoken.encoding_for_model("gpt-4o-mini")
+            import tiktoken
+            self.tokenizer = tiktoken.encoding_for_model("gpt-4o-mini")
+            self.hasTokenizer = True
+            logger.info("Tiktoken успешно инициализирован.")
+        except ImportError:
+            logger.warning("Модуль 'tiktoken' не найден. Подсчет токенов будет недоступен.")
             self.hasTokenizer = False
-        except:
-            logger.info("Тиктокен не сработал( Ну и пофиг, на билдах он никогда и не работал")
+        except Exception as e:
+            logger.error(f"Ошибка инициализации tiktoken: {e}")
             self.hasTokenizer = False
 
         self.max_response_tokens = int(self.gui.settings.get("MODEL_MAX_RESPONSE_TOKENS", 3200))
@@ -995,39 +1000,105 @@ class ChatModel:
         self.infos_to_add_to_history.append(system_info_message)
         logger.info(f"Queued temporary system info: {content[:100]}...")
 
-    #region TokensCounting
-    def calculate_cost(self, user_input_text: str):
-        if not self.hasTokenizer:
-            logger.warning("Tokenizer not available, cannot calculate cost accurately.")
-            return 0, 0.0
-
-        temp_messages_for_costing = []
-        if self.current_character:
-            history_data = self.current_character.history_manager.load_history()
-            temp_messages_for_costing.extend(history_data.get("messages", []))
-
-        temp_messages_for_costing.append({"role": "user", "content": user_input_text})
-
-        token_count = self.count_tokens(temp_messages_for_costing)
-        cost = (token_count / 1000) * self.cost_input_per_1000
-
-        logger.info(
-            f"Estimated token count for input '{user_input_text[:50]}...': {token_count}, Estimated cost: {cost:.5f}")
-        return token_count, cost
-
-    def count_tokens(self, messages_list: List[Dict]) -> int:
+    # region TokensCounting
+    def get_current_context_token_count(self) -> int:
+        """
+        Считает количество токенов в текущем контексте, который будет отправлен в LLM.
+        Это включает системные промпты, историю и текущий ввод пользователя.
+        """
         if not self.hasTokenizer:
             return 0
 
-        total_tokens = 0
-        for msg in messages_list:
-            if isinstance(msg, dict) and "content" in msg and isinstance(msg["content"], str):
+        # Логика формирования combined_messages из generate_response
+        combined_messages = []
+
+        # 1. Системные промпты / память
+        if bool(self.gui.settings.get("SEPARATE_PROMPTS", True)):
+            try:
+                resolved_main = self.current_character.dsl_interpreter.resolver.resolve_path(
+                    self.current_character.main_template_path_relative)
+                main_template_content = self.current_character.dsl_interpreter.resolver.load_text(
+                    resolved_main, "main template for separate prompts")
+            except Exception as e:
+                logger.error(f"Critical error loading main template for {self.current_character.char_id}: {e}",
+                             exc_info=True)
+                main_template_content = ""
+                combined_messages.append({"role": "system",
+                                          "content": f"[CRITICAL ERROR LOADING MAIN TEMPLATE FOR {self.current_character.char_id}]"})
+            file_paths = self.current_character.dsl_interpreter.placeholder_pattern.findall(main_template_content)
+            for p in file_paths:
                 try:
-                    total_tokens += len(self.tokenizer.encode(msg["content"]))
+                    content = self.current_character.dsl_interpreter.process_file(p)
+                    if content and content.strip():
+                        combined_messages.append({"role": "system", "content": content})
                 except Exception as e:
-                    logger.warning(
-                        f"Error encoding content for token counting: {e}. Content snippet: {msg['content'][:50]}")
+                    logger.error(f"Error processing DSL file {p} for {self.current_character.char_id}: {e}",
+                                 exc_info=True)
+                    combined_messages.append({"role": "system",
+                                              "content": f"[ERROR PROCESSING {p}]"})
+        else:
+            combined_messages.extend(self.current_character.get_full_system_setup_for_llm())
+
+        # Добавляем шахматы (если сформировано) - для точного подсчета нужно бы формировать, но пока заглушка
+        # В реальной ситуации здесь нужно было бы вызвать логику формирования chess_system_message_for_llm_content
+        # Для простоты пока не включаем, так как это усложнит подсчет без реального запроса
+        # if hasattr(self.current_character, 'chess_state_queue') and self.current_character.get_variable("playingChess", False):
+        #     combined_messages.append({"role": "system", "content": "Chess game state (placeholder)"})
+
+        # 2. История памяти
+        history_data = self.current_character.history_manager.load_history()
+        llm_messages_history = history_data.get("messages", [])
+
+        if self.current_character != self.GameMaster:
+            llm_messages_history_limited = llm_messages_history[-self.memory_limit:]
+        else:
+            llm_messages_history_limited = llm_messages_history[-8:]
+
+        # Применяем снижение качества к изображениям в истории, если включено
+        if self.image_quality_reduction_enabled:
+            llm_messages_history_limited = self._apply_history_image_quality_reduction(llm_messages_history_limited)
+
+        combined_messages.extend(llm_messages_history_limited)
+
+        # 3. Временные системные сообщения
+        if self.infos_to_add_to_history:
+            combined_messages.extend(self.infos_to_add_to_history)
+
+        # 4. Текущий ввод пользователя (если есть)
+        user_input_from_gui = self.gui.user_entry.get("1.0", "end-1c").strip()
+        if user_input_from_gui:
+            combined_messages.append({"role": "user", "content": user_input_from_gui})
+
+        total_tokens = 0
+        for msg in combined_messages:
+            if isinstance(msg, dict) and "content" in msg:
+                content = msg["content"]
+                if isinstance(content, str):
+                    total_tokens += len(self.tokenizer.encode(content))
+                elif isinstance(content, list):  # Для мультимодального контента
+                    for item in content:
+                        if item.get("type") == "text" and item.get("text"):
+                            total_tokens += len(self.tokenizer.encode(item["text"]))
+                        elif item.get("type") == "image_url" and item.get("image_url", {}).get("url"):
+                            # Для изображений, добавляем фиксированное количество токенов или 0,
+                            # так как tiktoken не считает токены изображений напрямую.
+                            # Google Gemini Vision Pro оценивает изображения по-разному,
+                            # но для общего подсчета можно использовать приближение.
+                            # Например, 1 изображение = 1000 токенов (очень грубо)
+                            total_tokens += 1000 # Примерное количество токенов за изображение
         return total_tokens
+
+    def calculate_cost_for_current_context(self) -> float:
+        """
+        Рассчитывает ориентировочную стоимость текущего контекста в токенах.
+        """
+        if not self.hasTokenizer:
+            logger.warning("Tokenizer not available, cannot calculate cost accurately.")
+            return 0.0
+
+        token_count = self.get_current_context_token_count()
+        cost = (token_count / 1000) * self.cost_input_per_1000
+        return cost
 
     #endregion
 
