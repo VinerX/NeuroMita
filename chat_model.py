@@ -1040,8 +1040,8 @@ class ChatModel:
         elif bool(self.gui.settings.get("NM_API_REQ", False)):
             current_model = self.gui.settings.get("NM_API_MODEL")
 
-        # Возвращаем лимит из маппинга, или дефолтное значение (например, 4096), если модель не найдена
-        return self._model_token_limits.get(current_model, 4096)
+        # Возвращаем лимит из маппинга, или дефолтное значение, если модель не найдена
+        return self._model_token_limits.get(current_model, "???")
 
     def get_current_context_token_count(self) -> int:
         """
