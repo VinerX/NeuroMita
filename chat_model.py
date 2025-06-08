@@ -770,17 +770,15 @@ class ChatModel:
                             # Индекс сообщения относительно начала зоны снижения качества
                             relative_index = i - actual_start_index
                             
-                            # Начальное качество для снижения (можно взять 100 или текущее качество захвата)
-                            # Для простоты, предположим, что исходное качество 100, если не указано иное.
-                            # Или можно использовать self.gui.settings.get("SCREEN_CAPTURE_QUALITY", 75)
-                            initial_quality = 75 # Предполагаемое исходное качество изображений
+                            # Начальное качество для снижения. Берем из настроек захвата экрана.
+                            initial_quality = int(self.gui.settings.get("SCREEN_CAPTURE_QUALITY", 75))
 
                             calculated_quality = initial_quality - (self.image_quality_reduction_decrease_rate * relative_index)
                             
                             # Ограничиваем качество минимальным значением
                             target_quality = max(self.image_quality_reduction_min_quality, calculated_quality)
                             
-                            logger.debug(f"Сообщение {i}: относительный индекс {relative_index}, рассчитанное качество {calculated_quality}, целевое качество {target_quality}")
+                            logger.info(f"Сообщение {i}: относительный индекс {relative_index}, рассчитанное качество {calculated_quality}, целевое качество {target_quality}")
 
                             processed_bytes = self._process_image_quality(img_bytes, target_quality)
 

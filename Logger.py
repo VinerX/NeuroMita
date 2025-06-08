@@ -15,7 +15,7 @@ class MyFileFilter(logging.Filter):
 
 # Создаем логгер
 logger = colorlog.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 # Обработчик для консоли
 console_handler = colorlog.StreamHandler()
