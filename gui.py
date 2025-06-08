@@ -528,6 +528,7 @@ class ChatGUI:
         # Добавляем новые стили для тегов
         self.chat_window.tag_configure("bold", font=("Arial", 12, "bold"))
         self.chat_window.tag_configure("italic", font=("Arial", 12, "italic"))
+        self.chat_window.tag_configure("timestamp", foreground="#888888", font=("Arial", 10, "italic"))
         # Стили для цветов будут добавляться динамически
 
         # Фрейм для кнопок над чатом
@@ -558,6 +559,7 @@ class ChatGUI:
         self.chat_window.tag_configure("Mita", foreground="hot pink", font=("Arial", 12, "bold"))
         self.chat_window.tag_configure("Player", foreground="gold", font=("Arial", 12, "bold"))
         self.chat_window.tag_configure("System", foreground="white", font=("Arial", 12, "bold"))
+        self.chat_window.tag_configure("timestamp", foreground="#888888", font=("Arial", 10, "italic"))
 
         # Инпут - нижняя часть (фиксированная высота)
         input_frame = tk.Frame(left_frame, bg="#2c2c2c")
@@ -684,6 +686,7 @@ class ChatGUI:
 
         self.setup_chat_settings_controls(settings_frame) # Новая секция для настроек чата
         self.setup_screen_analysis_controls(settings_frame)  # Новая секция для анализа экрана
+        self.setup_token_settings_controls(settings_frame) # Новая секция для настроек токенов
 
         self.setup_news_control(settings_frame)
 
@@ -750,142 +753,125 @@ class ChatGUI:
 
             # Обработка тегов в текстовом содержимом
         processed_text_parts = []
+        hide_tags = self.settings.get("HIDE_CHAT_TAGS", False)
 
         for part in processed_content_parts:
             if part["type"] == "text":
                 text_content = part["content"]
-                # Регулярное выражение для поиска тегов [b]...[/b], [i]...[/i] и [color=...]...[/color]
-                # Оно ищет открывающий тег, захватывает содержимое (нежадно), и ищет соответствующий закрывающий тег.
-                # Для color тега захватывается значение цвета.
-                matches = list(
-                    re.finditer(r'\[b\](.*?)\[\/b\]|\[i\](.*?)\[\/i\]|\[color=(.*?)\](.*?)\[\/color\]', text_content))
+                if hide_tags:
+                    # Удаляем все теги и их содержимое
+                    text_content = re.sub(r'<e>.*?</e>|<c>.*?</c>|<a>.*?</a>|\[b\].*?\[\/b\]|\[i\].*?\[\/i\]|\[color=.*?\](.*?)\[\/color\]', r'\1', text_content)
+                    processed_text_parts.append({"type": "text", "content": text_content, "tag": "default"})
+                else:
+                    # Регулярное выражение для поиска тегов <e>...</e>, <c>...</c>, <a>...</a>, [b]...[/b], [i]...[/i] и [color=...]...[/color]
+                    matches = list(
+                        re.finditer(r'<e>(.*?)</e>|<c>(.*?)</c>|<a>(.*?)</a>|\[b\](.*?)\[\/b\]|\[i\](.*?)\[\/i\]|\[color=(.*?)\](.*?)\[\/color\]', text_content))
 
-                last_end = 0
-                for match in matches:
-                    start, end = match.span()
-                    # Добавляем текст до совпадения
-                    if start > last_end:
-                        processed_text_parts.append({"type": "text", "content": text_content[last_end:start]})
+                    last_end = 0
+                    for match in matches:
+                        start, end = match.span()
+                        # Добавляем текст до совпадения без тега
+                        if start > last_end:
+                            processed_text_parts.append({"type": "text", "content": text_content[last_end:start], "tag": "default"})
 
-                    # Обрабатываем совпадение
-                    if match.group(1) is not None:  # Жирный текст
-                        processed_text_parts.append({"type": "text", "content": match.group(1), "tag": "bold"})
-                    elif match.group(2) is not None:  # Курсивный текст
-                        processed_text_parts.append({"type": "text", "content": match.group(2), "tag": "italic"})
-                    elif match.group(3) is not None and match.group(4) is not None:  # Цветной текст
-                        color = match.group(3)
-                        colored_text = match.group(4)
-                        tag_name = f"color_{color.replace('#', '').replace(' ', '_')}"  # Создаем имя тега на основе цвета
-                        # Проверяем, существует ли уже такой тег, если нет - создаем
-                        if tag_name not in self.chat_window.tag_names():
-                            try:
-                                self.chat_window.tag_configure(tag_name, foreground=color)
-                            except tk.TclError:
-                                logger.warning(f"Неверный формат цвета: {color}. Использование цвета по умолчанию.")
-                                tag_name = "Mita"  # Фоллбэк на стандартный цвет Миты
-                        processed_text_parts.append({"type": "text", "content": colored_text, "tag": tag_name})
+                        # Обрабатываем совпадение
+                        if match.group(1) is not None:  # Тег <e>
+                            processed_text_parts.append({"type": "text", "content": f"<e>{match.group(1)}</e>", "tag": "Mita"}) # Используем "Mita" для подсветки тегов
+                        elif match.group(2) is not None:  # Тег <c>
+                            processed_text_parts.append({"type": "text", "content": f"<c>{match.group(2)}</c>", "tag": "Mita"}) # Используем "Mita" для подсветки тегов
+                        elif match.group(3) is not None:  # Тег <a>
+                            processed_text_parts.append({"type": "text", "content": f"<a>{match.group(3)}</a>", "tag": "Mita"}) # Используем "Mita" для подсветки тегов
+                        elif match.group(4) is not None:  # Жирный текст [b]
+                            processed_text_parts.append({"type": "text", "content": f"[b]{match.group(4)}[/b]", "tag": "bold"})
+                        elif match.group(5) is not None:  # Курсивный текст [i]
+                            processed_text_parts.append({"type": "text", "content": f"[i]{match.group(5)}[/i]", "tag": "italic"})
+                        elif match.group(6) is not None and match.group(7) is not None:  # Цветной текст [color=...]
+                            color = match.group(6)
+                            colored_text = match.group(7)
+                            tag_name = f"color_{color.replace('#', '').replace(' ', '_')}"
+                            if tag_name not in self.chat_window.tag_names():
+                                try:
+                                    self.chat_window.tag_configure(tag_name, foreground=color)
+                                except tk.TclError:
+                                    logger.warning(f"Неверный формат цвета: {color}. Использование цвета по умолчанию.")
+                                    tag_name = "Mita"
+                            processed_text_parts.append({"type": "text", "content": f"[color={color}]{colored_text}[/color]", "tag": tag_name})
 
-                    last_end = end
+                        last_end = end
 
-                # Добавляем оставшийся текст после последнего совпадения
-                if last_end < len(text_content):
-                    processed_text_parts.append({"type": "text", "content": text_content[last_end:]})
+                    # Добавляем оставшийся текст после последнего совпадения без тега
+                    if last_end < len(text_content):
+                        processed_text_parts.append({"type": "text", "content": text_content[last_end:], "tag": "default"})
             else:
-                # Если это не текстовая часть (например, изображение), добавляем как есть
                 processed_text_parts.append(part)
 
         # Вставка сообщений
+        self.chat_window.config(state=tk.NORMAL)  # Включаем редактирование
+
+        show_timestamps = self.settings.get("SHOW_CHAT_TIMESTAMPS", False)
+        timestamp_str = ""
+        if show_timestamps:
+            timestamp_str = time.strftime("[%H:%M:%S] ")
+
         if insert_at_start:
             if role == "user":
                 self.chat_window.insert(1.0, "\n")
+                self.chat_window.insert(1.0, _("Вы: ", "You: "), "Player")  # Имя персонажа подсвечивается
+                if show_timestamps:
+                    self.chat_window.insert(1.0, timestamp_str, "timestamp")
                 for part in reversed(processed_text_parts):
                     if part["type"] == "text":
-                        tag = part.get("tag", "Player") if part.get("tag") else "Player"
-                        self.chat_window.insert(1.0, part["content"], tag)
+                        if part.get("tag") == "default":
+                            self.chat_window.insert(1.0, part["content"])  # Обычный текст без тега
+                        else:
+                            self.chat_window.insert(1.0, part["content"], part["tag"])
                     elif part["type"] == "image":
                         self.chat_window.image_create(1.0, image=part["content"])
-                        self.chat_window.insert(1.0, "\n")  # Добавляем перенос строки после изображения
-                self.chat_window.insert(1.0, _("Вы: ", "You: "), "Player")
+                        self.chat_window.insert(1.0, "\n")
             elif role == "assistant":
                 self.chat_window.insert(1.0, "\n\n")
+                self.chat_window.insert(1.0, f"{self.model.current_character.name}: ", "Mita")  # Имя персонажа подсвечивается
+                if show_timestamps:
+                    self.chat_window.insert(1.0, timestamp_str, "timestamp")
                 for part in reversed(processed_text_parts):
                     if part["type"] == "text":
-                        tag = part.get("tag", "Mita") if part.get("tag") else "Mita"
-                        self.chat_window.insert(1.0, part["content"], tag)
+                        if part.get("tag") == "default":
+                            self.chat_window.insert(1.0, part["content"])  # Обычный текст без тега
+                        else:
+                            self.chat_window.insert(1.0, part["content"], part["tag"])
                     elif part["type"] == "image":
                         self.chat_window.image_create(1.0, image=part["content"])
-                        self.chat_window.insert(1.0, "\n")  # Добавляем перенос строки после изображения
-                self.chat_window.insert(1.0, f"{self.model.current_character.name}: ", "Mita")
+                        self.chat_window.insert(1.0, "\n")
         else:
             if role == "user":
-                self.chat_window.insert(tk.END, _("Вы: ", "You: "), "Player")
+                if show_timestamps:
+                    self.chat_window.insert(tk.END, timestamp_str, "timestamp")
+                self.chat_window.insert(tk.END, _("Вы: ", "You: "), "Player")  # Имя персонажа подсвечивается
                 for part in processed_text_parts:
                     if part["type"] == "text":
-                        tag = part.get("tag", "Player") if part.get("tag") else "Player"
-                        self.chat_window.insert(tk.END, part["content"], tag)
+                        if part.get("tag") == "default":
+                            self.chat_window.insert(tk.END, part["content"])  # Обычный текст без тега
+                        else:
+                            self.chat_window.insert(tk.END, part["content"], part["tag"])
                     elif part["type"] == "image":
                         self.chat_window.image_create(tk.END, image=part["content"])
-                        self.chat_window.insert(tk.END, "\n")  # Добавляем перенос строки после изображения
+                        self.chat_window.insert(tk.END, "\n")
                 self.chat_window.insert(tk.END, "\n")
             elif role == "assistant":
-                self.chat_window.insert(tk.END, f"{self.model.current_character.name}: ", "Mita")
+                if show_timestamps:
+                    self.chat_window.insert(tk.END, timestamp_str, "timestamp")
+                self.chat_window.insert(tk.END, f"{self.model.current_character.name}: ", "Mita")  # Имя персонажа подсвечивается
                 for part in processed_text_parts:
                     if part["type"] == "text":
-                        tag = part.get("tag", "Mita") if part.get("tag") else "Mita"
-                        self.chat_window.insert(tk.END, part["content"], tag)
+                        if part.get("tag") == "default":
+                            self.chat_window.insert(tk.END, part["content"])  # Обычный текст без тега
+                        else:
+                            self.chat_window.insert(tk.END, part["content"], part["tag"])
                     elif part["type"] == "image":
                         self.chat_window.image_create(tk.END, image=part["content"])
-                        self.chat_window.insert(tk.END, "\n")  # Добавляем перенос строки после изображения
+                        self.chat_window.insert(tk.END, "\n")
                 self.chat_window.insert(tk.END, "\n\n")
-
-            # Вставка сообщений
-        if insert_at_start:
-            if role == "user":
-                if insert_at_start:
-                    self.chat_window.insert(1.0, "\n")
-                    for part in reversed(processed_content_parts):
-                        if part["type"] == "text":
-                            self.chat_window.insert(1.0, part["content"])
-                        elif part["type"] == "image":
-                            if processed_content_parts.index(part) > 0:
-                                self.chat_window.insert(1.0, "\n")
-                            self.chat_window.image_create(1.0, image=part["content"])
-                            self.chat_window.insert(1.0, "\n")
-                    self.chat_window.insert(1.0, _("Вы: ", "You: "), "Player")
-                else:
-                    self.chat_window.insert(tk.END, _("Вы: ", "You: "), "Player")
-                    for part in processed_content_parts:
-                        if part["type"] == "text":
-                            self.chat_window.insert(tk.END, part["content"])
-                        elif part["type"] == "image":
-                            if processed_content_parts.index(part) > 0:
-                                self.chat_window.insert(tk.END, "\n")
-                            self.chat_window.image_create(tk.END, image=part["content"])
-                            self.chat_window.insert(tk.END, "\n")
-                    self.chat_window.insert(tk.END, "\n")
-            elif role == "assistant":
-                if insert_at_start:
-                    self.chat_window.insert(1.0, "\n\n")
-                    for part in reversed(processed_content_parts):
-                        if part["type"] == "text":
-                            self.chat_window.insert(1.0, part["content"])
-                        elif part["type"] == "image":
-                            if processed_content_parts.index(part) > 0:
-                                self.chat_window.insert(1.0, "\n")
-                            self.chat_window.image_create(1.0, image=part["content"])
-                            self.chat_window.insert(1.0, "\n")
-                    self.chat_window.insert(1.0, f"{self.model.current_character.name}: ", "Mita")
-                else:
-                    self.chat_window.insert(tk.END, f"{self.model.current_character.name}: ", "Mita")
-                    for part in processed_content_parts:
-                        if part["type"] == "text":
-                            self.chat_window.insert(tk.END, part["content"])
-                        elif part["type"] == "image":
-                            if processed_content_parts.index(part) > 0:
-                                self.chat_window.insert(tk.END, "\n")
-                            self.chat_window.image_create(tk.END, image=part["content"])
-                            self.chat_window.insert(tk.END, "\n")
-                    self.chat_window.insert(tk.END, "\n\n")
+        self.chat_window.config(state=tk.DISABLED)  # Выключаем редактирование
 
             # Автоматическая прокрутка вниз после вставки сообщения
         self.chat_window.see(tk.END)
@@ -1198,8 +1184,11 @@ class ChatGUI:
         self.total_messages_in_history = len(all_messages)
         logger.info(f"Всего сообщений в истории: {self.total_messages_in_history}")
 
+        # Определяем максимальное количество сообщений для отображения
+        max_display_messages = int(self.settings.get("MAX_CHAT_HISTORY_DISPLAY", 100))
+
         # Загружаем последние N сообщений
-        start_index = max(0, self.total_messages_in_history - self.lazy_load_batch_size)
+        start_index = max(0, self.total_messages_in_history - max_display_messages)
         messages_to_load = all_messages[start_index:]
 
         for entry in messages_to_load:
@@ -1735,11 +1724,42 @@ class ChatGUI:
             {'label': _('Макс. сообщений в истории', 'Max Messages in History'), 'key': 'MAX_CHAT_HISTORY_DISPLAY',
              'type': 'entry', 'default': 100, 'validation': self.validate_positive_integer,
              'tooltip': _('Максимальное количество сообщений, отображаемых в окне чата.', 'Maximum number of messages displayed in the chat window.')},
+            {'label': _('Скрывать теги', 'Hide Tags'), 'key': 'HIDE_CHAT_TAGS',
+             'type': 'checkbutton', 'default_checkbutton': False,
+             'tooltip': _('Скрывать теги (<e>, <c>, <a>, [b], [i], [color]) в отображаемом тексте чата.', 'Hide tags (<e>, <c>, <a>, [b], [i], [color]) in the displayed chat text.')},
         ]
 
         self.create_settings_section(parent,
                                      _("Настройки чата", "Chat Settings"),
                                      chat_settings_config)
+
+    # endregion
+
+    # region Token Settings
+    def setup_token_settings_controls(self, parent):
+        """Создает секцию настроек для управления параметрами токенов."""
+        token_settings_config = [
+            {'label': _('Показывать информацию о токенах', 'Show Token Info'), 'key': 'SHOW_TOKEN_INFO',
+             'type': 'checkbutton', 'default_checkbutton': True,
+             'tooltip': _('Отображать количество токенов и ориентировочную стоимость в интерфейсе чата.',
+                           'Display token count and approximate cost in the chat interface.')},
+            {'label': _('Стоимость токена (вход, ₽)', 'Token Cost (input, ₽)'), 'key': 'TOKEN_COST_INPUT',
+             'type': 'entry', 'default': 0.000001, 'validation': self.validate_float_positive_or_zero,
+             'tooltip': _('Стоимость одного токена для входных данных (например, 0.000001 ₽ за токен).',
+                           'Cost of one token for input data (e.g., 0.000001 ₽ per token).')},
+            {'label': _('Стоимость токена (выход, ₽)', 'Token Cost (output, ₽)'), 'key': 'TOKEN_COST_OUTPUT',
+             'type': 'entry', 'default': 0.000002, 'validation': self.validate_float_positive_or_zero,
+             'tooltip': _('Стоимость одного токена для выходных данных (например, 0.000002 ₽ за токен).',
+                           'Cost of one token for output data (e.g., 0.000002 ₽ per token).')},
+            {'label': _('Максимальное количество токенов модели', 'Max Model Tokens'), 'key': 'MAX_MODEL_TOKENS',
+             'type': 'entry', 'default': 32000, 'validation': self.validate_positive_integer,
+             'tooltip': _('Максимальное количество токенов, которое может обработать модель.',
+                           'Maximum number of tokens the model can process.')},
+        ]
+
+        self.create_settings_section(parent,
+                                     _("Настройки токенов", "Token Settings"),
+                                     token_settings_config)
 
     # endregion
 
@@ -1764,8 +1784,16 @@ class ChatGUI:
             return False
 
     
-        def save_api_settings(self):
-            """Собирает данные из полей ввода и сохраняет только непустые значения, не перезаписывая существующие."""
+    def validate_float_positive_or_zero(self, new_value):
+        if new_value == "": return True
+        try:
+            value = float(new_value)
+            return value >= 0.0
+        except ValueError:
+            return False
+
+    def save_api_settings(self):
+        """Собирает данные из полей ввода и сохраняет только непустые значения, не перезаписывая существующие."""
     # Добавьте функции валидации в ChatGUI
     def validate_positive_integer(self, new_value):
         if new_value == "": return True  # Разрешаем пустое поле временно
@@ -1900,20 +1928,32 @@ class ChatGUI:
         self.debug_window.insert(tk.END, debug_info)
 
     def update_token_count(self, event=None):
-        if self.model.hasTokenizer:
+        show_token_info = self.settings.get("SHOW_TOKEN_INFO", True)
+
+        if show_token_info and self.model.hasTokenizer:
             # Получаем текущий контекст из модели
             current_context_tokens = self.model.get_current_context_token_count()
 
-            cost = self.model.calculate_cost_for_current_context() # Предполагаем, что этот метод существует или будет создан
+            # Получаем значения из настроек или используем значения по умолчанию
+            token_cost_input = float(self.settings.get("TOKEN_COST_INPUT", 0.000001))
+            token_cost_output = float(self.settings.get("TOKEN_COST_OUTPUT", 0.000002))
+            max_model_tokens = int(self.settings.get("MAX_MODEL_TOKENS", 32000))
 
-            max_model_tokens = self.model.get_max_model_tokens()
+            # Обновляем атрибуты модели, если они еще не были обновлены через all_settings_actions
+            self.model.token_cost_input = token_cost_input
+            self.model.token_cost_output = token_cost_output
+            self.model.max_model_tokens = max_model_tokens
+
+            cost = self.model.calculate_cost_for_current_context()
 
             self.token_count_label.config(
                 text=_("Токены: {}/{} (Макс. токены: {}) | Ориент. стоимость: {:.4f} ₽", "Tokens: {}/{} (Max tokens: {}) | Approx. cost: {:.4f} ₽").format(
                     current_context_tokens, max_model_tokens, max_model_tokens, cost
                 )
             )
+            self.token_count_label.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 5)) # Показываем метку
         else:
+            self.token_count_label.pack_forget() # Скрываем метку
             self.token_count_label.config(
                 text=_("Токены: Токенизатор недоступен", "Tokens: Tokenizer not available")
             )
@@ -2531,17 +2571,48 @@ class ChatGUI:
         if key == "CHAT_FONT_SIZE":
             try:
                 font_size = int(value)
-                # Update the font size of the chat window
-                self.chat_window.config(font=("Arial", font_size))
+                # Обновляем размер шрифта для всех тегов, использующих "Arial"
+                for tag_name in self.chat_window.tag_names():
+                    current_font = self.chat_window.tag_cget(tag_name, "font")
+                    if "Arial" in current_font:
+                        # Разбираем текущий шрифт, чтобы сохранить стиль (bold, italic)
+                        font_parts = current_font.split()
+                        new_font_parts = ["Arial", str(font_size)]
+                        if "bold" in font_parts:
+                            new_font_parts.append("bold")
+                        if "italic" in font_parts:
+                            new_font_parts.append("italic")
+                        self.chat_window.tag_configure(tag_name, font=(" ".join(new_font_parts)))
                 logger.info(f"Размер шрифта чата изменен на: {font_size}")
             except ValueError:
                 logger.warning(f"Неверное значение для размера шрифта чата: {value}")
+            except Exception as e:
+                logger.error(f"Ошибка при изменении размера шрифта чата: {e}")
         elif key == "SHOW_CHAT_TIMESTAMPS":
-            # This setting would require modifying the message insertion logic
-            logger.info(f"Настройка 'Показывать метки времени' изменена на: {value}. Требуется реализация логики отображения.")
+            # Перезагружаем историю чата, чтобы применить/убрать метки времени
+            self.load_chat_history()
+            logger.info(f"Настройка 'Показывать метки времени' изменена на: {value}. История чата перезагружена.")
         elif key == "MAX_CHAT_HISTORY_DISPLAY":
-             logger.info(f"Настройка 'Макс. сообщений в истории' изменена на: {value}. Требуется реализация логики ограничения истории.")
+            # Перезагружаем историю чата, чтобы применить новое ограничение
+            self.load_chat_history()
+            logger.info(f"Настройка 'Макс. сообщений в истории' изменена на: {value}. История чата перезагружена.")
+        elif key == "HIDE_CHAT_TAGS":
+            # Перезагружаем историю чата, чтобы применить/убрать скрытие тегов
+            self.load_chat_history()
+            logger.info(f"Настройка 'Скрывать теги' изменена на: {value}. История чата перезагружена.")
 
+
+        elif key == "SHOW_TOKEN_INFO":
+            self.update_token_count()
+        elif key == "TOKEN_COST_INPUT":
+            self.model.token_cost_input = float(value)
+            self.update_token_count()
+        elif key == "TOKEN_COST_OUTPUT":
+            self.model.token_cost_output = float(value)
+            self.update_token_count()
+        elif key == "MAX_MODEL_TOKENS":
+            self.model.max_model_tokens = int(value)
+            self.update_token_count()
 
         # logger.info(f"Настройки изменены: {key} = {value}")
 

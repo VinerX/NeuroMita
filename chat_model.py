@@ -70,11 +70,12 @@ class ChatModel:
         self.presence_penalty = float(self.gui.settings.get("MODEL_PRESENCE_PENALTY", 0.0))
         self.frequency_penalty = float(self.gui.settings.get("MODEL_FREQUENCY_PENALTY", 0.0))
         self.log_probability = float(self.gui.settings.get("MODEL_LOG_PROBABILITY", 0.0))
-
-        """ Очень спорно уже """
-        self.cost_input_per_1000 = 0.0432
-        self.cost_response_per_1000 = 0.1728
-
+        
+        # Настройки стоимости токенов и лимитов
+        self.token_cost_input = float(self.gui.settings.get("TOKEN_COST_INPUT", 0.0432))
+        self.token_cost_output = float(self.gui.settings.get("TOKEN_COST_OUTPUT", 0.1728))
+        self.max_model_tokens = int(self.gui.settings.get("MAX_MODEL_TOKENS", 128000)) # Default to a common large limit
+        
         self.memory_limit = int(self.gui.settings.get("MODEL_MESSAGE_LIMIT", 40))  # For historical messages
 
         self.current_character: Character = None
@@ -1041,8 +1042,10 @@ class ChatModel:
         elif bool(self.gui.settings.get("NM_API_REQ", False)):
             current_model = self.gui.settings.get("NM_API_MODEL")
 
-        # Возвращаем лимит из маппинга, или дефолтное значение, если модель не найдена
-        return self._model_token_limits.get(current_model, "???")
+        # Возвращаем лимит из настроек, если он задан и больше 0, иначе из маппинга
+        if self.max_model_tokens > 0:
+             return self.max_model_tokens
+        return self._model_token_limits.get(current_model, 128000) # Возвращаем дефолт, если модель не найдена
 
     def get_current_context_token_count(self) -> int:
         """
@@ -1140,7 +1143,8 @@ class ChatModel:
             return 0.0
 
         token_count = self.get_current_context_token_count()
-        cost = (token_count / 1000) * self.cost_input_per_1000
+        # Используем стоимость из настроек
+        cost = (token_count / 1000) * self.token_cost_input
         return cost
 
     #endregion
