@@ -538,25 +538,25 @@ class ChatGUI:
             input_frame, height=3, width=50, bg="#151515", fg="#ffffff",
             insertbackground="white", font=("Arial", 12)
         )
-        self.user_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.user_entry.pack(side=tk.TOP, fill=tk.X, expand=True, padx=5, pady=(0, 5))
 
         self.send_button = tk.Button(
             input_frame, text=_("Отправить", "Send"), command=self.send_message,
             bg="#9370db", fg="#ffffff", font=("Arial", 12)
         )
-        self.send_button.pack(side=tk.RIGHT, padx=5)
+        self.send_button.pack(side=tk.RIGHT, padx=5, pady=(0, 5)) # Размещаем справа от поля ввода
 
         self.clear_chat_button = tk.Button(
             input_frame, text=_("Очистить", "Clear"), command=self.clear_chat_display,
             bg="#8a2be2", fg="#ffffff", font=("Arial", 12)
         )
-        self.clear_chat_button.pack(side=tk.RIGHT, padx=5)
+        self.clear_chat_button.pack(side=tk.RIGHT, padx=5, pady=(0, 5)) # Размещаем справа от "Отправить"
 
         self.load_history_button = tk.Button(
             input_frame, text=_("Взять из истории (по текущему персонажу)", "Load from history (current character)"), command=self.load_chat_history,
             bg="#8a2be2", fg="#ffffff", font=("Arial", 12)
         )
-        self.load_history_button.pack(side=tk.RIGHT, padx=5)
+        self.load_history_button.pack(side=tk.LEFT, padx=(0, 5), pady=(0, 5)) # Размещаем слева от поля ввода
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -727,6 +727,9 @@ class ChatGUI:
                     if part["type"] == "text":
                         self.chat_window.insert(1.0, part["content"])
                     elif part["type"] == "image":
+                        # Добавляем перенос строки перед изображением, если это не первый элемент
+                        if processed_content_parts.index(part) > 0:
+                             self.chat_window.insert(1.0, "\n")
                         self.chat_window.image_create(1.0, image=part["content"])
                         self.chat_window.insert(1.0, "\n") # Добавляем перенос строки после изображения
                 self.chat_window.insert(1.0, _("Вы: ", "You: "), "Player")
@@ -736,6 +739,9 @@ class ChatGUI:
                     if part["type"] == "text":
                         self.chat_window.insert(1.0, part["content"])
                     elif part["type"] == "image":
+                         # Добавляем перенос строки перед изображением, если это не первый элемент
+                        if processed_content_parts.index(part) > 0:
+                             self.chat_window.insert(1.0, "\n")
                         self.chat_window.image_create(1.0, image=part["content"])
                         self.chat_window.insert(1.0, "\n") # Добавляем перенос строки после изображения
                 self.chat_window.insert(1.0, f"{self.model.current_character.name}: ", "Mita")
@@ -746,6 +752,9 @@ class ChatGUI:
                     if part["type"] == "text":
                         self.chat_window.insert(tk.END, part["content"])
                     elif part["type"] == "image":
+                        # Добавляем перенос строки перед изображением, если это не первый элемент
+                        if processed_content_parts.index(part) > 0:
+                             self.chat_window.insert(tk.END, "\n")
                         self.chat_window.image_create(tk.END, image=part["content"])
                         self.chat_window.insert(tk.END, "\n") # Добавляем перенос строки после изображения
                 self.chat_window.insert(tk.END, "\n") # Добавляем перенос строки после сообщения пользователя
@@ -755,6 +764,10 @@ class ChatGUI:
                     if part["type"] == "text":
                         self.chat_window.insert(tk.END, part["content"])
                     elif part["type"] == "image":
+                        # Добавляем перенос строки перед изображением, если это не первый элемент
+                        # Добавляем перенос строки перед изображением, если это не первый элемент
+                        if processed_content_parts.index(part) > 0:
+                             self.chat_window.insert(tk.END, "\n")
                         self.chat_window.image_create(tk.END, image=part["content"])
                         self.chat_window.insert(tk.END, "\n") # Добавляем перенос строки после изображения
                 self.chat_window.insert(tk.END, "\n\n") # Добавляем два переноса строки после сообщения ассистента
@@ -1524,15 +1537,33 @@ class ChatGUI:
             {'label': _('Температура', 'Temperature'), 'key': 'MODEL_TEMPERATURE',
              'type': 'entry', 'default': 0.5, 'validation': self.validate_float_0_to_2,
              'tooltip': _('Креативность ответа (0.0 = строго, 2.0 = очень творчески)',
+                           'Creativity of response (0.0 = strict, 2.0 = very creative)')},
+
+            {'label': _('Настройки ожидания', 'Waiting settings'), 'type': 'text'},
+            {'label': _('Время ожидания текста (сек)', 'Text waiting time (sec)'),
+             'key': 'TEXT_WAIT_TIME', 'type': 'entry', 'default': 40,
+             'tooltip': _('время ожидания ответа', 'response waiting time')},
+            {'label': _('Время ожидания звука (сек)', 'Voice waiting time (sec)'),
+             'key': 'VOICE_WAIT_TIME', 'type': 'entry', 'default': 40,
+             'tooltip': _('время ожидания озвучки', 'voice generation waiting time')},
+
+            {'label': _('Настройки генерации текста', 'Text Generation Settings'), 'type': 'text'},
+            {'label': _('Макс. токенов в ответе', 'Max response tokens'), 'key': 'MODEL_MAX_RESPONSE_TOKENS',
+             'type': 'entry', 'default': 2500, 'validation': self.validate_positive_integer,
+             'tooltip': _('Максимальное количество токенов в ответе модели',
+                          'Maximum number of tokens in the model response')},
+            {'label': _('Температура', 'Temperature'), 'key': 'MODEL_TEMPERATURE',
+             'type': 'entry', 'default': 0.5, 'validation': self.validate_float_0_to_2,
+             'tooltip': _('Креативность ответа (0.0 = строго, 2.0 = очень творчески)',
                           'Creativity of response (0.0 = strict, 2.0 = very creative)')},
 
-            {'label': _('Использовать Top-K', 'Use Top-K'), 'key': 'USE_MODEL_TOP_K',
+             {'label': _('Использовать Top-K', 'Use Top-K'), 'key': 'USE_MODEL_TOP_K',
              'type': 'checkbutton', 'default_checkbutton': self.settings.get('USE_MODEL_TOP_K', True),
              'tooltip': _('Включает/выключает параметр Top-K', 'Enables/disables Top-K parameter')},
-            {'label': _('Top-K', 'Top-K'), 'key': 'MODEL_TOP_K',
+             {'label': _('Top-K', 'Top-K'), 'key': 'MODEL_TOP_K',
              'type': 'entry', 'default': 0, 'validation': self.validate_positive_integer_or_zero, 'width': 30,
              'tooltip': _('Ограничивает выбор токенов K наиболее вероятными (0 = отключено)',
-                          'Limits token selection to K most likely (0 = disabled)')},
+                           'Limits token selection to K most likely (0 = disabled)')},
 
             {'label': _('Использовать Top-P', 'Use Top-P'), 'key': 'USE_MODEL_TOP_P',
              'type': 'checkbutton', 'default_checkbutton': self.settings.get('USE_MODEL_TOP_P', True),
@@ -1751,9 +1782,11 @@ class ChatGUI:
 
             cost = self.model.calculate_cost_for_current_context() # Предполагаем, что этот метод существует или будет создан
 
+            max_model_tokens = self.model.get_max_model_tokens()
+
             self.token_count_label.config(
-                text=_("Токены: {}/{} | Ориент. стоимость: {:.4f} ₽", "Tokens: {}/{} | Approx. cost: {:.4f} ₽").format(
-                    current_context_tokens, 5000, cost
+                text=_("Токены: {}/{} (Макс. токены: {}) | Ориент. стоимость: {:.4f} ₽", "Tokens: {}/{} (Max tokens: {}) | Approx. cost: {:.4f} ₽").format(
+                    current_context_tokens, max_model_tokens, max_model_tokens, cost
                 )
             )
         else:

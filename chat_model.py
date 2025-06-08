@@ -99,6 +99,19 @@ class ChatModel:
 
         self.infos_to_add_to_history: List[Dict] = []  # For temporary system messages to be added to history
 
+        # Mapping of model names to their token limits
+        self._model_token_limits: Dict[str, int] = {
+            "gpt-4o-mini": 128000,
+            "gpt-4o": 128000,
+            "gpt-4-turbo": 128000,
+            "gpt-4": 8192,
+            "gpt-3.5-turbo": 16385,
+            "gemini-1.5-flash": 1000000, # Примерный лимит для Gemini 1.5 Flash
+            "gemini-1.5-pro": 1000000,   # Примерный лимит для Gemini 1.5 Pro
+            "gemini-pro": 32768,        # Примерный лимит для Gemini Pro
+            # Добавьте другие модели по мере необходимости
+        }
+
         self.init_characters()
         self.HideAiData = True  # Unused?
         self.max_request_attempts = int(self.gui.settings.get("MODEL_MESSAGE_ATTEMPTS_COUNT", 5))
@@ -471,7 +484,23 @@ class ChatModel:
                 # остаётся processed_response_text
 
             # 9. Сохраняем историю / TTS --------------------------------------------------
-            assistant_message = {"role": "assistant", "content": final_response_text}
+            assistant_message_content = final_response_text
+
+            # Проверяем настройку замены изображений заглушками
+            if bool(self.gui.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
+                logger.info("Настройка REPLACE_IMAGES_WITH_PLACEHOLDERS включена. Заменяю изображения заглушками.")
+                # Здесь предполагается, что final_response_text - это строка.
+                # Если модель может возвращать изображения в ответе, нужно будет адаптировать эту логику.
+                # Пока что просто добавляем заглушку, если в ответе есть что-то похожее на изображение (хотя модель не должна их генерировать в текстовом ответе).
+                # В будущем, если модель сможет генерировать изображения, нужно будет обрабатывать мультимодальный контент и здесь.
+                # Для текущей реализации, где модель возвращает только текст, эта заглушка не сработает для изображений,
+                # но она готова к будущим изменениям, если модель начнет возвращать структурированный контент с изображениями.
+                # Пока что, если в ответе есть URL или base64, мы можем это заменить.
+                # Это очень грубая эвристика для текстового ответа.
+                assistant_message_content = re.sub(r'https?://\S+\.(?:png|jpg|jpeg|gif|bmp)|data:image/\S+;base64,\S+', '[Изображение]', assistant_message_content)
+
+
+            assistant_message = {"role": "assistant", "content": assistant_message_content}
 
             if user_message_for_history:
                 llm_messages_history.append(user_message_for_history)
@@ -1001,6 +1030,19 @@ class ChatModel:
         logger.info(f"Queued temporary system info: {content[:100]}...")
 
     # region TokensCounting
+    def get_max_model_tokens(self) -> int:
+        """
+        Возвращает максимальное количество токенов для текущей активной модели.
+        """
+        current_model = self.api_model
+        if bool(self.gui.settings.get("gpt4free")):
+            current_model = self.gpt4free_model
+        elif bool(self.gui.settings.get("NM_API_REQ", False)):
+            current_model = self.gui.settings.get("NM_API_MODEL")
+
+        # Возвращаем лимит из маппинга, или дефолтное значение (например, 4096), если модель не найдена
+        return self._model_token_limits.get(current_model, 4096)
+
     def get_current_context_token_count(self) -> int:
         """
         Считает количество токенов в текущем контексте, который будет отправлен в LLM.
