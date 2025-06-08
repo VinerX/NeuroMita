@@ -85,7 +85,8 @@ class ChatModel:
         self.image_quality_reduction_enabled = bool(self.gui.settings.get("IMAGE_QUALITY_REDUCTION_ENABLED", False))
         self.image_quality_reduction_start_index = int(self.gui.settings.get("IMAGE_QUALITY_REDUCTION_START_INDEX", 25))
         self.image_quality_reduction_use_percentage = bool(self.gui.settings.get("IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE", False))
-        self.image_quality_reduction_min_quality = int(self.gui.settings.get("IMAGE_QUALITY_REDUCTION_MIN_QUALITY", 30))
+        min_quolity = self.gui.settings.get("IMAGE_QUALITY_REDUCTION_MIN_QUALITY", 30)
+        self.image_quality_reduction_min_quality = int(min_quolity) if min_quolity!='' else 30
         self.image_quality_reduction_decrease_rate = int(self.gui.settings.get("IMAGE_QUALITY_REDUCTION_DECREASE_RATE", 5))
 
 

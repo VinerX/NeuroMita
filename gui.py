@@ -25,6 +25,7 @@ import asyncio
 import threading
 
 import binascii
+import re # Импортируем модуль регулярных выражений
 
 import tkinter as tk
 from tkinter import ttk
@@ -468,6 +469,11 @@ class ChatGUI:
         self.user_input = ""
         self.user_entry.delete(1.0, 'end')
 
+    def on_enter_pressed(self, event):
+        """Обработчик нажатия клавиши Enter в поле ввода."""
+        self.send_message()
+        return 'break' # Предотвращаем вставку новой строки
+
     def start_server(self):
         """Запускает сервер в отдельном потоке."""
         if not self.running:
@@ -519,10 +525,43 @@ class ChatGUI:
         self.chat_window.tag_configure("Mita", foreground="hot pink", font=("Arial", 12, "bold"))
         self.chat_window.tag_configure("Player", foreground="gold", font=("Arial", 12, "bold"))
         self.chat_window.tag_configure("System", foreground="white", font=("Arial", 12, "bold"))
+        # Добавляем новые стили для тегов
+        self.chat_window.tag_configure("bold", font=("Arial", 12, "bold"))
+        self.chat_window.tag_configure("italic", font=("Arial", 12, "italic"))
+        # Стили для цветов будут добавляться динамически
+
+        # Фрейм для кнопок над чатом
+        button_frame_above_chat = tk.Frame(left_frame, bg="#1e1e1e")
+        button_frame_above_chat.grid(row=0, column=0, sticky="nw", padx=10, pady=(10, 0)) # Размещаем над чатом
+
+        self.clear_chat_button = tk.Button(
+            button_frame_above_chat, text=_("Очистить", "Clear"), command=self.clear_chat_display,
+            bg="#8a2be2", fg="#ffffff", font=("Arial", 10), padx=2, pady=2 # Уменьшаем размер шрифта и отступы
+        )
+        self.clear_chat_button.pack(side=tk.LEFT, padx=(0, 5), pady=5) # Размещаем слева
+
+        self.load_history_button = tk.Button(
+            button_frame_above_chat, text=_("Взять из истории", "Load from history"), command=self.load_chat_history,
+            bg="#8a2be2", fg="#ffffff", font=("Arial", 10), padx=2, pady=2 # Уменьшаем размер шрифта и отступы
+        )
+        self.load_history_button.pack(side=tk.LEFT, padx=(0, 5), pady=5) # Размещаем слева
+
+        # Чат - верхняя часть (растягивается)
+        self.chat_window = tk.Text(
+            left_frame, height=30, width=40, state=tk.NORMAL,
+            bg="#151515", fg="#ffffff", insertbackground="white", wrap=tk.WORD,
+            font=("Arial", 12)
+        )
+        self.chat_window.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 0)) # Сдвигаем чат на вторую строку
+
+        # Добавляем стили
+        self.chat_window.tag_configure("Mita", foreground="hot pink", font=("Arial", 12, "bold"))
+        self.chat_window.tag_configure("Player", foreground="gold", font=("Arial", 12, "bold"))
+        self.chat_window.tag_configure("System", foreground="white", font=("Arial", 12, "bold"))
 
         # Инпут - нижняя часть (фиксированная высота)
         input_frame = tk.Frame(left_frame, bg="#2c2c2c")
-        input_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=(20, 10))  # pady=(20, 10) — отступ сверху 20px
+        input_frame.grid(row=2, column=0, sticky="ew", padx=5, pady=(20, 10))  # Сдвигаем инпут на третью строку
 
         # Метка для отображения количества токенов
         self.token_count_label = tk.Label(
@@ -539,24 +578,13 @@ class ChatGUI:
             insertbackground="white", font=("Arial", 12)
         )
         self.user_entry.pack(side=tk.TOP, fill=tk.X, expand=True, padx=5, pady=(0, 5))
+        self.user_entry.bind("<Return>", self.on_enter_pressed) # Добавляем обработчик нажатия Enter
 
         self.send_button = tk.Button(
             input_frame, text=_("Отправить", "Send"), command=self.send_message,
             bg="#9370db", fg="#ffffff", font=("Arial", 12)
         )
         self.send_button.pack(side=tk.RIGHT, padx=5, pady=(0, 5)) # Размещаем справа от поля ввода
-
-        self.clear_chat_button = tk.Button(
-            input_frame, text=_("Очистить", "Clear"), command=self.clear_chat_display,
-            bg="#8a2be2", fg="#ffffff", font=("Arial", 12)
-        )
-        self.clear_chat_button.pack(side=tk.RIGHT, padx=5, pady=(0, 5)) # Размещаем справа от "Отправить"
-
-        self.load_history_button = tk.Button(
-            input_frame, text=_("Взять из истории (по текущему персонажу)", "Load from history (current character)"), command=self.load_chat_history,
-            bg="#8a2be2", fg="#ffffff", font=("Arial", 12)
-        )
-        self.load_history_button.pack(side=tk.LEFT, padx=(0, 5), pady=(0, 5)) # Размещаем слева от поля ввода
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -654,6 +682,7 @@ class ChatGUI:
         if os.environ.get("ENABLE_COMMAND_REPLACER_BY_DEFAULT", "0") == "1":
             self.setup_command_replacer_controls(settings_frame)
 
+        self.setup_chat_settings_controls(settings_frame) # Новая секция для настроек чата
         self.setup_screen_analysis_controls(settings_frame)  # Новая секция для анализа экрана
 
         self.setup_news_control(settings_frame)
@@ -719,58 +748,147 @@ class ChatGUI:
         else:
             return
 
+            # Обработка тегов в текстовом содержимом
+        processed_text_parts = []
+
+        for part in processed_content_parts:
+            if part["type"] == "text":
+                text_content = part["content"]
+                # Регулярное выражение для поиска тегов [b]...[/b], [i]...[/i] и [color=...]...[/color]
+                # Оно ищет открывающий тег, захватывает содержимое (нежадно), и ищет соответствующий закрывающий тег.
+                # Для color тега захватывается значение цвета.
+                matches = list(
+                    re.finditer(r'\[b\](.*?)\[\/b\]|\[i\](.*?)\[\/i\]|\[color=(.*?)\](.*?)\[\/color\]', text_content))
+
+                last_end = 0
+                for match in matches:
+                    start, end = match.span()
+                    # Добавляем текст до совпадения
+                    if start > last_end:
+                        processed_text_parts.append({"type": "text", "content": text_content[last_end:start]})
+
+                    # Обрабатываем совпадение
+                    if match.group(1) is not None:  # Жирный текст
+                        processed_text_parts.append({"type": "text", "content": match.group(1), "tag": "bold"})
+                    elif match.group(2) is not None:  # Курсивный текст
+                        processed_text_parts.append({"type": "text", "content": match.group(2), "tag": "italic"})
+                    elif match.group(3) is not None and match.group(4) is not None:  # Цветной текст
+                        color = match.group(3)
+                        colored_text = match.group(4)
+                        tag_name = f"color_{color.replace('#', '').replace(' ', '_')}"  # Создаем имя тега на основе цвета
+                        # Проверяем, существует ли уже такой тег, если нет - создаем
+                        if tag_name not in self.chat_window.tag_names():
+                            try:
+                                self.chat_window.tag_configure(tag_name, foreground=color)
+                            except tk.TclError:
+                                logger.warning(f"Неверный формат цвета: {color}. Использование цвета по умолчанию.")
+                                tag_name = "Mita"  # Фоллбэк на стандартный цвет Миты
+                        processed_text_parts.append({"type": "text", "content": colored_text, "tag": tag_name})
+
+                    last_end = end
+
+                # Добавляем оставшийся текст после последнего совпадения
+                if last_end < len(text_content):
+                    processed_text_parts.append({"type": "text", "content": text_content[last_end:]})
+            else:
+                # Если это не текстовая часть (например, изображение), добавляем как есть
+                processed_text_parts.append(part)
+
         # Вставка сообщений
         if insert_at_start:
             if role == "user":
                 self.chat_window.insert(1.0, "\n")
-                for part in reversed(processed_content_parts):
+                for part in reversed(processed_text_parts):
                     if part["type"] == "text":
-                        self.chat_window.insert(1.0, part["content"])
+                        tag = part.get("tag", "Player") if part.get("tag") else "Player"
+                        self.chat_window.insert(1.0, part["content"], tag)
                     elif part["type"] == "image":
-                        # Добавляем перенос строки перед изображением, если это не первый элемент
-                        if processed_content_parts.index(part) > 0:
-                             self.chat_window.insert(1.0, "\n")
                         self.chat_window.image_create(1.0, image=part["content"])
-                        self.chat_window.insert(1.0, "\n") # Добавляем перенос строки после изображения
+                        self.chat_window.insert(1.0, "\n")  # Добавляем перенос строки после изображения
                 self.chat_window.insert(1.0, _("Вы: ", "You: "), "Player")
             elif role == "assistant":
                 self.chat_window.insert(1.0, "\n\n")
-                for part in reversed(processed_content_parts):
+                for part in reversed(processed_text_parts):
                     if part["type"] == "text":
-                        self.chat_window.insert(1.0, part["content"])
+                        tag = part.get("tag", "Mita") if part.get("tag") else "Mita"
+                        self.chat_window.insert(1.0, part["content"], tag)
                     elif part["type"] == "image":
-                         # Добавляем перенос строки перед изображением, если это не первый элемент
-                        if processed_content_parts.index(part) > 0:
-                             self.chat_window.insert(1.0, "\n")
                         self.chat_window.image_create(1.0, image=part["content"])
-                        self.chat_window.insert(1.0, "\n") # Добавляем перенос строки после изображения
+                        self.chat_window.insert(1.0, "\n")  # Добавляем перенос строки после изображения
                 self.chat_window.insert(1.0, f"{self.model.current_character.name}: ", "Mita")
         else:
             if role == "user":
                 self.chat_window.insert(tk.END, _("Вы: ", "You: "), "Player")
-                for part in processed_content_parts:
+                for part in processed_text_parts:
                     if part["type"] == "text":
-                        self.chat_window.insert(tk.END, part["content"])
+                        tag = part.get("tag", "Player") if part.get("tag") else "Player"
+                        self.chat_window.insert(tk.END, part["content"], tag)
                     elif part["type"] == "image":
-                        # Добавляем перенос строки перед изображением, если это не первый элемент
-                        if processed_content_parts.index(part) > 0:
-                             self.chat_window.insert(tk.END, "\n")
                         self.chat_window.image_create(tk.END, image=part["content"])
-                        self.chat_window.insert(tk.END, "\n") # Добавляем перенос строки после изображения
-                self.chat_window.insert(tk.END, "\n") # Добавляем перенос строки после сообщения пользователя
+                        self.chat_window.insert(tk.END, "\n")  # Добавляем перенос строки после изображения
+                self.chat_window.insert(tk.END, "\n")
             elif role == "assistant":
                 self.chat_window.insert(tk.END, f"{self.model.current_character.name}: ", "Mita")
-                for part in processed_content_parts:
+                for part in processed_text_parts:
                     if part["type"] == "text":
-                        self.chat_window.insert(tk.END, part["content"])
+                        tag = part.get("tag", "Mita") if part.get("tag") else "Mita"
+                        self.chat_window.insert(tk.END, part["content"], tag)
                     elif part["type"] == "image":
-                        # Добавляем перенос строки перед изображением, если это не первый элемент
-                        # Добавляем перенос строки перед изображением, если это не первый элемент
-                        if processed_content_parts.index(part) > 0:
-                             self.chat_window.insert(tk.END, "\n")
                         self.chat_window.image_create(tk.END, image=part["content"])
-                        self.chat_window.insert(tk.END, "\n") # Добавляем перенос строки после изображения
-                self.chat_window.insert(tk.END, "\n\n") # Добавляем два переноса строки после сообщения ассистента
+                        self.chat_window.insert(tk.END, "\n")  # Добавляем перенос строки после изображения
+                self.chat_window.insert(tk.END, "\n\n")
+
+            # Вставка сообщений
+        if insert_at_start:
+            if role == "user":
+                if insert_at_start:
+                    self.chat_window.insert(1.0, "\n")
+                    for part in reversed(processed_content_parts):
+                        if part["type"] == "text":
+                            self.chat_window.insert(1.0, part["content"])
+                        elif part["type"] == "image":
+                            if processed_content_parts.index(part) > 0:
+                                self.chat_window.insert(1.0, "\n")
+                            self.chat_window.image_create(1.0, image=part["content"])
+                            self.chat_window.insert(1.0, "\n")
+                    self.chat_window.insert(1.0, _("Вы: ", "You: "), "Player")
+                else:
+                    self.chat_window.insert(tk.END, _("Вы: ", "You: "), "Player")
+                    for part in processed_content_parts:
+                        if part["type"] == "text":
+                            self.chat_window.insert(tk.END, part["content"])
+                        elif part["type"] == "image":
+                            if processed_content_parts.index(part) > 0:
+                                self.chat_window.insert(tk.END, "\n")
+                            self.chat_window.image_create(tk.END, image=part["content"])
+                            self.chat_window.insert(tk.END, "\n")
+                    self.chat_window.insert(tk.END, "\n")
+            elif role == "assistant":
+                if insert_at_start:
+                    self.chat_window.insert(1.0, "\n\n")
+                    for part in reversed(processed_content_parts):
+                        if part["type"] == "text":
+                            self.chat_window.insert(1.0, part["content"])
+                        elif part["type"] == "image":
+                            if processed_content_parts.index(part) > 0:
+                                self.chat_window.insert(1.0, "\n")
+                            self.chat_window.image_create(1.0, image=part["content"])
+                            self.chat_window.insert(1.0, "\n")
+                    self.chat_window.insert(1.0, f"{self.model.current_character.name}: ", "Mita")
+                else:
+                    self.chat_window.insert(tk.END, f"{self.model.current_character.name}: ", "Mita")
+                    for part in processed_content_parts:
+                        if part["type"] == "text":
+                            self.chat_window.insert(tk.END, part["content"])
+                        elif part["type"] == "image":
+                            if processed_content_parts.index(part) > 0:
+                                self.chat_window.insert(tk.END, "\n")
+                            self.chat_window.image_create(tk.END, image=part["content"])
+                            self.chat_window.insert(tk.END, "\n")
+                    self.chat_window.insert(tk.END, "\n\n")
+
+            # Автоматическая прокрутка вниз после вставки сообщения
+        self.chat_window.see(tk.END)
 
     # region секция g4f
     def _check_and_perform_pending_update(self):
@@ -1100,6 +1218,9 @@ class ChatGUI:
         self.update_debug_info()
         self.update_token_count() # Вызываем после загрузки истории
         self.update_token_count() # Вызываем после загрузки истории
+
+        # Автоматическая прокрутка вниз после загрузки истории
+        self.chat_window.see(tk.END)
 
     #region SetupControls
 
@@ -1601,6 +1722,27 @@ class ChatGUI:
                                      _("Общие настройки моделей", "General settings for models"),
                                      general_config)
 
+    # region Chat Settings
+    def setup_chat_settings_controls(self, parent):
+        """Создает секцию настроек специально для чата."""
+        chat_settings_config = [
+            {'label': _('Размер шрифта чата', 'Chat Font Size'), 'key': 'CHAT_FONT_SIZE', 'type': 'entry',
+             'default': 12, 'validation': self.validate_positive_integer,
+             'tooltip': _('Размер шрифта в окне чата.', 'Font size in the chat window.')},
+            {'label': _('Показывать метки времени', 'Show Timestamps'), 'key': 'SHOW_CHAT_TIMESTAMPS',
+             'type': 'checkbutton', 'default_checkbutton': False,
+             'tooltip': _('Показывать метки времени рядом с сообщениями в чате.', 'Show timestamps next to messages in chat.')},
+            {'label': _('Макс. сообщений в истории', 'Max Messages in History'), 'key': 'MAX_CHAT_HISTORY_DISPLAY',
+             'type': 'entry', 'default': 100, 'validation': self.validate_positive_integer,
+             'tooltip': _('Максимальное количество сообщений, отображаемых в окне чата.', 'Maximum number of messages displayed in the chat window.')},
+        ]
+
+        self.create_settings_section(parent,
+                                     _("Настройки чата", "Chat Settings"),
+                                     chat_settings_config)
+
+    # endregion
+
     # region Validation
     def validate_number_0_60(self, new_value):
         if not new_value.isdigit():  # Проверяем, что это число
@@ -1621,9 +1763,9 @@ class ChatGUI:
         except ValueError:
             return False
 
-    def save_api_settings(self):
-        """Собирает данные из полей ввода и сохраняет только непустые значения, не перезаписывая существующие."""
-
+    
+        def save_api_settings(self):
+            """Собирает данные из полей ввода и сохраняет только непустые значения, не перезаписывая существующие."""
     # Добавьте функции валидации в ChatGUI
     def validate_positive_integer(self, new_value):
         if new_value == "": return True  # Разрешаем пустое поле временно
@@ -1777,27 +1919,27 @@ class ChatGUI:
             )
         self.update_debug_info()
 
-    def insertDialog(self, input_text="", response="", system_text=""):
-        MitaName = self.model.current_character.name
-
-        if input_text != "":
-            self.chat_window.insert(tk.END, "Вы: ", "Player")
-            self.chat_window.insert(tk.END, f"{input_text}\n")
-        if system_text != "":
-            self.chat_window.insert(tk.END, f"System to {MitaName}: ", "System")
-            self.chat_window.insert(tk.END, f"{system_text}\n\n")
-        if response != "":
-            self.chat_window.insert(tk.END, f"{MitaName}: ", "Mita")
-            self.chat_window.insert(tk.END, f"{response}\n\n")
+    
+        def insertDialog(self, input_text="", response="", system_text=""):
+            MitaName = self.model.current_character.name
+            if input_text != "":
+                self.chat_window.insert(tk.END, "Вы: ", "Player")
+                self.chat_window.insert(tk.END, f"{input_text}\n")
+            if system_text != "":
+                self.chat_window.insert(tk.END, f"System to {MitaName}: ", "System")
+                self.chat_window.insert(tk.END, f"{system_text}\n\n")
+            if response != "":
+                self.chat_window.insert(tk.END, f"{MitaName}: ", "Mita")
+                self.chat_window.insert(tk.END, f"{response}\n\n")
 
     def clear_chat_display(self):
         """Очищает отображаемую историю чата в GUI."""
         self.chat_window.delete(1.0, tk.END)
         logger.info("Отображаемая история чата очищена.")
 
+    
     def send_message(self, system_input: str = "", image_data: list[bytes] = None):
         user_input = self.user_entry.get("1.0", "end-1c").strip()  # Убираем пробелы сразу
-
         # Если включен анализ экрана, пытаемся получить последние кадры
         current_image_data = []
         if self.settings.get("ENABLE_SCREEN_ANALYSIS", False):
@@ -2384,6 +2526,22 @@ class ChatGUI:
             self.model.image_quality_reduction_min_quality = int(value)
         elif key == "IMAGE_QUALITY_REDUCTION_DECREASE_RATE":
             self.model.image_quality_reduction_decrease_rate = int(value)
+
+        # Handle chat specific settings keys
+        if key == "CHAT_FONT_SIZE":
+            try:
+                font_size = int(value)
+                # Update the font size of the chat window
+                self.chat_window.config(font=("Arial", font_size))
+                logger.info(f"Размер шрифта чата изменен на: {font_size}")
+            except ValueError:
+                logger.warning(f"Неверное значение для размера шрифта чата: {value}")
+        elif key == "SHOW_CHAT_TIMESTAMPS":
+            # This setting would require modifying the message insertion logic
+            logger.info(f"Настройка 'Показывать метки времени' изменена на: {value}. Требуется реализация логики отображения.")
+        elif key == "MAX_CHAT_HISTORY_DISPLAY":
+             logger.info(f"Настройка 'Макс. сообщений в истории' изменена на: {value}. Требуется реализация логики ограничения истории.")
+
 
         # logger.info(f"Настройки изменены: {key} = {value}")
 
