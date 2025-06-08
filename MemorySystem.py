@@ -36,7 +36,7 @@ class MemorySystem:
         if not self.memories:
             new_id = 1
         else:
-            new_id = max(memory['id'] for memory in self.memories) + 1
+            new_id = max(memory['N'] for memory in self.memories) + 1
 
         memory = {
             "N": new_id,
