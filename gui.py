@@ -214,8 +214,6 @@ class ChatGUI:
         SpeechRecognition.set_recognizer_type(initial_recognizer_type)
         SpeechRecognition.vosk_model = initial_vosk_model
 
-        SpeechRecognition.speach_recognition_start(self.device_id, self.loop)
-
         # Запуск проверки переменной textToTalk через after
         self.root.after(150, self.check_text_to_talk_or_send)
 
@@ -2058,7 +2056,12 @@ class ChatGUI:
             self.model.request_delay = float(value)
 
         elif key == "MIC_ACTIVE":
-            SpeechRecognition.active = bool(value)
+            if bool(value):
+                # Запускаем распознавание, если оно активировано
+                SpeechRecognition.speach_recognition_start(self.device_id, self.loop)
+            else:
+                # Останавливаем распознавание, если оно деактивировано
+                SpeechRecognition.speach_recognition_stop()
 
         elif key == "ENABLE_SCREEN_ANALYSIS":
             if bool(value):
