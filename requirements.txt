@@ -71,6 +71,7 @@ nodriver
 platformdirs
 dotenv
 onnxruntime
+win32gui
 # atm4x reqs
 
 pywin32

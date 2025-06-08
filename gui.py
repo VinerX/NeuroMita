@@ -1321,6 +1321,16 @@ class ChatGUI:
              'default': 20.0, 'validation': self.validate_float_positive,
              'tooltip': _('Интервал между автоматической отправкой запросов с изображениями в секундах (минимум 1.0).',
                           'Interval between automatic sending of image requests in seconds (minimum 1.0).')},
+            {'label': _('Исключить окно GUI из захвата', 'Exclude GUI Window from Capture'), 'key': 'EXCLUDE_GUI_WINDOW',
+             'type': 'checkbutton',
+             'default_checkbutton': False,
+             'tooltip': _('Если включено, окно NeuroMita GUI будет исключено из захвата экрана.',
+                          'If enabled, the NeuroMita GUI window will be excluded from capture.')},
+            {'label': _('Заголовок исключаемого окна', 'Excluded Window Title'), 'key': 'EXCLUDE_WINDOW_TITLE',
+             'type': 'entry',
+             'default': '',
+             'tooltip': _('Заголовок окна, которое нужно исключить из захвата (оставьте пустым для GUI).',
+                          'Title of the window to exclude from capture (leave empty for GUI).')},
         ]
         self.create_settings_section(parent,
                                      _("Настройки анализа экрана", "Screen Analysis Settings"),
@@ -2078,6 +2088,40 @@ class ChatGUI:
             else:
                 logger.info(
                     f"Настройка интервала запросов изображений изменена на '{value}'. Таймер не активен, изменения будут применены при следующем запуске.")
+        elif key in ["EXCLUDE_GUI_WINDOW", "EXCLUDE_WINDOW_TITLE"]:
+            # Получаем текущие значения настроек
+            exclude_gui = self.settings.get("EXCLUDE_GUI_WINDOW", False)
+            exclude_title = self.settings.get("EXCLUDE_WINDOW_TITLE", "")
+
+            hwnd_to_pass = None
+            if exclude_gui:
+                # Если включено исключение GUI, получаем HWND текущего окна Tkinter
+                hwnd_to_pass = self.root.winfo_id()
+                logger.info(f"Получен HWND окна GUI для исключения: {hwnd_to_pass}")
+            elif exclude_title:
+                # Если указан заголовок, пытаемся найти HWND по заголовку
+                try:
+                    hwnd_to_pass = win32gui.FindWindow(None, exclude_title)
+                    if hwnd_to_pass:
+                        logger.info(f"Найден HWND для заголовка '{exclude_title}': {hwnd_to_pass}")
+                    else:
+                        logger.warning(f"Окно с заголовком '{exclude_title}' не найдено.")
+                except Exception as e:
+                    logger.error(f"Ошибка при поиске окна по заголовку '{exclude_title}': {e}")
+
+            # Передаем параметры в ScreenCapture
+            if self.screen_capture_instance:
+                self.screen_capture_instance.set_exclusion_parameters(hwnd_to_pass, exclude_title, exclude_gui or bool(exclude_title))
+                logger.info(f"Параметры исключения окна переданы в ScreenCapture: exclude_gui={exclude_gui}, exclude_title='{exclude_title}'")
+
+            # Если поток захвата экрана запущен, перезапускаем его с новыми настройками
+            if self.screen_capture_instance and self.screen_capture_instance.is_running():
+                logger.info(f"Настройка исключения окна '{key}' изменена на '{value}'. Перезапускаю поток захвата.")
+                self.stop_screen_capture_thread()
+                self.start_screen_capture_thread()
+            else:
+                logger.info(
+                    f"Настройка исключения окна '{key}' изменена на '{value}'. Поток захвата не активен, изменения будут применены при следующем запуске.")
         elif key == "RECOGNIZER_TYPE":
             # Останавливаем текущее распознавание
             SpeechRecognition.active = False

@@ -4,6 +4,8 @@ import numpy as np
 import time
 import threading
 from Logger import logger
+import win32gui
+import win32con
 
 class ScreenCapture:
     def __init__(self):
@@ -21,6 +23,9 @@ class ScreenCapture:
         self._lock = threading.Lock() # Мьютекс для потокобезопасного доступа к данным
         self._error_count = 0 # Счетчик ошибок
         self._max_errors = 5 # Максимальное количество ошибок перед остановкой
+        self.hwnd_to_exclude = None # HWND окна, которое нужно исключить из захвата
+        self.window_title_to_exclude = None # Заголовок окна, которое нужно исключить
+        self.exclude_gui_window = False # Флаг для исключения окна GUI
     def _ensure_pil_installed(self):
         """Проверяет наличие Pillow и устанавливает при необходимости."""
         if self._pil_checked:
@@ -124,6 +129,39 @@ class ScreenCapture:
                     img = Image.frombytes("RGB", (sct_img.width, sct_img.height),
                                           sct_img.rgb)  # Используем sct_img.width, sct_img.height
 
+                    # Если включено исключение окна GUI
+                    if self.exclude_gui_window and self.hwnd_to_exclude:
+                        try:
+                            # Получаем координаты окна по его HWND
+                            left, top, right, bottom = win32gui.GetWindowRect(self.hwnd_to_exclude)
+                            # Определяем размеры окна
+                            width = right - left
+                            height = bottom - top
+
+                            # Создаем черное изображение размером с окно
+                            # Используем 'RGB' режим для совместимости с основным изображением
+                            black_patch = Image.new('RGB', (width, height), (0, 0, 0))
+
+                            # Вставляем черное изображение на захваченный кадр
+                            # Координаты вставки должны быть относительно верхнего левого угла захваченного монитора
+                            # monitor_to_capture['left'] и monitor_to_capture['top'] - это смещение монитора
+                            # относительно виртуального экрана (всех мониторов).
+                            # Поэтому нужно вычесть их из абсолютных координат окна.
+                            paste_x = left - monitor_to_capture['left']
+                            paste_y = top - monitor_to_capture['top']
+
+                            # Убедимся, что координаты вставки находятся в пределах изображения
+                            if 0 <= paste_x < img.width and 0 <= paste_y < img.height:
+                                img.paste(black_patch, (paste_x, paste_y))
+                                logger.debug(f"Окно GUI (HWND: {self.hwnd_to_exclude}) исключено из захвата.")
+                            else:
+                                logger.warning(f"Координаты окна GUI ({left},{top},{right},{bottom}) вне захваченной области монитора ({monitor_to_capture}). Исключение не применено.")
+                        except Exception as e:
+                            logger.error(f"Ошибка при исключении окна GUI из захвата: {e}", exc_info=True)
+                    elif self.exclude_gui_window and not self.hwnd_to_exclude:
+                        logger.warning("exclude_gui_window включен, но HWND окна GUI не установлен.")
+
+
                     max_size = (self._capture_width, self._capture_height)
                     img.thumbnail(max_size, Image.Resampling.LANCZOS)
 
@@ -167,3 +205,16 @@ class ScreenCapture:
     def is_running(self) -> bool:
         with self._lock:
             return self._running
+
+    def set_exclusion_parameters(self, hwnd: int | None, title: str | None, exclude: bool):
+        """
+        Устанавливает параметры для исключения окна из захвата.
+        :param hwnd: HWND окна, которое нужно исключить. None, если исключение по заголовку.
+        :param title: Заголовок окна, которое нужно исключить. None, если исключение по HWND.
+        :param exclude: Флаг, указывающий, нужно ли исключать окно.
+        """
+        with self._lock:
+            self.hwnd_to_exclude = hwnd
+            self.window_title_to_exclude = title
+            self.exclude_gui_window = exclude
+            logger.info(f"Параметры исключения окна обновлены: HWND={hwnd}, Title='{title}', Exclude={exclude}")
