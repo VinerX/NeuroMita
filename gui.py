@@ -703,7 +703,7 @@ class ChatGUI:
             for item in content:
                 if isinstance(item, dict):
                     if item.get("type") == "text":
-                        processed_content_parts.append({"type": "text", "content": item.get("text", "")})
+                        processed_content_parts.append({"type": "text", "content": item.get("text", ""), "tag": "default"})
                     elif item.get("type") == "image_url":
                         image_data_base64 = item.get("image_url", {}).get("url", "")
                         if image_data_base64.startswith("data:image/jpeg;base64,"):
@@ -736,10 +736,10 @@ class ChatGUI:
                 
             if has_image_content and not any(part["type"] == "text" and part["content"].strip() for part in processed_content_parts):
                 # Если есть только изображения и нет текста, добавляем метку
-                processed_content_parts.insert(0, {"type": "text", "content": _("<Изображение экрана>", "<Screen Image>") + "\n"})
-
+                processed_content_parts.insert(0, {"type": "text", "content": _("<Изображение экрана>", "<Screen Image>") + "\n", "tag": "default"})
+ 
         elif isinstance(content, str):
-            processed_content_parts.append({"type": "text", "content": content})
+            processed_content_parts.append({"type": "text", "content": content, "tag": "default"})
         else:
             return
 
@@ -761,8 +761,9 @@ class ChatGUI:
                     # Регулярное выражение для поиска тегов <любое_имя>...</любое_имя>, <любое_имя>, [b]...[/b], [i]...[/i] и [color=...]...[/color]
                     # Регулярное выражение для поиска парных тегов <tag>...</tag>, одиночных открывающих тегов <tag>,
                     # а также [b]...[/b], [i]...[/i] и [color=...]...[/color]
+                    # Изменено: (\w+) заменено на ([^>]+) для поддержки тегов с символами, отличными от буквенно-цифровых
                     matches = list(
-                        re.finditer(r'(<(\w+)>)(.*?)(</\2>)|(<(\w+)>)|(\[b\](.*?)\[\/b\])|(\[i\](.*?)\[\/i\])|(\[color=(.*?)\](.*?)\[\/color\])', text_content))
+                        re.finditer(r'(<([^>]+)>)(.*?)(</\2>)|(<([^>]+)>)|(\[b\](.*?)\[\/b\])|(\[i\](.*?)\[\/i\])|(\[color=(.*?)\](.*?)\[\/color\])', text_content))
 
                     last_end = 0
                     for match in matches:
@@ -840,10 +841,7 @@ class ChatGUI:
             # (потому что insert(1.0, ...) вставляет в начало)
             for part in reversed(parts_to_insert_in_order):
                 if part["type"] == "text":
-                    if part.get("tag") == "default":
-                        self.chat_window.insert(1.0, part["content"])
-                    else:
-                        self.chat_window.insert(1.0, part["content"], part["tag"])
+                    self.chat_window.insert(1.0, part["content"], part.get("tag", "default"))
                 elif part["type"] == "image":
                     self.chat_window.image_create(1.0, image=part["content"])
                     self.chat_window.insert(1.0, "\n") # Добавляем перевод строки после изображения
@@ -854,10 +852,7 @@ class ChatGUI:
                 self.chat_window.insert(tk.END, _("Вы: ", "You: "), "Player")  # Имя персонажа подсвечивается
                 for part in processed_text_parts:
                     if part["type"] == "text":
-                        if part.get("tag") == "default":
-                            self.chat_window.insert(tk.END, part["content"])  # Обычный текст без тега
-                        else:
-                            self.chat_window.insert(tk.END, part["content"], part["tag"])
+                        self.chat_window.insert(tk.END, part["content"], part.get("tag", "default"))
                     elif part["type"] == "image":
                         self.chat_window.image_create(tk.END, image=part["content"])
                         self.chat_window.insert(tk.END, "\n")
@@ -868,10 +863,7 @@ class ChatGUI:
                 self.chat_window.insert(tk.END, f"{self.model.current_character.name}: ", "Mita")  # Имя персонажа подсвечивается
                 for part in processed_text_parts:
                     if part["type"] == "text":
-                        if part.get("tag") == "default":
-                            self.chat_window.insert(tk.END, part["content"])  # Обычный текст без тега
-                        else:
-                            self.chat_window.insert(tk.END, part["content"], part["tag"])
+                        self.chat_window.insert(tk.END, part["content"], part.get("tag", "default"))
                     elif part["type"] == "image":
                         self.chat_window.image_create(tk.END, image=part["content"])
                         self.chat_window.insert(tk.END, "\n")
