@@ -1640,10 +1640,15 @@ class ChatGUI:
              'tooltip': _('время ожидания озвучки', 'voice generation waiting time')},
 
             {'label': _('Настройки генерации текста', 'Text Generation Settings'), 'type': 'text'},
+
+            {'label': _('Использовать Макс.Токены', 'Use Max response tokens'), 'key': 'USE_MODEL_MAX_RESPONSE_TOKENS',
+             'type': 'checkbutton', 'default_checkbutton': self.settings.get('USE_MODEL_MAX_RESPONSE_TOKENS', True),
+             'tooltip': _('Включает/выключает параметр макс токены', 'Enables/disables max response tokens parameter')},
             {'label': _('Макс. токенов в ответе', 'Max response tokens'), 'key': 'MODEL_MAX_RESPONSE_TOKENS',
              'type': 'entry', 'default': 2500, 'validation': self.validate_positive_integer,
              'tooltip': _('Максимальное количество токенов в ответе модели',
                           'Maximum number of tokens in the model response')},
+
             {'label': _('Температура', 'Temperature'), 'key': 'MODEL_TEMPERATURE',
              'type': 'entry', 'default': 0.5, 'validation': self.validate_float_0_to_2,
              'tooltip': _('Креативность ответа (0.0 = строго, 2.0 = очень творчески)',

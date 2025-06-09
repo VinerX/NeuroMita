@@ -1311,7 +1311,7 @@ class ChatModel:
             params['temperature'] = self.temperature
 
         # Макс. токены - названия могут различаться
-        if self.max_response_tokens is not None:
+        if bool(self.gui.settings.get("USE_MODEL_MAX_RESPONSE_TOKENS")) and self.max_response_tokens is not None:
             if provider_key == 'openai' or provider_key == 'deepseek' or provider_key == 'anthropic':
                 params['max_tokens'] = self.max_response_tokens
             elif provider_key == 'gemini':
