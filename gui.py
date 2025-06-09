@@ -543,13 +543,16 @@ class ChatGUI:
         self.load_history_button.pack(side=tk.LEFT, padx=(0, 5), pady=5) # Размещаем слева
 
         # Добавляем стили
-        self.chat_window.tag_configure("Mita", foreground="hot pink", font=("Arial", 12, "bold"))
-        self.chat_window.tag_configure("tag_green", foreground="#00FF00", font=("Arial", 12))
-        self.chat_window.tag_configure("Player", foreground="gold", font=("Arial", 12, "bold"))
-        self.chat_window.tag_configure("System", foreground="white", font=("Arial", 12, "bold"))
-        self.chat_window.tag_configure("bold", font=("Arial", 12, "bold"))
-        self.chat_window.tag_configure("italic", font=("Arial", 12, "italic"))
-        self.chat_window.tag_configure("timestamp", foreground="#888888", font=("Arial", 10, "italic"))
+        # Получаем начальный размер шрифта из настроек
+        initial_font_size = int(self.settings.get("CHAT_FONT_SIZE", 12))
+        self.chat_window.tag_configure("default", font=("Arial", initial_font_size)) # Явно настраиваем тег "default"
+        self.chat_window.tag_configure("Mita", foreground="hot pink", font=("Arial", initial_font_size, "bold"))
+        self.chat_window.tag_configure("tag_green", foreground="#00FF00", font=("Arial", initial_font_size))
+        self.chat_window.tag_configure("Player", foreground="gold", font=("Arial", initial_font_size, "bold"))
+        self.chat_window.tag_configure("System", foreground="white", font=("Arial", initial_font_size, "bold"))
+        self.chat_window.tag_configure("bold", font=("Arial", initial_font_size, "bold"))
+        self.chat_window.tag_configure("italic", font=("Arial", initial_font_size, "italic"))
+        self.chat_window.tag_configure("timestamp", foreground="#888888", font=("Arial", initial_font_size - 2, "italic")) # Метка времени чуть меньше
         # Стили для цветов будут добавляться динамически
 
         # Инпут - нижняя часть (фиксированная высота)
