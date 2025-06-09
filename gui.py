@@ -2078,13 +2078,13 @@ class ChatGUI:
 
     def clear_history(self):
         self.model.current_character.clear_history()
-        self.chat_window.delete(1.0, tk.END)
+        self.clear_chat_display()
         self.update_debug_info()
 
     def clear_history_all(self):
         for character in self.model.characters.values():
             character.clear_history()
-        self.chat_window.delete(1.0, tk.END)
+        self.clear_chat_display()
         self.update_debug_info()
 
     def on_chat_scroll(self, event):
@@ -2094,13 +2094,11 @@ class ChatGUI:
 
         # Проверяем, прокрутил ли пользователь к началу
         if self.chat_window.yview()[0] == 0:
-            logger.info("Достигнуто начало чата, попытка загрузить больше истории.")
             self.load_more_history()
 
     def load_more_history(self):
         """Загружает предыдущие сообщения в чат."""
         if self.loaded_messages_offset >= self.total_messages_in_history:
-            logger.info("Все сообщения уже загружены.")
             return
 
         self.loading_more_history = True
