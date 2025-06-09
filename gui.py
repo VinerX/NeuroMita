@@ -495,6 +495,7 @@ class ChatGUI:
         while self.running:
             needUpdate = self.server.handle_connection()
             if needUpdate:
+                logger.info(f"[{time.strftime('%H:%M:%S')}] run_server_loop: Обнаружено needUpdate, вызываю load_chat_history.")
                 self.load_chat_history()
 
     def setup_ui(self):
@@ -514,26 +515,20 @@ class ChatGUI:
         left_frame.grid_columnconfigure(0, weight=1)
 
         # Чат - верхняя часть (растягивается)
+
+        # Фрейм для кнопок над чатом
+        button_frame_above_chat = tk.Frame(left_frame, bg="#1e1e1e")
+        button_frame_above_chat.grid(row=0, column=0, sticky="nw", padx=10, pady=(10, 0)) # Размещаем над чатом
+
+
+
+        # Чат - верхняя часть (растягивается)
         self.chat_window = tk.Text(
             left_frame, height=30, width=40, state=tk.NORMAL,
             bg="#151515", fg="#ffffff", insertbackground="white", wrap=tk.WORD,
             font=("Arial", 12)
         )
-        self.chat_window.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 0))
-
-        # Добавляем стили
-        self.chat_window.tag_configure("Mita", foreground="hot pink", font=("Arial", 12, "bold"))
-        self.chat_window.tag_configure("Player", foreground="gold", font=("Arial", 12, "bold"))
-        self.chat_window.tag_configure("System", foreground="white", font=("Arial", 12, "bold"))
-        # Добавляем новые стили для тегов
-        self.chat_window.tag_configure("bold", font=("Arial", 12, "bold"))
-        self.chat_window.tag_configure("italic", font=("Arial", 12, "italic"))
-        self.chat_window.tag_configure("timestamp", foreground="#888888", font=("Arial", 10, "italic"))
-        # Стили для цветов будут добавляться динамически
-
-        # Фрейм для кнопок над чатом
-        button_frame_above_chat = tk.Frame(left_frame, bg="#1e1e1e")
-        button_frame_above_chat.grid(row=0, column=0, sticky="nw", padx=10, pady=(10, 0)) # Размещаем над чатом
+        self.chat_window.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 0)) # Сдвигаем чат на вторую строку
 
         self.clear_chat_button = tk.Button(
             button_frame_above_chat, text=_("Очистить", "Clear"), command=self.clear_chat_display,
@@ -547,19 +542,14 @@ class ChatGUI:
         )
         self.load_history_button.pack(side=tk.LEFT, padx=(0, 5), pady=5) # Размещаем слева
 
-        # Чат - верхняя часть (растягивается)
-        self.chat_window = tk.Text(
-            left_frame, height=30, width=40, state=tk.NORMAL,
-            bg="#151515", fg="#ffffff", insertbackground="white", wrap=tk.WORD,
-            font=("Arial", 12)
-        )
-        self.chat_window.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 0)) # Сдвигаем чат на вторую строку
-
         # Добавляем стили
         self.chat_window.tag_configure("Mita", foreground="hot pink", font=("Arial", 12, "bold"))
         self.chat_window.tag_configure("Player", foreground="gold", font=("Arial", 12, "bold"))
         self.chat_window.tag_configure("System", foreground="white", font=("Arial", 12, "bold"))
+        self.chat_window.tag_configure("bold", font=("Arial", 12, "bold"))
+        self.chat_window.tag_configure("italic", font=("Arial", 12, "italic"))
         self.chat_window.tag_configure("timestamp", foreground="#888888", font=("Arial", 10, "italic"))
+        # Стили для цветов будут добавляться динамически
 
         # Инпут - нижняя часть (фиксированная высота)
         input_frame = tk.Frame(left_frame, bg="#2c2c2c")
@@ -700,6 +690,7 @@ class ChatGUI:
         self.load_chat_history()
 
     def insert_message(self, role, content, insert_at_start=False):
+        logger.info(f"[{time.strftime('%H:%M:%S')}] insert_message вызван. Роль: {role}, Содержимое: {str(content)[:50]}...")
         # Создаем список для хранения ссылок на изображения, чтобы они не были удалены сборщиком мусора
         if not hasattr(self, '_images_in_chat'):
             self._images_in_chat = []
@@ -807,6 +798,7 @@ class ChatGUI:
 
         # Вставка сообщений
         self.chat_window.config(state=tk.NORMAL)  # Включаем редактирование
+        logger.info(f"[{time.strftime('%H:%M:%S')}] insert_message: Состояние chat_window установлено в NORMAL.")
 
         show_timestamps = self.settings.get("SHOW_CHAT_TIMESTAMPS", False)
         timestamp_str = ""
@@ -872,6 +864,8 @@ class ChatGUI:
                         self.chat_window.insert(tk.END, "\n")
                 self.chat_window.insert(tk.END, "\n\n")
         self.chat_window.config(state=tk.DISABLED)  # Выключаем редактирование
+        logger.info(f"[{time.strftime('%H:%M:%S')}] insert_message: Состояние chat_window установлено в DISABLED.")
+        logger.info(f"[{time.strftime('%H:%M:%S')}] insert_message: Содержимое после вставки: '{self.chat_window.get(1.0, tk.END).strip()}'")
 
             # Автоматическая прокрутка вниз после вставки сообщения
         self.chat_window.see(tk.END)
@@ -1174,7 +1168,9 @@ class ChatGUI:
         # save_history_button.pack(side=tk.LEFT, padx=10)
 
     def load_chat_history(self):
+        logger.info(f"[{time.strftime('%H:%M:%S')}] load_chat_history вызван.")
         self.chat_window.delete(1.0, tk.END)  # Очищаем чат перед загрузкой
+        logger.info(f"[{time.strftime('%H:%M:%S')}] load_chat_history: chat_window очищен перед загрузкой.")
         self.loaded_messages_offset = 0
         self.total_messages_in_history = 0
         self.loading_more_history = False
@@ -1182,7 +1178,7 @@ class ChatGUI:
         chat_history = self.model.current_character.load_history()
         all_messages = chat_history["messages"]
         self.total_messages_in_history = len(all_messages)
-        logger.info(f"Всего сообщений в истории: {self.total_messages_in_history}")
+        logger.info(f"[{time.strftime('%H:%M:%S')}] Всего сообщений в истории: {self.total_messages_in_history}")
 
         # Определяем максимальное количество сообщений для отображения
         max_display_messages = int(self.settings.get("MAX_CHAT_HISTORY_DISPLAY", 100))
@@ -1197,7 +1193,7 @@ class ChatGUI:
             self.insert_message(role, content)  # Вставляем в конец, как обычно
 
         self.loaded_messages_offset = len(messages_to_load)
-        logger.info(f"Загружено {self.loaded_messages_offset} последних сообщений.")
+        logger.info(f"[{time.strftime('%H:%M:%S')}] Загружено {self.loaded_messages_offset} последних сообщений.")
 
         # Привязываем событие прокрутки
         self.chat_window.bind("<MouseWheel>", self.on_chat_scroll)
@@ -1974,8 +1970,15 @@ class ChatGUI:
 
     def clear_chat_display(self):
         """Очищает отображаемую историю чата в GUI."""
+        logger.info(f"[{time.strftime('%H:%M:%S')}] clear_chat_display вызван. Состояние до: {self.chat_window.cget('state')}")
+        logger.info(f"[{time.strftime('%H:%M:%S')}] Содержимое до очистки: '{self.chat_window.get(1.0, tk.END).strip()}'")
+
+        self.chat_window.config(state=tk.NORMAL)
         self.chat_window.delete(1.0, tk.END)
-        logger.info("Отображаемая история чата очищена.")
+        self.chat_window.config(state=tk.DISABLED)
+
+        logger.info(f"[{time.strftime('%H:%M:%S')}] clear_chat_display завершен. Состояние после: {self.chat_window.cget('state')}")
+        logger.info(f"[{time.strftime('%H:%M:%S')}] Содержимое после очистки: '{self.chat_window.get(1.0, tk.END).strip()}'")
 
     
     def send_message(self, system_input: str = "", image_data: list[bytes] = None):
