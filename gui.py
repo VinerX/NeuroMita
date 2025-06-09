@@ -544,7 +544,7 @@ class ChatGUI:
 
         # Добавляем стили
         self.chat_window.tag_configure("Mita", foreground="hot pink", font=("Arial", 12, "bold"))
-        self.chat_window.tag_configure("tag_green", foreground="green", font=("Arial", 12, "bold"))
+        self.chat_window.tag_configure("tag_green", foreground="#00FF00", font=("Arial", 12))
         self.chat_window.tag_configure("Player", foreground="gold", font=("Arial", 12, "bold"))
         self.chat_window.tag_configure("System", foreground="white", font=("Arial", 12, "bold"))
         self.chat_window.tag_configure("bold", font=("Arial", 12, "bold"))
@@ -690,7 +690,7 @@ class ChatGUI:
 
         self.load_chat_history()
 
-    def insert_message(self, role, content, insert_at_start=False):
+    def insert_message(self, role, content, insert_at_start=False,is_historical = False):
         logger.info(f"[{time.strftime('%H:%M:%S')}] insert_message вызван. Роль: {role}, Содержимое: {str(content)[:50]}...")
         # Создаем список для хранения ссылок на изображения, чтобы они не были удалены сборщиком мусора
         if not hasattr(self, '_images_in_chat'):
@@ -756,8 +756,13 @@ class ChatGUI:
                     processed_text_parts.append({"type": "text", "content": text_content, "tag": "default"})
                 else:
                     # Регулярное выражение для поиска тегов <e>...</e>, <c>...</c>, <a>...</a>, [b]...[/b], [i]...[/i] и [color=...]...[/color]
+                    # Регулярное выражение для поиска тегов <e>...</e>, <c>...</c>, <a>...</a>, [b]...[/b], [i]...[/i] и [color=...]...[/color]
+                    # Теперь также ищет одиночные открывающие теги <что-то>
+                    # Регулярное выражение для поиска тегов <любое_имя>...</любое_имя>, <любое_имя>, [b]...[/b], [i]...[/i] и [color=...]...[/color]
+                    # Регулярное выражение для поиска парных тегов <tag>...</tag>, одиночных открывающих тегов <tag>,
+                    # а также [b]...[/b], [i]...[/i] и [color=...]...[/color]
                     matches = list(
-                        re.finditer(r'<e>(.*?)</e>|<c>(.*?)</c>|<a>(.*?)</a>|\[b\](.*?)\[\/b\]|\[i\](.*?)\[\/i\]|\[color=(.*?)\](.*?)\[\/color\]', text_content))
+                        re.finditer(r'(<(\w+)>)(.*?)(</\2>)|(<(\w+)>)|(\[b\](.*?)\[\/b\])|(\[i\](.*?)\[\/i\])|(\[color=(.*?)\](.*?)\[\/color\])', text_content))
 
                     last_end = 0
                     for match in matches:
@@ -767,25 +772,23 @@ class ChatGUI:
                             processed_text_parts.append({"type": "text", "content": text_content[last_end:start], "tag": "default"})
 
                         # Обрабатываем совпадение
-                        if match.group(1) is not None:  # Тег <e>
-                            processed_text_parts.append({"type": "text", "content": "<e>", "tag": "tag_green"})
-                            processed_text_parts.append({"type": "text", "content": match.group(1), "tag": "default"})
-                            processed_text_parts.append({"type": "text", "content": "</e>", "tag": "tag_green"})
-                        elif match.group(2) is not None:  # Тег <c>
-                            processed_text_parts.append({"type": "text", "content": "<c>", "tag": "tag_green"})
-                            processed_text_parts.append({"type": "text", "content": match.group(2), "tag": "default"})
-                            processed_text_parts.append({"type": "text", "content": "</c>", "tag": "tag_green"})
-                        elif match.group(3) is not None:  # Тег <a>
-                            processed_text_parts.append({"type": "text", "content": "<a>", "tag": "tag_green"})
-                            processed_text_parts.append({"type": "text", "content": match.group(3), "tag": "default"})
-                            processed_text_parts.append({"type": "text", "content": "</a>", "tag": "tag_green"})
-                        elif match.group(4) is not None:  # Жирный текст [b]
-                            processed_text_parts.append({"type": "text", "content": f"[b]{match.group(4)}[/b]", "tag": "bold"})
-                        elif match.group(5) is not None:  # Курсивный текст [i]
-                            processed_text_parts.append({"type": "text", "content": f"[i]{match.group(5)}[/i]", "tag": "italic"})
-                        elif match.group(6) is not None and match.group(7) is not None:  # Цветной текст [color=...]
-                            color = match.group(6)
-                            colored_text = match.group(7)
+                        if match.group(1) is not None:  # Парные теги <любое_имя>...</любое_имя>
+                            # match.group(1) = "<tag>"
+                            # match.group(3) = "content"
+                            # match.group(4) = "</tag>"
+                            processed_text_parts.append({"type": "text", "content": match.group(1), "tag": "tag_green"}) # Открывающий тег
+                            processed_text_parts.append({"type": "text", "content": match.group(3), "tag": "default"}) # Содержимое тега
+                            processed_text_parts.append({"type": "text", "content": match.group(4), "tag": "tag_green"}) # Закрывающий тег
+                        elif match.group(5) is not None:  # Одиночные открывающие теги <любое_имя>
+                            # match.group(5) = "<tag>"
+                            processed_text_parts.append({"type": "text", "content": match.group(5), "tag": "tag_green"})
+                        elif match.group(7) is not None:  # Жирный текст [b]
+                            processed_text_parts.append({"type": "text", "content": match.group(7), "tag": "bold"})
+                        elif match.group(9) is not None:  # Курсивный текст [i]
+                            processed_text_parts.append({"type": "text", "content": match.group(9), "tag": "italic"})
+                        elif match.group(11) is not None and match.group(12) is not None:  # Цветной текст [color=...]
+                            color = match.group(11)
+                            colored_text = match.group(12)
                             tag_name = f"color_{color.replace('#', '').replace(' ', '_')}"
                             if tag_name not in self.chat_window.tag_names():
                                 try:
@@ -805,11 +808,10 @@ class ChatGUI:
 
         # Вставка сообщений
         self.chat_window.config(state=tk.NORMAL)  # Включаем редактирование
-        logger.info(f"[{time.strftime('%H:%M:%S')}] insert_message: Состояние chat_window установлено в NORMAL.")
 
         show_timestamps = self.settings.get("SHOW_CHAT_TIMESTAMPS", False)
-        timestamp_str = ""
-        if show_timestamps:
+        timestamp_str = "[???] "
+        if show_timestamps and not is_historical:
             timestamp_str = time.strftime("[%H:%M:%S] ")
 
         if insert_at_start:
@@ -871,8 +873,6 @@ class ChatGUI:
                         self.chat_window.insert(tk.END, "\n")
                 self.chat_window.insert(tk.END, "\n\n")
         self.chat_window.config(state=tk.DISABLED)  # Выключаем редактирование
-        logger.info(f"[{time.strftime('%H:%M:%S')}] insert_message: Состояние chat_window установлено в DISABLED.")
-        logger.info(f"[{time.strftime('%H:%M:%S')}] insert_message: Содержимое после вставки: '{self.chat_window.get(1.0, tk.END).strip()}'")
 
             # Автоматическая прокрутка вниз после вставки сообщения
         self.chat_window.see(tk.END)
@@ -1175,9 +1175,7 @@ class ChatGUI:
         # save_history_button.pack(side=tk.LEFT, padx=10)
 
     def load_chat_history(self):
-        logger.info(f"[{time.strftime('%H:%M:%S')}] load_chat_history вызван.")
-        self.chat_window.delete(1.0, tk.END)  # Очищаем чат перед загрузкой
-        logger.info(f"[{time.strftime('%H:%M:%S')}] load_chat_history: chat_window очищен перед загрузкой.")
+        self.clear_chat_display()
         self.loaded_messages_offset = 0
         self.total_messages_in_history = 0
         self.loading_more_history = False
@@ -1197,7 +1195,7 @@ class ChatGUI:
         for entry in messages_to_load:
             role = entry["role"]
             content = entry["content"]
-            self.insert_message(role, content)  # Вставляем в конец, как обычно
+            self.insert_message(role, content,is_historical = True)  # Вставляем в конец, как обычно
 
         self.loaded_messages_offset = len(messages_to_load)
         logger.info(f"[{time.strftime('%H:%M:%S')}] Загружено {self.loaded_messages_offset} последних сообщений.")
@@ -1916,12 +1914,6 @@ class ChatGUI:
             # Если текст не выделен, ничего не делать
             pass
 
-    def toggle_api_settings(self):
-        if self.show_api_var.get():
-            self.api_settings_frame.pack(fill=tk.X, padx=10, pady=10)
-        else:
-            self.api_settings_frame.pack_forget()
-
     def update_debug_info(self):
         """Обновить окно отладки с отображением актуальных данных."""
         self.debug_window.delete(1.0, tk.END)  # Очистить старые данные
@@ -1963,29 +1955,23 @@ class ChatGUI:
         self.update_debug_info()
 
     
-        def insertDialog(self, input_text="", response="", system_text=""):
-            MitaName = self.model.current_character.name
-            if input_text != "":
-                self.chat_window.insert(tk.END, "Вы: ", "Player")
-                self.chat_window.insert(tk.END, f"{input_text}\n")
-            if system_text != "":
-                self.chat_window.insert(tk.END, f"System to {MitaName}: ", "System")
-                self.chat_window.insert(tk.END, f"{system_text}\n\n")
-            if response != "":
-                self.chat_window.insert(tk.END, f"{MitaName}: ", "Mita")
-                self.chat_window.insert(tk.END, f"{response}\n\n")
+    def insertDialog(self, input_text="", response="", system_text=""):
+        MitaName = self.model.current_character.name
+        if input_text != "":
+            self.chat_window.insert(tk.END, "Вы: ", "Player")
+            self.chat_window.insert(tk.END, f"{input_text}\n")
+        if system_text != "":
+            self.chat_window.insert(tk.END, f"System to {MitaName}: ", "System")
+            self.chat_window.insert(tk.END, f"{system_text}\n\n")
+        if response != "":
+            self.chat_window.insert(tk.END, f"{MitaName}: ", "Mita")
+            self.chat_window.insert(tk.END, f"{response}\n\n")
 
     def clear_chat_display(self):
         """Очищает отображаемую историю чата в GUI."""
-        logger.info(f"[{time.strftime('%H:%M:%S')}] clear_chat_display вызван. Состояние до: {self.chat_window.cget('state')}")
-        logger.info(f"[{time.strftime('%H:%M:%S')}] Содержимое до очистки: '{self.chat_window.get(1.0, tk.END).strip()}'")
-
         self.chat_window.config(state=tk.NORMAL)
         self.chat_window.delete(1.0, tk.END)
         self.chat_window.config(state=tk.DISABLED)
-
-        logger.info(f"[{time.strftime('%H:%M:%S')}] clear_chat_display завершен. Состояние после: {self.chat_window.cget('state')}")
-        logger.info(f"[{time.strftime('%H:%M:%S')}] Содержимое после очистки: '{self.chat_window.get(1.0, tk.END).strip()}'")
 
     
     def send_message(self, system_input: str = "", image_data: list[bytes] = None):
@@ -2129,7 +2115,7 @@ class ChatGUI:
             for entry in messages_to_prepend:
                 role = entry["role"]
                 content = entry["content"]
-                self.insert_message(role, content, insert_at_start=True)
+                self.insert_message(role, content, insert_at_start=True,is_historical=True)
 
             self.loaded_messages_offset += len(messages_to_prepend)
             logger.info(f"Загружено еще {len(messages_to_prepend)} сообщений. Всего загружено: {self.loaded_messages_offset}")
