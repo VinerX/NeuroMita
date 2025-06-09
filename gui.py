@@ -2000,6 +2000,15 @@ class ChatGUI:
         if user_input:  # Вставляем сообщение в чат только если есть пользовательский текст
             self.insert_message("user", user_input)
             self.user_entry.delete("1.0", "end")
+        
+        # Вставляем изображения в чат сразу, если они есть
+        if all_image_data:
+            # Создаем структуру, аналогичную той, что приходит из истории, для insert_message
+            image_content_for_display = [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64.b64encode(img).decode('utf-8')}"}} for img in all_image_data]
+            # Добавляем текстовую метку, если нет пользовательского ввода, но есть изображения
+            if not user_input:
+                image_content_for_display.insert(0, {"type": "text", "content": _("<Изображение экрана>", "<Screen Image>") + "\n"})
+            self.insert_message("user", image_content_for_display)
 
         # Запускаем асинхронную задачу для генерации ответа
         if self.loop and self.loop.is_running():
