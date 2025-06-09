@@ -544,6 +544,7 @@ class ChatGUI:
 
         # Добавляем стили
         self.chat_window.tag_configure("Mita", foreground="hot pink", font=("Arial", 12, "bold"))
+        self.chat_window.tag_configure("tag_green", foreground="green", font=("Arial", 12, "bold"))
         self.chat_window.tag_configure("Player", foreground="gold", font=("Arial", 12, "bold"))
         self.chat_window.tag_configure("System", foreground="white", font=("Arial", 12, "bold"))
         self.chat_window.tag_configure("bold", font=("Arial", 12, "bold"))
@@ -767,11 +768,17 @@ class ChatGUI:
 
                         # Обрабатываем совпадение
                         if match.group(1) is not None:  # Тег <e>
-                            processed_text_parts.append({"type": "text", "content": f"<e>{match.group(1)}</e>", "tag": "Mita"}) # Используем "Mita" для подсветки тегов
+                            processed_text_parts.append({"type": "text", "content": "<e>", "tag": "tag_green"})
+                            processed_text_parts.append({"type": "text", "content": match.group(1), "tag": "default"})
+                            processed_text_parts.append({"type": "text", "content": "</e>", "tag": "tag_green"})
                         elif match.group(2) is not None:  # Тег <c>
-                            processed_text_parts.append({"type": "text", "content": f"<c>{match.group(2)}</c>", "tag": "Mita"}) # Используем "Mita" для подсветки тегов
+                            processed_text_parts.append({"type": "text", "content": "<c>", "tag": "tag_green"})
+                            processed_text_parts.append({"type": "text", "content": match.group(2), "tag": "default"})
+                            processed_text_parts.append({"type": "text", "content": "</c>", "tag": "tag_green"})
                         elif match.group(3) is not None:  # Тег <a>
-                            processed_text_parts.append({"type": "text", "content": f"<a>{match.group(3)}</a>", "tag": "Mita"}) # Используем "Mita" для подсветки тегов
+                            processed_text_parts.append({"type": "text", "content": "<a>", "tag": "tag_green"})
+                            processed_text_parts.append({"type": "text", "content": match.group(3), "tag": "default"})
+                            processed_text_parts.append({"type": "text", "content": "</a>", "tag": "tag_green"})
                         elif match.group(4) is not None:  # Жирный текст [b]
                             processed_text_parts.append({"type": "text", "content": f"[b]{match.group(4)}[/b]", "tag": "bold"})
                         elif match.group(5) is not None:  # Курсивный текст [i]
