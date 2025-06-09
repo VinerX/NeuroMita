@@ -752,7 +752,7 @@ class ChatGUI:
                 text_content = part["content"]
                 if hide_tags:
                     # Удаляем все теги и их содержимое
-                    text_content = re.sub(r'<e>.*?</e>|<c>.*?</c>|<a>.*?</a>|\[b\].*?\[\/b\]|\[i\].*?\[\/i\]|\[color=.*?\](.*?)\[\/color\]', r'\1', text_content)
+                    text_content = re.sub(r'(<(\w+)>)(.*?)(</\2>)|(<(\w+)>)|(\[b\](.*?)\[\/b\])|(\[i\](.*?)\[\/i\])|(\[color=(.*?)\](.*?)\[\/color\])', r'\1', text_content)
                     processed_text_parts.append({"type": "text", "content": text_content, "tag": "default"})
                 else:
                     # Регулярное выражение для поиска тегов <e>...</e>, <c>...</c>, <a>...</a>, [b]...[/b], [i]...[/i] и [color=...]...[/color]
@@ -815,34 +815,38 @@ class ChatGUI:
             timestamp_str = time.strftime("[%H:%M:%S] ")
 
         if insert_at_start:
+            # Собираем части сообщения в список в желаемом порядке отображения
+            # (метка времени, имя, содержимое, перевод строки)
+            parts_to_insert_in_order = []
+
+            if show_timestamps:
+                parts_to_insert_in_order.append({"type": "text", "content": timestamp_str, "tag": "timestamp"})
+
             if role == "user":
-                self.chat_window.insert(1.0, "\n")
-                self.chat_window.insert(1.0, _("Вы: ", "You: "), "Player")  # Имя персонажа подсвечивается
-                if show_timestamps:
-                    self.chat_window.insert(1.0, timestamp_str, "timestamp")
-                for part in reversed(processed_text_parts):
-                    if part["type"] == "text":
-                        if part.get("tag") == "default":
-                            self.chat_window.insert(1.0, part["content"])  # Обычный текст без тега
-                        else:
-                            self.chat_window.insert(1.0, part["content"], part["tag"])
-                    elif part["type"] == "image":
-                        self.chat_window.image_create(1.0, image=part["content"])
-                        self.chat_window.insert(1.0, "\n")
+                parts_to_insert_in_order.append({"type": "text", "content": _("Вы: ", "You: "), "tag": "Player"})
             elif role == "assistant":
-                self.chat_window.insert(1.0, "\n\n")
-                self.chat_window.insert(1.0, f"{self.model.current_character.name}: ", "Mita")  # Имя персонажа подсвечивается
-                if show_timestamps:
-                    self.chat_window.insert(1.0, timestamp_str, "timestamp")
-                for part in reversed(processed_text_parts):
-                    if part["type"] == "text":
-                        if part.get("tag") == "default":
-                            self.chat_window.insert(1.0, part["content"])  # Обычный текст без тега
-                        else:
-                            self.chat_window.insert(1.0, part["content"], part["tag"])
-                    elif part["type"] == "image":
-                        self.chat_window.image_create(1.0, image=part["content"])
-                        self.chat_window.insert(1.0, "\n")
+                parts_to_insert_in_order.append({"type": "text", "content": f"{self.model.current_character.name}: ", "tag": "Mita"})
+
+            # Добавляем содержимое сообщения
+            parts_to_insert_in_order.extend(processed_text_parts)
+
+            # Добавляем переводы строк в конце
+            if role == "user":
+                parts_to_insert_in_order.append({"type": "text", "content": "\n"})
+            elif role == "assistant":
+                parts_to_insert_in_order.append({"type": "text", "content": "\n\n"})
+
+            # Вставляем все части в обратном порядке, чтобы они появились в правильном порядке в чате
+            # (потому что insert(1.0, ...) вставляет в начало)
+            for part in reversed(parts_to_insert_in_order):
+                if part["type"] == "text":
+                    if part.get("tag") == "default":
+                        self.chat_window.insert(1.0, part["content"])
+                    else:
+                        self.chat_window.insert(1.0, part["content"], part["tag"])
+                elif part["type"] == "image":
+                    self.chat_window.image_create(1.0, image=part["content"])
+                    self.chat_window.insert(1.0, "\n") # Добавляем перевод строки после изображения
         else:
             if role == "user":
                 if show_timestamps:
@@ -874,7 +878,7 @@ class ChatGUI:
                 self.chat_window.insert(tk.END, "\n\n")
         self.chat_window.config(state=tk.DISABLED)  # Выключаем редактирование
 
-            # Автоматическая прокрутка вниз после вставки сообщения
+        # Автоматическая прокрутка вниз после вставки сообщения
         self.chat_window.see(tk.END)
 
     # region секция g4f
@@ -2114,7 +2118,6 @@ class ChatGUI:
             start_index = max(0, end_index - self.lazy_load_batch_size)
 
             messages_to_prepend = all_messages[start_index:end_index]
-            messages_to_prepend.reverse()  # Вставляем в обратном порядке, чтобы сохранить порядок в чате
 
             # Сохраняем текущую позицию прокрутки
             current_scroll_pos = self.chat_window.yview()

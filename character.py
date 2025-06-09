@@ -294,7 +294,9 @@ class Character:
                 logger.warning(f"Invalid numeric values in <p> tag for {self.char_id}: '{changes_str}'")
             return "" # Remove the tag
 
-        response = re.sub(f"{re.escape(start_tag)}(.*?){re.escape(end_tag)}", p_tag_processor, response)
+        # Не убираю пока что
+        #response = re.sub(f"{re.escape(start_tag)}(.*?){re.escape(end_tag)}", p_tag_processor, response)
+
         return response.strip()
 
 
@@ -361,7 +363,9 @@ class Character:
             
             except Exception as e:
                 logger.error(f"[{self.char_id}] Error processing memory command <{operation}memory>: {content}. Error: {str(e)}", exc_info=True)
-            return "" # Remove the tag from the response
+
+            #return "" # Remove the tag from the response
+            return match_obj.group(0)
 
         return re.sub(memory_pattern, memory_processor, response, flags=re.DOTALL).strip()
 
