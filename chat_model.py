@@ -75,6 +75,7 @@ class ChatModel:
         self.token_cost_input = float(self.gui.settings.get("TOKEN_COST_INPUT", 0.0432))
         self.token_cost_output = float(self.gui.settings.get("TOKEN_COST_OUTPUT", 0.1728))
         self.max_model_tokens = int(self.gui.settings.get("MAX_MODEL_TOKENS", 128000)) # Default to a common large limit
+        self.save_missed_history_enabled = bool(self.gui.settings.get("SAVE_MISSED_HISTORY", True))
         
         self.memory_limit = int(self.gui.settings.get("MODEL_MESSAGE_LIMIT", 40))  # For historical messages
 
@@ -406,11 +407,24 @@ class ChatModel:
             combined_messages.append({"role": "system",
                                     "content": chess_system_message_for_llm_content})
 
-        # 5. История памяти -------------------------------------------------------------
+        # 5. История памяти
+        history_data = self.current_character.history_manager.load_history()
+        llm_messages_history = history_data.get("messages", [])
+
         if self.current_character != self.GameMaster:
+            # Определяем сообщения, которые будут "потеряны"
+            missed_messages = llm_messages_history[:-self.memory_limit]
             llm_messages_history_limited = llm_messages_history[-self.memory_limit:]
         else:
+            # Для GameMaster также определяем потерянные сообщения, если лимит превышен
+            missed_messages = llm_messages_history[:-8]
             llm_messages_history_limited = llm_messages_history[-8:]
+
+        # Если включена настройка сохранения пропущенных сообщений и есть что сохранять
+        if self.save_missed_history_enabled and missed_messages:
+            logger.info(
+                f"Сохраняю {len(missed_messages)} пропущенных сообщений для персонажа {self.current_character.char_id}.")
+            self.current_character.history_manager.save_missed_history(missed_messages)
 
         # Применяем снижение качества к изображениям в истории, если включено
         if self.image_quality_reduction_enabled:
@@ -505,10 +519,10 @@ class ChatModel:
             assistant_message = {"role": "assistant", "content": assistant_message_content}
 
             if user_message_for_history:
-                llm_messages_history.append(user_message_for_history)
-            llm_messages_history.append(assistant_message)
+                llm_messages_history_limited.append(user_message_for_history)
+            llm_messages_history_limited.append(assistant_message)
 
-            self.current_character.save_character_state_to_history(llm_messages_history)
+            self.current_character.save_character_state_to_history(llm_messages_history_limited)
 
             if self.current_character != self.GameMaster or bool(self.gui.settings.get("GM_VOICE")):
                 self.gui.textToTalk           = self.process_text_to_voice(final_response_text)
