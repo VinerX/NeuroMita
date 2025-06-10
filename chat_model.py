@@ -256,11 +256,11 @@ class ChatModel:
             self.infos_to_add_to_history.clear()
 
         # 2. Игровые переменные ---------------------------------------------------------
-        self.current_character.variables["GAME_DISTANCE"]      = self.distance
-        self.current_character.variables["GAME_ROOM_PLAYER"]   = self.get_room_name(self.roomPlayer)
-        self.current_character.variables["GAME_ROOM_MITA"]     = self.get_room_name(self.roomMita)
-        self.current_character.variables["GAME_NEAR_OBJECTS"]  = self.nearObjects
-        self.current_character.variables["GAME_ACTUAL_INFO"]   = self.actualInfo
+        self.current_character.set_variable("GAME_DISTANCE",self.distance)
+        self.current_character.set_variable("GAME_ROOM_PLAYER",self.get_room_name(self.roomPlayer))
+        self.current_character.set_variable("GAME_ROOM_MITA",self.get_room_name(self.roomMita))
+        self.current_character.set_variable("GAME_NEAR_OBJECTS",self.nearObjects)
+        self.current_character.set_variable("GAME_ACTUAL_INFO",self.actualInfo)
 
         # 3. Шахматы --------------------------------------------------------------------
         chess_system_message_for_llm_content: Optional[str] = None
