@@ -1441,29 +1441,6 @@ class ChatModel:
         return response
 
     #region TokensCounting
-    def calculate_cost(self, user_input):
-        # Загружаем историю
-        history_data = self.load_history()
-
-        # Получаем только сообщения
-        messages = history_data.get('messages', [])
-
-        # Добавляем новое сообщение от пользователя
-        messages.append({"role": "user", "content": user_input})
-
-        # Считаем токены
-        token_count = self.count_tokens(messages)
-
-        # Рассчитываем стоимость
-        cost = (token_count / 1000) * self.cost_input_per_1000
-
-        return token_count, cost
-
-    def count_tokens(self, messages):
-        return 0
-
-        return sum(len(self.tokenizer.encode(msg["content"])) for msg in messages if
-                   isinstance(msg, dict) and "content" in msg)
 
     #endregion
 
