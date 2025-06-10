@@ -694,7 +694,7 @@ class ChatGUI:
         self.load_chat_history()
 
     def insert_message(self, role, content, insert_at_start=False,is_historical = False):
-        logger.info(f"[{time.strftime('%H:%M:%S')}] insert_message вызван. Роль: {role}, Содержимое: {str(content)[:50]}...")
+        logger.info(f"insert_message вызван. Роль: {role}, Содержимое: {str(content)[:50]}...")
         # Создаем список для хранения ссылок на изображения, чтобы они не были удалены сборщиком мусора
         if not hasattr(self, '_images_in_chat'):
             self._images_in_chat = []
