@@ -292,10 +292,10 @@ class Character:
                     logger.warning(f"Invalid format in <p> tag for {self.char_id}: '{changes_str}'. Expected 3 values.")
             except ValueError:
                 logger.warning(f"Invalid numeric values in <p> tag for {self.char_id}: '{changes_str}'")
-            return "" # Remove the tag
+            return "" # Keep the content, remove the tags
 
         # Не убираю пока что
-        #response = re.sub(f"{re.escape(start_tag)}(.*?){re.escape(end_tag)}", p_tag_processor, response)
+        re.sub(f"{re.escape(start_tag)}(.*?){re.escape(end_tag)}", p_tag_processor, response)
 
         return response.strip()
 
