@@ -26,6 +26,7 @@ import threading
 
 import binascii
 import re # Импортируем модуль регулярных выражений
+import subprocess # Импортируем модуль subprocess для открытия папок
 
 import tkinter as tk
 from tkinter import ttk
@@ -669,7 +670,6 @@ class ChatGUI:
         #self.setup_control("Стресс", "stress", self.model.stress)
         #self.setup_secret_control()
 
-        self.setup_history_controls(settings_frame)
         self.setup_debug_controls(settings_frame)
 
         self.setup_common_controls(settings_frame)
@@ -1147,34 +1147,7 @@ class ChatGUI:
         """
         self.model.secretExposed = self.secret_var.get()
 
-    def setup_history_controls(self, parent):
-        history_frame = tk.Frame(parent, bg="#2c2c2c")
-        history_frame.pack(fill=tk.X, pady=4)
 
-        clear_button = tk.Button(
-            history_frame, text=_("Очистить историю персонажа", "Clear character history"), command=self.clear_history,
-            bg="#8a2be2", fg="#ffffff"
-        )
-        clear_button.pack(side=tk.LEFT, padx=5)
-
-        clear_button = tk.Button(
-            history_frame, text=_("Очистить все истории", "Clear all histories"), command=self.clear_history_all,
-            bg="#8a2be2", fg="#ffffff"
-        )
-        clear_button.pack(side=tk.LEFT, padx=5)
-
-        reload_prompts_button = tk.Button(
-            history_frame, text=_("Перекачать промпты", "ReDownload prompts"), command=self.reload_prompts,
-            bg="#8a2be2", fg="#ffffff"
-        )
-        reload_prompts_button.pack(side=tk.LEFT, padx=5)
-
-        # TODO Вернуть
-        # save_history_button = tk.Button(
-        #     history_frame, text="Сохранить историю", command=self.model.save_chat_history,
-        #     bg="#8a2be2", fg="#ffffff"
-        # )
-        # save_history_button.pack(side=tk.LEFT, padx=10)
 
     def load_chat_history(self):
         self.clear_chat_display()
@@ -1228,6 +1201,64 @@ class ChatGUI:
         self.debug_window.pack(fill=tk.BOTH, expand=True)
 
         self.update_debug_info()  # Отобразить изначальное состояние переменных
+
+    def open_character_folder(self):
+        """Открывает папку текущего персонажа в проводнике."""
+        if self.model.current_character and self.model.current_character.char_id:
+            character_name = self.model.current_character.char_id
+            character_folder_path = os.path.join("Prompts", character_name)
+            
+            if os.path.exists(character_folder_path):
+                try:
+                    if sys.platform == "win32":
+                        os.startfile(character_folder_path)
+                    elif sys.platform == "darwin":  # macOS
+                        subprocess.Popen(['open', character_folder_path])
+                    else:  # Linux и другие Unix-подобные
+                        subprocess.Popen(['xdg-open', character_folder_path])
+                    logger.info(f"Открыта папка персонажа: {character_folder_path}")
+                except Exception as e:
+                    logger.error(f"Не удалось открыть папку персонажа {character_folder_path}: {e}")
+                    messagebox.showerror(_("Ошибка", "Error"),
+                                         _("Не удалось открыть папку персонажа.", "Failed to open character folder."),
+                                         parent=self.root)
+            else:
+                messagebox.showwarning(_("Внимание", "Warning"),
+                                       _("Папка персонажа не найдена: ", "Character folder not found: ") + character_folder_path,
+                                       parent=self.root)
+        else:
+            messagebox.showinfo(_("Информация", "Information"),
+                               _("Персонаж не выбран или его имя недоступно.", "No character selected or its name is not available."),
+                               parent=self.root)
+
+    def open_character_history_folder(self):
+        """Открывает папку истории текущего персонажа в проводнике."""
+        if self.model.current_character and self.model.current_character.char_id:
+            character_name = self.model.current_character.char_id
+            history_folder_path = os.path.join("Histories", character_name)
+            
+            if os.path.exists(history_folder_path):
+                try:
+                    if sys.platform == "win32":
+                        os.startfile(history_folder_path)
+                    elif sys.platform == "darwin":  # macOS
+                        subprocess.Popen(['open', history_folder_path])
+                    else:  # Linux и другие Unix-подобные
+                        subprocess.Popen(['xdg-open', history_folder_path])
+                    logger.info(f"Открыта папка истории персонажа: {history_folder_path}")
+                except Exception as e:
+                    logger.error(f"Не удалось открыть папку истории персонажа {history_folder_path}: {e}")
+                    messagebox.showerror(_("Ошибка", "Error"),
+                                         _("Не удалось открыть папку истории персонажа.", "Failed to open character history folder."),
+                                         parent=self.root)
+            else:
+                messagebox.showwarning(_("Внимание", "Warning"),
+                                       _("Папка истории персонажа не найдена: ", "Character history folder not found: ") + history_folder_path,
+                                       parent=self.root)
+        else:
+            messagebox.showinfo(_("Информация", "Information"),
+                               _("Персонаж не выбран или его имя недоступно.", "No character selected or its name is not available."),
+                               parent=self.root)
 
     #region MODIFIED BUT NOT CHECKED BY Atm4x
     # Бывший setup_tg_controls()
@@ -1432,20 +1463,37 @@ class ChatGUI:
     def setup_mita_controls(self, parent):
         # Основные настройки
         mita_config = [
-            {'label': _('Персонаж', 'Character'), 'key': 'CHARACTER', 'type': 'combobox',
+            {'label': _('Персонажи', 'Characters'), 'key': 'CHARACTER', 'type': 'combobox',
              'options': self.model.get_all_mitas(),
              'default': "Crazy"},
+
+            {'label': _('Управление персонажем', 'Character Management'), 'type': 'text'},
+            {'label': _('Очистить историю персонажа', 'Clear character history'), 'type': 'button',
+             'command': self.clear_history},
+
+            {'label': _('Открыть папку персонажа', 'Open character folder'), 'type': 'button',
+             'command': self.open_character_folder},
+            {'label': _('Открыть папку истории персонажа', 'Open character history folder'), 'type': 'button',
+             'command': self.open_character_history_folder},
+
+            {'label': _('Аккуратно!', 'Be careful!'), 'type': 'text'},
+            {'label': _('Перекачать промпты', 'ReDownload prompts'), 'type': 'button',
+             'command': self.reload_prompts},
+            {'label': _("Очистить все истории", "Clear all histories"), 'type': 'button',
+             'command':  self.clear_history_all},
+
 
             {'label': _('Экспериментальные функции', 'Experimental features'), 'type': 'text'},
             {'label': _('Меню выбора Мит', 'Mita selection menu'), 'key': 'MITAS_MENU', 'type': 'checkbutton',
              'default_checkbutton': False},
             {'label': _('Меню эмоций Мит', 'Emotion menu'), 'key': 'EMOTION_MENU', 'type': 'checkbutton',
              'default_checkbutton': False},
+
             #  {'label': _('Миты в работе', 'Mitas in work'), 'key': 'TEST_MITAS', 'type': 'checkbutton',
             #   'default_checkbutton': False,'tooltip':_("Позволяет выбирать нестабильные версии Мит", "Allow to choose ustable Mita versions")}
         ]
 
-        self.create_settings_section(parent, _("Выбор персонажа", "Character selection"), mita_config)
+        self.create_settings_section(parent, _("Настройки персонажей", "Characters settings"), mita_config)
 
     def setup_model_controls(self, parent):
         # Основные настройки
