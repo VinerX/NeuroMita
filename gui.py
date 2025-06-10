@@ -693,7 +693,7 @@ class ChatGUI:
 
         self.load_chat_history()
 
-    def insert_message(self, role, content, insert_at_start=False,is_historical = False):
+    def insert_message(self, role, content, insert_at_start=False,message_time = ""):
         logger.info(f"insert_message вызван. Роль: {role}, Содержимое: {str(content)[:50]}...")
         # Создаем список для хранения ссылок на изображения, чтобы они не были удалены сборщиком мусора
         if not hasattr(self, '_images_in_chat'):
@@ -815,8 +815,11 @@ class ChatGUI:
 
         show_timestamps = self.settings.get("SHOW_CHAT_TIMESTAMPS", False)
         timestamp_str = "[???] "
-        if show_timestamps and not is_historical:
-            timestamp_str = time.strftime("[%H:%M:%S] ")
+        if show_timestamps:
+            if message_time:
+                timestamp_str = f"[{message_time}]"
+            else:
+                timestamp_str = time.strftime("[%H:%M:%S] ")
 
         if insert_at_start:
             # Собираем части сообщения в список в желаемом порядке отображения
@@ -1194,7 +1197,8 @@ class ChatGUI:
         for entry in messages_to_load:
             role = entry["role"]
             content = entry["content"]
-            self.insert_message(role, content,is_historical = True)  # Вставляем в конец, как обычно
+            message_time = entry.get("time","???")
+            self.insert_message(role, content,message_time=message_time)  # Вставляем в конец, как обычно
 
         self.loaded_messages_offset = len(messages_to_load)
         logger.info(f"[{time.strftime('%H:%M:%S')}] Загружено {self.loaded_messages_offset} последних сообщений.")
@@ -2125,7 +2129,8 @@ class ChatGUI:
             for entry in messages_to_prepend:
                 role = entry["role"]
                 content = entry["content"]
-                self.insert_message(role, content, insert_at_start=True,is_historical=True)
+                message_time = entry.get("time","???")
+                self.insert_message(role, content, insert_at_start=True,message_time=message_time)
 
             self.loaded_messages_offset += len(messages_to_prepend)
             logger.info(f"Загружено еще {len(messages_to_prepend)} сообщений. Всего загружено: {self.loaded_messages_offset}")

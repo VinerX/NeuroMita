@@ -523,7 +523,7 @@ class ChatModel:
 
 
             assistant_message = {"role": "assistant", "content": assistant_message_content}
-            assistant_message["time"] = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M")
+            assistant_message["time"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
 
             llm_messages_history_limited.append(assistant_message)
 
