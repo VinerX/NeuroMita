@@ -75,7 +75,6 @@ class ChatModel:
         self.token_cost_input = float(self.gui.settings.get("TOKEN_COST_INPUT", 0.0432))
         self.token_cost_output = float(self.gui.settings.get("TOKEN_COST_OUTPUT", 0.1728))
         self.max_model_tokens = int(self.gui.settings.get("MAX_MODEL_TOKENS", 128000)) # Default to a common large limit
-        self.save_missed_history_enabled = bool(self.gui.settings.get("SAVE_MISSED_HISTORY", True))
         
         self.memory_limit = int(self.gui.settings.get("MODEL_MESSAGE_LIMIT", 40))  # For historical messages
 
@@ -421,7 +420,7 @@ class ChatModel:
             llm_messages_history_limited = llm_messages_history[-8:]
 
         # Если включена настройка сохранения пропущенных сообщений и есть что сохранять
-        if self.save_missed_history_enabled and missed_messages:
+        if missed_messages and bool(self.gui.settings.get("SAVE_MISSED_HISTORY", True)):
             logger.info(
                 f"Сохраняю {len(missed_messages)} пропущенных сообщений для персонажа {self.current_character.char_id}.")
             self.current_character.history_manager.save_missed_history(missed_messages)

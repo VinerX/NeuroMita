@@ -1673,9 +1673,13 @@ class ChatGUI:
             {'label': _('Настройки сообщений', 'Message settings'), 'type': 'text'},
             {'label': _('Промты раздельно', 'Separated prompts'), 'key': 'SEPARATE_PROMPTS',
              'type': 'checkbutton', 'default_checkbutton': True},
+
             {'label': _('Лимит сообщений', 'Message limit'), 'key': 'MODEL_MESSAGE_LIMIT',
              'type': 'entry', 'default': 40,
              'tooltip': _('Сколько сообщений будет помнить мита', 'How much messages Mita will remember')},
+            {'label': _('Сохранять утерянную историю ', 'Save lost history'),
+             'key': 'GPT4FREE_LAST_ATTEMPT', 'type': 'checkbutton', 'default_checkbutton': False},
+
             {'label': _('Кол-во попыток', 'Attempt count'), 'key': 'MODEL_MESSAGE_ATTEMPTS_COUNT',
              'type': 'entry', 'default': 3},
             {'label': _('Время между попытками', 'time between attempts'),
