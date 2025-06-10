@@ -1,6 +1,7 @@
 # File: chat_model.py
 import base64
 import concurrent.futures
+import datetime
 import time
 import requests
 #import tiktoken
@@ -455,6 +456,11 @@ class ChatModel:
             user_message_for_history = {"role": "user", "content": user_content_chunks}
             combined_messages.append(user_message_for_history)
 
+        if user_message_for_history:
+            user_message_for_history["time"] = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M")
+            llm_messages_history_limited.append(user_message_for_history)
+
+
         # 8. Генерация ответа -----------------------------------------------------------
         try:
             llm_response_content, success = self._generate_chat_response(combined_messages)
@@ -517,9 +523,8 @@ class ChatModel:
 
 
             assistant_message = {"role": "assistant", "content": assistant_message_content}
+            assistant_message["time"] = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M")
 
-            if user_message_for_history:
-                llm_messages_history_limited.append(user_message_for_history)
             llm_messages_history_limited.append(assistant_message)
 
             self.current_character.save_character_state_to_history(llm_messages_history_limited)
@@ -681,7 +686,13 @@ class ChatModel:
         try:
             self.change_last_message_to_user_for_gemini(model_to_use, combined_messages)
 
-            final_params = self.get_final_params(model_to_use, combined_messages)
+            # Удаляем поле 'time' из сообщений, так как OpenAI API его не поддерживает
+            cleaned_messages = []
+            for msg in combined_messages:
+                cleaned_msg = {k: v for k, v in msg.items() if k != "time"}
+                cleaned_messages.append(cleaned_msg)
+
+            final_params = self.get_final_params(model_to_use, cleaned_messages)
 
             logger.info(
                 f"Requesting completion from {model_to_use} with temp={final_params.get('temperature')}, max_tokens={final_params.get('max_tokens')}")
