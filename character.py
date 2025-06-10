@@ -468,18 +468,21 @@ class Character:
         
     def adjust_attitude(self, amount: float):
         current = self.get_variable("attitude", 60.0)
+        amount = round(amount,2)
         amount = clamp(float(amount), -6.0, 6.0) # Max adjustment per original prompt
         self.set_variable("attitude", clamp(current + amount, 0.0, 100.0))
         logger.info(f"[{self.char_id}] Attitude changed by {amount:.2f} to {self.get_variable('attitude'):.2f}")
 
     def adjust_boredom(self, amount: float):
         current = self.get_variable("boredom", 10.0)
+        amount = round(amount, 2)
         amount = clamp(float(amount), -6.0, 6.0)
         self.set_variable("boredom", clamp(current + amount, 0.0, 100.0))
         logger.info(f"[{self.char_id}] Boredom changed by {amount:.2f} to {self.get_variable('boredom'):.2f}")
 
     def adjust_stress(self, amount: float):
         current = self.get_variable("stress", 5.0)
+        amount = round(amount, 2)
         amount = clamp(float(amount), -6.0, 6.0)
         self.set_variable("stress", clamp(current + amount, 0.0, 100.0))
         logger.info(f"[{self.char_id}] Stress changed by {amount:.2f} to {self.get_variable('stress'):.2f}")
