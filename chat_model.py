@@ -20,8 +20,7 @@ from characters import CrazyMita, KindMita, ShortHairMita, CappyMita, MilaMita, 
 from character import Character  # Character base
 from utils.PipInstaller import PipInstaller
 
-from utils import SH, save_combined_messages, calculate_cost_for_combined_messages, \
-    replace_numbers_with_words  # Keep utils
+from utils import SH, save_combined_messages, calculate_cost_for_combined_messages, process_text_to_voice # Keep utils
 
 
 # from promptPart import PromptPart, PromptType # No longer needed
@@ -530,7 +529,7 @@ class ChatModel:
             self.current_character.save_character_state_to_history(llm_messages_history_limited)
 
             if self.current_character != self.GameMaster or bool(self.gui.settings.get("GM_VOICE")):
-                self.gui.textToTalk           = self.process_text_to_voice(final_response_text)
+                self.gui.textToTalk           = process_text_to_voice(final_response_text)
                 self.gui.textSpeaker          = self.current_character.silero_command
                 self.gui.textSpeakerMiku      = self.current_character.miku_tts_name
                 self.gui.silero_turn_off_video= self.current_character.silero_turn_off_video
@@ -1023,25 +1022,7 @@ class ChatModel:
     #         # For now, keeping this as it was in the provided code.
     #     return params
 
-    def process_text_to_voice(self, text_to_speak: str) -> str:
-        if not isinstance(text_to_speak, str):
-            logger.warning(f"process_text_to_voice expected string, got {type(text_to_speak)}. Converting to string.")
-            text_to_speak = str(text_to_speak)
 
-        clean_text = re.sub(r"<[^>]+>.*?</[^>]+>", "", text_to_speak, flags=re.DOTALL)
-        clean_text = re.sub(r"<[^>]+>", "", clean_text)
-
-        try:
-            clean_text = replace_numbers_with_words(clean_text)
-        except NameError:
-            logger.debug("replace_numbers_with_words utility not found or used.")
-            pass
-
-        if not clean_text.strip():
-            clean_text = "..."
-            logger.info("TTS text was empty after cleaning, using default '...'")
-
-        return clean_text.strip()
 
     def reload_promts(self):
         logger.info("Reloading current character data.")
@@ -1460,49 +1441,6 @@ class ChatModel:
 
         return response
 
-    def process_text_to_voice(self, text):
-        # Проверяем, что текст является строкой (если это байты, декодируем)
-        if isinstance(text, bytes):
-            try:
-                text = text.decode("utf-8")  # Декодируем в UTF-8
-            except UnicodeDecodeError:
-                # Если UTF-8 не подходит, пробуем определить кодировку
-                import chardet
-                encoding = chardet.detect(text)["encoding"]
-                text = text.decode(encoding)
-
-        # Удаляем все теги и их содержимое
-        clean_text = re.sub(r"<[^>]+>.*?</[^>]+>", "", text)
-        clean_text = re.sub(r"<.*?>", "", clean_text)
-        clean_text = replace_numbers_with_words(clean_text)
-
-        #clean_text = transliterate_english_to_russian(clean_text)
-
-        # Если текст пустой, заменяем его на "Вот"
-        if clean_text.strip() == "":
-            clean_text = "Вот"
-
-        return clean_text
-
-    def reload_promts(self):
-        logger.info("Перезагрузка промптов")
-
-        self.current_character.init()
-        self.current_character.process_response()
-
-    def add_temporary_system_message(self, messages, content):
-        """
-        Добавляет одноразовое системное сообщение в список сообщений.
-
-        :param messages: Список сообщений, в который добавляется системное сообщение.
-        :param content: Текст системного сообщения.
-        """
-        system_message = {
-            "role": "system",
-            "content": content
-        }
-        messages.append(system_message)
-
     #region TokensCounting
     def calculate_cost(self, user_input):
         # Загружаем историю
@@ -1529,19 +1467,4 @@ class ChatModel:
                    isinstance(msg, dict) and "content" in msg)
 
     #endregion
-    def GetOtherKey(self):
-        """
-        Получаем ключ на замену сломанному
-        :return:
-        """
-        keys = [self.api_key] + self.gui.settings.get("NM_API_KEY_RES").split()
-        count = len(keys)
 
-        i = self.last_key + 1
-
-        if i >= count:
-            i = 0
-
-        self.last_key = i
-
-        return keys[i]

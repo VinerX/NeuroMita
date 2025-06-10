@@ -32,7 +32,7 @@ from tkinter import ttk
 from tkinter import messagebox
 from PIL import Image, ImageTk
 
-from utils import SH
+from utils import SH, process_text_to_voice
 import sys
 
 import sounddevice as sd
@@ -755,7 +755,7 @@ class ChatGUI:
                 text_content = part["content"]
                 if hide_tags:
                     # Удаляем все теги и их содержимое
-                    text_content = re.sub(r'(<(\w+)>)(.*?)(</\2>)|(<(\w+)>)|(\[b\](.*?)\[\/b\])|(\[i\](.*?)\[\/i\])|(\[color=(.*?)\](.*?)\[\/color\])', r'\1', text_content)
+                    text_content = process_text_to_voice(text_content)
                     processed_text_parts.append({"type": "text", "content": text_content, "tag": "default"})
                 else:
                     # Регулярное выражение для поиска тегов <e>...</e>, <c>...</c>, <a>...</a>, [b]...[/b], [i]...[/i] и [color=...]...[/color]
