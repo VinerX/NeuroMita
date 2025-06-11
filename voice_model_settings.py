@@ -26,16 +26,18 @@ model_descriptions = {
     "low": "Быстрая модель, комбинация Edge-TTS для генерации речи и RVC для преобразования голоса. Низкие требования.",
     "low+": "Комбинация Silero TTS для генерации речи и RVC для преобразования голоса. Требования схожи с low.",
     "medium": "Модель Fish Speech для генерации речи с хорошим качеством. Требует больше ресурсов.",
-    "medium+": "Улучшенная версия Fish Speech с потенциально более высоким качеством или доп. возможностями. Требует больше места.",
-    "medium+low": "Комбинация Fish Speech+ и RVC для высококачественного преобразования голоса. Самые высокие требования."
+    "medium+": "Скомпилированная на видеокарту версия Fish Speech. Требует больше места.",
+    "medium+low": "Комбинация Fish Speech+ и RVC для высококачественного преобразования голоса.",
+    "f5_tts": "Лучшая эмоциональная модель. Дифузионная модель, так что самая требовательная к видеокарте."
 }
 
 model_descriptions_en = {
-    "low": "Fast model, combination of Edge-TTS for speech generation and RVC for voice conversion. Low requirements.",
-    "low+": "Combination of Silero TTS for speech generation and RVC for voice conversion. Requirements similar to low.",
+    "low": "Fast model; a combination of Edge-TTS for speech generation and RVC for voice conversion. Low requirements.",
+    "low+": "Combination of Silero TTS for speech generation and RVC for voice conversion. Requirements similar to the 'low' model.",
     "medium": "Fish Speech model for speech generation with good quality. Requires more resources.",
-    "medium+": "Improved version of Fish Speech with potentially higher quality or additional features. Requires more space.",
-    "medium+low": "Combination of Fish Speech+ and RVC for high-quality voice conversion. Highest requirements."
+    "medium+": "GPU-compiled version of Fish Speech. Requires more disk space.",
+    "medium+low": "Combination of Fish Speech+ and RVC for high-quality voice conversion.",
+    "f5_tts": "Best emotional model. A diffusion model, therefore the most GPU-demanding."
 }
 
 
@@ -80,10 +82,21 @@ setting_descriptions = {
     "fsprvc_output_gain": "[FSP+RVC][RVC] Громкость (gain) для части RVC.",
     "fsprvc_filter_radius": "[FSP+RVC][RVC] Радиус фильтра F0 для части RVC.",
     "fsprvc_rvc_rms_mix_rate": "[FSP+RVC][RVC] Смешивание RMS для части RVC.",
+
+    "speed": "[F5-TTS] Скорость генерируемой речи. 1.0 - нормальная скорость, >1.0 - быстрее, <1.0 - медленнее.",
+    "remove_silence": "[F5-TTS] Автоматически удалять тишину в начале и конце сгенерированного аудио.",
+    "nfe_step": "[F5-TTS] Количество шагов диффузии. Больше = лучше качество, но медленнее. Меньше = быстрее, но может быть хуже. (Рекомендуется: 3-10)",
+    "cfg_strength": "[F5-TTS] Сила бесклассификаторного управления (CFG). Контролирует, насколько сильно генерация следует за референсным аудио. 0 - отключено. (Рекомендуется: 0.7)",
+    "sway_sampling_coef": "[F5-TTS] Коэффициент сэмплирования 'Sway'. Добавляет вариативности в генерацию. 0 - отключено. (Рекомендуется: 0.0)",
+    "target_rms": "[F5-TTS] Целевая громкость (RMS) для нормализации аудио. -1 отключает нормализацию. (Рекомендуется: -1)",
+    "cross_fade_duration": "[F5-TTS] Длительность кроссфейда (в секундах) между аудио-чанками. (Рекомендуется: 0.015)",
+    "fix_duration": "[F5-TTS] Фиксировать длительность фонем. Может улучшить стабильность, но снизить естественность. (Рекомендуется: False)",
+
     "tmp_directory": "Папка для временных файлов, создаваемых в процессе работы (например, промежуточные аудиофайлы).",
     "verbose": "Включить вывод подробной отладочной информации в консоль для диагностики проблем.",
     "cuda_toolkit": "Наличие установленного CUDA Toolkit от NVIDIA. Необходимо для некоторых функций (например, torch.compile) и работы с GPU NVIDIA.",
     "windows_sdk": "Наличие установленного Windows SDK. Может требоваться для компиляции некоторых зависимостей Python.",
+    
 }
 
 setting_descriptions_en = {
@@ -127,6 +140,16 @@ setting_descriptions_en = {
     "fsprvc_output_gain": "[FSP+RVC][RVC] Volume (gain) for the RVC part.",
     "fsprvc_filter_radius": "[FSP+RVC][RVC] F0 filter radius for the RVC part.",
     "fsprvc_rvc_rms_mix_rate": "[FSP+RVC][RVC] RMS mixing for the RVC part.",
+
+    "speed": "[F5-TTS] Speed of the generated speech. 1.0 is normal speed, >1.0 is faster, <1.0 is slower.",
+    "remove_silence": "[F5-TTS] Automatically remove silence from the beginning and end of the generated audio.",
+    "nfe_step": "[F5-TTS] Number of diffusion steps. More = better quality, but slower. Less = faster, but may be worse. (Recommended: 3-10)",
+    "cfg_strength": "[F5-TTS] Classifier-Free Guidance (CFG) strength. Controls how strongly the generation follows the reference audio. 0 - disabled. (Recommended: 0.7)",
+    "sway_sampling_coef": "[F5-TTS] 'Sway' sampling coefficient. Adds variability to the generation. 0 - disabled. (Recommended: 0.0)",
+    "target_rms": "[F5-TTS] Target loudness (RMS) for audio normalization. -1 disables normalization. (Recommended: -1)",
+    "cross_fade_duration": "[F5-TTS] Crossfade duration (in seconds) between audio chunks. (Recommended: 0.015)",
+    "fix_duration": "[F5-TTS] Fix phoneme duration. May improve stability but reduce naturalness. (Recommended: False)",
+
     "tmp_directory": "Folder for temporary files created during operation (e.g., intermediate audio files).",
     "verbose": "Enable detailed debug information output to the console for diagnosing problems.",
     "cuda_toolkit": "Presence of installed NVIDIA CUDA Toolkit. Required for some functions (e.g., torch.compile) and working with NVIDIA GPUs.",
@@ -598,15 +621,16 @@ class VoiceModelSettingsWindow:
                 "id": "low+", "name": "Silero + RVC", "min_vram": 3, "rec_vram": 4,
                 "gpu_vendor": ["NVIDIA", "AMD"], "size_gb": 3,
                 "settings": [
-                    {"key": "device", "label": _("Устройство RVC", "RVC Device"), "type": "combobox", "options": { "values_nvidia": ["dml", "cuda:0", "cpu"], "default_nvidia": "cuda:0", "values_amd": ["dml", "cpu"], "default_amd": "dml", "values_other": ["cpu", "dml"], "default_other": "cpu" }},
-                    {"key": "is_half", "label": _("Half-precision RVC", "Half-precision RVC"), "type": "combobox", "options": {"values": ["True", "False"], "default_nvidia": "True", "default_amd": "False", "default_other": "False"}},
-                    {"key": "f0method", "label": _("Метод F0 (RVC)", "F0 Method (RVC)"), "type": "combobox", "options": { "values_nvidia": ["pm", "rmvpe", "crepe", "harvest", "fcpe", "dio"], "default_nvidia": "rmvpe", "values_amd": ["rmvpe", "harvest", "pm", "dio"], "default_amd": "pm", "values_other": ["pm", "rmvpe", "harvest", "dio"], "default_other": "pm" }},
-                    {"key": "pitch", "label": _("Высота голоса RVC (пт)", "RVC Pitch (semitones)"), "type": "entry", "options": {"default": "6"}},
-                    {"key": "use_index_file", "label": _("Исп. .index файл (RVC)", "Use .index file (RVC)"), "type": "checkbutton", "options": {"default": True}},
-                    {"key": "index_rate", "label": _("Соотношение индекса RVC", "RVC Index Rate"), "type": "entry", "options": {"default": "0.75"}},
-                    {"key": "protect", "label": _("Защита согласных (RVC)", "Consonant Protection (RVC)"), "type": "entry", "options": {"default": "0.33"}},
-                    {"key": "filter_radius", "label": _("Радиус фильтра F0 (RVC)", "F0 Filter Radius (RVC)"), "type": "entry", "options": {"default": "3"}},
-                    {"key": "rms_mix_rate", "label": _("Смешивание RMS (RVC)", "RMS Mixing (RVC)"), "type": "entry", "options": {"default": "0.5"}},
+                    {"key": "silero_rvc_device", "label": _("Устройство RVC", "RVC Device"), "type": "combobox", "options": { "values_nvidia": ["dml", "cuda:0", "cpu"], "default_nvidia": "cuda:0", "values_amd": ["dml", "cpu"], "default_amd": "dml", "values_other": ["cpu", "dml"], "default_other": "cpu" }},
+                    {"key": "silero_rvc_is_half", "label": _("Half-precision RVC", "Half-precision RVC"), "type": "combobox", "options": {"values": ["True", "False"], "default_nvidia": "True", "default_amd": "False", "default_other": "False"}},
+                    {"key": "silero_rvc_f0method", "label": _("Метод F0 (RVC)", "F0 Method (RVC)"), "type": "combobox", "options": { "values_nvidia": ["pm", "rmvpe", "crepe", "harvest", "fcpe", "dio"], "default_nvidia": "rmvpe", "values_amd": ["rmvpe", "harvest", "pm", "dio"], "default_amd": "pm", "values_other": ["pm", "rmvpe", "harvest", "dio"], "default_other": "pm" }},
+                    {"key": "silero_rvc_pitch", "label": _("Высота голоса RVC (пт)", "RVC Pitch (semitones)"), "type": "entry", "options": {"default": "6"}},
+                    {"key": "silero_rvc_use_index_file", "label": _("Исп. .index файл (RVC)", "Use .index file (RVC)"), "type": "checkbutton", "options": {"default": True}},
+                    {"key": "silero_rvc_index_rate", "label": _("Соотношение индекса RVC", "RVC Index Rate"), "type": "entry", "options": {"default": "0.75"}},
+                    {"key": "silero_rvc_protect", "label": _("Защита согласных (RVC)", "Consonant Protection (RVC)"), "type": "entry", "options": {"default": "0.33"}},
+                    {"key": "silero_rvc_filter_radius", "label": _("Радиус фильтра F0 (RVC)", "F0 Filter Radius (RVC)"), "type": "entry", "options": {"default": "3"}},
+                    {"key": "silero_rvc_rms_mix_rate", "label": _("Смешивание RMS (RVC)", "RMS Mixing (RVC)"), "type": "entry", "options": {"default": "0.5"}},
+                    
                     {"key": "silero_device", "label": _("Устройство Silero", "Silero Device"), "type": "combobox", "options": {"values_nvidia": ["cuda", "cpu"], "default_nvidia": "cuda", "values_amd": ["cpu"], "default_amd": "cpu", "values_other": ["cpu"], "default_other": "cpu"}},
                     {"key": "silero_sample_rate", "label": _("Частота Silero", "Silero Sample Rate"), "type": "combobox", "options": {"values": ["48000", "24000", "16000"], "default": "48000"}},
                     {"key": "silero_put_accent", "label": _("Акценты Silero", "Silero Accents"), "type": "checkbutton", "options": {"default": True}},
@@ -661,6 +685,19 @@ class VoiceModelSettingsWindow:
                     # {"key": "fsprvc_output_gain", "label": _("[RVC] Громкость (gain)", "[RVC] Volume (gain)"), "type": "entry", "options": {"default": "0.75"}},
                     {"key": "fsprvc_filter_radius", "label": _("[RVC] Радиус фильтра F0", "[RVC] F0 Filter Radius"), "type": "entry", "options": {"default": "3"}},
                     {"key": "fsprvc_rvc_rms_mix_rate", "label": _("[RVC] Смешивание RMS", "[RVC] RMS Mixing"), "type": "entry", "options": {"default": "0.5"}}
+                ]
+            },
+            {
+                "id": "f5_tts",
+                "name": "F5-TTS",
+                "min_vram": 6,
+                "rec_vram": 8,
+                "gpu_vendor": ["NVIDIA"],
+                "size_gb": 4,
+                "settings": [
+                    {"key": "speed", "label": _("Скорость речи", "Speech Speed"), "type": "entry", "options": {"default": "1.0"}},
+                    {"key": "nfe_step", "label": _("Шаги диффузии", "Diffusion Steps"), "type": "entry", "options": {"default": "32"}},
+                    {"key": "remove_silence", "label": _("Удалять тишину", "Remove Silence"), "type": "checkbutton", "options": {"default": True}}
                 ]
             }
         ]
@@ -769,6 +806,7 @@ class VoiceModelSettingsWindow:
                     elif model_id == "medium": is_installed = self.check_installed_func("fish_speech_lib")
                     elif model_id == "medium+": is_installed = self.check_installed_func("fish_speech_lib") and self.check_installed_func("triton")
                     elif model_id == "medium+low": is_installed = self.check_installed_func("tts_with_rvc") and self.check_installed_func("fish_speech_lib") and self.check_installed_func("triton")
+                    elif model_id == "f5_tts": is_installed = self.check_installed_func("f5_tts")
 
                     if is_installed:
                         self.installed_models.add(model_id)
@@ -1452,6 +1490,8 @@ class VoiceModelSettingsWindow:
             target_uninstall_func = self.local_voice.uninstall_fish_speech
         elif model_id in ["medium+", "medium+low"]:
             target_uninstall_func = self.local_voice.uninstall_triton_component
+        elif model_id == "f5_tts":
+            target_uninstall_func = self.local_voice.uninstall_f5_tts
         else:
             logger.error(f"Неизвестный model_id для удаления: {model_id}")
             if button_widget and button_widget.winfo_exists(): button_widget.config(text="Ошибка", state=tk.NORMAL)

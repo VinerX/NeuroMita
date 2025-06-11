@@ -81,3 +81,5 @@ transformers
 py7zr
 python-chess
 uvicorn
+google-cloud-storage
+google-api-core
