@@ -449,17 +449,10 @@ class ChatGUI:
     def send_instantly(self):
         """Мгновенная отправка распознанного текста"""
         try:
-            #if text:
-            #logger.info(f"Получен текст: {text}")
-
-            #self.user_entry.delete("1.0", tk.END)
-            #self.user_entry.insert(tk.END, text)
             if self.ConnectedToGame:
                 self.instant_send = True
             else:
                 self.send_message()
-            
-
 
             SpeechRecognition._text_buffer.clear()
             SpeechRecognition._current_text = ""
