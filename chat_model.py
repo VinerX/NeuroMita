@@ -370,43 +370,46 @@ class ChatModel:
                     self.current_character._send_chess_command({"action": "get_state"})
 
         # 4. Системные промпты / память -------------------------------------------------
+        # Character теперь возвращает отдельные части системных сообщений
+        main_prompt_content, dsl_temp_messages, memory_messages = self.current_character.get_all_system_messages_for_llm()
+        
         combined_messages = []
 
+        # main_prompt_messages_list теперь уже является списком сообщений
+        main_prompt_messages_list, dsl_temp_messages, memory_messages = self.current_character.get_all_system_messages_for_llm()
+
         if bool(self.gui.settings.get("SEPARATE_PROMPTS", True)):
-            # подгружаем файлы по отдельности
-            try:
-                resolved_main = self.current_character.dsl_interpreter.resolver.resolve_path(
-                    self.current_character.main_template_path_relative)
-                main_template_content = self.current_character.dsl_interpreter.resolver.load_text(
-                    resolved_main, "main template for separate prompts")
-            except Exception as e:
-                logger.error(f"Critical error loading main template for {self.current_character.char_id}: {e}",
-                            exc_info=True)
-                main_template_content = ""
-                combined_messages.append({"role": "system",
-                                        "content": f"[CRITICAL ERROR LOADING MAIN TEMPLATE FOR {self.current_character.char_id}]"})
-            # вытаскиваем пути вида [<path>]
-            file_paths = self.current_character.dsl_interpreter.placeholder_pattern.findall(main_template_content)
-            for p in file_paths:
-                try:
-                    content = self.current_character.dsl_interpreter.process_file(p)
-                    if content and content.strip():
-                        combined_messages.append({"role": "system", "content": content})
-                except Exception as e:
-                    logger.error(f"Error processing DSL file {p} for {self.current_character.char_id}: {e}",
-                                exc_info=True)
-                    combined_messages.append({"role": "system",
-                                            "content": f"[ERROR PROCESSING {p}]"})
+            # Если включен режим раздельных промптов для основного промпта
+            if main_prompt_messages_list:
+                combined_messages.extend(main_prompt_messages_list)
+            # DSL временные сообщения и сообщения памяти всегда добавляются отдельно
+            if dsl_temp_messages:
+                combined_messages.extend(dsl_temp_messages)
+            if memory_messages:
+                combined_messages.extend(memory_messages)
         else:
-            # старое поведение
-            combined_messages.extend(self.current_character.get_full_system_setup_for_llm())
+            # Если включен режим слитного промпта для основного промпта
+            full_system_prompt_parts = []
+            if main_prompt_messages_list:
+                # Объединяем содержимое всех сообщений основного промпта в одну строку
+                full_system_prompt_parts.extend([msg["content"] for msg in main_prompt_messages_list])
+            
+            # DSL временные сообщения и сообщения памяти всегда добавляются отдельно,
+            # но если SEPARATE_PROMPTS выключен, они объединяются в один системный промпт.
+            if dsl_temp_messages:
+                full_system_prompt_parts.extend([msg["content"] for msg in dsl_temp_messages])
+            if memory_messages:
+                full_system_prompt_parts.extend([msg["content"] for msg in memory_messages])
+            
+            if full_system_prompt_parts:
+                combined_messages.append({"role": "system", "content": "\n".join(full_system_prompt_parts)})
 
         # Добавляем шахматы (если сформировано)
         if chess_system_message_for_llm_content:
             combined_messages.append({"role": "system",
                                     "content": chess_system_message_for_llm_content})
 
-        # 5. История памяти
+        # 5. История сообщений
         history_data = self.current_character.history_manager.load_history()
         llm_messages_history = history_data.get("messages", [])
 
@@ -1063,32 +1066,27 @@ class ChatModel:
         # Логика формирования combined_messages из generate_response
         combined_messages = []
 
-        # 1. Системные промпты / память
+        # 1. Системные промпты / память (логика как в generate_response)
+        main_prompt_messages_list, dsl_temp_messages, memory_messages = self.current_character.get_all_system_messages_for_llm()
+
         if bool(self.gui.settings.get("SEPARATE_PROMPTS", True)):
-            try:
-                resolved_main = self.current_character.dsl_interpreter.resolver.resolve_path(
-                    self.current_character.main_template_path_relative)
-                main_template_content = self.current_character.dsl_interpreter.resolver.load_text(
-                    resolved_main, "main template for separate prompts")
-            except Exception as e:
-                logger.error(f"Critical error loading main template for {self.current_character.char_id}: {e}",
-                             exc_info=True)
-                main_template_content = ""
-                combined_messages.append({"role": "system",
-                                          "content": f"[CRITICAL ERROR LOADING MAIN TEMPLATE FOR {self.current_character.char_id}]"})
-            file_paths = self.current_character.dsl_interpreter.placeholder_pattern.findall(main_template_content)
-            for p in file_paths:
-                try:
-                    content = self.current_character.dsl_interpreter.process_file(p)
-                    if content and content.strip():
-                        combined_messages.append({"role": "system", "content": content})
-                except Exception as e:
-                    logger.error(f"Error processing DSL file {p} for {self.current_character.char_id}: {e}",
-                                 exc_info=True)
-                    combined_messages.append({"role": "system",
-                                              "content": f"[ERROR PROCESSING {p}]"})
+            if main_prompt_messages_list:
+                combined_messages.extend(main_prompt_messages_list)
+            if dsl_temp_messages:
+                combined_messages.extend(dsl_temp_messages)
+            if memory_messages:
+                combined_messages.extend(memory_messages)
         else:
-            combined_messages.extend(self.current_character.get_full_system_setup_for_llm())
+            full_system_prompt_parts = []
+            if main_prompt_messages_list:
+                full_system_prompt_parts.extend([msg["content"] for msg in main_prompt_messages_list])
+            if dsl_temp_messages:
+                full_system_prompt_parts.extend([msg["content"] for msg in dsl_temp_messages])
+            if memory_messages:
+                full_system_prompt_parts.extend([msg["content"] for msg in memory_messages])
+            
+            if full_system_prompt_parts:
+                combined_messages.append({"role": "system", "content": "\n".join(full_system_prompt_parts)})
 
         # Добавляем шахматы (если сформировано) - для точного подсчета нужно бы формировать, но пока заглушка
         # В реальной ситуации здесь нужно было бы вызвать логику формирования chess_system_message_for_llm_content
@@ -1111,7 +1109,9 @@ class ChatModel:
 
         combined_messages.extend(llm_messages_history_limited)
 
-        # 3. Временные системные сообщения
+        # 3. Временные системные сообщения (только те, что добавлены ВНЕ DSL, например, из GUI)
+        # В отличие от generate_response, здесь мы не очищаем infos_to_add_to_history,
+        # так как это функция подсчета токенов, а не отправки.
         if self.infos_to_add_to_history:
             combined_messages.extend(self.infos_to_add_to_history)
 

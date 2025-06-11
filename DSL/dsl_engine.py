@@ -5,7 +5,7 @@ import os
 import re
 import sys
 import traceback
-from typing import List, Any, TYPE_CHECKING
+from typing import List, Any, Dict, TYPE_CHECKING
 from contextlib import contextmanager
 
 
@@ -189,7 +189,7 @@ class DslInterpreter:
         self._insert_values: dict[str, str] = {}
         self._local_vars: dict[str, Any] = {} # New: for local variables
         self._declared_local_vars: set[str] = set() # New: to track variables declared as LOCAL
-        self._declared_local_vars: set[str] = set() # New: to track variables declared as LOCAL
+        self._temporary_system_messages: List[Dict] = [] # New: for temporary system messages from DSL
 
     @contextmanager
     def _use_base(self, base_dir_resolved_id: str):
@@ -376,10 +376,11 @@ class DslInterpreter:
                 original_exception=e,
             ) from e
 
-    def execute_dsl_script(self, rel_script_path: str) -> str:
-        # Clear local variables at the start of each script execution
+    def execute_dsl_script(self, rel_script_path: str) -> tuple[str, List[Dict]]:
+        # Clear local variables and temporary system messages at the start of each script execution
         self._local_vars.clear()
         self._declared_local_vars.clear()
+        self._temporary_system_messages.clear()
 
         resolved_script_id: str = ""
         returned_value_for_log: bool | None = None
@@ -548,6 +549,55 @@ class DslInterpreter:
                                 dsl_execution_logger.debug(f"SET {var} = {value} ({os.path.basename(rel_script_path)}:{num})")
                         continue
 
+                    if command == "ADD_SYSTEM_INFO":
+                        if not args:
+                            raise DslError("ADD_SYSTEM_INFO requires an argument (expression or LOAD command).", resolved_script_id, num, raw)
+                        
+                        content_to_add = ""
+                        raw_arg = args.strip()
+                        
+                        if raw_arg.upper().startswith(("LOAD_REL ", "LOADREL ")):
+                            rel_path_to_load = raw_arg.split(None, 1)[1].strip().strip('"').strip("'")
+                            try:
+                                # Используем process_file для рекурсивной обработки
+                                content_to_add, _ = self.process_file(rel_path_to_load)
+                            except DslError as de:
+                                raise DslError(f"Error in ADD_SYSTEM_INFO LOAD_REL '{rel_path_to_load}': {de.message}", resolved_script_id, num, raw, de) from de
+                            except Exception as e:
+                                raise DslError(f"Unexpected error in ADD_SYSTEM_INFO LOAD_REL '{rel_path_to_load}': {e}", resolved_script_id, num, raw, e) from e
+                        elif raw_arg.upper().startswith("LOAD "):
+                            after_load = raw_arg[5:].strip()
+                            m = re.match(r"([A-Z0-9_]+)\s+FROM\s+(.+)", after_load, re.IGNORECASE)
+                            if m:
+                                tag_name = m.group(1).upper()
+                                path_str = m.group(2).strip().strip('"').strip("'")
+                                try:
+                                    # Для LOAD TAG, сначала извлекаем тег, затем обрабатываем как шаблон
+                                    loaded_path_id = self.resolver.resolve_path(path_str)
+                                    raw_tag = self._extract_tag_section(loaded_path_id, tag_name, resolved_script_id)
+                                    content_to_add = self.process_template_content(raw_tag, f"ADD_SYSTEM_INFO LOAD {tag_name} FROM {path_str} in {rel_script_path}:{num}")
+                                except DslError as de:
+                                    raise DslError(f"Error resolving/loading for ADD_SYSTEM_INFO LOAD TAG '{path_str}': {de.message}", resolved_script_id, num, raw, de) from de
+                                except Exception as e:
+                                    raise DslError(f"Unexpected error in ADD_SYSTEM_INFO LOAD TAG '{path_str}': {e}", resolved_script_id, num, raw, e) from e
+                            else:
+                                rel_file_to_load = after_load.strip().strip('"').strip("'")
+                                try:
+                                    # Используем process_file для рекурсивной обработки
+                                    content_to_add, _ = self.process_file(rel_file_to_load)
+                                except DslError as de:
+                                    raise DslError(f"Error in ADD_SYSTEM_INFO LOAD '{rel_file_to_load}': {de.message}", resolved_script_id, num, raw, de) from de
+                                except Exception as e:
+                                    raise DslError(f"Unexpected error in ADD_SYSTEM_INFO LOAD '{rel_file_to_load}': {e}", resolved_script_id, num, raw, e) from e
+                        else:
+                            # Если это не LOAD команда, то это выражение, которое нужно оценить
+                            expr_expanded = self._expand_inline_loads(raw_arg, script_path_for_error=resolved_script_id, line_num=num, line_content=raw)
+                            content_to_add = str(self._eval_expr(expr_expanded, resolved_script_id, num, raw))
+                        
+                        self._temporary_system_messages.append({"role": "system", "content": content_to_add})
+                        dsl_execution_logger.debug(f"ADD_SYSTEM_INFO: Added temporary system message ({os.path.basename(rel_script_path)}:{num})")
+                        continue
+
                     if command == "LOG":
                         val = self._eval_expr(args, resolved_script_id, num, raw)
                         prefix = f"{os.path.basename(rel_script_path)}:{num}"
@@ -556,7 +606,7 @@ class DslInterpreter:
                         continue
                     
                     if command == "RETURN":
-                        raw_arg = args.strip() 
+                        raw_arg = args.strip()
                         raw_arg_expanded = self._expand_inline_loads(raw_arg, script_path_for_error=resolved_script_id, line_num=num, line_content=raw)
                         txt = ""
 
@@ -594,7 +644,7 @@ class DslInterpreter:
                         returned = self.process_template_content(txt, f"RETURN in {rel_script_path}:{num}")
                         returned_value_for_log = returned is not None
                         dsl_execution_logger.debug(f"RETURN (value exists={returned_value_for_log}) ({os.path.basename(rel_script_path)}:{num})")
-                        return returned
+                        return (returned, self._temporary_system_messages.copy())
 
                     dsl_execution_logger.error(f"Unknown DSL command '{command}' in {os.path.basename(rel_script_path)}:{num} Line: \"{raw.strip()}\"")
                     raise DslError(f"Unknown DSL command '{command}'", resolved_script_id, num, raw)
@@ -603,22 +653,22 @@ class DslInterpreter:
                     dsl_execution_logger.warning(f"Script {rel_script_path} ended with unterminated IF block(s).")
                 
                 returned_value_for_log = returned is not None
-                return returned or ""
+                return (returned or "", self._temporary_system_messages.copy())
 
         except DslError as e:
             dsl_execution_logger.error(
                 f"DslError during execution of {rel_script_path} (resolved: {e.script_path or resolved_script_id}): {e.message} at line {e.line_num}",
-                exc_info=False, 
+                exc_info=False,
             )
             print(f"{RED}{str(e)}{RST}", file=sys.stderr)
-            return f"[DSL ERROR IN {os.path.basename(e.script_path or resolved_script_id or rel_script_path)}]"
+            return (f"[DSL ERROR IN {os.path.basename(e.script_path or resolved_script_id or rel_script_path)}]", [])
         except Exception as e:
             dsl_execution_logger.error(
                 f"Unexpected Python error during execution of {rel_script_path} (resolved: {resolved_script_id}): {e}",
                 exc_info=True,
             )
             print(f"{RED}Unexpected Python error in {rel_script_path}: {e}{RST}\n{traceback.format_exc()}", file=sys.stderr)
-            return f"[PY ERROR IN {os.path.basename(resolved_script_id or rel_script_path)}]"
+            return (f"[PY ERROR IN {os.path.basename(resolved_script_id or rel_script_path)}]", [])
         finally:
             dsl_execution_logger.info(
                 f"Finished DSL script: {rel_script_path}. Returned value: {returned_value_for_log if returned_value_for_log is not None else False}"
@@ -628,6 +678,12 @@ class DslInterpreter:
         if not isinstance(text, str): text = str(text)
         depth = 0
         original_text_for_recursion_check = text
+
+        # Временный список для сбора сообщений, добавленных через вложенные скрипты/файлы
+        # Этот список будет очищаться при каждом вызове process_main_template_file и process_file
+        # и использоваться для сбора сообщений из вложенных LOAD/ADD_SYSTEM_INFO.
+        # Затем он будет объединен с self._temporary_system_messages в process_main_template_file/process_file.
+        local_collected_temp_messages: List[Dict] = []
 
         while self.placeholder_pattern.search(text) and depth < MAX_RECURSION:
             depth += 1
@@ -639,13 +695,18 @@ class DslInterpreter:
                     placeholder_dirname_id = self.resolver.get_dirname(resolved_placeholder_id)
                     with self._use_base(placeholder_dirname_id):
                         if rel_path_placeholder.endswith(".script"):
-                            return self.execute_dsl_script(rel_path_placeholder) # execute_dsl_script expects relative path
+                            # execute_dsl_script теперь возвращает кортеж (текст, временные_сообщения)
+                            content, temp_msgs = self.execute_dsl_script(rel_path_placeholder)
+                            local_collected_temp_messages.extend(temp_msgs) # Собираем временные сообщения
+                            return content # Возвращаем только текст для подстановки
                         if rel_path_placeholder.endswith(".txt"):
-                            raw_txt = self.resolver.load_text(resolved_placeholder_id, f"placeholder {rel_path_placeholder} in {ctx}")
-                            return self.process_template_content(raw_txt, f"{rel_path_placeholder} (recursive from {ctx})")
+                            # process_file теперь возвращает кортеж (текст, временные_сообщения)
+                            content, temp_msgs = self.process_file(rel_path_placeholder)
+                            local_collected_temp_messages.extend(temp_msgs) # Собираем временные сообщения
+                            return content # Возвращаем только текст для подстановки
                         
                         dsl_execution_logger.error(f"Unknown placeholder type: {rel_path_placeholder} in {ctx}")
-                        raise DslError("Unknown placeholder type", script_path=rel_path_placeholder) # Pass rel_path here
+                        raise DslError("Unknown placeholder type", script_path=rel_path_placeholder)
                 except PathResolverError as pre:
                     dsl_execution_logger.error(f"PathResolverError for placeholder '{rel_path_placeholder}' in {ctx}: {pre.message}")
                     print(f"{RED}Error processing placeholder {rel_path_placeholder}: {pre}{RST}", file=sys.stderr)
@@ -653,7 +714,7 @@ class DslInterpreter:
                 except DslError as de:
                     dsl_execution_logger.error(f"DSL ERROR while processing placeholder {rel_path_placeholder} in {ctx}: {de}")
                     print(f"{RED}Error processing placeholder {rel_path_placeholder}: {de}{RST}", file=sys.stderr)
-                    return f"[DSL ERROR {rel_path_placeholder}]" # de.script_path should be rel_path_placeholder
+                    return f"[DSL ERROR {rel_path_placeholder}]"
                 except Exception as exc:
                     dsl_execution_logger.error(f"Unexpected Python error processing placeholder {rel_path_placeholder} in {ctx}: {exc}", exc_info=True)
                     print(f"{RED}Unexpected Python error in placeholder {rel_path_placeholder}: {exc}{RST}\n{traceback.format_exc()}", file=sys.stderr)
@@ -676,6 +737,9 @@ class DslInterpreter:
         if depth >= MAX_RECURSION:
             dsl_execution_logger.error(f"Max recursion depth ({MAX_RECURSION}) reached in '{ctx}'. Original: '{original_text_for_recursion_check[:100]}...'")
             text += f"\n[DSL ERROR: MAX RECURSION {MAX_RECURSION} REACHED IN '{ctx}']"
+        
+        # Объединяем собранные временные сообщения с основными временными сообщениями интерпретатора
+        self._temporary_system_messages.extend(local_collected_temp_messages)
         return text
 
     def set_insert(self, name: str, content: Any | None):
@@ -721,7 +785,9 @@ class DslInterpreter:
         if content.startswith("\n"): content = content[1:]
         return content
 
-    def process_main_template_file(self, rel_path_main_template: str) -> str:
+    def process_main_template_file(self, rel_path_main_template: str) -> tuple[List[Dict], List[Dict]]:
+        self._temporary_system_messages.clear() # Clear temporary messages at the start of main template processing
+        main_prompt_messages_list: List[Dict] = []
         resolved_main_template_id: str = ""
         try:
             char_ctx_filter.set_character_id(getattr(self.character, "char_id", "NO_CHAR_CTX"))
@@ -745,24 +811,56 @@ class DslInterpreter:
                     original_exception=pre
                 ) from pre
 
-            final_prompt = self.process_template_content(raw_template_content, f"main template {rel_path_main_template}")
-            final_prompt = self._apply_inserts(final_prompt, ctx=f"main template {rel_path_main_template}")
+            # Находим все плейсхолдеры [<path>]
+            file_paths_in_template = self.placeholder_pattern.findall(raw_template_content)
+
+            for rel_file_path in file_paths_in_template:
+                try:
+                    # process_file теперь возвращает (content, temp_messages)
+                    content, temp_msgs = self.process_file(rel_file_path)
+                    if content and content.strip():
+                        # Добавляем текстовое содержимое как отдельное системное сообщение
+                        main_prompt_messages_list.append({"role": "system", "content": content})
+                    # Временные сообщения уже добавлены в self._temporary_system_messages внутри process_file
+                except DslError as de:
+                    dsl_execution_logger.error(f"DslError while processing included file '{rel_file_path}' in main template: {de.message}", exc_info=False)
+                    main_prompt_messages_list.append({"role": "system", "content": f"[DSL ERROR IN {os.path.basename(de.script_path or rel_file_path)} - CHECK LOGS]"})
+                except Exception as e:
+                    dsl_execution_logger.error(f"Unexpected Python error processing included file '{rel_file_path}' in main template: {e}", exc_info=True)
+                    main_prompt_messages_list.append({"role": "system", "content": f"[PY ERROR IN {os.path.basename(rel_file_path)} - CHECK LOGS]"})
+
+            # Применяем inserts к каждому сообщению в main_prompt_messages_list
+            # Это важно, если inserts используются внутри файлов, загружаемых в main_template
+            final_main_prompt_messages = []
+            for msg in main_prompt_messages_list:
+                if msg["role"] == "system" and isinstance(msg["content"], str):
+                    final_main_prompt_messages.append({"role": "system", "content": self._apply_inserts(msg["content"], ctx=f"main template {rel_path_main_template}")})
+                else:
+                    final_main_prompt_messages.append(msg)
+
             dsl_execution_logger.info(f"Successfully processed main template: {rel_path_main_template}")
-            return final_prompt
+            return (final_main_prompt_messages, self._temporary_system_messages.copy())
         except DslError as e:
             dsl_execution_logger.error(f"DslError while processing main template '{rel_path_main_template}' (resolved: {e.script_path or resolved_main_template_id}): {e.message}", exc_info=False)
             print(f"{RED}{str(e)}{RST}", file=sys.stderr)
-            return f"[DSL ERROR IN MAIN TEMPLATE {os.path.basename(e.script_path or resolved_main_template_id or rel_path_main_template)} - CHECK LOGS]"
+            return ([{"role": "system", "content": f"[DSL ERROR IN MAIN TEMPLATE {os.path.basename(e.script_path or resolved_main_template_id or rel_path_main_template)} - CHECK LOGS]"}], [])
         except Exception as e:
             dsl_execution_logger.error(f"Unexpected Python error processing main template '{rel_path_main_template}' (resolved: {resolved_main_template_id}): {e}", exc_info=True)
             print(f"{RED}Unexpected Python error in main template {rel_path_main_template}: {e}{RST}\n{traceback.format_exc()}", file=sys.stderr)
-            return f"[PY ERROR IN MAIN TEMPLATE {os.path.basename(resolved_main_template_id or rel_path_main_template)} - CHECK LOGS]"
+            return ([{"role": "system", "content": f"[PY ERROR IN MAIN TEMPLATE {os.path.basename(resolved_main_template_id or rel_path_main_template)} - CHECK LOGS]"}], [])
 
-    def process_file(self, rel_file_path: str) -> str:
+    def process_file(self, rel_file_path: str) -> tuple[str, List[Dict]]:
         """
         Processes a given file (script or text) and returns its content.
         This acts as a unified entry point for processing individual prompt files.
         """
+        # self._temporary_system_messages.clear() # УДАЛЕНО: Очистка должна происходить только в execute_dsl_script и process_main_template_file
+        # Временный список для сбора сообщений, добавленных через вложенные скрипты/файлы
+        # Этот список будет очищаться при каждом вызове process_main_template_file и process_file
+        # и использоваться для сбора сообщений из вложенных LOAD/ADD_SYSTEM_INFO.
+        # Затем он будет объединен с self._temporary_system_messages в process_main_template_file/process_file.
+        local_collected_temp_messages: List[Dict] = [] # Перенесено из process_template_content
+
         resolved_file_id: str = ""
         try:
             char_ctx_filter.set_character_id(getattr(self.character, "char_id", "NO_CHAR_CTX"))
@@ -779,7 +877,8 @@ class DslInterpreter:
 
             if rel_file_path.endswith(".script"):
                 # For .script files, execute them
-                content = self.execute_dsl_script(rel_file_path)
+                content, temp_messages = self.execute_dsl_script(rel_file_path)
+                self._temporary_system_messages.extend(temp_messages) # Добавляем временные сообщения из скрипта
             elif rel_file_path.endswith(".txt"):
                 # For .txt files, load and process as template content
                 try:
@@ -792,16 +891,18 @@ class DslInterpreter:
                     ) from pre
                 content = self.process_template_content(raw_content, f"individual file {rel_file_path}")
                 content = self._apply_inserts(content, ctx=f"individual file {rel_file_path}")
+                # Временные сообщения из process_template_content уже добавлены в self._temporary_system_messages
+                temp_messages = [] # Здесь не нужно копировать, так как они уже добавлены
             else:
                 raise DslError(f"Unsupported file type for individual processing: {rel_file_path}", script_path=rel_file_path)
             
             dsl_execution_logger.info(f"Successfully processed individual file: {rel_file_path}")
-            return content
+            return (content, self._temporary_system_messages.copy()) # Возвращаем копию, чтобы не было мутаций
         except DslError as e:
             dsl_execution_logger.error(f"DslError while processing individual file '{rel_file_path}' (resolved: {e.script_path or resolved_file_id}): {e.message}", exc_info=False)
             print(f"{RED}{str(e)}{RST}", file=sys.stderr)
-            return f"[DSL ERROR IN FILE {os.path.basename(e.script_path or resolved_file_id or rel_file_path)} - CHECK LOGS]"
+            return (f"[DSL ERROR IN FILE {os.path.basename(e.script_path or resolved_file_id or rel_file_path)} - CHECK LOGS]", [])
         except Exception as e:
             dsl_execution_logger.error(f"Unexpected Python error processing individual file '{rel_file_path}' (resolved: {resolved_file_id}): {e}", exc_info=True)
             print(f"{RED}Unexpected Python error in file {rel_file_path}: {e}{RST}\n{traceback.format_exc()}", file=sys.stderr)
-            return f"[PY ERROR IN FILE {os.path.basename(resolved_file_id or rel_file_path)} - CHECK LOGS]"
+            return (f"[PY ERROR IN FILE {os.path.basename(resolved_file_id or rel_file_path)} - CHECK LOGS]", [])

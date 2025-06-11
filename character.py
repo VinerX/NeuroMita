@@ -144,9 +144,10 @@ class Character:
         # logger.debug(f"Variable '{name}' set to: {value} (type: {type(value)}) for char '{self.char_id}'")
 
 
-    def get_llm_system_prompt_string(self) -> str:
+    def get_all_system_messages_for_llm(self) -> tuple[List[Dict], List[Dict], List[Dict]]:
         """
-        Generates the main system prompt string using the DSL engine.
+        Собирает все системные сообщения для LLM: основной промпт (как список сообщений),
+        временные сообщения из DSL и сообщения из системы памяти.
         """
         self.set_variable("SYSTEM_DATETIME", datetime.datetime.now().strftime("%Y %B %d (%A) %H:%M"))
         
@@ -154,26 +155,21 @@ class Character:
             self.dsl_interpreter.char_ctx_filter.set_character_id(self.char_id) # type: ignore
             
         try:
-            generated_prompt = self.dsl_interpreter.process_main_template_file(self.main_template_path_relative)
-            return generated_prompt
+            # process_main_template_file теперь возвращает список сообщений основного промпта
+            main_prompt_messages_list, dsl_temp_messages = self.dsl_interpreter.process_main_template_file(self.main_template_path_relative)
+            
+            memory_message_content = self.memory_system.get_memories_formatted()
+            memory_messages = []
+            if memory_message_content and memory_message_content.strip():
+                memory_messages.append({"role": "system", "content": memory_message_content})
+            
+            return main_prompt_messages_list, dsl_temp_messages, memory_messages
+            
         except Exception as e:
             logger.error(f"Critical error during DSL processing for {self.char_id}: {e}", exc_info=True)
-            print(f"{RED_COLOR}Critical error in get_llm_system_prompt_string for {self.char_id}: {e}{RESET_COLOR}\n{traceback.format_exc()}", file=sys.stderr)
-            return f"[CRITICAL PYTHON ERROR GENERATING SYSTEM PROMPT FOR {self.char_id} - CHECK LOGS]"
-
-    def get_full_system_setup_for_llm(self) -> List[Dict[str, str]]:
-        """
-        Prepares all system messages for the LLM.
-        """
-        messages = []
-        dsl_generated_content = self.get_llm_system_prompt_string()
-        if dsl_generated_content and dsl_generated_content.strip():
-            messages.append({"role": "system", "content": dsl_generated_content})
-        
-        memory_message_content = self.memory_system.get_memories_formatted()
-        if memory_message_content and memory_message_content.strip():
-            messages.append({"role": "system", "content": memory_message_content})
-        return messages
+            print(f"{RED_COLOR}Critical error in get_all_system_messages_for_llm for {self.char_id}: {e}{RESET_COLOR}\n{traceback.format_exc()}", file=sys.stderr)
+            # В случае ошибки возвращаем пустые списки, чтобы не ломать дальнейшую логику
+            return ([{"role": "system", "content": f"[CRITICAL PYTHON ERROR GENERATING SYSTEM PROMPT FOR {self.char_id} - CHECK LOGS]"}], [], [])
 
     # In OpenMita/character.py, class Character
     def process_response_nlp_commands(self, response: str) -> str:
