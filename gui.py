@@ -1,4 +1,7 @@
+import io
 import uuid
+
+import win32gui
 
 import guiTemplates
 from AudioHandler import AudioHandler
@@ -22,12 +25,15 @@ import asyncio
 import threading
 
 import binascii
+import re # Импортируем модуль регулярных выражений
+import subprocess # Импортируем модуль subprocess для открытия папок
 
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
+from PIL import Image, ImageTk
 
-from utils import SH
+from utils import SH, process_text_to_voice
 import sys
 
 import sounddevice as sd
@@ -187,6 +193,12 @@ class ChatGUI:
         self.instant_send = False
         self.waiting_answer = False
 
+        # Параметры для ленивой загрузки
+        self.lazy_load_batch_size = 50  # Количество сообщений для загрузки за раз
+        self.total_messages_in_history = 0  # Общее количество сообщений в истории
+        self.loaded_messages_offset = 0  # Смещение для загрузки сообщений
+        self.loading_more_history = False  # Флаг, чтобы избежать повторной загрузки
+
         self.root = tk.Tk()
         self.root.wm_iconphoto(False, tk.PhotoImage(file='icon.png'))
 
@@ -222,8 +234,6 @@ class ChatGUI:
         SpeechRecognition.set_recognizer_type(initial_recognizer_type)
         SpeechRecognition.vosk_model = initial_vosk_model
 
-        SpeechRecognition.speach_recognition_start(self.device_id, self.loop)
-
         # Запуск проверки переменной textToTalk через after
         self.root.after(150, self.check_text_to_talk_or_send)
 
@@ -237,6 +247,11 @@ class ChatGUI:
         self.image_request_running = False
         self.last_image_request_time = time.time()
         self.image_request_timer_running = False
+
+        # Добавляем автоматический запуск захвата экрана, если настройка включена
+        if self.settings.get("ENABLE_SCREEN_ANALYSIS", False):
+            logger.info("Настройка 'ENABLE_SCREEN_ANALYSIS' включена. Автоматический запуск захвата экрана.")
+            self.start_screen_capture_thread()
 
     def start_asyncio_loop(self):
         """Запускает цикл событий asyncio в отдельном потоке."""
@@ -384,23 +399,28 @@ class ChatGUI:
                 logger.error("Ошибка: Цикл событий не готов.")
 
         # --- Логика периодической отправки изображений ---
-        if self.settings.get("SEND_IMAGE_REQUESTS", False):
+        if self.image_request_timer_running:
             current_time = time.time()
             interval = float(self.settings.get("IMAGE_REQUEST_INTERVAL", 20.0))
-            if current_time - self.last_image_request_time >= interval:
+
+            delta = current_time - self.last_image_request_time
+            # Добавляем лог для отладки
+            #logger.debug(f"Проверка периодической отправки: {delta}/{interval}")
+
+            if  delta >= interval:
 
                 # Захватываем изображение
                 image_data = []
                 if self.settings.get("ENABLE_SCREEN_ANALYSIS", False):
                     logger.info(
-                        f"Отправка периодического запроса с изображением ({current_time - self.last_image_request_time}/{interval} сек).")
+                        f"Отправка периодического запроса с изображением ({current_time - self.last_image_request_time:.2f}/{interval:.2f} сек).")
                     history_limit = int(self.settings.get("SCREEN_CAPTURE_HISTORY_LIMIT", 1))
                     frames = self.screen_capture_instance.get_recent_frames(history_limit)
                     if frames:
                         image_data.extend(frames)
                         logger.info(f"Захвачено {len(frames)} кадров для периодической отправки.")
                     else:
-                        ...#logger.info("Анализ экрана включен, но кадры не готовы или история пуста для периодической отправки.")
+                        logger.info("Анализ экрана включен, но кадры не готовы или история пуста для периодической отправки.")
 
                     if image_data:
                         # Отправляем запрос только с изображением (без текста)
@@ -410,7 +430,7 @@ class ChatGUI:
                         else:
                             logger.error("Ошибка: Цикл событий не готов для периодической отправки изображений.")
                     else:
-                        ...#logger.warning("Нет изображений для периодической отправки.")
+                        logger.warning("Нет изображений для периодической отправки.")
 
 
         # --- Остальная часть функции без изменений (обработка микрофона) ---
@@ -446,16 +466,22 @@ class ChatGUI:
                 self.instant_send = True
             else:
                 self.send_message()
+            
+
 
             SpeechRecognition._text_buffer.clear()
             SpeechRecognition._current_text = ""
-
         except Exception as e:
             logger.info(f"Ошибка обработки текста: {str(e)}")
 
     def clear_user_input(self):
         self.user_input = ""
         self.user_entry.delete(1.0, 'end')
+
+    def on_enter_pressed(self, event):
+        """Обработчик нажатия клавиши Enter в поле ввода."""
+        self.send_message()
+        return 'break' # Предотвращаем вставку новой строки
 
     def start_server(self):
         """Запускает сервер в отдельном потоке."""
@@ -478,6 +504,7 @@ class ChatGUI:
         while self.running:
             needUpdate = self.server.handle_connection()
             if needUpdate:
+                logger.info(f"[{time.strftime('%H:%M:%S')}] run_server_loop: Обнаружено needUpdate, вызываю load_chat_history.")
                 self.load_chat_history()
 
     def setup_ui(self):
@@ -497,33 +524,72 @@ class ChatGUI:
         left_frame.grid_columnconfigure(0, weight=1)
 
         # Чат - верхняя часть (растягивается)
+
+        # Фрейм для кнопок над чатом
+        button_frame_above_chat = tk.Frame(left_frame, bg="#1e1e1e")
+        button_frame_above_chat.grid(row=0, column=0, sticky="nw", padx=10, pady=(10, 0)) # Размещаем над чатом
+
+
+
+        # Чат - верхняя часть (растягивается)
         self.chat_window = tk.Text(
             left_frame, height=30, width=40, state=tk.NORMAL,
             bg="#151515", fg="#ffffff", insertbackground="white", wrap=tk.WORD,
             font=("Arial", 12)
         )
-        self.chat_window.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 0))
+        self.chat_window.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 0)) # Сдвигаем чат на вторую строку
+
+        self.clear_chat_button = tk.Button(
+            button_frame_above_chat, text=_("Очистить", "Clear"), command=self.clear_chat_display,
+            bg="#8a2be2", fg="#ffffff", font=("Arial", 10), padx=2, pady=2 # Уменьшаем размер шрифта и отступы
+        )
+        self.clear_chat_button.pack(side=tk.LEFT, padx=(0, 5), pady=5) # Размещаем слева
+
+        self.load_history_button = tk.Button(
+            button_frame_above_chat, text=_("Взять из истории", "Load from history"), command=self.load_chat_history,
+            bg="#8a2be2", fg="#ffffff", font=("Arial", 10), padx=2, pady=2 # Уменьшаем размер шрифта и отступы
+        )
+        self.load_history_button.pack(side=tk.LEFT, padx=(0, 5), pady=5) # Размещаем слева
 
         # Добавляем стили
-        self.chat_window.tag_configure("Mita", foreground="hot pink", font=("Arial", 12, "bold"))
-        self.chat_window.tag_configure("Player", foreground="gold", font=("Arial", 12, "bold"))
-        self.chat_window.tag_configure("System", foreground="white", font=("Arial", 12, "bold"))
+        # Получаем начальный размер шрифта из настроек
+        initial_font_size = int(self.settings.get("CHAT_FONT_SIZE", 12))
+        self.chat_window.tag_configure("default", font=("Arial", initial_font_size)) # Явно настраиваем тег "default"
+        self.chat_window.tag_configure("Mita", foreground="hot pink", font=("Arial", initial_font_size, "bold"))
+        self.chat_window.tag_configure("tag_green", foreground="#00FF00", font=("Arial", initial_font_size))
+        self.chat_window.tag_configure("Player", foreground="gold", font=("Arial", initial_font_size, "bold"))
+        self.chat_window.tag_configure("System", foreground="white", font=("Arial", initial_font_size, "bold"))
+        self.chat_window.tag_configure("bold", font=("Arial", initial_font_size, "bold"))
+        self.chat_window.tag_configure("italic", font=("Arial", initial_font_size, "italic"))
+        self.chat_window.tag_configure("timestamp", foreground="#888888", font=("Arial", initial_font_size - 2, "italic")) # Метка времени чуть меньше
+        # Стили для цветов будут добавляться динамически
 
         # Инпут - нижняя часть (фиксированная высота)
         input_frame = tk.Frame(left_frame, bg="#2c2c2c")
-        input_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=(20, 10))  # pady=(20, 10) — отступ сверху 20px
+        input_frame.grid(row=2, column=0, sticky="ew", padx=5, pady=(20, 10))  # Сдвигаем инпут на третью строку
+
+        # Метка для отображения количества токенов
+        self.token_count_label = tk.Label(
+            input_frame,
+            text=_("Токены: 0/0 | Стоимость: 0.00 ₽", "Tokens: 0/0 | Cost: 0.00 ₽"),
+            bg="#2c2c2c",
+            fg="#ffffff",
+            font=("Arial", 10)
+        )
+        self.token_count_label.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 5)) # Размещаем сверху
 
         self.user_entry = tk.Text(
             input_frame, height=3, width=50, bg="#151515", fg="#ffffff",
             insertbackground="white", font=("Arial", 12)
         )
-        self.user_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.user_entry.pack(side=tk.TOP, fill=tk.X, expand=True, padx=5, pady=(0, 5))
+        self.user_entry.bind("<Return>", self.on_enter_pressed) # Добавляем обработчик нажатия Enter
 
         self.send_button = tk.Button(
             input_frame, text=_("Отправить", "Send"), command=self.send_message,
             bg="#9370db", fg="#ffffff", font=("Arial", 12)
         )
-        self.send_button.pack(side=tk.RIGHT, padx=5)
+        self.send_button.pack(side=tk.RIGHT, padx=5, pady=(0, 5)) # Размещаем справа от поля ввода
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -612,7 +678,6 @@ class ChatGUI:
         #self.setup_control("Стресс", "stress", self.model.stress)
         #self.setup_secret_control()
 
-        self.setup_history_controls(settings_frame)
         self.setup_debug_controls(settings_frame)
 
         self.setup_common_controls(settings_frame)
@@ -621,7 +686,9 @@ class ChatGUI:
         if os.environ.get("ENABLE_COMMAND_REPLACER_BY_DEFAULT", "0") == "1":
             self.setup_command_replacer_controls(settings_frame)
 
+        self.setup_chat_settings_controls(settings_frame) # Новая секция для настроек чата
         self.setup_screen_analysis_controls(settings_frame)  # Новая секция для анализа экрана
+        self.setup_token_settings_controls(settings_frame) # Новая секция для настроек токенов
 
         self.setup_news_control(settings_frame)
 
@@ -634,29 +701,191 @@ class ChatGUI:
 
         self.load_chat_history()
 
-    def insert_message(self, role, content):
-        processed_content = ""
+    def insert_message(self, role, content, insert_at_start=False,message_time = ""):
+        logger.info(f"insert_message вызван. Роль: {role}, Содержимое: {str(content)[:50]}...")
+        # Создаем список для хранения ссылок на изображения, чтобы они не были удалены сборщиком мусора
+        if not hasattr(self, '_images_in_chat'):
+            self._images_in_chat = []
+
+        processed_content_parts = []
+        has_image_content = False
 
         if isinstance(content, list):
-            # Если content - это список, извлекаем только текстовые части
             for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    processed_content += item.get("text", "")
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        processed_content_parts.append({"type": "text", "content": item.get("text", ""), "tag": "default"})
+                    elif item.get("type") == "image_url":
+                        image_data_base64 = item.get("image_url", {}).get("url", "")
+                        if image_data_base64.startswith("data:image/jpeg;base64,"):
+                            image_data_base64 = image_data_base64.replace("data:image/jpeg;base64,", "")
+                        elif image_data_base64.startswith("data:image/png;base64,"):
+                            image_data_base64 = image_data_base64.replace("data:image/png;base64,", "")
+                        
+                        try:
+                            image_bytes = base64.b64decode(image_data_base64)
+                            image = Image.open(io.BytesIO(image_bytes))
+                            
+                            # Изменение размера изображения
+                            max_width = 400
+                            max_height = 300
+                            original_width, original_height = image.size
+
+                            if original_width > max_width or original_height > max_height:
+                                ratio = min(max_width / original_width, max_height / original_height)
+                                new_width = int(original_width * ratio)
+                                new_height = int(original_height * ratio)
+                                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+                            photo = ImageTk.PhotoImage(image)
+                            self._images_in_chat.append(photo) # Сохраняем ссылку
+                            processed_content_parts.append({"type": "image", "content": photo})
+                            has_image_content = True
+                        except Exception as e:
+                            logger.error(f"Ошибка при декодировании или обработке изображения: {e}")
+                            processed_content_parts.append({"type": "text", "content": _("<Ошибка загрузки изображения>", "<Image load error>")})
+                
+            if has_image_content and not any(part["type"] == "text" and part["content"].strip() for part in processed_content_parts):
+                # Если есть только изображения и нет текста, добавляем метку
+                processed_content_parts.insert(0, {"type": "text", "content": _("<Изображение экрана>", "<Screen Image>") + "\n", "tag": "default"})
+ 
         elif isinstance(content, str):
-            # Если content - это строка, используем ее как есть
-            processed_content = content
+            processed_content_parts.append({"type": "text", "content": content, "tag": "default"})
         else:
-            # Если content не является ни списком, ни строкой, игнорируем
             return
 
-        if role == "user":
-            # Вставляем имя пользователя с зеленым цветом, а текст — обычным
-            self.chat_window.insert(tk.END, _("Вы: ", "You: "), "Player")
-            self.chat_window.insert(tk.END, f"{processed_content}\n")
-        elif role == "assistant":
-            # Вставляем имя Миты с синим цветом, а текст — обычным
-            self.chat_window.insert(tk.END, f"{self.model.current_character.name}: ", "Mita")
-            self.chat_window.insert(tk.END, f"{processed_content}\n\n")
+            # Обработка тегов в текстовом содержимом
+        processed_text_parts = []
+        hide_tags = self.settings.get("HIDE_CHAT_TAGS", False)
+
+        for part in processed_content_parts:
+            if part["type"] == "text":
+                text_content = part["content"]
+                if hide_tags:
+                    # Удаляем все теги и их содержимое
+                    text_content = process_text_to_voice(text_content)
+                    processed_text_parts.append({"type": "text", "content": text_content, "tag": "default"})
+                else:
+                    # Регулярное выражение для поиска тегов <e>...</e>, <c>...</c>, <a>...</a>, [b]...[/b], [i]...[/i] и [color=...]...[/color]
+                    # Регулярное выражение для поиска тегов <e>...</e>, <c>...</c>, <a>...</a>, [b]...[/b], [i]...[/i] и [color=...]...[/color]
+                    # Теперь также ищет одиночные открывающие теги <что-то>
+                    # Регулярное выражение для поиска тегов <любое_имя>...</любое_имя>, <любое_имя>, [b]...[/b], [i]...[/i] и [color=...]...[/color]
+                    # Регулярное выражение для поиска парных тегов <tag>...</tag>, одиночных открывающих тегов <tag>,
+                    # а также [b]...[/b], [i]...[/i] и [color=...]...[/color]
+                    # Изменено: (\w+) заменено на ([^>]+) для поддержки тегов с символами, отличными от буквенно-цифровых
+                    matches = list(
+                        re.finditer(r'(<([^>]+)>)(.*?)(</\2>)|(<([^>]+)>)|(\[b\](.*?)\[\/b\])|(\[i\](.*?)\[\/i\])|(\[color=(.*?)\](.*?)\[\/color\])', text_content))
+
+                    last_end = 0
+                    for match in matches:
+                        start, end = match.span()
+                        # Добавляем текст до совпадения без тега
+                        if start > last_end:
+                            processed_text_parts.append({"type": "text", "content": text_content[last_end:start], "tag": "default"})
+
+                        # Обрабатываем совпадение
+                        if match.group(1) is not None:  # Парные теги <любое_имя>...</любое_имя>
+                            # match.group(1) = "<tag>"
+                            # match.group(3) = "content"
+                            # match.group(4) = "</tag>"
+                            processed_text_parts.append({"type": "text", "content": match.group(1), "tag": "tag_green"}) # Открывающий тег
+                            processed_text_parts.append({"type": "text", "content": match.group(3), "tag": "default"}) # Содержимое тега
+                            processed_text_parts.append({"type": "text", "content": match.group(4), "tag": "tag_green"}) # Закрывающий тег
+                        elif match.group(5) is not None:  # Одиночные открывающие теги <любое_имя>
+                            # match.group(5) = "<tag>"
+                            processed_text_parts.append({"type": "text", "content": match.group(5), "tag": "tag_green"})
+                        elif match.group(7) is not None:  # Жирный текст [b]
+                            processed_text_parts.append({"type": "text", "content": match.group(7), "tag": "bold"})
+                        elif match.group(9) is not None:  # Курсивный текст [i]
+                            processed_text_parts.append({"type": "text", "content": match.group(9), "tag": "italic"})
+                        elif match.group(11) is not None and match.group(12) is not None:  # Цветной текст [color=...]
+                            color = match.group(11)
+                            colored_text = match.group(12)
+                            tag_name = f"color_{color.replace('#', '').replace(' ', '_')}"
+                            if tag_name not in self.chat_window.tag_names():
+                                try:
+                                    self.chat_window.tag_configure(tag_name, foreground=color)
+                                except tk.TclError:
+                                    logger.warning(f"Неверный формат цвета: {color}. Использование цвета по умолчанию.")
+                                    tag_name = "Mita"
+                            processed_text_parts.append({"type": "text", "content": f"[color={color}]{colored_text}[/color]", "tag": tag_name})
+
+                        last_end = end
+
+                    # Добавляем оставшийся текст после последнего совпадения без тега
+                    if last_end < len(text_content):
+                        processed_text_parts.append({"type": "text", "content": text_content[last_end:], "tag": "default"})
+            else:
+                processed_text_parts.append(part)
+
+        # Вставка сообщений
+        self.chat_window.config(state=tk.NORMAL)  # Включаем редактирование
+
+        show_timestamps = self.settings.get("SHOW_CHAT_TIMESTAMPS", False)
+        timestamp_str = "[???] "
+        if show_timestamps:
+            if message_time:
+                timestamp_str = f"[{message_time}]"
+            else:
+                timestamp_str = time.strftime("[%H:%M:%S] ")
+
+        if insert_at_start:
+            # Собираем части сообщения в список в желаемом порядке отображения
+            # (метка времени, имя, содержимое, перевод строки)
+            parts_to_insert_in_order = []
+
+            if show_timestamps:
+                parts_to_insert_in_order.append({"type": "text", "content": timestamp_str, "tag": "timestamp"})
+
+            if role == "user":
+                parts_to_insert_in_order.append({"type": "text", "content": _("Вы: ", "You: "), "tag": "Player"})
+            elif role == "assistant":
+                parts_to_insert_in_order.append({"type": "text", "content": f"{self.model.current_character.name}: ", "tag": "Mita"})
+
+            # Добавляем содержимое сообщения
+            parts_to_insert_in_order.extend(processed_text_parts)
+
+            # Добавляем переводы строк в конце
+            if role == "user":
+                parts_to_insert_in_order.append({"type": "text", "content": "\n"})
+            elif role == "assistant":
+                parts_to_insert_in_order.append({"type": "text", "content": "\n\n"})
+
+            # Вставляем все части в обратном порядке, чтобы они появились в правильном порядке в чате
+            # (потому что insert(1.0, ...) вставляет в начало)
+            for part in reversed(parts_to_insert_in_order):
+                if part["type"] == "text":
+                    self.chat_window.insert(1.0, part["content"], part.get("tag", "default"))
+                elif part["type"] == "image":
+                    self.chat_window.image_create(1.0, image=part["content"])
+                    self.chat_window.insert(1.0, "\n") # Добавляем перевод строки после изображения
+        else:
+            if role == "user":
+                if show_timestamps:
+                    self.chat_window.insert(tk.END, timestamp_str, "timestamp")
+                self.chat_window.insert(tk.END, _("Вы: ", "You: "), "Player")  # Имя персонажа подсвечивается
+                for part in processed_text_parts:
+                    if part["type"] == "text":
+                        self.chat_window.insert(tk.END, part["content"], part.get("tag", "default"))
+                    elif part["type"] == "image":
+                        self.chat_window.image_create(tk.END, image=part["content"])
+                        self.chat_window.insert(tk.END, "\n")
+                self.chat_window.insert(tk.END, "\n")
+            elif role == "assistant":
+                if show_timestamps:
+                    self.chat_window.insert(tk.END, timestamp_str, "timestamp")
+                self.chat_window.insert(tk.END, f"{self.model.current_character.name}: ", "Mita")  # Имя персонажа подсвечивается
+                for part in processed_text_parts:
+                    if part["type"] == "text":
+                        self.chat_window.insert(tk.END, part["content"], part.get("tag", "default"))
+                    elif part["type"] == "image":
+                        self.chat_window.image_create(tk.END, image=part["content"])
+                        self.chat_window.insert(tk.END, "\n")
+                self.chat_window.insert(tk.END, "\n\n")
+        self.chat_window.config(state=tk.DISABLED)  # Выключаем редактирование
+
+        # Автоматическая прокрутка вниз после вставки сообщения
+        self.chat_window.see(tk.END)
 
     # region секция g4f
     def _check_and_perform_pending_update(self):
@@ -926,46 +1155,46 @@ class ChatGUI:
         """
         self.model.secretExposed = self.secret_var.get()
 
-    def setup_history_controls(self, parent):
-        history_frame = tk.Frame(parent, bg="#2c2c2c")
-        history_frame.pack(fill=tk.X, pady=4)
 
-        clear_button = tk.Button(
-            history_frame, text=_("Очистить историю персонажа", "Clear character history"), command=self.clear_history,
-            bg="#8a2be2", fg="#ffffff"
-        )
-        clear_button.pack(side=tk.LEFT, padx=5)
-
-        clear_button = tk.Button(
-            history_frame, text=_("Очистить все истории", "Clear all histories"), command=self.clear_history_all,
-            bg="#8a2be2", fg="#ffffff"
-        )
-        clear_button.pack(side=tk.LEFT, padx=5)
-
-        reload_prompts_button = tk.Button(
-            history_frame, text=_("Перекачать промпты", "ReDownload prompts"), command=self.reload_prompts,
-            bg="#8a2be2", fg="#ffffff"
-        )
-        reload_prompts_button.pack(side=tk.LEFT, padx=5)
-
-        # TODO Вернуть
-        # save_history_button = tk.Button(
-        #     history_frame, text="Сохранить историю", command=self.model.save_chat_history,
-        #     bg="#8a2be2", fg="#ffffff"
-        # )
-        # save_history_button.pack(side=tk.LEFT, padx=10)
 
     def load_chat_history(self):
+        self.clear_chat_display()
+        self.loaded_messages_offset = 0
+        self.total_messages_in_history = 0
+        self.loading_more_history = False
 
         chat_history = self.model.current_character.load_history()
-        for entry in chat_history["messages"]:
+        all_messages = chat_history["messages"]
+        self.total_messages_in_history = len(all_messages)
+        logger.info(f"[{time.strftime('%H:%M:%S')}] Всего сообщений в истории: {self.total_messages_in_history}")
+
+        # Определяем максимальное количество сообщений для отображения
+        max_display_messages = int(self.settings.get("MAX_CHAT_HISTORY_DISPLAY", 100))
+
+        # Загружаем последние N сообщений
+        start_index = max(0, self.total_messages_in_history - max_display_messages)
+        messages_to_load = all_messages[start_index:]
+
+        for entry in messages_to_load:
             role = entry["role"]
             content = entry["content"]
-            self.insert_message(role, content)
-        # Прокручиваем вниз
-        self.chat_window.see(tk.END)
+            message_time = entry.get("time","???")
+            self.insert_message(role, content,message_time=message_time)  # Вставляем в конец, как обычно
+
+        self.loaded_messages_offset = len(messages_to_load)
+        logger.info(f"[{time.strftime('%H:%M:%S')}] Загружено {self.loaded_messages_offset} последних сообщений.")
+
+        # Привязываем событие прокрутки
+        self.chat_window.bind("<MouseWheel>", self.on_chat_scroll)
+        self.chat_window.bind("<Button-4>", self.on_chat_scroll)  # Linux
+        self.chat_window.bind("<Button-5>", self.on_chat_scroll)  # Linux
 
         self.update_debug_info()
+        self.update_token_count() # Вызываем после загрузки истории
+        self.update_token_count() # Вызываем после загрузки истории
+
+        # Автоматическая прокрутка вниз после загрузки истории
+        self.chat_window.see(tk.END)
 
     #region SetupControls
 
@@ -980,6 +1209,64 @@ class ChatGUI:
         self.debug_window.pack(fill=tk.BOTH, expand=True)
 
         self.update_debug_info()  # Отобразить изначальное состояние переменных
+
+    def open_character_folder(self):
+        """Открывает папку текущего персонажа в проводнике."""
+        if self.model.current_character and self.model.current_character.char_id:
+            character_name = self.model.current_character.char_id
+            character_folder_path = os.path.join("Prompts", character_name)
+            
+            if os.path.exists(character_folder_path):
+                try:
+                    if sys.platform == "win32":
+                        os.startfile(character_folder_path)
+                    elif sys.platform == "darwin":  # macOS
+                        subprocess.Popen(['open', character_folder_path])
+                    else:  # Linux и другие Unix-подобные
+                        subprocess.Popen(['xdg-open', character_folder_path])
+                    logger.info(f"Открыта папка персонажа: {character_folder_path}")
+                except Exception as e:
+                    logger.error(f"Не удалось открыть папку персонажа {character_folder_path}: {e}")
+                    messagebox.showerror(_("Ошибка", "Error"),
+                                         _("Не удалось открыть папку персонажа.", "Failed to open character folder."),
+                                         parent=self.root)
+            else:
+                messagebox.showwarning(_("Внимание", "Warning"),
+                                       _("Папка персонажа не найдена: ", "Character folder not found: ") + character_folder_path,
+                                       parent=self.root)
+        else:
+            messagebox.showinfo(_("Информация", "Information"),
+                               _("Персонаж не выбран или его имя недоступно.", "No character selected or its name is not available."),
+                               parent=self.root)
+
+    def open_character_history_folder(self):
+        """Открывает папку истории текущего персонажа в проводнике."""
+        if self.model.current_character and self.model.current_character.char_id:
+            character_name = self.model.current_character.char_id
+            history_folder_path = os.path.join("Histories", character_name)
+            
+            if os.path.exists(history_folder_path):
+                try:
+                    if sys.platform == "win32":
+                        os.startfile(history_folder_path)
+                    elif sys.platform == "darwin":  # macOS
+                        subprocess.Popen(['open', history_folder_path])
+                    else:  # Linux и другие Unix-подобные
+                        subprocess.Popen(['xdg-open', history_folder_path])
+                    logger.info(f"Открыта папка истории персонажа: {history_folder_path}")
+                except Exception as e:
+                    logger.error(f"Не удалось открыть папку истории персонажа {history_folder_path}: {e}")
+                    messagebox.showerror(_("Ошибка", "Error"),
+                                         _("Не удалось открыть папку истории персонажа.", "Failed to open character history folder."),
+                                         parent=self.root)
+            else:
+                messagebox.showwarning(_("Внимание", "Warning"),
+                                       _("Папка истории персонажа не найдена: ", "Character history folder not found: ") + history_folder_path,
+                                       parent=self.root)
+        else:
+            messagebox.showinfo(_("Информация", "Information"),
+                               _("Персонаж не выбран или его имя недоступно.", "No character selected or its name is not available."),
+                               parent=self.root)
 
     #region MODIFIED BUT NOT CHECKED BY Atm4x
     # Бывший setup_tg_controls()
@@ -1184,20 +1471,37 @@ class ChatGUI:
     def setup_mita_controls(self, parent):
         # Основные настройки
         mita_config = [
-            {'label': _('Персонаж', 'Character'), 'key': 'CHARACTER', 'type': 'combobox',
+            {'label': _('Персонажи', 'Characters'), 'key': 'CHARACTER', 'type': 'combobox',
              'options': self.model.get_all_mitas(),
              'default': "Crazy"},
+
+            {'label': _('Управление персонажем', 'Character Management'), 'type': 'text'},
+            {'label': _('Очистить историю персонажа', 'Clear character history'), 'type': 'button',
+             'command': self.clear_history},
+
+            {'label': _('Открыть папку персонажа', 'Open character folder'), 'type': 'button',
+             'command': self.open_character_folder},
+            {'label': _('Открыть папку истории персонажа', 'Open character history folder'), 'type': 'button',
+             'command': self.open_character_history_folder},
+
+            {'label': _('Аккуратно!', 'Be careful!'), 'type': 'text'},
+            {'label': _('Перекачать промпты', 'ReDownload prompts'), 'type': 'button',
+             'command': self.reload_prompts},
+            {'label': _("Очистить все истории", "Clear all histories"), 'type': 'button',
+             'command':  self.clear_history_all},
+
 
             {'label': _('Экспериментальные функции', 'Experimental features'), 'type': 'text'},
             {'label': _('Меню выбора Мит', 'Mita selection menu'), 'key': 'MITAS_MENU', 'type': 'checkbutton',
              'default_checkbutton': False},
             {'label': _('Меню эмоций Мит', 'Emotion menu'), 'key': 'EMOTION_MENU', 'type': 'checkbutton',
              'default_checkbutton': False},
+
             #  {'label': _('Миты в работе', 'Mitas in work'), 'key': 'TEST_MITAS', 'type': 'checkbutton',
             #   'default_checkbutton': False,'tooltip':_("Позволяет выбирать нестабильные версии Мит", "Allow to choose ustable Mita versions")}
         ]
 
-        self.create_settings_section(parent, _("Выбор персонажа", "Character selection"), mita_config)
+        self.create_settings_section(parent, _("Настройки персонажей", "Characters settings"), mita_config)
 
     def setup_model_controls(self, parent):
         # Основные настройки
@@ -1297,6 +1601,11 @@ class ChatGUI:
              'default': 1, 'validation': self.validate_positive_integer,
              'tooltip': _('Максимальное количество последних кадров для отправки в модель (минимум 1).',
                           'Maximum number of recent frames to send to the model (минимум 1).')},
+            {'label': _('Кол-во кадров для передачи', 'Number of frames for transfer'),
+             'key': 'SCREEN_CAPTURE_TRANSFER_LIMIT', 'type': 'entry',
+             'default': 1, 'validation': self.validate_positive_integer,
+             'tooltip': _('Максимальное количество кадров, передаваемых за один запрос (минимум 1).',
+                          'Maximum number of frames transferred per request (minimum 1).')},
             {'label': _('Ширина захвата', 'Capture Width'), 'key': 'SCREEN_CAPTURE_WIDTH', 'type': 'entry',
              'default': 1024, 'validation': self.validate_positive_integer,
              'tooltip': _('Ширина захватываемого изображения в пикселях.', 'Width of the captured image in pixels.')},
@@ -1313,6 +1622,37 @@ class ChatGUI:
              'default': 20.0, 'validation': self.validate_float_positive,
              'tooltip': _('Интервал между автоматической отправкой запросов с изображениями в секундах (минимум 1.0).',
                           'Interval between automatic sending of image requests in seconds (minimum 1.0).')},
+            {'label': _('Исключить окно GUI из захвата', 'Exclude GUI Window from Capture'), 'key': 'EXCLUDE_GUI_WINDOW',
+             'type': 'checkbutton',
+             'default_checkbutton': False,
+             'tooltip': _('Если включено, окно NeuroMita GUI будет исключено из захвата экрана.',
+                          'If enabled, the NeuroMita GUI window will be excluded from capture.')},
+            {'label': _('Заголовок исключаемого окна', 'Excluded Window Title'), 'key': 'EXCLUDE_WINDOW_TITLE',
+             'type': 'entry',
+             'default': '',
+             'tooltip': _('Заголовок окна, которое нужно исключить из захвата (оставьте пустым для GUI).',
+                          'Title of the window to exclude from capture (leave empty for GUI).')},
+            {'label': _('Снижение качества изображений', 'Image Quality Reduction'), 'type': 'text'},
+            {'label': _('Включить снижение качества', 'Enable Quality Reduction'), 'key': 'IMAGE_QUALITY_REDUCTION_ENABLED',
+             'type': 'checkbutton', 'default_checkbutton': False,
+             'tooltip': _('Включает динамическое снижение качества изображений в истории сообщений.',
+                          'Enables dynamic image quality reduction in message history.')},
+            {'label': _('Начальный индекс снижения', 'Reduction Start Index'), 'key': 'IMAGE_QUALITY_REDUCTION_START_INDEX',
+             'type': 'entry', 'default': 25, 'validation': self.validate_positive_integer_or_zero,
+             'tooltip': _('Индекс сообщения, с которого начинается снижение качества (0 = первое сообщение).',
+                          'Message index from which quality reduction begins (0 = first message).')},
+            {'label': _('Использовать процентное снижение', 'Use Percentage Reduction'), 'key': 'IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE',
+             'type': 'checkbutton', 'default_checkbutton': False,
+             'tooltip': _('Если включено, качество снижается на процент, иначе - до минимального значения.',
+                          'If enabled, quality is reduced by a percentage, otherwise to a minimum value.')},
+            {'label': _('Минимальное качество (%)', 'Minimum Quality (%)'), 'key': 'IMAGE_QUALITY_REDUCTION_MIN_QUALITY',
+             'type': 'entry', 'default': 30, 'validation': self.validate_positive_integer,
+             'tooltip': _('Минимальное качество JPEG (0-100), до которого может быть снижено изображение.',
+                          'Minimum JPEG quality (0-100) to which an image can be reduced.')},
+            {'label': _('Скорость снижения качества', 'Quality Decrease Rate'), 'key': 'IMAGE_QUALITY_REDUCTION_DECREASE_RATE',
+             'type': 'entry', 'default': 5, 'validation': self.validate_positive_integer,
+             'tooltip': _('На сколько единиц снижается качество за каждое сообщение после начального индекса.',
+                          'By how many units quality decreases for each message after the start index.')},
         ]
         self.create_settings_section(parent,
                                      _("Настройки анализа экрана", "Screen Analysis Settings"),
@@ -1341,9 +1681,13 @@ class ChatGUI:
             {'label': _('Настройки сообщений', 'Message settings'), 'type': 'text'},
             {'label': _('Промты раздельно', 'Separated prompts'), 'key': 'SEPARATE_PROMPTS',
              'type': 'checkbutton', 'default_checkbutton': True},
+
             {'label': _('Лимит сообщений', 'Message limit'), 'key': 'MODEL_MESSAGE_LIMIT',
              'type': 'entry', 'default': 40,
              'tooltip': _('Сколько сообщений будет помнить мита', 'How much messages Mita will remember')},
+            {'label': _('Сохранять утерянную историю ', 'Save lost history'),
+             'key': 'GPT4FREE_LAST_ATTEMPT', 'type': 'checkbutton', 'default_checkbutton': False},
+
             {'label': _('Кол-во попыток', 'Attempt count'), 'key': 'MODEL_MESSAGE_ATTEMPTS_COUNT',
              'type': 'entry', 'default': 3},
             {'label': _('Время между попытками', 'time between attempts'),
@@ -1360,22 +1704,27 @@ class ChatGUI:
              'tooltip': _('время ожидания озвучки', 'voice generation waiting time')},
 
             {'label': _('Настройки генерации текста', 'Text Generation Settings'), 'type': 'text'},
+
+            {'label': _('Использовать Макс.Токены', 'Use Max response tokens'), 'key': 'USE_MODEL_MAX_RESPONSE_TOKENS',
+             'type': 'checkbutton', 'default_checkbutton': self.settings.get('USE_MODEL_MAX_RESPONSE_TOKENS', True),
+             'tooltip': _('Включает/выключает параметр макс токены', 'Enables/disables max response tokens parameter')},
             {'label': _('Макс. токенов в ответе', 'Max response tokens'), 'key': 'MODEL_MAX_RESPONSE_TOKENS',
              'type': 'entry', 'default': 2500, 'validation': self.validate_positive_integer,
              'tooltip': _('Максимальное количество токенов в ответе модели',
                           'Maximum number of tokens in the model response')},
+
             {'label': _('Температура', 'Temperature'), 'key': 'MODEL_TEMPERATURE',
              'type': 'entry', 'default': 0.5, 'validation': self.validate_float_0_to_2,
              'tooltip': _('Креативность ответа (0.0 = строго, 2.0 = очень творчески)',
                           'Creativity of response (0.0 = strict, 2.0 = very creative)')},
 
-            {'label': _('Использовать Top-K', 'Use Top-K'), 'key': 'USE_MODEL_TOP_K',
+             {'label': _('Использовать Top-K', 'Use Top-K'), 'key': 'USE_MODEL_TOP_K',
              'type': 'checkbutton', 'default_checkbutton': self.settings.get('USE_MODEL_TOP_K', True),
              'tooltip': _('Включает/выключает параметр Top-K', 'Enables/disables Top-K parameter')},
-            {'label': _('Top-K', 'Top-K'), 'key': 'MODEL_TOP_K',
+             {'label': _('Top-K', 'Top-K'), 'key': 'MODEL_TOP_K',
              'type': 'entry', 'default': 0, 'validation': self.validate_positive_integer_or_zero, 'width': 30,
              'tooltip': _('Ограничивает выбор токенов K наиболее вероятными (0 = отключено)',
-                          'Limits token selection to K most likely (0 = disabled)')},
+                           'Limits token selection to K most likely (0 = disabled)')},
 
             {'label': _('Использовать Top-P', 'Use Top-P'), 'key': 'USE_MODEL_TOP_P',
              'type': 'checkbutton', 'default_checkbutton': self.settings.get('USE_MODEL_TOP_P', True),
@@ -1431,6 +1780,58 @@ class ChatGUI:
                                      _("Общие настройки моделей", "General settings for models"),
                                      general_config)
 
+    # region Chat Settings
+    def setup_chat_settings_controls(self, parent):
+        """Создает секцию настроек специально для чата."""
+        chat_settings_config = [
+            {'label': _('Размер шрифта чата', 'Chat Font Size'), 'key': 'CHAT_FONT_SIZE', 'type': 'entry',
+             'default': 12, 'validation': self.validate_positive_integer,
+             'tooltip': _('Размер шрифта в окне чата.', 'Font size in the chat window.')},
+            {'label': _('Показывать метки времени', 'Show Timestamps'), 'key': 'SHOW_CHAT_TIMESTAMPS',
+             'type': 'checkbutton', 'default_checkbutton': False,
+             'tooltip': _('Показывать метки времени рядом с сообщениями в чате.', 'Show timestamps next to messages in chat.')},
+            {'label': _('Макс. сообщений в истории', 'Max Messages in History'), 'key': 'MAX_CHAT_HISTORY_DISPLAY',
+             'type': 'entry', 'default': 100, 'validation': self.validate_positive_integer,
+             'tooltip': _('Максимальное количество сообщений, отображаемых в окне чата.', 'Maximum number of messages displayed in the chat window.')},
+            {'label': _('Скрывать теги', 'Hide Tags'), 'key': 'HIDE_CHAT_TAGS',
+             'type': 'checkbutton', 'default_checkbutton': False,
+             'tooltip': _('Скрывать теги (<e>, <c>, <a>, [b], [i], [color]) в отображаемом тексте чата.', 'Hide tags (<e>, <c>, <a>, [b], [i], [color]) in the displayed chat text.')},
+        ]
+
+        self.create_settings_section(parent,
+                                     _("Настройки чата", "Chat Settings"),
+                                     chat_settings_config)
+
+    # endregion
+
+    # region Token Settings
+    def setup_token_settings_controls(self, parent):
+        """Создает секцию настроек для управления параметрами токенов."""
+        token_settings_config = [
+            {'label': _('Показывать информацию о токенах', 'Show Token Info'), 'key': 'SHOW_TOKEN_INFO',
+             'type': 'checkbutton', 'default_checkbutton': True,
+             'tooltip': _('Отображать количество токенов и ориентировочную стоимость в интерфейсе чата.',
+                           'Display token count and approximate cost in the chat interface.')},
+            {'label': _('Стоимость токена (вход, ₽)', 'Token Cost (input, ₽)'), 'key': 'TOKEN_COST_INPUT',
+             'type': 'entry', 'default': 0.000001, 'validation': self.validate_float_positive_or_zero,
+             'tooltip': _('Стоимость одного токена для входных данных (например, 0.000001 ₽ за токен).',
+                           'Cost of one token for input data (e.g., 0.000001 ₽ per token).')},
+            {'label': _('Стоимость токена (выход, ₽)', 'Token Cost (output, ₽)'), 'key': 'TOKEN_COST_OUTPUT',
+             'type': 'entry', 'default': 0.000002, 'validation': self.validate_float_positive_or_zero,
+             'tooltip': _('Стоимость одного токена для выходных данных (например, 0.000002 ₽ за токен).',
+                           'Cost of one token for output data (e.g., 0.000002 ₽ per token).')},
+            {'label': _('Максимальное количество токенов модели', 'Max Model Tokens'), 'key': 'MAX_MODEL_TOKENS',
+             'type': 'entry', 'default': 32000, 'validation': self.validate_positive_integer,
+             'tooltip': _('Максимальное количество токенов, которое может обработать модель.',
+                           'Maximum number of tokens the model can process.')},
+        ]
+
+        self.create_settings_section(parent,
+                                     _("Настройки токенов", "Token Settings"),
+                                     token_settings_config)
+
+    # endregion
+
     # region Validation
     def validate_number_0_60(self, new_value):
         if not new_value.isdigit():  # Проверяем, что это число
@@ -1451,9 +1852,17 @@ class ChatGUI:
         except ValueError:
             return False
 
+    
+    def validate_float_positive_or_zero(self, new_value):
+        if new_value == "": return True
+        try:
+            value = float(new_value)
+            return value >= 0.0
+        except ValueError:
+            return False
+
     def save_api_settings(self):
         """Собирает данные из полей ввода и сохраняет только непустые значения, не перезаписывая существующие."""
-
     # Добавьте функции валидации в ChatGUI
     def validate_positive_integer(self, new_value):
         if new_value == "": return True  # Разрешаем пустое поле временно
@@ -1573,12 +1982,6 @@ class ChatGUI:
             # Если текст не выделен, ничего не делать
             pass
 
-    def toggle_api_settings(self):
-        if self.show_api_var.get():
-            self.api_settings_frame.pack(fill=tk.X, padx=10, pady=10)
-        else:
-            self.api_settings_frame.pack_forget()
-
     def update_debug_info(self):
         """Обновить окно отладки с отображением актуальных данных."""
         self.debug_window.delete(1.0, tk.END)  # Очистить старые данные
@@ -1588,17 +1991,40 @@ class ChatGUI:
         self.debug_window.insert(tk.END, debug_info)
 
     def update_token_count(self, event=None):
-        if False and self.model.hasTokenizer:
-            user_input = self.user_entry.get("1.0", "end-1c")
-            token_count, cost = self.model.calculate_cost(user_input)
-            self.token_count_label.config(
-                text=f"ВЫКЛЮЧЕНО!! Токенов: {token_count}/{self.model.max_input_tokens} | Ориент. стоимость: {cost:.4f} ₽"
-            )
-            self.update_debug_info()
+        show_token_info = self.settings.get("SHOW_TOKEN_INFO", True)
 
+        if show_token_info and self.model.hasTokenizer:
+            # Получаем текущий контекст из модели
+            current_context_tokens = self.model.get_current_context_token_count()
+
+            # Получаем значения из настроек или используем значения по умолчанию
+            token_cost_input = float(self.settings.get("TOKEN_COST_INPUT", 0.000001))
+            token_cost_output = float(self.settings.get("TOKEN_COST_OUTPUT", 0.000002))
+            max_model_tokens = int(self.settings.get("MAX_MODEL_TOKENS", 32000))
+
+            # Обновляем атрибуты модели, если они еще не были обновлены через all_settings_actions
+            self.model.token_cost_input = token_cost_input
+            self.model.token_cost_output = token_cost_output
+            self.model.max_model_tokens = max_model_tokens
+
+            cost = self.model.calculate_cost_for_current_context()
+
+            self.token_count_label.config(
+                text=_("Токены: {}/{} (Макс. токены: {}) | Ориент. стоимость: {:.4f} ₽", "Tokens: {}/{} (Max tokens: {}) | Approx. cost: {:.4f} ₽").format(
+                    current_context_tokens, max_model_tokens, max_model_tokens, cost
+                )
+            )
+            self.token_count_label.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 5)) # Показываем метку
+        else:
+            self.token_count_label.pack_forget() # Скрываем метку
+            self.token_count_label.config(
+                text=_("Токены: Токенизатор недоступен", "Tokens: Tokenizer not available")
+            )
+        self.update_debug_info()
+
+    
     def insertDialog(self, input_text="", response="", system_text=""):
         MitaName = self.model.current_character.name
-
         if input_text != "":
             self.chat_window.insert(tk.END, "Вы: ", "Player")
             self.chat_window.insert(tk.END, f"{input_text}\n")
@@ -1609,9 +2035,15 @@ class ChatGUI:
             self.chat_window.insert(tk.END, f"{MitaName}: ", "Mita")
             self.chat_window.insert(tk.END, f"{response}\n\n")
 
+    def clear_chat_display(self):
+        """Очищает отображаемую историю чата в GUI."""
+        self.chat_window.config(state=tk.NORMAL)
+        self.chat_window.delete(1.0, tk.END)
+        self.chat_window.config(state=tk.DISABLED)
+
+    
     def send_message(self, system_input: str = "", image_data: list[bytes] = None):
         user_input = self.user_entry.get("1.0", "end-1c").strip()  # Убираем пробелы сразу
-
         # Если включен анализ экрана, пытаемся получить последние кадры
         current_image_data = []
         if self.settings.get("ENABLE_SCREEN_ANALYSIS", False):
@@ -1631,9 +2063,20 @@ class ChatGUI:
             #logger.info("Нет текста или изображений для отправки.")
             return
 
+        self.last_image_request_time = time.time()  # Сброс таймера захвата экрана при мгновенной отправке
+
         if user_input:  # Вставляем сообщение в чат только если есть пользовательский текст
             self.insert_message("user", user_input)
             self.user_entry.delete("1.0", "end")
+        
+        # Вставляем изображения в чат сразу, если они есть
+        if all_image_data:
+            # Создаем структуру, аналогичную той, что приходит из истории, для insert_message
+            image_content_for_display = [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64.b64encode(img).decode('utf-8')}"}} for img in all_image_data]
+            # Добавляем текстовую метку, если нет пользовательского ввода, но есть изображения
+            if not user_input:
+                image_content_for_display.insert(0, {"type": "text", "content": _("<Изображение экрана>", "<Screen Image>") + "\n"})
+            self.insert_message("user", image_content_for_display)
 
         # Запускаем асинхронную задачу для генерации ответа
         if self.loop and self.loop.is_running():
@@ -1648,8 +2091,9 @@ class ChatGUI:
                                           lambda: self.model.generate_response(user_input, system_input, image_data)),
                 timeout=25.0  # Тайм-аут в секундах
             )
-            self.insert_message("assistant", response)
-            self.updateAll()
+            self.root.after(0, lambda: self.insert_message("assistant", response))
+            self.root.after(0, self.updateAll)
+            self.root.after(0, self.update_token_count) # Обновляем счетчик токенов после получения ответа
             if self.server:
                 try:
                     if self.server.client_socket:
@@ -1669,14 +2113,18 @@ class ChatGUI:
             interval = float(self.settings.get("SCREEN_CAPTURE_INTERVAL", 5.0))
             quality = int(self.settings.get("SCREEN_CAPTURE_QUALITY", 25))
             fps = int(self.settings.get("SCREEN_CAPTURE_FPS", 1))
-            max_history_frames = int(self.settings.get("SCREEN_CAPTURE_HISTORY_LIMIT", 1))
+            max_history_frames = int(self.settings.get("SCREEN_CAPTURE_HISTORY_LIMIT", 3))
+            max_frames_per_request = int(self.settings.get("SCREEN_CAPTURE_TRANSFER_LIMIT", 1))
             capture_width = int(self.settings.get("SCREEN_CAPTURE_WIDTH", 1024))
             capture_height = int(self.settings.get("SCREEN_CAPTURE_HEIGHT", 768))
-            self.screen_capture_instance.start_capture(interval, quality, fps, max_history_frames, capture_width,
+            self.screen_capture_instance.start_capture(interval, quality, fps, max_history_frames,max_frames_per_request, capture_width,
                                                        capture_height)
             self.screen_capture_running = True
             logger.info(
                 f"Поток захвата экрана запущен с интервалом {interval}, качеством {quality}, {fps} FPS, историей {max_history_frames} кадров, разрешением {capture_width}x{capture_height}.")
+
+            if self.settings.get("SEND_IMAGE_REQUESTS", 1):
+                self.start_image_request_timer()
 
     def stop_screen_capture_thread(self):
         if self.screen_capture_running:
@@ -1687,7 +2135,9 @@ class ChatGUI:
     def start_image_request_timer(self):
         if not self.image_request_timer_running:
             self.image_request_timer_running = True
-            self.last_image_request_time = time.time()
+            # Устанавливаем время последнего запроса так, чтобы следующий запрос произошел немедленно
+           # interval = float(self.settings.get("IMAGE_REQUEST_INTERVAL", 20.0))
+            self.last_image_request_time = time.time()# - interval
             logger.info("Таймер периодической отправки изображений запущен.")
 
     def stop_image_request_timer(self):
@@ -1697,14 +2147,69 @@ class ChatGUI:
 
     def clear_history(self):
         self.model.current_character.clear_history()
-        self.chat_window.delete(1.0, tk.END)
+        self.clear_chat_display()
         self.update_debug_info()
 
     def clear_history_all(self):
         for character in self.model.characters.values():
             character.clear_history()
-        self.chat_window.delete(1.0, tk.END)
+        self.clear_chat_display()
         self.update_debug_info()
+
+    def on_chat_scroll(self, event):
+        """Обработчик события прокрутки чата."""
+        if self.loading_more_history:
+            return
+
+        # Проверяем, прокрутил ли пользователь к началу
+        if self.chat_window.yview()[0] == 0:
+            self.load_more_history()
+
+    def load_more_history(self):
+        """Загружает предыдущие сообщения в чат."""
+        if self.loaded_messages_offset >= self.total_messages_in_history:
+            return
+
+        self.loading_more_history = True
+        try:
+            chat_history = self.model.current_character.load_history()
+            all_messages = chat_history["messages"]
+
+            # Определяем диапазон сообщений для загрузки
+            end_index = self.total_messages_in_history - self.loaded_messages_offset
+            start_index = max(0, end_index - self.lazy_load_batch_size)
+
+            messages_to_prepend = all_messages[start_index:end_index]
+
+            # Сохраняем текущую позицию прокрутки
+            current_scroll_pos = self.chat_window.yview()
+            # Сохраняем высоту содержимого до вставки
+            old_height = self.chat_window.winfo_height()
+
+            for entry in messages_to_prepend:
+                role = entry["role"]
+                content = entry["content"]
+                message_time = entry.get("time","???")
+                self.insert_message(role, content, insert_at_start=True,message_time=message_time)
+
+            self.loaded_messages_offset += len(messages_to_prepend)
+            logger.info(f"Загружено еще {len(messages_to_prepend)} сообщений. Всего загружено: {self.loaded_messages_offset}")
+
+            # Корректируем прокрутку, чтобы пользователь остался на том же месте
+            self.root.update_idletasks() # Обновляем виджет, чтобы получить новые размеры
+            new_height = self.chat_window.winfo_height()
+            height_diff = new_height - old_height
+
+            # Прокручиваем на разницу в высоте, чтобы сохранить относительную позицию
+            # Это может потребовать более сложной логики для точного позиционирования
+            # В простейшем случае, если мы вставляем в начало, просто прокручиваем на высоту добавленного контента
+            self.chat_window.yview_scroll(-1, "pages") # Прокручиваем вверх на одну "страницу"
+            # Или можно попробовать более точно:
+            # self.chat_window.yview_moveto(current_scroll_pos[0] * (old_height / new_height))
+
+
+        finally:
+            self.loading_more_history = False
 
     def reload_prompts(self):
         """Скачивает свежие промпты с GitHub и перезагружает их для текущего персонажа."""
@@ -1808,12 +2313,11 @@ class ChatGUI:
                 'label': _("Тип распознавания", "Recognition Type"),
                 'type': 'combobox',
                 'key': 'RECOGNIZER_TYPE',
-                # TODO Вернуть воск 'options': ["google", "vosk"],
                 'options': ["google","vosk","gigaam"],
                 'default': "google",
                 'command': lambda value: SpeechRecognition.set_recognizer_type(value),
-                'tooltip': _("Выберите движок распознавания речи: Google или Vosk.",
-                             "Select speech recognition engine: Google or Vosk."),
+                'tooltip': _("Выберите движок распознавания речи",
+                             "Select speech recognition engine"),
                 #'command': self.update_vosk_model_visibility
             },
             # {
@@ -2033,7 +2537,12 @@ class ChatGUI:
             self.model.request_delay = float(value)
 
         elif key == "MIC_ACTIVE":
-            SpeechRecognition.active = bool(value)
+            if bool(value):
+                # Запускаем распознавание, если оно активировано
+                SpeechRecognition.speach_recognition_start(self.device_id, self.loop)
+            else:
+                # Останавливаем распознавание, если оно деактивировано
+                SpeechRecognition.speach_recognition_stop()
 
         elif key == "ENABLE_SCREEN_ANALYSIS":
             if bool(value):
@@ -2041,7 +2550,7 @@ class ChatGUI:
             else:
                 self.stop_screen_capture_thread()
         elif key in ["SCREEN_CAPTURE_INTERVAL", "SCREEN_CAPTURE_QUALITY", "SCREEN_CAPTURE_FPS",
-                     "SCREEN_CAPTURE_HISTORY_LIMIT", "SCREEN_CAPTURE_WIDTH", "SCREEN_CAPTURE_HEIGHT"]:
+                     "SCREEN_CAPTURE_HISTORY_LIMIT", "SCREEN_CAPTURE_TRANSFER_LIMIT", "SCREEN_CAPTURE_WIDTH", "SCREEN_CAPTURE_HEIGHT"]:
             # Если поток захвата экрана запущен, перезапускаем его с новыми настройками
             if self.screen_capture_instance and self.screen_capture_instance.is_running():
                 logger.info(f"Настройка захвата экрана '{key}' изменена на '{value}'. Перезапускаю поток захвата.")
@@ -2063,6 +2572,40 @@ class ChatGUI:
             else:
                 logger.info(
                     f"Настройка интервала запросов изображений изменена на '{value}'. Таймер не активен, изменения будут применены при следующем запуске.")
+        elif key in ["EXCLUDE_GUI_WINDOW", "EXCLUDE_WINDOW_TITLE"]:
+            # Получаем текущие значения настроек
+            exclude_gui = self.settings.get("EXCLUDE_GUI_WINDOW", False)
+            exclude_title = self.settings.get("EXCLUDE_WINDOW_TITLE", "")
+
+            hwnd_to_pass = None
+            if exclude_gui:
+                # Если включено исключение GUI, получаем HWND текущего окна Tkinter
+                hwnd_to_pass = self.root.winfo_id()
+                logger.info(f"Получен HWND окна GUI для исключения: {hwnd_to_pass}")
+            elif exclude_title:
+                # Если указан заголовок, пытаемся найти HWND по заголовку
+                try:
+                    hwnd_to_pass = win32gui.FindWindow(None, exclude_title)
+                    if hwnd_to_pass:
+                        logger.info(f"Найден HWND для заголовка '{exclude_title}': {hwnd_to_pass}")
+                    else:
+                        logger.warning(f"Окно с заголовком '{exclude_title}' не найдено.")
+                except Exception as e:
+                    logger.error(f"Ошибка при поиске окна по заголовку '{exclude_title}': {e}")
+
+            # Передаем параметры в ScreenCapture
+            if self.screen_capture_instance:
+                self.screen_capture_instance.set_exclusion_parameters(hwnd_to_pass, exclude_title, exclude_gui or bool(exclude_title))
+                logger.info(f"Параметры исключения окна переданы в ScreenCapture: exclude_gui={exclude_gui}, exclude_title='{exclude_title}'")
+
+            # Если поток захвата экрана запущен, перезапускаем его с новыми настройками
+            if self.screen_capture_instance and self.screen_capture_instance.is_running():
+                logger.info(f"Настройка исключения окна '{key}' изменена на '{value}'. Перезапускаю поток захвата.")
+                self.stop_screen_capture_thread()
+                self.start_screen_capture_thread()
+            else:
+                logger.info(
+                    f"Настройка исключения окна '{key}' изменена на '{value}'. Поток захвата не активен, изменения будут применены при следующем запуске.")
         elif key == "RECOGNIZER_TYPE":
             # Останавливаем текущее распознавание
             SpeechRecognition.active = False
@@ -2084,6 +2627,63 @@ class ChatGUI:
             SpeechRecognition.SILENCE_DURATION = float(value)
         elif key == "VOSK_PROCESS_INTERVAL":
             SpeechRecognition.VOSK_PROCESS_INTERVAL = float(value)
+        elif key == "IMAGE_QUALITY_REDUCTION_ENABLED":
+            self.model.image_quality_reduction_enabled = bool(value)
+        elif key == "IMAGE_QUALITY_REDUCTION_START_INDEX":
+            self.model.image_quality_reduction_start_index = int(value)
+        elif key == "IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE":
+            self.model.image_quality_reduction_use_percentage = bool(value)
+        elif key == "IMAGE_QUALITY_REDUCTION_MIN_QUALITY":
+            self.model.image_quality_reduction_min_quality = int(value)
+        elif key == "IMAGE_QUALITY_REDUCTION_DECREASE_RATE":
+            self.model.image_quality_reduction_decrease_rate = int(value)
+
+        # Handle chat specific settings keys
+        if key == "CHAT_FONT_SIZE":
+            try:
+                font_size = int(value)
+                # Обновляем размер шрифта для всех тегов, использующих "Arial"
+                for tag_name in self.chat_window.tag_names():
+                    current_font = self.chat_window.tag_cget(tag_name, "font")
+                    if "Arial" in current_font:
+                        # Разбираем текущий шрифт, чтобы сохранить стиль (bold, italic)
+                        font_parts = current_font.split()
+                        new_font_parts = ["Arial", str(font_size)]
+                        if "bold" in font_parts:
+                            new_font_parts.append("bold")
+                        if "italic" in font_parts:
+                            new_font_parts.append("italic")
+                        self.chat_window.tag_configure(tag_name, font=(" ".join(new_font_parts)))
+                logger.info(f"Размер шрифта чата изменен на: {font_size}")
+            except ValueError:
+                logger.warning(f"Неверное значение для размера шрифта чата: {value}")
+            except Exception as e:
+                logger.error(f"Ошибка при изменении размера шрифта чата: {e}")
+        elif key == "SHOW_CHAT_TIMESTAMPS":
+            # Перезагружаем историю чата, чтобы применить/убрать метки времени
+            self.load_chat_history()
+            logger.info(f"Настройка 'Показывать метки времени' изменена на: {value}. История чата перезагружена.")
+        elif key == "MAX_CHAT_HISTORY_DISPLAY":
+            # Перезагружаем историю чата, чтобы применить новое ограничение
+            self.load_chat_history()
+            logger.info(f"Настройка 'Макс. сообщений в истории' изменена на: {value}. История чата перезагружена.")
+        elif key == "HIDE_CHAT_TAGS":
+            # Перезагружаем историю чата, чтобы применить/убрать скрытие тегов
+            self.load_chat_history()
+            logger.info(f"Настройка 'Скрывать теги' изменена на: {value}. История чата перезагружена.")
+
+
+        elif key == "SHOW_TOKEN_INFO":
+            self.update_token_count()
+        elif key == "TOKEN_COST_INPUT":
+            self.model.token_cost_input = float(value)
+            self.update_token_count()
+        elif key == "TOKEN_COST_OUTPUT":
+            self.model.token_cost_output = float(value)
+            self.update_token_count()
+        elif key == "MAX_MODEL_TOKENS":
+            self.model.max_model_tokens = int(value)
+            self.update_token_count()
 
         # logger.info(f"Настройки изменены: {key} = {value}")
 

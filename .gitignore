@@ -183,3 +183,4 @@ web/vtt/models/*
 /SpeechRecognition/Models
 /Logs
 /SpeechRecognitionModels/Vosk
+/lc0_engine_files

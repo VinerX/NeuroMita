@@ -9,3 +9,4 @@
 [<Main/player.txt>]
 [<Structural/VariableEffects.script>]
 [<../Common/CommonContext.script>]
+[<../Common/chess_handler.script>]

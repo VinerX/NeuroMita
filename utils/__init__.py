@@ -149,7 +149,25 @@ def shift_chars(s, shift):
         result.append(new_char)
     return ''.join(result)
 
+def process_text_to_voice(text_to_speak: str) -> str:
+    if not isinstance(text_to_speak, str):
+        logger.warning(f"process_text_to_voice expected string, got {type(text_to_speak)}. Converting to string.")
+        text_to_speak = str(text_to_speak)
 
+    clean_text = re.sub(r"<[^>]+>.*?</[^>]+>", "", text_to_speak, flags=re.DOTALL)
+    clean_text = re.sub(r"<[^>]+>", "", clean_text)
+
+    try:
+        clean_text = replace_numbers_with_words(clean_text)
+    except NameError:
+        logger.debug("replace_numbers_with_words utility not found or used.")
+        pass
+
+    if not clean_text.strip():
+        clean_text = "..."
+        logger.info("TTS text was empty after cleaning, using default '...'")
+
+    return clean_text.strip()
 
 # text = load_text_from_file("Prompts/Common/None.txt")
 # logger.info(text)

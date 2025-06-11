@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import datetime
 
@@ -13,16 +14,20 @@ class MemorySystem:
         self.total_characters = 0  # Новый атрибут для подсчета символов
         self.last_memory_number = 1
 
-        if os.path.exists(self.filename):
-            self.load_memories()
-        else:
-            self._calculate_total_characters()  # Инициализация подсчета символов
+        self.load_memories()
 
     def load_memories(self):
-        with open(self.filename, 'r', encoding='utf-8') as file:
-            self.memories = json.load(file)
-            self.last_memory_number = len(self.memories) + 1
-            self._calculate_total_characters()
+
+        if os.path.exists(self.filename):
+            with open(self.filename, 'r', encoding='utf-8') as file:
+                self.memories = json.load(file)
+                self.last_memory_number = len(self.memories) + 1
+                self._calculate_total_characters()
+        else:
+            logging.warning(f"No memories file {self.filename} found!")
+            self.memories = []
+            self.save_memories() # Создаем пустой файл
+            logging.info(f"Created new memories file: {self.filename}")
 
     def _calculate_total_characters(self):
         """Пересчитывает общее количество символов"""
@@ -33,8 +38,13 @@ class MemorySystem:
             json.dump(self.memories, file, ensure_ascii=False, indent=4)
 
     def add_memory(self, content, date=datetime.datetime.now().strftime("%d.%m.%Y_%H.%M"), priority="Normal"):
+        if not self.memories:
+            new_id = 1
+        else:
+            new_id = max(memory['N'] for memory in self.memories) + 1
+
         memory = {
-            "N": self.last_memory_number,
+            "N": new_id,
             "date": date,
             "priority": priority,
             "content": content

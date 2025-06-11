@@ -1,6 +1,7 @@
 # File: chat_model.py
 import base64
 import concurrent.futures
+import datetime
 import time
 import requests
 #import tiktoken
@@ -10,6 +11,8 @@ import importlib
 from typing import List, Dict, Any, Optional
 import queue
 import os  # Added for os.environ
+from PIL import Image # Добавлено для обработки изображений
+from io import BytesIO # Добавлено для обработки изображений
 
 from Logger import logger
 from characters import CrazyMita, KindMita, ShortHairMita, CappyMita, MilaMita, CreepyMita, SleepyMita, GameMaster, \
@@ -17,8 +20,7 @@ from characters import CrazyMita, KindMita, ShortHairMita, CappyMita, MilaMita, 
 from character import Character  # Character base
 from utils.PipInstaller import PipInstaller
 
-from utils import SH, save_combined_messages, calculate_cost_for_combined_messages, \
-    replace_numbers_with_words  # Keep utils
+from utils import SH, save_combined_messages, calculate_cost_for_combined_messages, process_text_to_voice # Keep utils
 
 
 # from promptPart import PromptPart, PromptType # No longer needed
@@ -48,10 +50,15 @@ class ChatModel:
             self.client = None
 
         try:
-            #  self.tokenizer = tiktoken.encoding_for_model("gpt-4o-mini")
+            import tiktoken
+            self.tokenizer = tiktoken.encoding_for_model("gpt-4o-mini")
+            self.hasTokenizer = True
+            logger.info("Tiktoken успешно инициализирован.")
+        except ImportError:
+            logger.warning("Модуль 'tiktoken' не найден. Подсчет токенов будет недоступен.")
             self.hasTokenizer = False
-        except:
-            logger.info("Тиктокен не сработал( Ну и пофиг, на билдах он никогда и не работал")
+        except Exception as e:
+            logger.error(f"Ошибка инициализации tiktoken: {e}")
             self.hasTokenizer = False
 
         self.max_response_tokens = int(self.gui.settings.get("MODEL_MAX_RESPONSE_TOKENS", 3200))
@@ -63,16 +70,25 @@ class ChatModel:
         self.presence_penalty = float(self.gui.settings.get("MODEL_PRESENCE_PENALTY", 0.0))
         self.frequency_penalty = float(self.gui.settings.get("MODEL_FREQUENCY_PENALTY", 0.0))
         self.log_probability = float(self.gui.settings.get("MODEL_LOG_PROBABILITY", 0.0))
-
-        """ Очень спорно уже """
-        self.cost_input_per_1000 = 0.0432
-        self.cost_response_per_1000 = 0.1728
-
+        
+        # Настройки стоимости токенов и лимитов
+        self.token_cost_input = float(self.gui.settings.get("TOKEN_COST_INPUT", 0.0432))
+        self.token_cost_output = float(self.gui.settings.get("TOKEN_COST_OUTPUT", 0.1728))
+        self.max_model_tokens = int(self.gui.settings.get("MAX_MODEL_TOKENS", 128000)) # Default to a common large limit
+        
         self.memory_limit = int(self.gui.settings.get("MODEL_MESSAGE_LIMIT", 40))  # For historical messages
 
         self.current_character: Character = None
         self.current_character_to_change = str(self.gui.settings.get("CHARACTER"))
         self.characters: Dict[str, Character] = {}
+
+        # Настройки для снижения качества изображений в истории
+        self.image_quality_reduction_enabled = bool(self.gui.settings.get("IMAGE_QUALITY_REDUCTION_ENABLED", False))
+        self.image_quality_reduction_start_index = int(self.gui.settings.get("IMAGE_QUALITY_REDUCTION_START_INDEX", 25))
+        self.image_quality_reduction_use_percentage = bool(self.gui.settings.get("IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE", False))
+        min_quolity = self.gui.settings.get("IMAGE_QUALITY_REDUCTION_MIN_QUALITY", 30)
+        self.image_quality_reduction_min_quality = int(min_quolity) if min_quolity!='' else 30
+        self.image_quality_reduction_decrease_rate = int(self.gui.settings.get("IMAGE_QUALITY_REDUCTION_DECREASE_RATE", 5))
 
 
         # Game-specific state - these should ideally be passed to character or managed elsewhere if possible
@@ -84,6 +100,19 @@ class ChatModel:
         self.actualInfo = ""
 
         self.infos_to_add_to_history: List[Dict] = []  # For temporary system messages to be added to history
+
+        # Mapping of model names to their token limits
+        self._model_token_limits: Dict[str, int] = {
+            "gpt-4o-mini": 128000,
+            "gpt-4o": 128000,
+            "gpt-4-turbo": 128000,
+            "gpt-4": 8192,
+            "gpt-3.5-turbo": 16385,
+            "gemini-1.5-flash": 1000000, # Примерный лимит для Gemini 1.5 Flash
+            "gemini-1.5-pro": 1000000,   # Примерный лимит для Gemini 1.5 Pro
+            "gemini-pro": 32768,        # Примерный лимит для Gemini Pro
+            # Добавьте другие модели по мере необходимости
+        }
 
         self.init_characters()
         self.HideAiData = True  # Unused?
@@ -227,11 +256,11 @@ class ChatModel:
             self.infos_to_add_to_history.clear()
 
         # 2. Игровые переменные ---------------------------------------------------------
-        self.current_character.variables["GAME_DISTANCE"]      = self.distance
-        self.current_character.variables["GAME_ROOM_PLAYER"]   = self.get_room_name(self.roomPlayer)
-        self.current_character.variables["GAME_ROOM_MITA"]     = self.get_room_name(self.roomMita)
-        self.current_character.variables["GAME_NEAR_OBJECTS"]  = self.nearObjects
-        self.current_character.variables["GAME_ACTUAL_INFO"]   = self.actualInfo
+        self.current_character.set_variable("GAME_DISTANCE",self.distance)
+        self.current_character.set_variable("GAME_ROOM_PLAYER",self.get_room_name(self.roomPlayer))
+        self.current_character.set_variable("GAME_ROOM_MITA",self.get_room_name(self.roomMita))
+        self.current_character.set_variable("GAME_NEAR_OBJECTS",self.nearObjects)
+        self.current_character.set_variable("GAME_ACTUAL_INFO",self.actualInfo)
 
         # 3. Шахматы --------------------------------------------------------------------
         chess_system_message_for_llm_content: Optional[str] = None
@@ -377,11 +406,28 @@ class ChatModel:
             combined_messages.append({"role": "system",
                                     "content": chess_system_message_for_llm_content})
 
-        # 5. История памяти -------------------------------------------------------------
+        # 5. История памяти
+        history_data = self.current_character.history_manager.load_history()
+        llm_messages_history = history_data.get("messages", [])
+
         if self.current_character != self.GameMaster:
+            # Определяем сообщения, которые будут "потеряны"
+            missed_messages = llm_messages_history[:-self.memory_limit]
             llm_messages_history_limited = llm_messages_history[-self.memory_limit:]
         else:
+            # Для GameMaster также определяем потерянные сообщения, если лимит превышен
+            missed_messages = llm_messages_history[:-8]
             llm_messages_history_limited = llm_messages_history[-8:]
+
+        # Если включена настройка сохранения пропущенных сообщений и есть что сохранять
+        if missed_messages and bool(self.gui.settings.get("SAVE_MISSED_HISTORY", True)):
+            logger.info(
+                f"Сохраняю {len(missed_messages)} пропущенных сообщений для персонажа {self.current_character.char_id}.")
+            self.current_character.history_manager.save_missed_history(missed_messages)
+
+        # Применяем снижение качества к изображениям в истории, если включено
+        if self.image_quality_reduction_enabled:
+            llm_messages_history_limited = self._apply_history_image_quality_reduction(llm_messages_history_limited)
 
         combined_messages.extend(llm_messages_history_limited)
 
@@ -407,6 +453,11 @@ class ChatModel:
         if user_content_chunks:
             user_message_for_history = {"role": "user", "content": user_content_chunks}
             combined_messages.append(user_message_for_history)
+
+        if user_message_for_history:
+            user_message_for_history["time"] = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M")
+            llm_messages_history_limited.append(user_message_for_history)
+
 
         # 8. Генерация ответа -----------------------------------------------------------
         try:
@@ -453,16 +504,31 @@ class ChatModel:
                 # остаётся processed_response_text
 
             # 9. Сохраняем историю / TTS --------------------------------------------------
-            assistant_message = {"role": "assistant", "content": final_response_text}
+            assistant_message_content = final_response_text
 
-            if user_message_for_history:
-                llm_messages_history.append(user_message_for_history)
-            llm_messages_history.append(assistant_message)
+            # Проверяем настройку замены изображений заглушками
+            if bool(self.gui.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
+                logger.info("Настройка REPLACE_IMAGES_WITH_PLACEHOLDERS включена. Заменяю изображения заглушками.")
+                # Здесь предполагается, что final_response_text - это строка.
+                # Если модель может возвращать изображения в ответе, нужно будет адаптировать эту логику.
+                # Пока что просто добавляем заглушку, если в ответе есть что-то похожее на изображение (хотя модель не должна их генерировать в текстовом ответе).
+                # В будущем, если модель сможет генерировать изображения, нужно будет обрабатывать мультимодальный контент и здесь.
+                # Для текущей реализации, где модель возвращает только текст, эта заглушка не сработает для изображений,
+                # но она готова к будущим изменениям, если модель начнет возвращать структурированный контент с изображениями.
+                # Пока что, если в ответе есть URL или base64, мы можем это заменить.
+                # Это очень грубая эвристика для текстового ответа.
+                assistant_message_content = re.sub(r'https?://\S+\.(?:png|jpg|jpeg|gif|bmp)|data:image/\S+;base64,\S+', '[Изображение]', assistant_message_content)
 
-            self.current_character.save_character_state_to_history(llm_messages_history)
+
+            assistant_message = {"role": "assistant", "content": assistant_message_content}
+            assistant_message["time"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+
+            llm_messages_history_limited.append(assistant_message)
+
+            self.current_character.save_character_state_to_history(llm_messages_history_limited)
 
             if self.current_character != self.GameMaster or bool(self.gui.settings.get("GM_VOICE")):
-                self.gui.textToTalk           = self.process_text_to_voice(final_response_text)
+                self.gui.textToTalk           = process_text_to_voice(final_response_text)
                 self.gui.textSpeaker          = self.current_character.silero_command
                 self.gui.textSpeakerMiku      = self.current_character.miku_tts_name
                 self.gui.silero_turn_off_video= self.current_character.silero_turn_off_video
@@ -618,7 +684,13 @@ class ChatModel:
         try:
             self.change_last_message_to_user_for_gemini(model_to_use, combined_messages)
 
-            final_params = self.get_final_params(model_to_use, combined_messages)
+            # Удаляем поле 'time' из сообщений, так как OpenAI API его не поддерживает
+            cleaned_messages = []
+            for msg in combined_messages:
+                cleaned_msg = {k: v for k, v in msg.items() if k != "time"}
+                cleaned_messages.append(cleaned_msg)
+
+            final_params = self.get_final_params(model_to_use, cleaned_messages)
 
             logger.info(
                 f"Requesting completion from {model_to_use} with temp={final_params.get('temperature')}, max_tokens={final_params.get('max_tokens')}")
@@ -679,6 +751,132 @@ class ChatModel:
             cleaned = cleaned[3:-3]
 
         return cleaned.strip()
+
+    def _process_image_quality(self, image_bytes: bytes, target_quality: int) -> bytes | None:
+        """
+        Обрабатывает байты изображения, изменяя его качество JPEG.
+        Если target_quality == 0, возвращает None (для удаления изображения).
+        """
+        if not image_bytes:
+            return None
+
+        if target_quality <= 0:
+            logger.info("Изображение будет удалено (target_quality <= 0).")
+            return None
+
+        try:
+            original_size = len(image_bytes)
+            img = Image.open(BytesIO(image_bytes))
+            # Конвертируем в RGB, если режим не RGB (например, RGBA), чтобы избежать ошибок при сохранении JPEG
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+
+            byte_arr = BytesIO()
+            img.save(byte_arr, format='JPEG', quality=target_quality)
+            processed_bytes = byte_arr.getvalue()
+            processed_size = len(processed_bytes)
+            logger.debug(f"Качество изображения изменено на {target_quality}. Размер: {original_size} байт -> {processed_size} байт.")
+            return processed_bytes
+        except Exception as e:
+            logger.error(f"Ошибка при обработке качества изображения: {e}", exc_info=True)
+            return image_bytes # Возвращаем исходные байты в случае ошибки
+
+    def _apply_history_image_quality_reduction(self, messages: List[Dict]) -> List[Dict]:
+        """
+        Применяет снижение качества к изображениям в истории сообщений на основе настроек.
+        """
+        if not messages:
+            return messages
+
+        history_length = len(messages)
+        actual_start_index = 0
+
+        if self.image_quality_reduction_use_percentage:
+            actual_start_index = int(history_length * (self.image_quality_reduction_start_index / 100.0))
+        else:
+            actual_start_index = self.image_quality_reduction_start_index
+
+        # Убедимся, что start_index не выходит за пределы истории
+        actual_start_index = max(0, min(actual_start_index, history_length))
+
+        logger.info(f"Применение снижения качества изображений: длина истории {history_length}, фактический старт {actual_start_index}")
+
+        updated_messages = []
+        for i, msg in enumerate(messages):
+            # Сообщения до actual_start_index остаются без изменений
+            if i < actual_start_index:
+                updated_messages.append(msg)
+                continue
+
+            # Обрабатываем только сообщения, которые содержат изображения
+            if msg.get("role") in ["user", "assistant"] and isinstance(msg.get("content"), list):
+                new_content_chunks = []
+                image_processed = False
+                for item in msg["content"]:
+                    if item.get("type") == "image_url" and item.get("image_url") and item["image_url"].get("url"):
+                        image_processed = True
+                        base64_url = item["image_url"]["url"]
+                        # Извлекаем только base64 данные
+                        if "," in base64_url:
+                            img_base64 = base64_url.split(',')[1]
+                        else:
+                            img_base64 = base64_url # Если нет префикса, предполагаем, что это чистый base64
+
+                        try:
+                            img_bytes = base64.b64decode(img_base64)
+
+                            # Вычисляем целевое качество
+                            # Индекс сообщения относительно начала зоны снижения качества
+                            relative_index = i - actual_start_index
+                            
+                            # Начальное качество для снижения. Берем из настроек захвата экрана.
+                            initial_quality = int(self.gui.settings.get("SCREEN_CAPTURE_QUALITY", 75))
+
+                            calculated_quality = initial_quality - (self.image_quality_reduction_decrease_rate * relative_index)
+                            
+                            # Ограничиваем качество минимальным значением
+                            target_quality = max(self.image_quality_reduction_min_quality, calculated_quality)
+                            
+                            logger.info(f"Сообщение {i}: относительный индекс {relative_index}, рассчитанное качество {calculated_quality}, целевое качество {target_quality}")
+
+                            processed_bytes = self._process_image_quality(img_bytes, target_quality)
+
+                            if processed_bytes:
+                                new_content_chunks.append({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{base64.b64encode(processed_bytes).decode('utf-8')}"
+                                    }
+                                })
+                            else:
+                                logger.info(f"Изображение в сообщении {i} удалено (качество <= 0).")
+                                # Если processed_bytes None, изображение удаляется, не добавляем его в new_content_chunks
+                        except Exception as e:
+                            logger.error(f"Ошибка при обработке изображения в истории сообщения {i}: {e}", exc_info=True)
+                            new_content_chunks.append(item) # В случае ошибки оставляем исходный элемент
+                    else:
+                        new_content_chunks.append(item) # Добавляем текстовые части и другие типы контента
+
+                if image_processed: # Если в сообщении были изображения, обновляем его
+                    if new_content_chunks:
+                        new_msg = msg.copy()
+                        new_msg["content"] = new_content_chunks
+                        updated_messages.append(new_msg)
+                    else:
+                        # Если все изображения были удалены и нет другого контента, можно удалить сообщение
+                        # Или оставить его только с текстом, если он был
+                        if any(item.get("type") == "text" for item in msg["content"]):
+                            new_msg = msg.copy()
+                            new_msg["content"] = [item for item in msg["content"] if item.get("type") == "text"]
+                            updated_messages.append(new_msg)
+                        else:
+                            logger.info(f"Сообщение {i} полностью удалено, так как все изображения были удалены и нет текста.")
+                else:
+                    updated_messages.append(msg) # Если изображений не было, добавляем сообщение как есть
+            else:
+                updated_messages.append(msg) # Добавляем сообщения без изображений как есть
+
+        return updated_messages
 
     # def generate_request_gemini(self, combined_messages):
     #     params_for_gemini = self.get_params(model="gemini-pro")
@@ -823,25 +1021,7 @@ class ChatModel:
     #         # For now, keeping this as it was in the provided code.
     #     return params
 
-    def process_text_to_voice(self, text_to_speak: str) -> str:
-        if not isinstance(text_to_speak, str):
-            logger.warning(f"process_text_to_voice expected string, got {type(text_to_speak)}. Converting to string.")
-            text_to_speak = str(text_to_speak)
 
-        clean_text = re.sub(r"<[^>]+>.*?</[^>]+>", "", text_to_speak, flags=re.DOTALL)
-        clean_text = re.sub(r"<[^>]+>", "", clean_text)
-
-        try:
-            clean_text = replace_numbers_with_words(clean_text)
-        except NameError:
-            logger.debug("replace_numbers_with_words utility not found or used.")
-            pass
-
-        if not clean_text.strip():
-            clean_text = "..."
-            logger.info("TTS text was empty after cleaning, using default '...'")
-
-        return clean_text.strip()
 
     def reload_promts(self):
         logger.info("Reloading current character data.")
@@ -856,39 +1036,121 @@ class ChatModel:
         self.infos_to_add_to_history.append(system_info_message)
         logger.info(f"Queued temporary system info: {content[:100]}...")
 
-    #region TokensCounting
-    def calculate_cost(self, user_input_text: str):
-        if not self.hasTokenizer:
-            logger.warning("Tokenizer not available, cannot calculate cost accurately.")
-            return 0, 0.0
+    # region TokensCounting
+    def get_max_model_tokens(self) -> int:
+        """
+        Возвращает максимальное количество токенов для текущей активной модели.
+        """
+        current_model = self.api_model
+        if bool(self.gui.settings.get("gpt4free")):
+            current_model = self.gpt4free_model
+        elif bool(self.gui.settings.get("NM_API_REQ", False)):
+            current_model = self.gui.settings.get("NM_API_MODEL")
 
-        temp_messages_for_costing = []
-        if self.current_character:
-            history_data = self.current_character.history_manager.load_history()
-            temp_messages_for_costing.extend(history_data.get("messages", []))
+        # Возвращаем лимит из настроек, если он задан и больше 0, иначе из маппинга
+        if self.max_model_tokens > 0:
+             return self.max_model_tokens
+        return self._model_token_limits.get(current_model, 128000) # Возвращаем дефолт, если модель не найдена
 
-        temp_messages_for_costing.append({"role": "user", "content": user_input_text})
-
-        token_count = self.count_tokens(temp_messages_for_costing)
-        cost = (token_count / 1000) * self.cost_input_per_1000
-
-        logger.info(
-            f"Estimated token count for input '{user_input_text[:50]}...': {token_count}, Estimated cost: {cost:.5f}")
-        return token_count, cost
-
-    def count_tokens(self, messages_list: List[Dict]) -> int:
+    def get_current_context_token_count(self) -> int:
+        """
+        Считает количество токенов в текущем контексте, который будет отправлен в LLM.
+        Это включает системные промпты, историю и текущий ввод пользователя.
+        """
         if not self.hasTokenizer:
             return 0
 
-        total_tokens = 0
-        for msg in messages_list:
-            if isinstance(msg, dict) and "content" in msg and isinstance(msg["content"], str):
+        # Логика формирования combined_messages из generate_response
+        combined_messages = []
+
+        # 1. Системные промпты / память
+        if bool(self.gui.settings.get("SEPARATE_PROMPTS", True)):
+            try:
+                resolved_main = self.current_character.dsl_interpreter.resolver.resolve_path(
+                    self.current_character.main_template_path_relative)
+                main_template_content = self.current_character.dsl_interpreter.resolver.load_text(
+                    resolved_main, "main template for separate prompts")
+            except Exception as e:
+                logger.error(f"Critical error loading main template for {self.current_character.char_id}: {e}",
+                             exc_info=True)
+                main_template_content = ""
+                combined_messages.append({"role": "system",
+                                          "content": f"[CRITICAL ERROR LOADING MAIN TEMPLATE FOR {self.current_character.char_id}]"})
+            file_paths = self.current_character.dsl_interpreter.placeholder_pattern.findall(main_template_content)
+            for p in file_paths:
                 try:
-                    total_tokens += len(self.tokenizer.encode(msg["content"]))
+                    content = self.current_character.dsl_interpreter.process_file(p)
+                    if content and content.strip():
+                        combined_messages.append({"role": "system", "content": content})
                 except Exception as e:
-                    logger.warning(
-                        f"Error encoding content for token counting: {e}. Content snippet: {msg['content'][:50]}")
+                    logger.error(f"Error processing DSL file {p} for {self.current_character.char_id}: {e}",
+                                 exc_info=True)
+                    combined_messages.append({"role": "system",
+                                              "content": f"[ERROR PROCESSING {p}]"})
+        else:
+            combined_messages.extend(self.current_character.get_full_system_setup_for_llm())
+
+        # Добавляем шахматы (если сформировано) - для точного подсчета нужно бы формировать, но пока заглушка
+        # В реальной ситуации здесь нужно было бы вызвать логику формирования chess_system_message_for_llm_content
+        # Для простоты пока не включаем, так как это усложнит подсчет без реального запроса
+        # if hasattr(self.current_character, 'chess_state_queue') and self.current_character.get_variable("playingChess", False):
+        #     combined_messages.append({"role": "system", "content": "Chess game state (placeholder)"})
+
+        # 2. История памяти
+        history_data = self.current_character.history_manager.load_history()
+        llm_messages_history = history_data.get("messages", [])
+
+        if self.current_character != self.GameMaster:
+            llm_messages_history_limited = llm_messages_history[-self.memory_limit:]
+        else:
+            llm_messages_history_limited = llm_messages_history[-8:]
+
+        # Применяем снижение качества к изображениям в истории, если включено
+        if self.image_quality_reduction_enabled:
+            llm_messages_history_limited = self._apply_history_image_quality_reduction(llm_messages_history_limited)
+
+        combined_messages.extend(llm_messages_history_limited)
+
+        # 3. Временные системные сообщения
+        if self.infos_to_add_to_history:
+            combined_messages.extend(self.infos_to_add_to_history)
+
+        # 4. Текущий ввод пользователя (если есть)
+        user_input_from_gui = self.gui.user_entry.get("1.0", "end-1c").strip()
+        if user_input_from_gui:
+            combined_messages.append({"role": "user", "content": user_input_from_gui})
+
+        total_tokens = 0
+        for msg in combined_messages:
+            if isinstance(msg, dict) and "content" in msg:
+                content = msg["content"]
+                if isinstance(content, str):
+                    total_tokens += len(self.tokenizer.encode(content))
+                elif isinstance(content, list):  # Для мультимодального контента
+                    for item in content:
+                        if item.get("type") == "text" and item.get("text"):
+                            total_tokens += len(self.tokenizer.encode(item["text"]))
+                        elif item.get("type") == "image_url" and item.get("image_url", {}).get("url"):
+                            # Для изображений, добавляем фиксированное количество токенов или 0,
+                            # так как tiktoken не считает токены изображений напрямую.
+                            # Google Gemini Vision Pro оценивает изображения по-разному,
+                            # но для общего подсчета можно использовать приближение.
+                            # Например, 1 изображение = 1000 токенов (очень грубо)
+                            total_tokens += 1000 # Примерное количество токенов за изображение
         return total_tokens
+
+    def calculate_cost_for_current_context(self) -> float:
+        """
+        Рассчитывает ориентировочную стоимость текущего контекста в токенах.
+        """
+        if not self.hasTokenizer:
+            logger.warning("Tokenizer not available, cannot calculate cost accurately.")
+            return 0.0
+
+        token_count = self.get_current_context_token_count()
+        # Используем стоимость из настроек
+        cost = (token_count / 1000) * self.token_cost_input
+        return cost
 
     #endregion
 
@@ -1054,7 +1316,7 @@ class ChatModel:
             params['temperature'] = self.temperature
 
         # Макс. токены - названия могут различаться
-        if self.max_response_tokens is not None:
+        if bool(self.gui.settings.get("USE_MODEL_MAX_RESPONSE_TOKENS")) and self.max_response_tokens is not None:
             if provider_key == 'openai' or provider_key == 'deepseek' or provider_key == 'anthropic':
                 params['max_tokens'] = self.max_response_tokens
             elif provider_key == 'gemini':
@@ -1178,88 +1440,7 @@ class ChatModel:
 
         return response
 
-    def process_text_to_voice(self, text):
-        # Проверяем, что текст является строкой (если это байты, декодируем)
-        if isinstance(text, bytes):
-            try:
-                text = text.decode("utf-8")  # Декодируем в UTF-8
-            except UnicodeDecodeError:
-                # Если UTF-8 не подходит, пробуем определить кодировку
-                import chardet
-                encoding = chardet.detect(text)["encoding"]
-                text = text.decode(encoding)
-
-        # Удаляем все теги и их содержимое
-        clean_text = re.sub(r"<[^>]+>.*?</[^>]+>", "", text)
-        clean_text = re.sub(r"<.*?>", "", clean_text)
-        clean_text = replace_numbers_with_words(clean_text)
-
-        #clean_text = transliterate_english_to_russian(clean_text)
-
-        # Если текст пустой, заменяем его на "Вот"
-        if clean_text.strip() == "":
-            clean_text = "Вот"
-
-        return clean_text
-
-    def reload_promts(self):
-        logger.info("Перезагрузка промптов")
-
-        self.current_character.init()
-        self.current_character.process_response()
-
-    def add_temporary_system_message(self, messages, content):
-        """
-        Добавляет одноразовое системное сообщение в список сообщений.
-
-        :param messages: Список сообщений, в который добавляется системное сообщение.
-        :param content: Текст системного сообщения.
-        """
-        system_message = {
-            "role": "system",
-            "content": content
-        }
-        messages.append(system_message)
-
     #region TokensCounting
-    def calculate_cost(self, user_input):
-        # Загружаем историю
-        history_data = self.load_history()
-
-        # Получаем только сообщения
-        messages = history_data.get('messages', [])
-
-        # Добавляем новое сообщение от пользователя
-        messages.append({"role": "user", "content": user_input})
-
-        # Считаем токены
-        token_count = self.count_tokens(messages)
-
-        # Рассчитываем стоимость
-        cost = (token_count / 1000) * self.cost_input_per_1000
-
-        return token_count, cost
-
-    def count_tokens(self, messages):
-        return 0
-
-        return sum(len(self.tokenizer.encode(msg["content"])) for msg in messages if
-                   isinstance(msg, dict) and "content" in msg)
 
     #endregion
-    def GetOtherKey(self):
-        """
-        Получаем ключ на замену сломанному
-        :return:
-        """
-        keys = [self.api_key] + self.gui.settings.get("NM_API_KEY_RES").split()
-        count = len(keys)
 
-        i = self.last_key + 1
-
-        if i >= count:
-            i = 0
-
-        self.last_key = i
-
-        return keys[i]

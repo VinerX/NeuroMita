@@ -21,6 +21,7 @@ FILES_TO_COPY = [
     (PROJECT_DIR / "init.py", OUTPUT_DIR),
     (PROJECT_DIR / "init_triton.bat", OUTPUT_DIR),
     (PROJECT_DIR / "ffmpeg.exe", OUTPUT_DIR),
+    (PROJECT_DIR / "icon.png", OUTPUT_DIR),
 ]
 
 # Папки для копирования (рекурсивно)

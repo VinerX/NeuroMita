@@ -70,7 +70,7 @@ emoji
 nodriver
 platformdirs
 dotenv
-
+onnxruntime
 # atm4x reqs
 
 pywin32

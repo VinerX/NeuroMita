@@ -91,6 +91,37 @@ class HistoryManager:
         shutil.copy(self.history_file_path, target_path)
         logger.info(f"Файл сохранён как {target_path}")
 
+    def save_missed_history(self, missed_messages: list):
+        """
+        Сохраняет "потерянные" сообщения в отдельный файл для персонажа.
+        Сообщения добавляются к существующему файлу, если он есть.
+        """
+        missed_dir = os.path.join("Histories", self.character_name)
+        os.makedirs(missed_dir, exist_ok=True)
+        missed_file_path = os.path.join(missed_dir, f"{self.character_name}_missed_history.json")
+
+        existing_missed_messages = []
+        if os.path.exists(missed_file_path):
+            try:
+                with open(missed_file_path, 'r', encoding='utf-8') as f:
+                    existing_missed_messages = json.load(f)
+                    if not isinstance(existing_missed_messages, list):
+                        logger.warning(f"Файл пропущенной истории {missed_file_path} поврежден или имеет неверный формат. Создаю новый.")
+                        existing_missed_messages = []
+            except (json.JSONDecodeError, FileNotFoundError):
+                logger.warning(f"Не удалось загрузить существующую пропущенную историю из {missed_file_path}. Создаю новый файл.")
+                existing_missed_messages = []
+
+        # Добавляем новые пропущенные сообщения
+        existing_missed_messages.extend(missed_messages)
+
+        try:
+            with open(missed_file_path, 'w', encoding='utf-8') as f:
+                json.dump(existing_missed_messages, f, ensure_ascii=False, indent=4)
+            logger.info(f"Пропущенные сообщения сохранены в {missed_file_path}")
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении пропущенных сообщений в {missed_file_path}: {e}", exc_info=True)
+
     def clear_history(self):
         logger.info("Сброс файла истории")
 

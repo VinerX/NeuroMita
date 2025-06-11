@@ -57,6 +57,7 @@ class SpeechRecognition:
     _current_text = ""
     _is_processing_audio = asyncio.Lock()
     _is_running = False
+    _recognition_task = None # Для хранения ссылки на задачу распознавания
 
     # --- Переменные для ленивой загрузки библиотек и функций ---
     _torch = None
@@ -536,7 +537,35 @@ class SpeechRecognition:
         SpeechRecognition._is_running = True
         SpeechRecognition.active = True
         SpeechRecognition.microphone_index = device_id
-        asyncio.run_coroutine_threadsafe(SpeechRecognition.speach_recognition_start_async(), loop)
+        SpeechRecognition._recognition_task = asyncio.run_coroutine_threadsafe(SpeechRecognition.speach_recognition_start_async(), loop)
+
+    @staticmethod
+    def speach_recognition_stop():
+        if not SpeechRecognition._is_running:
+            logger.warning("Попытка остановить распознавание, когда оно не запущено. Игнорируется.")
+            return
+
+        SpeechRecognition.active = False
+        SpeechRecognition._is_running = False
+        logger.info("Запрос на остановку распознавания речи...")
+
+        if SpeechRecognition._recognition_task and not SpeechRecognition._recognition_task.done():
+            try:
+                # Ждем завершения задачи, чтобы убедиться, что цикл live_recognition завершился
+                # Используем небольшой таймаут, чтобы не блокировать основной поток GUI надолго
+                # В реальном приложении, возможно, лучше использовать asyncio.wait_for в отдельном потоке
+                # или более сложную логику для неблокирующего ожидания.
+                # Для простоты, здесь мы просто ждем.
+                SpeechRecognition._recognition_task.result(timeout=1.0) # Ждем до 1 секунды
+                logger.info("Задача распознавания речи успешно завершена.")
+            except asyncio.TimeoutError:
+                logger.warning("Таймаут при ожидании завершения задачи распознавания речи.")
+            except Exception as e:
+                logger.error(f"Ошибка при ожидании завершения задачи распознавания речи: {e}")
+        else:
+            logger.info("Задача распознавания речи уже завершена или не была запущена.")
+
+        SpeechRecognition._recognition_task = None # Очищаем ссылку
 
     @staticmethod
     async def get_current_text() -> str:

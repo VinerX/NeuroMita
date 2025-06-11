@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
 from SettingsManager import SettingsManager, CollapsibleSection
+import os # Добавлено для os.path.exists
 
 from SettingsManager import CollapsibleSection
 
@@ -168,6 +169,15 @@ def create_setting_widget(gui, parent, label, setting_key, widget_type='entry',
 
     return frame
 
+def create_gui_settings_config():
+    """Определяет конфигурацию для секции настроек GUI."""
+    return [
+        {'label': _('Настройки изображений в чате', 'Chat Image Settings'), 'type': 'text'},
+        {'label': _('Заменять изображения заглушками', 'Replace images with placeholders'), 'key': 'REPLACE_IMAGES_WITH_PLACEHOLDERS',
+         'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _('Заменять отображение изображений в истории чата на текстовые заглушки.',
+                      'Replace image display in chat history with text placeholders.')},
+    ]
 
 def create_tooltip(self, widget, text):
     """Создает всплывающую подсказку для виджета"""
