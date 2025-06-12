@@ -6,7 +6,7 @@ from tkinter import ttk
 from Logger import logger
 from SpeechRecognition import SpeechRecognition
 from utils import getTranslationVariant as _
-
+import sounddevice as sd
 
 def setup_microphone_controls(self, parent):
     # Конфигурация настроек микрофона
@@ -15,9 +15,9 @@ def setup_microphone_controls(self, parent):
             'label': _("Микрофон", "Microphone"),
             'type': 'combobox',
             'key': 'MIC_DEVICE',
-            'options': self.get_microphone_list(),
-            'default': self.get_microphone_list()[0] if self.get_microphone_list() else "",
-            'command': self.on_mic_selected,
+            'options': get_microphone_list(self),
+            'default': get_microphone_list(self)[0] if get_microphone_list(self) else "",
+            'command': lambda : on_mic_selected(self),
             'widget_attrs': {
                 'width': 30
             }
@@ -92,7 +92,7 @@ def setup_microphone_controls(self, parent):
         {
             'label': _("Обновить список", "Refresh list"),
             'type': 'button',
-            'command': self.update_mic_list
+            'command': lambda : update_mic_list(self)
         }
     ]
 
@@ -114,5 +114,82 @@ def setup_microphone_controls(self, parent):
                         self.mic_active_check = child
                 elif isinstance(child, ttk.Combobox) and 'VOSK_MODEL' in str(widget):
                     self.vosk_model_combobox = child
+
+# Region MicFunctions
+
+def get_microphone_list(self):
+    try:
+        devices = sd.query_devices()
+        input_devices = [
+            f"{d['name']} ({i})"
+            for i, d in enumerate(devices)
+            if d['max_input_channels'] > 0
+        ]
+        return input_devices
+    except Exception as e:
+        logger.info(f"Ошибка получения списка микрофонов: {e}")
+        return []
+
+def update_vosk_model_visibility(self, value):
+    """Показывает/скрывает настройки Vosk в зависимости от выбранного типа."""
+    show_vosk = value == "vosk"
+    for widget in self.mic_section.content_frame.winfo_children():
+        for child in widget.winfo_children():
+            if hasattr(child, 'setting_key') and child.setting_key == 'VOSK_MODEL':
+                if show_vosk:
+                    widget.pack(fill=tk.X, pady=2)
+                else:
+                    widget.pack_forget()
+
+def on_mic_selected(self, event):
+    selection = self.mic_combobox.get()
+    if selection:
+        self.selected_microphone = selection.split(" (")[0]
+        device_id = int(selection.split(" (")[-1].replace(")", ""))
+        self.device_id = device_id
+        logger.info(f"Выбран микрофон: {self.selected_microphone} (ID: {device_id})")
+        self.save_mic_settings(device_id)
+
+def update_mic_list(self):
+    self.mic_combobox['values'] = self.get_microphone_list()
+
+def save_mic_settings(self, device_id):
+    try:
+        with open(self.config_path, "rb") as f:
+            encoded = f.read()
+        decoded = base64.b64decode(encoded)
+        settings = json.loads(decoded.decode("utf-8"))
+    except FileNotFoundError:
+        settings = {}
+
+    settings["NM_MICROPHONE_ID"] = device_id
+    settings["NM_MICROPHONE_NAME"] = self.selected_microphone
+
+    json_data = json.dumps(settings, ensure_ascii=False)
+    encoded = base64.b64encode(json_data.encode("utf-8"))
+    with open(self.config_path, "wb") as f:
+        f.write(encoded)
+
+def load_mic_settings(self):
+    try:
+        with open(self.config_path, "rb") as f:
+            encoded = f.read()
+        decoded = base64.b64decode(encoded)
+        settings = json.loads(decoded.decode("utf-8"))
+
+        device_id = settings.get("NM_MICROPHONE_ID", 0)
+        device_name = settings.get("NM_MICROPHONE_NAME", "")
+
+        devices = sd.query_devices()
+        if device_id < len(devices):
+            self.selected_microphone = device_name
+            self.device_id = device_id
+            self.mic_combobox.set(f"{device_name} ({device_id})")
+            logger.info(f"Загружен микрофон: {device_name} (ID: {device_id})")
+
+    except Exception as e:
+        logger.info(f"Ошибка загрузки настроек микрофона: {e}")
+
+# endregion
 
 

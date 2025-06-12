@@ -61,6 +61,8 @@ from ui.settings import (
 class ChatGUI:
     def __init__(self):
 
+        self.debug_window = None
+        self.mic_combobox = None
         self.silero_connected = False
         self.game_connected_checkbox_var = False
         self.ConnectedToGame = False
@@ -294,87 +296,11 @@ class ChatGUI:
 
         # Если озвучка включена и есть текст
         if bool(self.settings.get("SILERO_USE")) and self.textToTalk:
-            logger.info(f"Есть текст для отправки: {self.textToTalk} id {self.id_sound}")
-            if self.loop and self.loop.is_running():
-                try:
-                    # Получаем основной метод озвучки из настроек
-                    self.voiceover_method = self.settings.get("VOICEOVER_METHOD", "TG")
-
-                    if self.voiceover_method == "TG":
-                        logger.info("Используем Telegram (Silero/Miku) для озвучки")
-                        # Используем существующую логику для TG/MikuTTS
-                        asyncio.run_coroutine_threadsafe(
-                            self.run_send_and_receive(self.textToTalk, self.get_speaker_text(), self.id_sound),
-                            self.loop
-                        )
-                        self.textToTalk = ""  # Очищаем текст после отправки
-
-                    elif self.voiceover_method == "Local":
-                        # Получаем ID выбранной локальной модели из настроек
-                        selected_local_model_id = self.settings.get("NM_CURRENT_VOICEOVER", None)
-                        if selected_local_model_id:  # Убедимся, что ID локальной модели выбран
-                            logger.info(f"Используем {selected_local_model_id} для локальной озвучки")
-                            # Проверяем, инициализирована ли модель
-                            if self.local_voice.is_model_initialized(selected_local_model_id):
-                                asyncio.run_coroutine_threadsafe(
-                                    self.run_local_voiceover(self.textToTalk),
-                                    self.loop
-                                )
-                                self.textToTalk = ""  # Очищаем текст после отправки
-                            else:
-                                logger.warning(
-                                    f"Модель {selected_local_model_id} выбрана, но не инициализирована. Озвучка не будет выполнена.")
-                                self.textToTalk = ""  # Очищаем, чтобы не зациклиться
-                        else:
-                            logger.warning("Локальная озвучка выбрана, но конкретная модель не установлена/не выбрана.")
-                            self.textToTalk = ""  # Очищаем, чтобы не зациклиться
-                    else:
-                        logger.warning(f"Неизвестный метод озвучки: {self.voiceover_method}")
-                        self.textToTalk = ""  # Очищаем, чтобы не зациклиться
-
-                    logger.info("Выполнено")
-                except Exception as e:
-                    logger.error(f"Ошибка при отправке текста на озвучку: {e}")
-                    self.textToTalk = ""  # Очищаем текст в случае ошибки
-            else:
-                logger.error("Ошибка: Цикл событий не готов.")
+            self.voice_text()
 
         # --- Логика периодической отправки изображений ---
         if self.image_request_timer_running:
-            current_time = time.time()
-            interval = float(self.settings.get("IMAGE_REQUEST_INTERVAL", 20.0))
-
-            delta = current_time - self.last_image_request_time
-            # Добавляем лог для отладки
-            #logger.debug(f"Проверка периодической отправки: {delta}/{interval}")
-
-            if delta >= interval:
-
-                # Захватываем изображение
-                image_data = []
-                if self.settings.get("ENABLE_SCREEN_ANALYSIS", False):
-                    logger.info(
-                        f"Отправка периодического запроса с изображением ({current_time - self.last_image_request_time:.2f}/{interval:.2f} сек).")
-                    history_limit = int(self.settings.get("SCREEN_CAPTURE_HISTORY_LIMIT", 1))
-                    frames = self.screen_capture_instance.get_recent_frames(history_limit)
-                    if frames:
-                        image_data.extend(frames)
-                        logger.info(f"Захвачено {len(frames)} кадров для периодической отправки.")
-                    else:
-                        logger.info(
-                            "Анализ экрана включен, но кадры не готовы или история пуста для периодической отправки.")
-
-                    if image_data:
-                        # Отправляем запрос только с изображением (без текста)
-                        if self.loop and self.loop.is_running():
-                            asyncio.run_coroutine_threadsafe(
-                                self.async_send_message(user_input="", system_input="", image_data=image_data),
-                                self.loop)
-                            self.last_image_request_time = current_time
-                        else:
-                            logger.error("Ошибка: Цикл событий не готов для периодической отправки изображений.")
-                    else:
-                        logger.warning("Нет изображений для периодической отправки.")
+            self.send_interval_image()
 
         # --- Остальная часть функции без изменений (обработка микрофона) ---
         if bool(self.settings.get("MIC_INSTANT_SENT")):
@@ -394,6 +320,86 @@ class ChatGUI:
 
         # Перезапуск проверки через 100 миллисекунд
         self.root.after(100, self.check_text_to_talk_or_send)
+
+    def send_interval_image(self):
+        current_time = time.time()
+        interval = float(self.settings.get("IMAGE_REQUEST_INTERVAL", 20.0))
+        delta = current_time - self.last_image_request_time
+        # Добавляем лог для отладки
+        # logger.debug(f"Проверка периодической отправки: {delta}/{interval}")
+        if delta >= interval:
+
+            # Захватываем изображение
+            image_data = []
+            if self.settings.get("ENABLE_SCREEN_ANALYSIS", False):
+                logger.info(
+                    f"Отправка периодического запроса с изображением ({current_time - self.last_image_request_time:.2f}/{interval:.2f} сек).")
+                history_limit = int(self.settings.get("SCREEN_CAPTURE_HISTORY_LIMIT", 1))
+                frames = self.screen_capture_instance.get_recent_frames(history_limit)
+                if frames:
+                    image_data.extend(frames)
+                    logger.info(f"Захвачено {len(frames)} кадров для периодической отправки.")
+                else:
+                    logger.info(
+                        "Анализ экрана включен, но кадры не готовы или история пуста для периодической отправки.")
+
+                if image_data:
+                    # Отправляем запрос только с изображением (без текста)
+                    if self.loop and self.loop.is_running():
+                        asyncio.run_coroutine_threadsafe(
+                            self.async_send_message(user_input="", system_input="", image_data=image_data),
+                            self.loop)
+                        self.last_image_request_time = current_time
+                    else:
+                        logger.error("Ошибка: Цикл событий не готов для периодической отправки изображений.")
+                else:
+                    logger.warning("Нет изображений для периодической отправки.")
+
+    def voice_text(self):
+        logger.info(f"Есть текст для отправки: {self.textToTalk} id {self.id_sound}")
+        if self.loop and self.loop.is_running():
+            try:
+                # Получаем основной метод озвучки из настроек
+                self.voiceover_method = self.settings.get("VOICEOVER_METHOD", "TG")
+
+                if self.voiceover_method == "TG":
+                    logger.info("Используем Telegram (Silero/Miku) для озвучки")
+                    # Используем существующую логику для TG/MikuTTS
+                    asyncio.run_coroutine_threadsafe(
+                        self.run_send_and_receive(self.textToTalk, self.get_speaker_text(), self.id_sound),
+                        self.loop
+                    )
+                    self.textToTalk = ""  # Очищаем текст после отправки
+
+                elif self.voiceover_method == "Local":
+                    # Получаем ID выбранной локальной модели из настроек
+                    selected_local_model_id = self.settings.get("NM_CURRENT_VOICEOVER", None)
+                    if selected_local_model_id:  # Убедимся, что ID локальной модели выбран
+                        logger.info(f"Используем {selected_local_model_id} для локальной озвучки")
+                        # Проверяем, инициализирована ли модель
+                        if self.local_voice.is_model_initialized(selected_local_model_id):
+                            asyncio.run_coroutine_threadsafe(
+                                self.run_local_voiceover(self.textToTalk),
+                                self.loop
+                            )
+                            self.textToTalk = ""  # Очищаем текст после отправки
+                        else:
+                            logger.warning(
+                                f"Модель {selected_local_model_id} выбрана, но не инициализирована. Озвучка не будет выполнена.")
+                            self.textToTalk = ""  # Очищаем, чтобы не зациклиться
+                    else:
+                        logger.warning("Локальная озвучка выбрана, но конкретная модель не установлена/не выбрана.")
+                        self.textToTalk = ""  # Очищаем, чтобы не зациклиться
+                else:
+                    logger.warning(f"Неизвестный метод озвучки: {self.voiceover_method}")
+                    self.textToTalk = ""  # Очищаем, чтобы не зациклиться
+
+                logger.info("Выполнено")
+            except Exception as e:
+                logger.error(f"Ошибка при отправке текста на озвучку: {e}")
+                self.textToTalk = ""  # Очищаем текст в случае ошибки
+        else:
+            logger.error("Ошибка: Цикл событий не готов.")
 
     #endregion
 
@@ -966,8 +972,6 @@ class ChatGUI:
 
         self.update_debug_info()  # Отобразить изначальное состояние переменных
 
-
-
     def setup_model_controls(self, parent):
         # Основные настройки
         mita_config = [
@@ -1061,15 +1065,7 @@ class ChatGUI:
         except ValueError:
             return False
 
-    def validate_float_positive(self, new_value):
-        if new_value == "": return True
-        try:
-            value = float(new_value)
-            return value > 0
-        except ValueError:
-            return False
-
-    # endrigion
+    # endregion
 
     def load_api_settings(self, update_model):
         """Загружает настройки из файла"""
@@ -1179,7 +1175,7 @@ class ChatGUI:
             )
         self.update_debug_info()
 
-    def insertDialog(self, input_text="", response="", system_text=""):
+    def insert_dialog(self, input_text="", response="", system_text=""):
         MitaName = self.model.current_character.name
         if input_text != "":
             self.chat_window.insert(tk.END, "Вы: ", "Player")
@@ -1303,16 +1299,7 @@ class ChatGUI:
             self.image_request_timer_running = False
             logger.info("Таймер периодической отправки изображений остановлен.")
 
-    def clear_history(self):
-        self.model.current_character.clear_history()
-        self.clear_chat_display()
-        self.update_debug_info()
 
-    def clear_history_all(self):
-        for character in self.model.characters.values():
-            character.clear_history()
-        self.clear_chat_display()
-        self.update_debug_info()
 
     def on_chat_scroll(self, event):
         """Обработчик события прокрутки чата."""
@@ -1370,61 +1357,7 @@ class ChatGUI:
         finally:
             self.loading_more_history = False
 
-    def reload_prompts(self):
-        """Скачивает свежие промпты с GitHub и перезагружает их для текущего персонажа."""
-        # Запускаем асинхронную задачу через event loop
-        #тут делаем запрос подверждение
-        confirm = messagebox.askokcancel(
-            _("Подтверждение", "Confirmation"),
-            _("Это удалит текущие промпты! Продолжить?", "This will delete the current prompts! Continue?"),
-            icon='warning', parent=self.root
-        )
-        if not confirm:
-            return
-        if confirm:
-            # Показать индикатор загрузки
-            self._show_loading_popup(_("Загрузка промптов...", "Downloading prompts..."))
-            if self.loop and self.loop.is_running():
-                asyncio.run_coroutine_threadsafe(self.async_reload_prompts(), self.loop)
-            else:
-                logger.error("Цикл событий asyncio не запущен. Невозможно выполнить асинхронную загрузку промптов.")
-                messagebox.showerror(
-                    _("Ошибка", "Error"),
-                    _("Не удалось запустить асинхронную загрузку промптов.",
-                      "Failed to start asynchronous prompt download.")
-                )
 
-    async def async_reload_prompts(self):
-        try:
-            from utils.prompt_downloader import PromptDownloader
-            downloader = PromptDownloader()
-
-            success = await self.loop.run_in_executor(None, downloader.download_and_replace_prompts)
-
-            if success:
-                character = self.model.characters.get(self.model.current_character_to_change)
-                if character:
-                    await self.loop.run_in_executor(None, character.reload_prompts)
-                else:
-                    logger.error("Персонаж для перезагрузки не найден")
-
-                self._close_loading_popup()
-                messagebox.showinfo(
-                    _("Успешно", "Success"),
-                    _("Промпты успешно скачаны и перезагружены.", "Prompts successfully downloaded and reloaded.")
-                )
-            else:
-                messagebox.showerror(
-                    _("Ошибка", "Error"),
-                    _("Не удалось скачать промпты с GitHub. Проверьте подключение к интернету.",
-                      "Failed to download prompts from GitHub. Check your internet connection.")
-                )
-        except Exception as e:
-            logger.error(f"Ошибка при обновлении промптов: {e}")
-            messagebox.showerror(
-                _("Ошибка", "Error"),
-                _("Не удалось обновить промпты.", "Failed to update prompts.")
-            )
 
     def _show_loading_popup(self, message):
         """Показать окно загрузки"""
@@ -1594,7 +1527,7 @@ class ChatGUI:
             # Перезапускаем распознавание с новым типом
             SpeechRecognition.active = True  # Активируем снова
             SpeechRecognition.speach_recognition_start(self.device_id, self.loop)
-            self.update_vosk_model_visibility(value)
+            microphone_settings.update_vosk_model_visibility(self,value)
         elif key == "VOSK_MODEL":
             SpeechRecognition.vosk_model = value
         elif key == "SILENCE_THRESHOLD":
@@ -2666,79 +2599,3 @@ class ChatGUI:
 
     # endregion
 
-    # Region MicFunctions
-
-    def get_microphone_list(self):
-        try:
-            devices = sd.query_devices()
-            input_devices = [
-                f"{d['name']} ({i})"
-                for i, d in enumerate(devices)
-                if d['max_input_channels'] > 0
-            ]
-            return input_devices
-        except Exception as e:
-            logger.info(f"Ошибка получения списка микрофонов: {e}")
-            return []
-
-    def update_vosk_model_visibility(self, value):
-        """Показывает/скрывает настройки Vosk в зависимости от выбранного типа."""
-        show_vosk = value == "vosk"
-        for widget in self.mic_section.content_frame.winfo_children():
-            for child in widget.winfo_children():
-                if hasattr(child, 'setting_key') and child.setting_key == 'VOSK_MODEL':
-                    if show_vosk:
-                        widget.pack(fill=tk.X, pady=2)
-                    else:
-                        widget.pack_forget()
-
-    def on_mic_selected(self, event):
-        selection = self.mic_combobox.get()
-        if selection:
-            self.selected_microphone = selection.split(" (")[0]
-            device_id = int(selection.split(" (")[-1].replace(")", ""))
-            self.device_id = device_id
-            logger.info(f"Выбран микрофон: {self.selected_microphone} (ID: {device_id})")
-            self.save_mic_settings(device_id)
-
-    def update_mic_list(self):
-        self.mic_combobox['values'] = self.get_microphone_list()
-
-    def save_mic_settings(self, device_id):
-        try:
-            with open(self.config_path, "rb") as f:
-                encoded = f.read()
-            decoded = base64.b64decode(encoded)
-            settings = json.loads(decoded.decode("utf-8"))
-        except FileNotFoundError:
-            settings = {}
-
-        settings["NM_MICROPHONE_ID"] = device_id
-        settings["NM_MICROPHONE_NAME"] = self.selected_microphone
-
-        json_data = json.dumps(settings, ensure_ascii=False)
-        encoded = base64.b64encode(json_data.encode("utf-8"))
-        with open(self.config_path, "wb") as f:
-            f.write(encoded)
-
-    def load_mic_settings(self):
-        try:
-            with open(self.config_path, "rb") as f:
-                encoded = f.read()
-            decoded = base64.b64decode(encoded)
-            settings = json.loads(decoded.decode("utf-8"))
-
-            device_id = settings.get("NM_MICROPHONE_ID", 0)
-            device_name = settings.get("NM_MICROPHONE_NAME", "")
-
-            devices = sd.query_devices()
-            if device_id < len(devices):
-                self.selected_microphone = device_name
-                self.device_id = device_id
-                self.mic_combobox.set(f"{device_name} ({device_id})")
-                logger.info(f"Загружен микрофон: {device_name} (ID: {device_id})")
-
-        except Exception as e:
-            logger.info(f"Ошибка загрузки настроек микрофона: {e}")
-
-    # endregion
