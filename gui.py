@@ -268,11 +268,11 @@ class ChatGUI:
         if self.loop and self.loop.is_running():
             logger.info("Запускаем асинхронную задачу в цикле событий...")
             # Здесь мы вызываем асинхронную задачу через главный цикл
-            self.loop.create_task(self.run_send_and_receive(self.textToTalk, self.getSpeakerText()))
+            self.loop.create_task(self.run_send_and_receive(self.textToTalk, self.get_speaker_text()))
         else:
             logger.info("Ошибка: Цикл событий asyncio не готов.")
 
-    def getSpeakerText(self):
+    def get_speaker_text(self):
         if self.settings.get("AUDIO_BOT") == "@CrazyMitaAIbot":
             return self.textSpeakerMiku
         else:
@@ -292,15 +292,6 @@ class ChatGUI:
     def check_text_to_talk_or_send(self):
         """Периодическая проверка переменной self.textToTalk."""
 
-        # Проверяем, включена ли озвучка глобально
-        # if not self.settings.get("SILERO_USE", True):
-        #     if self.textToTalk:
-        #         logger.debug("Озвучка выключена в настройках, очищаем текст.")
-        #         self.textToTalk = "" # Очищаем, чтобы не пытаться отправить
-        #     # Перезапуск проверки
-        #     self.root.after(100, self.check_text_to_talk_or_send)
-        #     return # Выходим, если озвучка выключена
-
         # Если озвучка включена и есть текст
         if bool(self.settings.get("SILERO_USE")) and self.textToTalk:
             logger.info(f"Есть текст для отправки: {self.textToTalk} id {self.id_sound}")
@@ -313,7 +304,7 @@ class ChatGUI:
                         logger.info("Используем Telegram (Silero/Miku) для озвучки")
                         # Используем существующую логику для TG/MikuTTS
                         asyncio.run_coroutine_threadsafe(
-                            self.run_send_and_receive(self.textToTalk, self.getSpeakerText(), self.id_sound),
+                            self.run_send_and_receive(self.textToTalk, self.get_speaker_text(), self.id_sound),
                             self.loop
                         )
                         self.textToTalk = ""  # Очищаем текст после отправки
@@ -529,7 +520,6 @@ class ChatGUI:
         )
         self.send_button.pack(side=tk.RIGHT, padx=5, pady=(0, 5))  # Размещаем справа от поля ввода
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-
 
     def setup_right_frame(self, main_frame):
         # Второй столбец
@@ -911,7 +901,7 @@ class ChatGUI:
         self.ConnectedToGame = is_connected
         self.game_connected_checkbox_var = tk.BooleanVar(value=is_connected)  # Статус подключения к игре
 
-    def updateAll(self):
+    def update_all(self):
         self.update_status_colors()
         self.update_debug_info()
 
@@ -924,71 +914,6 @@ class ChatGUI:
         # Обновление цвета для подключения к Silero
         silero_color = "#00ff00" if self.silero_connected.get() else "#ffffff"
         self.silero_status_checkbox.config(fg=silero_color)
-
-    def setup_control(self, label_text, attribute_name, initial_value):
-        """
-        Создает элементы управления для настроения, скуки и стресса.
-        :param label_text: Текст метки (например, "Настроение").
-        :param attribute_name: Имя атрибута модели (например, "attitude").
-        :param initial_value: Начальное значение атрибута.
-        """
-        frame = tk.Frame(self.controls_frame, bg="#2c2c2c")
-        frame.pack(fill=tk.X, pady=5)
-
-        # Метка для отображения текущего значения
-        label = tk.Label(frame, text=f"{label_text}: {initial_value}", bg="#2c2c2c", fg="#ffffff")
-        label.pack(side=tk.LEFT, padx=5)
-
-        # Кнопки для увеличения и уменьшения значения
-        up_button = tk.Button(
-            frame, text="+", command=lambda: self.adjust_value(attribute_name, 15, label),
-            bg="#8a2be2", fg="#ffffff"
-        )
-        up_button.pack(side=tk.RIGHT, padx=5)
-
-        down_button = tk.Button(
-            frame, text="-", command=lambda: self.adjust_value(attribute_name, -15, label),
-            bg="#8a2be2", fg="#ffffff"
-        )
-        down_button.pack(side=tk.RIGHT, padx=5)
-
-        # Сохраняем ссылку на метку для обновления
-        setattr(self, f"{attribute_name}_label", label)
-
-    def setup_secret_control(self):
-        """
-        Создает чекбокс для управления состоянием "Секрет раскрыт".
-        """
-        frame = tk.Frame(self.controls_frame, bg="#2c2c2c")
-        frame.pack(fill=tk.X, pady=5)
-
-        self.secret_var = tk.BooleanVar(value=self.model.secretExposed)
-
-        secret_checkbox = tk.Checkbutton(
-            frame, text="Секрет раскрыт", variable=self.secret_var,
-            bg="#2c2c2c", fg="#ffffff", command=self.adjust_secret
-        )
-        secret_checkbox.pack(side=tk.LEFT, padx=5)
-
-    def adjust_value(self, attribute_name, delta, label):
-        """
-        Обновляет значение атрибута модели и метки.
-        :param attribute_name: Имя атрибута модели (например, "attitude").
-        :param delta: Изменение значения (например, +15 или -15).
-        :param label: Метка, которую нужно обновить.
-        """
-        current_value = getattr(self.model, attribute_name)
-        new_value = current_value + delta
-        setattr(self.model, attribute_name, new_value)
-
-        # Обновляем текст метки
-        label.config(text=f"{label.cget('text').split(':')[0]}: {new_value}")
-
-    def adjust_secret(self):
-        """
-        Обновляет состояние "Секрет раскрыт" в модели.
-        """
-        self.model.secretExposed = self.secret_var.get()
 
     def load_chat_history(self):
         self.clear_chat_display()
@@ -1041,68 +966,7 @@ class ChatGUI:
 
         self.update_debug_info()  # Отобразить изначальное состояние переменных
 
-    def open_character_folder(self):
-        """Открывает папку текущего персонажа в проводнике."""
-        if self.model.current_character and self.model.current_character.char_id:
-            character_name = self.model.current_character.char_id
-            character_folder_path = os.path.join("Prompts", character_name)
 
-            if os.path.exists(character_folder_path):
-                try:
-                    if sys.platform == "win32":
-                        os.startfile(character_folder_path)
-                    elif sys.platform == "darwin":  # macOS
-                        subprocess.Popen(['open', character_folder_path])
-                    else:  # Linux и другие Unix-подобные
-                        subprocess.Popen(['xdg-open', character_folder_path])
-                    logger.info(f"Открыта папка персонажа: {character_folder_path}")
-                except Exception as e:
-                    logger.error(f"Не удалось открыть папку персонажа {character_folder_path}: {e}")
-                    messagebox.showerror(_("Ошибка", "Error"),
-                                         _("Не удалось открыть папку персонажа.", "Failed to open character folder."),
-                                         parent=self.root)
-            else:
-                messagebox.showwarning(_("Внимание", "Warning"),
-                                       _("Папка персонажа не найдена: ",
-                                         "Character folder not found: ") + character_folder_path,
-                                       parent=self.root)
-        else:
-            messagebox.showinfo(_("Информация", "Information"),
-                                _("Персонаж не выбран или его имя недоступно.",
-                                  "No character selected or its name is not available."),
-                                parent=self.root)
-
-    def open_character_history_folder(self):
-        """Открывает папку истории текущего персонажа в проводнике."""
-        if self.model.current_character and self.model.current_character.char_id:
-            character_name = self.model.current_character.char_id
-            history_folder_path = os.path.join("Histories", character_name)
-
-            if os.path.exists(history_folder_path):
-                try:
-                    if sys.platform == "win32":
-                        os.startfile(history_folder_path)
-                    elif sys.platform == "darwin":  # macOS
-                        subprocess.Popen(['open', history_folder_path])
-                    else:  # Linux и другие Unix-подобные
-                        subprocess.Popen(['xdg-open', history_folder_path])
-                    logger.info(f"Открыта папка истории персонажа: {history_folder_path}")
-                except Exception as e:
-                    logger.error(f"Не удалось открыть папку истории персонажа {history_folder_path}: {e}")
-                    messagebox.showerror(_("Ошибка", "Error"),
-                                         _("Не удалось открыть папку истории персонажа.",
-                                           "Failed to open character history folder."),
-                                         parent=self.root)
-            else:
-                messagebox.showwarning(_("Внимание", "Warning"),
-                                       _("Папка истории персонажа не найдена: ",
-                                         "Character history folder not found: ") + history_folder_path,
-                                       parent=self.root)
-        else:
-            messagebox.showinfo(_("Информация", "Information"),
-                                _("Персонаж не выбран или его имя недоступно.",
-                                  "No character selected or its name is not available."),
-                                parent=self.root)
 
     def setup_model_controls(self, parent):
         # Основные настройки
@@ -1156,10 +1020,6 @@ class ChatGUI:
         except ValueError:
             return False
 
-    def save_api_settings(self):
-        """Собирает данные из полей ввода и сохраняет только непустые значения, не перезаписывая существующие."""
-
-    # Добавьте функции валидации в ChatGUI
     def validate_positive_integer(self, new_value):
         if new_value == "": return True  # Разрешаем пустое поле временно
 
@@ -1389,7 +1249,7 @@ class ChatGUI:
                 timeout=25.0  # Тайм-аут в секундах
             )
             self.root.after(0, lambda: self.insert_message("assistant", response))
-            self.root.after(0, self.updateAll)
+            self.root.after(0, self.update_all)
             self.root.after(0, self.update_token_count)  # Обновляем счетчик токенов после получения ответа
             if self.server:
                 try:
@@ -2882,5 +2742,3 @@ class ChatGUI:
             logger.info(f"Ошибка загрузки настроек микрофона: {e}")
 
     # endregion
-
-    #Endregion
