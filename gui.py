@@ -494,15 +494,10 @@ class ChatGUI:
         # Добавляем стили
         # Получаем начальный размер шрифта из настроек
         initial_font_size = int(self.settings.get("CHAT_FONT_SIZE", 12))
-        self.chat_window.tag_configure("default", font=("Arial", initial_font_size))  # Явно настраиваем тег "default"
-        self.chat_window.tag_configure("Mita", foreground="hot pink", font=("Arial", initial_font_size, "bold"))
-        self.chat_window.tag_configure("tag_green", foreground="#00FF00", font=("Arial", initial_font_size))
-        self.chat_window.tag_configure("Player", foreground="gold", font=("Arial", initial_font_size, "bold"))
-        self.chat_window.tag_configure("System", foreground="white", font=("Arial", initial_font_size, "bold"))
-        self.chat_window.tag_configure("bold", font=("Arial", initial_font_size, "bold"))
-        self.chat_window.tag_configure("italic", font=("Arial", initial_font_size, "italic"))
-        self.chat_window.tag_configure("timestamp", foreground="#888888",
-                                       font=("Arial", initial_font_size - 2, "italic"))  # Метка времени чуть меньше
+
+        self.setup_tags_configurations(initial_font_size)
+
+
         # Стили для цветов будут добавляться динамически
         # Инпут - нижняя часть (фиксированная высота)
         input_frame = tk.Frame(left_frame, bg="#2c2c2c")
@@ -528,6 +523,17 @@ class ChatGUI:
         )
         self.send_button.pack(side=tk.RIGHT, padx=5, pady=(0, 5))  # Размещаем справа от поля ввода
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def setup_tags_configurations(self, initial_font_size):
+        self.chat_window.tag_configure("default", font=("Arial", initial_font_size))  # Явно настраиваем тег "default"
+        self.chat_window.tag_configure("Mita", foreground="hot pink", font=("Arial", initial_font_size, "bold"))
+        self.chat_window.tag_configure("tag_green", foreground="#00FF00", font=("Arial", initial_font_size))
+        self.chat_window.tag_configure("Player", foreground="gold", font=("Arial", initial_font_size, "bold"))
+        self.chat_window.tag_configure("System", foreground="white", font=("Arial", initial_font_size, "bold"))
+        self.chat_window.tag_configure("bold", font=("Arial", initial_font_size, "bold"))
+        self.chat_window.tag_configure("italic", font=("Arial", initial_font_size, "italic"))
+        self.chat_window.tag_configure("timestamp", foreground="#888888",
+                                       font=("Arial", initial_font_size - 2, "italic"))  # Метка времени чуть меньше
 
     def setup_right_frame(self, main_frame):
         # Второй столбец
@@ -585,6 +591,7 @@ class ChatGUI:
         right_canvas.bind_all("<MouseWheel>", _on_mousewheel)  # Windows и macOS
         right_canvas.bind_all("<Button-4>", _on_mousewheel)  # Linux (прокрутка вверх)
         right_canvas.bind_all("<Button-5>", _on_mousewheel)  # Linux (прокрутка вниз)
+
         status_indicators.create_status_indicators(self, settings_frame)
         language_settings.create_language_section(self, settings_frame)
         api_settings.setup_api_controls(self, settings_frame)
@@ -596,13 +603,14 @@ class ChatGUI:
         self.setup_debug_controls(settings_frame)
         self.setup_common_controls(settings_frame)
         gamemaster_settings.setup_game_master_controls(self, settings_frame)
+
         if os.environ.get("ENABLE_COMMAND_REPLACER_BY_DEFAULT", "0") == "1":
             command_replacer_settings.setup_command_replacer_controls(self, settings_frame)
         chat_settings.setup_chat_settings_controls(self, settings_frame)
         screen_analysis_settings.setup_screen_analysis_controls(self, settings_frame)
         token_settings.setup_token_settings_controls(self, settings_frame)
         self.setup_news_control(settings_frame)
-        # self.setup_advanced_controls(right_frame)
+
         # Сворачивание секций
         for widget in settings_frame.winfo_children():
             if isinstance(widget, CollapsibleSection):
