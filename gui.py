@@ -61,6 +61,8 @@ from ui.settings import (
 class ChatGUI:
     def __init__(self):
 
+        self.voice_language_var = None
+        self.local_voice_combobox = None
         self.debug_window = None
         self.mic_combobox = None
         self.silero_connected = False
@@ -622,35 +624,8 @@ class ChatGUI:
                         processed_content_parts.append(
                             {"type": "text", "content": item.get("text", ""), "tag": "default"})
                     elif item.get("type") == "image_url":
-                        image_data_base64 = item.get("image_url", {}).get("url", "")
-                        if image_data_base64.startswith("data:image/jpeg;base64,"):
-                            image_data_base64 = image_data_base64.replace("data:image/jpeg;base64,", "")
-                        elif image_data_base64.startswith("data:image/png;base64,"):
-                            image_data_base64 = image_data_base64.replace("data:image/png;base64,", "")
-
-                        try:
-                            image_bytes = base64.b64decode(image_data_base64)
-                            image = Image.open(io.BytesIO(image_bytes))
-
-                            # Изменение размера изображения
-                            max_width = 400
-                            max_height = 300
-                            original_width, original_height = image.size
-
-                            if original_width > max_width or original_height > max_height:
-                                ratio = min(max_width / original_width, max_height / original_height)
-                                new_width = int(original_width * ratio)
-                                new_height = int(original_height * ratio)
-                                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-                            photo = ImageTk.PhotoImage(image)
-                            self._images_in_chat.append(photo)  # Сохраняем ссылку
-                            processed_content_parts.append({"type": "image", "content": photo})
-                            has_image_content = True
-                        except Exception as e:
-                            logger.error(f"Ошибка при декодировании или обработке изображения: {e}")
-                            processed_content_parts.append(
-                                {"type": "text", "content": _("<Ошибка загрузки изображения>", "<Image load error>")})
+                        has_image_content = self.process_image_for_chat(has_image_content, item,
+                                                                        processed_content_parts)
 
             if has_image_content and not any(
                     part["type"] == "text" and part["content"].strip() for part in processed_content_parts):
@@ -676,13 +651,6 @@ class ChatGUI:
                     text_content = process_text_to_voice(text_content)
                     processed_text_parts.append({"type": "text", "content": text_content, "tag": "default"})
                 else:
-                    # Регулярное выражение для поиска тегов <e>...</e>, <c>...</c>, <a>...</a>, [b]...[/b], [i]...[/i] и [color=...]...[/color]
-                    # Регулярное выражение для поиска тегов <e>...</e>, <c>...</c>, <a>...</a>, [b]...[/b], [i]...[/i] и [color=...]...[/color]
-                    # Теперь также ищет одиночные открывающие теги <что-то>
-                    # Регулярное выражение для поиска тегов <любое_имя>...</любое_имя>, <любое_имя>, [b]...[/b], [i]...[/i] и [color=...]...[/color]
-                    # Регулярное выражение для поиска парных тегов <tag>...</tag>, одиночных открывающих тегов <tag>,
-                    # а также [b]...[/b], [i]...[/i] и [color=...]...[/color]
-                    # Изменено: (\w+) заменено на ([^>]+) для поддержки тегов с символами, отличными от буквенно-цифровых
                     matches = list(
                         re.finditer(
                             r'(<([^>]+)>)(.*?)(</\2>)|(<([^>]+)>)|(\[b\](.*?)\[\/b\])|(\[i\](.*?)\[\/i\])|(\[color=(.*?)\](.*?)\[\/color\])',
@@ -806,6 +774,37 @@ class ChatGUI:
 
         # Автоматическая прокрутка вниз после вставки сообщения
         self.chat_window.see(tk.END)
+
+    def process_image_for_chat(self, has_image_content, item, processed_content_parts):
+        image_data_base64 = item.get("image_url", {}).get("url", "")
+        if image_data_base64.startswith("data:image/jpeg;base64,"):
+            image_data_base64 = image_data_base64.replace("data:image/jpeg;base64,", "")
+        elif image_data_base64.startswith("data:image/png;base64,"):
+            image_data_base64 = image_data_base64.replace("data:image/png;base64,", "")
+        try:
+            image_bytes = base64.b64decode(image_data_base64)
+            image = Image.open(io.BytesIO(image_bytes))
+
+            # Изменение размера изображения
+            max_width = 400
+            max_height = 300
+            original_width, original_height = image.size
+
+            if original_width > max_width or original_height > max_height:
+                ratio = min(max_width / original_width, max_height / original_height)
+                new_width = int(original_width * ratio)
+                new_height = int(original_height * ratio)
+                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+            photo = ImageTk.PhotoImage(image)
+            self._images_in_chat.append(photo)  # Сохраняем ссылку
+            processed_content_parts.append({"type": "image", "content": photo})
+            has_image_content = True
+        except Exception as e:
+            logger.error(f"Ошибка при декодировании или обработке изображения: {e}")
+            processed_content_parts.append(
+                {"type": "text", "content": _("<Ошибка загрузки изображения>", "<Image load error>")})
+        return has_image_content
 
     # region секция g4f
     def _check_and_perform_pending_update(self):

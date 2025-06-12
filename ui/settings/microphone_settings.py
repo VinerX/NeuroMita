@@ -8,6 +8,7 @@ from SpeechRecognition import SpeechRecognition
 from utils import getTranslationVariant as _
 import sounddevice as sd
 
+
 def setup_microphone_controls(self, parent):
     # Конфигурация настроек микрофона
     mic_settings = [
@@ -17,7 +18,7 @@ def setup_microphone_controls(self, parent):
             'key': 'MIC_DEVICE',
             'options': get_microphone_list(self),
             'default': get_microphone_list(self)[0] if get_microphone_list(self) else "",
-            'command': lambda : on_mic_selected(self),
+            'command': lambda: on_mic_selected(self),
             'widget_attrs': {
                 'width': 30
             }
@@ -92,7 +93,7 @@ def setup_microphone_controls(self, parent):
         {
             'label': _("Обновить список", "Refresh list"),
             'type': 'button',
-            'command': lambda : update_mic_list(self)
+            'command': lambda: update_mic_list(self)
         }
     ]
 
@@ -115,6 +116,7 @@ def setup_microphone_controls(self, parent):
                 elif isinstance(child, ttk.Combobox) and 'VOSK_MODEL' in str(widget):
                     self.vosk_model_combobox = child
 
+
 # Region MicFunctions
 
 def get_microphone_list(self):
@@ -130,6 +132,7 @@ def get_microphone_list(self):
         logger.info(f"Ошибка получения списка микрофонов: {e}")
         return []
 
+
 def update_vosk_model_visibility(self, value):
     """Показывает/скрывает настройки Vosk в зависимости от выбранного типа."""
     show_vosk = value == "vosk"
@@ -141,7 +144,8 @@ def update_vosk_model_visibility(self, value):
                 else:
                     widget.pack_forget()
 
-def on_mic_selected(self, event):
+
+def on_mic_selected(self):
     selection = self.mic_combobox.get()
     if selection:
         self.selected_microphone = selection.split(" (")[0]
@@ -150,8 +154,10 @@ def on_mic_selected(self, event):
         logger.info(f"Выбран микрофон: {self.selected_microphone} (ID: {device_id})")
         self.save_mic_settings(device_id)
 
+
 def update_mic_list(self):
     self.mic_combobox['values'] = self.get_microphone_list()
+
 
 def save_mic_settings(self, device_id):
     try:
@@ -169,6 +175,7 @@ def save_mic_settings(self, device_id):
     encoded = base64.b64encode(json_data.encode("utf-8"))
     with open(self.config_path, "wb") as f:
         f.write(encoded)
+
 
 def load_mic_settings(self):
     try:
@@ -191,5 +198,3 @@ def load_mic_settings(self):
         logger.info(f"Ошибка загрузки настроек микрофона: {e}")
 
 # endregion
-
-
