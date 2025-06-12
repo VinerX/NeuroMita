@@ -6,11 +6,20 @@ import re
 from num2words import num2words
 
 from Logger import logger
+from SettingsManager import SettingsManager
 
 
 def clamp(value, min_value, max_value):
     return max(min_value, min(value, max_value))
 
+def getTranslationVariant(ru_str, en_str=""):
+    if en_str and SettingsManager.get("LANGUAGE") == "EN":
+        return en_str
+
+    return ru_str
+
+
+_ = getTranslationVariant  # Временно, мб
 
 def load_text_from_file(filename):
     """
