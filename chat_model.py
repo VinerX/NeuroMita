@@ -571,48 +571,56 @@ class ChatModel:
                     else:
                         logger.warning("MemorySystem недоступен для добавления сжатой сводки.")
                 elif self.history_compression_output_target == "history":
-                    # Добавляем в начало истории как системное сообщение
                     summary_message = {"role": "system", "content": f"[Сводка истории]: {compressed_summary}"}
-                    # Вставляем в начало llm_messages_history
-                    llm_messages_history = [summary_message] + llm_messages_history[len(messages_to_compress):]
-                    logger.info("Сжатая сводка добавлена в начало истории.")
+                    # Оставляем self.memory_limit - 1 самых новых сообщений и добавляем сводку в начало
+                    # Убедимся, что self.memory_limit > 0, чтобы избежать отрицательных индексов
+                    messages_to_keep = llm_messages_history[-self.memory_limit + 1:] if self.memory_limit > 0 else []
+                    llm_messages_history = [summary_message] + messages_to_keep
+                    logger.info("Сжатая сводка добавлена в начало истории, старые сообщения удалены.")
                 else:
                     logger.warning(f"Неизвестный target для сжатия истории: {self.history_compression_output_target}")
-
-                # Удаляем сжатые сообщения из истории
-                llm_messages_history = llm_messages_history[-self.memory_limit:]
-                logger.info(f"История сокращена до {len(llm_messages_history)} сообщений после сжатия.")
+                
+                logger.info(f"История сокращена до {len(llm_messages_history)} сообщений после сжатия по лимиту.")
             else:
-                logger.warning("Сжатие истории по лимиту не удалось.")
+                logger.warning("Сжатие истории по лимиту не удалось (недостаточно сообщений для сжатия).")
+        
         # Логика периодического сжатия
         if self.enable_history_compression_periodic:
             self._messages_since_last_periodic_compression += 1
             if self._messages_since_last_periodic_compression >= self.history_compression_periodic_interval:
-                messages_to_compress = llm_messages_history[-self.history_compression_periodic_interval:]
+                # Берем самые старые сообщения для периодического сжатия
+                messages_to_compress = llm_messages_history[:self.history_compression_periodic_interval]
+                
+                if not messages_to_compress:
+                    logger.info("Нет сообщений для периодического сжатия.")
+                    self._messages_since_last_periodic_compression = 0 # Сбрасываем счетчик
+                    return llm_messages_history # Возвращаем текущую историю без изменений
+
                 logger.info(f"Периодическое сжатие: попытка сжать {len(messages_to_compress)} сообщений.")
                 compressed_summary = self._compress_history(messages_to_compress)
 
                 if compressed_summary:
                     if self.history_compression_output_target == "memory":
-                        # Добавляем в MemorySystem
                         if hasattr(self.current_character, 'memory_system') and self.current_character.memory_system:
-                            self.current_character.memory_system.add_memory(compressed_summary,memory_type="summary")
+                            self.current_character.memory_system.add_memory(compressed_summary, memory_type="summary")
                             logger.info("Сжатая сводка добавлена в MemorySystem.")
                         else:
                             logger.warning("MemorySystem недоступен для добавления сжатой сводки.")
+                        # После добавления в память, просто обрезаем историю до лимита
+                        llm_messages_history = llm_messages_history[-self.memory_limit:]
                     elif self.history_compression_output_target == "history":
-                        # Добавляем в начало истории как системное сообщение
                         summary_message = {"role": "system", "content": f"[Сводка истории]: {compressed_summary}"}
-                        # Вставляем в начало llm_messages_history
-                        llm_messages_history = [summary_message] + llm_messages_history[len(messages_to_compress):]
-                        logger.info("Сжатая сводка добавлена в начало истории.")
+                        # Оставляем сообщения после сжатых и добавляем сводку в начало
+                        remaining_messages = llm_messages_history[len(messages_to_compress):]
+                        # Затем обрезаем до self.memory_limit, учитывая, что summary_message уже добавлен
+                        messages_to_keep = remaining_messages[-self.memory_limit + 1:] if self.memory_limit > 0 else []
+                        llm_messages_history = [summary_message] + messages_to_keep
+                        logger.info("Сжатая сводка добавлена в начало истории, старые сообщения удалены.")
                     else:
                         logger.warning(
                             f"Неизвестный target для сжатия истории: {self.history_compression_output_target}")
 
-                    # Удаляем сжатые сообщения из истории
-                    llm_messages_history = llm_messages_history[-self.memory_limit:]
-                    logger.info(f"История сокращена до {len(llm_messages_history)} сообщений после сжатия.")
+                    logger.info(f"История сокращена до {len(llm_messages_history)} сообщений после периодического сжатия.")
                 else:
                     logger.warning("Периодическое сжатие истории не удалось.")
 
