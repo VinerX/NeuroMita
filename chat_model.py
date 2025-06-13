@@ -1191,6 +1191,10 @@ class ChatModel:
         if self.infos_to_add_to_history:
             combined_messages.extend(self.infos_to_add_to_history)
 
+        event_system_infos = self.current_character.get_system_infos()
+        if event_system_infos:
+            combined_messages.extend(event_system_infos)
+
         # 4. Текущий ввод пользователя (если есть)
         user_input_from_gui = self.gui.user_entry.get("1.0", "end-1c").strip()
         if user_input_from_gui:

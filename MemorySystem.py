@@ -88,7 +88,7 @@ class MemorySystem:
     def get_memories_formatted(self):
         formatted_memories = []
         for memory in self.memories:
-            if memory['memory_type'] == "summary":
+            if memory.get('memory_type',"") == "summary":
                 formatted_memories.append(
                     f"N:{memory['N']}, Date {memory['date']}, Type: Summary: {memory['content']}"
                 )

@@ -187,6 +187,10 @@ class Character:
             messages.append({"role": "system", "content": memory_message_content})
         return messages
 
+    def get_system_infos(self):
+        return self.system_messages
+
+
     # In OpenMita/character.py, class Character
     def process_response_nlp_commands(self, response: str) -> str:
         original_response_for_log = response[:200] + "..." if len(response) > 200 else response
