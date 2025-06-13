@@ -46,17 +46,6 @@ def setup_prompt_catalogue_controls(self, parent):
         if selected_set_name:
             set_path = os.path.join(catalogue_path, selected_set_name)
             load_info_json(set_path)
-            # Копируем набор промптов в папку текущего персонажа
-            if self.model.current_character and self.model.current_character.char_id:
-                 character_prompts_path = os.path.join("Prompts", self.model.current_character.char_id)
-                 if copy_prompt_set(set_path, character_prompts_path):
-                     messagebox.showinfo(_("Успех", "Success"), _("Набор промптов успешно скопирован.", "Prompt set copied successfully."))
-                     # Перезагружаем данные персонажа
-                     self.model.current_character.reload_character_data() # Предполагается наличие такого метода
-                 else:
-                     messagebox.showerror(_("Ошибка", "Error"), _("Не удалось скопировать набор промптов.", "Failed to copy prompt set."))
-            else:
-                 messagebox.showwarning(_("Внимание", "Warning"), _("Персонаж не выбран. Не удалось скопировать набор промптов.", "No character selected. Failed to copy prompt set."))
 
 
     prompt_set_combobox.bind("<<ComboboxSelected>>", on_prompt_set_selected)
@@ -64,6 +53,33 @@ def setup_prompt_catalogue_controls(self, parent):
     # Фрейм для кнопок управления каталогом
     button_frame = tk.Frame(catalogue_frame, background="#2c2c2c")
     button_frame.pack(fill="x", pady=5)
+
+    # Кнопка "Заменить" (копировать в папку персонажа)
+    def replace_prompt_set_action():
+        selected_set_name = prompt_set_combobox.get()
+        if not selected_set_name:
+            messagebox.showwarning(_("Внимание", "Warning"), _("Набор промптов не выбран для замены.", "No prompt set selected for replacement."))
+            return
+
+        set_path = os.path.join(catalogue_path, selected_set_name)
+
+        if self.model.current_character and self.model.current_character.char_id:
+             character_prompts_path = os.path.join("Prompts", self.model.current_character.char_id)
+             if copy_prompt_set(set_path, character_prompts_path):
+                 messagebox.showinfo(_("Успех", "Success"), _("Набор промптов успешно скопирован.", "Prompt set copied successfully."))
+                 # Перезагружаем данные персонажа
+                 # Предполагается наличие метода reload_character_data в self.model.current_character
+                 if hasattr(self.model.current_character, 'reload_character_data'):
+                     self.model.current_character.reload_character_data()
+                 else:
+                     print("Warning: current_character does not have reload_character_data method.") # Для отладки
+             else:
+                 messagebox.showerror(_("Ошибка", "Error"), _("Не удалось скопировать набор промптов.", "Failed to copy prompt set."))
+        else:
+             messagebox.showwarning(_("Внимание", "Warning"), _("Персонаж не выбран. Не удалось скопировать набор промптов.", "No character selected. Failed to copy prompt set."))
+
+    tk.Button(button_frame, text=_("Заменить", "Replace"), command=replace_prompt_set_action, bg="#8a2be2", fg="#ffffff", activebackground="#6a1bcb", activeforeground="#ffffff", relief=tk.RAISED, bd=2).pack(side="left", padx=2)
+
 
     # Кнопка "Создать новый набор"
     def create_new_set_action():
