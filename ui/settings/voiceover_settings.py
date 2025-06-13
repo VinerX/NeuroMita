@@ -46,6 +46,14 @@ LOCAL_VOICE_MODELS = [
         "rec_vram": 8,
         "gpu_vendor": ["NVIDIA"],
         "size_gb": 15
+    },
+    {
+        "id": "f5_tts",
+        "name": "F5-TTS",
+        "min_vram": 6,
+        "rec_vram": 8,
+        "gpu_vendor": ["NVIDIA", "AMD"],
+        "size_gb": 4
     }
 ]
 
