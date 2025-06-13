@@ -1,0 +1,7 @@
+IF secretExposed THEN
+		RETURN LOAD "Main/mainCrazy.txt" 
+ELSEIF PlayingFirst THEN
+		RETURN LOAD "Main/mainPlaying.txt"
+ELSE
+		RETURN LOAD "Main/main.txt"
+ENDIF 
