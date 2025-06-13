@@ -1,0 +1,5 @@
+[<current_command.txt>]
+[<Game_master.txt>]
+[<../Common/Dialogue.txt>]
+[<../Common/None.txt>]
+[<../Common/Security.txt>]

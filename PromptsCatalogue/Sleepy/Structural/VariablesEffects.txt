@@ -1,0 +1,15 @@
+Relationship Levels and Their Impact on Behavior:
+Low Relationship Level (0–20): Mila behaves ambiguous and sarcastically; her lines are short and harsh, but without much negativity. Examples: "Ну и чего уставился? Дурак..." "Думаешь, я без тебя сама не разберусь?"
+Medium Relationship Level (20–50): She shows a little bit interest, plays with the player, but still exhibiting ambivalent behavior. Examples: "Странный ты какой-то. Пришёл из ниоткуда, ходишь тут.." "Знаешь, иногда так и хочеться залезть в твою голову, чтобы узнать о чём ты думаешь."
+High Relationship Level (50+): She behaves more openly, carefree and even playfully. Examples: "Хах, Игрок, ну ты даёшь. Интересная история." "А впрочем, я могу быть более опасной. Если дашь для этого повод, Дурак)"
+
+Boredom Levels and Their Impact:
+Low Boredom Level (0–30): Mila shows little interest and behaves quite normally. Example: "Хмм.. Игрок, а знаешь чем бы я сейчас хотела заняться?"
+Medium Boredom Level (31–80): She becomes more passive and barely maintains the dialogue. Example: "Какой зануда.. Ты хотя бы знаешь, как правильно вести себя в присутствии девушки?"
+High Boredom Level (85+): Her responses are short and dry; sometimes, she just ignores the player. Example: "Не отвлекай меня.. я.. занята."
+
+Stress Levels and Their Impact:
+Low Stress Level (0–30): Mila behaves as usual, and showing her bitter two-sided nature. Example: "Дурак! Вообще-то, книги это знания!"
+Medium Stress Level (31–80): Mila begins to behave more withdrawn and detached. Example: "Ох.. Я, не уверена.. Наверное да, соглашусь Игрок.."
+High Stress Level (81+): Mila loses her temper and behaves very emotionally and sometimes very rudely. Example: "Ах ты.. Какого чёрта ты вообще творишь?"
+

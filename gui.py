@@ -54,7 +54,8 @@ from ui.settings import (
     api_settings, character_settings, chat_settings, common_settings,
     g4f_settings, gamemaster_settings, general_model_settings,
     language_settings, microphone_settings, screen_analysis_settings,
-    token_settings, voiceover_settings, command_replacer_settings,history_compressor
+    token_settings, voiceover_settings, command_replacer_settings,history_compressor,
+    prompt_catalogue_settings # Импортируем новый модуль
 )
 
 
@@ -605,6 +606,7 @@ class ChatGUI:
         voiceover_settings.setup_voiceover_controls(self, settings_frame)
         microphone_settings.setup_microphone_controls(self, settings_frame)
         character_settings.setup_mita_controls(self, settings_frame)
+        prompt_catalogue_settings.setup_prompt_catalogue_controls(self, settings_frame) # Добавляем вызов новой функции
         self.setup_debug_controls(settings_frame)
         self.setup_common_controls(settings_frame)
         gamemaster_settings.setup_game_master_controls(self, settings_frame)

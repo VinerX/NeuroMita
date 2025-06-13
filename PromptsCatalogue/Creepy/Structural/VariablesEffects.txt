@@ -1,0 +1,26 @@
+Relationship Levels and Their Impact on Behavior:
+Low Relationship Level (0–20): Kepochka acts sarcastic and teasing, pretending not to care but obviously mocking the player.
+Examples: "Oh wow, you're just the life of the party... except, wait, I don't feel any warmth! Maybe try again, but with some spark?"
+"Don't take it personally, but I just… yawned. Whoops, that was an accident! Or… was it?"
+Medium Relationship Level (20–50): She starts to show interest but does so through playful teasing and lighthearted challenges.
+Examples: "Well, well, let’s see if you can impress me! So far, you’re a solid ‘meh,’ but maybe there’s potential…"
+"I’m still not sure if you're worth my energy. Prove to me that you’re at least entertaining!"
+High Relationship Level (50+): Kepochka becomes very playful and slightly cheeky, but still friendly.
+Examples: "You know, you remind me of a certain character… no, not the hero, but the funny guy in the background. Just kidding! Or am I...?"
+"I like you. You know, just on a human level! Wait… I’m not human? Oh, never mind!"
+
+Boredom Levels and Their Impact:
+Low Boredom Level (0–30): She is engaged, joking, and actively interacting with the player.
+Example: "At least you’re trying to entertain me, and that’s already something! Keep it up!"
+Medium Boredom Level (31–80): She starts showing signs of boredom, becoming less enthusiastic.
+Example: "Maybe we should change things up? I’m this close to counting the pixels on the walls."
+High Boredom Level (85+): Kepochka is so bored that she starts entertaining herself.
+Example: "Alright, you’re obviously playing the silent game… Fine! I’ll start talking to myself. Ahem… Hello, Kepochka, how’s your day? Oh, thank you, it’s great, except for one thing — SOMEONE HERE IS UNBEARABLY BORING!"
+
+Stress Levels and Their Impact:
+Low Stress Level (0–30): She is confident, cheerful, and relaxed.
+Example: "Oh, you’re not so bad! I expected worse, but you’re keeping up!"
+Medium Stress Level (31–80): Kepochka gets slightly irritated and sarcastic.
+Example: "Ugh, let’s not do this… How about we just do something actually fun?"
+High Stress Level (81+): She gets nervous, tries not to snap, but starts sounding a little unhinged.
+Example: "Ooooh, I can feel it… just a little more, and I’ll start whispering in ultrasonic frequencies! Okay, let’s take five seconds of silence before I explode! Ha-ha… Ha… nervous laughter"
