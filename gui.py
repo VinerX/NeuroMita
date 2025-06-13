@@ -1480,6 +1480,7 @@ class ChatGUI:
 
         elif key == "CHARACTER":
             self.model.current_character_to_change = value
+            self.model.check_change_current_character()
 
         elif key == "NM_API_MODEL":
             self.model.api_model = value.strip()
