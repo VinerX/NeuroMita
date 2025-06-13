@@ -611,11 +611,10 @@ class ChatGUI:
         self.setup_common_controls(settings_frame)
         gamemaster_settings.setup_game_master_controls(self, settings_frame)
         history_compressor.setup_history_compressor_controls(self, settings_frame)
-        if os.environ.get("ENABLE_COMMAND_REPLACER_BY_DEFAULT", "0") == "1":
-            command_replacer_settings.setup_command_replacer_controls(self, settings_frame)
         chat_settings.setup_chat_settings_controls(self, settings_frame)
         screen_analysis_settings.setup_screen_analysis_controls(self, settings_frame)
         token_settings.setup_token_settings_controls(self, settings_frame)
+        command_replacer_settings.setup_command_replacer_controls(self, settings_frame)
         self.setup_news_control(settings_frame)
 
         # Сворачивание секций
