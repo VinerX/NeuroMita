@@ -4,7 +4,7 @@ IF secretExposed THEN
 	    lOG "secretExposedFirst"
 		SET secretExposed_First = True
 		ADD_SYSTEM_INFO LOAD "Events/SecretExposed.txt"
-	ENDIF	
+	ENDIF
 	RETURN LOAD "Main/mainCrazy.txt" 
 
 ELSEIF PlayingFirst THEN

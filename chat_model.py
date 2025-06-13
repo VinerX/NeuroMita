@@ -391,6 +391,10 @@ class ChatModel:
             combined_messages.append({"role": "system",
                                     "content": chess_system_message_for_llm_content})
 
+        event_system_infos = self.current_character.get_system_infos()
+        if event_system_infos:
+            combined_messages.extend(event_system_infos)
+
         # 5. История памяти
         llm_messages_history = self.process_history_compression(llm_messages_history)
 

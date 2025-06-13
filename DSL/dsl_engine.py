@@ -380,7 +380,6 @@ class DslInterpreter:
         # Clear local variables and temporary system messages at the start of each script execution
         self._local_vars.clear()
         self._declared_local_vars.clear()
-        self._temporary_system_messages.clear()
 
         resolved_script_id: str = ""
         returned_value_for_log: bool | None = None
@@ -644,7 +643,7 @@ class DslInterpreter:
                         returned = self.process_template_content(txt, f"RETURN in {rel_script_path}:{num}")
                         returned_value_for_log = returned is not None
                         dsl_execution_logger.debug(f"RETURN (value exists={returned_value_for_log}) ({os.path.basename(rel_script_path)}:{num})")
-                        return (returned, self._temporary_system_messages.copy())
+                        return (returned, self.get_system_messages())
 
                     dsl_execution_logger.error(f"Unknown DSL command '{command}' in {os.path.basename(rel_script_path)}:{num} Line: \"{raw.strip()}\"")
                     raise DslError(f"Unknown DSL command '{command}'", resolved_script_id, num, raw)
@@ -653,7 +652,7 @@ class DslInterpreter:
                     dsl_execution_logger.warning(f"Script {rel_script_path} ended with unterminated IF block(s).")
                 
                 returned_value_for_log = returned is not None
-                return (returned or "", self._temporary_system_messages.copy())
+                return (returned or "", self.get_system_messages())
 
         except DslError as e:
             dsl_execution_logger.error(
@@ -673,6 +672,11 @@ class DslInterpreter:
             dsl_execution_logger.info(
                 f"Finished DSL script: {rel_script_path}. Returned value: {returned_value_for_log if returned_value_for_log is not None else False}"
             )
+
+    def get_system_messages(self):
+        messages = self._temporary_system_messages.copy()
+        self._temporary_system_messages.clear()
+        return messages
 
     def process_template_content(self, text: str, ctx="template") -> str:
         if not isinstance(text, str): text = str(text)
