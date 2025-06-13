@@ -54,7 +54,7 @@ from ui.settings import (
     api_settings, character_settings, chat_settings, common_settings,
     g4f_settings, gamemaster_settings, general_model_settings,
     language_settings, microphone_settings, screen_analysis_settings,
-    token_settings, voiceover_settings, command_replacer_settings
+    token_settings, voiceover_settings, command_replacer_settings,history_compressor
 )
 
 
@@ -603,7 +603,7 @@ class ChatGUI:
         self.setup_debug_controls(settings_frame)
         self.setup_common_controls(settings_frame)
         gamemaster_settings.setup_game_master_controls(self, settings_frame)
-
+        history_compressor.setup_history_compressor_controls(self, settings_frame)
         if os.environ.get("ENABLE_COMMAND_REPLACER_BY_DEFAULT", "0") == "1":
             command_replacer_settings.setup_command_replacer_controls(self, settings_frame)
         chat_settings.setup_chat_settings_controls(self, settings_frame)
@@ -1249,7 +1249,7 @@ class ChatGUI:
             response = await asyncio.wait_for(
                 self.loop.run_in_executor(None,
                                           lambda: self.model.generate_response(user_input, system_input, image_data)),
-                timeout=25.0  # Тайм-аут в секундах
+                timeout=60.0  # Тайм-аут в секундах
             )
             self.root.after(0, lambda: self.insert_message("assistant", response))
             self.root.after(0, self.update_all)
@@ -1553,6 +1553,20 @@ class ChatGUI:
             self.model.image_quality_reduction_min_quality = int(value)
         elif key == "IMAGE_QUALITY_REDUCTION_DECREASE_RATE":
             self.model.image_quality_reduction_decrease_rate = int(value)
+
+        elif key == "ENABLE_HISTORY_COMPRESSION_ON_LIMIT":
+            self.model.enable_history_compression_on_limit = bool(value)
+        elif key == "ENABLE_HISTORY_COMPRESSION_PERIODIC":
+            self.model.enable_history_compression_periodic = bool(value)
+        elif key == "HISTORY_COMPRESSION_OUTPUT_TARGET":
+            self.model.history_compression_output_target = str(value)
+        elif key == "HISTORY_COMPRESSION_PERIODIC_INTERVAL":
+            self.model.history_compression_periodic_interval = int(value)
+        elif key == "HISTORY_COMPRESSION_MIN_MESSAGES_TO_COMPRESS":
+            self.model.history_compression_min_messages_to_compress = int(value)
+
+
+
 
         # Handle chat specific settings keys
         if key == "CHAT_FONT_SIZE":
