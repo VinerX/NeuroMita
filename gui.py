@@ -1562,8 +1562,8 @@ class ChatGUI:
             self.model.history_compression_output_target = str(value)
         elif key == "HISTORY_COMPRESSION_PERIODIC_INTERVAL":
             self.model.history_compression_periodic_interval = int(value)
-        elif key == "HISTORY_COMPRESSION_MIN_MESSAGES_TO_COMPRESS":
-            self.model.history_compression_min_messages_to_compress = int(value)
+        elif key == "HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS":
+            self.model.history_compression_min_messages_to_compress = float(value)
 
 
 

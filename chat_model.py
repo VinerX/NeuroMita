@@ -83,8 +83,6 @@ class ChatModel:
         self.enable_history_compression_periodic = bool(self.gui.settings.get("ENABLE_HISTORY_COMPRESSION_PERIODIC", False))
         self.history_compression_periodic_interval = int(self.gui.settings.get("HISTORY_COMPRESSION_PERIODIC_INTERVAL", 20))
         self.history_compression_prompt_template = str(self.gui.settings.get("HISTORY_COMPRESSION_PROMPT_TEMPLATE", "Prompts/System/compression_prompt.txt"))
-
-        self.history_compression_min_messages_to_compress = int(self.gui.settings.get("HISTORY_COMPRESSION_MIN_MESSAGES_TO_COMPRESS", 10))
         self.history_compression_output_target = str(self.gui.settings.get("HISTORY_COMPRESSION_OUTPUT_TARGET", "memory"))
 
         self._messages_since_last_periodic_compression = 0 # Счетчик сообщений с момента последнего периодического сжатия
@@ -554,10 +552,10 @@ class ChatModel:
     def process_history_compression(self,llm_messages_history):
         """Сжимает старые воспоминания"""
 
+        compress_percent = float(self.gui.settings.get("HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS",0.85))
+        if self.enable_history_compression_on_limit and len(llm_messages_history) >= self.memory_limit*compress_percent:
 
-        if self.enable_history_compression_on_limit and len(llm_messages_history) > self.memory_limit + self.history_compression_min_messages_to_compress:
-
-            messages_to_compress = llm_messages_history[:-self.memory_limit]
+            messages_to_compress = llm_messages_history[:round(-self.memory_limit*compress_percent)]
             logger.info(f"История превышает лимит. Попытка сжать {len(messages_to_compress)} сообщений.")
 
             compressed_summary = self._compress_history(messages_to_compress)
