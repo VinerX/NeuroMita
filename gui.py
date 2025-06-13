@@ -1,7 +1,6 @@
 import io
 import uuid
 
-import win32gui
 
 import guiTemplates
 from AudioHandler import AudioHandler
