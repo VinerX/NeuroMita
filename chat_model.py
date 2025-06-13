@@ -569,7 +569,7 @@ class ChatModel:
                     else:
                         logger.warning("MemorySystem недоступен для добавления сжатой сводки.")
                 elif self.history_compression_output_target == "history":
-                    summary_message = {"role": "system", "content": f"[Сводка истории]: {compressed_summary}"}
+                    summary_message = {"role": "system", "content": f"[HISTORY SUMMARY]: {compressed_summary}"}
                     # Оставляем self.memory_limit - 1 самых новых сообщений и добавляем сводку в начало
                     # Убедимся, что self.memory_limit > 0, чтобы избежать отрицательных индексов
                     messages_to_keep = llm_messages_history[-self.memory_limit + 1:] if self.memory_limit > 0 else []
@@ -607,7 +607,7 @@ class ChatModel:
                         # После добавления в память, просто обрезаем историю до лимита
                         llm_messages_history = llm_messages_history[-self.memory_limit:]
                     elif self.history_compression_output_target == "history":
-                        summary_message = {"role": "system", "content": f"[Сводка истории]: {compressed_summary}"}
+                        summary_message = {"role": "system", "content": f"[HISTORY SUMMARY]: {compressed_summary}"}
                         # Оставляем сообщения после сжатых и добавляем сводку в начало
                         remaining_messages = llm_messages_history[len(messages_to_compress):]
                         # Затем обрезаем до self.memory_limit, учитывая, что summary_message уже добавлен
