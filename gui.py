@@ -168,7 +168,7 @@ class ChatGUI:
         self.root.bind_class("Text", "<Control-KeyPress>", lambda e: self.keypress(e))
 
         try:
-            self.load_mic_settings()
+            microphone_settings.load_mic_settings(self)
         except Exception as e:
             logger.info("Не удалось удачно получить настройки микрофона", e)
 
@@ -743,7 +743,7 @@ class ChatGUI:
             # Добавляем переводы строк в конце
             if role == "user":
                 parts_to_insert_in_order.append({"type": "text", "content": "\n"})
-            elif role == "assistant":
+            elif role in {"assistant","system"}:
                 parts_to_insert_in_order.append({"type": "text", "content": "\n\n"})
 
             # Вставляем все части в обратном порядке, чтобы они появились в правильном порядке в чате
@@ -766,7 +766,7 @@ class ChatGUI:
                         self.chat_window.image_create(tk.END, image=part["content"])
                         self.chat_window.insert(tk.END, "\n")
                 self.chat_window.insert(tk.END, "\n")
-            elif role == "assistant":
+            elif role in {"assistant","system"}:
                 if show_timestamps:
                     self.chat_window.insert(tk.END, timestamp_str, "timestamp")
                 self.chat_window.insert(tk.END, f"{self.model.current_character.name}: ",
