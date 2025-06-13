@@ -1316,6 +1316,34 @@ class ChatGUI:
         # Проверяем, прокрутил ли пользователь к началу
         if self.chat_window.yview()[0] == 0:
             self.load_more_history()
+        # Проверяем, прокрутил ли пользователь к концу и движется вниз
+        elif self.chat_window.yview()[1] == 1.0 and (event.delta < 0 or (hasattr(event, 'num') and event.num == 5)):
+            self.trim_chat_display()
+
+    def trim_chat_display(self):
+        """Удаляет сообщения из начала чата, оставляя только видимые + запас."""
+        # Получаем общее количество строк в виджете Text
+        total_lines = int(self.chat_window.index(tk.END).split('.')[0])
+
+        # Получаем индекс первой видимой строки
+        first_visible_line_index = int(self.chat_window.index("@0,0").split('.')[0])
+
+        # Определяем буфер (количество строк, которые нужно оставить выше первой видимой)
+        buffer_size = 20  # Например, 20 строк
+
+        # Вычисляем количество строк для удаления
+        # Удаляем все строки до первой видимой, оставляя буфер
+        lines_to_delete = max(0, first_visible_line_index - buffer_size)
+
+        if lines_to_delete > 0:
+            self.chat_window.config(state=tk.NORMAL)
+            # Удаляем строки с начала до (lines_to_delete + 1).0
+            # +1.0 потому что delete удаляет до указанной позиции, не включая ее
+            self.chat_window.delete("1.0", f"{lines_to_delete + 1}.0")
+            self.chat_window.config(state=tk.DISABLED)
+            # Уменьшаем смещение загруженных сообщений на количество удаленных строк
+            self.loaded_messages_offset -= lines_to_delete
+            logger.info(f"Удалено {lines_to_delete} сообщений из начала чата. Обновлено loaded_messages_offset: {self.loaded_messages_offset}")
 
     def load_more_history(self):
         """Загружает предыдущие сообщения в чат."""
@@ -1333,12 +1361,11 @@ class ChatGUI:
 
             messages_to_prepend = all_messages[start_index:end_index]
 
-            # Сохраняем текущую позицию прокрутки
-            current_scroll_pos = self.chat_window.yview()
-            # Сохраняем высоту содержимого до вставки
-            old_height = self.chat_window.winfo_height()
+            # Сохраняем текущую высоту содержимого чата перед вставкой
+            old_content_height = self.chat_window.winfo_height()
 
-            for entry in messages_to_prepend:
+            # Вставляем сообщения в обратном порядке, чтобы они появились в правильном порядке в чате
+            for entry in reversed(messages_to_prepend):
                 role = entry["role"]
                 content = entry["content"]
                 message_time = entry.get("time", "???")
@@ -1348,18 +1375,18 @@ class ChatGUI:
             logger.info(
                 f"Загружено еще {len(messages_to_prepend)} сообщений. Всего загружено: {self.loaded_messages_offset}")
 
-            # Корректируем прокрутку, чтобы пользователь остался на том же месте
-            self.root.update_idletasks()  # Обновляем виджет, чтобы получить новые размеры
-            new_height = self.chat_window.winfo_height()
-            height_diff = new_height - old_height
+            # Обновляем виджет, чтобы он пересчитал свои размеры после вставки
+            self.root.update_idletasks()
 
-            # Прокручиваем на разницу в высоте, чтобы сохранить относительную позицию
-            # Это может потребовать более сложной логики для точного позиционирования
-            # В простейшем случае, если мы вставляем в начало, просто прокручиваем на высоту добавленного контента
-            self.chat_window.yview_scroll(-1, "pages")  # Прокручиваем вверх на одну "страницу"
-            # Или можно попробовать более точно:
-            # self.chat_window.yview_moveto(current_scroll_pos[0] * (old_height / new_height))
+            # Получаем новую высоту содержимого чата
+            new_content_height = self.chat_window.winfo_height()
 
+            # Вычисляем разницу в высоте
+            height_difference = new_content_height - old_content_height
+
+            # Скорректировать прокрутку, переместив ее на height_difference пикселей вверх
+            # Это компенсирует добавленный контент и сохраняет видимую область
+            self.chat_window.yview_scroll(-height_difference, "pixels")
 
         finally:
             self.loading_more_history = False
