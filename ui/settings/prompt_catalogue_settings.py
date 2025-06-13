@@ -104,7 +104,7 @@ def setup_prompt_catalogue_controls(self, parent):
         else:
             messagebox.showwarning(_("Внимание", "Warning"), _("Набор промптов не выбран.", "No prompt set selected."))
 
-    ttk.Button(button_frame, text=_("Открыть папку набора", "Open Set Folder"), command=open_set_folder_action, bg="#9370db", fg="#ffffff", font=("Arial", 10)).pack(side="left", padx=2)
+    ttk.Button(button_frame, text=_("Открыть папку набора", "Open Set Folder"), command=open_set_folder_action).pack(side="left", padx=2)
 
     # Кнопка "Удалить набор"
     def delete_set_action():
@@ -118,16 +118,16 @@ def setup_prompt_catalogue_controls(self, parent):
         else:
             messagebox.showwarning(_("Внимание", "Warning"), _("Набор промптов не выбран.", "No prompt set selected."))
 
-    ttk.Button(button_frame, text=_("Удалить набор", "Delete Set"), command=delete_set_action, bg="#9370db", fg="#ffffff", font=("Arial", 10)).pack(side="left", padx=2)
+    ttk.Button(button_frame, text=_("Удалить набор", "Delete Set"), command=delete_set_action).pack(side="left", padx=2)
 
     # --- GUI для редактирования info.json ---
-    info_json_frame = ttk.LabelFrame(catalogue_frame, text=_("Информация о наборе", "Set Information"), background="#000000", foreground="#ffffff", font=("Arial", 10))
+    info_json_frame = ttk.LabelFrame(catalogue_frame, text=_("Информация о наборе", "Set Information"))
     info_json_frame.pack(fill="x", pady=5, padx=2)
 
     self.info_json_entries = {} # Словарь для хранения Entry виджетов
 
     def create_info_field(parent_frame, label_text, key):
-        frame = ttk.Frame(parent_frame, background="#000000")
+        frame = ttk.Frame(parent_frame)
         frame.pack(fill="x", pady=1)
         ttk.Label(frame, text=label_text, width=15, background="#000000", foreground="#ffffff", font=("Arial", 10)).pack(side="left", padx=2)
         entry = ttk.Entry(frame, background="#000000", foreground="#ffffff", font=("Arial", 10))
@@ -164,7 +164,7 @@ def setup_prompt_catalogue_controls(self, parent):
         else:
             messagebox.showwarning(_("Внимание", "Warning"), _("Набор промптов не выбран для сохранения.", "No prompt set selected for saving."))
 
-    ttk.Button(info_json_frame, text=_("Сохранить информацию", "Save Information"), command=save_info_json_action, bg="#9370db", fg="#ffffff", font=("Arial", 10)).pack(pady=5)
+    ttk.Button(info_json_frame, text=_("Сохранить информацию", "Save Information"), command=save_info_json_action).pack(pady=5)
 
 
     def load_info_json(set_path):
