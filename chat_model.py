@@ -391,9 +391,7 @@ class ChatModel:
             combined_messages.append({"role": "system",
                                     "content": chess_system_message_for_llm_content})
 
-        event_system_infos = self.current_character.get_system_infos()
-        if event_system_infos:
-            combined_messages.extend(event_system_infos)
+
 
         # 5. История памяти
         llm_messages_history = self.process_history_compression(llm_messages_history)
@@ -417,11 +415,16 @@ class ChatModel:
         if self.image_quality_reduction_enabled:
             llm_messages_history_limited = self._apply_history_image_quality_reduction(llm_messages_history_limited)
 
+        event_system_infos = self.current_character.get_system_infos()
+        if event_system_infos:
+            llm_messages_history_limited.extend(event_system_infos)
+
         combined_messages.extend(llm_messages_history_limited)
+
 
         # 6. Добавляем system_input -----------------------------------------------------
         if system_input:
-            combined_messages.append({"role": "system", "content": system_input})
+            llm_messages_history_limited.append({"role": "system", "content": system_input})
 
         # 7. Пользовательское сообщение (текст + картинки) ------------------------------
         user_message_for_history = None
@@ -1195,7 +1198,7 @@ class ChatModel:
         if self.infos_to_add_to_history:
             combined_messages.extend(self.infos_to_add_to_history)
 
-        event_system_infos = self.current_character.get_system_infos()
+        event_system_infos = self.current_character.get_system_infos(clear=False)
         if event_system_infos:
             combined_messages.extend(event_system_infos)
 

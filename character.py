@@ -154,7 +154,6 @@ class Character:
             self.dsl_interpreter.char_ctx_filter.set_character_id(self.char_id) # type: ignore
             
         try:
-            self.system_messages.clear()
             generated_prompt,system_messages = self.dsl_interpreter.process_main_template_file(self.main_template_path_relative)
             self.system_messages.extend(system_messages)
             return generated_prompt
@@ -187,8 +186,11 @@ class Character:
             messages.append({"role": "system", "content": memory_message_content})
         return messages
 
-    def get_system_infos(self):
-        return self.system_messages
+    def get_system_infos(self,clear=True):
+        messages = self.system_messages.copy()
+        if clear:
+            self.system_messages.clear()
+        return messages
 
 
     # In OpenMita/character.py, class Character
