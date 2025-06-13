@@ -70,12 +70,12 @@ class ChatModel:
         self.presence_penalty = float(self.gui.settings.get("MODEL_PRESENCE_PENALTY", 0.0))
         self.frequency_penalty = float(self.gui.settings.get("MODEL_FREQUENCY_PENALTY", 0.0))
         self.log_probability = float(self.gui.settings.get("MODEL_LOG_PROBABILITY", 0.0))
-        
+
         # Настройки стоимости токенов и лимитов
         self.token_cost_input = float(self.gui.settings.get("TOKEN_COST_INPUT", 0.0432))
         self.token_cost_output = float(self.gui.settings.get("TOKEN_COST_OUTPUT", 0.1728))
         self.max_model_tokens = int(self.gui.settings.get("MAX_MODEL_TOKENS", 128000)) # Default to a common large limit
-        
+
         self.memory_limit = int(self.gui.settings.get("MODEL_MESSAGE_LIMIT", 40))  # For historical messages
 
         # Настройки для сжатия истории
@@ -201,7 +201,7 @@ class ChatModel:
         self.mila_character = MilaMita("Mila","Mila", "/speaker mila", short_name="Mila", miku_tts_name="/set_person MilaMita", silero_turn_off_video=True)
         self.sleepy_character = SleepyMita("Sleepy","Sleepy Mita", "/speaker dream", short_name="SleepyMita", miku_tts_name="/set_person SleepyMita", silero_turn_off_video=True)
         self.creepy_character = CreepyMita("Creepy","Creepy Mita", "/speaker ghost", short_name="GhostMita", miku_tts_name="/set_person GhostMita", silero_turn_off_video=True)
-        
+
         self.cart_space = SpaceCartridge("Cart_portal", "Cart_portal", "/speaker wheatley", short_name="Player", miku_tts_name="/set_person Player", silero_turn_off_video=True,is_cartridge=True)
         self.cart_divan = DivanCartridge("Cart_divan", "Cart_divan", "/speaker engineer", short_name="Player", miku_tts_name="/set_person Player", silero_turn_off_video=True,is_cartridge=True)
         self.GameMaster = GameMaster("GameMaster", "GameMaster", "/speaker dryad", short_name="PhoneMita", miku_tts_name="/set_person PhoneMita", silero_turn_off_video=True)
@@ -381,34 +381,10 @@ class ChatModel:
         # 4. Системные промпты / память -------------------------------------------------
         combined_messages = []
 
-        if bool(self.gui.settings.get("SEPARATE_PROMPTS", True)):
-            # подгружаем файлы по отдельности
-            try:
-                resolved_main = self.current_character.dsl_interpreter.resolver.resolve_path(
-                    self.current_character.main_template_path_relative)
-                main_template_content = self.current_character.dsl_interpreter.resolver.load_text(
-                    resolved_main, "main template for separate prompts")
-            except Exception as e:
-                logger.error(f"Critical error loading main template for {self.current_character.char_id}: {e}",
-                            exc_info=True)
-                main_template_content = ""
-                combined_messages.append({"role": "system",
-                                        "content": f"[CRITICAL ERROR LOADING MAIN TEMPLATE FOR {self.current_character.char_id}]"})
-            # вытаскиваем пути вида [<path>]
-            file_paths = self.current_character.dsl_interpreter.placeholder_pattern.findall(main_template_content)
-            for p in file_paths:
-                try:
-                    content = self.current_character.dsl_interpreter.process_file(p)
-                    if content and content.strip():
-                        combined_messages.append({"role": "system", "content": content})
-                except Exception as e:
-                    logger.error(f"Error processing DSL file {p} for {self.current_character.char_id}: {e}",
-                                exc_info=True)
-                    combined_messages.append({"role": "system",
-                                            "content": f"[ERROR PROCESSING {p}]"})
-        else:
-            # старое поведение
-            combined_messages.extend(self.current_character.get_full_system_setup_for_llm())
+        separate_prompts =  bool(self.gui.settings.get("SEPARATE_PROMPTS", True))
+        messages = self.current_character.get_full_system_setup_for_llm(separate_prompts)
+        combined_messages.extend(messages)
+
 
         # Добавляем шахматы (если сформировано)
         if chess_system_message_for_llm_content:
@@ -577,18 +553,18 @@ class ChatModel:
                     logger.info("Сжатая сводка добавлена в начало истории, старые сообщения удалены.")
                 else:
                     logger.warning(f"Неизвестный target для сжатия истории: {self.history_compression_output_target}")
-                
+
                 logger.info(f"История сокращена до {len(llm_messages_history)} сообщений после сжатия по лимиту.")
             else:
                 logger.warning("Сжатие истории по лимиту не удалось (недостаточно сообщений для сжатия).")
-        
+
         # Логика периодического сжатия
         if self.enable_history_compression_periodic:
             self._messages_since_last_periodic_compression += 1
             if self._messages_since_last_periodic_compression >= self.history_compression_periodic_interval:
                 # Берем самые старые сообщения для периодического сжатия
                 messages_to_compress = llm_messages_history[:self.history_compression_periodic_interval]
-                
+
                 if not messages_to_compress:
                     logger.info("Нет сообщений для периодического сжатия.")
                     self._messages_since_last_periodic_compression = 0 # Сбрасываем счетчик
@@ -913,15 +889,15 @@ class ChatModel:
                             # Вычисляем целевое качество
                             # Индекс сообщения относительно начала зоны снижения качества
                             relative_index = i - actual_start_index
-                            
+
                             # Начальное качество для снижения. Берем из настроек захвата экрана.
                             initial_quality = int(self.gui.settings.get("SCREEN_CAPTURE_QUALITY", 75))
 
                             calculated_quality = initial_quality - (self.image_quality_reduction_decrease_rate * relative_index)
-                            
+
                             # Ограничиваем качество минимальным значением
                             target_quality = max(self.image_quality_reduction_min_quality, calculated_quality)
-                            
+
                             logger.info(f"Сообщение {i}: относительный индекс {relative_index}, рассчитанное качество {calculated_quality}, целевое качество {target_quality}")
 
                             processed_bytes = self._process_image_quality(img_bytes, target_quality)
@@ -1185,31 +1161,10 @@ class ChatModel:
         combined_messages = []
 
         # 1. Системные промпты / память
-        if bool(self.gui.settings.get("SEPARATE_PROMPTS", True)):
-            try:
-                resolved_main = self.current_character.dsl_interpreter.resolver.resolve_path(
-                    self.current_character.main_template_path_relative)
-                main_template_content = self.current_character.dsl_interpreter.resolver.load_text(
-                    resolved_main, "main template for separate prompts")
-            except Exception as e:
-                logger.error(f"Critical error loading main template for {self.current_character.char_id}: {e}",
-                             exc_info=True)
-                main_template_content = ""
-                combined_messages.append({"role": "system",
-                                          "content": f"[CRITICAL ERROR LOADING MAIN TEMPLATE FOR {self.current_character.char_id}]"})
-            file_paths = self.current_character.dsl_interpreter.placeholder_pattern.findall(main_template_content)
-            for p in file_paths:
-                try:
-                    content = self.current_character.dsl_interpreter.process_file(p)
-                    if content and content.strip():
-                        combined_messages.append({"role": "system", "content": content})
-                except Exception as e:
-                    logger.error(f"Error processing DSL file {p} for {self.current_character.char_id}: {e}",
-                                 exc_info=True)
-                    combined_messages.append({"role": "system",
-                                              "content": f"[ERROR PROCESSING {p}]"})
-        else:
-            combined_messages.extend(self.current_character.get_full_system_setup_for_llm())
+        separate_prompts = bool(self.gui.settings.get("SEPARATE_PROMPTS", True))
+        messages = self.current_character.get_full_system_setup_for_llm(separate_prompts)
+        combined_messages.extend(messages)
+
 
         # Добавляем шахматы (если сформировано) - для точного подсчета нужно бы формировать, но пока заглушка
         # В реальной ситуации здесь нужно было бы вызвать логику формирования chess_system_message_for_llm_content

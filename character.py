@@ -71,7 +71,7 @@ class Character:
 
         self.variables: Dict[str, Any] = {} # Initialize first
         self.is_cartridge = is_cartridge
-
+        self.system_messages = []
 
         # Compose initial variables: Base -> Subclass Overrides -> Passed-in Overrides
         composed_initials = Character.BASE_DEFAULTS.copy()
@@ -144,7 +144,7 @@ class Character:
         # logger.debug(f"Variable '{name}' set to: {value} (type: {type(value)}) for char '{self.char_id}'")
 
 
-    def get_llm_system_prompt_string(self) -> str:
+    def get_llm_system_prompts(self) -> list:
         """
         Generates the main system prompt string using the DSL engine.
         """
@@ -154,22 +154,34 @@ class Character:
             self.dsl_interpreter.char_ctx_filter.set_character_id(self.char_id) # type: ignore
             
         try:
-            generated_prompt = self.dsl_interpreter.process_main_template_file(self.main_template_path_relative)
+            self.system_messages.clear()
+            generated_prompt,system_messages = self.dsl_interpreter.process_main_template_file(self.main_template_path_relative)
+            self.system_messages.extend(system_messages)
             return generated_prompt
         except Exception as e:
             logger.error(f"Critical error during DSL processing for {self.char_id}: {e}", exc_info=True)
             print(f"{RED_COLOR}Critical error in get_llm_system_prompt_string for {self.char_id}: {e}{RESET_COLOR}\n{traceback.format_exc()}", file=sys.stderr)
-            return f"[CRITICAL PYTHON ERROR GENERATING SYSTEM PROMPT FOR {self.char_id} - CHECK LOGS]"
+            return []
 
-    def get_full_system_setup_for_llm(self) -> List[Dict[str, str]]:
+    def get_full_system_setup_for_llm(self, separate_prompts = False):
         """
         Prepares all system messages for the LLM.
         """
         messages = []
-        dsl_generated_content = self.get_llm_system_prompt_string()
-        if dsl_generated_content and dsl_generated_content.strip():
-            messages.append({"role": "system", "content": dsl_generated_content})
-        
+        dsl_generated_content = self.get_llm_system_prompts()
+
+        if separate_prompts:
+            if dsl_generated_content:
+                messages.extend(dsl_generated_content)
+
+        else:
+            total_text = ""
+            for message in dsl_generated_content:
+                total_text += f"\n{message["content"]}"
+
+            if total_text:
+                messages.append({"role": "system", "content": total_text})
+
         memory_message_content = self.memory_system.get_memories_formatted()
         if memory_message_content and memory_message_content.strip():
             messages.append({"role": "system", "content": memory_message_content})

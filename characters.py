@@ -108,7 +108,7 @@ class GameMaster(Character):
         response = re.sub(r"<p>.*?</p>", "", response).strip()
         return response
 
-    def get_llm_system_prompt_string(self) -> str:
+    def get_llm_system_prompts(self) -> list:
         try:
             from SettingsManager import SettingsManager as settings
             current_instruction = settings.get("GM_SMALL_PROMPT", "")
@@ -119,4 +119,4 @@ class GameMaster(Character):
         except Exception as e:
             logger.error(f"[{self.char_id}] Error accessing GM_SMALL_PROMPT: {e}")
             self.set_variable("GM_INSTRUCTION", "")
-        return super().get_llm_system_prompt_string()
+        return super().get_llm_system_prompts()
