@@ -177,24 +177,52 @@ def setup_prompt_catalogue_controls(self, parent):
     # Кнопка для сохранения info.json
     def save_info_json_action():
         selected_set_name = prompt_set_combobox.get()
-        if selected_set_name:
-            set_path = os.path.join(catalogue_path, selected_set_name)
-            info_data = read_info_json(set_path) # Читаем текущие данные, чтобы сохранить дополнительные параметры
-            if info_data is None: # Handle read error
-                 info_data = {}
+        if not selected_set_name:
+            messagebox.showwarning(_("Внимание", "Warning"), _("Набор промптов не выбран для сохранения.", "No prompt set selected for saving."))
+            return
 
-            # Обновляем основные поля
-            for key, entry in self.info_json_entries.items():
+        catalogue_path = "PromptsCatalogue" # Ensure catalogue_path is accessible here
+        current_set_path = os.path.join(catalogue_path, selected_set_name)
+
+        info_data = read_info_json(current_set_path) # Читаем текущие данные, чтобы сохранить дополнительные параметры
+        if info_data is None: # Handle read error
+             info_data = {}
+
+        new_folder_name = self.info_json_entries["folder"].get()
+        new_set_path = current_set_path # Default to current path
+
+        folder_renamed = False
+        if new_folder_name and new_folder_name != selected_set_name:
+            new_set_path = os.path.join(catalogue_path, new_folder_name)
+            if os.path.exists(new_set_path):
+                messagebox.showerror(_("Ошибка", "Error"), _(f"Папка с именем '{new_folder_name}' уже существует.", f"Folder with name '{new_folder_name}' already exists."))
+                return # Stop if new folder name exists
+            try:
+                os.rename(current_set_path, new_set_path)
+                folder_renamed = True
+                selected_set_name = new_folder_name # Update selected_set_name to the new name
+                info_data["folder"] = new_folder_name # Update info_data with the new folder name
+            except OSError as e:
+                messagebox.showerror(_("Ошибка", "Error"), _(f"Не удалось переименовать папку: {e}", f"Failed to rename folder: {e}"))
+                return # Stop if rename fails
+
+        # Обновляем основные поля (используем potentially updated info_data)
+        for key, entry in self.info_json_entries.items():
+            if key != "folder": # Avoid overwriting the potentially updated folder name
                 info_data[key] = entry.get()
 
-            # Дополнительные параметры пока не редактируются через GUI, но сохраняются
-            # Если нужно редактирование доп. параметров, потребуется более сложный GUI
 
-            if write_info_json(set_path, info_data):
-                messagebox.showinfo(_("Успех", "Success"), _("Информация о наборе сохранена.", "Set information saved."))
-            # write_info_json уже содержит messagebox для ошибок
-        else:
-            messagebox.showwarning(_("Внимание", "Warning"), _("Набор промптов не выбран для сохранения.", "No prompt set selected for saving."))
+        # Дополнительные параметры пока не редактируются через GUI, но сохраняются
+        # Если нужно редактирование доп. параметров, потребуется более сложный GUI
+
+        # Write info.json to the (potentially new) path
+        if write_info_json(new_set_path, info_data):
+            messagebox.showinfo(_("Успех", "Success"), _("Информация о наборе сохранена.", "Set information saved."))
+            if folder_renamed:
+                update_prompt_set_combobox() # Refresh the list
+                prompt_set_combobox.set(selected_set_name) # Select the new name
+                load_info_json(new_set_path) # Load info from the new path
+        # write_info_json уже содержит messagebox для ошибок
 
     tk.Button(info_json_frame, text=_("Сохранить информацию", "Save Information"), command=save_info_json_action, bg="#8a2be2", fg="#ffffff", activebackground="#6a1bcb", activeforeground="#ffffff", relief=tk.RAISED, bd=2).pack(pady=5)
 
@@ -202,15 +230,24 @@ def setup_prompt_catalogue_controls(self, parent):
     def load_info_json(set_path):
         """Загружает данные из info.json и заполняет поля GUI."""
         info_data = read_info_json(set_path)
+        # Get the actual folder name from the path
+        folder_name = os.path.basename(set_path)
+
         if info_data:
             for key, entry in self.info_json_entries.items():
                 entry.delete(0, tk.END)
-                if key in info_data:
+                if key == "folder": # Handle folder field separately
+                    entry.insert(0, folder_name)
+                elif key in info_data:
                     entry.insert(0, info_data[key])
                 else:
-                    entry.insert(0, "") # Очищаем поле, если ключа нет
+                    entry.insert(0, "") # Clear other fields if key is missing
         else:
+            # If info.json doesn't exist or is empty, just set the folder name
             clear_info_json_fields()
+            if "folder" in self.info_json_entries:
+                 self.info_json_entries["folder"].insert(0, folder_name)
+
 
     def clear_info_json_fields():
          """Очищает все поля info.json GUI."""
