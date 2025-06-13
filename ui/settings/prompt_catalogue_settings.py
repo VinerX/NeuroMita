@@ -84,7 +84,11 @@ def setup_prompt_catalogue_controls(self, parent):
     # Кнопка "Создать новый набор"
     def create_new_set_action():
         if self.model.current_character and self.model.current_character.char_id:
-            character_name = self.model.current_character.char_id
+            character = self.model.current_character
+            if character.is_cartridge:
+                character_name = "Cartridges"
+            else:
+                character_name = character.char_id
             prompts_path = os.path.join("Prompts", character_name)
             new_set_path = create_new_set(character_name, catalogue_path, prompts_path)
             if new_set_path:
