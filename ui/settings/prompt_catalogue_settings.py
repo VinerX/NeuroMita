@@ -28,8 +28,13 @@ def setup_prompt_catalogue_controls(self, parent):
 
     # Выбор набора промптов
     ttk.Label(catalogue_frame, text=_("Выберите набор промптов:", "Select prompt set:"), background="#2c2c2c", foreground="#ffffff", font=("Arial", 10)).pack(pady=2, anchor="w")
-    prompt_set_combobox = ttk.Combobox(catalogue_frame, state="readonly", background="#1e1e1e", foreground="#ffffff", font=("Arial", 10))
-    prompt_set_combobox.pack(fill="x", pady=2)
+
+    # Frame for combobox and refresh button
+    combobox_refresh_frame = tk.Frame(catalogue_frame, background="#2c2c2c") # New line
+    combobox_refresh_frame.pack(fill="x", pady=2) # New line
+
+    prompt_set_combobox = ttk.Combobox(combobox_refresh_frame, state="readonly", background="#1e1e1e", foreground="#ffffff", font=("Arial", 10)) # Modified line
+    prompt_set_combobox.pack(side="left", fill="x", expand=True, padx=(0, 5)) # Modified line
 
     def update_prompt_set_combobox():
         sets = list_prompt_sets(catalogue_path)
@@ -40,6 +45,12 @@ def setup_prompt_catalogue_controls(self, parent):
         else:
             prompt_set_combobox.set("")
             clear_info_json_fields()
+
+    # Refresh button
+    refresh_button = tk.Button(combobox_refresh_frame, text=_("Обновить", "Refresh"), command=update_prompt_set_combobox, bg="#8a2be2", fg="#ffffff", activebackground="#6a1bcb", activeforeground="#ffffff", relief=tk.RAISED, bd=2) # New line
+    refresh_button.pack(side="left") # New line
+
+
 
     def on_prompt_set_selected(event):
         selected_set_name = prompt_set_combobox.get()
@@ -155,6 +166,7 @@ def setup_prompt_catalogue_controls(self, parent):
         self.info_json_entries[key] = entry
         return entry
 
+    create_info_field(info_json_frame, _("Папка:", "Folder:"), "folder") # New line
     create_info_field(info_json_frame, _("Персонаж:", "Character:"), "character")
     create_info_field(info_json_frame, _("Автор:", "Author:"), "author")
     create_info_field(info_json_frame, _("Версия:", "Version:"), "version")
