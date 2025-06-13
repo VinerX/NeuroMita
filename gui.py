@@ -1,6 +1,7 @@
 import io
 import uuid
 
+import win32gui
 
 import guiTemplates
 from AudioHandler import AudioHandler
@@ -960,7 +961,7 @@ class ChatGUI:
         self.chat_window.bind("<Button-5>", self.on_chat_scroll)  # Linux
 
         self.update_debug_info()
-
+        self.update_token_count()
         # Автоматическая прокрутка вниз после загрузки истории
         self.chat_window.see(tk.END)
 
