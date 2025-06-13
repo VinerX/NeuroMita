@@ -37,7 +37,7 @@ class MemorySystem:
         with open(self.filename, 'w', encoding='utf-8') as file:
             json.dump(self.memories, file, ensure_ascii=False, indent=4)
 
-    def add_memory(self, content, date=datetime.datetime.now().strftime("%d.%m.%Y_%H.%M"), priority="Normal"):
+    def add_memory(self, content, date=datetime.datetime.now().strftime("%d.%m.%Y_%H.%M"), priority="Normal", memory_type="fact"):
         if not self.memories:
             new_id = 1
         else:
@@ -47,7 +47,8 @@ class MemorySystem:
             "N": new_id,
             "date": date,
             "priority": priority,
-            "content": content
+            "content": content,
+            "memory_type": memory_type  # Добавляем тип памяти
         }
         self.memories.append(memory)
         self.total_characters += len(content)  # Обновляем счетчик
@@ -87,9 +88,14 @@ class MemorySystem:
     def get_memories_formatted(self):
         formatted_memories = []
         for memory in self.memories:
-            formatted_memories.append(
-                f"N:{memory['N']}, Date {memory['date']}, Priority: {memory['priority']}: {memory['content']}"
-            )
+            if memory['memory_type'] == "summary":
+                formatted_memories.append(
+                    f"N:{memory['N']}, Date {memory['date']}, Type: Summary: {memory['content']}"
+                )
+            else:
+                formatted_memories.append(
+                    f"N:{memory['N']}, Date {memory['date']}, Priority: {memory['priority']}: {memory['content']}"
+                )
 
         memory_stats = f"\nMemory status: {len(self.memories)} facts, {self.total_characters} characters"
 
