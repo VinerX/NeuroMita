@@ -35,12 +35,12 @@ class HistoryManager:
                     return self._default_history()
 
         except json.JSONDecodeError as e:
-            logger.info(f"Ошибка загрузки истории {e} , создается бекап")
+            logger.error(f"Ошибка загрузки истории {e} , создается бекап")
             self.save_history_separate()
             return self._default_history()
         except FileNotFoundError:
             # Если файл пуст или не существует, создаем бекап и возвращаем структуру по умолчанию
-            logger.info("Файл истории пуст или не существует")
+            logger.warning("Файл истории пуст или не существует")
             return self._default_history()
 
     def history_format_correct(self, data):
