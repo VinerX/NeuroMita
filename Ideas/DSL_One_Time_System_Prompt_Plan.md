@@ -3,7 +3,7 @@
 **Цель:** Расширить DSL возможностью указывать разовый системный промпт, который будет отправляться в ChatModel при выполнении определенного условия, с максимальным разделением ответственности и упрощением логики в ChatModel.
 
 **Изменение подхода:**
-`DslInterpreter` будет накапливать временные системные сообщения. `Character` будет отвечать за сбор всех системных сообщений (основной промпт, временные сообщения из DSL, сообщения из системы памяти) и предоставление их `ChatModel` через единый метод.
+`DslInterpreter` будет накапливать временные системные сообщения. `Character` будет отвечать за сбор всех системных сообщений (основной промпт, временные сообщения из DSL, сообщения из системы памяти) и предоставление их `ChatModel` через новый метод `get_system_info` непосредственно перед запросом к модели.
 
 **Предлагаемая новая команда DSL:**
 `ADD_SYSTEM_INFO <выражение>`
@@ -49,7 +49,7 @@ ADD_SYSTEM_INFO f"Динамическое сообщение: {my_variable}"
 2.  **Модификация класса `Character` (файл `character.py`)**
     *   **Удаление `get_llm_system_prompt_string`:** Этот метод больше не нужен, его логика будет интегрирована.
     *   **Модификация `get_full_system_setup_for_llm`:**
-        *   Переименовать `get_full_system_setup_for_llm` в `get_all_system_messages_for_llm` (или аналогичное, более точное название).
+        *   Переименовать `get_full_system_setup_for_llm` в `get_system_info`.
         *   Этот метод будет отвечать за сбор всех системных сообщений.
         *   Внутри этого метода:
             *   Установить `SYSTEM_DATETIME`.
@@ -62,15 +62,15 @@ ADD_SYSTEM_INFO f"Динамическое сообщение: {my_variable}"
 
 3.  **Модификация класса `ChatModel` (файл `chat_model.py`)**
     *   **Упрощение `generate_response`:**
-        *   В разделе "4. Системные промпты / память", полностью заменить логику загрузки системных промптов на вызов нового метода `Character`.
+        *   В разделе "4. Системные промпты / память", полностью заменить логику загрузки системных промптов на вызов нового метода `self.current_character.get_system_info()`.
+        *   `self.infos_to_add_to_history` в `ChatModel` будет использоваться только для сообщений, которые добавляются *вне* DSL (например, из GUI или других модулей). Эти сообщения должны быть добавлены к `combined_messages` *после* получения системных сообщений от `Character.get_system_info()`.
         *   Удалить `self.infos_to_add_to_history.clear()` после добавления, так как теперь `Character` будет отвечать за это.
-        *   `self.infos_to_add_to_history` в `ChatModel` будет использоваться только для сообщений, которые добавляются *вне* DSL (например, из GUI или других модулей).
 
 **Диаграмма потока данных (финальная):**
 
 ```mermaid
 graph TD
-    A[ChatModel.generate_response] --> B{Character.get_all_system_messages_for_llm};
+    A[ChatModel.generate_response] --> B{Character.get_system_info};
     B --> C[Character.dsl_interpreter.process_main_template_file];
     C -- Returns (main_text, temp_messages) --> B;
     B -- Combines main_text, temp_messages, memory_messages --> A;
