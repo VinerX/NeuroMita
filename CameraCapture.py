@@ -98,7 +98,6 @@ class CameraCapture:
                         current_frame_bytes = jpeg_frame.tobytes()
 
                         self._frame_history.append(current_frame_bytes)
-                        logger.info(current_frame_bytes)
                         if len(self._frame_history) > self._max_history_frames:
                             self._frame_history.pop(0)
                         self._latest_frame = current_frame_bytes

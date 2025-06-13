@@ -207,6 +207,11 @@ class ChatGUI:
             logger.info("Настройка 'ENABLE_SCREEN_ANALYSIS' включена. Автоматический запуск захвата экрана.")
             self.start_screen_capture_thread()
 
+        # Добавляем автоматический запуск захвата с камеры, если настройка включена
+        if self.settings.get("ENABLE_CAMERA_CAPTURE", False):
+            logger.info("Настройка 'ENABLE_CAMERA_CAPTURE' включена. Автоматический запуск захвата с камеры.")
+            self.start_camera_capture_thread()
+
     def start_asyncio_loop(self):
         """Запускает цикл событий asyncio в отдельном потоке."""
         try:
@@ -1216,6 +1221,17 @@ class ChatGUI:
         # Объединяем переданные изображения с текущими захваченными
         all_image_data = (image_data if image_data is not None else []) + current_image_data
 
+        # Если включен захват с камеры, добавляем кадры с камеры
+        if self.settings.get("ENABLE_CAMERA_CAPTURE", False):
+            if hasattr(self, 'camera_capture') and self.camera_capture is not None and self.camera_capture.is_running():
+                history_limit = int(self.settings.get("CAMERA_CAPTURE_HISTORY_LIMIT", 1))
+                camera_frames = self.camera_capture.get_recent_frames(history_limit)
+                if camera_frames:
+                    all_image_data.extend(camera_frames)
+                    logger.info(f"Добавлено {len(camera_frames)} кадров с камеры для отправки.")
+                else:
+                    logger.info("Захват с камеры включен, но кадры не готовы или история пуста.")
+
         # Отправляем сообщение, если есть пользовательский ввод ИЛИ системный ввод ИЛИ изображения
         if not user_input and not system_input:
             #logger.info("Нет текста или изображений для отправки.")
@@ -1267,6 +1283,31 @@ class ChatGUI:
             # Обработка тайм-аута
             logger.info("Тайм-аут: генерация ответа заняла слишком много времени.")
             #self.insert_message("assistant", "Превышен лимит времени ожидания ответа от нейросети.")
+
+    def start_camera_capture_thread(self):
+        if not hasattr(self, 'camera_capture') or self.camera_capture is None:
+            from CameraCapture import CameraCapture
+            self.camera_capture = CameraCapture()
+
+        if not self.camera_capture.is_running():
+            camera_index = int(self.settings.get("CAMERA_INDEX", 0))
+            interval = float(self.settings.get("CAMERA_CAPTURE_INTERVAL", 5.0))
+            quality = int(self.settings.get("CAMERA_CAPTURE_QUALITY", 25))
+            fps = int(self.settings.get("CAMERA_CAPTURE_FPS", 1))
+            max_history_frames = int(self.settings.get("CAMERA_CAPTURE_HISTORY_LIMIT", 3))
+            max_frames_per_request = int(self.settings.get("CAMERA_CAPTURE_TRANSFER_LIMIT", 1))
+            capture_width = int(self.settings.get("CAMERA_CAPTURE_WIDTH", 640))
+            capture_height = int(self.settings.get("CAMERA_CAPTURE_HEIGHT", 480))
+            self.camera_capture.start_capture(camera_index, quality, fps, max_history_frames,
+                                                       max_frames_per_request, capture_width,
+                                                       capture_height)
+            logger.info(
+                f"Поток захвата с камеры запущен с индексом {camera_index}, интервалом {interval}, качеством {quality}, {fps} FPS, историей {max_history_frames} кадров, разрешением {capture_width}x{capture_height}.")
+
+    def stop_camera_capture_thread(self):
+        if hasattr(self, 'camera_capture') and self.camera_capture is not None and self.camera_capture.is_running():
+            self.camera_capture.stop_capture()
+            logger.info("Поток захвата с камеры остановлен.")
 
     def start_screen_capture_thread(self):
         if not self.screen_capture_running:
@@ -1489,6 +1530,11 @@ class ChatGUI:
                 self.start_screen_capture_thread()
             else:
                 self.stop_screen_capture_thread()
+        elif key == "ENABLE_CAMERA_CAPTURE":
+            if bool(value):
+                self.start_camera_capture_thread()
+            else:
+                self.stop_camera_capture_thread()
         elif key in ["SCREEN_CAPTURE_INTERVAL", "SCREEN_CAPTURE_QUALITY", "SCREEN_CAPTURE_FPS",
                      "SCREEN_CAPTURE_HISTORY_LIMIT", "SCREEN_CAPTURE_TRANSFER_LIMIT", "SCREEN_CAPTURE_WIDTH",
                      "SCREEN_CAPTURE_HEIGHT"]:
@@ -1572,7 +1618,7 @@ class ChatGUI:
             SpeechRecognition.VOSK_PROCESS_INTERVAL = float(value)
         elif key == "IMAGE_QUALITY_REDUCTION_ENABLED":
             self.model.image_quality_reduction_enabled = bool(value)
-        elif key == "IMAGE_QUALITY_REDUCTION_START_INDEX":
+
             self.model.image_quality_reduction_start_index = int(value)
         elif key == "IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE":
             self.model.image_quality_reduction_use_percentage = bool(value)
@@ -1752,6 +1798,7 @@ class ChatGUI:
             pass
 
         self.stop_screen_capture_thread()  # Останавливаем захват экрана при закрытии
+        self.stop_camera_capture_thread() # Останавливаем захват с камеры при закрытии
         self.delete_all_sound_files()
         self.stop_server()
         logger.info("Закрываемся")
