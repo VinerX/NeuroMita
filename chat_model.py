@@ -1112,10 +1112,16 @@ class ChatModel:
                 prompt_template = f.read()
 
             # 2. Форматирование сообщений для промпта
-            formatted_messages = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages_to_compress])
+            formatted_messages = "\n".join([
+                f"[{msg.get('time', '')}] [{'Player' if msg['role'] == 'user' else 'Character or System'}]: {msg['content']}"
+                if msg.get('time')
+                else f"[{'Player' if msg['role'] == 'user' else 'Character or System'}]: {msg['content']}"
+                for msg in messages_to_compress
+            ])
 
             # 3. Формирование полного промпта
             full_prompt = prompt_template.replace("{history_messages}", formatted_messages)
+            full_prompt = full_prompt.replace("{your character}", self.current_character.name)
 
             # 4. Вызов LLM для получения сжатой сводки
             system_message = {"role": "system", "content": full_prompt}
