@@ -132,6 +132,10 @@ class ScreenCapture:
                     # Если включено исключение окна GUI
                     if self.exclude_gui_window and self.hwnd_to_exclude:
                         try:
+
+                            #TODO не делатьчерный экран если нет на экране
+                            #win32gui.IsWindowVisible(self.hwnd_to_exclude) and win32gui.GetForegroundWindow() == self.hwnd_to_exclude:
+
                             # Получаем координаты окна по его HWND
                             left, top, right, bottom = win32gui.GetWindowRect(self.hwnd_to_exclude)
                             # Определяем размеры окна
