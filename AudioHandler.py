@@ -1,5 +1,6 @@
 import asyncio
 import os
+import threading
 
 import pygame
 
@@ -7,6 +8,7 @@ from Logger import logger
 
 
 class AudioHandler:
+    _lock = threading.Lock()
 
     @classmethod
     async def handle_voice_file(cls, file_path, delete :bool = True):
@@ -29,12 +31,13 @@ class AudioHandler:
         """Проигрывает аудиофайл."""
 
         def play():
-            pygame.mixer.init()
-            pygame.mixer.music.load(file_path)  # Pygame поддерживает MP3 и OGG
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():  # Ждем завершения воспроизведения
-                pygame.time.Clock().tick(10)
-            pygame.mixer.music.stop()
-            pygame.mixer.quit()
+            with AudioHandler._lock:
+                pygame.mixer.init()
+                pygame.mixer.music.load(file_path)  # Pygame поддерживает MP3 и OGG
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():  # Ждем завершения воспроизведения
+                    pygame.time.Clock().tick(10)
+                pygame.mixer.music.stop()
+                pygame.mixer.quit()
 
         await asyncio.to_thread(play)  # Запуск в отдельном потоке
