@@ -1,5 +1,6 @@
 ### main.py
 
+
 import pydantic.fields
 import uvicorn
 from gui import ChatGUI
@@ -28,11 +29,15 @@ import win32file
 import pyworld
 import cProfile
 import filecmp
-import google.api_core
-import google.auth
-from google.cloud import storage
-from google.protobuf import empty_pb2
-import google.protobuf.wrappers_pb2
+
+try:
+    import google.api_core
+    import google.auth
+    from google.cloud import storage
+    from google.protobuf import empty_pb2
+    import google.protobuf.wrappers_pb2
+except Exception as e:
+    logger.warning(f"{e}")
 import xml.dom
 
 if os.environ.get("ENABLE_COMMAND_REPLACER_BY_DEFAULT", "0") != "1":

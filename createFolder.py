@@ -29,6 +29,7 @@ DIRS_TO_COPY = [
     (PROJECT_DIR / "libs", OUTPUT_DIR / "libs"),
     (PROJECT_DIR / "include", OUTPUT_DIR / "include"),
     (PROJECT_DIR / "Prompts", OUTPUT_DIR / "Prompts"),
+    (PROJECT_DIR / "PromptsCatalogue", OUTPUT_DIR / "PromptsCatalogue"),
 ]
 
 
