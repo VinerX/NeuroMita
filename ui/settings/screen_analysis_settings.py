@@ -1,9 +1,32 @@
 import tkinter as tk
+import cv2
 from utils import getTranslationVariant as _
+import cv2
+from tkinter import ttk
+from Logger import logger
+
+def get_camera_list(self):
+    camera_list = []
+    for i in range(5):  # Проверяем первые 10 камер
+        cap = cv2.VideoCapture(i)
+        if cap.isOpened():
+            camera_list.append(f"Camera {i}")
+            cap.release()
+    return camera_list
+
+def update_camera_list(self):
+    self.camera_combobox.config(values=get_camera_list(self))
+
+def on_camera_selected(self):
+    selection = self.camera_combobox.get()
+    if selection:
+        camera_index = int(selection.split(" ")[-1])
+        self.selected_camera = camera_index
+        logger.info(f"Выбрана камера: {self.selected_camera}")
 
 
 def setup_screen_analysis_controls(self, parent):
-    """Создает секцию настроек для анализа экрана."""
+    """Creates a settings section for screen analysis."""
     screen_analysis_config = [
         {'label': _('Включить анализ экрана', 'Enable Screen Analysis'), 'key': 'ENABLE_SCREEN_ANALYSIS',
          'type': 'checkbutton',
@@ -92,10 +115,17 @@ def setup_screen_analysis_controls(self, parent):
          'default_checkbutton': False,
          'tooltip': _('Включает захват с камеры и отправку кадров в модель для анализа.',
                       'Enables camera capture and sending frames to the model for analysis.')},
-        {'label': _('Индекс камеры', 'Camera Index'), 'key': 'CAMERA_INDEX',
-         'type': 'entry',
-         'default': 0, 'validation': self.validate_positive_integer,
-         'tooltip': _('Индекс используемой камеры.', 'Index of the camera to use.')},
+        {'label': _('Камера', 'Camera'), 'key': 'CAMERA_DEVICE',
+                 'type': 'combobox',
+                 'options': [_("Обновите","Update")],#get_camera_list(self),
+                 'default': [_("Обновите","Update")],#get_camera_list(self)[0] if get_camera_list(self) else "",
+                 'command': lambda: on_camera_selected(self),
+                 'tooltip': _('Выберите камеру.', 'Select camera.'),
+                 'widget_name': 'camera_combobox'},
+                {'label': _("Обновить список", "Refresh list"),
+                 'type': 'button',
+                 'command': lambda: update_camera_list(self)
+                },
         {'label': _('Интервал захвата (сек)', 'Capture Interval (sec)'), 'key': 'CAMERA_CAPTURE_INTERVAL',
          'type': 'entry',
          'default': 5.0, 'validation': self.validate_float_positive,
@@ -124,6 +154,22 @@ def setup_screen_analysis_controls(self, parent):
          'default': 480, 'validation': self.validate_positive_integer,
          'tooltip': _('Высота захватываемого изображения в пикселях.', 'Height of the captured image in pixels.')},
     ]
-    self.create_settings_section(parent,
+    self.camera_section = self.create_settings_section(parent,
                                  _("Настройки захвата с камеры", "Camera Capture Settings"),
                                  camera_analysis_config)
+
+    # # Сохраняем ссылки на важные виджеты
+    # for widget in self.camera_section.content_frame.winfo_children():
+    #     if isinstance(widget, tk.Frame):
+    #         for child in widget.winfo_children():
+    #             if isinstance(child, ttk.Combobox) and 'CAMERA_DEVICE' in str(child):
+    #                 self.camera_combobox = child
+
+
+    # Сохраняем ссылку на combobox камеры
+    for widget in self.camera_section.content_frame.winfo_children():
+        if hasattr(widget, 'widget_name') and widget.widget_name == 'camera_combobox':
+            for child in widget.winfo_children():
+                if isinstance(child, ttk.Combobox):
+                    self.camera_combobox = child
+                    break

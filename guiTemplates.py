@@ -3,7 +3,7 @@ from tkinter import ttk
 from tkinter import messagebox
 from SettingsManager import SettingsManager, CollapsibleSection
 import os # Добавлено для os.path.exists
-
+from utils import getTranslationVariant as _
 from SettingsManager import CollapsibleSection
 
 
@@ -12,7 +12,8 @@ def create_settings_section(self, parent, title, settings_config):
     section.pack(fill=tk.X, padx=5, pady=5, expand=True)
 
     for config in settings_config:
-        widget = self.create_setting_widget(
+        widget = create_setting_widget(
+            gui=self,
             parent=section.content_frame,
             label=config['label'],
             setting_key=config.get('key', ''),
@@ -23,7 +24,8 @@ def create_settings_section(self, parent, title, settings_config):
             validation=config.get('validation', None),
             tooltip=config.get('tooltip', ""),
             hide=config.get('hide', False),
-            command=config.get('command', None)
+            command=config.get('command', None),
+            widget_name = config.get('widget_name', None)
         )
         section.add_widget(widget)
 
@@ -32,9 +34,9 @@ def create_settings_section(self, parent, title, settings_config):
 
 def create_setting_widget(gui, parent, label, setting_key, widget_type='entry',
                           options=None, default='', default_checkbutton=False, validation=None, tooltip=None,
-                          width=None, height=None, command=None, hide=False):
+                          width=None, height=None, command=None, hide=False, widget_name=None):
     """
-    Создает виджет настройки с различными параметрами.
+    Creates a setting widget with various parameters.
 
     Параметры:
         parent: Родительский контейнер
@@ -97,7 +99,7 @@ def create_setting_widget(gui, parent, label, setting_key, widget_type='entry',
         def save_combobox():
             gui._save_setting(setting_key, var.get())
             if command:
-                command(var.get())
+                command()
 
         cb.bind("<<ComboboxSelected>>", lambda e: save_combobox())
 
@@ -166,6 +168,9 @@ def create_setting_widget(gui, parent, label, setting_key, widget_type='entry',
     # Добавляем tooltip если указан
     if tooltip:
         gui.create_tooltip(frame, tooltip)
+
+    if widget_name:
+        setattr(frame, "widget_name", widget_name)
 
     return frame
 
