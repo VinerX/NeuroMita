@@ -17,8 +17,7 @@ def setup_mita_controls(self, parent):
          'default': "Crazy"},
 
         {'label': _('Управление персонажем', 'Character Management'), 'type': 'text'},
-        {'label': _('Очистить историю персонажа', 'Clear character history'), 'type': 'button',
-         'command': lambda: clear_history(self)},
+
 
         {'label': _('Открыть папку персонажа', 'Open character folder'), 'type': 'button',
          'command': lambda: open_character_folder(self)},
@@ -26,6 +25,8 @@ def setup_mita_controls(self, parent):
          'command': lambda: open_character_history_folder(self)},
 
         {'label': _('Аккуратно!', 'Be careful!'), 'type': 'text'},
+        {'label': _('Очистить историю персонажа', 'Clear character history'), 'type': 'button',
+         'command': lambda: clear_history(self)},
         {'label': _('Перекачать промпты', 'ReDownload prompts'), 'type': 'button',
          'command': lambda: reload_prompts(self)},
         {'label': _("Очистить все истории", "Clear all histories"), 'type': 'button',

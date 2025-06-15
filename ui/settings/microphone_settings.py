@@ -156,7 +156,7 @@ def on_mic_selected(self):
 
 
 def update_mic_list(self):
-    self.mic_combobox['values'] = self.get_microphone_list()
+    self.mic_combobox['values'] = get_microphone_list(self)
 
 
 def save_mic_settings(self, device_id):
