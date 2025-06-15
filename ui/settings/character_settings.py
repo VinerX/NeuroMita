@@ -65,20 +65,25 @@ def setup_mita_controls(self, parent):
             folder_name = os.path.basename(character_prompts_path)
             combobox.set(folder_name)
 
+    self.prompt_set_combobox = combobox
+
 
 def apply_prompt_set(self):
     """Применяет выбранный набор промтов к текущему персонажу."""
-    selected_set_name = self.settings.get("PROMPT_SET",None)
+    selected_set_name = self.settings.get("PROMPT_SET", None)
     if not selected_set_name:
         messagebox.showwarning(_("Внимание", "Warning"), _("Набор промптов не выбран.", "No prompt set selected."))
         return
 
+    # Show confirmation dialog
     confirm = messagebox.askokcancel(
         _("Подтверждение", "Confirmation"),
         _("Применить набор промтов?", "Apply prompt set?"),
         icon='warning', parent=self.root
     )
     if not confirm:
+        # Restore previous value
+        self.prompt_set_combobox.config(textvariable=tk.StringVar(value=selected_set_name))
         return
 
     catalogue_path = "PromptsCatalogue"
