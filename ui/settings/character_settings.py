@@ -16,6 +16,8 @@ import subprocess
 
 
 def setup_mita_controls(self, parent):
+    default_prompt_pack = self.settings.get("PROMPT_SET", None)
+
     # Основные настройки
     mita_config = [
         {'label': _('Персонажи', 'Characters'), 'key': 'CHARACTER', 'type': 'combobox',
@@ -44,7 +46,7 @@ def setup_mita_controls(self, parent):
         {'label': _('Меню эмоций Мит', 'Emotion menu'), 'key': 'EMOTION_MENU', 'type': 'checkbutton',
                  'default_checkbutton': False},
             {'label': _('Набор промтов', 'Prompt Set'), 'key': 'PROMPT_SET', 'type': 'combobox',
-             'options': list_prompt_sets("PromptsCatalogue"), 'default': "",
+             'options': list_prompt_sets("PromptsCatalogue"), 'default': '', # default_prompt_pack,
              'widget_name':'prompt_pack'},
 
         #  {'label': _('Миты в работе', 'Mitas in work'), 'key': 'TEST_MITAS', 'type': 'checkbutton',
@@ -58,14 +60,22 @@ def setup_mita_controls(self, parent):
     if combobox:
         combobox.bind("<<ComboboxSelected>>", lambda e: apply_prompt_set(self))
         # Set default value
-        if self.model.current_character and self.model.current_character.char_id:
-            character_name = self.model.current_character.char_id
-            character_prompts_path = os.path.join("Prompts", character_name)
-            # Get the folder name
-            folder_name = os.path.basename(character_prompts_path)
-            combobox.set(folder_name)
+        #set_default_prompt_pack(self,combobox)
 
-    self.prompt_set_combobox = combobox
+
+    self.character_prompt_pack_combobox = combobox
+
+
+def set_default_prompt_pack(self,combobox):
+    default_prompt_pack = self.settings.get("PROMPT_SET", None)
+    if default_prompt_pack:
+        combobox.set(default_prompt_pack)
+    elif self.model.current_character and self.model.current_character.char_id:
+        character_name = self.model.current_character.char_id
+        character_prompts_path = os.path.join("Prompts", character_name)
+        # Get the folder name
+        folder_name = os.path.basename(character_prompts_path)
+        combobox.set(folder_name)
 
 
 def apply_prompt_set(self):
@@ -83,7 +93,7 @@ def apply_prompt_set(self):
     )
     if not confirm:
         # Restore previous value
-        self.prompt_set_combobox.config(textvariable=tk.StringVar(value=selected_set_name))
+        set_default_prompt_pack(self,self.character_prompt_pack_combobox)
         return
 
     catalogue_path = "PromptsCatalogue"
