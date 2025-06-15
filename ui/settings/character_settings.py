@@ -65,12 +65,12 @@ def setup_mita_controls(self, parent):
         # Set default value
 
     if character_combobox:
-        character_combobox.bind("<<ComboboxSelected>>", lambda e: update_prompt_sets(self))
+        character_combobox.bind("<<ComboboxSelected>>", lambda e: change_character_actions(self))
 
     self.character_prompt_pack_combobox = prompt_pack_combobox
     self.character_combobox = character_combobox
 
-    update_prompt_sets(self)
+    change_character_actions(self)
 
 def set_default_prompt_pack(self, combobox):
     if self.model.current_character and self.model.current_character.char_id:
@@ -79,35 +79,29 @@ def set_default_prompt_pack(self, combobox):
         folder_name = get_prompt_set_name(character_prompts_path)
         combobox.set(folder_name)
     
-def update_prompt_sets(self):
+def change_character_actions(self):
     """Обновляет список наборов промтов в combobox."""
     selected_character = self.character_combobox.get()#self.settings.get("CHARACTER", None)
     if not selected_character:
         messagebox.showwarning(_("Внимание", "Warning"), _("Персонаж не выбран.", "No character selected."))
         return
 
-    # Получаем char_id выбранного персонажа
-    char_id = None
-    for char, data in self.model.characters.items():
-        if data.char_id == selected_character:
-            char_id = data.char_id
-            break
-
-    if not char_id:
+    if not selected_character:
         messagebox.showwarning(_("Внимание", "Warning"), _("Не найден char_id для выбранного персонажа.", "No char_id found for selected character."))
         return
 
     # Обновляем список опций для combobox'а
     if self.character_prompt_pack_combobox:
-        new_options = list_prompt_sets("PromptsCatalogue", char_id)
+        new_options = list_prompt_sets("PromptsCatalogue", selected_character)
         self.character_prompt_pack_combobox['values'] = new_options
         # Optionally, reset the selected value
         set_default_prompt_pack(self,self.character_prompt_pack_combobox)
 
 def apply_prompt_set(self):
     """Применяет выбранный набор промтов к текущему персонажу."""
-    selected_set_name = self.character_combobox.get()#self.settings.get("PROMPT_SET", None)
-    if not selected_set_name:
+    chat_to = self.character_prompt_pack_combobox.get()
+    char_from = self.character_combobox.get()
+    if not chat_to:
         messagebox.showwarning(_("Внимание", "Warning"), _("Набор промптов не выбран.", "No prompt set selected."))
         return
 
@@ -123,10 +117,10 @@ def apply_prompt_set(self):
         return
 
     catalogue_path = "PromptsCatalogue"
-    set_path = os.path.join(catalogue_path, selected_set_name)
+    set_path = os.path.join(catalogue_path, chat_to)
 
-    if self.model.current_character and self.model.current_character.char_id:
-        character_prompts_path = os.path.join("Prompts", self.model.current_character.char_id)
+    if char_from:
+        character_prompts_path = os.path.join("Prompts", char_from)
         if copy_prompt_set(set_path, character_prompts_path):
             messagebox.showinfo(_("Успех", "Success"), _("Набор промптов успешно применен.", "Prompt set applied successfully."))
             # Перезагружаем данные персонажа
