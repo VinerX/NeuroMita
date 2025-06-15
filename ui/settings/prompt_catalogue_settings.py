@@ -208,8 +208,7 @@ def setup_prompt_catalogue_controls(self, parent):
 
         # Обновляем основные поля (используем potentially updated info_data)
         for key, entry in self.info_json_entries.items():
-            if key != "folder": # Avoid overwriting the potentially updated folder name
-                info_data[key] = entry.get()
+            info_data[key] = entry.get()
 
 
         # Дополнительные параметры пока не редактируются через GUI, но сохраняются

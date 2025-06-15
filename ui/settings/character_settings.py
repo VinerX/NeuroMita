@@ -7,7 +7,7 @@ from tkinter import messagebox, ttk
 from guiTemplates import find_widget_child_by_type
 from ui.settings.prompt_catalogue_settings import list_prompt_sets
 
-from utils.prompt_catalogue_manager import copy_prompt_set, get_prompt_set_name
+from utils.prompt_catalogue_manager import copy_prompt_set, get_prompt_catalogue_folder_name
 
 from Logger import logger
 from utils import getTranslationVariant as _
@@ -73,11 +73,11 @@ def setup_mita_controls(self, parent):
     change_character_actions(self)
 
 def set_default_prompt_pack(self, combobox):
-    if self.model.current_character and self.model.current_character.char_id:
-        character_name = self.model.current_character.char_id
-        character_prompts_path = os.path.join("Prompts", character_name)
-        folder_name = get_prompt_set_name(character_prompts_path)
-        combobox.set(folder_name)
+    character_name = self.character_combobox.get()
+    character_prompts_path = os.path.join("Prompts", character_name)
+
+    folder_name = get_prompt_catalogue_folder_name(character_prompts_path)
+    combobox.set(folder_name)
     
 def change_character_actions(self):
     """Обновляет список наборов промтов в combobox."""

@@ -87,6 +87,7 @@ def create_new_set(character_name, catalogue_path, prompts_path):
         # Create default info.json
         info_data = {
             "character": character_name,
+            "folder": new_set_name,
             "author": "Unknown",
             "version": "1.0",
             "description": "A new prompt set.",
@@ -117,7 +118,7 @@ def delete_prompt_set(set_path):
     else:
         return False
 
-def get_prompt_set_name(character_prompts_path):
+def get_prompt_catalogue_folder_name(character_prompts_path):
     """
     Reads info.json from character_prompts_path and returns the 'name' field,
     or the basename of the path if info.json is not found or doesn't contain the 'name' field.
@@ -126,7 +127,7 @@ def get_prompt_set_name(character_prompts_path):
     try:
         with open(info_file_path, "r", encoding="utf-8") as f:
             info = json.load(f)
-        return info.get("name", os.path.basename(character_prompts_path))
+        return info.get("folder", os.path.basename(character_prompts_path))
     except FileNotFoundError:
         return os.path.basename(character_prompts_path)
     except json.JSONDecodeError:
