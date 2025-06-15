@@ -1,6 +1,8 @@
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
+
+from Logger import logger
 from SettingsManager import SettingsManager, CollapsibleSection
 import os # Добавлено для os.path.exists
 from utils import getTranslationVariant as _
@@ -205,3 +207,41 @@ def create_tooltip(self, widget, text):
 
     widget.bind("<Enter>", enter)
     widget.bind("<Leave>", leave)
+
+def find_widget_child_by_type(section, widget_name, widget_type):
+    """
+    Ищет виджет с указанным именем и типом в указанной секции.
+
+    Параметры:
+        section: Секция, в которой нужно искать виджет.
+        widget_name: Имя виджета, который нужно найти.
+        widget_type: Тип виджета, который нужно найти (например, ttk.Combobox).
+
+    Возвращает:
+        Виджет, если он найден, или None, если нет.
+    """
+    for widget in section.content_frame.winfo_children():
+        if hasattr(widget, 'widget_name') and widget.widget_name == widget_name:
+            for child in widget.winfo_children():
+                if isinstance(child, widget_type):
+                    return child
+    logger.warning(f"Виджет с именем '{widget_name}' и типом '{widget_type}' не найден в секции '{section.title}'.")
+    return None
+
+
+def find_widget_by_name(section, widget_name):
+    """
+    Ищет виджет с указанным именем в указанной секции.
+
+    Параметры:
+        section: Секция, в которой нужно искать виджет.
+        widget_name: Имя виджета, который нужно найти.
+
+    Возвращает:
+        Виджет, если он найден, или None, если нет.
+    """
+    for widget in section.content_frame.winfo_children():
+        if hasattr(widget, 'widget_name') and widget.widget_name == widget_name:
+            return widget
+    logger.warning(f"Виджет с именем '{widget_name}' не найден в секции '{section.title}'.")
+    return None

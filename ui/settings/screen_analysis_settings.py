@@ -4,6 +4,7 @@ from utils import getTranslationVariant as _
 import cv2
 from tkinter import ttk
 from Logger import logger
+from guiTemplates import find_widget_child_by_type
 
 def get_camera_list(self):
     camera_list = []
@@ -157,19 +158,6 @@ def setup_screen_analysis_controls(self, parent):
     self.camera_section = self.create_settings_section(parent,
                                  _("Настройки захвата с камеры", "Camera Capture Settings"),
                                  camera_analysis_config)
-
-    # # Сохраняем ссылки на важные виджеты
-    # for widget in self.camera_section.content_frame.winfo_children():
-    #     if isinstance(widget, tk.Frame):
-    #         for child in widget.winfo_children():
-    #             if isinstance(child, ttk.Combobox) and 'CAMERA_DEVICE' in str(child):
-    #                 self.camera_combobox = child
-
-
+   
     # Сохраняем ссылку на combobox камеры
-    for widget in self.camera_section.content_frame.winfo_children():
-        if hasattr(widget, 'widget_name') and widget.widget_name == 'camera_combobox':
-            for child in widget.winfo_children():
-                if isinstance(child, ttk.Combobox):
-                    self.camera_combobox = child
-                    break
+    self.camera_combobox = find_widget_child_by_type(self.camera_section, 'camera_combobox', ttk.Combobox)
