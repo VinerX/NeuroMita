@@ -6,14 +6,23 @@ from tkinter import messagebox
 import logging
 
 # Initialize logger
-logger = logging.getLogger(__name__)
+from Logger import logger
 
-def list_prompt_sets(catalogue_path):
+def list_prompt_sets(catalogue_path, character_name=None):
     """
-    Returns a list of subdirectory names in catalogue_path.
+    Returns a list of subdirectory names in catalogue_path,
+    filtered by character_name if provided.
     """
     try:
-        return [d for d in os.listdir(catalogue_path) if os.path.isdir(os.path.join(catalogue_path, d))]
+        all_sets = [d for d in os.listdir(catalogue_path) if os.path.isdir(os.path.join(catalogue_path, d))]
+        if character_name:
+            character_sets = [d for d in all_sets if d.__contains__(character_name)]
+            if character_sets:
+                return character_sets
+            else:
+                return []
+        else:
+            return all_sets
     except Exception as e:
         logger.exception(f"Error listing prompt sets in {catalogue_path}: {e}")
         messagebox.showerror("Error", f"Error listing prompt sets: {e}")

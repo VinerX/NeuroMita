@@ -46,7 +46,7 @@ def setup_mita_controls(self, parent):
         {'label': _('Меню эмоций Мит', 'Emotion menu'), 'key': 'EMOTION_MENU', 'type': 'checkbutton',
                  'default_checkbutton': False},
             {'label': _('Набор промтов', 'Prompt Set'), 'key': 'PROMPT_SET', 'type': 'combobox',
-             'options': list_prompt_sets("PromptsCatalogue"), 'default': '', # default_prompt_pack,
+             'options': list_prompt_sets("PromptsCatalogue",self.model.current_character.char_id), 'default': '', # default_prompt_pack,
              'widget_name':'prompt_pack'},
 
         #  {'label': _('Миты в работе', 'Mitas in work'), 'key': 'TEST_MITAS', 'type': 'checkbutton',
