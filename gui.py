@@ -789,6 +789,13 @@ class ChatGUI:
         # Автоматическая прокрутка вниз после вставки сообщения
         self.chat_window.see(tk.END)
 
+    def append_message(self, text):
+        self.chat_window.config(state=tk.NORMAL)
+        # Получаем индекс последнего символа перед "\n\n"
+        last_index = self.chat_window.index("end-2c")
+        self.chat_window.insert(last_index, text)
+        self.chat_window.config(state=tk.DISABLED)
+        self.chat_window.see(tk.END)
     def process_image_for_chat(self, has_image_content, item, processed_content_parts):
         image_data_base64 = item.get("image_url", {}).get("url", "")
         if image_data_base64.startswith("data:image/jpeg;base64,"):

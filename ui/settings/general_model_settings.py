@@ -18,6 +18,9 @@ def setup_general_settings_control(self, parent):
          'type': 'entry', 'default': 3},
         {'label': _('Время между попытками', 'time between attempts'),
          'key': 'MODEL_MESSAGE_ATTEMPTS_TIME', 'type': 'entry', 'default': 0.20},
+        {'label': _('Включить стриминговую передачу', 'Enable Streaming'), 'key': 'ENABLE_STREAMING',
+         'type': 'checkbutton',
+         'default_checkbutton': False},
         {'label': _('Использовать gpt4free последней попыткой ', 'Use gpt4free as last attempt'),
          'key': 'GPT4FREE_LAST_ATTEMPT', 'type': 'checkbutton', 'default_checkbutton': False},
 

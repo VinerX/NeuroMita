@@ -2,6 +2,7 @@
 import base64
 import concurrent.futures
 import datetime
+import json
 import time
 import requests
 #import tiktoken
@@ -761,10 +762,23 @@ class ChatModel:
             final_params = self.get_final_params(model_to_use, cleaned_messages)
 
             logger.info(
-                f"Requesting completion from {model_to_use} with temp={final_params.get('temperature')}, max_tokens={final_params.get('max_tokens')}")
-            completion = target_client.chat.completions.create(**final_params)
+                f"Requesting completion from {model_to_use} with temp={final_params.get('temperature')}, max_tokens={final_params.get('max_tokens')}, stream={bool(self.gui.settings.get("ENABLE_STREAMING", False))}")
+            completion = target_client.chat.completions.create(**final_params, stream=bool(self.gui.settings.get("ENABLE_STREAMING", False)))
 
-            if completion and completion.choices:
+            if bool(self.gui.settings.get("ENABLE_STREAMING", False)):
+                # Handle streaming response
+                for chunk in completion:
+                    if chunk.choices:
+                        try:
+                            response_content = chunk.candidates[0].content.parts[0].text
+                        except:
+                            response_content = chunk.choices[0].delta.content or ""
+                        if response_content:
+                            decoded_content = response_content.encode('utf-8', 'ignore').decode('utf-8')
+                            self.gui.append_message(decoded_content)
+                            logger.info("Completion successful.")
+                return None, True
+            elif completion and completion.choices:
                 response_content = completion.choices[0].message.content
                 logger.info("Completion successful.")
                 return response_content.strip() if response_content else None
@@ -1347,14 +1361,24 @@ class ChatModel:
         logger.info("Отправляю запрос к Gemini.")
         logger.debug(f"Отправляемые данные (Gemini): {data}")  # Добавляем логирование содержимого
         save_combined_messages(data, "SavedMessages/last_gemini_log")
-        response = requests.post(self.api_url, headers=headers, json=data)
+        response = requests.post(self.api_url, headers=headers, json=data, stream=bool(self.gui.settings.get("ENABLE_STREAMING", False)))
 
         if response.status_code == 200:
-            response_data = response.json()
-            generated_text = response_data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get(
-                "text", "")
-            logger.info("Answer: \n" + generated_text)
-            return generated_text
+            if self.gui.settings.get("ENABLE_STREAMING", False):
+                for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
+                    if chunk:
+                        try:
+                            generated_text = json.loads(chunk).get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                            self.gui.append_message(generated_text)
+                        except:
+                            ...
+                return None
+            else:
+                response_data = response.json()
+                generated_text = response_data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get(
+                    "text", "")
+                logger.info("Answer: \n" + generated_text)
+                return generated_text
         else:
             logger.error(f"Ошибка: {response.status_code}, {response.text}")
             return None
@@ -1380,14 +1404,26 @@ class ChatModel:
         logger.info("Отправляю запрос к RequestCommon.")
         logger.debug(f"Отправляемые данные (RequestCommon): {data}")  # Добавляем логирование содержимого
         save_combined_messages(data, "SavedMessages/last_request_common_log")
-        response = requests.post(self.api_url, headers=headers, json=data)
+        response = requests.post(self.api_url, headers=headers, json=data, stream=bool(self.gui.settings.get("ENABLE_STREAMING", False)))
 
         if response.status_code == 200:
-            response_data = response.json()
-            # Формат ответа DeepSeek отличается от Gemini
-            generated_text = response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            logger.info("Common request: \n" + generated_text)
-            return generated_text
+            if bool(self.gui.settings.get("ENABLE_STREAMING", False)):
+                for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
+                    if chunk:
+                        try:
+                            response_data = json.loads(chunk)
+                            decoded_chunk = response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                            logger.info("Chunk: \n" + decoded_chunk)
+                            self.gui.append_message(decoded_chunk)
+                        except:
+                            ...
+                return None
+            else:
+                response_data = response.json()
+                # Формат ответа DeepSeek отличается от Gemini
+                generated_text = response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                logger.info("Common request: \n" + generated_text)
+                return generated_text
         else:
             logger.error(f"Ошибка: {response.status_code}, {response.text}")
             return None
