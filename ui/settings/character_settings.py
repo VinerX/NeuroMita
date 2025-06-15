@@ -6,9 +6,8 @@ from tkinter import messagebox, ttk
 
 from guiTemplates import find_widget_child_by_type
 from ui.settings.prompt_catalogue_settings import list_prompt_sets
-import os
 
-from utils.prompt_catalogue_manager import copy_prompt_set
+from utils.prompt_catalogue_manager import copy_prompt_set, get_prompt_set_name
 
 from Logger import logger
 from utils import getTranslationVariant as _
@@ -22,7 +21,13 @@ def setup_mita_controls(self, parent):
     mita_config = [
         {'label': _('Персонажи', 'Characters'), 'key': 'CHARACTER', 'type': 'combobox',
          'options': self.model.get_all_mitas(),
-         'default': "Crazy"},
+         'default': "Crazy",
+         'widget_name':"Characters_combobox"},
+        {'label': _('Набор промтов', 'Prompt Set'), 'key': 'PROMPT_SET', 'type': 'combobox',
+         'options': list_prompt_sets("PromptsCatalogue", self.model.current_character.char_id),
+         'default': _("Выберите", "Choose"),  # default_prompt_pack,
+         'widget_name': 'prompt_pack'},
+
 
         {'label': _('Управление персонажем', 'Character Management'), 'type': 'text'},
 
@@ -45,42 +50,63 @@ def setup_mita_controls(self, parent):
          'default_checkbutton': False},
         {'label': _('Меню эмоций Мит', 'Emotion menu'), 'key': 'EMOTION_MENU', 'type': 'checkbutton',
                  'default_checkbutton': False},
-            {'label': _('Набор промтов', 'Prompt Set'), 'key': 'PROMPT_SET', 'type': 'combobox',
-             'options': list_prompt_sets("PromptsCatalogue",self.model.current_character.char_id), 'default': '', # default_prompt_pack,
-             'widget_name':'prompt_pack'},
 
-        #  {'label': _('Миты в работе', 'Mitas in work'), 'key': 'TEST_MITAS', 'type': 'checkbutton',
-        #   'default_checkbutton': False,'tooltip':_("Позволяет выбирать нестабильные версии Мит", "Allow to choose ustable Mita versions")}
+
     ]
 
     section = self.create_settings_section(parent, _("Настройки персонажей", "Characters settings"), mita_config)
-    # find combobox
 
-    combobox = find_widget_child_by_type(section,"prompt_pack",ttk.Combobox)
-    if combobox:
-        combobox.bind("<<ComboboxSelected>>", lambda e: apply_prompt_set(self))
+    # find comboboxes
+    character_combobox = find_widget_child_by_type(section, "Characters_combobox", ttk.Combobox)
+    prompt_pack_combobox = find_widget_child_by_type(section, "prompt_pack", ttk.Combobox)
+
+    if prompt_pack_combobox:
+        prompt_pack_combobox.bind("<<ComboboxSelected>>", lambda e: apply_prompt_set(self))
         # Set default value
-        #set_default_prompt_pack(self,combobox)
 
+    if character_combobox:
+        character_combobox.bind("<<ComboboxSelected>>", lambda e: update_prompt_sets(self))
 
-    self.character_prompt_pack_combobox = combobox
+    self.character_prompt_pack_combobox = prompt_pack_combobox
+    self.character_combobox = character_combobox
 
+    update_prompt_sets(self)
 
-def set_default_prompt_pack(self,combobox):
-    default_prompt_pack = self.settings.get("PROMPT_SET", None)
-    if default_prompt_pack:
-        combobox.set(default_prompt_pack)
-    elif self.model.current_character and self.model.current_character.char_id:
+def set_default_prompt_pack(self, combobox):
+    if self.model.current_character and self.model.current_character.char_id:
         character_name = self.model.current_character.char_id
         character_prompts_path = os.path.join("Prompts", character_name)
-        # Get the folder name
-        folder_name = os.path.basename(character_prompts_path)
+        folder_name = get_prompt_set_name(character_prompts_path)
         combobox.set(folder_name)
+    
+def update_prompt_sets(self):
+    """Обновляет список наборов промтов в combobox."""
+    selected_character = self.character_combobox.get()#self.settings.get("CHARACTER", None)
+    if not selected_character:
+        messagebox.showwarning(_("Внимание", "Warning"), _("Персонаж не выбран.", "No character selected."))
+        return
 
+    # Получаем char_id выбранного персонажа
+    char_id = None
+    for char, data in self.model.characters.items():
+        if data.char_id == selected_character:
+            char_id = data.char_id
+            break
+
+    if not char_id:
+        messagebox.showwarning(_("Внимание", "Warning"), _("Не найден char_id для выбранного персонажа.", "No char_id found for selected character."))
+        return
+
+    # Обновляем список опций для combobox'а
+    if self.character_prompt_pack_combobox:
+        new_options = list_prompt_sets("PromptsCatalogue", char_id)
+        self.character_prompt_pack_combobox['values'] = new_options
+        # Optionally, reset the selected value
+        set_default_prompt_pack(self,self.character_prompt_pack_combobox)
 
 def apply_prompt_set(self):
     """Применяет выбранный набор промтов к текущему персонажу."""
-    selected_set_name = self.settings.get("PROMPT_SET", None)
+    selected_set_name = self.character_combobox.get()#self.settings.get("PROMPT_SET", None)
     if not selected_set_name:
         messagebox.showwarning(_("Внимание", "Warning"), _("Набор промптов не выбран.", "No prompt set selected."))
         return
