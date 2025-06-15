@@ -3,6 +3,10 @@ import os
 import sys
 import tkinter as tk
 from tkinter import messagebox
+from ui.settings.prompt_catalogue_settings import list_prompt_sets
+import os
+
+from utils.prompt_catalogue_manager import copy_prompt_set
 
 from Logger import logger
 from utils import getTranslationVariant as _
@@ -36,13 +40,48 @@ def setup_mita_controls(self, parent):
         {'label': _('Меню выбора Мит', 'Mita selection menu'), 'key': 'MITAS_MENU', 'type': 'checkbutton',
          'default_checkbutton': False},
         {'label': _('Меню эмоций Мит', 'Emotion menu'), 'key': 'EMOTION_MENU', 'type': 'checkbutton',
-         'default_checkbutton': False},
+                 'default_checkbutton': False},
+            {'label': _('Набор промтов', 'Prompt Set'), 'key': 'PROMPT_SET', 'type': 'combobox',
+             'options': list_prompt_sets("PromptsCatalogue"), 'default': "", 'command': lambda: apply_prompt_set(self)},
 
         #  {'label': _('Миты в работе', 'Mitas in work'), 'key': 'TEST_MITAS', 'type': 'checkbutton',
         #   'default_checkbutton': False,'tooltip':_("Позволяет выбирать нестабильные версии Мит", "Allow to choose ustable Mita versions")}
     ]
 
     self.create_settings_section(parent, _("Настройки персонажей", "Characters settings"), mita_config)
+
+
+def apply_prompt_set(self):
+    """Применяет выбранный набор промтов к текущему персонажу."""
+    selected_set_name = self.settings.get("PROMPT_SET",None)
+    if not selected_set_name:
+        messagebox.showwarning(_("Внимание", "Warning"), _("Набор промптов не выбран.", "No prompt set selected."))
+        return
+
+    confirm = messagebox.askokcancel(
+        _("Подтверждение", "Confirmation"),
+        _("Применить набор промтов?", "Apply prompt set?"),
+        icon='warning', parent=self.root
+    )
+    if not confirm:
+        return
+
+    catalogue_path = "PromptsCatalogue"
+    set_path = os.path.join(catalogue_path, selected_set_name)
+
+    if self.model.current_character and self.model.current_character.char_id:
+        character_prompts_path = os.path.join("Prompts", self.model.current_character.char_id)
+        if copy_prompt_set(set_path, character_prompts_path):
+            messagebox.showinfo(_("Успех", "Success"), _("Набор промптов успешно применен.", "Prompt set applied successfully."))
+            # Перезагружаем данные персонажа
+            if hasattr(self.model.current_character, 'reload_character_data'):
+                self.model.current_character.reload_character_data()
+            else:
+                print("Warning: current_character does not have reload_character_data method.")  # Для отладки
+        else:
+            messagebox.showerror(_("Ошибка", "Error"), _("Не удалось применить набор промтов.", "Failed to apply prompt set."))
+    else:
+        messagebox.showwarning(_("Внимание", "Warning"), _("Персонаж не выбран.", "No character selected."))
 
 
 def open_character_folder(self):

@@ -103,7 +103,7 @@ def create_setting_widget(gui, parent, label, setting_key, widget_type='entry',
             if command:
                 command()
 
-        cb.bind("<<ComboboxSelected>>", lambda e: save_combobox())
+        cb.bind("<<ComboboxSelected>>", lambda e: [save_combobox(), command()] if command else save_combobox())
 
     elif widget_type == 'checkbutton':
         var = tk.BooleanVar(value=gui.settings.get(setting_key, default_checkbutton))
