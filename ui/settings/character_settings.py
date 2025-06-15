@@ -2,7 +2,9 @@ import asyncio
 import os
 import sys
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
+
+from guiTemplates import find_widget_child_by_type
 from ui.settings.prompt_catalogue_settings import list_prompt_sets
 import os
 
@@ -42,13 +44,26 @@ def setup_mita_controls(self, parent):
         {'label': _('Меню эмоций Мит', 'Emotion menu'), 'key': 'EMOTION_MENU', 'type': 'checkbutton',
                  'default_checkbutton': False},
             {'label': _('Набор промтов', 'Prompt Set'), 'key': 'PROMPT_SET', 'type': 'combobox',
-             'options': list_prompt_sets("PromptsCatalogue"), 'default': "", 'command': lambda: apply_prompt_set(self)},
+             'options': list_prompt_sets("PromptsCatalogue"), 'default': "",
+             'widget_name':'prompt_pack'},
 
         #  {'label': _('Миты в работе', 'Mitas in work'), 'key': 'TEST_MITAS', 'type': 'checkbutton',
         #   'default_checkbutton': False,'tooltip':_("Позволяет выбирать нестабильные версии Мит", "Allow to choose ustable Mita versions")}
     ]
 
-    self.create_settings_section(parent, _("Настройки персонажей", "Characters settings"), mita_config)
+    section = self.create_settings_section(parent, _("Настройки персонажей", "Characters settings"), mita_config)
+    # find combobox
+
+    combobox = find_widget_child_by_type(section,"prompt_pack",ttk.Combobox)
+    if combobox:
+        combobox.bind("<<ComboboxSelected>>", lambda e: apply_prompt_set(self))
+        # Set default value
+        if self.model.current_character and self.model.current_character.char_id:
+            character_name = self.model.current_character.char_id
+            character_prompts_path = os.path.join("Prompts", character_name)
+            # Get the folder name
+            folder_name = os.path.basename(character_prompts_path)
+            combobox.set(folder_name)
 
 
 def apply_prompt_set(self):
