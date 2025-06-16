@@ -51,6 +51,74 @@ class SettingsManager:
         SettingsManager.instance.settings[key] = value
 
 
+
+class APIConfigManager:
+    def __init__(self, config_dir="Settings/API_Configs", settings_manager=None):
+        self.config_dir = config_dir
+        self.settings_manager = settings_manager
+        self.configs = {}
+        self.load_configs()
+
+    def load_configs(self):
+        self.configs = {}
+        for filename in os.listdir(self.config_dir):
+            if filename.endswith(".json"):
+                config_name = filename[:-5]
+                config_path = os.path.join(self.config_dir, filename)
+                try:
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        self.configs[config_name] = json.load(f)
+                except Exception as e:
+                    logger.error(f"Error loading config {config_name}: {e}")
+
+    def load_config(self, name):
+        return self.configs.get(name)
+
+    def save_config(self, name, config):
+        config_path = os.path.join(self.config_dir, f"{name}.json")
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            self.load_configs()  # Refresh configs after saving
+        except Exception as e:
+            logger.error(f"Error saving config {name}: {e}")
+
+    def create_config(self, name, base_config=None):
+        if base_config is None:
+            base_config = {
+                "name": name,
+                "NM_API_KEY": "",
+                "NM_API_URL": "",
+                "NM_API_MODEL": "",
+                "NM_API_REQ": False,
+                "GEMINI_CASE": False,
+                "gpt4free": True,
+                "gpt4free_model": ""
+            }
+        self.save_config(name, base_config)
+
+    def delete_config(self, name):
+        config_path = os.path.join(self.config_dir, f"{name}.json")
+        try:
+            os.remove(config_path)
+            self.load_configs()  # Refresh configs after deleting
+        except Exception as e:
+            logger.error(f"Error deleting config {name}: {e}")
+
+    def set_active_config(self, name):
+        if self.settings_manager:
+            self.settings_manager.set("active_api_config", name)
+        else:
+            logger.warning("Settings manager not available to set active config.")
+
+    def get_active_config(self):
+        if self.settings_manager:
+            return self.settings_manager.get("active_api_config", "default")
+        else:
+            logger.warning("Settings manager not available to get active config.")
+            return "default"
+
+
 class CollapsibleSection(ttk.Frame):
     def __init__(self, parent, title, *args, **kwargs):
         super().__init__(parent, *args, **kwargs)

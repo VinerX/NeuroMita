@@ -6,7 +6,9 @@ import win32gui
 import guiTemplates
 from AudioHandler import AudioHandler
 from Logger import logger
-from SettingsManager import SettingsManager, CollapsibleSection
+from SettingsManager import SettingsManager, CollapsibleSection, APIConfigManager
+
+
 from chat_model import ChatModel
 from server import ChatServer
 
@@ -56,8 +58,9 @@ from ui.settings import (
     language_settings, microphone_settings, screen_analysis_settings,
     token_settings, voiceover_settings, command_replacer_settings,history_compressor,
     prompt_catalogue_settings # Импортируем новый модуль
+    
 )
-
+from ui.settings import api_settings
 
 class ChatGUI:
     def __init__(self):
@@ -94,10 +97,11 @@ class ChatGUI:
         try:
             target_folder = "Settings"
             os.makedirs(target_folder, exist_ok=True)
-            self.config_path = os.path.join(target_folder, "settings.json")
-
+            self.config_path = os.path.join(target_folder, "settings.json") # Путь к основным настройкам приложения
+            self.settings = SettingsManager(self.config_path) # Инициализация основного менеджера настроек
+            self.api_config_manager = APIConfigManager() # Инициализация менеджера конфигураций API
+            self.active_api_config_name = self.settings.get("ACTIVE_API_CONFIG", "default") # Получаем имя активной конфигурации
             self.load_api_settings(False)  # Загружаем настройки при инициализации
-            self.settings = SettingsManager(self.config_path)
         except Exception as e:
             logger.info("Не удалось удачно получить из системных переменных все данные", e)
             self.settings = SettingsManager("Settings/settings.json")
@@ -600,6 +604,7 @@ class ChatGUI:
 
         status_indicators.create_status_indicators(self, settings_frame)
         language_settings.create_language_section(self, settings_frame)
+        api_settings.setup_api_config_controls(self, settings_frame)
         api_settings.setup_api_controls(self, settings_frame)
         g4f_settings.setup_g4f_controls(self, settings_frame)
         general_model_settings.setup_general_settings_control(self, settings_frame)
@@ -1088,52 +1093,104 @@ class ChatGUI:
     # endregion
 
     def load_api_settings(self, update_model):
-        """Загружает настройки из файла"""
-        logger.info("Начинаю загрузку настроек")
+        """Загружает настройки API из активной конфигурации."""
+        logger.info(f"Начинаю загрузку настроек API для конфигурации: {self.active_api_config_name}")
 
-        if not os.path.exists(self.config_path):
-            logger.info("Не найден файл настроек")
-            #self.save_api_settings(False)
-            return
+        # Загружаем активную конфигурацию
+        api_config_data = self.api_config_manager.load_config(self.active_api_config_name)
 
-        try:
-            # Читаем закодированные данные из файла
-            with open(self.config_path, "rb") as f:
-                encoded = f.read()
-            # Декодируем из base64
-            decoded = base64.b64decode(encoded)
-            # Десериализуем JSON
-            settings = json.loads(decoded.decode("utf-8"))
+        if api_config_data is None:
+            logger.warning(f"Конфигурация API '{self.active_api_config_name}' не найдена. Загружаю 'default'.")
+            # Если активная конфигурация не найдена, пытаемся загрузить 'default'
+            api_config_data = self.api_config_manager.load_config("default")
+            if api_config_data is None:
+                logger.warning("Конфигурация 'default' также не найдена. Создаю пустую 'default'.")
+                # Если и 'default' нет, создаем пустую и сохраняем
+                api_config_data = {
+                    "name": "default",
+                    "NM_API_KEY": "",
+                    "NM_API_URL": "",
+                    "NM_API_MODEL": "",
+                    "NM_API_REQ": False,
+                    "GEMINI_CASE": False,
+                    "gpt4free": True, # По умолчанию gpt4free включен
+                    "gpt4free_model": "gemini-1.5-flash"
+                }
+                self.api_config_manager.save_config("default", api_config_data)
+                self.settings.set("ACTIVE_API_CONFIG", "default")
+                self.settings.save_settings()
+                self.active_api_config_name = "default"
+            else:
+                self.settings.set("ACTIVE_API_CONFIG", "default")
+                self.settings.save_settings()
+                self.active_api_config_name = "default"
 
-            # Устанавливаем значения
-            self.api_key = settings.get("NM_API_KEY", "")
-            self.api_key_res = settings.get("NM_API_KEY_RES", "")
-            self.api_url = settings.get("NM_API_URL", "")
-            self.api_model = settings.get("NM_API_MODEL", "")
-            self.makeRequest = settings.get("NM_API_REQ", False)
 
-            # ТГ
-            self.api_id = settings.get("NM_TELEGRAM_API_ID", "")
-            self.api_hash = settings.get("NM_TELEGRAM_API_HASH", "")
-            self.phone = settings.get("NM_TELEGRAM_PHONE", "")
+        # Устанавливаем значения из загруженной конфигурации
+        self.api_key = api_config_data.get("NM_API_KEY", "")
+        self.api_key_res = api_config_data.get("NM_API_KEY_RES", "") # Это поле не в API_Configuration_Plan.md, но есть в gui.py
+        self.api_url = api_config_data.get("NM_API_URL", "")
+        self.api_model = api_config_data.get("NM_API_MODEL", "")
+        self.makeRequest = api_config_data.get("NM_API_REQ", False)
+        self.gemini_case = api_config_data.get("GEMINI_CASE", False) # Добавляем GEMINI_CASE
+        self.gpt4free = api_config_data.get("gpt4free", False) # Добавляем gpt4free
+        self.gpt4free_model = api_config_data.get("gpt4free_model", "") # Добавляем gpt4free_model
 
-            logger.info(
-                f"Итого загружено {SH(self.api_key)},{SH(self.api_key_res)},{self.api_url},{self.api_model},{self.makeRequest} (Должно быть не пусто)")
-            logger.info(f"По тг {SH(self.api_id)},{SH(self.api_hash)},{SH(self.phone)} (Должно быть не пусто если тг)")
-            if update_model:
-                if self.api_key:
-                    self.model.api_key = self.api_key
-                if self.api_url:
-                    self.model.api_url = self.api_url
-                if self.api_model:
-                    self.model.api_model = self.api_model
+        # ТГ настройки остаются в основном settings.json, так как они не являются частью API конфигураций
+        # self.api_id = self.settings.get("NM_TELEGRAM_API_ID", "")
+        # self.api_hash = self.settings.get("NM_TELEGRAM_API_HASH", "")
+        # self.phone = self.settings.get("NM_TELEGRAM_PHONE", "")
 
-                self.model.makeRequest = self.makeRequest
-                self.model.update_openai_client()
+        logger.info(
+            f"Загружено API: Key={SH(self.api_key)}, URL={self.api_url}, Model={self.api_model}, Req={self.makeRequest}, Gemini={self.gemini_case}, G4F={self.gpt4free}, G4F_Model={self.gpt4free_model}")
 
-            logger.info("Настройки загружены из файла")
-        except Exception as e:
-            logger.info(f"Ошибка загрузки: {e}")
+        if update_model:
+            # Обновляем модель чата
+            self.model.api_key = self.api_key
+            self.model.api_url = self.api_url
+            self.model.api_model = self.api_model
+            self.model.makeRequest = self.makeRequest
+            self.model.gemini_case = self.gemini_case # Обновляем в модели
+            self.model.gpt4free = self.gpt4free # Обновляем в модели
+            self.model.gpt4free_model = self.gpt4free_model # Обновляем в модели
+            self.model.update_openai_client()
+
+        # Обновляем поля ввода в GUI, если они уже созданы
+        if hasattr(self, 'api_config_combobox'): # Проверяем, что UI уже инициализирован
+            self.update_api_fields_in_gui()
+
+        logger.info("Настройки API загружены.")
+
+    def update_api_fields_in_gui(self):
+        """Обновляет поля ввода API в GUI на основе текущих значений self.api_key, self.api_url и т.д."""
+        logger.info("Обновляю поля API в GUI.")
+        # Проверяем, что виджеты уже созданы
+        if hasattr(self, 'api_key_entry') and self.api_key_entry.winfo_exists():
+            self.api_key_entry.delete(0, tk.END)
+            self.api_key_entry.insert(0, self.api_key)
+        if hasattr(self, 'api_key_res_entry') and self.api_key_res_entry.winfo_exists():
+            self.api_key_res_entry.delete(0, tk.END)
+            self.api_key_res_entry.insert(0, self.api_key_res)
+        if hasattr(self, 'api_url_entry') and self.api_url_entry.winfo_exists():
+            self.api_url_entry.delete(0, tk.END)
+            self.api_url_entry.insert(0, self.api_url)
+        if hasattr(self, 'api_model_entry') and self.api_model_entry.winfo_exists():
+            self.api_model_entry.delete(0, tk.END)
+            self.api_model_entry.insert(0, self.api_model)
+        if hasattr(self, 'api_req_checkbutton_var') and self.api_req_checkbutton_var.winfo_exists():
+            self.api_req_checkbutton_var.set(self.makeRequest)
+        if hasattr(self, 'gemini_case_checkbutton_var') and self.gemini_case_checkbutton_var.winfo_exists():
+            self.gemini_case_checkbutton_var.set(self.gemini_case)
+        if hasattr(self, 'gpt4free_checkbutton_var') and self.gpt4free_checkbutton_var.winfo_exists():
+            self.gpt4free_checkbutton_var.set(self.gpt4free)
+        if hasattr(self, 'gpt4free_model_entry') and self.gpt4free_model_entry.winfo_exists():
+            self.gpt4free_model_entry.delete(0, tk.END)
+            self.gpt4free_model_entry.insert(0, self.gpt4free_model)
+
+        # Обновляем комбобокс выбора конфигурации
+        if hasattr(self, 'api_config_combobox') and self.api_config_combobox.winfo_exists():
+            self.update_api_config_combobox()
+
 
     def paste_from_clipboard(self, event=None):
         try:
@@ -1488,6 +1545,10 @@ class ChatGUI:
             self.model.current_character_to_change = value
             self.model.check_change_current_character()
 
+
+        elif key == "active_api_config":
+            self.api_config_manager.set_active_config(value)
+            self.load_api_settings(True)
         elif key == "NM_API_MODEL":
             self.model.api_model = value.strip()
         elif key == "NM_API_KEY":
@@ -2702,4 +2763,3 @@ class ChatGUI:
             logger.warning("Метод 'change_voice_language' отсутствует в объекте local_voice.")
 
     # endregion
-
