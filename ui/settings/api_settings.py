@@ -21,6 +21,7 @@ def setup_api_controls(self, parent):
 def setup_api_config_controls(self, parent):
     # API Config settings
     api_config = [
+        {'label': _('Имя конфигурации', 'Configuration Name'), 'key': 'api_config_name', 'type': 'entry', 'readonly': True},
         {'label': _('Активная конфигурация', 'Active configuration'), 'key': 'active_api_config', 'type': 'combobox',
          'values': get_api_config_names(self), 'command': lambda : on_api_config_changed(self)},
     ]
@@ -55,7 +56,7 @@ def create_api_config(self):
     name = simpledialog.askstring(_("Создать конфигурацию", "Create configuration"), _("Имя конфигурации", "Configuration name"))
     if name:
         self.api_config_manager.create_config(name)
-        self.update_api_config_combobox()
+        update_api_config_combobox(self)
 
 def save_api_config(self):
     # Сохраняет текущие значения полей API в активную конфигурацию.
@@ -82,17 +83,20 @@ def delete_api_config(self):
         return
     if messagebox.askyesno(_("Удалить конфигурацию", "Delete configuration"), _("Вы уверены, что хотите удалить конфигурацию", "Are you sure you want to delete configuration") + f" '{active_config_name}'?"):
         self.api_config_manager.delete_config(active_config_name)
-        self.update_api_config_combobox()
+        update_api_config_combobox(self)
 
 def update_api_config_combobox(self):
     # Обновляет список конфигураций в выпадающем списке.
     if hasattr(self, 'api_config_controls') and 'active_api_config' in self.api_config_controls:
         self.api_config_controls['active_api_config']['values'] = self.get_api_config_names()
 
-def on_api_config_changed(self, event=None):
+def on_api_config_changed(self):
     # Загружает значения из выбранной конфигурации и устанавливает их в соответствующие поля.
     active_config_name = self.api_config_manager.get_active_config()
     config = self.api_config_manager.load_config(active_config_name)
+    if hasattr(self, 'api_controls') and 'api_config_name' in self.api_controls:
+        self.api_controls['api_config_name']['widget'].delete(0, tk.END)
+        self.api_controls['api_config_name']['widget'].insert(0, active_config_name)
     if config:
         self.settings.set("NM_API_URL", config.get("NM_API_URL", ""))
         self.settings.set("NM_API_MODEL", config.get("NM_API_MODEL", ""))

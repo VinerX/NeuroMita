@@ -99,7 +99,7 @@ class ChatGUI:
             os.makedirs(target_folder, exist_ok=True)
             self.config_path = os.path.join(target_folder, "settings.json") # Путь к основным настройкам приложения
             self.settings = SettingsManager(self.config_path) # Инициализация основного менеджера настроек
-            self.api_config_manager = APIConfigManager() # Инициализация менеджера конфигураций API
+            self.api_config_manager = APIConfigManager(settings_manager=self.settings) # Инициализация менеджера конфигураций API
             self.active_api_config_name = self.settings.get("ACTIVE_API_CONFIG", "default") # Получаем имя активной конфигурации
             self.load_api_settings(False)  # Загружаем настройки при инициализации
         except Exception as e:
