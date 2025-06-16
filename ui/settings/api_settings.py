@@ -1,6 +1,8 @@
 import tkinter.simpledialog as simpledialog
 import tkinter.messagebox as messagebox
 import tkinter as tk
+
+import guiTemplates
 from utils import _
 def setup_api_controls(self, parent):
     # Основные настройки
@@ -21,13 +23,17 @@ def setup_api_controls(self, parent):
 def setup_api_config_controls(self, parent):
     # API Config settings
     api_config = [
-        {'label': _('Имя конфигурации', 'Configuration Name'), 'key': 'api_config_name', 'type': 'entry', 'readonly': True},
         {'label': _('Активная конфигурация', 'Active configuration'), 'key': 'active_api_config', 'type': 'combobox',
-         'values': get_api_config_names(self), 'command': lambda : on_api_config_changed(self)},
+         'options': get_api_config_names(self), 'default': self.settings.get("active_api_config",'default'),
+         'command': lambda : on_api_config_changed(self)},
+        {'label': _('Имя конфигурации', 'Configuration Name'), 'key': 'api_config_name', 'type': 'entry'},
     ]
     api_config_section = self.create_settings_section(parent,
                                  _("Конфигурации API", "API Configurations"),
                                  api_config)
+
+    self.config_combobox = guiTemplates.find_widget_child_by_type(api_config_section,widget_name="active_api_config")
+    self.config_name = guiTemplates.find_widget_child_by_type(api_config_section, widget_name="api_config_name")
 
     # Кнопки управления конфигурациями
     button_frame = tk.Frame(api_config_section.content_frame)
@@ -42,6 +48,11 @@ def setup_api_config_controls(self, parent):
 
     delete_button = tk.Button(button_frame, text=_("Удалить текущую", "Delete current"), command=lambda :delete_api_config(self))
     delete_button.pack(side=tk.LEFT, padx=5)
+
+    copy_button = tk.Button(button_frame, text=_("Копировать текущую", "Copy current"), command=lambda: copy_api_config(self))
+    copy_button.pack(side=tk.LEFT, padx=5)
+
+
 
 def get_api_config_names(self):
     # Get API config names from APIConfigManager
@@ -84,19 +95,31 @@ def delete_api_config(self):
     if messagebox.askyesno(_("Удалить конфигурацию", "Delete configuration"), _("Вы уверены, что хотите удалить конфигурацию", "Are you sure you want to delete configuration") + f" '{active_config_name}'?"):
         self.api_config_manager.delete_config(active_config_name)
         update_api_config_combobox(self)
+        update_api_config_combobox(self)
+
+def copy_api_config(self):
+    # Копирует текущую конфигурацию.
+    active_config_name = self.api_config_manager.get_active_config()
+    config = self.api_config_manager.load_config(active_config_name)
+    if config:
+        name = simpledialog.askstring(_("Копировать конфигурацию", "Copy configuration"), _("Имя новой конфигурации", "New configuration name"))
+        if name:
+            self.api_config_manager.create_config(name, config)
+            update_api_config_combobox(self)
+    else:
+        messagebox.showerror(_("Ошибка", "Error"), _("Активная конфигурация не найдена", "Active configuration not found"))
 
 def update_api_config_combobox(self):
     # Обновляет список конфигураций в выпадающем списке.
     if hasattr(self, 'api_config_controls') and 'active_api_config' in self.api_config_controls:
-        self.api_config_controls['active_api_config']['values'] = self.get_api_config_names()
+        self.api_config_controls['active_api_config']['values'] = get_api_config_names(self)
 
 def on_api_config_changed(self):
     # Загружает значения из выбранной конфигурации и устанавливает их в соответствующие поля.
     active_config_name = self.api_config_manager.get_active_config()
     config = self.api_config_manager.load_config(active_config_name)
-    if hasattr(self, 'api_controls') and 'api_config_name' in self.api_controls:
-        self.api_controls['api_config_name']['widget'].delete(0, tk.END)
-        self.api_controls['api_config_name']['widget'].insert(0, active_config_name)
+    self.config_name = active_config_name
+
     if config:
         self.settings.set("NM_API_URL", config.get("NM_API_URL", ""))
         self.settings.set("NM_API_MODEL", config.get("NM_API_MODEL", ""))
@@ -107,19 +130,20 @@ def on_api_config_changed(self):
         self.settings.set("gpt4free", config.get("gpt4free", True))
         self.settings.set("gpt4free_model", config.get("gpt4free_model", ""))
         # Обновляем значения полей в интерфейсе
-        self.update_api_controls()
+        update_api_controls(self)
     else:
         messagebox.showerror(_("Ошибка", "Error"), _("Активная конфигурация не найдена", "Active configuration not found"))
 
 def update_api_controls(self):
     # Обновляет значения полей в интерфейсе
-    if hasattr(self, 'api_controls'):
-        for key, control in self.api_controls.items():
-            if control['type'] == 'entry':
-                control['widget'].delete(0, tk.END)
-                control['widget'].insert(0, self.settings.get(key, ""))
-            elif control['type'] == 'checkbutton':
-                control['variable'].set(self.settings.get(key, False))
+    ...
+    # if hasattr(self, 'api_controls'):
+    #     for key, control in self.api_controls.items():
+    #         if control['type'] == 'entry':
+    #             control['widget'].delete(0, tk.END)
+    #             control['widget'].insert(0, self.settings.get(key, ""))
+    #         elif control['type'] == 'checkbutton':
+    #             control['variable'].set(self.settings.get(key, False))
 
 def setup_ui(self, parent):
     self.setup_api_controls(parent)

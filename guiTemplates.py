@@ -173,6 +173,9 @@ def create_setting_widget(gui, parent, label, setting_key, widget_type='entry',
 
     if widget_name:
         setattr(frame, "widget_name", widget_name)
+    else:
+        setattr(frame, "widget_name", setting_key)
+
 
     return frame
 
@@ -208,7 +211,7 @@ def create_tooltip(self, widget, text):
     widget.bind("<Enter>", enter)
     widget.bind("<Leave>", leave)
 
-def find_widget_child_by_type(section, widget_name, widget_type):
+def find_widget_child_by_type(section, widget_name, widget_type = ttk.Combobox):
     """
     Ищет виджет с указанным именем и типом в указанной секции.
 
