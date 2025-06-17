@@ -82,6 +82,10 @@ def set_default_prompt_pack(self, combobox):
 def change_character_actions(self):
     """Обновляет список наборов промтов в combobox."""
     selected_character = self.character_combobox.get()#self.settings.get("CHARACTER", None)
+
+    self.model.current_character_to_change = selected_character
+    self.model.check_change_current_character()
+
     if not selected_character:
         messagebox.showwarning(_("Внимание", "Warning"), _("Персонаж не выбран.", "No character selected."))
         return

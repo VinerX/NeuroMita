@@ -613,10 +613,9 @@ class ChatModel:
         if not self.current_character_to_change:
             return
         if self.current_character_to_change in self.characters:
-            if not self.current_character or self.current_character.name != self.current_character_to_change:
-                logger.info(f"Changing character to {self.current_character_to_change}")
-                self.current_character = self.characters[self.current_character_to_change]
-                self.current_character.reload_character_data()
+            logger.info(f"Changing character to {self.current_character_to_change}")
+            self.current_character = self.characters[self.current_character_to_change]
+            self.current_character.reload_character_data()
             self.current_character_to_change = ""
         else:
             logger.warning(f"Attempted to change to unknown character: {self.current_character_to_change}")

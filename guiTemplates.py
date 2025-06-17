@@ -100,8 +100,8 @@ def create_setting_widget(gui, parent, label, setting_key, widget_type='entry',
 
         def save_combobox():
             gui._save_setting(setting_key, var.get())
-            if command:
-                command()
+           # if command:
+              #  command()
 
         cb.bind("<<ComboboxSelected>>", lambda e: [save_combobox(), command()] if command else save_combobox())
 
