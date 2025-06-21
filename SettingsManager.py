@@ -6,6 +6,123 @@ import tkinter as tk
 from tkinter import ttk
 
 from Logger import logger
+from tkinter import messagebox
+
+import json
+import os
+
+class APIConfigManager:
+    def __init__(self, config_dir="Settings/API_Configs/", default_config="default.json"):
+        self.config_dir = config_dir
+        self.default_config = default_config
+        self.active_config = None
+        self.configs = self.load_configs()
+
+    def load_configs(self):
+        configs = {}
+        if not os.path.exists(self.config_dir):
+            os.makedirs(self.config_dir)
+        for filename in os.listdir(self.config_dir):
+            if filename.endswith(".json"):
+                config_name = filename[:-5]
+                try:
+                    with open(os.path.join(self.config_dir, filename), "r", encoding="utf-8") as f:
+                        configs[config_name] = json.load(f)
+                except Exception as e:
+                    print(f"Error loading config {filename}: {e}")
+        return configs
+
+    def load_config(self, config_name):
+        if config_name in self.configs:
+            self.active_config = config_name
+            return self.configs[config_name]
+        else:
+            return None
+
+    def save_config(self, config_name, config_data):
+        self.configs[config_name] = config_data
+        filepath = os.path.join(self.config_dir, f"{config_name}.json")
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(config_data, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"Error saving config {config_name}: {e}")
+            return False
+
+    def create_config(self, config_name):
+        if config_name in self.configs:
+            return False
+        else:
+            # Копируем значения из текущей активной конфигурации или из default
+            if self.active_config:
+                new_config = self.configs[self.active_config].copy()
+            elif self.default_config in self.configs:
+                new_config = self.configs[self.default_config].copy()
+            else:
+                # Если нет ни активной, ни default, создаем пустую конфигурацию
+                new_config = {
+                  "name": config_name,
+                  "NM_API_KEY": "",
+                  "NM_API_URL": "",
+                  "NM_API_MODEL": "",
+                  "NM_API_REQ": False,
+                  "GEMINI_CASE": False,
+                  "gpt4free": True,
+                  "gpt4free_model": "",
+                  "MODEL_MESSAGE_LIMIT": 40,
+                  "MODEL_MESSAGE_ATTEMPTS_COUNT": 3,
+                  "MODEL_MESSAGE_ATTEMPTS_TIME": 0.20,
+                  "TEXT_WAIT_TIME": 40,
+                  "VOICE_WAIT_TIME": 40,
+                  "USE_MODEL_MAX_RESPONSE_TOKENS": True,
+                  "MODEL_MAX_RESPONSE_TOKENS": 2500,
+                  "MODEL_TEMPERATURE": 0.5,
+                  "USE_MODEL_TOP_K": True,
+                  "MODEL_TOP_K": 0,
+                  "USE_MODEL_TOP_P": True,
+                  "MODEL_TOP_P": 1.0,
+                  "USE_MODEL_THINKING_BUDGET": False,
+                  "MODEL_THINKING_BUDGET": 0.0,
+                  "USE_MODEL_PRESENCE_PENALTY": False,
+                  "MODEL_PRESENCE_PENALTY": 0.0,
+                  "USE_MODEL_FREQUENCY_PENALTY": False,
+                  "MODEL_FREQUENCY_PENALTY": 0.0,
+                  "USE_MODEL_LOG_PROBABILITY": False,
+                  "MODEL_LOG_PROBABILITY": 0.0
+                }
+            new_config["name"] = config_name
+            self.save_config(config_name, new_config)
+            self.configs[config_name] = new_config
+            return True
+
+    def delete_config(self, config_name):
+        if config_name not in self.configs:
+            return False
+        else:
+            filepath = os.path.join(self.config_dir, f"{config_name}.json")
+            try:
+                os.remove(filepath)
+                del self.configs[config_name]
+                if self.active_config == config_name:
+                    self.active_config = None
+                return True
+            except Exception as e:
+                print(f"Error deleting config {config_name}: {e}")
+                return False
+
+    def set_active_config(self, config_name):
+        if config_name in self.configs:
+            self.active_config = config_name
+            return True
+        else:
+            return False
+
+    def get_active_config(self):
+        if self.active_config:
+            return self.configs[self.active_config]
+        else:
+            return None
 
 class SettingsManager:
     instance = None

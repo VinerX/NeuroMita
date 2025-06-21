@@ -55,12 +55,16 @@ from ui.settings import (
     g4f_settings, gamemaster_settings, general_model_settings,
     language_settings, microphone_settings, screen_analysis_settings,
     token_settings, voiceover_settings, command_replacer_settings,history_compressor,
-    prompt_catalogue_settings # Импортируем новый модуль
+    prompt_catalogue_settings, # Импортируем новый модуль
+    api_config_settings
 )
-
+from ui.settings.APIConfigManager import APIConfigManager
 
 class ChatGUI:
     def __init__(self):
+        self.config_path = os.path.join("Settings", "settings.json")
+        self.settings = SettingsManager(self.config_path)
+        self.api_config_manager = APIConfigManager(self.settings)
 
         self.voice_language_var = None
         self.local_voice_combobox = None
@@ -81,10 +85,10 @@ class ChatGUI:
         self.user_entry = None
         self.user_input = ""
 
-        self.api_key = ""
-        self.api_key_res = ""
-        self.api_url = ""
-        self.api_model = ""
+        self.api_key = "" # Будет загружено из активной конфигурации
+        self.api_key_res = "" # Будет загружено из активной конфигурации
+        self.api_url = "" # Будет загружено из активной конфигурации
+        self.api_model = "" # Будет загружено из активной конфигурации
 
         self.makeRequest = False
         self.api_hash = ""
@@ -94,13 +98,12 @@ class ChatGUI:
         try:
             target_folder = "Settings"
             os.makedirs(target_folder, exist_ok=True)
-            self.config_path = os.path.join(target_folder, "settings.json")
-
             self.load_api_settings(False)  # Загружаем настройки при инициализации
-            self.settings = SettingsManager(self.config_path)
         except Exception as e:
             logger.info("Не удалось удачно получить из системных переменных все данные", e)
-            self.settings = SettingsManager("Settings/settings.json")
+            # Если SettingsManager не был инициализирован, создаем его здесь
+            if not hasattr(self, 'settings') or self.settings is None:
+                self.settings = SettingsManager("Settings/settings.json")
 
         try:
             self.pip_installer = PipInstaller(
@@ -126,8 +129,8 @@ class ChatGUI:
                     break
         self.model_loading_cancelled = False
 
-        self.model = ChatModel(self, self.api_key, self.api_key_res, self.api_url, self.api_model, self.makeRequest,
-                               self.pip_installer)
+        # Инициализируем ChatModel с пустыми значениями, они будут обновлены из load_api_settings
+        self.model = ChatModel(self, "", "", "", "", False, self.pip_installer)
         self.server = ChatServer(self, self.model)
         self.server_thread = None
         self.running = False
@@ -600,6 +603,7 @@ class ChatGUI:
 
         status_indicators.create_status_indicators(self, settings_frame)
         language_settings.create_language_section(self, settings_frame)
+        api_config_settings.setup_api_config_controls(self, settings_frame)
         api_settings.setup_api_controls(self, settings_frame)
         g4f_settings.setup_g4f_controls(self, settings_frame)
         general_model_settings.setup_general_settings_control(self, settings_frame)
@@ -1087,7 +1091,7 @@ class ChatGUI:
 
     # endregion
 
-    def load_api_settings(self, update_model):
+    def load_api_settings(self, update_model=True):
         """Загружает настройки из файла"""
         logger.info("Начинаю загрузку настроек")
 

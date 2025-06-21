@@ -175,7 +175,7 @@ def create_setting_widget(gui, parent, label, setting_key, widget_type='entry',
     if widget_name:
         setattr(frame, "widget_name", widget_name)
     else:
-        setattr(frame, setting_key, widget_name)
+        setattr(frame, "widget_name", setting_key)
 
     return frame
 
