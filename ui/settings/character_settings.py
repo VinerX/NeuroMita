@@ -22,7 +22,8 @@ def setup_mita_controls(self, parent):
         {'label': _('Персонажи', 'Characters'), 'key': 'CHARACTER', 'type': 'combobox',
          'options': self.model.get_all_mitas(),
          'default': "Crazy",
-         'widget_name':"Characters_combobox"},
+         'widget_name':"Characters_combobox",
+         'command': lambda : change_character_actions(self)},
         {'label': _('Набор промтов', 'Prompt Set'), 'key': 'PROMPT_SET', 'type': 'combobox',
          'options': list_prompt_sets("PromptsCatalogue", self.model.current_character.char_id),
          'default': _("Выберите", "Choose"),  # default_prompt_pack,
@@ -60,17 +61,17 @@ def setup_mita_controls(self, parent):
     character_combobox = find_widget_child_by_type(section, "Characters_combobox", ttk.Combobox)
     prompt_pack_combobox = find_widget_child_by_type(section, "prompt_pack", ttk.Combobox)
 
+    self.character_prompt_pack_combobox = prompt_pack_combobox
+    self.character_combobox = character_combobox
+
     if prompt_pack_combobox:
         prompt_pack_combobox.bind("<<ComboboxSelected>>", lambda e: apply_prompt_set(self))
         # Set default value
 
-    if character_combobox:
-        character_combobox.bind("<<ComboboxSelected>>", lambda e: change_character_actions(self))
+    #if character_combobox:
+     #   character_combobox.bind("<<ComboboxSelected>>", lambda e: [,self.settings.save()])
 
-    self.character_prompt_pack_combobox = prompt_pack_combobox
-    self.character_combobox = character_combobox
-
-    change_character_actions(self)
+    change_character_actions(self,self.settings.get("CHARACTER", None))
 
 def set_default_prompt_pack(self, combobox):
     character_name = self.character_combobox.get()
@@ -79,9 +80,12 @@ def set_default_prompt_pack(self, combobox):
     folder_name = get_prompt_catalogue_folder_name(character_prompts_path)
     combobox.set(folder_name)
     
-def change_character_actions(self):
+def change_character_actions(self,character = None):
     """Обновляет список наборов промтов в combobox."""
-    selected_character = self.character_combobox.get()#self.settings.get("CHARACTER", None)
+    if character:
+        selected_character = character
+    else:
+        selected_character = self.character_combobox.get()
 
     self.model.current_character_to_change = selected_character
     self.model.check_change_current_character()
