@@ -3,6 +3,7 @@ import json
 import tkinter as tk
 from tkinter import ttk
 
+import guiTemplates
 from Logger import logger
 from SpeechRecognition import SpeechRecognition
 from utils import getTranslationVariant as _
@@ -10,6 +11,9 @@ import sounddevice as sd
 
 
 def setup_microphone_controls(self, parent):
+
+    logger.warning(f"Recognition {self.settings.get('RECOGNIZER_TYPE')}")
+
     # Конфигурация настроек микрофона
     mic_settings = [
         {
@@ -29,9 +33,9 @@ def setup_microphone_controls(self, parent):
             'key': 'RECOGNIZER_TYPE',
             'options': ["google", "vosk", "gigaam"],
             'default': "google",
-            'command': lambda value: SpeechRecognition.set_recognizer_type(value),
             'tooltip': _("Выберите движок распознавания речи",
                          "Select speech recognition engine"),
+            'widget_name':"RECOGNIZER_TYPE",
             # 'command': self.update_vosk_model_visibility
         },
         # {
@@ -108,14 +112,13 @@ def setup_microphone_controls(self, parent):
     for widget in self.mic_section.content_frame.winfo_children():
         if isinstance(widget, tk.Frame):
             for child in widget.winfo_children():
-                if isinstance(child, ttk.Combobox):
-                    self.mic_combobox = child
-                elif isinstance(child, tk.Checkbutton):
+                if isinstance(child, tk.Checkbutton):
                     if 'MIC_ACTIVE' in str(widget):
                         self.mic_active_check = child
                 elif isinstance(child, ttk.Combobox) and 'VOSK_MODEL' in str(widget):
                     self.vosk_model_combobox = child
 
+    self.mic_combobox = guiTemplates.find_widget_child_by_type(self.mic_section,"MIC_DEVICE",ttk.Combobox)
 
 # Region MicFunctions
 
@@ -152,7 +155,7 @@ def on_mic_selected(self):
         device_id = int(selection.split(" (")[-1].replace(")", ""))
         self.device_id = device_id
         logger.info(f"Выбран микрофон: {self.selected_microphone} (ID: {device_id})")
-        self.save_mic_settings(device_id)
+        save_mic_settings(self,device_id)
 
 
 def update_mic_list(self):

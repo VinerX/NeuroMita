@@ -161,7 +161,7 @@ class SpeechRecognition:
         return False
 
     @staticmethod
-    def set_recognizer_type(recognizer_type: str):
+    def set_recognizer_type(recognizer_type: str = None):
         if recognizer_type in ["google", "vosk", "gigaam"]:
             SpeechRecognition._recognizer_type = recognizer_type
             logger.info(f"Тип распознавателя установлен на: {recognizer_type}")

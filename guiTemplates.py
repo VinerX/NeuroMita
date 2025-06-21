@@ -100,10 +100,10 @@ def create_setting_widget(gui, parent, label, setting_key, widget_type='entry',
 
         def save_combobox():
             gui._save_setting(setting_key, var.get())
-           # if command:
-              #  command()
+            if command:
+                command()
 
-        cb.bind("<<ComboboxSelected>>", lambda e: [save_combobox(), command()] if command else save_combobox())
+        cb.bind("<<ComboboxSelected>>", lambda e: save_combobox())
 
     elif widget_type == 'checkbutton':
         var = tk.BooleanVar(value=gui.settings.get(setting_key, default_checkbutton))
@@ -171,8 +171,11 @@ def create_setting_widget(gui, parent, label, setting_key, widget_type='entry',
     if tooltip:
         gui.create_tooltip(frame, tooltip)
 
+    # Ставим атрибут чтобы можно было найти
     if widget_name:
         setattr(frame, "widget_name", widget_name)
+    else:
+        setattr(frame, setting_key, widget_name)
 
     return frame
 
