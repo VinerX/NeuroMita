@@ -203,6 +203,10 @@ class ChatGUI:
         self.last_image_request_time = time.time()
         self.image_request_timer_running = False
 
+        if self.settings.get("MIC_ACTIVE",False):
+            # Запускаем распознавание, если оно активировано
+            SpeechRecognition.speach_recognition_start(self.device_id, self.loop)
+
         # Добавляем автоматический запуск захвата экрана, если настройка включена
         if self.settings.get("ENABLE_SCREEN_ANALYSIS", False):
             logger.info("Настройка 'ENABLE_SCREEN_ANALYSIS' включена. Автоматический запуск захвата экрана.")
