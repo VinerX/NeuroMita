@@ -3,9 +3,9 @@ RULE LoveTagHandler
     MATCH REGEX "<love>([+-]?\d*\.?\d+)</love>" CAPTURE (love_value_str)
     ACTIONS
         SET LOCAL love_value = float(love_value_str)
-        SET Love = Love + int(love_value)
+        SET Love = max(-1, min(10,Love+int(love_value)))
         LOG "Character love updated by " + str(love_value) + ". New love: " + str(Love)
-        REMOVE_MATCH // This will remove "<love>X</love>" from the response
+        // REMOVE_MATCH // This will remove "<love>X</love>" from the response
     END_ACTIONS
 END_RULE
 
@@ -14,7 +14,7 @@ RULE SecretExposedByTag
     MATCH TEXT "<secret_revealed>" // Simple text match
     ACTIONS
         SET secretExposed = True
-        LOG "secretExposed set to True by <secret_revealed> tag."
+        LOG "secretExposed set to True by <secret_revealed> tag."ы
         REMOVE_MATCH
     END_ACTIONS
 END_RULE
