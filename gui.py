@@ -66,8 +66,7 @@ class ChatGUI:
         self.local_voice_combobox = None
         self.debug_window = None
         self.mic_combobox = None
-        self.silero_connected = False
-        self.game_connected_checkbox_var = False
+
         self.ConnectedToGame = False
 
         self.chat_window = None
@@ -161,6 +160,10 @@ class ChatGUI:
         self.root.after(100, self.check_and_install_ffmpeg)
 
         self.delete_all_sound_files()
+
+        self.silero_connected = tk.BooleanVar(value=False)
+        self.game_connected_checkbox_var = tk.BooleanVar(value=False)
+
         self.setup_ui()
 
         self.load_chat_history()
@@ -929,21 +932,27 @@ class ChatGUI:
 
     def update_game_connection(self, is_connected):
         self.ConnectedToGame = is_connected
-        self.game_connected_checkbox_var = tk.BooleanVar(value=is_connected)  # Статус подключения к игре
+        self.root.after(0, self.update_status_colors)
 
     def update_all(self):
         self.update_status_colors()
         self.update_debug_info()
 
     def update_status_colors(self):
-        self.game_connected_checkbox_var = tk.BooleanVar(value=self.ConnectedToGame)  # Статус подключения к игре
+        # self.game_connected_checkbox_var = tk.BooleanVar(value=self.ConnectedToGame)  # <--- НЕПРАВИЛЬНО
+        self.game_connected_checkbox_var.set(self.ConnectedToGame)  # <--- ПРАВИЛЬНО
+
         # Обновление цвета для подключения к игре
         game_color = "#00ff00" if self.ConnectedToGame else "#ffffff"
-        self.game_status_checkbox.config(fg=game_color)
+        # Убедимся, что виджет существует, прежде чем его настраивать
+        if hasattr(self, 'game_status_checkbox') and self.game_status_checkbox.winfo_exists():
+            self.game_status_checkbox.config(fg=game_color)
 
         # Обновление цвета для подключения к Silero
-        silero_color = "#00ff00" if self.silero_connected.get() else "#ffffff"
-        self.silero_status_checkbox.config(fg=silero_color)
+        # Убедимся, что виджет существует
+        if hasattr(self, 'silero_status_checkbox') and self.silero_status_checkbox.winfo_exists():
+            silero_color = "#00ff00" if self.silero_connected.get() else "#ffffff"
+            self.silero_status_checkbox.config(fg=silero_color)
 
     def load_chat_history(self):
         self.clear_chat_display()
