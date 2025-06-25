@@ -54,8 +54,8 @@ from ui.settings import (
     api_settings, character_settings, chat_settings, common_settings,
     g4f_settings, gamemaster_settings, general_model_settings,
     language_settings, microphone_settings, screen_analysis_settings,
-    token_settings, voiceover_settings, command_replacer_settings,history_compressor,
-    prompt_catalogue_settings # Импортируем новый модуль
+    token_settings, voiceover_settings, command_replacer_settings, history_compressor,
+    prompt_catalogue_settings  # Импортируем новый модуль
 )
 
 
@@ -161,8 +161,12 @@ class ChatGUI:
 
         self.delete_all_sound_files()
 
+        # --- Переменные для индикаторов статуса ---
         self.silero_connected = tk.BooleanVar(value=False)
         self.game_connected_checkbox_var = tk.BooleanVar(value=False)
+        self.mic_recognition_active = tk.BooleanVar(value=False)
+        self.screen_capture_active = tk.BooleanVar(value=False)
+        self.camera_capture_active = tk.BooleanVar(value=False)
 
         self.setup_ui()
 
@@ -206,9 +210,11 @@ class ChatGUI:
         self.last_image_request_time = time.time()
         self.image_request_timer_running = False
 
-        if self.settings.get("MIC_ACTIVE",False):
+        if self.settings.get("MIC_ACTIVE", False):
             # Запускаем распознавание, если оно активировано
             SpeechRecognition.speach_recognition_start(self.device_id, self.loop)
+            self.mic_recognition_active.set(True)  # Обновляем статус
+            self.update_status_colors()
 
         # Добавляем автоматический запуск захвата экрана, если настройка включена
         if self.settings.get("ENABLE_SCREEN_ANALYSIS", False):
@@ -416,7 +422,7 @@ class ChatGUI:
         else:
             logger.error("Ошибка: Цикл событий не готов.")
 
-    #endregion
+    # endregion
 
     def send_instantly(self):
         """Мгновенная отправка распознанного текста"""
@@ -509,7 +515,6 @@ class ChatGUI:
         initial_font_size = int(self.settings.get("CHAT_FONT_SIZE", 12))
 
         self.setup_tags_configurations(initial_font_size)
-
 
         # Стили для цветов будут добавляться динамически
         # Инпут - нижняя часть (фиксированная высота)
@@ -613,7 +618,7 @@ class ChatGUI:
         voiceover_settings.setup_voiceover_controls(self, settings_frame)
         microphone_settings.setup_microphone_controls(self, settings_frame)
         character_settings.setup_mita_controls(self, settings_frame)
-        prompt_catalogue_settings.setup_prompt_catalogue_controls(self, settings_frame) # Добавляем вызов новой функции
+        prompt_catalogue_settings.setup_prompt_catalogue_controls(self, settings_frame)  # Добавляем вызов новой функции
         self.setup_debug_controls(settings_frame)
         self.setup_common_controls(settings_frame)
         gamemaster_settings.setup_game_master_controls(self, settings_frame)
@@ -756,7 +761,7 @@ class ChatGUI:
             # Добавляем переводы строк в конце
             if role == "user":
                 parts_to_insert_in_order.append({"type": "text", "content": "\n"})
-            elif role in {"assistant","system"}:
+            elif role in {"assistant", "system"}:
                 parts_to_insert_in_order.append({"type": "text", "content": "\n\n"})
 
             # Вставляем все части в обратном порядке, чтобы они появились в правильном порядке в чате
@@ -779,7 +784,7 @@ class ChatGUI:
                         self.chat_window.image_create(tk.END, image=part["content"])
                         self.chat_window.insert(tk.END, "\n")
                 self.chat_window.insert(tk.END, "\n")
-            elif role in {"assistant","system"}:
+            elif role in {"assistant", "system"}:
                 if show_timestamps:
                     self.chat_window.insert(tk.END, timestamp_str, "timestamp")
                 self.chat_window.insert(tk.END, f"{self.model.current_character.name}: ",
@@ -794,7 +799,8 @@ class ChatGUI:
         self.chat_window.config(state=tk.DISABLED)  # Выключаем редактирование
 
         # Автоматическая прокрутка вниз после вставки сообщения
-        self.chat_window.see(tk.END)
+        if not insert_at_start:
+            self.chat_window.see(tk.END)
 
     def append_message(self, text):
         self.chat_window.config(state=tk.NORMAL)
@@ -803,6 +809,7 @@ class ChatGUI:
         self.chat_window.insert(last_index, text)
         self.chat_window.config(state=tk.DISABLED)
         self.chat_window.see(tk.END)
+
     def process_image_for_chat(self, has_image_content, item, processed_content_parts):
         image_data_base64 = item.get("image_url", {}).get("url", "")
         if image_data_base64.startswith("data:image/jpeg;base64,"):
@@ -939,20 +946,32 @@ class ChatGUI:
         self.update_debug_info()
 
     def update_status_colors(self):
-        # self.game_connected_checkbox_var = tk.BooleanVar(value=self.ConnectedToGame)  # <--- НЕПРАВИЛЬНО
-        self.game_connected_checkbox_var.set(self.ConnectedToGame)  # <--- ПРАВИЛЬНО
+        self.game_connected_checkbox_var.set(self.ConnectedToGame)
 
         # Обновление цвета для подключения к игре
         game_color = "#00ff00" if self.ConnectedToGame else "#ffffff"
-        # Убедимся, что виджет существует, прежде чем его настраивать
         if hasattr(self, 'game_status_checkbox') and self.game_status_checkbox.winfo_exists():
             self.game_status_checkbox.config(fg=game_color)
 
         # Обновление цвета для подключения к Silero
-        # Убедимся, что виджет существует
         if hasattr(self, 'silero_status_checkbox') and self.silero_status_checkbox.winfo_exists():
             silero_color = "#00ff00" if self.silero_connected.get() else "#ffffff"
             self.silero_status_checkbox.config(fg=silero_color)
+
+        # Обновление цвета для распознавания речи
+        if hasattr(self, 'mic_status_checkbox') and self.mic_status_checkbox.winfo_exists():
+            mic_color = "#00ff00" if self.mic_recognition_active.get() else "#ffffff"
+            self.mic_status_checkbox.config(fg=mic_color)
+
+        # Обновление цвета для захвата экрана
+        if hasattr(self, 'screen_capture_status_checkbox') and self.screen_capture_status_checkbox.winfo_exists():
+            screen_color = "#00ff00" if self.screen_capture_active.get() else "#ffffff"
+            self.screen_capture_status_checkbox.config(fg=screen_color)
+
+        # Обновление цвета для захвата с камеры
+        if hasattr(self, 'camera_capture_status_checkbox') and self.camera_capture_status_checkbox.winfo_exists():
+            camera_color = "#00ff00" if self.camera_capture_active.get() else "#ffffff"
+            self.camera_capture_status_checkbox.config(fg=camera_color)
 
     def load_chat_history(self):
         self.clear_chat_display()
@@ -991,7 +1010,7 @@ class ChatGUI:
         # Автоматическая прокрутка вниз после загрузки истории
         self.chat_window.see(tk.END)
 
-    #region SetupControls
+    # region SetupControls
 
     def setup_debug_controls(self, parent):
         debug_frame = tk.Frame(parent, bg="#2c2c2c")
@@ -1027,7 +1046,7 @@ class ChatGUI:
         ]
         self.create_settings_section(parent, _("Общие настройки", "Common settings"), common_config)
 
-    #endregion
+    # endregion
 
     # region Validation
     def validate_number_0_60(self, new_value):
@@ -1106,7 +1125,7 @@ class ChatGUI:
 
         if not os.path.exists(self.config_path):
             logger.info("Не найден файл настроек")
-            #self.save_api_settings(False)
+            # self.save_api_settings(False)
             return
 
         try:
@@ -1235,7 +1254,7 @@ class ChatGUI:
             frames = self.screen_capture_instance.get_recent_frames(history_limit)
             if frames:
                 current_image_data.extend(frames)
-                #logger.info(f"Захвачено {len(frames)} кадров для отправки.")
+                # logger.info(f"Захвачено {len(frames)} кадров для отправки.")
             else:
                 logger.info("Анализ экрана включен, но кадры не готовы или история пуста.")
 
@@ -1255,7 +1274,7 @@ class ChatGUI:
 
         # Отправляем сообщение, если есть пользовательский ввод ИЛИ системный ввод ИЛИ изображения
         if not user_input and not system_input:
-            #logger.info("Нет текста или изображений для отправки.")
+            # logger.info("Нет текста или изображений для отправки.")
             return
 
         self.last_image_request_time = time.time()  # Сброс таймера захвата экрана при мгновенной отправке
@@ -1303,7 +1322,7 @@ class ChatGUI:
         except asyncio.TimeoutError:
             # Обработка тайм-аута
             logger.info("Тайм-аут: генерация ответа заняла слишком много времени.")
-            #self.insert_message("assistant", "Превышен лимит времени ожидания ответа от нейросети.")
+            # self.insert_message("assistant", "Превышен лимит времени ожидания ответа от нейросети.")
 
     def start_camera_capture_thread(self):
         if not hasattr(self, 'camera_capture') or self.camera_capture is None:
@@ -1320,15 +1339,19 @@ class ChatGUI:
             capture_width = int(self.settings.get("CAMERA_CAPTURE_WIDTH", 640))
             capture_height = int(self.settings.get("CAMERA_CAPTURE_HEIGHT", 480))
             self.camera_capture.start_capture(camera_index, quality, fps, max_history_frames,
-                                                       max_frames_per_request, capture_width,
-                                                       capture_height)
+                                              max_frames_per_request, capture_width,
+                                              capture_height)
             logger.info(
                 f"Поток захвата с камеры запущен с индексом {camera_index}, интервалом {interval}, качеством {quality}, {fps} FPS, историей {max_history_frames} кадров, разрешением {capture_width}x{capture_height}.")
+            self.camera_capture_active.set(True)
+            self.update_status_colors()
 
     def stop_camera_capture_thread(self):
         if hasattr(self, 'camera_capture') and self.camera_capture is not None and self.camera_capture.is_running():
             self.camera_capture.stop_capture()
             logger.info("Поток захвата с камеры остановлен.")
+        self.camera_capture_active.set(False)
+        self.update_status_colors()
 
     def start_screen_capture_thread(self):
         if not self.screen_capture_running:
@@ -1346,14 +1369,18 @@ class ChatGUI:
             logger.info(
                 f"Поток захвата экрана запущен с интервалом {interval}, качеством {quality}, {fps} FPS, историей {max_history_frames} кадров, разрешением {capture_width}x{capture_height}.")
 
+            self.screen_capture_active.set(True)
             if self.settings.get("SEND_IMAGE_REQUESTS", 1):
                 self.start_image_request_timer()
+            self.update_status_colors()
 
     def stop_screen_capture_thread(self):
         if self.screen_capture_running:
             self.screen_capture_instance.stop_capture()
             self.screen_capture_running = False
             logger.info("Поток захвата экрана остановлен.")
+        self.screen_capture_active.set(False)
+        self.update_status_colors()
 
     def start_image_request_timer(self):
         if not self.image_request_timer_running:
@@ -1368,19 +1395,19 @@ class ChatGUI:
             self.image_request_timer_running = False
             logger.info("Таймер периодической отправки изображений остановлен.")
 
-
-
     def on_chat_scroll(self, event):
         """Обработчик события прокрутки чата."""
         if self.loading_more_history:
             return
 
-        # Проверяем, прокрутил ли пользователь к началу
-        if self.chat_window.yview()[0] == 0:
+        # Проверяем, прокрутил ли пользователь к самому началу
+        # Используем <= 0.0 для надежности из-за возможных неточностей float
+        if self.chat_window.yview()[0] <= 0.0:
             self.load_more_history()
-        # Проверяем, прокрутил ли пользователь к концу и движется вниз
-        elif self.chat_window.yview()[1] == 1.0 and (event.delta < 0 or (hasattr(event, 'num') and event.num == 5)):
-            self.trim_chat_display()
+
+        # Логика очистки старых сообщений при прокрутке вниз (опционально)
+        # elif self.chat_window.yview()[1] == 1.0 and (event.delta < 0 or (hasattr(event, 'num') and event.num == 5)):
+        #     self.trim_chat_display()
 
     def trim_chat_display(self):
         """Удаляет сообщения из начала чата, оставляя только видимые + запас."""
@@ -1403,14 +1430,17 @@ class ChatGUI:
             # +1.0 потому что delete удаляет до указанной позиции, не включая ее
             self.chat_window.delete("1.0", f"{lines_to_delete + 1}.0")
             self.chat_window.config(state=tk.DISABLED)
-            # Уменьшаем смещение загруженных сообщений на количество удаленных строк
+            # ВНИМАНИЕ: Эта логика может быть неточной, т.к. количество строк не равно количеству сообщений.
+            # Это может привести к рассинхронизации с историей в файле.
+            # Для простоты пока оставим, но это потенциальная точка улучшения.
             self.loaded_messages_offset -= lines_to_delete
-            logger.info(f"Удалено {lines_to_delete} сообщений из начала чата. Обновлено loaded_messages_offset: {self.loaded_messages_offset}")
+            logger.info(
+                f"Удалено {lines_to_delete} строк из начала чата. Обновлено loaded_messages_offset: {self.loaded_messages_offset}")
 
     def load_more_history(self):
-        """Загружает предыдущие сообщения в чат."""
+        """Загружает предыдущие сообщения в чат, сохраняя позицию прокрутки."""
         if self.loaded_messages_offset >= self.total_messages_in_history:
-            return
+            return  # Вся история уже загружена
 
         self.loading_more_history = True
         try:
@@ -1420,40 +1450,35 @@ class ChatGUI:
             # Определяем диапазон сообщений для загрузки
             end_index = self.total_messages_in_history - self.loaded_messages_offset
             start_index = max(0, end_index - self.lazy_load_batch_size)
-
             messages_to_prepend = all_messages[start_index:end_index]
 
-            # Сохраняем текущую высоту содержимого чата перед вставкой
-            old_content_height = self.chat_window.winfo_height()
+            if not messages_to_prepend:
+                self.loading_more_history = False
+                return
 
-            # Вставляем сообщения в обратном порядке, чтобы они появились в правильном порядке в чате
+            # --- УЛУЧШЕННАЯ ЛОГИКА СОХРАНЕНИЯ ПОЗИЦИИ ---
+            # 1. Устанавливаем метку на текущую верхнюю строку
+            self.chat_window.mark_set("restore_view", "1.0")
+
+            # 2. Вставляем сообщения в обратном порядке (в начало)
             for entry in reversed(messages_to_prepend):
                 role = entry["role"]
                 content = entry["content"]
                 message_time = entry.get("time", "???")
                 self.insert_message(role, content, insert_at_start=True, message_time=message_time)
 
+            # 3. Прокручиваем виджет так, чтобы строка с меткой снова стала видимой
+            self.chat_window.see("restore_view")
+
+            # 4. Удаляем метку для чистоты
+            self.chat_window.mark_unset("restore_view")
+
             self.loaded_messages_offset += len(messages_to_prepend)
             logger.info(
                 f"Загружено еще {len(messages_to_prepend)} сообщений. Всего загружено: {self.loaded_messages_offset}")
 
-            # Обновляем виджет, чтобы он пересчитал свои размеры после вставки
-            self.root.update_idletasks()
-
-            # Получаем новую высоту содержимого чата
-            new_content_height = self.chat_window.winfo_height()
-
-            # Вычисляем разницу в высоте
-            height_difference = new_content_height - old_content_height
-
-            # Скорректировать прокрутку, переместив ее на height_difference пикселей вверх
-            # Это компенсирует добавленный контент и сохраняет видимую область
-            self.chat_window.yview_scroll(-height_difference, "pixels")
-
         finally:
             self.loading_more_history = False
-
-
 
     def _show_loading_popup(self, message):
         """Показать окно загрузки"""
@@ -1479,7 +1504,7 @@ class ChatGUI:
             self.loading_popup.grab_release()
             self.loading_popup.destroy()
 
-    #region SettingGUI - MODIFIED BUT NOT CHECKED
+    # region SettingGUI - MODIFIED BUT NOT CHECKED
     def all_settings_actions(self, key, value):
         if key in ["SILERO_USE", "VOICEOVER_METHOD", "AUDIO_BOT"]:
             self.switch_voiceover_settings()
@@ -1543,9 +1568,12 @@ class ChatGUI:
             if bool(value):
                 # Запускаем распознавание, если оно активировано
                 SpeechRecognition.speach_recognition_start(self.device_id, self.loop)
+                self.mic_recognition_active.set(True)
             else:
                 # Останавливаем распознавание, если оно деактивировано
                 SpeechRecognition.speach_recognition_stop()
+                self.mic_recognition_active.set(False)
+            self.update_status_colors()
 
         elif key == "ENABLE_SCREEN_ANALYSIS":
             if bool(value):
@@ -1627,9 +1655,10 @@ class ChatGUI:
             SpeechRecognition.set_recognizer_type(value)
 
             # Перезапускаем распознавание с новым типом
-            SpeechRecognition.active = True  # Активируем снова
-            SpeechRecognition.speach_recognition_start(self.device_id, self.loop)
-            microphone_settings.update_vosk_model_visibility(self,value)
+            if self.settings.get("MIC_ACTIVE", False):
+                SpeechRecognition.active = True  # Активируем снова, только если был активен
+                SpeechRecognition.speach_recognition_start(self.device_id, self.loop)
+            microphone_settings.update_vosk_model_visibility(self, value)
         elif key == "VOSK_MODEL":
             SpeechRecognition.vosk_model = value
         elif key == "SILENCE_THRESHOLD":
@@ -1659,9 +1688,6 @@ class ChatGUI:
             self.model.history_compression_periodic_interval = int(value)
         elif key == "HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS":
             self.model.history_compression_min_messages_to_compress = float(value)
-
-
-
 
         # Handle chat specific settings keys
         if key == "CHAT_FONT_SIZE":
@@ -1712,7 +1738,7 @@ class ChatGUI:
 
         # logger.info(f"Настройки изменены: {key} = {value}")
 
-    #endregion
+    # endregion
 
     def create_settings_section(self, parent, title, settings_config):
         return guiTemplates.create_settings_section(self, parent, title, settings_config)
@@ -1752,13 +1778,13 @@ class ChatGUI:
 
         self.all_settings_actions(key, value)
 
-    #endregion
+    # endregion
 
     def get_news_content(self):
         """Получает содержимое новостей с GitHub"""
         try:
             response = requests.get('https://raw.githubusercontent.com/VinerX/NeuroMita/main/NEWS.md', timeout=500)
-            #response = requests.get('https://raw.githubusercontent.com/VinerX/NeuroMita/refs/heads/main/NEWS.md', timeout=500)
+            # response = requests.get('https://raw.githubusercontent.com/VinerX/NeuroMita/refs/heads/main/NEWS.md', timeout=500)
             if response.status_code == 200:
                 return response.text
             return _('Не удалось загрузить новости', 'Failed to load news')
@@ -1768,7 +1794,7 @@ class ChatGUI:
 
     def setup_news_control(self, parent):
         news_config = [
-            #{'label': _('Новости и обновления', 'News and updates'), 'type': 'text'},
+            # {'label': _('Новости и обновления', 'News and updates'), 'type': 'text'},
             {'label': self.get_news_content(), 'type': 'text'},
         ]
 
@@ -1776,7 +1802,7 @@ class ChatGUI:
                                      _("Новости", "News"),
                                      news_config)
 
-    #region HotKeys
+    # region HotKeys
     def keypress(self, e):
         # Получаем виджет, на котором произошло событие
         widget = e.widget
@@ -1805,7 +1831,7 @@ class ChatGUI:
         if isinstance(widget, (tk.Entry, ttk.Entry, tk.Text)):
             widget.event_generate("<<Paste>>")
 
-    #endregion
+    # endregion
 
     def run(self):
         self.root.mainloop()
@@ -1820,7 +1846,7 @@ class ChatGUI:
             pass
 
         self.stop_screen_capture_thread()  # Останавливаем захват экрана при закрытии
-        self.stop_camera_capture_thread() # Останавливаем захват с камеры при закрытии
+        self.stop_camera_capture_thread()  # Останавливаем захват с камеры при закрытии
         self.delete_all_sound_files()
         self.stop_server()
         logger.info("Закрываемся")
@@ -2691,4 +2717,3 @@ class ChatGUI:
             logger.warning("Метод 'change_voice_language' отсутствует в объекте local_voice.")
 
     # endregion
-
