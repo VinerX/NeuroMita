@@ -2281,30 +2281,6 @@ class ChatGUI:
         self.voiceover_method = current_method
         self.check_triton_dependencies()
 
-    def update_tg_widgets_visibility(self):
-        # if not hasattr(self, 'tg_widgets'):
-        #     return
-
-        # for key, data in self.tg_widgets.items():
-        #     widget_frame = data['frame']
-        #     config = data['config']
-        #     show_widget = True
-
-        #     if 'condition_key' in config:
-        #         condition_value = self.settings.get(config['condition_key'])
-        #         # Условие изменено: показываем API только если выбран @silero_voice_bot
-        #         if 'condition_value' in config and condition_value != config['condition_value']:
-        #              show_widget = False
-
-        #     if widget_frame.winfo_exists():
-        #         if show_widget:
-        #             if not widget_frame.winfo_manager():
-        #                 widget_frame.pack(fill=tk.X, pady=2)
-        #         else:
-        #             if widget_frame.winfo_manager():
-        #                 widget_frame.pack_forget()
-        pass
-
     def update_local_voice_combobox(self):
         """Обновляет комбобокс списком установленных локальных моделей и статус инициализации."""
         if not hasattr(self, 'local_voice_combobox') or not self.local_voice_combobox.winfo_exists():
