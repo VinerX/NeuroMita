@@ -81,30 +81,6 @@ def setup_screen_analysis_controls(self, parent):
          'default': '',
          'tooltip': _('Заголовок окна, которое нужно исключить из захвата (оставьте пустым для GUI).',
                       'Title of the window to exclude from capture (leave empty for GUI).')},
-        {'label': _('Снижение качества изображений', 'Image Quality Reduction'), 'type': 'text'},
-        {'label': _('Включить снижение качества', 'Enable Quality Reduction'), 'key': 'IMAGE_QUALITY_REDUCTION_ENABLED',
-         'type': 'checkbutton', 'default_checkbutton': False,
-         'tooltip': _('Включает динамическое снижение качества изображений в истории сообщений.',
-                      'Enables dynamic image quality reduction in message history.')},
-        {'label': _('Начальный индекс снижения', 'Reduction Start Index'), 'key': 'IMAGE_QUALITY_REDUCTION_START_INDEX',
-         'type': 'entry', 'default': 25, 'validation': self.validate_positive_integer_or_zero,
-         'tooltip': _('Индекс сообщения, с которого начинается снижение качества (0 = первое сообщение).',
-                      'Message index from which quality reduction begins (0 = first message).')},
-        {'label': _('Использовать процентное снижение', 'Use Percentage Reduction'),
-         'key': 'IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE',
-         'type': 'checkbutton', 'default_checkbutton': False,
-         'tooltip': _('Если включено, качество снижается на процент, иначе - до минимального значения.',
-                      'If enabled, quality is reduced by a percentage, otherwise to a minimum value.')},
-        {'label': _('Минимальное качество (%)', 'Minimum Quality (%)'), 'key': 'IMAGE_QUALITY_REDUCTION_MIN_QUALITY',
-         'type': 'entry', 'default': 30, 'validation': self.validate_positive_integer_or_zero,
-         'tooltip': _(
-             'Минимальное качество JPEG (0-100), до которого может быть снижено изображение. 0 означает удаление изображения.',
-             'Minimum JPEG quality (0-100) to which an image can be reduced. 0 means image deletion.')},
-        {'label': _('Скорость снижения качества', 'Quality Decrease Rate'),
-         'key': 'IMAGE_QUALITY_REDUCTION_DECREASE_RATE',
-         'type': 'entry', 'default': 5, 'validation': self.validate_positive_integer,
-         'tooltip': _('На сколько единиц снижается качество за каждое сообщение после начального индекса.',
-                      'By how many units quality decreases for each message after the start index.')},
     ]
     self.create_settings_section(parent,
                                  _("Настройки анализа экрана", "Screen Analysis Settings"),
@@ -158,6 +134,35 @@ def setup_screen_analysis_controls(self, parent):
     self.camera_section = self.create_settings_section(parent,
                                  _("Настройки захвата с камеры", "Camera Capture Settings"),
                                  camera_analysis_config)
-   
     # Сохраняем ссылку на combobox камеры
     self.camera_combobox = find_widget_child_by_type(self.camera_section, 'camera_combobox', ttk.Combobox)
+
+
+    frame_comptession_config = [
+        {'label': _('Включить снижение качества', 'Enable Quality Reduction'), 'key': 'IMAGE_QUALITY_REDUCTION_ENABLED',
+         'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _('Включает динамическое снижение качества изображений в истории сообщений.',
+                      'Enables dynamic image quality reduction in message history.')},
+        {'label': _('Начальный индекс снижения', 'Reduction Start Index'), 'key': 'IMAGE_QUALITY_REDUCTION_START_INDEX',
+         'type': 'entry', 'default': 25, 'validation': self.validate_positive_integer_or_zero,
+         'tooltip': _('Индекс сообщения, с которого начинается снижение качества (0 = первое сообщение).',
+                      'Message index from which quality reduction begins (0 = first message).')},
+        {'label': _('Использовать процентное снижение', 'Use Percentage Reduction'),
+         'key': 'IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE',
+         'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _('Если включено, качество снижается с индекса выходящего за процент , иначе - до минимального значения.',
+                      'If enabled, the quality is reduced from an index exceeding a percent, otherwise - to the minimum value.')},
+        {'label': _('Минимальное качество (%)', 'Minimum Quality (%)'), 'key': 'IMAGE_QUALITY_REDUCTION_MIN_QUALITY',
+         'type': 'entry', 'default': 30, 'validation': self.validate_positive_integer_or_zero,
+         'tooltip': _(
+             'Минимальное качество JPEG (0-100), до которого может быть снижено изображение. 0 означает удаление изображения.',
+             'Minimum JPEG quality (0-100) to which an image can be reduced. 0 means image deletion.')},
+        {'label': _('Скорость снижения качества', 'Quality Decrease Rate'),
+         'key': 'IMAGE_QUALITY_REDUCTION_DECREASE_RATE',
+         'type': 'entry', 'default': 5, 'validation': self.validate_positive_integer,
+         'tooltip': _('На сколько единиц снижается качество за каждое сообщение после начального индекса.',
+                      'By how many units quality decreases for each message after the start index.')},
+    ]
+    self.create_settings_section(parent,
+                                 _("Настройки угасания кадров", "Frame regression settings"),
+                                 frame_comptession_config)
