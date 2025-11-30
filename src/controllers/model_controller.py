@@ -277,7 +277,11 @@ class ModelController:
         image_data = event.data.get('image_data', [])
         stream_callback = event.data.get('stream_callback', None)
         message_id = event.data.get('message_id', None)
-        
+        event_type = event.data.get('event_type', None)
+
+        if event_type == 'react' and hasattr(self.model, 'generate_react'):
+            return self.model.generate_react(user_input, system_input, image_data, stream_callback, message_id)
+
         if hasattr(self.model, 'generate_response'):
             return self.model.generate_response(user_input, system_input, image_data, stream_callback, message_id)
         return None

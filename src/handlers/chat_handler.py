@@ -5,6 +5,7 @@ import datetime
 import json
 import time
 #import tiktoken
+import os
 import re
 import importlib
 from typing import List, Dict, Any, Optional
@@ -468,6 +469,216 @@ class ChatModel:
 
         except Exception as e:
             logger.error(f"Error during LLM response generation or processing: {e}", exc_info=True)
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': str(e)})
+            return f"Ошибка: {e}"
+
+    def generate_react(
+        self,
+        user_input: str,
+        system_input: str = "",
+        image_data: list[bytes] | None = None,
+        stream_callback: callable = None,
+        message_id: int | None = None
+    ):
+        """
+        Специализированный генератор для react-задач:
+        - использует react_template.txt (если есть, иначе main_template.txt);
+        - может использовать отдельный пресет (REACT_PROVIDER);
+        - контекст/история/переменные собираются так же, как в generate_response.
+        """
+        if image_data is None:
+            image_data = []
+
+        # React может быть полностью отключён настройкой
+        if not bool(self.settings.get("REACT_ENABLED", False)):
+            logger.info("generate_react: REACT_ENABLED is False, skipping generation.")
+            return None
+
+        self.check_change_current_character()
+
+        history_data = self.current_character.history_manager.load_history()
+        llm_messages_history = history_data.get("messages", [])
+
+        if self.infos_to_add_to_history:
+            llm_messages_history.extend(self.infos_to_add_to_history)
+            self.infos_to_add_to_history.clear()
+
+        # Игровые переменные
+        self.current_character.set_variable("GAME_DISTANCE", self.distance)
+        self.current_character.set_variable("GAME_ROOM_PLAYER", self.get_room_name(self.roomPlayer))
+        self.current_character.set_variable("GAME_ROOM_MITA", self.get_room_name(self.roomMita))
+        self.current_character.set_variable("GAME_NEAR_OBJECTS", self.nearObjects)
+        self.current_character.set_variable("GAME_ACTUAL_INFO", self.actualInfo)
+
+        game_state_prompt_content: Optional[str] = None
+        if self.current_character.get_variable("playingGame", False):
+            if hasattr(self.current_character, 'game_manager'):
+                game_state_prompt_content = self.current_character.game_manager.get_active_game_state_prompt()
+                if game_state_prompt_content:
+                    logger.info(f"[{self.current_character.char_id}] Сформирован промпт состояния игры (react).")
+            else:
+                logger.warning(f"[{self.current_character.char_id}] Игра активна, но GameManager отсутствует (react).")
+
+        combined_messages = []
+
+        # Выбор шаблона: react_template.txt или fallback на main_template.txt
+        template_name = "react_template.txt"
+        template_path = os.path.join(self.current_character.base_data_path, template_name)
+        if not os.path.exists(template_path):
+            template_name = self.current_character.main_template_path_relative
+
+        separate_prompts = bool(self.settings.get("SEPARATE_PROMPTS", True))
+        messages = self.current_character.get_full_system_setup_for_llm_template(template_name, separate_prompts)
+        combined_messages.extend(messages)
+
+        if game_state_prompt_content:
+            combined_messages.append({"role": "system", "content": game_state_prompt_content})
+
+        llm_messages_history = self.process_history_compression(llm_messages_history)
+
+        # Лимит истории как в обычном generate_response
+        if self.current_character != self.GameMaster:
+            missed_messages = llm_messages_history[:-self.memory_limit]
+            llm_messages_history_limited = llm_messages_history[-self.memory_limit:]
+        else:
+            missed_messages = llm_messages_history[:-8]
+            llm_messages_history_limited = llm_messages_history[-8:]
+
+        if missed_messages and bool(self.settings.get("SAVE_MISSED_HISTORY", True)):
+            logger.info(f"Сохраняю {len(missed_messages)} пропущенных сообщений для персонажа {self.current_character.char_id} (react).")
+            self.current_character.history_manager.save_missed_history(missed_messages)
+
+        if self.image_quality_reduction_enabled:
+            llm_messages_history_limited = self._apply_history_image_quality_reduction(llm_messages_history_limited)
+
+        event_system_infos = self.current_character.get_system_infos()
+        if event_system_infos:
+            llm_messages_history_limited.extend(
+                [{"role": "system", "content": s} if isinstance(s, str) else s for s in event_system_infos]
+            )
+
+        combined_messages.extend(llm_messages_history_limited)
+
+        current_time = datetime.datetime.now()
+        current_state_message = {
+            "role": "system",
+            "content": f"[Current State]\nDate: {current_time.strftime('%Y-%m-%d')}\n"
+                       f"Time: {current_time.strftime('%H:%M:%S')}\n"
+                       f"Day of week: {current_time.strftime('%A')}"
+        }
+        combined_messages.append(current_state_message)
+
+        if system_input:
+            combined_messages.append({"role": "system", "content": system_input})
+
+        user_message_for_history = None
+        user_content_chunks = []
+
+        if user_input:
+            user_content_chunks.append({"type": "text", "text": user_input})
+
+        for img_bytes in image_data:
+            user_content_chunks.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
+                }
+            })
+
+        if user_content_chunks:
+            user_message_for_history = {"role": "user", "content": user_content_chunks}
+            combined_messages.append(user_message_for_history)
+
+        if user_message_for_history:
+            user_message_for_history["time"] = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M")
+            llm_messages_history_limited.append(user_message_for_history)
+
+        # Выбор пресета: REACT_PROVIDER имеет приоритет, иначе используем логика character provider
+        char_provider = self.get_character_provider()
+        react_provider_label = str(self.settings.get("REACT_PROVIDER", translate("Текущий", "Current")))
+        preset_id = None
+
+        if react_provider_label not in (translate("Текущий", "Current"), "Текущий", "Current"):
+            preset_id = self._get_preset_id_by_name(react_provider_label)
+            if preset_id is None:
+                logger.warning(f"generate_react: REACT_PROVIDER '{react_provider_label}' не найден, используем текущий пресет.")
+        else:
+            if char_provider != "Current":
+                try:
+                    preset_id = int(char_provider)
+                    logger.info(f"generate_react: using character-specific preset ID: {preset_id}")
+                except ValueError:
+                    logger.warning(f"generate_react: invalid CHAR_PROVIDER='{char_provider}', fallback to current preset.")
+
+        try:
+            # Для react стриминг как правило не нужен, поэтому stream_callback обычно None
+            llm_response_content, success = self._generate_chat_response(
+                combined_messages,
+                stream_callback=None,
+                preset_id=preset_id
+            )
+
+            if not success or not llm_response_content:
+                logger.warning("generate_react: LLM generation failed or returned empty.")
+                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                    'error': translate("Не удалось получить ответ.", "Text generation failed.")
+                })
+                return None
+
+            processed_response_text = self.current_character.process_response_nlp_commands(
+                llm_response_content,
+                self.settings.get("SAVE_MISSED_MEMORY", False)
+            )
+
+            final_response_text = processed_response_text
+            try:
+                use_cmd_replacer = self.settings.get("USE_COMMAND_REPLACER", False)
+                if use_cmd_replacer:
+                    if not hasattr(self, 'model_handler'):
+                        from handlers.embedding_handler import EmbeddingModelHandler
+                        self.model_handler = EmbeddingModelHandler()
+                    if not hasattr(self, 'parser'):
+                        from utils.command_parser import CommandParser
+                        self.parser = CommandParser(model_handler=self.model_handler)
+
+                    min_sim = float(self.settings.get("MIN_SIMILARITY_THRESHOLD", 0.40))
+                    cat_switch = float(self.settings.get("CATEGORY_SWITCH_THRESHOLD", 0.18))
+                    skip_comma = bool(self.settings.get("SKIP_COMMA_PARAMETERS", True))
+
+                    logger.info(f"[react] Attempting command replacement on: {processed_response_text[:100]}...")
+                    final_response_text, _ = self.parser.parse_and_replace(
+                        processed_response_text,
+                        min_similarity_threshold=min_sim,
+                        category_switch_threshold=cat_switch,
+                        skip_comma_params=skip_comma
+                    )
+                    logger.info(f"[react] After command replacement: {final_response_text[:100]}...")
+                else:
+                    logger.info("[react] Command replacer disabled.")
+            except Exception as ex:
+                logger.error(f"[react] Error during command replacement: {ex}", exc_info=True)
+
+            assistant_message_content = final_response_text
+
+            if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
+                logger.info("[react] REPLACE_IMAGES_WITH_PLACEHOLDERS is enabled. Replacing images with placeholders.")
+                assistant_message_content = re.sub(
+                    r'https?://\S+\.(?:png|jpg|jpeg|gif|bmp)|data:image/\S+;base64,\S+',
+                    '[Изображение]', assistant_message_content
+                )
+
+            assistant_message = {"role": "assistant", "content": assistant_message_content}
+            assistant_message["time"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+
+            llm_messages_history_limited.append(assistant_message)
+            self.current_character.save_character_state_to_history(llm_messages_history_limited)
+
+            self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
+            logger.success(translate("Получен успешный react-ответ от API.", "Successful react response from API."))
+            return final_response_text
+
+        except Exception as e:
+            logger.error(f"[react] Error during LLM response generation or processing: {e}", exc_info=True)
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': str(e)})
             return f"Ошибка: {e}"
 
@@ -1301,10 +1512,29 @@ class ChatModel:
         new_response, _ = self._generate_chat_response(messages, stream_callback)
         return new_response or response_text
 
-
-
     def get_character_provider(self) -> str:
         if not self.current_character:
             return "Current"  # По умолчанию, если персонаж не выбран
         key = f"CHAR_PROVIDER_{self.current_character.char_id}"
         return self.settings.get(key, "Current")  # 'Current' по умолчанию
+    
+    def _get_preset_id_by_name(self, display_name: str) -> Optional[int]:
+        """
+        Возвращает ID пользовательского пресета по его отображаемому имени.
+        Используется для REACT_PROVIDER и аналогичных настроек.
+        """
+        if not display_name:
+            return None
+        try:
+            meta_res = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
+            meta = meta_res[0] if meta_res else None
+            if not meta:
+                return None
+            custom_list = meta.get('custom', []) or []
+            for pm in custom_list:
+                # pm — это PresetMeta dataclass
+                if getattr(pm, 'name', None) == display_name:
+                    return getattr(pm, 'id', None)
+        except Exception as e:
+            logger.error(f"Failed to resolve preset id by name '{display_name}': {e}", exc_info=True)
+        return None

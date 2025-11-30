@@ -234,10 +234,10 @@ class Character:
         # logger.debug(f"Variable '{name}' set to: {value} (type: {type(value)}) for char '{self.char_id}'")
 
 
-    def get_llm_system_prompts(self) -> list[str]:
+    def _get_llm_system_prompts_for_template(self, template_relative: str) -> list[str]:
         """
-        Генерирует список текстовых блоков системного промпта через DSL.
-        Возвращает массив строк; системная инфа из ADD_SYSTEM_INFO складывается в self.system_messages (как строки).
+        Базовая реализация получения системных промптов по указанному main_template.
+        Используется как для обычного main_template.txt, так и для react_template.txt.
         """
         self.set_variable("SYSTEM_DATETIME", datetime.datetime.now().strftime("%Y %B %d (%A) %H:%M"))
         try:
@@ -252,7 +252,7 @@ class Character:
             self.update_app_vars({})
 
         try:
-            blocks, system_infos = self.dsl_interpreter.process_main_template(self.main_template_path_relative)
+            blocks, system_infos = self.dsl_interpreter.process_main_template(template_relative)
             if system_infos:
                 self.system_messages.extend(system_infos)
             return blocks or []
@@ -260,6 +260,19 @@ class Character:
             logger.error(f"Critical error during DSL processing for {self.char_id}: {e}", exc_info=True)
             print(f"{RED_COLOR}Critical error in get_llm_system_prompts for {self.char_id}: {e}{RESET_COLOR}\n{traceback.format_exc()}", file=sys.stderr)
             return []
+
+    def get_llm_system_prompts(self) -> list[str]:
+        """
+        Стандартный путь — использовать main_template.txt
+        """
+        return self._get_llm_system_prompts_for_template(self.main_template_path_relative)
+
+    def get_llm_system_prompts_for_template(self, template_relative: str) -> list[str]:
+        """
+        Публичный метод для получения промптов по произвольному template_relative
+        (наприме��, 'react_template.txt').
+        """
+        return self._get_llm_system_prompts_for_template(template_relative)
 
     def get_full_system_setup_for_llm(self, separate_prompts = False):
         """
@@ -270,6 +283,25 @@ class Character:
 
         messages = []
         dsl_blocks = self.get_llm_system_prompts()
+
+        messages.extend(build_system_prompts(dsl_blocks, separate=separate_prompts))
+
+        memory_message_content = self.memory_system.get_memories_formatted()
+        if memory_message_content and memory_message_content.strip():
+            messages.append({"role": "system", "content": memory_message_content})
+
+        self._cached_system_setup = [m.copy() for m in messages]
+        return messages
+    
+    def get_full_system_setup_for_llm_template(self, template_relative: str, separate_prompts=False):
+        """
+        Собирает системные сообщения для LLM на основе указанного шаблона (template_relative).
+        Например, 'react_template.txt'.
+        """
+        from utils.prompt_builder import build_system_prompts
+
+        messages = []
+        dsl_blocks = self.get_llm_system_prompts_for_template(template_relative)
 
         messages.extend(build_system_prompts(dsl_blocks, separate=separate_prompts))
 

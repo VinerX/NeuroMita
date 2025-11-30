@@ -97,38 +97,39 @@ class GeminiProvider(BaseProvider):
         params = {k: v for k, v in req.extra.items() if isinstance(v, (str, int, float, bool, list, dict, type(None)))}
         self.clear_endline_sim(params)
 
-        # Форматируем сообщения согласно Gemini API
         formatted = self._format_messages_for_gemini_api(req.messages)
         
         # Базовый payload
         data = {}
         
-        # Добавляем system_instruction если есть
         if "system_instruction" in formatted:
             data["system_instruction"] = formatted["system_instruction"]
         
-        # Добавляем contents
         data["contents"] = formatted["contents"]
+
+        if not data["contents"]:
+            logger.info("Gemini: no non-system messages, inserting synthetic user prompt for contents.")
+            data["contents"] = [{
+                "role": "user",
+                "parts": [{
+                    "text": "[SYSTEM INFO] Follow the system_instruction and generate an appropriate reaction."
+                }]
+            }]
         
-        # Gemini требует, чтобы последнее сообщение было от user
         if data["contents"] and data["contents"][-1].get("role") != "user":
             logger.info("Корректировка: последнее сообщение должно быть от user для Gemini")
             last_msg = data["contents"][-1]
             last_msg["role"] = "user"
-            # Добавляем префикс [SYSTEM INFO] к тексту
             for part in last_msg.get("parts", []):
                 if "text" in part:
                     part["text"] = f"[SYSTEM INFO] {part['text']}"
         
-        # Добавляем generationConfig если есть параметры
         if params:
             data["generationConfig"] = params
         
-        # Добавляем tools если включены
         if req.tools_on and req.tools_payload:
             data["tools"] = req.tools_payload
 
-        # Логируем для отладки (специфично для Gemini)
         try:
             json_data = json.dumps(data, ensure_ascii=False, indent=2)
             with open("wtf.json", "w", encoding="utf-8") as f:
@@ -153,12 +154,10 @@ class GeminiProvider(BaseProvider):
         if need_stream:
             return self._handle_gemini_stream(response, req.stream_cb)
 
-        # Обработка обычного ответа
         try:
             response_data = response.json()
             first_part = response_data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0]
             
-            # Обработка function call
             func_call = first_part.get("functionCall")
             if func_call:
                 name = func_call.get("name")
