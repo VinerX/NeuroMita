@@ -1,3 +1,6 @@
+import datetime
+import re
+
 from handlers.chat_handler import ChatModel
 from utils import _, process_text_to_voice
 from core.events import get_event_bus, Events, Event
@@ -54,6 +57,7 @@ class ModelController:
         
         # События для обновления промптов
         self.event_bus.subscribe(Events.Model.RELOAD_PROMPTS_ASYNC, self._on_reload_prompts_async, weak=False)
+
         
     def _on_model_settings_loaded(self, event: Event):
         data = event.data
@@ -277,14 +281,252 @@ class ModelController:
         image_data = event.data.get('image_data', [])
         stream_callback = event.data.get('stream_callback', None)
         message_id = event.data.get('message_id', None)
-        event_type = event.data.get('event_type', None)
+        event_type = event.data.get('event_type', None) or 'chat'
+        preset_id_override = event.data.get('preset_id', None)
 
-        if event_type == 'react' and hasattr(self.model, 'generate_react'):
-            return self.model.generate_react(user_input, system_input, image_data, stream_callback, message_id)
+        if not hasattr(self.model, 'current_character') or not self.model.current_character:
+            logger.error("Генерация невозможна: текущий персонаж не выбран.")
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                'error': _("Персонаж не выбран.", "Character not selected.")
+            })
+            return None
 
-        if hasattr(self.model, 'generate_response'):
-            return self.model.generate_response(user_input, system_input, image_data, stream_callback, message_id)
-        return None
+        char = self.model.current_character
+        char_id = getattr(char, 'char_id', '')
+
+        if event_type == 'compress':
+            messages = []
+            if system_input:
+                messages.append({"role": "system", "content": system_input})
+
+            preset_id = preset_id_override
+            if preset_id is None:
+                hc_provider = self.settings.get("HC_PROVIDER", "Current")
+                if hc_provider != "Current":
+                    try:
+                        preset_id = int(hc_provider)
+                    except ValueError:
+                        logger.warning(f"Некорректный HC_PROVIDER='{hc_provider}', используется текущий пресет.")
+                        preset_id = None
+
+            try:
+                raw_text = self.model.generate(messages, stream_callback=None, preset_id=preset_id)
+                return raw_text
+            except Exception as e:
+                logger.error(f"Ошибка при сжатии истории через GENERATE_RESPONSE: {e}", exc_info=True)
+                return None
+
+        game_state = {
+            'distance': self.model.distance,
+            'roomPlayer': self.model.roomPlayer,
+            'roomMita': self.model.roomMita,
+            'nearObjects': self.model.nearObjects,
+            'actualInfo': self.model.actualInfo,
+        }
+
+        extra_system_infos = self.model.infos_to_add_to_history.copy()
+        self.model.infos_to_add_to_history.clear()
+
+        screen_quality = self.settings.get("SCREEN_CAPTURE_QUALITY", 75)
+        screen_quality = int(screen_quality) if str(screen_quality) != '' else 75
+
+        image_quality_cfg = {
+            'enabled': bool(self.model.image_quality_reduction_enabled),
+            'start_index': int(self.model.image_quality_reduction_start_index),
+            'use_percentage': bool(self.model.image_quality_reduction_use_percentage),
+            'min_quality': int(self.model.image_quality_reduction_min_quality),
+            'decrease_rate': int(self.model.image_quality_reduction_decrease_rate),
+            'screen_capture_quality': screen_quality,
+        }
+
+        separate_prompts = bool(self.settings.get("SEPARATE_PROMPTS", True))
+        save_missed_history = bool(self.settings.get("SAVE_MISSED_HISTORY", True))
+        memory_limit = self.model.memory_limit
+        is_game_master = (char == getattr(self.model, "GameMaster", None))
+
+        try:
+            prompt_res = self.event_bus.emit_and_wait(
+                Events.Prompt.BUILD_PROMPT,
+                {
+                    'character_id': char_id,
+                    'event_type': event_type,
+                    'user_input': user_input,
+                    'system_input': system_input,
+                    'image_data': image_data,
+                    'memory_limit': memory_limit,
+                    'is_game_master': is_game_master,
+                    'save_missed_history': save_missed_history,
+                    'image_quality': image_quality_cfg,
+                    'separate_prompts': separate_prompts,
+                    'extra_system_infos': extra_system_infos,
+                    'game_state': game_state,
+                },
+                timeout=10.0
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при BUILD_PROMPT: {e}", exc_info=True)
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                'error': _("Не удалось сформировать промпт.", "Failed to build prompt.")
+            })
+            return None
+
+        if not prompt_res or not isinstance(prompt_res[0], dict):
+            logger.error("BUILD_PROMPT не вернул валидный результат")
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                'error': _("Не удалось сформировать промпт.", "Failed to build prompt.")
+            })
+            return None
+
+        prompt_data = prompt_res[0]
+        combined_messages = prompt_data.get("messages", []) or []
+        history_for_save = prompt_data.get("history_messages", []) or []
+
+        preset_id = None
+        if event_type == 'react':
+            react_provider_label = str(self.settings.get("REACT_PROVIDER", _("Текущий", "Current")))
+            if react_provider_label not in (_("Текущий", "Current"), "Текущий", "Current"):
+                if hasattr(self.model, '_get_preset_id_by_name'):
+                    preset_id = self.model._get_preset_id_by_name(react_provider_label)
+                if preset_id is None:
+                    logger.warning(
+                        f"REACT_PROVIDER '{react_provider_label}' не найден, используется CHAR_PROVIDER."
+                    )
+            if preset_id is None:
+                char_provider = self.model.get_character_provider()
+                if char_provider != "Current":
+                    try:
+                        preset_id = int(char_provider)
+                        logger.info(f"react: используем CHAR_PROVIDER preset ID: {preset_id}")
+                    except ValueError:
+                        logger.warning(
+                            f"react: некорректный CHAR_PROVIDER='{char_provider}', используем текущий пресет."
+                        )
+        else:
+            char_provider = self.model.get_character_provider()
+            if char_provider != "Current":
+                try:
+                    preset_id = int(char_provider)
+                    logger.info(f"chat: используем character-specific preset ID: {preset_id}")
+                except ValueError:
+                    logger.warning(
+                        f"chat: некорректный CHAR_PROVIDER='{char_provider}', используем текущий пресет."
+                    )
+
+        self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION)
+
+        try:
+            use_stream_cb = stream_callback if event_type != 'react' else None
+            raw_text = self.model.generate(
+                combined_messages,
+                stream_callback=use_stream_cb,
+                preset_id=preset_id
+            )
+
+            if not raw_text:
+                logger.warning("LLM generation failed or returned empty.")
+                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                    'error': _("Не удалось получить ответ.", "Text generation failed.")
+                })
+                return None
+
+            processed_response_text = char.process_response_nlp_commands(
+                raw_text,
+                self.settings.get("SAVE_MISSED_MEMORY", False)
+            )
+
+            final_response_text = processed_response_text
+
+            try:
+                use_cmd_replacer = self.settings.get("USE_COMMAND_REPLACER", False)
+                if use_cmd_replacer:
+                    if not hasattr(self, 'model_handler'):
+                        from handlers.embedding_handler import EmbeddingModelHandler
+                        self.model_handler = EmbeddingModelHandler()
+                    if not hasattr(self, 'parser'):
+                        from utils.command_parser import CommandParser
+                        self.parser = CommandParser(model_handler=self.model_handler)
+
+                    min_sim = float(self.settings.get("MIN_SIMILARITY_THRESHOLD", 0.40))
+                    cat_switch = float(self.settings.get("CATEGORY_SWITCH_THRESHOLD", 0.18))
+                    skip_comma = bool(self.settings.get("SKIP_COMMA_PARAMETERS", True))
+
+                    prefix = "[react]" if event_type == 'react' else ""
+                    logger.info(f"{prefix} Attempting command replacement on: {processed_response_text[:100]}...")
+                    final_response_text, __ = self.parser.parse_and_replace(
+                        processed_response_text,
+                        min_similarity_threshold=min_sim,
+                        category_switch_threshold=cat_switch,
+                        skip_comma_params=skip_comma
+                    )
+                    logger.info(f"{prefix} After command replacement: {final_response_text[:100]}...")
+                else:
+                    if event_type == 'react':
+                        logger.info("[react] Command replacer disabled.")
+                    else:
+                        logger.info("Command replacer disabled.")
+            except Exception as ex:
+                logger.error(f"Error during command replacement: {ex}", exc_info=True)
+
+            assistant_message_content = final_response_text
+
+            if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
+                logger.info("REPLACE_IMAGES_WITH_PLACEHOLDERS включена. Заменяю изображения заглушками.")
+                assistant_message_content = re.sub(
+                    r'https?://\S+\.(?:png|jpg|jpeg|gif|bmp)|data:image/\S+;base64,\S+',
+                    '[Изображение]',
+                    assistant_message_content
+                )
+
+            assistant_message = {"role": "assistant", "content": assistant_message_content}
+            assistant_message["time"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+
+            history_for_save.append(assistant_message)
+
+            self.event_bus.emit(Events.History.SAVE_AFTER_RESPONSE, {
+                'character_id': char_id,
+                'messages': history_for_save
+            })
+
+            self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
+            logger.success(
+                _("Получен успешный react-ответ от API.", "Successful react response from API.")
+                if event_type == 'react'
+                else _("Получен успешный ответ от API.", "Successful response from API.")
+            )
+            return final_response_text
+
+        except Exception as e:
+            logger.error(f"Error during LLM response generation or processing: {e}", exc_info=True)
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': str(e)})
+            return f"Ошибка: {e}"
+
+
+
+    def _on_raw_generate(self, event: Event):
+        """
+        Обрабатывает Events.LLM.RAW_GENERATE:
+        data: {
+            'messages': List[dict],
+            'preset_id': Optional[int]
+        }
+        Возвращает tuple (response_text: str | None, success: bool)
+        """
+        messages = event.data.get('messages') or []
+        preset_id = event.data.get('preset_id', None)
+
+        if not hasattr(self.model, '_generate_chat_response'):
+            return (None, False)
+
+        try:
+            response_text, success = self.model._generate_chat_response(
+                combined_messages=messages,
+                stream_callback=None,
+                preset_id=preset_id
+            )
+            return (response_text, success)
+        except Exception as e:
+            logger.error(f"Ошибка в RAW_GENERATE: {e}", exc_info=True)
+            return (None, False)
     
     def _on_reload_prompts_async(self, event: Event):
         # Получаем главный asyncio-loop через событие

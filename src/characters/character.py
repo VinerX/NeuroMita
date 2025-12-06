@@ -28,31 +28,30 @@ RESET_COLOR = "\033[0m"
 
 class Character:
     BASE_DEFAULTS: Dict[str, Any] = {
-        "attitude": 60.0, # Use floats for consistency with adjustments
+        "attitude": 60.0,
         "boredom": 10.0,
         "stress": 5.0,
         "secretExposed": False,
-        "current_fsm_state": "Hello", # Default FSM-like state
-        "available_action_level": 1,  # For command availability in DSL
+        "current_fsm_state": "Hello", 
+        "available_action_level": 1,
         "PlayingFirst": False,
         "secretExposedFirst": False,
         "secret_exposed_event_text_shown": False,
         "LongMemoryRememberCount": 0,
         "player_name": "Игрок",
         "player_name_known": False,
-        # Add any other truly common defaults for ALL characters
     }
 
     def __init__(self, 
-         char_id: str, 
-         name: str, 
-         silero_command: str, 
-         short_name: str,
-         miku_tts_name: str = "Player", 
-         silero_turn_off_video: bool = False,
-         initial_vars_override: Dict[str, Any] | None = None,
-         is_cartridge = False
-         ):
+            char_id: str, 
+            name: str, 
+            silero_command: str, 
+            short_name: str,
+            miku_tts_name: str = "Player", 
+            silero_turn_off_video: bool = False,
+            initial_vars_override: Dict[str, Any] | None = None,
+            is_cartridge = False
+        ):
         self.event_bus = get_event_bus()
     
         self.char_id = char_id
@@ -68,9 +67,7 @@ class Character:
 
         self.variables: Dict[str, Any] = {}
         self.is_cartridge = is_cartridge
-        self.system_messages = []
 
-        self._cached_system_setup: List[Dict] = []
         self.app_vars: Dict[str, Any] = {}
 
         composed_initials = Character.BASE_DEFAULTS.copy()
@@ -232,94 +229,6 @@ class Character:
         
         self.variables[name] = value
         # logger.debug(f"Variable '{name}' set to: {value} (type: {type(value)}) for char '{self.char_id}'")
-
-
-    def _get_llm_system_prompts_for_template(self, template_relative: str) -> list[str]:
-        """
-        Базовая реализация получения системных промптов по указанному main_template.
-        Используется как для обычного main_template.txt, так и для react_template.txt.
-        """
-        self.set_variable("SYSTEM_DATETIME", datetime.datetime.now().strftime("%Y %B %d (%A) %H:%M"))
-        try:
-            results = self.event_bus.emit_and_wait(Events.Settings.GET_APP_VARS, timeout=1.0)
-            app_vars: Dict[str, Any] = {}
-            for r in results or []:
-                if isinstance(r, dict):
-                    app_vars.update(r)
-            self.update_app_vars(app_vars)
-        except Exception as e:
-            logger.warning(f"[{self.char_id}] Не удалось получить app_vars через события: {e}")
-            self.update_app_vars({})
-
-        try:
-            blocks, system_infos = self.dsl_interpreter.process_main_template(template_relative)
-            if system_infos:
-                self.system_messages.extend(system_infos)
-            return blocks or []
-        except Exception as e:
-            logger.error(f"Critical error during DSL processing for {self.char_id}: {e}", exc_info=True)
-            print(f"{RED_COLOR}Critical error in get_llm_system_prompts for {self.char_id}: {e}{RESET_COLOR}\n{traceback.format_exc()}", file=sys.stderr)
-            return []
-
-    def get_llm_system_prompts(self) -> list[str]:
-        """
-        Стандартный путь — использовать main_template.txt
-        """
-        return self._get_llm_system_prompts_for_template(self.main_template_path_relative)
-
-    def get_llm_system_prompts_for_template(self, template_relative: str) -> list[str]:
-        """
-        Публичный метод для получения промптов по произвольному template_relative
-        (наприме��, 'react_template.txt').
-        """
-        return self._get_llm_system_prompts_for_template(template_relative)
-
-    def get_full_system_setup_for_llm(self, separate_prompts = False):
-        """
-        Собирает системные сообщения для LLM на основе массива строк из DSL.
-        Если separate_prompts=True — по одному сообщению на блок; иначе — один общий промпт.
-        """
-        from utils.prompt_builder import build_system_prompts
-
-        messages = []
-        dsl_blocks = self.get_llm_system_prompts()
-
-        messages.extend(build_system_prompts(dsl_blocks, separate=separate_prompts))
-
-        memory_message_content = self.memory_system.get_memories_formatted()
-        if memory_message_content and memory_message_content.strip():
-            messages.append({"role": "system", "content": memory_message_content})
-
-        self._cached_system_setup = [m.copy() for m in messages]
-        return messages
-    
-    def get_full_system_setup_for_llm_template(self, template_relative: str, separate_prompts=False):
-        """
-        Собирает системные сообщения для LLM на основе указанного шаблона (template_relative).
-        Например, 'react_template.txt'.
-        """
-        from utils.prompt_builder import build_system_prompts
-
-        messages = []
-        dsl_blocks = self.get_llm_system_prompts_for_template(template_relative)
-
-        messages.extend(build_system_prompts(dsl_blocks, separate=separate_prompts))
-
-        memory_message_content = self.memory_system.get_memories_formatted()
-        if memory_message_content and memory_message_content.strip():
-            messages.append({"role": "system", "content": memory_message_content})
-
-        self._cached_system_setup = [m.copy() for m in messages]
-        return messages
-    
-    def get_cached_system_setup(self) -> List[Dict]:
-        return [m.copy() for m in self._cached_system_setup]  # пустой список, если ещё не считали
-
-    def get_system_infos(self,clear=True):
-        messages = self.system_messages.copy()
-        if clear:
-            self.system_messages.clear()
-        return messages
 
     def process_response_nlp_commands(self, response: str,save_as_missed = False) -> str:
         original_response_for_log = response[:200] + "..." if len(response) > 200 else response
@@ -483,11 +392,9 @@ class Character:
 
         return re.sub(memory_pattern, memory_processor, response, flags=re.DOTALL).strip()
 
-    # In OpenMita/character.py, class Character
     def reload_character_data(self):
         logger.info(f"[{self.char_id}] Reloading character data from disk (config + history).")
 
-        # Сначала перезагружаем config, затем историю (история может переопределить значения)
         self.load_config()
         self.load_history()
         self.memory_system.load_memories()
@@ -508,7 +415,7 @@ class Character:
 
     #region History
 
-    def load_history(self): # RENAMED from load_character_state_from_history
+    def load_history(self):
         """Loads variables from history into self.variables.
            This is called after defaults and overrides are set during __init__.
            Persisted variables will overwrite the initial composed ones.
@@ -545,11 +452,9 @@ class Character:
         for key, value in composed_initials.items():
             self.set_variable(key, value)
 
-        # Перезагружаем конфиг после сброса — чтобы применить новые/актуальные значения
         self.load_config()
 
         self.memory_system.clear_memories()
-        self._cached_system_setup = []
         self.history_manager.clear_history()
         logger.info(f"[{self.char_id}] History cleared and state reset to initial defaults/overrides.")
 

@@ -294,470 +294,6 @@ class ChatModel:
     #         logger.error(f"Error loading crazy_prehistory.json: {e}")
     #         return []
     
-    def generate_response(
-        self,
-        user_input : str,
-        system_input : str = "",
-        image_data : list[bytes] | None = None,
-        stream_callback: callable = None,
-        message_id: int | None = None
-    ):
-        if image_data is None:
-            image_data = []
-
-        self.check_change_current_character()
-
-        history_data           = self.current_character.history_manager.load_history()
-        llm_messages_history   = history_data.get("messages", [])
-
-        if self.infos_to_add_to_history:
-            llm_messages_history.extend(self.infos_to_add_to_history)
-            self.infos_to_add_to_history.clear()
-
-        self.current_character.set_variable("GAME_DISTANCE",self.distance)
-        self.current_character.set_variable("GAME_ROOM_PLAYER",self.get_room_name(self.roomPlayer))
-        self.current_character.set_variable("GAME_ROOM_MITA",self.get_room_name(self.roomMita))
-        self.current_character.set_variable("GAME_NEAR_OBJECTS",self.nearObjects)
-        self.current_character.set_variable("GAME_ACTUAL_INFO",self.actualInfo)
-
-        game_state_prompt_content: Optional[str] = None
-        if self.current_character.get_variable("playingGame", False):
-            if hasattr(self.current_character, 'game_manager'):
-                game_state_prompt_content = self.current_character.game_manager.get_active_game_state_prompt()
-                if game_state_prompt_content:
-                    logger.info(f"[{self.current_character.char_id}] Сформирован промпт состояния игры.")
-            else:
-                logger.warning(f"[{self.current_character.char_id}] Игра активна, но GameManager отсутствует.")
-
-        combined_messages = []
-
-        separate_prompts =  bool(self.settings.get("SEPARATE_PROMPTS", True))
-        messages = self.current_character.get_full_system_setup_for_llm(separate_prompts)
-        combined_messages.extend(messages)
-
-        if game_state_prompt_content:
-            combined_messages.append({"role": "system", "content": game_state_prompt_content})
-
-        # prehistory = self.load_prehistory()
-        # if prehistory:
-        #     combined_messages.extend(prehistory)
-        #     logger.info(f"Added {len(prehistory)} prehistory messages to combined messages")
-
-        llm_messages_history = self.process_history_compression(llm_messages_history)
-
-        if self.current_character != self.GameMaster:
-            missed_messages = llm_messages_history[:-self.memory_limit]
-            llm_messages_history_limited = llm_messages_history[-self.memory_limit:]
-        else:
-            missed_messages = llm_messages_history[:-8]
-            llm_messages_history_limited = llm_messages_history[-8:]
-
-        if missed_messages and bool(self.settings.get("SAVE_MISSED_HISTORY", True)):
-            logger.info(f"Сохраняю {len(missed_messages)} пропущенных сообщений для персонажа {self.current_character.char_id}.")
-            self.current_character.history_manager.save_missed_history(missed_messages)
-
-        if self.image_quality_reduction_enabled:
-            llm_messages_history_limited = self._apply_history_image_quality_reduction(llm_messages_history_limited)
-
-        # ВАЖНО: system infos — это строки -> оборачиваем в {role, content}
-        event_system_infos = self.current_character.get_system_infos()
-        if event_system_infos:
-            llm_messages_history_limited.extend(
-                [{"role": "system", "content": s} if isinstance(s, str) else s for s in event_system_infos]
-            )
-
-        combined_messages.extend(llm_messages_history_limited)
-
-        current_time = datetime.datetime.now()
-        current_state_message = {
-            "role": "system", 
-            "content": f"[Current State]\nDate: {current_time.strftime('%Y-%m-%d')}\nTime: {current_time.strftime('%H:%M:%S')}\nDay of week: {current_time.strftime('%A')}"
-        }
-        combined_messages.append(current_state_message)
-
-        if system_input:
-            combined_messages.append({"role": "system", "content": system_input})
-
-        user_message_for_history = None
-        user_content_chunks = []
-
-        if user_input:
-            user_content_chunks.append({"type": "text", "text": user_input})
-
-        for img_bytes in image_data:
-            user_content_chunks.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"}
-            })
-
-        if user_content_chunks:
-            user_message_for_history = {"role": "user", "content": user_content_chunks}
-            combined_messages.append(user_message_for_history)
-
-        if user_message_for_history:
-            user_message_for_history["time"] = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M")
-            llm_messages_history_limited.append(user_message_for_history)
-
-        char_provider = self.get_character_provider()
-        preset_id = None
-        if char_provider != "Current":
-            try:
-                preset_id = int(char_provider)
-                logger.info(f"Using character-specific preset ID: {preset_id}")
-            except ValueError:
-                logger.warning(f"Invalid preset ID in CHAR_PROVIDER: {char_provider}, using current")
-        
-        try:
-            llm_response_content, success = self._generate_chat_response(combined_messages, stream_callback, preset_id)
-
-            if not success or not llm_response_content:
-                logger.warning("LLM generation failed or returned empty.")
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': translate("Не удалось получить ответ.", "Text generation failed.")})
-                return None
-
-            processed_response_text = self.current_character.process_response_nlp_commands(
-                llm_response_content, self.settings.get("SAVE_MISSED_MEMORY", False)
-            )
-
-            final_response_text = processed_response_text
-            try:
-                use_cmd_replacer  = self.settings.get("USE_COMMAND_REPLACER", False)
-                if use_cmd_replacer:
-                    if not hasattr(self, 'model_handler'):
-                        from handlers.embedding_handler import EmbeddingModelHandler
-                        self.model_handler = EmbeddingModelHandler()
-                    if not hasattr(self, 'parser'):
-                        from utils.command_parser import CommandParser
-                        self.parser = CommandParser(model_handler=self.model_handler)
-
-                    min_sim     = float(self.settings.get("MIN_SIMILARITY_THRESHOLD", 0.40))
-                    cat_switch  = float(self.settings.get("CATEGORY_SWITCH_THRESHOLD", 0.18))
-                    skip_comma  = bool(self.settings.get("SKIP_COMMA_PARAMETERS", True))
-
-                    logger.info(f"Attempting command replacement on: {processed_response_text[:100]}...")
-                    final_response_text, _ = self.parser.parse_and_replace(
-                        processed_response_text,
-                        min_similarity_threshold=min_sim,
-                        category_switch_threshold=cat_switch,
-                        skip_comma_params=skip_comma
-                    )
-                    logger.info(f"After command replacement: {final_response_text[:100]}...")
-                else:
-                    logger.info("Command replacer disabled.")
-            except Exception as ex:
-                logger.error(f"Error during command replacement: {ex}", exc_info=True)
-
-            assistant_message_content = final_response_text
-
-            if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
-                logger.info("Настройка REPLACE_IMAGES_WITH_PLACEHOLDERS включена. Заменяю изображения заглушками.")
-                assistant_message_content = re.sub(
-                    r'https?://\S+\.(?:png|jpg|jpeg|gif|bmp)|data:image/\S+;base64,\S+',
-                    '[Изображение]', assistant_message_content
-                )
-
-            assistant_message = {"role": "assistant", "content": assistant_message_content}
-            assistant_message["time"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
-
-            llm_messages_history_limited.append(assistant_message)
-
-            self.current_character.save_character_state_to_history(llm_messages_history_limited)
-
-            self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
-            logger.success(translate("Получен успешный ответ от API.", "Successful response from API."))
-            return final_response_text
-
-        except Exception as e:
-            logger.error(f"Error during LLM response generation or processing: {e}", exc_info=True)
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': str(e)})
-            return f"Ошибка: {e}"
-
-    def generate_react(
-        self,
-        user_input: str,
-        system_input: str = "",
-        image_data: list[bytes] | None = None,
-        stream_callback: callable = None,
-        message_id: int | None = None
-    ):
-        """
-        Специализированный генератор для react-задач:
-        - использует react_template.txt (если есть, иначе main_template.txt);
-        - может использовать отдельный пресет (REACT_PROVIDER);
-        - контекст/история/переменные собираются так же, как в generate_response.
-        """
-        if image_data is None:
-            image_data = []
-
-        # React может быть полностью отключён настройкой
-        if not bool(self.settings.get("REACT_ENABLED", False)):
-            logger.info("generate_react: REACT_ENABLED is False, skipping generation.")
-            return None
-
-        self.check_change_current_character()
-
-        history_data = self.current_character.history_manager.load_history()
-        llm_messages_history = history_data.get("messages", [])
-
-        if self.infos_to_add_to_history:
-            llm_messages_history.extend(self.infos_to_add_to_history)
-            self.infos_to_add_to_history.clear()
-
-        # Игровые переменные
-        self.current_character.set_variable("GAME_DISTANCE", self.distance)
-        self.current_character.set_variable("GAME_ROOM_PLAYER", self.get_room_name(self.roomPlayer))
-        self.current_character.set_variable("GAME_ROOM_MITA", self.get_room_name(self.roomMita))
-        self.current_character.set_variable("GAME_NEAR_OBJECTS", self.nearObjects)
-        self.current_character.set_variable("GAME_ACTUAL_INFO", self.actualInfo)
-
-        game_state_prompt_content: Optional[str] = None
-        if self.current_character.get_variable("playingGame", False):
-            if hasattr(self.current_character, 'game_manager'):
-                game_state_prompt_content = self.current_character.game_manager.get_active_game_state_prompt()
-                if game_state_prompt_content:
-                    logger.info(f"[{self.current_character.char_id}] Сформирован промпт состояния игры (react).")
-            else:
-                logger.warning(f"[{self.current_character.char_id}] Игра активна, но GameManager отсутствует (react).")
-
-        combined_messages = []
-
-        # Выбор шаблона: react_template.txt или fallback на main_template.txt
-        template_name = "react_template.txt"
-        template_path = os.path.join(self.current_character.base_data_path, template_name)
-        if not os.path.exists(template_path):
-            template_name = self.current_character.main_template_path_relative
-
-        separate_prompts = bool(self.settings.get("SEPARATE_PROMPTS", True))
-        messages = self.current_character.get_full_system_setup_for_llm_template(template_name, separate_prompts)
-        combined_messages.extend(messages)
-
-        if game_state_prompt_content:
-            combined_messages.append({"role": "system", "content": game_state_prompt_content})
-
-        llm_messages_history = self.process_history_compression(llm_messages_history)
-
-        # Лимит истории как в обычном generate_response
-        if self.current_character != self.GameMaster:
-            missed_messages = llm_messages_history[:-self.memory_limit]
-            llm_messages_history_limited = llm_messages_history[-self.memory_limit:]
-        else:
-            missed_messages = llm_messages_history[:-8]
-            llm_messages_history_limited = llm_messages_history[-8:]
-
-        if missed_messages and bool(self.settings.get("SAVE_MISSED_HISTORY", True)):
-            logger.info(f"Сохраняю {len(missed_messages)} пропущенных сообщений для персонажа {self.current_character.char_id} (react).")
-            self.current_character.history_manager.save_missed_history(missed_messages)
-
-        if self.image_quality_reduction_enabled:
-            llm_messages_history_limited = self._apply_history_image_quality_reduction(llm_messages_history_limited)
-
-        event_system_infos = self.current_character.get_system_infos()
-        if event_system_infos:
-            llm_messages_history_limited.extend(
-                [{"role": "system", "content": s} if isinstance(s, str) else s for s in event_system_infos]
-            )
-
-        combined_messages.extend(llm_messages_history_limited)
-
-        current_time = datetime.datetime.now()
-        current_state_message = {
-            "role": "system",
-            "content": f"[Current State]\nDate: {current_time.strftime('%Y-%m-%d')}\n"
-                       f"Time: {current_time.strftime('%H:%M:%S')}\n"
-                       f"Day of week: {current_time.strftime('%A')}"
-        }
-        combined_messages.append(current_state_message)
-
-        if system_input:
-            combined_messages.append({"role": "system", "content": system_input})
-
-        user_message_for_history = None
-        user_content_chunks = []
-
-        if user_input:
-            user_content_chunks.append({"type": "text", "text": user_input})
-
-        for img_bytes in image_data:
-            user_content_chunks.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
-                }
-            })
-
-        if user_content_chunks:
-            user_message_for_history = {"role": "user", "content": user_content_chunks}
-            combined_messages.append(user_message_for_history)
-
-        if user_message_for_history:
-            user_message_for_history["time"] = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M")
-            llm_messages_history_limited.append(user_message_for_history)
-
-        # Выбор пресета: REACT_PROVIDER имеет приоритет, иначе используем логика character provider
-        char_provider = self.get_character_provider()
-        react_provider_label = str(self.settings.get("REACT_PROVIDER", translate("Текущий", "Current")))
-        preset_id = None
-
-        if react_provider_label not in (translate("Текущий", "Current"), "Текущий", "Current"):
-            preset_id = self._get_preset_id_by_name(react_provider_label)
-            if preset_id is None:
-                logger.warning(f"generate_react: REACT_PROVIDER '{react_provider_label}' не найден, используем текущий пресет.")
-        else:
-            if char_provider != "Current":
-                try:
-                    preset_id = int(char_provider)
-                    logger.info(f"generate_react: using character-specific preset ID: {preset_id}")
-                except ValueError:
-                    logger.warning(f"generate_react: invalid CHAR_PROVIDER='{char_provider}', fallback to current preset.")
-
-        try:
-            # Для react стриминг как правило не нужен, поэтому stream_callback обычно None
-            llm_response_content, success = self._generate_chat_response(
-                combined_messages,
-                stream_callback=None,
-                preset_id=preset_id
-            )
-
-            if not success or not llm_response_content:
-                logger.warning("generate_react: LLM generation failed or returned empty.")
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                    'error': translate("Не удалось получить ответ.", "Text generation failed.")
-                })
-                return None
-
-            processed_response_text = self.current_character.process_response_nlp_commands(
-                llm_response_content,
-                self.settings.get("SAVE_MISSED_MEMORY", False)
-            )
-
-            final_response_text = processed_response_text
-            try:
-                use_cmd_replacer = self.settings.get("USE_COMMAND_REPLACER", False)
-                if use_cmd_replacer:
-                    if not hasattr(self, 'model_handler'):
-                        from handlers.embedding_handler import EmbeddingModelHandler
-                        self.model_handler = EmbeddingModelHandler()
-                    if not hasattr(self, 'parser'):
-                        from utils.command_parser import CommandParser
-                        self.parser = CommandParser(model_handler=self.model_handler)
-
-                    min_sim = float(self.settings.get("MIN_SIMILARITY_THRESHOLD", 0.40))
-                    cat_switch = float(self.settings.get("CATEGORY_SWITCH_THRESHOLD", 0.18))
-                    skip_comma = bool(self.settings.get("SKIP_COMMA_PARAMETERS", True))
-
-                    logger.info(f"[react] Attempting command replacement on: {processed_response_text[:100]}...")
-                    final_response_text, _ = self.parser.parse_and_replace(
-                        processed_response_text,
-                        min_similarity_threshold=min_sim,
-                        category_switch_threshold=cat_switch,
-                        skip_comma_params=skip_comma
-                    )
-                    logger.info(f"[react] After command replacement: {final_response_text[:100]}...")
-                else:
-                    logger.info("[react] Command replacer disabled.")
-            except Exception as ex:
-                logger.error(f"[react] Error during command replacement: {ex}", exc_info=True)
-
-            assistant_message_content = final_response_text
-
-            if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
-                logger.info("[react] REPLACE_IMAGES_WITH_PLACEHOLDERS is enabled. Replacing images with placeholders.")
-                assistant_message_content = re.sub(
-                    r'https?://\S+\.(?:png|jpg|jpeg|gif|bmp)|data:image/\S+;base64,\S+',
-                    '[Изображение]', assistant_message_content
-                )
-
-            assistant_message = {"role": "assistant", "content": assistant_message_content}
-            assistant_message["time"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
-
-            llm_messages_history_limited.append(assistant_message)
-            self.current_character.save_character_state_to_history(llm_messages_history_limited)
-
-            self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
-            logger.success(translate("Получен успешный react-ответ от API.", "Successful react response from API."))
-            return final_response_text
-
-        except Exception as e:
-            logger.error(f"[react] Error during LLM response generation or processing: {e}", exc_info=True)
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': str(e)})
-            return f"Ошибка: {e}"
-
-    def process_history_compression(self,llm_messages_history):
-        """Сжимает старые воспоминания"""
-
-        compress_percent = float(self.settings.get("HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS",0.85))
-        if self.enable_history_compression_on_limit and len(llm_messages_history) >= self.memory_limit*compress_percent:
-
-            messages_to_compress = llm_messages_history[:round(-self.memory_limit*compress_percent)]
-            logger.info(f"История превышает лимит. Попытка сжать {len(messages_to_compress)} сообщений.")
-
-            compressed_summary = self._compress_history(messages_to_compress)
-
-            if compressed_summary:
-                if self.history_compression_output_target == "memory":
-                    # Добавляем в MemorySystem
-                    if hasattr(self.current_character, 'memory_system') and self.current_character.memory_system:
-                        self.current_character.memory_system.add_memory(content=compressed_summary,memory_type="summary")
-                        logger.info("Сжатая сводка добавлена в MemorySystem.")
-                    else:
-                        logger.warning("MemorySystem недоступен для добавления сжатой сводки.")
-                elif self.history_compression_output_target == "history":
-                    summary_message = {"role": "system", "content": f"[HISTORY SUMMARY]: {compressed_summary}"}
-                    # Оставляем self.memory_limit - 1 самых новых сообщений и добавляем сводку в начало
-                    # Убедимся, что self.memory_limit > 0, чтобы избежать отрицательных индексов
-                    messages_to_keep = llm_messages_history[-self.memory_limit + 1:] if self.memory_limit > 0 else []
-                    llm_messages_history = [summary_message] + messages_to_keep
-                    logger.info("Сжатая сводка добавлена в начало истории, старые сообщения удалены.")
-                else:
-                    logger.warning(f"Неизвестный target для сжатия истории: {self.history_compression_output_target}")
-
-                logger.info(f"История сокращена до {len(llm_messages_history)} сообщений после сжатия по лимиту.")
-            else:
-                logger.warning("Сжатие истории по лимиту не удалось (недостаточно сообщений для сжатия).")
-
-        # Логика периодического сжатия
-        if self.enable_history_compression_periodic:
-            self._messages_since_last_periodic_compression += 1
-            if self._messages_since_last_periodic_compression >= self.history_compression_periodic_interval:
-                # Берем самые старые сообщения для периодического сжатия
-                messages_to_compress = llm_messages_history[:self.history_compression_periodic_interval]
-
-                if not messages_to_compress:
-                    logger.info("Нет сообщений для периодического сжатия.")
-                    self._messages_since_last_periodic_compression = 0 # Сбрасываем счетчик
-                    return llm_messages_history # Возвращаем текущую историю без изменений
-
-                logger.info(f"Периодическое сжатие: попытка сжать {len(messages_to_compress)} сообщений.")
-                compressed_summary = self._compress_history(messages_to_compress)
-
-                if compressed_summary:
-                    if self.history_compression_output_target == "memory":
-                        if hasattr(self.current_character, 'memory_system') and self.current_character.memory_system:
-                            self.current_character.memory_system.add_memory(compressed_summary, memory_type="summary")
-                            logger.info("Сжатая сводка добавлена в MemorySystem.")
-                        else:
-                            logger.warning("MemorySystem недоступен для добавления сжатой сводки.")
-                        # После добавления в память, просто обрезаем историю до лимита
-                        llm_messages_history = llm_messages_history[-self.memory_limit:]
-                    elif self.history_compression_output_target == "history":
-                        summary_message = {"role": "system", "content": f"[HISTORY SUMMARY]: {compressed_summary}"}
-                        # Оставляем сообщения после сжатых и добавляем сводку в начало
-                        remaining_messages = llm_messages_history[len(messages_to_compress):]
-                        # Затем обрезаем до self.memory_limit, учитывая, что summary_message уже добавлен
-                        messages_to_keep = remaining_messages[-self.memory_limit + 1:] if self.memory_limit > 0 else []
-                        llm_messages_history = [summary_message] + messages_to_keep
-                        logger.info("Сжатая сводка добавлена в начало истории, старые сообщения удалены.")
-                    else:
-                        logger.warning(
-                            f"Неизвестный target для сжатия истории: {self.history_compression_output_target}")
-
-                    logger.info(f"История сокращена до {len(llm_messages_history)} сообщений после периодического сжатия.")
-                else:
-                    logger.warning("Периодическое сжатие истории не удалось.")
-
-                self._messages_since_last_periodic_compression = 0  # Сбрасываем счетчик
-        return llm_messages_history
-
     def check_change_current_character(self):
         if not self.current_character_to_change:
             return
@@ -770,54 +306,25 @@ class ChatModel:
             logger.warning(f"Attempted to change to unknown character: {self.current_character_to_change}")
             self.current_character_to_change = ""
     
-    def load_preset_settings(self, preset_id: Optional[int] = None) -> Dict[str, Any]:
-        """
-        Загружает настройки из пресета по ID.
-        Если preset_id не указан, берёт текущий из LAST_API_PRESET_ID.
-        """
-        if preset_id is None:
-            preset_id = self.settings.get("LAST_API_PRESET_ID", 0)
-            logger.info(f"Loading current preset ID: {preset_id}")
-        else:
-            logger.info(f"Loading specific preset ID: {preset_id}")
+    def generate(
+        self,
+        messages: List[Dict[str, Any]],
+        stream_callback: callable = None,
+        preset_id: Optional[int] = None
+    ) -> Optional[str]:
         
-        preset_data = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_FULL, {'id': preset_id}, timeout=1.0)
-        if preset_data and preset_data[0]:
-            preset = preset_data[0]
-            logger.info(f"Preset {preset_id} loaded successfully: {preset.get('name', 'Unknown')}")
-            
-            # Если есть url_tpl, собираем URL
-            url = preset.get('url', '')
-            if preset.get('url_tpl'):
-                model = preset.get('default_model', '')
-                url = preset['url_tpl'].format(model=model) if '{model}' in preset['url_tpl'] else preset['url_tpl']
-                if preset.get('add_key') and preset.get('key'):
-                    sep = '&' if '?' in url else '?'
-                    url = f"{url}{sep}key={preset['key']}"
-            
-            return {
-                'api_key': preset.get('key', ''),
-                'api_url': url,
-                'api_model': preset.get('default_model', ''),
-                'make_request': preset.get('use_request', False),
-                'gemini_case': preset.get('gemini_case', False),
-                'is_g4f': preset.get('is_g4f', False),
-                'g4f_model': preset.get('default_model', '') if preset.get('is_g4f') else '',
-                'preset_name': preset.get('name', 'Unknown'),
-            }
-        else:
-            logger.error(f"Failed to load preset ID {preset_id}: using fallback from settings")
-            return {
-                'api_key': self.settings.get("NM_API_KEY", ""),
-                'api_url': self.settings.get("NM_API_URL", ""),
-                'api_model': self.settings.get("NM_API_MODEL", ""),
-                'make_request': self.settings.get("NM_API_REQ", False),
-                'gemini_case': self.settings.get("GEMINI_CASE", False),
-                'is_g4f': self.settings.get("gpt4free", False),
-                'g4f_model': self.settings.get("gpt4free_model", ""),
-                'preset_name': 'Fallback',
-            }
-        
+        if messages is None:
+            messages = []
+        raw_text, success = self._generate_chat_response(
+            combined_messages=messages,
+            stream_callback=stream_callback,
+            preset_id=preset_id
+        )
+        if not success:
+            return None
+        return raw_text
+
+
     def _generate_chat_response(self, combined_messages, stream_callback: callable = None, preset_id: Optional[int] = None):
         max_attempts = self.max_request_attempts
         retry_delay = self.request_delay
@@ -1175,53 +682,6 @@ class ChatModel:
         logger.info(f"Unknown provider for model '{model_name}', defaulting to 'openai' parameter naming conventions.")
         return 'openai'
 
-    def _compress_history(self, messages_to_compress: List[Dict]) -> Optional[str]:
-        """
-        Сжимает историю диалога, используя LLM для создания краткой сводки.
-        """
-        try:
-            # 1. Загрузка промпта из файла
-            with open(self.history_compression_prompt_template, "r", encoding="utf-8") as f:
-                prompt_template = f.read()
-
-            # 2. Форматирование сообщений для промпта
-            formatted_messages = "\n".join([
-                f"[{msg.get('time', '')}] [{'Player' if msg['role'] == 'user' else 'Character or System'}]: {msg['content']}"
-                if msg.get('time')
-                else f"[{'Player' if msg['role'] == 'user' else 'Character or System'}]: {msg['content']}"
-                for msg in messages_to_compress
-            ])
-
-            # 3. Формирование полного промпта
-            full_prompt = prompt_template.replace("{history_messages}", formatted_messages)
-            full_prompt = full_prompt.replace("{your character}", self.current_character.name)
-
-            # 4. Вызов LLM для получения сжатой сводки
-            system_message = {"role": "system", "content": full_prompt}
-
-            # Получаем preset_id для сжатия истории
-            hc_provider = self.settings.get("HC_PROVIDER", "Current")
-            preset_id = None
-            if hc_provider != "Current":
-                try:
-                    preset_id = int(hc_provider)
-                    logger.info(f"Using history compression preset ID: {preset_id}")
-                except ValueError:
-                    logger.warning(f"Invalid preset ID in HC_PROVIDER: {hc_provider}, using current")
-
-            compressed_summary, success = self._generate_chat_response([system_message], preset_id=preset_id)
-
-            if success and compressed_summary:
-                logger.info("История успешно сжата.")
-                return compressed_summary
-            else:
-                logger.warning("Не удалось сжать историю.")
-                return None
-
-        except Exception as e:
-            logger.error(f"Ошибка при сжатии истории: {e}", exc_info=True)
-            return None
-
     def reload_promts(self):
         logger.info("Reloading current character data.")
         if self.current_character:
@@ -1252,18 +712,12 @@ class ChatModel:
              return self.max_model_tokens
         return self._model_token_limits.get(current_model, 128000)
 
+    
     def get_current_context_token_count(self) -> int:
         if not self.hasTokenizer:
             return 0
 
-        combined_messages = []
-
-        separate_prompts = bool(self.settings.get("SEPARATE_PROMPTS", True))
-        messages = self.current_character.get_cached_system_setup()
-        combined_messages.extend(messages)
-
-        if not messages:
-            messages = self.current_character.get_full_system_setup_for_llm(separate_prompts)
+        combined_messages: List[Dict[str, Any]] = []
 
         history_data = self.current_character.history_manager.load_history()
         llm_messages_history = history_data.get("messages", [])
@@ -1281,21 +735,11 @@ class ChatModel:
         if self.infos_to_add_to_history:
             combined_messages.extend(self.infos_to_add_to_history)
 
-        # ВАЖНО: system infos — строки -> оборачиваем
-        event_system_infos = self.current_character.get_system_infos(clear=False)
-        if event_system_infos:
-            combined_messages.extend(
-                [{"role": "system", "content": s} if isinstance(s, str) else s for s in event_system_infos]
-            )
-
         user_input = self.event_bus.emit_and_wait(Events.Speech.GET_USER_INPUT)
         user_input_from_gui = user_input[0] if user_input else ""
 
         if user_input_from_gui:
             combined_messages.append({"role": "user", "content": user_input_from_gui})
-
-        if not self.hasTokenizer:
-            return 0
 
         total_tokens = 0
         for msg in combined_messages:

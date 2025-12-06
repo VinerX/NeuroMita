@@ -219,19 +219,6 @@ class GameMaster(Character):
         response = re.sub(r"<p>.*?</p>", "", response).strip()
         return response
 
-    def get_llm_system_prompts(self) -> list:
-        try:
-            from managers.settings_manager import SettingsManager as settings
-            current_instruction = settings.get("GM_SMALL_PROMPT", "")
-            self.set_variable("GM_INSTRUCTION", current_instruction)
-        except ImportError:
-            logger.warning(f"[{self.char_id}] SettingsManager not found for GameMaster's GM_INSTRUCTION.")
-            self.set_variable("GM_INSTRUCTION", "")
-        except Exception as e:
-            logger.error(f"[{self.char_id}] Error accessing GM_SMALL_PROMPT: {e}")
-            self.set_variable("GM_INSTRUCTION", "")
-        return super().get_llm_system_prompts()
-
 class Mitaphone(Character):
     DEFAULT_OVERRIDES: Dict[str, Any] = {}
 

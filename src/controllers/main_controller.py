@@ -15,6 +15,8 @@ from controllers.loop_controller import LoopController
 from controllers.task_controller import TaskController
 from controllers.api_presets_controller import ApiPresetsController
 from controllers.local_voice_controller import LocalVoiceController
+from controllers.prompt_controller import PromptController
+from controllers.history_controller import HistoryController
 
 from main_logger import logger
 from utils.ffmpeg_installer import install_ffmpeg
@@ -74,17 +76,30 @@ class MainController:
         
         self.task_controller = TaskController()
         logger.notify("TaskController успешно инициализирован.")
+
+        self.history_controller = HistoryController()
+        logger.notify("HistoryController успешно инициализирован.")
+
+        self.prompt_controller = PromptController()
+        logger.notify("PromptController успешно инициализирован.")
+
         self.api_presets_controller = ApiPresetsController()
         logger.notify("ApiPresetsController успешно инициализирован.")
+
         self.audio_controller = AudioController(self)
         logger.notify("AudioController успешно инициализирован.")
+        
         self.model_controller = ModelController(self.settings, self.pip_installer)
         logger.notify("ModelController успешно инициализирован.")
+
         self.capture_controller = CaptureController(self.settings)
         logger.notify("CaptureController успешно инициализирован.")
+
         self.speech_controller = SpeechController()
         logger.notify("SpeechController успешно инициализирован.")
+
         self._init_server_controller()
+        
         self.chat_controller = ChatController(self.settings)
         logger.notify("ChatController успешно инициализирован.")
 
