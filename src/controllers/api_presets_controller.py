@@ -75,8 +75,91 @@ class ApiPresetsController:
         # Транзиентные состояния (UI-снапшоты)
         self.preset_states: Dict[int, Dict[str, Any]] = {}
 
+        # МИГРАЦИЯ: удаляем старые ключи API из настроек
+        self._migrate_old_api_keys()
+        
         self._load_data()
         self._subscribe_to_events()
+    
+    def _migrate_old_api_keys(self):
+        """
+        Безопасно удаляем старые ключи API из настроек.
+        Выполняется один раз при первом запуске новой версии.
+        """
+        try:
+            from managers.settings_manager import SettingsManager
+            
+            settings_manager = SettingsManager.instance
+            if not settings_manager:
+                logger.warning("SettingsManager не инициализирован, пропускаем миграцию")
+                return
+            
+            settings = settings_manager.settings
+            
+            # Проверяем, выполнена ли уже миграция
+            if settings.get("_API_MIGRATION_DONE", False):
+                logger.debug("Миграция API уже выполнена ранее, пропускаем")
+                return
+            
+            # Старые ключи API, которые нужно удалить
+            old_keys = [
+                "API_PROVIDER",
+                "NM_API_URL",
+                "NM_API_MODEL",
+                "NM_API_KEY",
+                "NM_API_REQ",
+                "GEMINI_CASE",
+                "NM_API_KEY_RES",
+                "API_PROVIDER_DATA",
+                "CUSTOM_API_PRESETS",
+                "LAST_API_PRESET_ID",
+                "GEMINI_CASE_UI",
+                "USE_NEW_API",
+            ]
+            
+            # Также удаляем все CHAR_PROVIDER_* ключи
+            char_keys_to_remove = []
+            for key in settings.keys():
+                if key.startswith("CHAR_PROVIDER_"):
+                    char_keys_to_remove.append(key)
+            
+            # Проверяем, есть ли вообще старые ключи
+            has_old_keys = False
+            for key in old_keys + char_keys_to_remove:
+                if key in settings:
+                    has_old_keys = True
+                    break
+            
+            # Если старых ключей нет, просто ставим флаг и выходим
+            if not has_old_keys:
+                settings["_API_MIGRATION_DONE"] = True
+                settings_manager.save_settings()
+                logger.debug("Старых ключей API не найдено, флаг миграции установлен")
+                return
+            
+            # Удаляем ключи
+            changed = False
+            for key in old_keys + char_keys_to_remove:
+                if key in settings:
+                    del settings[key]
+                    changed = True
+                    logger.info(f"Удалён устаревший ключ API: {key}")
+            
+            if changed:
+                # Ставим флаг, что миграция выполнена
+                settings["_API_MIGRATION_DONE"] = True
+                # Сохраняем настройки через менеджер
+                settings_manager.save_settings()
+                logger.info("Старые ключи API удалены из настроек, флаг миграции установлен")
+            else:
+                # Если почему-то ничего не удалили, но были старые ключи
+                settings["_API_MIGRATION_DONE"] = True
+                settings_manager.save_settings()
+                logger.debug("Флаг миграции установлен без изменений")
+                
+        except Exception as e:
+            logger.error(f"Ошибка при миграции старых ключей API: {e}")
+            # Не падаем, просто логируем ошибку
     
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.ApiPresets.GET_PRESET_LIST, self._on_get_preset_list, weak=False)
@@ -291,7 +374,7 @@ class ApiPresetsController:
             'custom': []
         }
         # builtin = шаблоны
-        for tpl in self.templates.values():
+        for tpl in sorted(self.templates.values(), key=lambda t: t.id):  # СОРТИРОВКА ПО ID
             meta['builtin'].append(PresetMeta(
                 id=tpl.id,
                 name=tpl.name,
@@ -424,7 +507,7 @@ class ApiPresetsController:
         except Exception as e:
             logger.error(f"Failed to import preset: {e}")
             return None
-    
+
     def _on_test_connection(self, event: Event):
         preset_id = event.data.get('id')
         base_id = event.data.get('base')
@@ -451,20 +534,93 @@ class ApiPresetsController:
             })
             return
         
-        test_url = p_tpl.test_url.replace('{key}', key)
+        test_url = p_tpl.test_url
+        
+        # Для Google Gemini заменяем {key} в URL
+        if p_tpl.add_key and '{key}' in test_url:
+            if key:
+                test_url = test_url.replace('{key}', key)
+            else:
+                # Если ключ не предоставлен, используем ключ из пресета
+                if preset_id in self.presets:
+                    up = self.presets[preset_id]
+                    if up.key:
+                        test_url = test_url.replace('{key}', up.key)
+        
         logger.info(f"Starting sync test connection for preset {preset_id} to {test_url}")
         
         threading.Thread(target=self._sync_test_connection, 
                          args=(preset_id, test_url, p_tpl.filter_fn)).start()
 
     def _sync_test_connection(self, preset_id: int, url: str, filter_fn: str):
+        # Получаем базовый шаблон для определения типа аутентификации
+        base_id = None
+        if preset_id in self.presets:
+            up = self.presets[preset_id]
+            base_id = up.base
+        
+        # Получаем ключ из пресета или шаблона
+        key = ""
+        if preset_id in self.presets:
+            up = self.presets[preset_id]
+            key = up.key
+        
+        # Если ключ пустой, пробуем получить из состояния
+        if not key and preset_id in self.preset_states:
+            state = self.preset_states[preset_id]
+            key = state.get('key', '')
+        
+        # Получаем шаблон для проверки типа аутентификации
+        template = None
+        if base_id and base_id in self.templates:
+            template = self.templates[base_id]
+        
         try:
-            resp = requests.get(url, timeout=10)
+            headers = {}
+            params = {}
+            
+            # Определяем способ аутентификации на основе URL или имени провайдера
+            if "mistral.ai" in url:
+                # Mistral: ключ в заголовке Authorization
+                if key:
+                    headers["Authorization"] = f"Bearer {key}"
+                test_url = url
+            elif "generativelanguage.googleapis.com" in url:
+                # Google Gemini: ключ в параметре URL (уже встроен в URL)
+                test_url = url
+                if key and "key=" not in url:
+                    # Если ключ не встроен в URL, добавляем его
+                    separator = "&" if "?" in url else "?"
+                    test_url = f"{url}{separator}key={key}"
+            elif "openrouter.ai" in url:
+                # OpenRouter: ключ в заголовке Authorization
+                if key:
+                    headers["Authorization"] = f"Bearer {key}"
+                headers["Referer"] = "https://github.com/Atm4x/NeuroMita"
+                headers["X-Title"] = "NeuroMita"
+                test_url = url
+            elif "intelligence.io.solutions" in url:
+                # Ai.iO: ключ в заголовке Authorization
+                if key:
+                    headers["Authorization"] = f"Bearer {key}"
+                test_url = url
+            else:
+                # По умолчанию: ключ в заголовке Authorization
+                if key:
+                    headers["Authorization"] = f"Bearer {key}"
+                test_url = url
+            
+            logger.info(f"Testing connection to {test_url} with headers: {list(headers.keys())}")
+            
+            # Определяем таймаут в зависимости от провайдера
+            timeout = 30 if "openrouter.ai" in test_url else 15
+            resp = requests.get(test_url, headers=headers, params=params, timeout=timeout)
             status = resp.status_code
             text = resp.text
             success = False
             message = ""
             models = []
+            
             if status == 200:
                 try:
                     data = json.loads(text)
@@ -475,21 +631,39 @@ class ApiPresetsController:
                         models = [m.get('name', '').split('/')[-1] for m in data.get('models', []) if m.get('name')]
                         success = True
                         message = f"Found {len(models)} models"
+                    elif 'data' in data and isinstance(data['data'], list):
+                        # Альтернативный формат ответа
+                        models = [m.get('id', '').split('/')[-1] for m in data.get('data', []) if m.get('id')]
+                        success = True
+                        message = f"Found {len(models)} models"
                     else:
                         success = True
                         message = "Connection successful"
                 except Exception as e:
                     success = False
                     message = f"Parsing error: {str(e)}"
-                    logger.error(f"Test parsing error: {e}")
+                    logger.error(f"Test parsing error for {preset_id}: {e}")
+            elif status == 401:
+                message = "Invalid API key (Unauthorized)"
+                success = False
             elif status == 403:
-                message = "Invalid API key"
+                message = "Access forbidden. Check API key permissions."
+                success = False
+            elif status == 404:
+                message = "Endpoint not found"
+                success = False
             elif status == 400:
-                message = "Bad request"
+                message = "Bad request. Check URL and parameters."
+                success = False
+            elif status == 429:
+                message = "Rate limit exceeded"
+                success = False
             else:
                 message = f"HTTP {status}"
+                success = False
             
             logger.info(f"Test result for {preset_id}: success={success}, message={message}, models={len(models)}")
+            
             self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
                 'id': preset_id,
                 'success': success,
@@ -501,14 +675,21 @@ class ApiPresetsController:
             self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
                 'id': preset_id,
                 'success': False,
-                'message': "Connection timeout"
+                'message': "Connection timeout (15s)"
+            })
+        except requests.ConnectionError:
+            logger.warning(f"Connection error for {preset_id}")
+            self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
+                'id': preset_id,
+                'success': False,
+                'message': "Connection failed. Check internet connection."
             })
         except Exception as e:
             logger.error(f"Test error for {preset_id}: {e}")
             self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
                 'id': preset_id,
                 'success': False,
-                'message': str(e)
+                'message': f"Error: {str(e)}"
             })
 
     def _on_update_preset_models(self, event: Event):
@@ -518,29 +699,32 @@ class ApiPresetsController:
             return False
 
         # Если это кастом — обновляем его базовый шаблон.
-        if preset_id in self.presets:
-            up = self.presets[preset_id]
-            if up.base and up.base in self.templates:
-                tpl = self.templates[up.base]
-                existing = set(tpl.known_models or [])
-                updated = list(existing.union(set(new_models)))
-                updated.sort(reverse=True)
-                tpl.known_models = updated
-                self._save_templates()
-                logger.info(f"Updated base template {up.base} with sorted models")
-                return True
-            return False
+        # if preset_id in self.presets:
+        #     up = self.presets[preset_id]
+        #     if up.base and up.base in self.templates:
+        #         tpl = self.templates[up.base]
+        #         existing = set(tpl.known_models or [])
+        #         updated = list(existing.union(set(new_models)))
+        #         updated.sort(reverse=True)
+        #         tpl.known_models = updated
+        #         self._save_templates()
+        #         logger.info(f"Updated base template {up.base} with sorted models")
+        #         return True
+        #     return False
 
         # Если это сам шаблон — обновляем его
-        if preset_id in self.templates:
-            tpl = self.templates[preset_id]
-            existing = set(tpl.known_models or [])
-            updated = list(existing.union(set(new_models)))
-            updated.sort(reverse=True)
-            tpl.known_models = updated
-            self._save_templates()
-            logger.info(f"Updated and sorted models for template {preset_id}")
-            return True
+        # if preset_id in self.templates:
+        #     tpl = self.templates[preset_id]
+        #     existing = set(tpl.known_models or [])
+        #     updated = list(existing.union(set(new_models)))
+        #     updated.sort(reverse=True)
+        #     tpl.known_models = updated
+        #     self._save_templates()
+        #     logger.info(f"Updated and sorted models for template {preset_id}")
+        #     return True
+        
+        # Просто логируем, что получили запрос, но ничего не делаем
+        logger.info(f"Received model update request for preset {preset_id}, but not saving to template (feature disabled)")
 
         return False
 
@@ -581,14 +765,25 @@ class ApiPresetsController:
         self.preset_states[preset_id] = state
         return True
     
+   # def _on_load_preset_state(self, event: Event):
+   #     preset_id = event.data.get('id')
+   #     state = self.preset_states.get(preset_id, {})
+   #     return state
+
     def _on_load_preset_state(self, event: Event):
         preset_id = event.data.get('id')
         state = self.preset_states.get(preset_id, {})
+        # Если в state нет модели - получаем её из пресета
+        if not state.get('model'):
+            preset_dict = self._build_effective_preset_dict(preset_id)
+            if preset_dict and preset_dict.get('default_model'):
+                # Возвращаем обновлённый state (но не сохраняем, чтобы не менять оригинал)
+                return {**state, 'model': preset_dict['default_model']}
         return state
-    
+
     def _on_get_current_preset_id(self, event: Event):
         return self.current_preset_id
-    
+
     def _on_set_current_preset_id(self, event: Event):
         self.current_preset_id = event.data.get('id')
         return True

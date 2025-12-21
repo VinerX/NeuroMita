@@ -1,32 +1,76 @@
 API_TEMPLATES_DATA = [
+    # 1. MISTRAL AI - новый, самый приоритетный
     {
         "id": 1,
-        "name": "Gpt4Free",
-        "pricing": "free",
-        "default_model": "deepseek-v3",
-        "known_models": ["deepseek-v3", "gpt-4o-mini", "claude-3.5-sonnet"],
-        "is_g4f": True,
-        "use_request": False,
-        "documentation_url": "https://github.com/xtekky/gpt4free"
+        "name": "Mistral AI",
+        "pricing": "mixed",
+        "url": "https://api.mistral.ai/v1/chat/completions",
+        "default_model": "mistral-large-2512",
+        "known_models": [
+            "mistral-large-2407",
+            "mistral-medium-2312"
+        ],
+        "gemini_case": False,
+        "use_request": True,
+        "is_g4f": False,
+        "test_url": "https://api.mistral.ai/v1/models",
+        "filter_fn": "mistral_filter",
+        "add_key": True,
+        "documentation_url": "https://docs.mistral.ai/",
+        "models_url": "https://docs.mistral.ai/getting-started/models/",
+        "key_url": "https://console.mistral.ai/api-keys/"
     },
+    
+    # 2. OPENROUTER - второй по приоритету
     {
         "id": 2,
         "name": "OpenRouter",
         "pricing": "mixed",
         "url": "https://openrouter.ai/api/v1/chat/completions",
-        "default_model": "google/gemini-2.0-flash-exp:free",
+        "default_model": "amazon/nova-2-lite-v1:free",
         "known_models": [
-            "google/gemini-2.0-flash-exp:free",
-            "google/gemini-2.0-flash-thinking-exp:free",
-            "meta-llama/llama-3.2-3b-instruct:free"
+            "mistralai/devstral-2512:free",
+            "z-ai/glm-4.5-air:free",
+            "arcee-ai/trinity-mini:free",
+            "nex-agi/deepseek-v3.1-nex-n1:free"
         ],
         "gemini_case": None,
         "use_request": True,
         "add_key": False,
-        "documentation_url": "https://openrouter.ai/keys"
+        "test_url": "https://openrouter.ai/api/v1/models",
+        "filter_fn": "openrouter_filter",
+        "documentation_url": "https://openrouter.ai/docs/quickstart",
+        "models_url": "https://openrouter.ai/models",
+        "key_url": "https://openrouter.ai/keys"
     },
+    
+    # 3. GOOGLE AI STUDIO проблем.
     {
         "id": 3,
+        "name": "Google AI Studio",
+        "pricing": "mixed",
+        "url_tpl": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        "default_model": "gemini-3-flash-preview",
+        "known_models": [
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash",
+            "gemini-flash-latest"
+        ],
+        "gemini_case": True,
+        "use_request": True,
+        "add_key": True,
+        "test_url": "https://generativelanguage.googleapis.com/v1beta/models?key={key}",
+        "filter_fn": "filter_generate_content",
+        "documentation_url": "https://ai.google.dev/gemini-api/docs",
+        "models_url": "https://ai.google.dev/gemini-api/docs/models/gemini",
+        "key_url": "https://aistudio.google.com/apikey"
+    },
+    
+    # 4. AI.IO проблем.
+    {
+        "id": 4,
         "name": "Ai.iO",
         "pricing": "mixed",
         "url": "https://api.intelligence.io.solutions/api/v1/chat/completions",
@@ -34,95 +78,11 @@ API_TEMPLATES_DATA = [
         "known_models": [],
         "use_request": True,
         "add_key": False,
-        "documentation_url": "https://intelligence.io.solutions"
-    },
-    {
-        "id": 4,
-        "name": "Google AI Studio",
-        "pricing": "mixed",
-        "url_tpl": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        "default_model": "gemini-2.0-flash-exp",
-        "known_models": [
-            "gemini-2.0-flash-exp",
-            "gemini-2.0-flash-thinking-exp-1219",
-            "gemini-1.5-flash",
-            "gemini-1.5-flash-8b",
-            "gemini-1.5-pro"
-        ],
-        "gemini_case": True,
-        "use_request": True,
-        "add_key": True,
-        "test_url": "https://generativelanguage.googleapis.com/v1beta/models?key={key}",
-        "filter_fn": "filter_generate_content",
-        'documentation_url': 'https://ai.google.dev/gemini-api/docs',
-        'models_url': 'https://ai.google.dev/gemini-api/docs/models/gemini',
-        'key_url': 'https://aistudio.google.com/apikey'
-    },
-    {
-        "id": 5,
-        "name": "ProxiApi (google)",
-        "pricing": "paid",
-        "url_tpl": "https://api.proxyapi.ru/google/v1/models/{model}:generateContent",
-        "default_model": "gemini-2.0-flash-lite",
-        "known_models": ["gemini-2.0-flash-lite", "gemini-1.5-flash"],
-        "gemini_case": True,
-        "use_request": True,
-        "add_key": False,
-        "documentation_url": "https://proxyapi.ru"
-    },
-    {
-        "id": 6,
-        "name": "ProxiApi (deepseek)",
-        "pricing": "paid",
-        "url": "https://api.proxyapi.ru/deepseek",
-        "default_model": "deepseek-chat",
-        "known_models": ["deepseek-chat", "deepseek-reasoner"],
-        "use_request": True,
-        "add_key": False,
-        "documentation_url": "https://proxyapi.ru"
-    },
-    {
-        "id": 7,
-        "name": "OpenAI",
-        "pricing": "paid",
-        "url": "https://api.openai.com/v1/chat/completions",
-        "default_model": "gpt-4o-mini",
-        "known_models": ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "o1-mini", "o1-preview"],
-        "use_request": False,
-        "add_key": False,
-        "documentation_url": "https://platform.openai.com/api-keys"
-    },
-    {
-        "id": 8,
-        "name": "Anthropic",
-        "pricing": "paid",
-        "url": "https://api.anthropic.com/v1/messages",
-        "default_model": "claude-3-5-sonnet-20241022",
-        "known_models": ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229"],
-        "use_request": True,
-        "add_key": False,
-        "documentation_url": "https://console.anthropic.com/settings/keys"
-    },
-    {
-        "id": 9,
-        "name": "DeepSeek",
-        "pricing": "paid",
-        "url": "https://api.deepseek.com/chat/completions",
-        "default_model": "deepseek-chat",
-        "known_models": ["deepseek-chat", "deepseek-reasoner"],
-        "use_request": True,
-        "add_key": False,
-        "documentation_url": "https://platform.deepseek.com/api_keys"
-    },
-    {
-        "id": 10,
-        "name": "Chutes.ai",
-        "pricing": "paid",
-        "url": "https://llm.chutes.ai/v1/chat/completions",
-        "default_model": "deepseek-ai/DeepSeek-V3-0324",
-        "known_models": ["deepseek-ai/DeepSeek-V3-0324"],
-        "use_request": True,
-        "add_key": False,
-        "documentation_url": "https://chutes.ai"
+        "test_url": "https://api.intelligence.io.solutions/api/v1/models",
+        "filter_fn": "aiio_filter",
+        "documentation_url": "https://io.net/docs/guides/inception",
+        "models_url": "https://io.net/docs/guides/intelligence/exploring-ai-models",
+        "key_url": "https://ai.io.net/ai/api-keys"
     }
+    
 ]

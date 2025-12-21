@@ -292,12 +292,12 @@ class ChatModel:
     #     except Exception as e:
     #         logger.error(f"Error loading crazy_prehistory.json: {e}")
     #         return []
-    
+
     def generate_response(
         self,
-        user_input : str,
-        system_input : str = "",
-        image_data : list[bytes] | None = None,
+        user_input: str,
+        system_input: str = "",
+        image_data: list[bytes] | None = None,
         stream_callback: callable = None,
         message_id: int | None = None
     ):
@@ -306,18 +306,44 @@ class ChatModel:
 
         self.check_change_current_character()
 
-        history_data           = self.current_character.history_manager.load_history()
-        llm_messages_history   = history_data.get("messages", [])
+        # --- ОПРЕДЕЛЕНИЕ МОДЕЛИ И РЕЖИМА ---
+        current_model_lower = str(self.api_model).lower()
+        
+        # Получаем настройки текущего пресета
+        preset_settings = self.load_preset_settings()
+        api_url_str = str(preset_settings.get('api_url', '')).lower()
+        
+        # Проверяем на AI.IO и Мистраль
+        is_ai_io = "intelligence.io.solutions" in api_url_str
+        is_mistral_mode = "mistral" in current_model_lower or "mixtral" in current_model_lower or is_ai_io
 
+        if is_mistral_mode:
+            logger.info("Detected AI.IO or Mistral: Activating strict message ordering.")
+
+        history_data = self.current_character.history_manager.load_history()
+        llm_messages_history = history_data.get("messages", [])
+
+        # Буфер для текста системных сообщений (используется только если is_mistral_mode = True)
+        mistral_system_buffer = []
+
+        # 1. System Info from Event Bus (добавление в историю или буфер)
         if self.infos_to_add_to_history:
-            llm_messages_history.extend(self.infos_to_add_to_history)
+            if is_mistral_mode:
+                # В режиме Mistral собираем текст
+                for item in self.infos_to_add_to_history:
+                    content = item.get("content", "") if isinstance(item, dict) else str(item)
+                    mistral_system_buffer.append(f"[System Info]: {content}")
+            else:
+                # Обычный режим: добавляем как сообщения
+                llm_messages_history.extend(self.infos_to_add_to_history)
+
             self.infos_to_add_to_history.clear()
 
-        self.current_character.set_variable("GAME_DISTANCE",self.distance)
-        self.current_character.set_variable("GAME_ROOM_PLAYER",self.get_room_name(self.roomPlayer))
-        self.current_character.set_variable("GAME_ROOM_MITA",self.get_room_name(self.roomMita))
-        self.current_character.set_variable("GAME_NEAR_OBJECTS",self.nearObjects)
-        self.current_character.set_variable("GAME_ACTUAL_INFO",self.actualInfo)
+        self.current_character.set_variable("GAME_DISTANCE", self.distance)
+        self.current_character.set_variable("GAME_ROOM_PLAYER", self.get_room_name(self.roomPlayer))
+        self.current_character.set_variable("GAME_ROOM_MITA", self.get_room_name(self.roomMita))
+        self.current_character.set_variable("GAME_NEAR_OBJECTS", self.nearObjects)
+        self.current_character.set_variable("GAME_ACTUAL_INFO", self.actualInfo)
 
         game_state_prompt_content: Optional[str] = None
         if self.current_character.get_variable("playingGame", False):
@@ -330,58 +356,70 @@ class ChatModel:
 
         combined_messages = []
 
-        separate_prompts =  bool(self.settings.get("SEPARATE_PROMPTS", True))
+        separate_prompts = bool(self.settings.get("SEPARATE_PROMPTS", True))
         messages = self.current_character.get_full_system_setup_for_llm(separate_prompts)
         combined_messages.extend(messages)
 
         if game_state_prompt_content:
             combined_messages.append({"role": "system", "content": game_state_prompt_content})
 
-        # prehistory = self.load_prehistory()
-        # if prehistory:
-        #     combined_messages.extend(prehistory)
-        #     logger.info(f"Added {len(prehistory)} prehistory messages to combined messages")
-
         llm_messages_history = self.process_history_compression(llm_messages_history)
 
         if self.current_character != self.GameMaster:
-            missed_messages = llm_messages_history[:-self.memory_limit]
             llm_messages_history_limited = llm_messages_history[-self.memory_limit:]
         else:
-            missed_messages = llm_messages_history[:-8]
             llm_messages_history_limited = llm_messages_history[-8:]
-
-        if missed_messages and bool(self.settings.get("SAVE_MISSED_HISTORY", True)):
-            logger.info(f"Сохраняю {len(missed_messages)} пропущенных сообщений для персонажа {self.current_character.char_id}.")
-            self.current_character.history_manager.save_missed_history(missed_messages)
 
         if self.image_quality_reduction_enabled:
             llm_messages_history_limited = self._apply_history_image_quality_reduction(llm_messages_history_limited)
 
-        # ВАЖНО: system infos — это строки -> оборачиваем в {role, content}
+        # добавление в историю или буфер
         event_system_infos = self.current_character.get_system_infos()
         if event_system_infos:
-            llm_messages_history_limited.extend(
-                [{"role": "system", "content": s} if isinstance(s, str) else s for s in event_system_infos]
-            )
+            if is_mistral_mode:
+                for s in event_system_infos:
+                    content = s if isinstance(s, str) else s.get("content", "")
+                    mistral_system_buffer.append(f"[Event Info]: {content}")
+            else:
+                llm_messages_history_limited.extend(
+                    [{"role": "system", "content": s} if isinstance(s, str) else s for s in event_system_infos]
+                )
 
         combined_messages.extend(llm_messages_history_limited)
 
+        # Current State (Время/Дата)
         current_time = datetime.datetime.now()
-        current_state_message = {
-            "role": "system", 
-            "content": f"[Current State]\nDate: {current_time.strftime('%Y-%m-%d')}\nTime: {current_time.strftime('%H:%M:%S')}\nDay of week: {current_time.strftime('%A')}"
-        }
-        combined_messages.append(current_state_message)
+        current_state_content = f"[Current State]\nDate: {current_time.strftime('%Y-%m-%d')}\nTime: {current_time.strftime('%H:%M:%S')}\nDay of week: {current_time.strftime('%A')}"
 
+        if is_mistral_mode:
+            mistral_system_buffer.append(current_state_content)
+        else:
+            combined_messages.append({"role": "system", "content": current_state_content})
+
+        # 4. System Input (дополнительный контекст)
         if system_input:
-            combined_messages.append({"role": "system", "content": system_input})
+            if is_mistral_mode:
+                mistral_system_buffer.append(f"[System Context]: {system_input}")
+            else:
+                combined_messages.append({"role": "system", "content": system_input})
 
-        user_message_for_history = None
+        # --- Формирование сообщения пользователя ---
+        final_user_text = user_input
+
+        # Схлопываем буфер в текст пользователя для AI.IO/Mistral
+        if is_mistral_mode and mistral_system_buffer:
+            full_context_prefix = "\n\n".join(mistral_system_buffer)
+            if final_user_text:
+                final_user_text = f"{full_context_prefix}\n\n{final_user_text}"
+            else:
+                final_user_text = full_context_prefix
+
+        user_message_llm = None
+        user_message_history = None
         user_content_chunks = []
 
-        if user_input:
-            user_content_chunks.append({"type": "text", "text": user_input})
+        if final_user_text:
+            user_content_chunks.append({"type": "text", "text": final_user_text})
 
         for img_bytes in image_data:
             user_content_chunks.append({
@@ -390,27 +428,38 @@ class ChatModel:
             })
 
         if user_content_chunks:
-            user_message_for_history = {"role": "user", "content": user_content_chunks}
-            combined_messages.append(user_message_for_history)
+            user_message_llm = {"role": "user", "content": user_content_chunks}
+            combined_messages.append(user_message_llm)
 
-        if user_message_for_history:
-            user_message_for_history["time"] = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M")
-            llm_messages_history_limited.append(user_message_for_history)
+        if user_message_llm:
+            if is_mistral_mode:
+                clean_chunks = []
+                if user_input:
+                    clean_chunks.append({"type": "text", "text": user_input})
+                for chunk in user_content_chunks:
+                    if chunk.get("type") == "image_url":
+                        clean_chunks.append(chunk)
+                if clean_chunks:
+                    user_message_history = {"role": "user", "content": clean_chunks}
+            else:
+                user_message_history = user_message_llm
+
+            if user_message_history:
+                user_message_history["time"] = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M")
+                llm_messages_history_limited.append(user_message_history)
 
         char_provider = self.get_character_provider()
         preset_id = None
+        
         if char_provider != "Current":
-            try:
-                preset_id = int(char_provider)
-                logger.info(f"Using character-specific preset ID: {preset_id}")
-            except ValueError:
-                logger.warning(f"Invalid preset ID in CHAR_PROVIDER: {char_provider}, using current")
+            found_id = self._get_preset_id_by_name(char_provider)
+            if found_id:
+                preset_id = found_id
         
         try:
             llm_response_content, success = self._generate_chat_response(combined_messages, stream_callback, preset_id)
 
             if not success or not llm_response_content:
-                logger.warning("LLM generation failed or returned empty.")
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': translate("Не удалось получить ответ.", "Text generation failed.")})
                 return None
 
@@ -420,8 +469,7 @@ class ChatModel:
 
             final_response_text = processed_response_text
             try:
-                use_cmd_replacer  = self.settings.get("USE_COMMAND_REPLACER", False)
-                if use_cmd_replacer:
+                if self.settings.get("USE_COMMAND_REPLACER", False):
                     if not hasattr(self, 'model_handler'):
                         from handlers.embedding_handler import EmbeddingModelHandler
                         self.model_handler = EmbeddingModelHandler()
@@ -429,48 +477,29 @@ class ChatModel:
                         from utils.command_parser import CommandParser
                         self.parser = CommandParser(model_handler=self.model_handler)
 
-                    min_sim     = float(self.settings.get("MIN_SIMILARITY_THRESHOLD", 0.40))
-                    cat_switch  = float(self.settings.get("CATEGORY_SWITCH_THRESHOLD", 0.18))
-                    skip_comma  = bool(self.settings.get("SKIP_COMMA_PARAMETERS", True))
-
-                    logger.info(f"Attempting command replacement on: {processed_response_text[:100]}...")
                     final_response_text, _ = self.parser.parse_and_replace(
                         processed_response_text,
-                        min_similarity_threshold=min_sim,
-                        category_switch_threshold=cat_switch,
-                        skip_comma_params=skip_comma
+                        min_similarity_threshold=float(self.settings.get("MIN_SIMILARITY_THRESHOLD", 0.40)),
+                        category_switch_threshold=float(self.settings.get("CATEGORY_SWITCH_THRESHOLD", 0.18)),
+                        skip_comma_params=bool(self.settings.get("SKIP_COMMA_PARAMETERS", True))
                     )
-                    logger.info(f"After command replacement: {final_response_text[:100]}...")
-                else:
-                    logger.info("Command replacer disabled.")
             except Exception as ex:
-                logger.error(f"Error during command replacement: {ex}", exc_info=True)
+                logger.error(f"Error during command replacement: {ex}")
 
             assistant_message_content = final_response_text
-
-            if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
-                logger.info("Настройка REPLACE_IMAGES_WITH_PLACEHOLDERS включена. Заменяю изображения заглушками.")
-                assistant_message_content = re.sub(
-                    r'https?://\S+\.(?:png|jpg|jpeg|gif|bmp)|data:image/\S+;base64,\S+',
-                    '[Изображение]', assistant_message_content
-                )
-
             assistant_message = {"role": "assistant", "content": assistant_message_content}
             assistant_message["time"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
 
             llm_messages_history_limited.append(assistant_message)
-
             self.current_character.save_character_state_to_history(llm_messages_history_limited)
-
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
-            logger.success(translate("Получен успешный ответ от API.", "Successful response from API."))
+            
             return final_response_text
 
         except Exception as e:
-            logger.error(f"Error during LLM response generation or processing: {e}", exc_info=True)
+            logger.error(f"Error during LLM generation: {e}", exc_info=True)
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': str(e)})
             return f"Ошибка: {e}"
-
     def process_history_compression(self,llm_messages_history):
         """Сжимает старые воспоминания"""
 
@@ -631,7 +660,6 @@ class ChatModel:
             logger.info(f"Generation attempt {attempt}/{max_attempts}")
             
             response_text = None
-
             save_combined_messages(combined_messages, "SavedMessages/last_attempt_log")
 
             try:
@@ -643,6 +671,15 @@ class ChatModel:
                 # Подгружаем пресет для текущей попытки
                 preset_settings = self.load_preset_settings(preset_id)
                 
+                # АВТО-ВЫКЛЮЧЕНИЕ TOOLS ДЛЯ AI.IO
+                current_tools_on = tools_on
+                api_url_str = str(preset_settings.get('api_url', '')).lower()
+                
+                if "intelligence.io.solutions" in api_url_str:
+                    if current_tools_on:
+                        logger.info("AI.IO провайдер обнаружен: Автоматически отключаю Tools для совместимости.")
+                        current_tools_on = False
+
                 # Обработка резервных ключей из пресета
                 current_api_key = preset_settings['api_key']
                 reserve_keys = preset_settings.get('reserve_keys', [])
@@ -652,7 +689,6 @@ class ChatModel:
                     if new_key and new_key != current_api_key:
                         logger.info(f"Attempt {attempt}: switching to reserve key (masked): {SH(new_key)}")
                         preset_settings['api_key'] = new_key
-                        # Обновляем URL если нужно (для Gemini с ?key=)
                         if preset_settings['make_request'] and "key=" in preset_settings['api_url']:
                             preset_settings['api_url'] = re.sub(r"key=[^&]*", f"key={new_key}", preset_settings['api_url'])
                 
@@ -667,7 +703,8 @@ class ChatModel:
                 params = self.get_params(effective_model)
                 
                 tools_payload = None
-                if tools_on and tools_mode == "native":
+                # Используем переменную current_tools_on вместо глобальной tools_on
+                if current_tools_on and tools_mode == "native":
                     if preset_settings['make_request'] and preset_settings['gemini_case']:
                         tools_payload = self.tool_manager.get_tools_payload("gemini")
                     elif preset_settings['make_request']:
@@ -675,7 +712,7 @@ class ChatModel:
                     else:
                         tools_payload = self.tool_manager.get_tools_payload("openai")
                 
-                # Передаем сообщения как есть - форматирование происходит в provider
+                # Передаем сообщения как есть
                 req = LLMRequest(
                     model=effective_model,
                     messages=combined_messages,
@@ -687,7 +724,7 @@ class ChatModel:
                     g4f_model=preset_settings['g4f_model'],
                     stream=bool(self.settings.get("ENABLE_STREAMING", False)) and stream_callback is not None,
                     stream_cb=stream_callback,
-                    tools_on=tools_on,
+                    tools_on=current_tools_on,
                     tools_mode=tools_mode,
                     tools_payload=tools_payload,
                     extra=params,
@@ -1301,10 +1338,69 @@ class ChatModel:
         new_response, _ = self._generate_chat_response(messages, stream_callback)
         return new_response or response_text
 
-
-
-    def get_character_provider(self) -> str:
+    def get_character_provider(self):
+        """Возвращает имя провайдера для текущего персонажа"""
         if not self.current_character:
             return "Current"  # По умолчанию, если персонаж не выбран
+        
         key = f"CHAR_PROVIDER_{self.current_character.char_id}"
-        return self.settings.get(key, "Current")  # 'Current' по умолчанию
+        provider_value = self.settings.get(key, "Current")
+        
+        # Обработка разных форматов
+        if not provider_value or provider_value == "Current":
+            return "Current"
+        
+        # Если это уже строка (имя) - возвращаем
+        if isinstance(provider_value, str):
+            return provider_value
+        
+        # Если это число - находим имя по ID
+        if isinstance(provider_value, int):
+            if provider_value == 0:
+                return "Current"
+            
+            # Ищем пресет по ID, чтобы получить имя
+            preset_data = self.event_bus.emit_and_wait(
+                Events.ApiPresets.GET_PRESET_FULL, 
+                {'id': provider_value}, 
+                timeout=1.0
+            )
+            if preset_data and preset_data[0]:
+                return preset_data[0].get('name', "Current")
+        
+        return "Current"
+
+    def _get_preset_id_by_name(self, preset_name: str):
+        """
+        Находит ID пресета по имени
+        preset_name - имя пресета (например "Для Мистраль")
+        Возвращает ID (число) или None если не найден
+        """
+        try:
+            # Получаем список всех пресетов
+            presets_meta = self.event_bus.emit_and_wait(
+                Events.ApiPresets.GET_PRESET_LIST, 
+                timeout=1.0
+            )
+            
+            if not presets_meta or not presets_meta[0]:
+                logger.warning("Cannot get presets list for name lookup")
+                return None
+            
+            # Ищем во встроенных и кастомных пресетах
+            builtin_presets = presets_meta[0].get('builtin', [])
+            custom_presets = presets_meta[0].get('custom', [])
+            all_presets = builtin_presets + custom_presets
+            
+            # Ищем пресет с нужным именем
+            for preset in all_presets:
+                if preset.name == preset_name:
+                    logger.info(f"Found preset '{preset_name}' with ID: {preset.id}")
+                    return preset.id
+            
+            logger.warning(f"Preset '{preset_name}' not found in available presets")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error searching for preset by name '{preset_name}': {e}")
+            return None

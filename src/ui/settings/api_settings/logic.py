@@ -1,7 +1,10 @@
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtWidgets import (
-    QMessageBox, QInputDialog, QFileDialog, QLineEdit, QLabel
+    QMessageBox, QInputDialog, QFileDialog, QLineEdit, QLabel,
+    QDialog, QVBoxLayout, QTextEdit, QPushButton, QDialogButtonBox
 )
+from PyQt6.QtGui import QTextCursor
+from PyQt6.QtGui import QGuiApplication as QApplication
 import qtawesome as qta
 
 from utils import _
@@ -256,6 +259,10 @@ def wire_api_settings_logic(self):
         template = template_data[0]
         self.is_loading_preset = True
         
+        # ставим дефолтную модель нового шаблона
+        default_model = template.get('default_model', '')
+        self.api_model_entry.setText(default_model)  # Даже если пустая строка
+        
         url_tpl = template.get('url_tpl', '')
         if url_tpl:
             current_model = self.api_model_entry.text()
@@ -331,7 +338,18 @@ def wire_api_settings_logic(self):
         known_models = template.get('known_models', [])
         if known_models:
             self.api_model_list_model.setStringList(known_models)
-        
+            # Обновляем модель автодополнения для QLineEdit
+            current_text = self.api_model_entry.text()
+            self.api_model_entry.completer().setModel(self.api_model_list_model)
+            self.api_model_entry.setText(current_text)
+
+        # Устанавливаем модель по умолчанию только если поле пустое
+        current_model = self.api_model_entry.text()
+        if not current_model:
+            default_model = template.get('default_model', '')
+            if default_model:
+                self.api_model_entry.setText(default_model)
+
         self.current_preset_data['base'] = template_id
         self.current_preset_data['is_g4f'] = is_g4f
         self.current_preset_data['use_request'] = template.get('use_request', False)
@@ -508,13 +526,17 @@ def wire_api_settings_logic(self):
         known_models = preset.get('known_models', [])
         if known_models:
             self.api_model_list_model.setStringList(known_models)
+            # Обновляем модель автодополнения для QLineEdit
+            current_text = self.api_model_entry.text()
+            self.api_model_entry.completer().setModel(self.api_model_list_model)
+            self.api_model_entry.setText(current_text)
 
         # Применяем настройки и запоминаем последний пресет
         _apply_settings_from_preset(preset)
         self.settings.set("LAST_API_PRESET_ID", preset_id)
         self.settings.save_settings()
 
-        # ОРИГИНАЛЬНОЕ СОСТОЯНИЕ — ПОСЛЕ всех setText/setIndex/setChecked
+        # ОРИГИНАЛЬНОЕ СОСТОЯНИЕ
         self.original_preset_state = _get_current_state()
 
         # Кнопки сохранения (только для кастомных)
@@ -776,42 +798,165 @@ def wire_api_settings_logic(self):
         logger.info(f"Handling test result in UI: success={data.get('success')}, message={data.get('message')}")
         
         if data.get('success'):
-            message = data.get('message', 'OK')
             models = data.get('models', [])
-            if models:
-                message = f"{message}\n{_('Найдено моделей:', 'Models found:')} {len(models)}"
-            QMessageBox.information(self, _("Успех", "Success"), message)
-            if models:
-                self.event_bus.emit(Events.ApiPresets.UPDATE_PRESET_MODELS, {
-                    'id': self.current_preset_id,
-                    'models': models
-                })
-                logger.info(f"Emitted update models for preset {self.current_preset_id}")
-                preset_data = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_FULL, 
-                                                           {'id': self.current_preset_id}, timeout=1.0)
-                if preset_data and preset_data[0]:
-                    preset = preset_data[0]
-                    known_models = preset.get('known_models', [])
-                    self.api_model_list_model.setStringList(known_models)
-                    logger.info(f"Reloaded and updated completer with {len(known_models)} models")
+            current_template = self.template_combo.currentText().lower()
+            current_url = self.api_url_entry.text().lower()
+
+            # Добавление имён
+            # 1. Проверяем, что это AI.IO
+            is_ai_io = "ai.io" in current_template or "intelligence.io" in current_url
+
+            if is_ai_io and "openrouter" not in current_template:
+                logger.info("Logic: AI.IO detected. Patching string names...")
+                
+                # Карта префиксов (ключ маленькими буквами)
+                prefix_map = {
+                    "kimi-k2": "moonshotai/",
+                    "deepseek": "deepseek-ai/",
+                    "glm-4": "zai-org/",
+                    "llama-3": "meta-llama/",
+                    "llama-4": "meta-llama/",
+                    "gpt-oss": "openai/",
+                    "qwen2": "Qwen/",
+                    "qwen3": "Qwen/",
+                    "mistral": "mistralai/",
+                    "devstral": "mistralai/",
+                    "magistral": "mistralai/",
+                    "nemo": "mistralai/"
+                }
+
+                fixed_models = []
+                for m in models:
+                    # Принудительно превращаем в строку
+                    m_str = str(m).strip()
+                    
+                    # Если слэша нет, ищем совпадение
+                    if "/" not in m_str:
+                        m_lower = m_str.lower()
+                        for key, prefix in prefix_map.items():
+                            if key in m_lower:
+                                # ПРОСТОЕ СЛОЖЕНИЕ СТРОК
+                                m_str = prefix + m_str
+                                break
+                    
+                    fixed_models.append(m_str)
+                
+                # Подменяем список на исправленный
+                models = fixed_models
+                # Сохраняем обратно в data, чтобы при сохранении пресета записалось полное имя
+                data['models'] = fixed_models 
+
+            # OpenRouter и вывод
+            is_openrouter = False
+            if 'openrouter' in current_template:
+                is_openrouter = True
+            elif models and len(models) > 0:
+                # Проверка первой модели
+                first_model = str(models[0]).lower()
+                if ":free" in first_model:
+                    is_openrouter = True
+            
+            # Формируем текст для окошка
+            model_texts = []
+            for i, model_name in enumerate(models[:150], 1):
+                model_texts.append(f"{i}. {model_name}")
+            
+            model_text = '\n'.join(model_texts)
+            if len(models) > 150:
+                model_text += f"\n... и еще {len(models) - 150} моделей"
+            
+            # Заголовок сообщения
+            if is_openrouter:
+                message = f"✅ Подключение успешно\n\n"
+                message += f"📊 Найдено бесплатных моделей OpenRouter: {len(models)}"
+                message += f"\n\n💡 Бесплатные модели имеют лимиты (~50 запросов в день)."
+            else:
+                message = f"✅ Подключение успешно\nНайдено моделей: {len(models)}"
+            
+            # Создаем диалог для отображения списка моделей
+            dialog = QDialog(self)
+            dialog.setWindowTitle(_("Результат тестирования", "Test Result"))
+            dialog.setModal(True)
+            
+            layout = QVBoxLayout(dialog)
+            
+            # Сообщение об успехе
+            success_label = QLabel(message)
+            success_label.setStyleSheet("font-weight: bold; color: #27ae60;")
+            success_label.setWordWrap(True)
+            layout.addWidget(success_label)
+            
+            # Поле со списком моделей для копирования
+            text_edit = QTextEdit()
+            text_edit.setReadOnly(True)
+            text_edit.setPlainText(model_text)
+            text_edit.setMinimumHeight(400)
+            text_edit.setMinimumWidth(500)
+            layout.addWidget(text_edit)
+            
+            # Кнопки
+            button_box = QDialogButtonBox()
+            copy_button = QPushButton(_("Копировать список", "Copy list"))
+            ok_button = QPushButton("OK")
+            ok_button.setDefault(True)
+            
+            button_box.addButton(copy_button, QDialogButtonBox.ButtonRole.ActionRole)
+            button_box.addButton(ok_button, QDialogButtonBox.ButtonRole.AcceptRole)
+            layout.addWidget(button_box)
+            
+            # Сигналы
+            def copy_to_clipboard():
+                clipboard = QApplication.clipboard()
+                clipboard.setText(model_text)
+                copy_button.setText(_("Скопировано!", "Copied!"))
+                QTimer.singleShot(1500, lambda: copy_button.setText(_("Копировать список", "Copy list")))
+            
+            copy_button.clicked.connect(copy_to_clipboard)
+            ok_button.clicked.connect(dialog.accept)
+            
+            dialog.exec()
         else:
             error_message = data.get('message', _('Неизвестная ошибка', 'Unknown error'))
             detailed_message = _("Не удалось подключиться к API", "Failed to connect to API")
             detailed_message += f"\n\n{_('Причина:', 'Reason:')} {error_message}"
-            if "Invalid API key" in error_message or "403" in error_message:
-                detailed_message += f"\n\n{_('Рекомендация:', 'Recommendation:')}"
-                detailed_message += f"\n{_('Проверьте правильность API ключа', 'Check if API key is correct')}"
-            elif "timeout" in error_message.lower():
-                detailed_message += f"\n\n{_('Рекомендация:', 'Recommendation:')}"
-                detailed_message += f"\n{_('Проверьте подключение к интернету или попробуйте позже', 'Check internet connection or try again later')}"
-            elif "400" in error_message:
-                detailed_message += f"\n\n{_('Рекомендация:', 'Recommendation:')}"
-                detailed_message += f"\n{_('Проверьте правильность URL и формата запроса', 'Check URL and request format')}"
-            elif "404" in error_message:
-                detailed_message += f"\n\n{_('Рекомендация:', 'Recommendation:')}"
-                detailed_message += f"\n{_('Проверьте правильность URL адреса', 'Check if URL is correct')}"
-            QMessageBox.critical(self, _("Ошибка подключения", "Connection Error"), detailed_message)
-    
+            
+            # Диалог для ошибок тоже с возможностью копирования
+            dialog = QDialog(self)
+            dialog.setWindowTitle(_("Ошибка подключения", "Connection Error"))
+            dialog.setModal(True)
+            
+            layout = QVBoxLayout(dialog)
+            
+            error_label = QLabel(f"❌ {detailed_message}")
+            error_label.setWordWrap(True)
+            layout.addWidget(error_label)
+            
+            text_edit = QTextEdit()
+            text_edit.setReadOnly(True)
+            text_edit.setPlainText(detailed_message)
+            text_edit.setMaximumHeight(150)
+            layout.addWidget(text_edit)
+            
+            button_box = QDialogButtonBox()
+            copy_button = QPushButton(_("Копировать текст", "Copy text"))
+            ok_button = QPushButton("OK")
+            ok_button.setDefault(True)
+            
+            button_box.addButton(copy_button, QDialogButtonBox.ButtonRole.ActionRole)
+            button_box.addButton(ok_button, QDialogButtonBox.ButtonRole.AcceptRole)
+            layout.addWidget(button_box)
+            
+            def copy_error_to_clipboard():
+                clipboard = QApplication.clipboard()
+                clipboard.setText(detailed_message)
+                copy_button.setText(_("Скопировано!", "Copied!"))
+                QTimer.singleShot(1500, lambda: copy_button.setText(_("Копировать текст", "Copy text")))
+            
+            copy_button.clicked.connect(copy_error_to_clipboard)
+            ok_button.clicked.connect(dialog.accept)
+            
+            dialog.exec()
+
     def _on_test_failed(event):
         data = event.data
         self.test_result_failed.emit(data)
