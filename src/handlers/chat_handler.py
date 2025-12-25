@@ -200,15 +200,12 @@ class ChatModel:
             return None
         return raw_text
 
-
     def _generate_chat_response(self, combined_messages, stream_callback: callable = None, preset_id: Optional[int] = None):
         max_attempts = self.max_request_attempts
         retry_delay = self.request_delay
         request_timeout = 45
 
         self._log_generation_start(preset_id)
-
-        self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION)
 
         tools_on = self.settings.get("TOOLS_ON", True)
         tools_mode = self.settings.get("TOOLS_MODE", "native")
@@ -225,10 +222,19 @@ class ChatModel:
         from handlers.llm_providers.base import LLMRequest
 
         def build_request(preset_settings, effective_model: str, use_g4f_for_this_attempt: bool) -> LLMRequest:
-            """
-            preset_settings: PresetSettings (возможна ротация ключа на попытках)
-            """
-            params = self.get_params(effective_model)
+            from handlers.llm_providers.param_mapper import build_unified_generation_params
+
+            params = build_unified_generation_params(
+                settings=self.settings,
+                temperature=self.temperature,
+                max_response_tokens=self.max_response_tokens,
+                presence_penalty=self.presence_penalty,
+                frequency_penalty=self.frequency_penalty,
+                log_probability=self.log_probability,
+                top_k=self.top_k,
+                top_p=self.top_p,
+                thinking_budget=self.thinking_budget,
+            )
 
             tools_payload = None
             if tools_on and tools_mode == "native":
@@ -294,6 +300,7 @@ class ChatModel:
 
         return None, False
 
+    
     def _log_generation_start(self, preset_id: Optional[int] = None):
         logger.info("Preparing to generate LLM response.")
         preset_settings = self.preset_resolver.resolve(preset_id)
@@ -343,17 +350,6 @@ class ChatModel:
             cleaned = cleaned[3:-3]
 
         return cleaned.strip()
-
-
-    def _get_provider_key(self, model_name: str) -> str:
-        if not model_name: return 'openai'
-        model_name_lower = model_name.lower()
-        if 'gpt-4' in model_name_lower or 'gpt-3.5' in model_name_lower: return 'openai'
-        if 'gemini' in model_name_lower or 'gemma' in model_name_lower: return 'gemini'
-        if 'claude' in model_name_lower: return 'anthropic'
-        if 'deepseek' in model_name_lower: return 'deepseek'
-        logger.info(f"Unknown provider for model '{model_name}', defaulting to 'openai' parameter naming conventions.")
-        return 'openai'
 
     def reload_promts(self):
         logger.info("Reloading current character data.")
@@ -507,81 +503,6 @@ class ChatModel:
         messages.append(system_message)
         logger.debug(f"Временно добавлено системное сообщение в переданный список: {content[:100]}...")
 
-    def get_params(self, model=None):
-        current_model = model if model is not None else self.api_model
-        provider_key = self._get_provider_key(current_model)
-
-        params = {}
-
-        # Температура часто называется одинаково
-        if self.temperature is not None:
-            params['temperature'] = self.temperature
-
-        # Макс. токены - названия могут различаться
-        if bool(self.settings.get("USE_MODEL_MAX_RESPONSE_TOKENS")) and self.max_response_tokens is not None:
-            if provider_key == 'openai' or provider_key == 'deepseek' or provider_key == 'anthropic':
-                params['max_tokens'] = self.max_response_tokens
-            elif provider_key == 'gemini':
-                params['maxOutputTokens'] = self.max_response_tokens
-            # Добавьте другие провайдеры
-
-        # Штраф за присутствие - названия могут различаться, и параметр может отсутствовать у некоторых провайдеров
-        if bool(self.settings.get("USE_MODEL_PRESENCE_PENALTY")) and self.presence_penalty is not None:
-            if provider_key == 'openai' or provider_key == 'deepseek':
-                params['presence_penalty'] = self.presence_penalty
-            elif provider_key == 'gemini':
-                params['presencePenalty'] = self.presence_penalty
-
-        if bool(self.settings.get("USE_MODEL_FREQUENCY_PENALTY")) and self.frequency_penalty is not None:
-            if provider_key == 'openai' or provider_key == 'deepseek':
-                params['frequency_penalty'] = self.frequency_penalty
-            elif provider_key == 'gemini':
-                params['frequencyPenalty'] = self.frequency_penalty
-
-        if bool(self.settings.get("USE_MODEL_LOG_PROBABILITY")) and self.log_probability is not None:
-            if provider_key == 'openai' or provider_key == 'deepseek':
-                params['logprobs'] = self.log_probability  # OpenAI/DeepSeek
-            # Gemini не имеет прямого аналога logprobs в том же виде
-
-        # Добавляем top_k, top_p и thought_process, если они заданы
-        if bool(self.settings.get("USE_MODEL_TOP_K")) and self.top_k > 0:
-            if provider_key == 'openai' or provider_key == 'deepseek' or provider_key == 'anthropic':
-                params['top_k'] = self.top_k
-            elif provider_key == 'gemini':
-                params['topK'] = self.top_k
-
-        if bool(self.settings.get("USE_MODEL_TOP_P")):
-            if provider_key == 'openai' or provider_key == 'deepseek' or provider_key == 'anthropic':
-                params['top_p'] = self.top_p
-            elif provider_key == 'gemini':
-                params['topP'] = self.top_p
-
-        if bool(self.settings.get("USE_MODEL_THINKING_BUDGET")):
-            params['thinking_budget'] = self.thinking_budget
-            # Anthropic, например, не имеет прямого аналога этого параметра в том же виде.
-            # Поэтому мы просто не добавляем его для Anthropic.
-
-        # Добавьте другие параметры аналогично
-        # if self.some_other_param is not None:
-        #     if provider_key == 'openai': params['openai_name'] = self.some_other_param
-        #     elif provider_key == 'gemini': params['gemini_name'] = self.some_other_param
-        #     # и т.д.
-
-        params = self.remove_unsupported_params(current_model, params)
-
-        return params
-
-    def clear_endline_sim(self, params):
-        for key, value in params.items():
-            if isinstance(value, str):
-                params[key] = value.replace("'\x00", "").replace("\x00", "")
-
-    def remove_unsupported_params(self, model, params):
-        """Тут удаляем все лишние параметры"""
-        if model in ("gemini-2.5-pro-exp-03-25", "gemini-2.5-flash-preview-04-17"):
-            params.pop("presencePenalty", None)
-        return params
-
 
     def _handle_legacy_tool_calls(self, response_text: str, messages: List[Dict], stream_callback,
                                   _depth: int = 0) -> str:
@@ -623,23 +544,3 @@ class ChatModel:
         key = f"CHAR_PROVIDER_{self.current_character.char_id}"
         return self.settings.get(key, "Current")  # 'Current' по умолчанию
     
-    def _get_preset_id_by_name(self, display_name: str) -> Optional[int]:
-        """
-        Возвращает ID пользовательского пресета по его отображаемому имени.
-        Используется для REACT_PROVIDER и аналогичных настроек.
-        """
-        if not display_name:
-            return None
-        try:
-            meta_res = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-            meta = meta_res[0] if meta_res else None
-            if not meta:
-                return None
-            custom_list = meta.get('custom', []) or []
-            for pm in custom_list:
-                # pm — это PresetMeta dataclass
-                if getattr(pm, 'name', None) == display_name:
-                    return getattr(pm, 'id', None)
-        except Exception as e:
-            logger.error(f"Failed to resolve preset id by name '{display_name}': {e}", exc_info=True)
-        return None

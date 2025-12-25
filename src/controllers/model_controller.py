@@ -6,6 +6,7 @@ from utils import _, process_text_to_voice
 from core.events import get_event_bus, Events, Event
 from main_logger import logger
 from managers.character_manager import CharacterManager
+from managers.api_preset_resolver import ApiPresetResolver
 
 # Контроллер для работы с моделью LLM
 
@@ -18,6 +19,8 @@ class ModelController:
         self.total_messages_in_history = 0
         self.loaded_messages_offset = 0
         self.loading_more_history = False
+
+        self.preset_resolver = ApiPresetResolver(settings=self.settings, event_bus=self.event_bus)
 
         self.model = ChatModel(settings, pip_installer)
 
@@ -322,6 +325,7 @@ class ModelController:
         char = self.model.current_character
         char_id = getattr(char, 'char_id', '')
 
+        # --- compress: теперь тоже эмитим "started", т.к. ChatModel больше это не делает ---
         if event_type == 'compress':
             messages = []
             if system_input:
@@ -333,9 +337,14 @@ class ModelController:
                 if hc_provider != "Current":
                     try:
                         preset_id = int(hc_provider)
+                        logger.info(f"[HistoryController] Используется пресет для сжатия истории: {preset_id}")
                     except ValueError:
-                        logger.warning(f"Некорректный HC_PROVIDER='{hc_provider}', используется текущий пресет.")
+                        logger.warning(
+                            f"[HistoryController] Некорректный HC_PROVIDER='{hc_provider}', используется текущий пресет."
+                        )
                         preset_id = None
+
+            self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION)
 
             try:
                 raw_text = self.model.generate(messages, stream_callback=None, preset_id=preset_id)
@@ -409,16 +418,18 @@ class ModelController:
         combined_messages = prompt_data.get("messages", []) or []
         history_for_save = prompt_data.get("history_messages", []) or []
 
+        # --- preset routing (react/char_provider) ---
         preset_id = None
+
         if event_type == 'react':
             react_provider_label = str(self.settings.get("REACT_PROVIDER", _("Текущий", "Current")))
             if react_provider_label not in (_("Текущий", "Current"), "Текущий", "Current"):
-                if hasattr(self.model, '_get_preset_id_by_name'):
-                    preset_id = self.model._get_preset_id_by_name(react_provider_label)
+                preset_id = self.preset_resolver.resolve_preset_id_by_name(react_provider_label)
                 if preset_id is None:
                     logger.warning(
                         f"REACT_PROVIDER '{react_provider_label}' не найден, используется CHAR_PROVIDER."
                     )
+
             if preset_id is None:
                 char_provider = self.model.get_character_provider()
                 if char_provider != "Current":
@@ -440,6 +451,7 @@ class ModelController:
                         f"chat: некорректный CHAR_PROVIDER='{char_provider}', используем текущий пресет."
                     )
 
+        # Оставляем эмит только здесь (ChatModel больше не должен его делать)
         self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION)
 
         try:
