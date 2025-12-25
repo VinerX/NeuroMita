@@ -1,16 +1,17 @@
 # src/handlers/llm_providers/common_provider.py
+from __future__ import annotations
+
 from .base import BaseProvider, LLMRequest
 import requests
 import json
 from main_logger import logger
 from utils import save_combined_messages
 
-from handlers.llm_providers.param_mapper import map_unified_params_to_openai_kwargs
-
 
 class CommonProvider(BaseProvider):
     name = "common"
     priority = 30
+    supports_tools_native = True
 
     def is_applicable(self, req: LLMRequest) -> bool:
         if req.g4f_flag:
@@ -22,6 +23,24 @@ class CommonProvider(BaseProvider):
     def generate(self, req: LLMRequest) -> str:
         return self.generate_request_common(req)
 
+    def _map_unified_params(self, unified: dict, model_to_use: str) -> dict:
+        u = unified or {}
+        m = (model_to_use or "").lower()
+        out = {}
+
+        for k in ("temperature", "max_tokens", "presence_penalty", "frequency_penalty", "top_p"):
+            if k in u:
+                out[k] = u[k]
+
+        if "top_k" in u and "deepseek" in m:
+            out["top_k"] = u["top_k"]
+
+        if "logprobs" in u:
+            lp = u["logprobs"]
+            out["logprobs"] = lp if isinstance(lp, bool) else bool(lp)
+
+        return out
+
     def generate_request_common(self, req: LLMRequest) -> str:
         if req.depth > 3:
             return None
@@ -31,8 +50,7 @@ class CommonProvider(BaseProvider):
             "messages": [{"role": m["role"], "content": m["content"]} for m in req.messages]
         }
 
-        # NEW: unified -> openai kwargs (без unsupported ключей)
-        data.update(map_unified_params_to_openai_kwargs(req.extra, model=req.model))
+        data.update(self._map_unified_params(req.extra, req.model))
 
         if req.tools_on and req.tools_mode == "native" and req.tools_payload:
             data["tools"] = req.tools_payload
@@ -95,9 +113,7 @@ class CommonProvider(BaseProvider):
                     except (IndexError, KeyError) as e:
                         logger.warning(f"Could not parse SSE streaming chunk structure: {line_data}, error: {e}")
 
-            full_text = "".join(full_response_parts)
-            logger.info("Common request stream finished. Full text accumulated.")
-            return full_text
+            return "".join(full_response_parts)
         except Exception as e:
             logger.error(f"Error processing common (SSE) stream: {e}", exc_info=True)
             return "".join(full_response_parts)

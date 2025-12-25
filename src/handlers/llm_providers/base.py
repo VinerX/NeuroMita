@@ -28,6 +28,10 @@ class BaseProvider(ABC):
     name: str
     priority: int = 100
 
+    supports_tools_native: bool = False
+    supports_streaming: bool = True
+    supports_streaming_with_tools: bool = False
+
     @abstractmethod
     def is_applicable(self, req: LLMRequest) -> bool:
         pass

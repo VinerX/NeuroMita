@@ -1,35 +1,28 @@
 # src/handlers/llm_providers/gemini_provider.py
+from __future__ import annotations
+
 from .base import BaseProvider, LLMRequest
 import requests
 import json
 import copy
 from main_logger import logger
+from handlers.llm_providers.param_mapper import filter_jsonable_params
 
-from handlers.llm_providers.param_mapper import (
-    build_unified_generation_params,
-    map_unified_params_to_gemini_generation_config,
-    filter_jsonable_params,
-)
 
 class GeminiProvider(BaseProvider):
     name = "gemini"
     priority = 20
+    supports_tools_native = True
+    supports_streaming = True
+    supports_streaming_with_tools = False
 
     def is_applicable(self, req: LLMRequest) -> bool:
-        if not req.make_request:
-            return False
-        if not req.gemini_case:
-            return False
-        return True
+        return bool(req.make_request and req.gemini_case)
 
     def generate(self, req: LLMRequest) -> str:
         return self.generate_request_gemini(req)
 
     def _format_messages_for_gemini_api(self, messages):
-        """
-        Форматирует сообщения для Gemini API согласно официальной спецификации.
-        Разделяет system сообщения в system_instruction, остальные в contents.
-        """
         system_parts = []
         contents = []
 
@@ -38,16 +31,10 @@ class GeminiProvider(BaseProvider):
             content = msg.get("content")
 
             if role == "system":
-                parts = self._format_content_to_parts(content)
-                system_parts.extend(parts)
+                system_parts.extend(self._format_content_to_parts(content))
             else:
                 gemini_role = "model" if role == "assistant" else "user"
-                parts = self._format_content_to_parts(content)
-
-                contents.append({
-                    "role": gemini_role,
-                    "parts": parts
-                })
+                contents.append({"role": gemini_role, "parts": self._format_content_to_parts(content)})
 
         result = {}
         if system_parts:
@@ -56,12 +43,7 @@ class GeminiProvider(BaseProvider):
         return result
 
     def _format_content_to_parts(self, content):
-        """
-        Преобразует content в формат parts для Gemini API.
-        Поддерживает текст, изображения и tool calls.
-        """
         parts = []
-
         if isinstance(content, str):
             parts.append({"text": content})
         elif isinstance(content, list):
@@ -72,26 +54,39 @@ class GeminiProvider(BaseProvider):
                     image_url = item.get("image_url", {}).get("url", "")
                     if "," in image_url:
                         base64_data = image_url.split(",", 1)[1]
-                        parts.append({
-                            "inline_data": {
-                                "mime_type": "image/jpeg",
-                                "data": base64_data
-                            }
-                        })
+                        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64_data}})
         elif isinstance(content, dict):
             if "functionCall" in content or "functionResponse" in content:
                 parts.append(content)
-
         return parts
+
+    def _map_unified_params_to_generation_config(self, unified: dict, model: str) -> dict:
+        u = unified or {}
+        cfg = {}
+
+        if "temperature" in u:
+            cfg["temperature"] = u["temperature"]
+        if "max_tokens" in u:
+            cfg["maxOutputTokens"] = u["max_tokens"]
+        if "presence_penalty" in u:
+            cfg["presencePenalty"] = u["presence_penalty"]
+        if "frequency_penalty" in u:
+            cfg["frequencyPenalty"] = u["frequency_penalty"]
+        if "top_p" in u:
+            cfg["topP"] = u["top_p"]
+        if "top_k" in u:
+            cfg["topK"] = u["top_k"]
+
+        # Поведение как раньше (remove_unsupported_params)
+        if model in ("gemini-2.5-pro-exp-03-25", "gemini-2.5-flash-preview-04-17"):
+            cfg.pop("presencePenalty", None)
+
+        return filter_jsonable_params(cfg)
 
     def generate_request_gemini(self, req: LLMRequest) -> str:
         if req.depth > 3:
             logger.error("Превышена глубина рекурсии для Gemini tool calls")
             return None
-
-        # req.extra теперь содержит unified (canonical) параметры.
-        unified_params = filter_jsonable_params(req.extra or {})
-        gen_cfg = map_unified_params_to_gemini_generation_config(unified_params, model=req.model)
 
         formatted = self._format_messages_for_gemini_api(req.messages)
 
@@ -99,38 +94,26 @@ class GeminiProvider(BaseProvider):
         if "system_instruction" in formatted:
             data["system_instruction"] = formatted["system_instruction"]
 
-        data["contents"] = formatted["contents"]
-
+        data["contents"] = formatted["contents"] or []
         if not data["contents"]:
-            logger.info("Gemini: no non-system messages, inserting synthetic user prompt for contents.")
             data["contents"] = [{
                 "role": "user",
-                "parts": [{
-                    "text": "[SYSTEM INFO] Follow the system_instruction and generate an appropriate reaction."
-                }]
+                "parts": [{"text": "[SYSTEM INFO] Follow the system_instruction and generate an appropriate reaction."}]
             }]
 
         if data["contents"] and data["contents"][-1].get("role") != "user":
-            logger.info("Корректировка: последнее сообщение должно быть от user для Gemini")
             last_msg = data["contents"][-1]
             last_msg["role"] = "user"
             for part in last_msg.get("parts", []):
                 if "text" in part:
                     part["text"] = f"[SYSTEM INFO] {part['text']}"
 
+        gen_cfg = self._map_unified_params_to_generation_config(req.extra, req.model)
         if gen_cfg:
             data["generationConfig"] = gen_cfg
 
         if req.tools_on and req.tools_payload:
             data["tools"] = req.tools_payload
-
-        try:
-            json_data = json.dumps(data, ensure_ascii=False, indent=2)
-            with open("wtf.json", "w", encoding="utf-8") as f:
-                f.write(json_data)
-            logger.debug("Gemini request payload сохранен в wtf.json")
-        except Exception as e:
-            logger.warning(f"Не удалось сохранить wtf.json: {e}")
 
         need_stream = req.stream and "tools" not in data
 
@@ -158,7 +141,6 @@ class GeminiProvider(BaseProvider):
                 args = func_call.get("args", {})
                 tm = req.tool_manager
                 if tm:
-                    logger.info(f"Gemini вызвал tool: {name} с args: {args}")
                     tool_result = tm.run(name, args)
                     from tools.manager import mk_tool_call_msg, mk_tool_resp_msg
                     new_messages = copy.deepcopy(req.messages)
@@ -191,10 +173,7 @@ class GeminiProvider(BaseProvider):
                         json_buffer = json_buffer[index:].lstrip()
                     except json.JSONDecodeError:
                         break
-
-            full_text = "".join(full_response_parts)
-            logger.info("Gemini stream завершен. Накоплен полный текст.")
-            return full_text
+            return "".join(full_response_parts)
         except Exception as e:
             logger.error(f"Ошибка обработки Gemini stream: {e}", exc_info=True)
             return "".join(full_response_parts)

@@ -390,7 +390,7 @@ class ModelController:
                     )
 
             if preset_id is None:
-                char_provider = self.model.get_character_provider()
+                char_provider = self._get_character_provider_label(char_id)
                 if char_provider != "Current":
                     try:
                         preset_id = int(char_provider)
@@ -400,7 +400,7 @@ class ModelController:
                             f"react: некорректный CHAR_PROVIDER='{char_provider}', используем текущий пресет."
                         )
         else:
-            char_provider = self.model.get_character_provider()
+            char_provider = self._get_character_provider_label(char_id)
             if char_provider != "Current":
                 try:
                     preset_id = int(char_provider)
@@ -569,3 +569,9 @@ class ModelController:
         except Exception as e:
             logger.error(f"Ошибка при обновлении промптов: {e}")
             self.event_bus.emit("reload_prompts_failed", {"error": str(e)})
+
+    def _get_character_provider_label(self, char_id: str) -> str:
+        if not char_id:
+            return "Current"
+        key = f"CHAR_PROVIDER_{char_id}"
+        return self.settings.get(key, "Current")

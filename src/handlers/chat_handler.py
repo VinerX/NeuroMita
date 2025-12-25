@@ -405,7 +405,7 @@ class ChatModel:
         matches = re.findall(parse_regex, response_text)
 
         if not matches:
-            return response_text  # Нет вызовов — возвращаем как есть
+            return response_text
 
         for tool_name, args_str in matches:
             try:
@@ -413,24 +413,14 @@ class ChatModel:
                 logger.info(f"Legacy tool call: {tool_name}({args})")
                 tool_result = self.tool_manager.run(tool_name, args)
 
-                # Добавляем служебные сообщения
                 messages.append(mk_tool_call_msg(tool_name, args))
                 messages.append(mk_tool_resp_msg(tool_name, tool_result))
 
-                # Удаляем вызов из ответа (чтобы не путать)
                 response_text = re.sub(parse_regex, "", response_text).strip()
 
             except Exception as e:
                 logger.error(f"Ошибка legacy tool: {e}")
                 self.add_temporary_system_message(messages, f"Tool call failed: {e}")
 
-        # Рекурсивно генерируем новый ответ с обновленными messages
         new_response, _ = self._generate_chat_response(messages, stream_callback)
         return new_response or response_text
-
-    def get_character_provider(self) -> str:
-        if not self.current_character:
-            return "Current"  # По умолчанию, если персонаж не выбран
-        key = f"CHAR_PROVIDER_{self.current_character.char_id}"
-        return self.settings.get(key, "Current")  # 'Current' по умолчанию
-    
