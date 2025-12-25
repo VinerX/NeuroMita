@@ -403,6 +403,6 @@ class LocalVoiceController:
                     future.set_exception(Exception("Local voiceover failed: empty result"))
 
         except Exception as e:
-            logger.error(f"Ошибка локальной озвучки: {e}", exc_info=True)
+            #logger.error(f"Ошибка локальной озвучки: {e}", exc_info=False)
             if future and not future.done():
                 future.set_exception(e)

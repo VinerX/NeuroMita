@@ -31,11 +31,14 @@ class ChatController:
         user_input: str,
         system_input: str = "",
         image_data: list[bytes] | None = None,
-        task_uid: str | None = None  # Изменено с message_id на task_uid
+        task_uid: str | None = None,  # Изменено с message_id на task_uid
+        event_type: str | None = None
     ):
         try:
             print("[DEBUG] Начинаем async_send_message, показываем статус")
             self.llm_processing = True
+
+            is_react = (event_type == 'react')
             
             # Обновляем статус задачи на PENDING если есть uid
             if task_uid:
@@ -43,13 +46,13 @@ class ChatController:
                     'uid': task_uid,
                     'status': TaskStatus.PENDING
                 })
-            
+
             is_streaming = bool(self.settings.get("ENABLE_STREAMING", False))
 
             def stream_callback_handler(chunk: str):
                 self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {'chunk': chunk})
 
-            if is_streaming:
+            if is_streaming and not is_react:
                 self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI)
 
             if image_data:      # ДО вызова GENERATE_RESPONSE
@@ -70,14 +73,14 @@ class ChatController:
                 'user_input': user_input,
                 'system_input': system_input,
                 'image_data': image_data,
-                'stream_callback': stream_callback_handler if is_streaming else None,
-                'message_id': task_uid  # Передаем task_uid как message_id для совместимости
+                'stream_callback': stream_callback_handler if is_streaming and not is_react else None,
+                'message_id': task_uid,  # task_uid как message_id
+                'event_type': event_type
             }, timeout=600.0)
             
             response = response_result[0] if response_result else None
 
             if not response:
-                # Обновляем статус задачи на FAILED_ON_GENERATION
                 if task_uid:
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                         'uid': task_uid,
@@ -85,11 +88,12 @@ class ChatController:
                         'error': "Failed to generate response"
                     })
                 self.llm_processing = False
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': "Превышено время ожидания ответа"})
+                if not is_react:
+                    self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': "Превышено время ожидания ответа"})
                 return None
 
             # Проверяем нужна ли озвучка
-            if response and self.settings.get("USE_VOICEOVER"):
+            if response and self.settings.get("USE_VOICEOVER") and not is_react:
                 character_result = self.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CHARACTER, timeout=3.0)
                 current_character = character_result[0] if character_result else None
                 
@@ -104,7 +108,6 @@ class ChatController:
                                 'status': TaskStatus.VOICING
                             })
                         
-                        
                         speaker = current_character.get("silero_command")
                         if self.settings.get("AUDIO_BOT") == "@CrazyMitaAIbot":
                             speaker = current_character.get("miku_tts_name")
@@ -112,11 +115,10 @@ class ChatController:
                         self.event_bus.emit(Events.Audio.VOICEOVER_REQUESTED, {
                             'text': response,
                             'speaker': speaker,
-                            'task_uid': task_uid  # Передаем task_uid вместо message_id
+                            'task_uid': task_uid
                         })
                         logger.info(f"Озвучка запрошена с task_uid: {task_uid}")
             else:
-                # Если озвучка не нужна, сразу устанавливаем SUCCESS
                 if task_uid:
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                         'uid': task_uid,
@@ -124,9 +126,10 @@ class ChatController:
                         'result': {'response': response}
                     })
 
-            if is_streaming:
+
+            if is_streaming and not is_react:
                 self.event_bus.emit(Events.GUI.FINISH_STREAM_UI)
-            else:
+            elif not is_streaming and not is_react:
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                     'role': 'assistant',
                     'response': response if response is not None else "...",
@@ -163,7 +166,8 @@ class ChatController:
                     'status': TaskStatus.FAILED_ON_GENERATION,
                     'error': "Timeout"
                 })
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': "Превышено время ожидания ответа"})
+            if not is_react:
+                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': "Превышено время ожидания ответа"})
             return "Произошла ошибка при обработке вашего сообщения."
         except Exception as e:
             logger.error(f"Ошибка в async_send_message: {e}", exc_info=True)
@@ -174,7 +178,8 @@ class ChatController:
                     'status': TaskStatus.FAILED_ON_GENERATION,
                     'error': str(e)
                 })
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': f"Ошибка: {str(e)[:50]}..."})
+            if not is_react:
+                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': f"Ошибка: {str(e)[:50]}..."})
             return "Произошла ошибка при обработке вашего сообщения."
     
     def _on_send_message(self, event: Event):
@@ -183,6 +188,8 @@ class ChatController:
         system_input = data.get('system_input', '')
         image_data = data.get('image_data', [])
         task_uid = data.get('task_uid')  # Изменено с message_id
+        event_type = data.get('event_type')
+
         
         if image_data:
             self.event_bus.emit(Events.Capture.UPDATE_LAST_IMAGE_REQUEST_TIME)
@@ -195,7 +202,7 @@ class ChatController:
             # Запускаем корутину в этом loop'е и синхронно ждём результата
             import asyncio
             fut = asyncio.run_coroutine_threadsafe(
-                self.async_send_message(user_input, system_input, image_data, task_uid),
+                self.async_send_message(user_input, system_input, image_data, task_uid, event_type),
                 loop
             )
             try:
@@ -208,7 +215,7 @@ class ChatController:
             # fallback: нет цикла ⇒ запускаем напрямую
             import asyncio
             response = asyncio.run(
-                self.async_send_message(user_input, system_input, image_data, task_uid)
+                self.async_send_message(user_input, system_input, image_data, task_uid, event_type)
             )
             return response
     
@@ -225,7 +232,8 @@ class ChatController:
             user_input=data.get('user_input', ''),
             system_input=data.get('system_input', ''), 
             image_data=data.get('image_data', []),
-            task_uid=data.get('task_uid')  # Изменено
+            task_uid=data.get('task_uid'),
+            event_type=data.get('event_type')
         )
         
         self.event_bus.emit(Events.Core.RUN_IN_LOOP, {

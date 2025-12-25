@@ -1,3 +1,4 @@
+# src/handlers/llm_providers/base.py
 from dataclasses import dataclass, field
 from typing import List, Dict, Callable, Optional, Any
 from abc import ABC, abstractmethod
@@ -14,17 +15,26 @@ class LLMRequest:
     g4f_model: Optional[str] = None
     stream: bool = False
     stream_cb: Optional[Callable[[str], None]] = None
+
     tools_on: bool = False
     tools_mode: str = "native"
+
     tools_payload: Optional[Any] = None
+    tools_dialect: Optional[str] = None
+
     extra: Dict[str, Any] = field(default_factory=dict)
     settings: Optional[Any] = None
+    pip_installer: Optional[Any] = None
     depth: int = 0
     tool_manager: Optional[Any] = None
 
 class BaseProvider(ABC):
     name: str
     priority: int = 100
+
+    supports_tools_native: bool = False
+    supports_streaming: bool = True
+    supports_streaming_with_tools: bool = False
 
     @abstractmethod
     def is_applicable(self, req: LLMRequest) -> bool:

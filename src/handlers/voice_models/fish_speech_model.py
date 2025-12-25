@@ -24,6 +24,7 @@ from utils import getTranslationVariant as _, get_character_voice_paths
 
 from core.events import get_event_bus, Events
 
+
 class FishSpeechModel(IVoiceModel):
     def __init__(self, parent: 'LocalVoice', model_id: str, rvc_handler: Optional[IVoiceModel] = None):
         super().__init__(parent, model_id)
@@ -47,29 +48,29 @@ class FishSpeechModel(IVoiceModel):
             ),
             "settings": [
                 {"key": "device", "label": _("Устройство", "Device"), "type": "combobox",
-                "options": {"values": ["cuda", "cpu", "mps"], "default": "cuda"},
-                "help": _("Устройство вычислений для модели.", "Compute device for the model.")},
+                 "options": {"values": ["cuda", "cpu", "mps"], "default": "cuda"},
+                 "help": _("Устройство вычислений для модели.", "Compute device for the model.")},
                 {"key": "half", "label": _("Half-precision", "Half-precision"), "type": "combobox",
-                "options": {"values": ["False", "True"], "default": "False"},
-                "help": _("FP16 для экономии VRAM и ускорения (если поддерживается).", "FP16 for VRAM saving and speed (if supported).")},
+                 "options": {"values": ["False", "True"], "default": "False"},
+                 "help": _("FP16 для экономии VRAM и ускорения (если поддерживается).", "FP16 for VRAM saving and speed (if supported).")},
                 {"key": "temperature", "label": _("Температура", "Temperature"), "type": "entry", "options": {"default": "0.7"},
-                "help": _("Случайность сэмплирования (>0): выше — разнообразнее, но нестабильнее.", "Sampling randomness (>0): higher — more diverse, less stable.")},
+                 "help": _("Случайность сэмплирования (>0): выше — разнообразнее, но нестабильнее.", "Sampling randomness (>0): higher — more diverse, less stable.")},
                 {"key": "top_p", "label": _("Top-P", "Top-P"), "type": "entry", "options": {"default": "0.7"},
-                "help": _("Ядерное сэмплирование (0..1): ограничивает выбор наиболее вероятными токенами.", "Nucleus sampling (0..1): keep only most probable tokens.")},
+                 "help": _("Ядерное сэмплирование (0..1): ограничивает выбор наиболее вероятными токенами.", "Nucleus sampling (0..1): keep only most probable tokens.")},
                 {"key": "repetition_penalty", "label": _("Штраф повторений", "Repetition Penalty"), "type": "entry", "options": {"default": "1.2"},
-                "help": _(">1 уменьшает зацикливание на повторах.", ">1 reduces looping on repeats.")},
+                 "help": _(">1 уменьшает зацикливание на повторах.", ">1 reduces looping on repeats.")},
                 {"key": "chunk_length", "label": _("Размер чанка (~символов)", "Chunk Size (~chars)"), "type": "entry", "options": {"default": "200"},
-                "help": _("Сколько текста обрабатывается за раз (влияет на память).", "How much text is processed at once (affects memory).")},
+                 "help": _("Сколько текста обрабатывается за раз (влияет на память).", "How much text is processed at once (affects memory).")},
                 {"key": "max_new_tokens", "label": _("Макс. токены", "Max Tokens"), "type": "entry", "options": {"default": "1024"},
-                "help": _("Ограничение длины генерируемой последовательности.", "Limit of generated sequence length.")},
+                 "help": _("Ограничение длины генерируемой последовательности.", "Limit of generated sequence length.")},
                 {"key": "compile_model", "label": _("Компиляция модели", "Compile Model"), "type": "combobox",
-                "options": {"values": ["False", "True"], "default": "False"},
-                "locked": True,
-                "help": _("torch.compile() ускоряет на GPU после первого запуска.", "torch.compile() speeds up on GPU after warmup.")},
+                 "options": {"values": ["False", "True"], "default": "False"},
+                 "locked": True,
+                 "help": _("torch.compile() ускоряет на GPU после первого запуска.", "torch.compile() speeds up on GPU after warmup.")},
                 {"key": "seed", "label": _("Seed", "Seed"), "type": "entry", "options": {"default": "0"},
-                "help": _("Инициализация генератора случайности.", "Random seed.")},
+                 "help": _("Инициализация генератора случайности.", "Random seed.")},
                 {"key": "volume", "label": _("Громкость (volume)", "Volume"), "type": "entry", "options": {"default": "1.0"},
-                "help": _("Итоговая громкость.", "Final loudness.")}
+                 "help": _("Итоговая громкость.", "Final loudness.")}
             ]
         },
         {
@@ -87,30 +88,30 @@ class FishSpeechModel(IVoiceModel):
             ),
             "settings": [
                 {"key": "device", "label": _("Устройство", "Device"), "type": "combobox",
-                "options": {"values": ["cuda", "cpu", "mps"], "default": "cuda"},
-                "help": _("Устройство вычислений для модели.", "Compute device for the model.")},
+                 "options": {"values": ["cuda", "cpu", "mps"], "default": "cuda"},
+                 "help": _("Устройство вычислений для модели.", "Compute device for the model.")},
                 {"key": "half", "label": _("Half-precision", "Half-precision"), "type": "combobox",
-                "options": {"values": ["True", "False"], "default": "False"},
-                "locked": True,
-                "help": _("FP16 принудительно, параметр заблокирован для совместимости.", "FP16 enforced; parameter locked for compatibility.")},
+                 "options": {"values": ["True", "False"], "default": "False"},
+                 "locked": True,
+                 "help": _("FP16 принудительно, параметр заблокирован для совместимости.", "FP16 enforced; parameter locked for compatibility.")},
                 {"key": "temperature", "label": _("Температура", "Temperature"), "type": "entry", "options": {"default": "0.7"},
-                "help": _("Случайность сэмплирования (>0): выше — разнообразнее, но нестабильнее.", "Sampling randomness (>0): higher — more diverse, less stable.")},
+                 "help": _("Случайность сэмплирования (>0): выше — разнообразнее, но нестабильнее.", "Sampling randomness (>0): higher — more diverse, less stable.")},
                 {"key": "top_p", "label": _("Top-P", "Top-P"), "type": "entry", "options": {"default": "0.8"},
-                "help": _("Ядерное сэмплирование (0..1): ограничивает выбор наиболее вероятными токенами.", "Nucleus sampling (0..1): keep only most probable tokens.")},
+                 "help": _("Ядерное сэмплирование (0..1): ограничивает выбор наиболее вероятными токенами.", "Nucleus sampling (0..1): keep only most probable tokens.")},
                 {"key": "repetition_penalty", "label": _("Штраф повторений", "Repetition Penalty"), "type": "entry", "options": {"default": "1.1"},
-                "help": _(">1 уменьшает зацикливание на повторах.", ">1 reduces looping on repeats.")},
+                 "help": _(">1 уменьшает зацикливание на повторах.", ">1 reduces looping on repeats.")},
                 {"key": "chunk_length", "label": _("Размер чанка (~символов)", "Chunk Size (~chars)"), "type": "entry", "options": {"default": "200"},
-                "help": _("Сколько текста обрабатывается за раз (влияет на память).", "How much text is processed at once (affects memory).")},
+                 "help": _("Сколько текста обрабатывается за раз (влияет на память).", "How much text is processed at once (affects memory).")},
                 {"key": "max_new_tokens", "label": _("Макс. токены", "Max Tokens"), "type": "entry", "options": {"default": "1024"},
-                "help": _("Ограничение длины генерируемой последовательности.", "Limit of generated sequence length.")},
+                 "help": _("Ограничение длины генерируемой последовательности.", "Limit of generated sequence length.")},
                 {"key": "compile_model", "label": _("Компиляция модели", "Compile Model"), "type": "combobox",
-                "options": {"values": ["False", "True"], "default": "True"},
-                "locked": True,
-                "help": _("torch.compile() включён и заблокирован для ускорения.", "torch.compile() enabled and locked for speed.")},
+                 "options": {"values": ["False", "True"], "default": "True"},
+                 "locked": True,
+                 "help": _("torch.compile() включён и заблокирован для ускорения.", "torch.compile() enabled and locked for speed.")},
                 {"key": "seed", "label": _("Seed", "Seed"), "type": "entry", "options": {"default": "0"},
-                "help": _("Инициализация генератора случайности.", "Random seed.")},
+                 "help": _("Инициализация генератора случайности.", "Random seed.")},
                 {"key": "volume", "label": _("Громкость (volume)", "Volume"), "type": "entry", "options": {"default": "1.0"},
-                "help": _("Итоговая громкость.", "Final loudness.")}
+                 "help": _("Итоговая громкость.", "Final loudness.")}
             ]
         },
         {
@@ -127,54 +128,52 @@ class FishSpeechModel(IVoiceModel):
                 "Combination of Fish Speech+ and RVC for high‑quality timbre conversion."
             ),
             "settings": [
-                # FSP
                 {"key": "fsprvc_fsp_device", "label": _("[FSP] Устройство", "[FSP] Device"), "type": "combobox",
-                "options": {"values": ["cuda", "cpu", "mps"], "default": "cuda"},
-                "help": _("Устройство для части Fish Speech+.", "Device for Fish Speech+ part.")},
+                 "options": {"values": ["cuda", "cpu", "mps"], "default": "cuda"},
+                 "help": _("Устройство для части Fish Speech+.", "Device for Fish Speech+ part.")},
                 {"key": "fsprvc_fsp_half", "label": _("[FSP] Half-precision", "[FSP] Half-precision"), "type": "combobox",
-                "options": {"values": ["True", "False"], "default": "False"},
-                "locked": True,
-                "help": _("FP16 для ускорения; параметр заблокирован.", "FP16 for speed; parameter locked.")},
+                 "options": {"values": ["True", "False"], "default": "False"},
+                 "locked": True,
+                 "help": _("FP16 для ускорения; параметр заблокирован.", "FP16 for speed; parameter locked.")},
                 {"key": "fsprvc_fsp_temperature", "label": _("[FSP] Температура", "[FSP] Temperature"), "type": "entry", "options": {"default": "0.7"},
-                "help": _("Случайность генерации в части Fish Speech+.", "Sampling randomness in Fish Speech+ part.")},
+                 "help": _("Случайность генерации в части Fish Speech+.", "Sampling randomness in Fish Speech+ part.")},
                 {"key": "fsprvc_fsp_top_p", "label": _("[FSP] Top-P", "[FSP] Top-P"), "type": "entry", "options": {"default": "0.7"},
-                "help": _("Нуклеус‑сэмплинг для Fish Speech+.", "Nucleus sampling for Fish Speech+.")},
+                 "help": _("Нуклеус‑сэмплинг для Fish Speech+.", "Nucleus sampling for Fish Speech+.")},
                 {"key": "fsprvc_fsp_repetition_penalty", "label": _("[FSP] Штраф повторений", "[FSP] Repetition Penalty"), "type": "entry", "options": {"default": "1.2"},
-                "help": _("Снижает повторения в тексте.", "Reduces repetitions.")},
+                 "help": _("Снижает повторения в тексте.", "Reduces repetitions.")},
                 {"key": "fsprvc_fsp_chunk_length", "label": _("[FSP] Размер чанка (слов)", "[FSP] Chunk Size (words)"), "type": "entry", "options": {"default": "200"},
-                "help": _("Размер порции текста для Fish Speech+.", "Chunk size for Fish Speech+.")},
+                 "help": _("Размер порции текста для Fish Speech+.", "Chunk size for Fish Speech+.")},
                 {"key": "fsprvc_fsp_max_tokens", "label": _("[FSP] Макс. токены", "[FSP] Max Tokens"), "type": "entry", "options": {"default": "1024"},
-                "help": _("Ограничение длины генерации.", "Generation length limit.")},
+                 "help": _("Ограничение длины генерации.", "Generation length limit.")},
                 {"key": "compile_model", "label": _("Компиляция модели", "Compile Model"), "type": "combobox",
-                "options": {"values": ["False", "True"], "default": "False"},
-                "locked": True,
-                "help": _("torch.compile() ускоряет на GPU после первого запуска.", "torch.compile() speeds up on GPU after warmup.")},
+                 "options": {"values": ["False", "True"], "default": "False"},
+                 "locked": True,
+                 "help": _("torch.compile() ускоряет на GPU после первого запуска.", "torch.compile() speeds up on GPU after warmup.")},
                 {"key": "fsprvc_fsp_seed", "label": _("[FSP] Seed", "[FSP] Seed"), "type": "entry", "options": {"default": "0"},
-                "help": _("Сид генерации для Fish Speech+.", "Seed value for Fish Speech+.")},
-                # RVC
+                 "help": _("Сид генерации для Fish Speech+.", "Seed value for Fish Speech+.")},
                 {"key": "fsprvc_rvc_device", "label": _("[RVC] Устройство", "[RVC] Device"), "type": "combobox",
-                "options": {"values": ["cuda:0", "cpu", "mps:0", "dml"], "default_nvidia": "cuda:0", "default_amd": "dml"},
-                "help": _("Устройство для части RVC.", "Device for RVC part.")},
+                 "options": {"values": ["cuda:0", "cpu", "mps:0", "dml"], "default_nvidia": "cuda:0", "default_amd": "dml"},
+                 "help": _("Устройство для части RVC.", "Device for RVC part.")},
                 {"key": "fsprvc_is_half", "label": _("[RVC] Half-precision", "[RVC] Half-precision"), "type": "combobox",
-                "options": {"values": ["True", "False"], "default_nvidia": "True", "default_amd": "False"},
-                "help": _("FP16 для RVC на совместимых GPU.", "FP16 for RVC on compatible GPUs.")},
+                 "options": {"values": ["True", "False"], "default_nvidia": "True", "default_amd": "False"},
+                 "help": _("FP16 для RVC на совместимых GPU.", "FP16 for RVC on compatible GPUs.")},
                 {"key": "fsprvc_f0method", "label": _("[RVC] Метод F0", "[RVC] F0 Method"), "type": "combobox",
-                "options": {"values": ["pm", "rmvpe", "crepe", "harvest", "fcpe", "dio"], "default_nvidia": "rmvpe", "default_amd": "dio"},
-                "help": _("Алгоритм извлечения высоты тона.", "Pitch extraction algorithm.")},
+                 "options": {"values": ["pm", "rmvpe", "crepe", "harvest", "fcpe", "dio"], "default_nvidia": "rmvpe", "default_amd": "dio"},
+                 "help": _("Алгоритм извлечения высоты тона.", "Pitch extraction algorithm.")},
                 {"key": "fsprvc_rvc_pitch", "label": _("[RVC] Высота голоса (пт)", "[RVC] Pitch (semitones)"), "type": "entry", "options": {"default": "0"},
-                "help": _("Смещение высоты в полутонах.", "Pitch shift in semitones.")},
+                 "help": _("Смещение высоты в полутонах.", "Pitch shift in semitones.")},
                 {"key": "fsprvc_use_index_file", "label": _("[RVC] Исп. .index файл", "[RVC] Use .index file"), "type": "checkbutton", "options": {"default": True},
-                "help": _("Улучшает совпадение тембра.", "Improves timbre matching.")},
+                 "help": _("Улучшает совпадение тембра.", "Improves timbre matching.")},
                 {"key": "fsprvc_index_rate", "label": _("[RVC] Соотн. индекса", "[RVC] Index Rate"), "type": "entry", "options": {"default": "0.75"},
-                "help": _("Степень влияния .index (0..1).", "How much .index affects result (0..1).")},
+                 "help": _("Степень влияния .index (0..1).", "How much .index affects result (0..1).")},
                 {"key": "fsprvc_protect", "label": _("[RVC] Защита согласных", "[RVC] Consonant Protection"), "type": "entry", "options": {"default": "0.33"},
-                "help": _("Защита глухих согласных (0..0.5).", "Protect voiceless consonants (0..0.5).")},
+                 "help": _("Защита глухих согласных (0..0.5).", "Protect voiceless consonants (0..0.5).")},
                 {"key": "fsprvc_filter_radius", "label": _("[RVC] Радиус фильтра F0", "[RVC] F0 Filter Radius"), "type": "entry", "options": {"default": "3"},
-                "help": _("Сглаживание кривой F0 (рекоменд. ≥3).", "Smooth F0 curve (recommended ≥3).")},
+                 "help": _("Сглаживание кривой F0 (рекоменд. ≥3).", "Smooth F0 curve (recommended ≥3).")},
                 {"key": "fsprvc_rvc_rms_mix_rate", "label": _("[RVC] Смешивание RMS", "[RVC] RMS Mixing"), "type": "entry", "options": {"default": "0.5"},
-                "help": _("Смешивание громкости исходника и RVC (0..1).", "Mix source loudness and RVC result (0..1).")},
+                 "help": _("Смешивание громкости исходника и RVC (0..1).", "Mix source loudness and RVC result (0..1).")},
                 {"key": "volume", "label": _("Громкость (volume)", "Volume"), "type": "entry", "options": {"default": "1.0"},
-                "help": _("Итоговая громкость.", "Final loudness.")}
+                 "help": _("Итоговая громкость.", "Final loudness.")}
             ]
         }
     ]
@@ -205,7 +204,7 @@ class FishSpeechModel(IVoiceModel):
         elif mode == "medium+low":
             return "Fish Speech+ + RVC"
         return None
-    
+
     def is_installed(self, model_id) -> bool:
         self._load_module()
         mode = model_id
@@ -224,16 +223,14 @@ class FishSpeechModel(IVoiceModel):
         if self.fish_speech_module is None:
             if not self._install_fish_speech():
                 return False
-        
+
         mode = model_id
-        # Если нужен Triton, ставим его
         if mode in ("medium+", "medium+low"):
             if not self.parent.is_triton_installed():
                 logger.info("Компонент Fish Speech установлен, приступаем к установке Triton...")
                 if not self._install_triton():
                     return False
-        
-        # Если нужен RVC, ставим его
+
         if mode == "medium+low":
             if self.rvc_handler and not self.rvc_handler.is_installed("low"):
                 logger.info("Компоненты Fish Speech и Triton установлены, приступаем к установке RVC...")
@@ -246,7 +243,7 @@ class FishSpeechModel(IVoiceModel):
             progress_cb = getattr(self.parent, '_external_progress', lambda *_: None)
             status_cb = getattr(self.parent, '_external_status', lambda *_: None)
             log_cb = getattr(self.parent, '_external_log', lambda *_: None)
-            
+
             installer = PipInstaller(
                 script_path=r"libs\python\python.exe",
                 libs_path="Lib",
@@ -301,16 +298,132 @@ class FishSpeechModel(IVoiceModel):
 
             setattr(self, "_import_attempted", False)
             self._load_module()
-            
+
             return True
         except Exception as e:
             logger.error(f"Ошибка при установке Fish Speech: {e}", exc_info=True)
             return False
 
+    def _apply_triton_patches(self, libs_path_abs: str, progress_cb, status_cb, log_cb) -> None:
+        progress_cb(50)
+        status_cb(_("Применение патчей...", "Applying patches..."))
+        log_cb(_("Применение необходимых патчей для Triton...", "Applying necessary patches for Triton..."))
+
+        build_py_path = os.path.join(libs_path_abs, "triton", "runtime", "build.py")
+        if os.path.exists(build_py_path):
+            try:
+                import sysconfig
+                with open(build_py_path, "r", encoding="utf-8") as f:
+                    source = f.read()
+
+                try:
+                    old_line_tcc = 'cc = os.path.join(sysconfig.get_paths()["platlib"], "triton", "runtime", "tcc", "tcc.exe")'
+                except Exception:
+                    old_line_tcc = 'os.path.join(sysconfig.get_paths()["platlib"], "triton", "runtime", "tcc", "tcc.exe")'
+                    log_cb(_("Предупреждение: не удалось определить точную старую строку tcc в build.py, используется запасной вариант.", "Warning: failed to detect exact old tcc line in build.py, using fallback."))
+
+                new_line_tcc = 'cc = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tcc", "tcc.exe")'
+                old_line_fpic = 'cc_cmd = [cc, src, "-O3", "-shared", "-fPIC", "-Wno-psabi", "-o", out]'
+                new_line_fpic = 'cc_cmd = [cc, src, "-O3", "-shared", "-Wno-psabi", "-o", out]'
+
+                patched_source = source
+                applied_patch_tcc = False
+                applied_patch_fpic = False
+
+                if old_line_tcc in patched_source:
+                    patched_source = patched_source.replace(old_line_tcc, new_line_tcc)
+                    applied_patch_tcc = True
+                else:
+                    log_cb(_("Патч (путь tcc.exe) для build.py уже применен или строка не найдена.", "Patch (tcc.exe path) for build.py already applied or line not found."))
+
+                if old_line_fpic in patched_source:
+                    patched_source = patched_source.replace(old_line_fpic, new_line_fpic)
+                    applied_patch_fpic = True
+                else:
+                    log_cb(_("Патч (удаление -fPIC) для build.py уже применен или строка не найдена.", "Patch (removing -fPIC) for build.py already applied or line not found."))
+
+                if applied_patch_tcc or applied_patch_fpic:
+                    with open(build_py_path, "w", encoding="utf-8") as f:
+                        f.write(patched_source)
+                    if applied_patch_tcc:
+                        log_cb(_("Патч (путь tcc.exe) успешно применен к build.py", "Patch (tcc.exe path) successfully applied to build.py"))
+                    if applied_patch_fpic:
+                        log_cb(_("Патч (удаление -fPIC) успешно применен к build.py", "Patch (removing -fPIC) successfully applied to build.py"))
+            except Exception as e:
+                log_cb(_(f"Ошибка при патче build.py: {e}", f"Error patching build.py: {e}"))
+                log_cb(traceback.format_exc())
+        else:
+            log_cb(_("Предупреждение: файл build.py не найден, пропускаем патч", "Warning: build.py file not found, skipping patch"))
+
+        progress_cb(60)
+        windows_utils_path = os.path.join(libs_path_abs, "triton", "windows_utils.py")
+        log_cb(_("Применение патча к windows_utils.py...", "Applying patch to windows_utils.py..."))
+        if os.path.exists(windows_utils_path):
+            try:
+                with open(windows_utils_path, "r", encoding="utf-8") as f:
+                    source = f.read()
+                old_code_win = "output = subprocess.check_output(command, text=True).strip()"
+                new_code_win = "output = subprocess.check_output(\n            command, text=True, creationflags=subprocess.CREATE_NO_WINDOW, close_fds=True, stdin=subprocess.DEVNULL, stderr=subprocess.PIPE\n        ).strip()"
+                if old_code_win in source:
+                    patched_source = source.replace(old_code_win, new_code_win)
+                    with open(windows_utils_path, "w", encoding="utf-8") as f:
+                        f.write(patched_source)
+                    log_cb(_("Патч успешно применен к windows_utils.py", "Patch successfully applied to windows_utils.py"))
+                else:
+                    log_cb(_("Патч для windows_utils.py уже применен или строка не найдена.", "Patch for windows_utils.py already applied or line not found."))
+            except Exception as e:
+                log_cb(_(f"Ошибка при патче windows_utils.py: {e}", f"Error patching windows_utils.py: {e}"))
+                log_cb(traceback.format_exc())
+        else:
+            log_cb(_("Предупреждение: файл windows_utils.py не найден, пропускаем патч", "Warning: windows_utils.py file not found, skipping patch"))
+
+        progress_cb(70)
+        compiler_path = os.path.join(libs_path_abs, "triton", "backends", "nvidia", "compiler.py")
+        log_cb(_("Применение патча к compiler.py...", "Applying patch to compiler.py..."))
+        if os.path.exists(compiler_path):
+            try:
+                with open(compiler_path, "r", encoding="utf-8") as f:
+                    source = f.read()
+                old_code_comp_line = 'version = subprocess.check_output([_path_to_binary("ptxas")[0], "--version"]).decode("utf-8")'
+                new_code_comp_line = 'version = subprocess.check_output([_path_to_binary("ptxas")[0], "--version"], creationflags=subprocess.CREATE_NO_WINDOW, stderr=subprocess.PIPE, close_fds=True, stdin=subprocess.DEVNULL).decode("utf-8")'
+                if old_code_comp_line in source:
+                    patched_source = source.replace(old_code_comp_line, new_code_comp_line)
+                    with open(compiler_path, "w", encoding="utf-8") as f:
+                        f.write(patched_source)
+                    log_cb(_("Патч успешно применен к compiler.py", "Patch successfully applied to compiler.py"))
+                else:
+                    log_cb(_("Патч для compiler.py уже применен или строка не найдена.", "Patch for compiler.py already applied or line not found."))
+            except Exception as e:
+                log_cb(_(f"Ошибка при патче compiler.py: {e}", f"Error patching compiler.py: {e}"))
+                log_cb(traceback.format_exc())
+        else:
+            log_cb(_("Предупреждение: файл compiler.py не найден, пропускаем патч", "Warning: compiler.py file not found, skipping patch"))
+
+        cache_py_path = os.path.join(libs_path_abs, "triton", "runtime", "cache.py")
+        log_cb(_("Применение патча к cache.py...", "Applying patch to cache.py..."))
+        if os.path.exists(cache_py_path):
+            try:
+                with open(cache_py_path, "r", encoding="utf-8") as f:
+                    source = f.read()
+                old_line = 'temp_dir = os.path.join(self.cache_dir, f"tmp.pid_{pid}_{rnd_id}")'
+                new_line = 'temp_dir = os.path.join(self.cache_dir, f"tmp.pid_{str(pid)[:5]}_{str(rnd_id)[:5]}")'
+                if old_line in source:
+                    patched_source = source.replace(old_line, new_line)
+                    with open(cache_py_path, "w", encoding="utf-8") as f:
+                        f.write(patched_source)
+                    log_cb(_("Патч успешно применен к cache.py", "Patch successfully applied to cache.py"))
+                else:
+                    log_cb(_("Патч для cache.py уже применен или строка не найдена.", "Patch for cache.py already applied or line not found."))
+            except Exception as e:
+                log_cb(_(f"Ошибка при патче cache.py: {e}", f"Error patching cache.py: {e}"))
+                log_cb(traceback.format_exc())
+        else:
+            log_cb(_("Предупреждение: файл cache.py не найден, пропускаем патч", "Warning: cache.py file not found, skipping patch"))
+
     def _install_triton(self):
         """
         - Если Triton не установлен: ставим его (pip).
-        - ВСЕГДА: патчи, проверка зависимостей, показ диалога зависимостей.
+        - Всегда: патчи, проверка зависимостей, показ диалога зависимостей.
         - Если пользователь не нажал Skip: запускаем init.py (компиляция/инициализация).
         """
         self.parent.triton_module = False
@@ -329,7 +442,6 @@ class FishSpeechModel(IVoiceModel):
             progress_cb(10)
             log_cb(_("Подготовка Triton...", "Preparing Triton..."))
 
-            # 1) pip только если реально не установлен
             needs_install = not self.parent.is_triton_installed()
             if needs_install:
                 status_cb(_("Установка библиотеки Triton...", "Installing Triton library..."))
@@ -356,9 +468,8 @@ class FishSpeechModel(IVoiceModel):
                 status_cb(_("Triton найден, пропускаем установку. Патчи/инициализация...", "Triton found, skipping install. Patching/initializing..."))
                 log_cb(_("Triton уже установлен — пропускаем pip, продолжаем.", "Triton already installed — skipping pip step, continuing."))
 
-            # 2) ПАТЧИ — оставь как у тебя (не дублирую здесь ради краткости)
+            self._apply_triton_patches(libs_path_abs, progress_cb, status_cb, log_cb)
 
-            # 3) Проверка зависимостей
             progress_cb(80)
             status_cb(_("Проверка системных зависимостей...", "Checking system dependencies..."))
             log_cb(_("Проверка наличия Triton, CUDA, Windows SDK, MSVC...", "Checking for Triton, CUDA, Windows SDK, MSVC..."))
@@ -375,7 +486,6 @@ class FishSpeechModel(IVoiceModel):
 
                 self.parent._check_system_dependencies()
                 log_cb(_("_check_system_dependencies выполнена успешно.", "_check_system_dependencies executed successfully."))
-
             except ImportError as e:
                 msg = str(e)
                 if msg.startswith("DLL load failed while importing libtriton"):
@@ -388,20 +498,17 @@ class FishSpeechModel(IVoiceModel):
                 log_cb(_(f"ОШИБКА: Общая ошибка во время _check_system_dependencies: {e}", f"ERROR: General error during _check_system_dependencies: {e}"))
                 log_cb(traceback.format_exc())
 
-            # 4) Диалоги
             if dll_error:
                 status_cb(_("Ошибка загрузки Triton! Проверьте VC Redist.", "Triton load error! Check VC Redist."))
                 res = self.events.emit_and_wait(Events.Audio.SHOW_VC_REDIST_DIALOG, timeout=6000.0)
                 choice = res[0] if res else "close"
                 if choice == "retry":
-                    # простой повтор всего метода
                     return self._install_triton()
                 else:
                     status_cb(_("Инициализация ядра пропущена", "Kernel initialization skipped"))
                     progress_cb(95)
                     return False
 
-            # ВСЕГДА показываем диалог зависимостей после чеков — как ты и хочешь
             deps = {
                 "cuda_found": bool(getattr(self.parent, "cuda_found", False)),
                 "winsdk_found": bool(getattr(self.parent, "winsdk_found", False)),
@@ -411,7 +518,6 @@ class FishSpeechModel(IVoiceModel):
             user_action = res_deps[0] if res_deps else "continue"
             skip_init = (user_action == "skip")
 
-            # 5) init.py — компиляция/инициализация
             if not skip_init:
                 progress_cb(90)
                 status_cb(_("Инициализация ядра Triton...", "Initializing Triton kernel..."))
@@ -469,14 +575,14 @@ class FishSpeechModel(IVoiceModel):
                 pass
             self.parent.triton_module = False
             return False
-    
+
     def uninstall(self, model_id) -> bool:
         mode = model_id
         if mode == "medium":
             return self.parent._uninstall_component("Fish Speech", "fish-speech-lib")
         elif mode in ("medium+", "medium+low"):
             return self.parent._uninstall_component("Triton", "triton-windows")
-        else: 
+        else:
             logger.error(_('Неизвестная модель для удаления.', 'Unknown model for uninstall'))
             return False
 
@@ -505,7 +611,7 @@ class FishSpeechModel(IVoiceModel):
         mode = self._mode()
         compile_model = mode in ("medium+", "medium+low")
 
-        if (self.parent.first_compiled is not None 
+        if (self.parent.first_compiled is not None
                 and self.parent.first_compiled != compile_model):
             logger.error("КОНФЛИКТ: нельзя переключиться между compile=True/False без перезапуска")
             return False
@@ -516,7 +622,7 @@ class FishSpeechModel(IVoiceModel):
                 "fsprvc_fsp_device" if mode == "medium+low" else "device",
                 "cuda")
             half = settings.get(
-                "fsprvc_fsp_half"  if mode == "medium+low" else "half",
+                "fsprvc_fsp_half" if mode == "medium+low" else "half",
                 "True" if compile_model else "False").lower() == "true"
 
             self.current_fish_speech = self.fish_speech_module(
@@ -547,7 +653,6 @@ class FishSpeechModel(IVoiceModel):
                 future = asyncio.run_coroutine_threadsafe(self.voiceover(init_text), main_loop)
                 result_path = future.result(timeout=3600)
 
-                # ВАЖНО: успех только если файл реально создан и непустой
                 if not result_path or not os.path.exists(result_path) or os.path.getsize(result_path) == 0:
                     logger.error("Тестовый прогон не создал аудиофайл — инициализация неуспешна.")
                     self.initialized = False
@@ -571,7 +676,7 @@ class FishSpeechModel(IVoiceModel):
             mode = self._mode()
             settings = self.parent.load_model_settings(mode)
             is_combined_model = mode == "medium+low"
-            
+
             temp_key = "fsprvc_fsp_temperature" if is_combined_model else "temperature"
             top_p_key = "fsprvc_fsp_top_p" if is_combined_model else "top_p"
             rep_penalty_key = "fsprvc_fsp_repetition_penalty" if is_combined_model else "repetition_penalty"
@@ -611,7 +716,7 @@ class FishSpeechModel(IVoiceModel):
             raw_output_filename = f"fish_raw_{hash_object.hexdigest()[:10]}.wav"
             raw_output_path = os.path.abspath(os.path.join("temp", raw_output_filename))
             os.makedirs("temp", exist_ok=True)
-            
+
             import soundfile as sf
             sf.write(raw_output_path, audio_data, sample_rate)
 
@@ -619,15 +724,15 @@ class FishSpeechModel(IVoiceModel):
                 return None
 
             stereo_output_path = raw_output_path.replace("_raw", "_stereo")
-            converted_file = self.parent.convert_wav_to_stereo(raw_output_path, stereo_output_path, volume=str(0.5+float(vol)))
-            
+            converted_file = self.parent.convert_wav_to_stereo(raw_output_path, stereo_output_path, volume=str(0.5 + float(vol)))
+
             processed_output_path = stereo_output_path if converted_file and os.path.exists(converted_file) else raw_output_path
             if processed_output_path == stereo_output_path:
                 try:
                     os.remove(raw_output_path)
                 except OSError:
                     pass
-            
+
             final_output_path = processed_output_path
 
             if mode == "medium+low" and self.rvc_handler:
@@ -661,12 +766,12 @@ class FishSpeechModel(IVoiceModel):
             connected_to_game = res_conn[0] if res_conn else False
             if connected_to_game:
                 self.events.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, final_output_path)
-            
+
             return final_output_path
         except Exception as error:
             traceback.print_exc()
             logger.info(f"Ошибка при создании озвучки с Fish Speech ({self.model_id}): {error}")
             return None
-        
+
     def _mode(self) -> str:
         return (self.parent.current_model_id or "medium")

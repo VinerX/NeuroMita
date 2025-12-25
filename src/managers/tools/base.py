@@ -1,9 +1,10 @@
+﻿# src/managers/tools/base.py
 from abc import ABC, abstractmethod
 from typing import Any, Dict
 
 
 class Tool(ABC):
-    """ Базовый интерфейс любого инструмента """
+    """Базовый интерфейс любого инструмента"""
 
     @property
     @abstractmethod
@@ -12,7 +13,7 @@ class Tool(ABC):
     @property
     @abstractmethod
     def description(self) -> str:
-        """ Короткое описание – LLM увидит его в JSON ‑описании. """
+        """Короткое описание – LLM увидит его в JSON‑описании."""
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -24,7 +25,4 @@ class Tool(ABC):
 
     @abstractmethod
     def run(self, **kwargs) -> Any:
-        """
-        Непосредственно выполняет действие инструмента,
-        возвращает строку (или dict – на ваше усмотрение).
-        """
+        """Выполняет инструмент и возвращает результат (str/dict)."""

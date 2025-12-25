@@ -321,6 +321,53 @@ class ChatServerNew:
             else:
                 await self._send_aborted_update(client_id, event_type, character, reason="Failed to flush system info", req_id=req_id)
 
+        elif event_type == 'react':
+            reason = data.get('reason', '')
+            duration = data.get('duration', 0.0)
+            current_info = context.get('currentInfo', '')
+
+            react_system_input_lines = [
+                "This is a react event from the game.",
+                f"Reason: {reason}" if reason else "Reason: player_look",
+                f"Look duration (seconds): {duration:.1f}",
+            ]
+            if current_info:
+                react_system_input_lines.append("")
+                react_system_input_lines.append("Current game info:")
+                react_system_input_lines.append(str(current_info))
+
+            react_system_input = "\n".join(react_system_input_lines)
+
+            task_result = self.event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
+                'type': 'react',
+                'data': {
+                    'character': character,
+                    'user_input': '',
+                    'system_input': react_system_input,
+                    'client_id': client_id,
+                    'event_type': event_type,
+                    'req_id': req_id,
+                    'reason': reason,
+                    'duration': duration,
+                }
+            }, timeout=5.0)
+
+            task = task_result[0] if task_result else None
+
+            if task:
+                self.client_tasks[client_id].add(task.uid)
+                await self.send_task_update(client_id, task)
+
+                self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
+                    'user_input': '',
+                    'system_input': react_system_input,
+                    'image_data': context.get('image_base64_list', []),
+                    'task_uid': task.uid,
+                    'event_type': 'react'
+                })
+            else:
+                await self._send_aborted_update(client_id, event_type, character,
+                                                reason="Failed to create react task", req_id=req_id)
         else:
             await self._send_aborted_update(client_id, event_type, character, reason=f"Unknown event type: {event_type}", req_id=req_id)
 

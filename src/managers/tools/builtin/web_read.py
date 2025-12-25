@@ -1,13 +1,6 @@
-# tools/web_reader.py
-"""
-WebPageReaderTool v2
- • авто-конвертация GitHub-URL в raw.githubusercontent.com
- • улучшено определение кодировки
- • добавлена базовая поддержка Markdown
-"""
-import re, requests, bs4, mimetypes
-from urllib.parse import urlparse
-from .base import Tool
+﻿
+import re, requests, bs4
+from managers.tools.base import Tool
 
 _CLEAN_TAGS = ["script", "style", "noscript", "iframe", "header",
                "footer", "nav", "aside", "form"]
@@ -30,15 +23,12 @@ class WebPageReaderTool(Tool):
         "required": ["url"]
     }
 
-    # ─────────────────────────────────────────────
     def run(self, url: str, max_chars: int = 1500, **_):
         url = self._convert_github_raw(url)
 
         try:
-            resp = requests.get(url, timeout=10,
-                                headers={"User-Agent": "Mozilla/5.0"})
+            resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
             resp.raise_for_status()
-            # корректируем кодировку, если requests не угадал
             if not resp.encoding or resp.encoding.lower() == 'iso-8859-1':
                 resp.encoding = resp.apparent_encoding
         except Exception as e:
@@ -50,12 +40,10 @@ class WebPageReaderTool(Tool):
 
         text = resp.text
 
-        # Markdown-файлы читаем как есть (они уже plain text)
         if "markdown" in content_type or url.endswith((".md", ".markdown")):
             cleaned = self._clean_whitespaces(text)
             return self._truncate(cleaned, max_chars)
 
-        # HTML-страница
         soup = bs4.BeautifulSoup(text, "html.parser")
         for tg in _CLEAN_TAGS:
             for tag in soup.find_all(tg):
@@ -67,15 +55,12 @@ class WebPageReaderTool(Tool):
 
         return self._truncate(pure_text, max_chars)
 
-    # ─────────────────────────────────────────────
-    # utils
     def _truncate(self, txt: str, max_len: int) -> str:
         return txt if len(txt) <= max_len else txt[:max_len] + " …"
 
     def _clean_whitespaces(self, s: str) -> str:
         return re.sub(r"\s{2,}", " ", s).strip()
 
-    # если это github.com/.../blob/... → переведём в raw.githubusercontent.com/...
     def _convert_github_raw(self, url: str) -> str:
         if "github.com" in url and "/blob/" in url:
             m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/blob/(.+)", url)

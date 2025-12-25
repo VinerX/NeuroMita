@@ -369,6 +369,8 @@ class Events:
         ADD_TEMPORARY_SYSTEM_INFO = "add_temporary_system_info"
         GENERATE_RESPONSE = "generate_response"
         GET_LLM_PROCESSING_STATUS = "get_llm_processing_status"
+        GET_GAME_STATE = "get_game_state"
+        PEEK_TEMPORARY_SYSTEM_INFOS = "peek_temporary_system_infos"
 
     class Chat:
         """События, управляющие логикой чата и отправкой сообщений"""
@@ -542,3 +544,12 @@ class Events:
         SET_CURRENT_PRESET_ID = "set_current_preset_id"
         UPDATE_PRESET_MODELS = "update_preset_models"
         SAVE_PRESETS_ORDER = "save_presets_order"
+
+    class Prompt:
+        """Сборка промптов для LLM"""
+        BUILD_PROMPT = "build_prompt"
+
+    class History:
+        """Работа с историей диалога"""
+        PREPARE_FOR_PROMPT = "prepare_history_for_prompt"
+        SAVE_AFTER_RESPONSE = "save_history_after_response"

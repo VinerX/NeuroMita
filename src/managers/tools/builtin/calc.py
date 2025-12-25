@@ -1,5 +1,7 @@
+﻿# src/managers/tools/builtin/calc.py
 from typing import Any
-from .base import Tool
+from managers.tools.base import Tool
+
 
 class CalculatorTool(Tool):
     name = "calculator"
@@ -17,7 +19,6 @@ class CalculatorTool(Tool):
 
     def run(self, expression: str, **_) -> Any:
         try:
-            # ⚠️ eval в продакшн лучше заменить безопасным парсером.
             result = eval(expression, {"__builtins__": {}})
             return str(result)
         except Exception as e:
