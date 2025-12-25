@@ -13,9 +13,6 @@ from io import BytesIO # Добавлено для обработки изобр
 from tools.manager import ToolManager,mk_tool_call_msg,mk_tool_resp_msg
 from main_logger import logger
 
-from characters import CrazyMita, KindMita, ShortHairMita, \
-    CappyMita, MilaMita, CreepyMita, SleepyMita, GameMaster, \
-    SpaceCartridge, DivanCartridge, GhostMita, Mitaphone
 from characters.character import Character
 from utils.pip_installer import PipInstaller
 
@@ -32,17 +29,15 @@ class ChatModel:
         self.g4f_available = False
         self.settings = settings
         self.event_bus = get_event_bus()
-        
-        # Подгружаем текущий пресет для инициализации параметров по умолчанию
+
         preset_settings = self.load_preset_settings()
         logger.info(f"Initializing ChatModel with preset: {preset_settings['preset_name']}")
-        
-        # Сохраняем только для логирования и legacy-кода
+
         self.api_model = preset_settings['api_model']
         self.gpt4free_model = preset_settings['g4f_model'] if preset_settings['is_g4f'] else self.settings.get("gpt4free_model", "")
-        
+
         self._initialize_g4f()
-        
+
         self.tool_manager = ToolManager()
 
         try:
@@ -67,14 +62,12 @@ class ChatModel:
         self.frequency_penalty = float(self.settings.get("MODEL_FREQUENCY_PENALTY", 0.0))
         self.log_probability = float(self.settings.get("MODEL_LOG_PROBABILITY", 0.0))
 
-        # Настройки стоимости токенов и лимитов
         self.token_cost_input = float(self.settings.get("TOKEN_COST_INPUT", 0.0432))
         self.token_cost_output = float(self.settings.get("TOKEN_COST_OUTPUT", 0.1728))
         self.max_model_tokens = int(self.settings.get("MAX_MODEL_TOKENS", 128000))
 
         self.memory_limit = int(self.settings.get("MODEL_MESSAGE_LIMIT", 40))
 
-        # Настройки для сжатия истории
         self.enable_history_compression_on_limit = bool(self.settings.get("ENABLE_HISTORY_COMPRESSION_ON_LIMIT", False))
         self.enable_history_compression_periodic = bool(self.settings.get("ENABLE_HISTORY_COMPRESSION_PERIODIC", False))
         self.history_compression_periodic_interval = int(self.settings.get("HISTORY_COMPRESSION_PERIODIC_INTERVAL", 20))
@@ -84,18 +77,18 @@ class ChatModel:
         self._messages_since_last_periodic_compression = 0
 
         self.current_character: Character = None
-        self.current_character_to_change = str(self.settings.get("CHARACTER"))
-        self.characters: Dict[str, Character] = {}
+        self.GameMaster: Character = None
+        self.characters = {}  # optional alias для legacy
 
-        # Настройки для снижения качества изображений в истории
+        # Настройки для снижения качества изображений в истории (используются выше по цепочке при сборке промпта)
         self.image_quality_reduction_enabled = bool(self.settings.get("IMAGE_QUALITY_REDUCTION_ENABLED", False))
         self.image_quality_reduction_start_index = int(self.settings.get("IMAGE_QUALITY_REDUCTION_START_INDEX", 25))
         self.image_quality_reduction_use_percentage = bool(self.settings.get("IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE", False))
         min_quolity = self.settings.get("IMAGE_QUALITY_REDUCTION_MIN_QUALITY", 30)
-        self.image_quality_reduction_min_quality = int(min_quolity) if min_quolity!='' else 30
+        self.image_quality_reduction_min_quality = int(min_quolity) if min_quolity != '' else 30
         self.image_quality_reduction_decrease_rate = int(self.settings.get("IMAGE_QUALITY_REDUCTION_DECREASE_RATE", 5))
 
-        # Game-specific state
+        # Game-specific state (пока оставляем, как договорились — перенос потом)
         self.distance = 0.0
         self.roomPlayer = -1
         self.roomMita = -1
@@ -116,7 +109,6 @@ class ChatModel:
             "gemini-pro": 32768,
         }
 
-        self.init_characters()
         self.HideAiData = True
         self.max_request_attempts = int(self.settings.get("MODEL_MESSAGE_ATTEMPTS_COUNT", 5))
         self.request_delay = float(self.settings.get("MODEL_MESSAGE_ATTEMPTS_TIME", 0.20))
@@ -246,65 +238,6 @@ class ChatModel:
             logger.error(f"Непредвиденная ошибка при первичной инициализации g4f: {e_initial}")
             self.g4fClient = None
             self.g4f_available = False
-
-    def init_characters(self):
-        character_classes = [
-            CrazyMita,
-            KindMita,
-            CappyMita,
-            ShortHairMita,
-            MilaMita,
-            SleepyMita,
-            CreepyMita,
-            GhostMita,
-            SpaceCartridge,
-            DivanCartridge,
-            GameMaster,
-            Mitaphone
-        ]
-        
-        self.characters = {}
-        for char_class in character_classes:
-            character = char_class()
-            self.characters[character.char_id] = character
-        
-        self.crazy_mita_character = self.characters.get("Crazy")
-        self.GameMaster = self.characters.get("GameMaster")
-        
-        self.current_character = self.characters.get(self.current_character_to_change) or self.crazy_mita_character
-
-    def get_all_mitas(self):
-        logger.info(f"Available characters: {list(self.characters.keys())}")
-        return list(self.characters.keys())
-    
-    # def load_prehistory(self) -> List[Dict]:
-    #     """Загружает предысторию из файла mita_prehistory.json"""
-    #     try:
-    #         with open("crazy_prehistory.json", "r", encoding="utf-8") as f:
-    #             prehistory = json.load(f)
-    #             logger.success(f"Loaded {len(prehistory)} messages from crazy_prehistory.json")
-    #             return prehistory
-    #     except FileNotFoundError:
-    #         logger.warning("crazy_prehistory.json.json not found")
-    #         return []
-    #     except json.JSONDecodeError as e:
-    #         logger.error(f"Error parsing crazy_prehistory.json: {e}")
-    #         return []
-    #     except Exception as e:
-    #         logger.error(f"Error loading crazy_prehistory.json: {e}")
-    #         return []
-    
-    def check_change_current_character(self):
-        if not self.current_character_to_change:
-            return
-        if self.current_character_to_change in self.characters:
-            logger.info(f"Changing character to {self.current_character_to_change}")
-            self.current_character = self.characters[self.current_character_to_change]
-            self.current_character.reload_character_data()
-            self.current_character_to_change = ""
-        else:
-            logger.warning(f"Attempted to change to unknown character: {self.current_character_to_change}")
-            self.current_character_to_change = ""
     
     def generate(
         self,
@@ -545,132 +478,6 @@ class ChatModel:
 
         return cleaned.strip()
 
-    def _process_image_quality(self, image_bytes: bytes, target_quality: int) -> bytes | None:
-        """
-        Обрабатывает байты изображения, изменяя его качество JPEG.
-        Если target_quality == 0, возвращает None (для удаления изображения).
-        """
-        if not image_bytes:
-            return None
-
-        if target_quality <= 0:
-            logger.info("Изображение будет удалено (target_quality <= 0).")
-            return None
-
-        try:
-            from PIL import Image
-            original_size = len(image_bytes)
-            img = Image.open(BytesIO(image_bytes))
-            # Конвертируем в RGB, если режим не RGB (например, RGBA), чтобы избежать ошибок при сохранении JPEG
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-
-            byte_arr = BytesIO()
-            img.save(byte_arr, format='JPEG', quality=target_quality)
-            processed_bytes = byte_arr.getvalue()
-            processed_size = len(processed_bytes)
-            logger.debug(f"Качество изображения изменено на {target_quality}. Размер: {original_size} байт -> {processed_size} байт.")
-            return processed_bytes
-        except Exception as e:
-            logger.error(f"Ошибка при обработке качества изображения: {e}", exc_info=True)
-            return image_bytes # Возвращаем исходные байты в случае ошибки
-
-    def _apply_history_image_quality_reduction(self, messages: List[Dict]) -> List[Dict]:
-        """
-        Применяет снижение качества к изображениям в истории сообщений на основе настроек.
-        """
-        if not messages:
-            return messages
-
-        history_length = len(messages)
-        actual_start_index = 0
-
-        if self.image_quality_reduction_use_percentage:
-            actual_start_index = int(history_length * (self.image_quality_reduction_start_index / 100.0))
-        else:
-            actual_start_index = self.image_quality_reduction_start_index
-
-        # Убедимся, что start_index не выходит за пределы истории
-        actual_start_index = max(0, min(actual_start_index, history_length))
-
-        logger.info(f"Применение снижения качества изображений: длина истории {history_length}, фактический старт {actual_start_index}")
-
-        updated_messages = []
-        for i, msg in enumerate(messages):
-            # Сообщения до actual_start_index остаются без изменений
-            if i < actual_start_index:
-                updated_messages.append(msg)
-                continue
-
-            # Обрабатываем только сообщения, которые содержат изображения
-            if msg.get("role") in ["user", "assistant"] and isinstance(msg.get("content"), list):
-                new_content_chunks = []
-                image_processed = False
-                for item in msg["content"]:
-                    if item.get("type") == "image_url" and item.get("image_url") and item["image_url"].get("url"):
-                        image_processed = True
-                        base64_url = item["image_url"]["url"]
-                        # Извлекаем только base64 данные
-                        if "," in base64_url:
-                            img_base64 = base64_url.split(',')[1]
-                        else:
-                            img_base64 = base64_url # Если нет префикса, предполагаем, что это чистый base64
-
-                        try:
-                            img_bytes = base64.b64decode(img_base64)
-
-                            # Вычисляем целевое качество
-                            # Индекс сообщения относительно начала зоны снижения качества
-                            relative_index = i - actual_start_index
-
-                            # Начальное качество для снижения. Берем из настроек захвата экрана.
-                            initial_quality = int(self.settings.get("SCREEN_CAPTURE_QUALITY", 75))
-
-                            calculated_quality = initial_quality - (self.image_quality_reduction_decrease_rate * relative_index)
-
-                            # Ограничиваем качество минимальным значением
-                            target_quality = max(self.image_quality_reduction_min_quality, calculated_quality)
-
-                            logger.info(f"Сообщение {i}: относительный индекс {relative_index}, рассчитанное качество {calculated_quality}, целевое качество {target_quality}")
-
-                            processed_bytes = self._process_image_quality(img_bytes, target_quality)
-
-                            if processed_bytes:
-                                new_content_chunks.append({
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/jpeg;base64,{base64.b64encode(processed_bytes).decode('utf-8')}"
-                                    }
-                                })
-                            else:
-                                logger.info(f"Изображение в сообщении {i} удалено (качество <= 0).")
-                                # Если processed_bytes None, изображение удаляется, не добавляем его в new_content_chunks
-                        except Exception as e:
-                            logger.error(f"Ошибка при обработке изображения в истории сообщения {i}: {e}", exc_info=True)
-                            new_content_chunks.append(item) # В случае ошибки оставляем исходный элемент
-                    else:
-                        new_content_chunks.append(item) # Добавляем текстовые части и другие типы контента
-
-                if image_processed: # Если в сообщении были изображения, обновляем его
-                    if new_content_chunks:
-                        new_msg = msg.copy()
-                        new_msg["content"] = new_content_chunks
-                        updated_messages.append(new_msg)
-                    else:
-                        # Если все изображения были удалены и нет другого контента, можно удалить сообщение
-                        # Или оставить его только с текстом, если он был
-                        if any(item.get("type") == "text" for item in msg["content"]):
-                            new_msg = msg.copy()
-                            new_msg["content"] = [item for item in msg["content"] if item.get("type") == "text"]
-                            updated_messages.append(new_msg)
-                        else:
-                            logger.info(f"Сообщение {i} полностью удалено, так как все изображения были удалены и нет текста.")
-                else:
-                    updated_messages.append(msg) # Если изображений не было, добавляем сообщение как есть
-            else:
-                updated_messages.append(msg) # Добавляем сообщения без изображений как есть
-
-        return updated_messages
 
     def _get_provider_key(self, model_name: str) -> str:
         if not model_name: return 'openai'
@@ -717,42 +524,86 @@ class ChatModel:
         if not self.hasTokenizer:
             return 0
 
-        combined_messages: List[Dict[str, Any]] = []
+        if not self.current_character:
+            return 0
 
-        history_data = self.current_character.history_manager.load_history()
-        llm_messages_history = history_data.get("messages", [])
-
-        if self.current_character != self.GameMaster:
-            llm_messages_history_limited = llm_messages_history[-self.memory_limit:]
-        else:
-            llm_messages_history_limited = llm_messages_history[-8:]
-
-        if self.image_quality_reduction_enabled:
-            llm_messages_history_limited = self._apply_history_image_quality_reduction(llm_messages_history_limited)
-
-        combined_messages.extend(llm_messages_history_limited)
-
-        if self.infos_to_add_to_history:
-            combined_messages.extend(self.infos_to_add_to_history)
-
+        # Текущий ввод пользователя (как и раньше)
         user_input = self.event_bus.emit_and_wait(Events.Speech.GET_USER_INPUT)
         user_input_from_gui = user_input[0] if user_input else ""
 
-        if user_input_from_gui:
-            combined_messages.append({"role": "user", "content": user_input_from_gui})
+        # Конфиг качества изображений — чтобы PromptController/HistoryController собрали тот же контекст,
+        # что и реальная генерация (но без compression).
+        screen_quality = self.settings.get("SCREEN_CAPTURE_QUALITY", 75)
+        screen_quality = int(screen_quality) if str(screen_quality) != '' else 75
+
+        image_quality_cfg = {
+            'enabled': bool(self.settings.get("IMAGE_QUALITY_REDUCTION_ENABLED", False)),
+            'start_index': int(self.settings.get("IMAGE_QUALITY_REDUCTION_START_INDEX", 25)),
+            'use_percentage': bool(self.settings.get("IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE", False)),
+            'min_quality': int(self.settings.get("IMAGE_QUALITY_REDUCTION_MIN_QUALITY", 30) or 30),
+            'decrease_rate': int(self.settings.get("IMAGE_QUALITY_REDUCTION_DECREASE_RATE", 5)),
+            'screen_capture_quality': screen_quality,
+        }
+
+        separate_prompts = bool(self.settings.get("SEPARATE_PROMPTS", True))
+        is_game_master = (self.current_character == getattr(self, "GameMaster", None))
+
+        # Важно: не сохраняем missed history и не запускаем compression (это только для токенкаунта)
+        try:
+            prompt_res = self.event_bus.emit_and_wait(
+                Events.Prompt.BUILD_PROMPT,
+                {
+                    'character_id': getattr(self.current_character, "char_id", ""),
+                    'event_type': 'chat',
+                    'user_input': user_input_from_gui,
+                    'system_input': '',
+                    'image_data': [],
+                    'memory_limit': int(self.memory_limit),
+                    'is_game_master': bool(is_game_master),
+                    'save_missed_history': False,
+                    'image_quality': image_quality_cfg,
+                    'separate_prompts': separate_prompts,
+                    'extra_system_infos': list(self.infos_to_add_to_history) if self.infos_to_add_to_history else [],
+                    'game_state': {
+                        'distance': float(getattr(self, "distance", 0.0)),
+                        'roomPlayer': int(getattr(self, "roomPlayer", -1)),
+                        'roomMita': int(getattr(self, "roomMita", -1)),
+                        'nearObjects': str(getattr(self, "nearObjects", "")),
+                        'actualInfo': str(getattr(self, "actualInfo", "")),
+                    },
+                    'disable_history_compression': True,
+                },
+                timeout=2.0
+            )
+        except Exception:
+            return 0
+
+        if not prompt_res or not isinstance(prompt_res[0], dict):
+            return 0
+
+        combined_messages: List[Dict[str, Any]] = prompt_res[0].get("messages", []) or []
 
         total_tokens = 0
         for msg in combined_messages:
-            if isinstance(msg, dict) and "content" in msg:
-                content = msg["content"]
-                if isinstance(content, str):
-                    total_tokens += len(self.tokenizer.encode(content))
-                elif isinstance(content, list):
-                    for item in content:
-                        if item.get("type") == "text" and item.get("text"):
-                            total_tokens += len(self.tokenizer.encode(item["text"]))
-                        elif item.get("type") == "image_url" and item.get("image_url", {}).get("url"):
-                            total_tokens += 1000
+            if not isinstance(msg, dict) or "content" not in msg:
+                continue
+
+            content = msg["content"]
+
+            if isinstance(content, str):
+                total_tokens += len(self.tokenizer.encode(content))
+                continue
+
+            if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "text" and item.get("text"):
+                        total_tokens += len(self.tokenizer.encode(item["text"]))
+                    elif item.get("type") == "image_url" and item.get("image_url", {}).get("url"):
+                        # как и раньше: грубая оценка “картинка ~1000 токенов”
+                        total_tokens += 1000
+
         return total_tokens
 
     def calculate_cost_for_current_context(self) -> float:
@@ -855,18 +706,6 @@ class ChatModel:
 
         return params
 
-    def get_final_params(self, model, messages):
-        """Модель, сообщения и параметры"""
-        final_params = {
-            "model": model,
-            "messages": messages,
-        }
-        final_params.update(self.get_params(model))
-
-        self.clear_endline_sim(final_params)
-
-        return final_params
-
     def clear_endline_sim(self, params):
         for key, value in params.items():
             if isinstance(value, str):
@@ -878,49 +717,6 @@ class ChatModel:
             params.pop("presencePenalty", None)
         return params
 
-    def process_commands(self, response, messages):
-        """
-        Обрабатывает команды типа <c>...</c> в ответе.
-        Команды могут быть: "Достать бензопилу", "Выключить игрока" и другие.
-        """
-        start_tag = "<c>"
-        end_tag = "</c>"
-        search_start = 0  # Указатель для поиска новых команд
-
-        while start_tag in response[search_start:] and end_tag in response[search_start:]:
-            try:
-                # Находим команду
-                start_index = response.index(start_tag, search_start) + len(start_tag)
-                end_index = response.index(end_tag, start_index)
-                command = response[start_index:end_index]
-
-                # Логируем текущую команду
-                logger.info(f"Обработка команды: {command}")
-
-                # Обработка команды
-                if command == "Достать бензопилу":
-                    ...
-                    #add_temporary_system_message(messages, "Игрок был не распилен, произошла ошибка")
-
-
-                elif command == "Выключить игрока":
-                    ...
-                    #add_temporary_system_message(messages, "Игрок был отпавлен в главное меню, но скоро он вернется...")
-
-
-                else:
-                    # Обработка неизвестных команд
-                    #add_temporary_system_message(messages, f"Неизвестная команда: {command}")
-                    logger.info(f"Неизвестная команда: {command}")
-
-                # Сдвигаем указатель поиска на следующий символ после текущей команды
-                search_start = end_index + len(end_tag)
-
-            except ValueError as e:
-                self.add_temporary_system_message(messages, f"Ошибка обработки команды: {e}")
-                break
-
-        return response
 
     def _handle_legacy_tool_calls(self, response_text: str, messages: List[Dict], stream_callback,
                                   _depth: int = 0) -> str:

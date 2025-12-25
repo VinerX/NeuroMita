@@ -131,6 +131,9 @@ class PromptController:
         extra_system_infos: List[Any] = data.get('extra_system_infos') or []
         game_state: Dict[str, Any] = data.get('game_state') or {}
 
+        # НОВОЕ: чтобы token_count/preview не триггерили компрессию истории
+        disable_history_compression: bool = bool(data.get('disable_history_compression', False))
+
         try:
             character.set_variable("GAME_DISTANCE", float(game_state.get('distance', 0.0)))
             character.set_variable("GAME_ROOM_PLAYER", game_state.get('roomPlayer', -1))
@@ -170,6 +173,8 @@ class PromptController:
                 'is_game_master': is_game_master,
                 'save_missed_history': save_missed_history,
                 'image_quality': image_cfg,
+                # НОВОЕ:
+                'disable_compression': disable_history_compression,
             },
             timeout=5.0
         )

@@ -5,6 +5,7 @@ from handlers.chat_handler import ChatModel
 from utils import _, process_text_to_voice
 from core.events import get_event_bus, Events, Event
 from main_logger import logger
+from managers.character_manager import CharacterManager
 
 # Контроллер для работы с моделью LLM
 
@@ -18,8 +19,16 @@ class ModelController:
         self.loaded_messages_offset = 0
         self.loading_more_history = False
 
-        # Исправленный вызов: теперь только 2 аргумента (settings, pip_installer)
         self.model = ChatModel(settings, pip_installer)
+
+        initial_char = str(self.settings.get("CHARACTER") or "")
+        self.character_manager = CharacterManager(initial_character_id=initial_char)
+
+        self.model.current_character = self.character_manager.current_character
+        self.model.GameMaster = self.character_manager.GameMaster
+
+        self.model.characters = self.character_manager.characters
+
         self._subscribe_to_events()
         
     def _subscribe_to_events(self):
@@ -126,50 +135,58 @@ class ModelController:
             self.model.max_model_tokens = int(value)
                 
     def change_character(self, character):
-        if character:
-            self.model.current_character_to_change = character
-            self.model.check_change_current_character()
+        if not character:
+            return
+        self.character_manager.set_character_to_change(character)
+        self.character_manager.check_change_current_character()
+
+        # Синхронизируем ссылки в ChatModel для совместимости
+        self.model.current_character = self.character_manager.current_character
+        self.model.characters = self.character_manager.characters
+        self.model.GameMaster = self.character_manager.GameMaster
     
     # События персонажей
     def _on_get_all_characters(self, event: Event):
-        if hasattr(self.model, 'get_all_mitas'):
-            return self.model.get_all_mitas()
-        return []
+        return self.character_manager.get_all_characters()
     
     def _on_get_current_character(self, event: Event):
-        if hasattr(self.model, 'current_character'):
-            char = self.model.current_character
-            return {
-                'name': char.name if hasattr(char, 'name') else '',
-                'char_id': char.char_id if hasattr(char, 'char_id') else '',
-                'is_cartridge': char.is_cartridge if hasattr(char, 'is_cartridge') else False,
-                'silero_command': getattr(char, 'silero_command', ''),
-                'short_name': getattr(char, 'short_name', ''),
-                'miku_tts_name': getattr(char, 'miku_tts_name', 'Player'),
-                'silero_turn_off_video': getattr(char, 'silero_turn_off_video', False),
-            }
-        return None
+        ch = self.character_manager.current_character
+        if not ch:
+            return None
+
+        return {
+            'name': getattr(ch, 'name', ''),
+            'char_id': getattr(ch, 'char_id', ''),
+            'is_cartridge': bool(getattr(ch, 'is_cartridge', False)),
+            'silero_command': getattr(ch, 'silero_command', ''),
+            'short_name': getattr(ch, 'short_name', ''),
+            'miku_tts_name': getattr(ch, 'miku_tts_name', 'Player'),
+            'silero_turn_off_video': bool(getattr(ch, 'silero_turn_off_video', False)),
+        }
+
     
     def _on_set_character_to_change(self, event: Event):
-        character_name = event.data.get('character')
-        if character_name and hasattr(self.model, 'current_character_to_change'):
-            self.model.current_character_to_change = character_name
+        character_name = (event.data or {}).get('character')
+        if character_name:
+            self.character_manager.set_character_to_change(character_name)
     
     def _on_check_change_character(self, event: Event):
-        if hasattr(self.model, 'check_change_current_character'):
-            self.model.check_change_current_character()
+        self.character_manager.check_change_current_character()
+
+
+        self.model.current_character = self.character_manager.current_character
+        self.model.characters = self.character_manager.characters
+        self.model.GameMaster = self.character_manager.GameMaster
     
     def _on_get_character(self, event: Event):
-        character_name = event.data.get('name')
-        if character_name and hasattr(self.model, 'characters'):
-            return self.model.characters.get(character_name)
-        return None
+        character_name = (event.data or {}).get('name')
+        return self.character_manager.get_character(character_name)
     
-    def _on_reload_character_data(self, event: Event):
-        if hasattr(self.model, 'current_character'):
-            char = self.model.current_character
-            if hasattr(char, 'reload_character_data'):
-                char.reload_character_data()
+    def _on_reload_character_prompts(self, event: Event):
+        character_name = (event.data or {}).get('character')
+        ch = self.character_manager.get_character(character_name) if character_name else None
+        if ch and hasattr(ch, 'reload_prompts'):
+            ch.reload_prompts()
     
     def _on_reload_character_prompts(self, event: Event):
         character_name = event.data.get('character')
@@ -179,33 +196,40 @@ class ModelController:
                 char.reload_prompts()
     
     def _on_clear_character_history(self, event: Event):
-        if hasattr(self.model, 'current_character'):
-            char = self.model.current_character
-            if hasattr(char, 'clear_history'):
-                char.clear_history()
+        ch = self.character_manager.current_character
+        if ch and hasattr(ch, 'clear_history'):
+            ch.clear_history()
     
     def _on_clear_all_histories(self, event: Event):
-        if hasattr(self.model, 'characters'):
-            for character in self.model.characters.values():
-                if hasattr(character, 'clear_history'):
-                    character.clear_history()
+        for ch in self.character_manager.characters.values():
+            if hasattr(ch, 'clear_history'):
+                ch.clear_history()
     
     # События истории
     def _on_load_history(self, event: Event):
         self.loaded_messages_offset = 0
         self.total_messages_in_history = 0
         self.loading_more_history = False
-        
-        chat_history = self.model.current_character.load_history()
+
+        ch = self.character_manager.current_character
+        if not ch:
+            self.event_bus.emit("history_loaded", {
+                'messages': [],
+                'total_messages': 0,
+                'loaded_offset': 0
+            })
+            return
+
+        chat_history = ch.load_history()
         all_messages = chat_history["messages"]
         self.total_messages_in_history = len(all_messages)
-        
+
         max_display_messages = int(self.settings.get("MAX_CHAT_HISTORY_DISPLAY", 100))
         start_index = max(0, self.total_messages_in_history - max_display_messages)
         messages_to_load = all_messages[start_index:]
-        
+
         self.loaded_messages_offset = len(messages_to_load)
-        
+
         self.event_bus.emit("history_loaded", {
             'messages': messages_to_load,
             'total_messages': self.total_messages_in_history,
@@ -215,20 +239,24 @@ class ModelController:
     def _on_load_more_history(self, event: Event):
         if self.loaded_messages_offset >= self.total_messages_in_history:
             return
-        
+
         self.loading_more_history = True
         try:
-            chat_history = self.model.current_character.load_history()
+            ch = self.character_manager.current_character
+            if not ch:
+                return
+
+            chat_history = ch.load_history()
             all_messages = chat_history["messages"]
-            
+
             lazy_load_batch_size = self.lazy_load_batch_size
             end_index = self.total_messages_in_history - self.loaded_messages_offset
             start_index = max(0, end_index - lazy_load_batch_size)
             messages_to_prepend = all_messages[start_index:end_index]
-            
+
             if messages_to_prepend:
                 self.loaded_messages_offset += len(messages_to_prepend)
-                
+
                 self.event_bus.emit("more_history_loaded", {
                     'messages': messages_to_prepend,
                     'loaded_offset': self.loaded_messages_offset
@@ -238,7 +266,8 @@ class ModelController:
     
     # События информации
     def _on_get_character_name(self, event: Event):
-        return self.model.current_character.name
+        ch = self.character_manager.current_character
+        return ch.name if ch else ""
     
     def _on_get_current_context_tokens(self, event: Event):
         if hasattr(self.model, 'get_current_context_token_count'):
@@ -255,10 +284,9 @@ class ModelController:
         return 0.0
     
     def _on_get_debug_info(self, event: Event):
-        if hasattr(self.model, 'current_character'):
-            char = self.model.current_character
-            if hasattr(char, 'current_variables_string'):
-                return char.current_variables_string()
+        ch = self.character_manager.current_character
+        if ch and hasattr(ch, 'current_variables_string'):
+            return ch.current_variables_string()
         return "Debug info not available"
     
     # События игры
@@ -528,6 +556,12 @@ class ModelController:
             logger.error(f"Ошибка в RAW_GENERATE: {e}", exc_info=True)
             return (None, False)
     
+    def _on_reload_character_data(self, event: Event):
+        if hasattr(self.model, 'current_character'):
+            char = self.model.current_character
+            if hasattr(char, 'reload_character_data'):
+                char.reload_character_data()
+
     def _on_reload_prompts_async(self, event: Event):
         # Получаем главный asyncio-loop через событие
         loop_res = self.event_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
