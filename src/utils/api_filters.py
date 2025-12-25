@@ -39,14 +39,52 @@ def mistral_filter(data: dict) -> dict:
 
 def openrouter_filter(data: dict) -> dict:
     """
-    Простой фильтр для OpenRouter API.
-    Показывает только бесплатные модели (с :free).
+    Фильтр для OpenRouter API с добавлением префиксов.
+    Показывает только бесплатные модели (с :free) и добавляет префиксы.
     """
     if 'data' not in data:
         return data
     
     models = data['data']
     filtered_models = []
+    
+    # Карта префиксов
+    prefix_map = {
+        "kimi-k2": "moonshotai/",
+        "deepseek": "deepseek-ai/",
+        "glm-4": "zai-org/",
+        "llama-3": "meta-llama/",
+        "llama-4": "meta-llama/",
+        "gpt-oss": "openai/",
+        "qwen2": "Qwen/",
+        "qwen3": "Qwen/",
+        "qwen-2.5": "Qwen/",
+        "mistral": "mistralai/",
+        "devstral": "mistralai/",
+        "magistral": "mistralai/",
+        "nemo": "mistralai/",
+        "olmo-3": "allenai/",
+        "olmo-3.1": "allenai/",
+        "nemotron": "nvidia/",
+        "mimo": "mistralai/",
+        "trinity": "allenai/",
+        "tng-r1t": "allenai/",
+        "kat-coder": "cohere/",
+        "tongyi": "alibaba/",
+        "dolphin": "cognitivecomputations/",
+        "gemma": "google/",
+        "gemini": "google/",
+        "claude": "anthropic/",
+        "command": "cohere/",
+        "phi": "microsoft/",
+        "dbrx": "databricks/",
+        "amazon": "amazon/",
+        "ai21": "ai21/",
+        "allenai": "allenai/",
+        "cohere": "cohere/",
+        "arcee-ai": "arcee-ai/",
+        "bert": "openrouter/"
+    }
     
     for model in models:
         try:
@@ -57,9 +95,18 @@ def openrouter_filter(data: dict) -> dict:
             if ':free' not in model_id_lower:
                 continue
             
+            # Добавляем префикс, если его нет
+            if "/" not in model_id:
+                for key, prefix in prefix_map.items():
+                    if key in model_id_lower:
+                        model_id = prefix + model_id
+                        break
+            
+            # Возвращаем словарь в том же формате, что и aiio_filter
             formatted_model = {
-                'name': model_id,
-                'is_free': True,
+                'id': model_id,
+                'name': model_id,  # Показываем полное имя в списке
+                'is_free': True
             }
             
             filtered_models.append(formatted_model)
@@ -67,13 +114,13 @@ def openrouter_filter(data: dict) -> dict:
         except Exception:
             continue
     
-    # Возвращаем только бесплатные модели
+    # Возвращаем только бесплатные модели с префиксами
     return {'models': filtered_models}
 
 
 def aiio_filter(data: dict) -> dict:
     """
-    Финальная версия фильтра: возвращает словари с префиксами.
+    Возвращает словари с префиксами.
     Это лечит ошибку 'str object has no get' и добавляет авторов.
     """
     raw_models = data.get('data', []) or data.get('models', [])
@@ -87,10 +134,32 @@ def aiio_filter(data: dict) -> dict:
         "gpt-oss": "openai/",
         "qwen2": "Qwen/",
         "qwen3": "Qwen/",
+        "qwen-2.5": "Qwen/",
         "mistral": "mistralai/",
         "devstral": "mistralai/",
         "magistral": "mistralai/",
-        "nemo": "mistralai/"
+        "nemo": "mistralai/",
+        "olmo-3": "allenai/",
+        "olmo-3.1": "allenai/",
+        "nemotron": "nvidia/",
+        "mimo": "mistralai/",
+        "trinity": "allenai/",
+        "tng-r1t": "allenai/",
+        "kat-coder": "cohere/",
+        "tongyi": "alibaba/",
+        "dolphin": "cognitivecomputations/",
+        "gemma": "google/",
+        "gemini": "google/",
+        "claude": "anthropic/",
+        "command": "cohere/",
+        "phi": "microsoft/",
+        "dbrx": "databricks/",
+        "amazon": "amazon/",
+        "ai21": "ai21/",
+        "allenai": "allenai/",
+        "cohere": "cohere/",
+        "arcee-ai": "arcee-ai/",
+        "bert": "openrouter/"
     }
     
     final_list = []

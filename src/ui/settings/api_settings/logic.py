@@ -802,14 +802,15 @@ def wire_api_settings_logic(self):
             current_template = self.template_combo.currentText().lower()
             current_url = self.api_url_entry.text().lower()
 
-            # Добавление имён
-            # 1. Проверяем, что это AI.IO
+            # Определяем провайдера
             is_ai_io = "ai.io" in current_template or "intelligence.io" in current_url
-
-            if is_ai_io and "openrouter" not in current_template:
-                logger.info("Logic: AI.IO detected. Patching string names...")
-                
-                # Карта префиксов (ключ маленькими буквами)
+            is_openrouter = 'openrouter' in current_template
+        
+            # Для AI.IO и OpenRouter обрабатываем модели
+            if is_ai_io or is_openrouter:
+                logger.info(f"Logic: {'AI.IO' if is_ai_io else 'OpenRouter'} detected. Processing models...")
+            
+                # Карта префиксов (общая для обоих провайдеров)
                 prefix_map = {
                     "kimi-k2": "moonshotai/",
                     "deepseek": "deepseek-ai/",
@@ -819,43 +820,94 @@ def wire_api_settings_logic(self):
                     "gpt-oss": "openai/",
                     "qwen2": "Qwen/",
                     "qwen3": "Qwen/",
+                    "qwen-2.5": "Qwen/",
                     "mistral": "mistralai/",
                     "devstral": "mistralai/",
                     "magistral": "mistralai/",
-                    "nemo": "mistralai/"
+                    "nemo": "mistralai/",
+                    "olmo-3": "allenai/",
+                    "olmo-3.1": "allenai/",
+                    "nemotron": "nvidia/",
+                    "mimo": "mistralai/",
+                    "trinity": "allenai/",
+                    "tng-r1t": "allenai/",
+                    "kat-coder": "cohere/",
+                    "tongyi": "alibaba/",
+                    "dolphin": "cognitivecomputations/",
+                    "gemma": "google/",
+                    "gemini": "google/",
+                    "claude": "anthropic/",
+                    "command": "cohere/",
+                    "phi": "microsoft/",
+                    "dbrx": "databricks/",
+                    "amazon": "amazon/",
+                    "ai21": "ai21/",
+                    "allenai": "allenai/",
+                    "cohere": "cohere/",
+                    "arcee-ai": "arcee-ai/",
+                    "bert": "openrouter/"
                 }
 
                 fixed_models = []
                 for m in models:
-                    # Принудительно превращаем в строку
-                    m_str = str(m).strip()
+                    # Извлекаем ID модели в зависимости от формата
+                    m_id = ''
+                    if isinstance(m, dict):
+                        # Для словарей берем 'id' или 'name'
+                        m_id = m.get('id', m.get('name', ''))
+                    else:
+                        # Для строк просто используем значение
+                        m_id = str(m).strip()
                     
-                    # Если слэша нет, ищем совпадение
-                    if "/" not in m_str:
-                        m_lower = m_str.lower()
+                    if not m_id:
+                        continue
+                    
+                    # Добавляем префикс, если его нет
+                    if "/" not in m_id:
+                        m_lower = m_id.lower()
                         for key, prefix in prefix_map.items():
                             if key in m_lower:
-                                # ПРОСТОЕ СЛОЖЕНИЕ СТРОК
-                                m_str = prefix + m_str
+                                m_id = prefix + m_id
                                 break
                     
-                    fixed_models.append(m_str)
+                    fixed_models.append(m_id)
                 
                 # Подменяем список на исправленный
                 models = fixed_models
                 # Сохраняем обратно в data, чтобы при сохранении пресета записалось полное имя
-                data['models'] = fixed_models 
+                data['models'] = fixed_models
 
-            # OpenRouter и вывод
-            is_openrouter = False
+            # РАБОТА С ПРОБЛЕМНЫМИ МОДЕЛЯМИ
+            is_openrouter_temp = False
             if 'openrouter' in current_template:
-                is_openrouter = True
+                is_openrouter_temp = True
             elif models and len(models) > 0:
-                # Проверка первой модели
                 first_model = str(models[0]).lower()
                 if ":free" in first_model:
-                    is_openrouter = True
+                    is_openrouter_temp = True
             
+            if is_openrouter_temp:
+                logger.info("Logic: OpenRouter detected. Applying specific fixes...")
+                fixed_models = []
+                for m in models:
+                    # Извлекаем строку из словаря или просто берём строку
+                    m_str = m.get('id', '') if isinstance(m, dict) else str(m)
+                    m_str = m_str.strip()
+                    
+                    # Конкретные замены для проблемных моделей OpenRouter (Можно добавить другие замены здесь)
+                    if "deepseek-v3.1-nex-n1" in m_str:
+                        # Заменяем ЛЮБОЙ префикс перед моделью на правильный
+                        m_str = "nex-agi/deepseek-v3.1-nex-n1" + m_str.split("deepseek-v3.1-nex-n1")[-1]
+                    elif "hermes-3-llama-3.1-405b" in m_str:
+                        m_str = "nousresearch/hermes-3-llama-3.1-405b" + m_str.split("hermes-3-llama-3.1-405b")[-1]
+                    elif "glm-4.5-air" in m_str:
+                        m_str = "z-ai/glm-4.5-air" + m_str.split("glm-4.5-air")[-1]
+                    
+                    fixed_models.append(m_str)
+                
+                models = fixed_models
+                data['models'] = fixed_models
+
             # Формируем текст для окошка
             model_texts = []
             for i, model_name in enumerate(models[:150], 1):
