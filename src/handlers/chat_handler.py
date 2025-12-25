@@ -1,27 +1,26 @@
 # File: chat_handler.py
-import base64
-import concurrent.futures
-import datetime
 import json
 import time
 #import tiktoken
-import os
 import re
 import importlib
 from typing import List, Dict, Any, Optional
-from io import BytesIO # Добавлено для обработки изображений
 from tools.manager import ToolManager,mk_tool_call_msg,mk_tool_resp_msg
 from main_logger import logger
 
 from characters.character import Character
 from utils.pip_installer import PipInstaller
 
-from utils import SH, save_combined_messages # Keep utils
+from utils import SH, save_combined_messages
 from utils import _ as translate
+
+from managers.api_preset_resolver import ApiPresetResolver
+from managers.llm_request_runner import LLMRequestRunner
 
 from core.events import get_event_bus, Events
 
 class ChatModel:
+    
     def __init__(self, settings, pip_installer: PipInstaller):
         self.last_key = 0
         self.pip_installer = pip_installer
@@ -30,15 +29,23 @@ class ChatModel:
         self.settings = settings
         self.event_bus = get_event_bus()
 
-        preset_settings = self.load_preset_settings()
-        logger.info(f"Initializing ChatModel with preset: {preset_settings['preset_name']}")
+        self.preset_resolver = ApiPresetResolver(settings=self.settings, event_bus=self.event_bus)
 
-        self.api_model = preset_settings['api_model']
-        self.gpt4free_model = preset_settings['g4f_model'] if preset_settings['is_g4f'] else self.settings.get("gpt4free_model", "")
+        preset_settings = self.preset_resolver.resolve()
+        logger.info(f"Initializing ChatModel with preset: {preset_settings.preset_name}")
+
+        self.api_model = preset_settings.api_model
+        self.gpt4free_model = preset_settings.g4f_model if preset_settings.is_g4f else self.settings.get("gpt4free_model", "")
 
         self._initialize_g4f()
 
         self.tool_manager = ToolManager()
+
+        self.request_runner = LLMRequestRunner(
+            settings=self.settings,
+            preset_resolver=self.preset_resolver,
+            event_bus=self.event_bus
+        )
 
         try:
             import tiktoken
@@ -80,7 +87,6 @@ class ChatModel:
         self.GameMaster: Character = None
         self.characters = {}  # optional alias для legacy
 
-        # Настройки для снижения качества изображений в истории (используются выше по цепочке при сборке промпта)
         self.image_quality_reduction_enabled = bool(self.settings.get("IMAGE_QUALITY_REDUCTION_ENABLED", False))
         self.image_quality_reduction_start_index = int(self.settings.get("IMAGE_QUALITY_REDUCTION_START_INDEX", 25))
         self.image_quality_reduction_use_percentage = bool(self.settings.get("IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE", False))
@@ -88,7 +94,6 @@ class ChatModel:
         self.image_quality_reduction_min_quality = int(min_quolity) if min_quolity != '' else 30
         self.image_quality_reduction_decrease_rate = int(self.settings.get("IMAGE_QUALITY_REDUCTION_DECREASE_RATE", 5))
 
-        # Game-specific state (пока оставляем, как договорились — перенос потом)
         self.distance = 0.0
         self.roomPlayer = -1
         self.roomMita = -1
@@ -97,7 +102,6 @@ class ChatModel:
 
         self.infos_to_add_to_history: List[Dict] = []
 
-        # Mapping of model names to their token limits
         self._model_token_limits: Dict[str, int] = {
             "gpt-4o-mini": 128000,
             "gpt-4o": 128000,
@@ -112,67 +116,6 @@ class ChatModel:
         self.HideAiData = True
         self.max_request_attempts = int(self.settings.get("MODEL_MESSAGE_ATTEMPTS_COUNT", 5))
         self.request_delay = float(self.settings.get("MODEL_MESSAGE_ATTEMPTS_TIME", 0.20))
-
-    def load_preset_settings(self, preset_id: Optional[int] = None) -> Dict[str, Any]:
-        """
-        Загружает настройки из пресета по ID.
-        Если preset_id не указан, берёт текущий из LAST_API_PRESET_ID.
-        """
-        if preset_id is None:
-            preset_id = self.settings.get("LAST_API_PRESET_ID", 0)
-            logger.info(f"Loading current preset ID: {preset_id}")
-        else:
-            logger.info(f"Loading specific preset ID: {preset_id}")
-        
-        preset_data = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_FULL, {'id': preset_id}, timeout=1.0)
-        if preset_data and preset_data[0]:
-            preset = preset_data[0]
-            logger.info(f"Preset {preset_id} loaded successfully: {preset.get('name', 'Unknown')}")
-            
-            url = preset.get('url', '')
-            if preset.get('url_tpl'):
-                model = preset.get('default_model', '')
-                url = preset['url_tpl'].format(model=model) if '{model}' in preset['url_tpl'] else preset['url_tpl']
-                if preset.get('add_key') and preset.get('key'):
-                    sep = '&' if '?' in url else '?'
-                    url = f"{url}{sep}key={preset['key']}"
-
-            # ВАЖНО: если gemini_case в шаблоне настраиваемый (None), берём фактическое значение из state
-            effective_gemini = preset.get('gemini_case', False)
-            if preset.get('gemini_case') is None:
-                state = self.event_bus.emit_and_wait(Events.ApiPresets.LOAD_PRESET_STATE, {'id': preset_id}, timeout=1.0)
-                if state and state[0]:
-                    effective_gemini = bool(state[0].get('gemini_case', False))
-
-            return {
-                'api_key': preset.get('key', ''),
-                'api_url': url,
-                'api_model': preset.get('default_model', ''),
-                'make_request': preset.get('use_request', False),
-                'gemini_case': effective_gemini,
-                'is_g4f': preset.get('is_g4f', False),
-                'g4f_model': preset.get('default_model', '') if preset.get('is_g4f') else '',
-                'preset_name': preset.get('name', 'Unknown'),
-                'reserve_keys': preset.get('reserve_keys', []),
-            }
-        else:
-            logger.error(f"Failed to load preset ID {preset_id}: using fallback from settings")
-            # Для обратной совместимости берем резервные ключи из settings
-            reserve_keys_str = self.settings.get("NM_API_KEY_RES", "")
-            reserve_keys = [key.strip() for key in reserve_keys_str.split() if key.strip()] if reserve_keys_str else []
-            
-            return {
-                'api_key': self.settings.get("NM_API_KEY", ""),
-                'api_url': self.settings.get("NM_API_URL", ""),
-                'api_model': self.settings.get("NM_API_MODEL", ""),
-                'make_request': self.settings.get("NM_API_REQ", False),
-                'gemini_case': self.settings.get("GEMINI_CASE", False),
-                'is_g4f': self.settings.get("gpt4free", False),
-                'g4f_model': self.settings.get("gpt4free_model", ""),
-                'preset_name': 'Fallback',
-                'reserve_keys': reserve_keys,
-            }
-
 
     def _initialize_g4f(self):
         logger.info("Проверка и инициализация g4f (после возможного обновления при запуске)...")
@@ -273,175 +216,98 @@ class ChatModel:
         if tools_mode == "off":
             tools_on = False
 
+        # legacy tools: подмешиваем system prompt один раз
         if tools_on and tools_mode == "legacy":
             tools_desc = json.dumps(self.tool_manager.json_schema())
             legacy_prompt = self.tool_manager.tools_prompt().format(tools_json=tools_desc)
             combined_messages.insert(0, {"role": "system", "content": legacy_prompt})
 
-        for attempt in range(1, max_attempts + 1):
-            logger.info(f"Generation attempt {attempt}/{max_attempts}")
-            
-            response_text = None
+        from handlers.llm_providers.base import LLMRequest
 
-            save_combined_messages(combined_messages, "SavedMessages/last_attempt_log")
+        def build_request(preset_settings, effective_model: str, use_g4f_for_this_attempt: bool) -> LLMRequest:
+            """
+            preset_settings: PresetSettings (возможна ротация ключа на попытках)
+            """
+            params = self.get_params(effective_model)
 
-            try:
-                logger.info("Generating response...")
-                
-                from managers.provider_manager import ProviderManager
-                from handlers.llm_providers.base import LLMRequest
-                
-                # Подгружаем пресет для текущей попытки
-                preset_settings = self.load_preset_settings(preset_id)
-                
-                # Обработка резервных ключей из пресета
-                current_api_key = preset_settings['api_key']
-                reserve_keys = preset_settings.get('reserve_keys', [])
-                
-                if attempt > 1 and reserve_keys:
-                    new_key = self.GetReserveKey(current_api_key, reserve_keys, attempt - 1)
-                    if new_key and new_key != current_api_key:
-                        logger.info(f"Attempt {attempt}: switching to reserve key (masked): {SH(new_key)}")
-                        preset_settings['api_key'] = new_key
-                        # Обновляем URL если нужно (для Gemini с ?key=)
-                        if preset_settings['make_request'] and "key=" in preset_settings['api_url']:
-                            preset_settings['api_url'] = re.sub(r"key=[^&]*", f"key={new_key}", preset_settings['api_url'])
-                
-                effective_model = preset_settings['api_model']
-                use_gpt4free_for_this_attempt = preset_settings['is_g4f'] or \
-                                            (bool(self.settings.get("GPT4FREE_LAST_ATTEMPT")) and attempt >= max_attempts)
-                
-                if use_gpt4free_for_this_attempt:
-                    effective_model = preset_settings['g4f_model'] or self.gpt4free_model
-                    logger.info(f"Using g4f for attempt {attempt} with model: {effective_model}")
-                
-                params = self.get_params(effective_model)
-                
-                tools_payload = None
-                if tools_on and tools_mode == "native":
-                    if preset_settings['make_request'] and preset_settings['gemini_case']:
-                        tools_payload = self.tool_manager.get_tools_payload("gemini")
-                    elif preset_settings['make_request']:
-                        tools_payload = self.tool_manager.get_tools_payload("deepseek")
-                    else:
-                        tools_payload = self.tool_manager.get_tools_payload("openai")
-                
-                # Передаем сообщения как есть - форматирование происходит в provider
-                req = LLMRequest(
-                    model=effective_model,
-                    messages=combined_messages,
-                    api_key=preset_settings['api_key'],
-                    api_url=preset_settings['api_url'],
-                    make_request=preset_settings['make_request'],
-                    gemini_case=preset_settings['gemini_case'],
-                    g4f_flag=use_gpt4free_for_this_attempt,
-                    g4f_model=preset_settings['g4f_model'],
-                    stream=bool(self.settings.get("ENABLE_STREAMING", False)) and stream_callback is not None,
-                    stream_cb=stream_callback,
-                    tools_on=tools_on,
-                    tools_mode=tools_mode,
-                    tools_payload=tools_payload,
-                    extra=params,
-                    tool_manager=self.tool_manager
-                )
-                
-                logger.notify(f"req: {json.dumps(preset_settings)}")
-                
-                req.extra['tool_manager'] = self.tool_manager
-                
-                logger.info(f"Request configured: provider={preset_settings['preset_name']}, model={effective_model}, stream={req.stream}")
-                
-                pm = ProviderManager()
-                response_text = self._execute_with_timeout(
-                    pm.generate,
-                    args=(req,),
-                    timeout=request_timeout
-                )
-
-                if response_text and tools_on and tools_mode == "legacy":
-                    response_text = self._handle_legacy_tool_calls(response_text, combined_messages, stream_callback)
-
-                if response_text:
-                    cleaned_response = self._clean_response(response_text)
-                    logger.info(f"Successful response received (attempt {attempt}).")
-                    if cleaned_response:
-                        return cleaned_response, True
-                    else:
-                        logger.warning("Response became empty after cleaning.")
+            tools_payload = None
+            if tools_on and tools_mode == "native":
+                if preset_settings.make_request and preset_settings.gemini_case:
+                    tools_payload = self.tool_manager.get_tools_payload("gemini")
+                elif preset_settings.make_request:
+                    tools_payload = self.tool_manager.get_tools_payload("deepseek")
                 else:
-                    logger.warning(f"Attempt {attempt} yielded no response or an error handled within generation.")
+                    tools_payload = self.tool_manager.get_tools_payload("openai")
 
-            except concurrent.futures.TimeoutError:
-                logger.error(f"Attempt {attempt} timed out after {request_timeout}s.")
-            except Exception as e:
-                logger.error(f"Error during generation attempt {attempt}: {str(e)}", exc_info=True)
+            req = LLMRequest(
+                model=effective_model,
+                messages=combined_messages,
+                api_key=preset_settings.api_key,
+                api_url=preset_settings.api_url,
+                make_request=preset_settings.make_request,
+                gemini_case=preset_settings.gemini_case,
+                g4f_flag=use_g4f_for_this_attempt,
+                g4f_model=preset_settings.g4f_model,
+                stream=bool(self.settings.get("ENABLE_STREAMING", False)) and stream_callback is not None,
+                stream_cb=stream_callback,
+                tools_on=tools_on,
+                tools_mode=tools_mode,
+                tools_payload=tools_payload,
+                extra=params,
+                tool_manager=self.tool_manager
+            )
 
-            if attempt < max_attempts:
-                logger.info(f"Waiting {retry_delay}s before next attempt...")
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE_ATTEMPT)
-                time.sleep(retry_delay)
+            # для обратной совместимости с текущими провайдерами (они местами читают tool_manager из extra)
+            req.extra["tool_manager"] = self.tool_manager
 
-        logger.error("All generation attempts failed.")
+            logger.info(
+                f"Request configured: preset={preset_settings.preset_name}, "
+                f"model={effective_model}, stream={req.stream}, make_request={preset_settings.make_request}, "
+                f"gemini_case={preset_settings.gemini_case}, g4f={use_g4f_for_this_attempt}"
+            )
+            return req
+
+        try:
+            response_text = self.request_runner.run(
+                messages=combined_messages,
+                preset_id=preset_id,
+                stream_callback=stream_callback,
+                build_request=build_request,
+                max_attempts=max_attempts,
+                retry_delay=retry_delay,
+                request_timeout=request_timeout,
+                g4f_fallback_model=str(self.gpt4free_model or self.settings.get("gpt4free_model", "") or ""),
+            )
+        except Exception as e:
+            logger.error(f"Runner failed unexpectedly: {e}", exc_info=True)
+            return None, False
+
+        if response_text and tools_on and tools_mode == "legacy":
+            response_text = self._handle_legacy_tool_calls(response_text, combined_messages, stream_callback)
+
+        if response_text:
+            cleaned_response = self._clean_response(response_text)
+            if cleaned_response:
+                return cleaned_response, True
+            logger.warning("Response became empty after cleaning.")
+            return None, False
+
         return None, False
-
-    def _execute_with_timeout(self, func, args=(), kwargs={}, timeout=30):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(func, *args, **kwargs)
-            try:
-                return future.result(timeout=timeout)
-            except concurrent.futures.TimeoutError:
-                logger.error(f"Function {func.__name__} timed out after {timeout} seconds.")
-                raise
-            except Exception as e:
-                logger.error(f"Exception in function {func.__name__} executed with timeout: {e}")
-                raise
-
-    def GetReserveKey(self, current_key: str, reserve_keys: List[str], attempt_index: int) -> str | None:
-        """
-        Получает резервный ключ из списка.
-        current_key - текущий ключ из пресета
-        reserve_keys - список резервных ключей из пресета
-        attempt_index - индекс попытки (0-based)
-        """
-        all_keys = []
-        if current_key:
-            all_keys.append(current_key)
-        
-        # Добавляем резервные ключи из пресета
-        if reserve_keys:
-            all_keys.extend(reserve_keys)
-
-        seen = set()
-        unique_keys = [x for x in all_keys if not (x in seen or seen.add(x))]
-
-        if not unique_keys:
-            logger.error("No API keys available")
-            return None
-
-        if len(unique_keys) == 1:
-            return unique_keys[0]
-        
-        # Циклический перебор ключей
-        key_index = attempt_index % len(unique_keys)
-        selected_key = unique_keys[key_index]
-
-        logger.info(
-            f"Selected API key index: {key_index} (masked: {SH(selected_key)}) from {len(unique_keys)} unique keys.")
-        return selected_key
-
 
     def _log_generation_start(self, preset_id: Optional[int] = None):
         logger.info("Preparing to generate LLM response.")
-        preset_settings = self.load_preset_settings(preset_id)
-        logger.info(f"Using preset: {preset_settings['preset_name']}")
+        preset_settings = self.preset_resolver.resolve(preset_id)
+
+        logger.info(f"Using preset: {preset_settings.preset_name}")
         logger.info(f"Max Response Tokens: {self.max_response_tokens}, Temperature: {self.temperature}")
         logger.info(
-            f"Presence Penalty: {self.presence_penalty} (Used: {bool(self.settings.get('USE_MODEL_PRESENCE_PENALTY'))})")
-        logger.info(f"API URL: {preset_settings['api_url']}, API Model: {preset_settings['api_model']}")
-        logger.info(f"g4f Enabled: {preset_settings['is_g4f']}, g4f Model: {preset_settings.get('g4f_model', 'N/A')}")
-        logger.info(f"Custom Request: {preset_settings['make_request']}")
-        if preset_settings['make_request']:
-            logger.info(f"  Gemini Case: {preset_settings['gemini_case']}")
+            f"Presence Penalty: {self.presence_penalty} (Used: {bool(self.settings.get('USE_MODEL_PRESENCE_PENALTY'))})"
+        )
+        logger.info(f"API URL: {preset_settings.api_url}, API Model: {preset_settings.api_model}")
+        logger.info(f"g4f Enabled: {preset_settings.is_g4f}, g4f Model: {preset_settings.g4f_model or 'N/A'}")
+        logger.info(f"Custom Request: {preset_settings.make_request}")
+        if preset_settings.make_request:
+            logger.info(f"  Gemini Case: {preset_settings.gemini_case}")
 
     def try_print_error(self, completion_or_error):
         logger.warning("Attempting to print error details from API response/error object.")
@@ -507,16 +373,15 @@ class ChatModel:
         """
         Возвращает максимальное количество токенов для текущей активной модели.
         """
-        # Берем модель из текущего пресета
-        preset_settings = self.load_preset_settings()
-        current_model = preset_settings['api_model']
-        
-        if preset_settings['is_g4f']:
-            current_model = preset_settings.get('g4f_model', '') or self.gpt4free_model
+        preset_settings = self.preset_resolver.resolve()
+        current_model = preset_settings.api_model
 
-        # Возвращаем лимит из настроек, если он задан и больше 0, иначе из маппинга
+        if preset_settings.is_g4f:
+            current_model = preset_settings.g4f_model or self.gpt4free_model
+
         if self.max_model_tokens > 0:
-             return self.max_model_tokens
+            return self.max_model_tokens
+
         return self._model_token_limits.get(current_model, 128000)
 
     
