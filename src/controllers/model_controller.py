@@ -2,6 +2,8 @@ import datetime
 import re
 import copy
 
+from typing import Optional
+
 from handlers.chat_handler import ChatModel
 from utils import _, process_text_to_voice
 from core.events import get_event_bus, Events, Event
@@ -325,9 +327,42 @@ class ModelController:
             return None
 
         char = self.model.current_character
-        char_id = getattr(char, 'char_id', '')
+        char_id = getattr(char, 'char_id', '') or ''
+        char_name = getattr(char, 'name', '') or ''
 
-        # --- compress: теперь тоже эмитим "started", т.к. ChatModel больше это не делает ---
+        def _is_current_label(label: str | None) -> bool:
+            s = str(label or "").strip()
+            return s in ("", "Current", "Текущий", _("Текущий", "Current"))
+
+        def _resolve_label_to_preset_id(label: str | None) -> Optional[int]:
+            if label is None:
+                return None
+            if _is_current_label(label):
+                return None
+
+            s = str(label).strip()
+            try:
+                return int(s)
+            except ValueError:
+                pass
+
+            try:
+                return self.preset_resolver.resolve_preset_id_by_name(s)
+            except Exception:
+                return None
+
+        def _get_char_provider_label() -> str:
+            """
+            Поддержка обеих схем ключей:
+            - CHAR_PROVIDER_{char_id}
+            - CHAR_PROVIDER_{char_name}
+            """
+            v = self.settings.get(f"CHAR_PROVIDER_{char_id}", None)
+            if v is None and char_name:
+                v = self.settings.get(f"CHAR_PROVIDER_{char_name}", None)
+            return str(v if v is not None else "Current")
+
+        # compress branch
         if event_type == 'compress':
             messages = []
             if system_input:
@@ -336,15 +371,10 @@ class ModelController:
             preset_id = preset_id_override
             if preset_id is None:
                 hc_provider = self.settings.get("HC_PROVIDER", "Current")
-                if hc_provider != "Current":
-                    try:
-                        preset_id = int(hc_provider)
-                        logger.info(f"[HistoryController] Используется пресет для сжатия истории: {preset_id}")
-                    except ValueError:
-                        logger.warning(
-                            f"[HistoryController] Некорректный HC_PROVIDER='{hc_provider}', используется текущий пресет."
-                        )
-                        preset_id = None
+                preset_id = _resolve_label_to_preset_id(str(hc_provider))
+
+                if preset_id is None and not _is_current_label(str(hc_provider)):
+                    logger.warning(f"[compress] HC_PROVIDER='{hc_provider}' не найден, используем текущий пресет.")
 
             self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION)
 
@@ -355,28 +385,46 @@ class ModelController:
                 logger.error(f"Ошибка при сжатии истории через GENERATE_RESPONSE: {e}", exc_info=True)
                 return None
 
-        game_state = self.game_state.to_prompt_dict()
+        # normal chat/react branch
+        try:
+            game_state = self.game_state.to_prompt_dict()
+        except Exception:
+            try:
+                gs_res = self.event_bus.emit_and_wait(Events.Model.GET_GAME_STATE, timeout=1.0)
+                game_state = gs_res[0] if gs_res and isinstance(gs_res[0], dict) else {}
+            except Exception:
+                game_state = {}
 
-        extra_system_infos = list(self._temporary_system_infos)
-        self._temporary_system_infos.clear()
+        try:
+            extra_system_infos = list(getattr(self, "_temporary_system_infos", []) or [])
+            if hasattr(self, "_temporary_system_infos"):
+                self._temporary_system_infos.clear()
+        except Exception:
+            extra_system_infos = []
+
+        cfg = getattr(self.model, "cfg", None)
 
         screen_quality = self.settings.get("SCREEN_CAPTURE_QUALITY", 75)
         screen_quality = int(screen_quality) if str(screen_quality) != '' else 75
 
-        cfg = self.model.cfg
+        def _cfg_get(attr: str, default):
+            if cfg is not None and hasattr(cfg, attr):
+                return getattr(cfg, attr)
+            return getattr(self.model, attr, default)
 
         image_quality_cfg = {
-            'enabled': bool(cfg.image_quality_reduction_enabled),
-            'start_index': int(cfg.image_quality_reduction_start_index),
-            'use_percentage': bool(cfg.image_quality_reduction_use_percentage),
-            'min_quality': int(cfg.image_quality_reduction_min_quality),
-            'decrease_rate': int(cfg.image_quality_reduction_decrease_rate),
+            'enabled': bool(_cfg_get("image_quality_reduction_enabled", False)),
+            'start_index': int(_cfg_get("image_quality_reduction_start_index", 25)),
+            'use_percentage': bool(_cfg_get("image_quality_reduction_use_percentage", False)),
+            'min_quality': int(_cfg_get("image_quality_reduction_min_quality", 30)),
+            'decrease_rate': int(_cfg_get("image_quality_reduction_decrease_rate", 5)),
             'screen_capture_quality': screen_quality,
         }
 
         separate_prompts = bool(self.settings.get("SEPARATE_PROMPTS", True))
         save_missed_history = bool(self.settings.get("SAVE_MISSED_HISTORY", True))
-        memory_limit = cfg.memory_limit
+        memory_limit = int(_cfg_get("memory_limit", 40))
+
         is_game_master = (char == getattr(self.model, "GameMaster", None))
 
         try:
@@ -416,45 +464,34 @@ class ModelController:
         combined_messages = prompt_data.get("messages", []) or []
         history_for_save = prompt_data.get("history_messages", []) or []
 
-        try:
-            self._cache_base_prompt(char_id, event_type, combined_messages)
-        except Exception:
-            pass
-
-        # --- preset routing (react/char_provider) ---
-        preset_id = None
+        # preset routing
+        preset_id: Optional[int] = None
 
         if event_type == 'react':
             react_provider_label = str(self.settings.get("REACT_PROVIDER", _("Текущий", "Current")))
-            if react_provider_label not in (_("Текущий", "Current"), "Текущий", "Current"):
-                preset_id = self.preset_resolver.resolve_preset_id_by_name(react_provider_label)
+            if not _is_current_label(react_provider_label):
+                preset_id = _resolve_label_to_preset_id(react_provider_label)
                 if preset_id is None:
-                    logger.warning(
-                        f"REACT_PROVIDER '{react_provider_label}' не найден, используется CHAR_PROVIDER."
-                    )
+                    logger.warning(f"REACT_PROVIDER '{react_provider_label}' не найден, используем CHAR_PROVIDER.")
 
             if preset_id is None:
-                char_provider = self._get_character_provider_label(char_id)
-                if char_provider != "Current":
-                    try:
-                        preset_id = int(char_provider)
-                        logger.info(f"react: используем CHAR_PROVIDER preset ID: {preset_id}")
-                    except ValueError:
-                        logger.warning(
-                            f"react: некорректный CHAR_PROVIDER='{char_provider}', используем текущий пресет."
-                        )
-        else:
-            char_provider = self._get_character_provider_label(char_id)
-            if char_provider != "Current":
-                try:
-                    preset_id = int(char_provider)
-                    logger.info(f"chat: используем character-specific preset ID: {preset_id}")
-                except ValueError:
-                    logger.warning(
-                        f"chat: некорректный CHAR_PROVIDER='{char_provider}', используем текущий пресет."
-                    )
+                char_provider_label = _get_char_provider_label()
+                preset_id = _resolve_label_to_preset_id(char_provider_label)
 
-        # Оставляем эмит только здесь (ChatModel больше не должен его делать)
+                if preset_id is not None:
+                    logger.info(f"react: используем CHAR_PROVIDER preset ID: {preset_id}")
+                elif not _is_current_label(char_provider_label):
+                    logger.warning(f"react: CHAR_PROVIDER='{char_provider_label}' не найден, используем текущий пресет.")
+
+        else:
+            char_provider_label = _get_char_provider_label()
+            preset_id = _resolve_label_to_preset_id(char_provider_label)
+
+            if preset_id is not None:
+                logger.info(f"chat: используем character-specific preset ID: {preset_id}")
+            elif not _is_current_label(char_provider_label):
+                logger.warning(f"chat: CHAR_PROVIDER='{char_provider_label}' не найден, используем текущий пресет.")
+
         self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION)
 
         try:
@@ -479,6 +516,7 @@ class ModelController:
 
             final_response_text = processed_response_text
 
+            # command replacer
             try:
                 use_cmd_replacer = self.settings.get("USE_COMMAND_REPLACER", False)
                 if use_cmd_replacer:
@@ -523,8 +561,6 @@ class ModelController:
             assistant_message = {"role": "assistant", "content": assistant_message_content}
             assistant_message["time"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
 
-            history_for_save.append(assistant_message)
-
             if event_type != 'react':
                 history_for_save.append(assistant_message)
 
@@ -547,9 +583,7 @@ class ModelController:
             logger.error(f"Error during LLM response generation or processing: {e}", exc_info=True)
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': str(e)})
             return f"Ошибка: {e}"
-
-
-
+        
     def _on_raw_generate(self, event: Event):
         """
         Обрабатывает Events.LLM.RAW_GENERATE:
@@ -583,14 +617,13 @@ class ModelController:
                 char.reload_character_data()
 
     def _on_reload_prompts_async(self, event: Event):
-        # Получаем главный asyncio-loop через событие
         loop_res = self.event_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
         loop = loop_res[0] if loop_res else None
         
         logger.info("Запрос на асинхронное обновление промптов...")
         self.event_bus.emit(Events.Core.RUN_IN_LOOP, {
             'coroutine': self._async_reload_prompts(),
-            'callback': None  # Можно добавить callback для обработки результата, если нужно
+            'callback': None 
         })
 
     async def _async_reload_prompts(self):
@@ -642,3 +675,22 @@ class ModelController:
             safe = safe[:-1]
 
         self._base_prompt_cache[(char_id, event_type)] = safe
+
+    def _is_current_provider_label(self, label: str) -> bool:
+        s = str(label or "").strip()
+        return s in ("", "Current", "Текущий", _("Текущий", "Current"))
+
+    def _resolve_provider_label_to_preset_id(self, label: str | None) -> int | None:
+        if label is None:
+            return None
+        if self._is_current_provider_label(label):
+            return None
+
+        s = str(label).strip()
+        try:
+            return int(s)
+        except ValueError:
+            pass
+
+        pid = self.preset_resolver.resolve_preset_id_by_name(s)
+        return pid

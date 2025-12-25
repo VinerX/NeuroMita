@@ -53,7 +53,7 @@ def setup_model_interaction_controls(self, parent):
                     'Maximum number of tokens in the model response')},
 
         {'label': _('Температура', 'Temperature'), 'key': 'MODEL_TEMPERATURE',
-         'type': 'entry', 'default': 0.5, 'validation': self.validate_float_0_to_2,
+         'type': 'entry', 'default': 1.0, 'validation': self.validate_float_0_to_2,
          'tooltip': _('Креативность ответа (0.0 = строго, 2.0 = очень творчески)',
                       'Creativity of response (0.0 = strict, 2.0 = very creative)')},
 
