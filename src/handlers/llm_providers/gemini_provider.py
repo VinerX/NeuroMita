@@ -23,6 +23,65 @@ class GeminiProvider(BaseProvider):
     def generate(self, req: LLMRequest) -> str:
         return self.generate_request_gemini(req)
 
+    def _supports_system_instruction(self, model: str) -> bool:
+        m = (model or "").lower()
+        # Gemma-family часто не поддерживает developer instruction => нельзя system_instruction
+        if "gemma" in m and "gemini" not in m:
+            return False
+        return True
+
+    def _system_parts_to_text(self, system_parts: list) -> str:
+        chunks = []
+        for p in system_parts or []:
+            if isinstance(p, dict) and p.get("text"):
+                chunks.append(str(p["text"]))
+            else:
+                try:
+                    chunks.append(json.dumps(p, ensure_ascii=False))
+                except Exception:
+                    chunks.append(str(p))
+        return "\n".join([c for c in chunks if c and str(c).strip()]).strip()
+
+    def _inject_system_into_contents(self, system_parts: list, contents: list) -> list:
+        """
+        Для моделей без system_instruction: переносим system в первое user-сообщение.
+        """
+        sys_text = self._system_parts_to_text(system_parts)
+        if not sys_text:
+            return contents
+
+        prefix = f"[SYSTEM INFO]\n{sys_text}\n\n"
+
+        if not contents:
+            return [{
+                "role": "user",
+                "parts": [{"text": prefix}]
+            }]
+
+        # найти первое user сообщение
+        for msg in contents:
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                continue
+            parts = msg.get("parts") or []
+            if not isinstance(parts, list):
+                parts = []
+
+            inserted = False
+            for part in parts:
+                if isinstance(part, dict) and "text" in part:
+                    part["text"] = f"{prefix}{part.get('text', '')}"
+                    inserted = True
+                    break
+
+            if not inserted:
+                parts.insert(0, {"text": prefix})
+
+            msg["parts"] = parts
+            return contents
+
+        # если user-сообщений нет — добавим отдельное в начало
+        return [{"role": "user", "parts": [{"text": prefix}]}] + contents
+
     def _format_messages_for_gemini_api(self, messages):
         system_parts = []
         contents = []
@@ -37,10 +96,9 @@ class GeminiProvider(BaseProvider):
                 gemini_role = "model" if role == "assistant" else "user"
                 contents.append({"role": gemini_role, "parts": self._format_content_to_parts(content)})
 
-        result = {}
+        result = {"contents": contents}
         if system_parts:
             result["system_instruction"] = {"parts": system_parts}
-        result["contents"] = contents
         return result
 
     def _format_content_to_parts(self, content):
@@ -49,6 +107,8 @@ class GeminiProvider(BaseProvider):
             parts.append({"text": content})
         elif isinstance(content, list):
             for item in content:
+                if not isinstance(item, dict):
+                    continue
                 if item.get("type") == "text":
                     parts.append({"text": item.get("text", "")})
                 elif item.get("type") == "image_url":
@@ -91,14 +151,24 @@ class GeminiProvider(BaseProvider):
         formatted = self._format_messages_for_gemini_api(req.messages)
 
         data = {}
-        if "system_instruction" in formatted:
-            data["system_instruction"] = formatted["system_instruction"]
 
-        data["contents"] = formatted["contents"] or []
+        contents = formatted.get("contents") or []
+        system_parts = []
+        if "system_instruction" in formatted:
+            system_parts = (formatted.get("system_instruction") or {}).get("parts") or []
+
+        # Gemma: system_instruction нельзя — переносим system в contents
+        if system_parts and not self._supports_system_instruction(req.model):
+            contents = self._inject_system_into_contents(system_parts, contents)
+        else:
+            if system_parts:
+                data["system_instruction"] = {"parts": system_parts}
+
+        data["contents"] = contents or []
         if not data["contents"]:
             data["contents"] = [{
                 "role": "user",
-                "parts": [{"text": "[SYSTEM INFO] Follow the system_instruction and generate an appropriate reaction."}]
+                "parts": [{"text": "Generate an appropriate reaction."}]
             }]
 
         if data["contents"] and data["contents"][-1].get("role") != "user":
@@ -169,7 +239,12 @@ class GeminiProvider(BaseProvider):
                 while json_buffer.strip():
                     try:
                         result, index = decoder.raw_decode(json_buffer)
-                        generated_text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                        generated_text = (
+                            result.get("candidates", [{}])[0]
+                            .get("content", {})
+                            .get("parts", [{}])[0]
+                            .get("text", "")
+                        )
                         if generated_text:
                             if stream_callback:
                                 stream_callback(generated_text)
