@@ -16,37 +16,43 @@ from utils import _ as translate
 
 from managers.api_preset_resolver import ApiPresetResolver
 from managers.llm_request_runner import LLMRequestRunner
+from managers.model_config_loader import ModelConfigLoader
 
 from core.events import get_event_bus, Events
 
 class ChatModel:
-    
     def __init__(self, settings, pip_installer: PipInstaller):
         self.last_key = 0
         self.pip_installer = pip_installer
-        self.g4fClient = None
-        self.g4f_available = False
         self.settings = settings
         self.event_bus = get_event_bus()
 
+        # Presets
         self.preset_resolver = ApiPresetResolver(settings=self.settings, event_bus=self.event_bus)
 
         preset_settings = self.preset_resolver.resolve()
         logger.info(f"Initializing ChatModel with preset: {preset_settings.preset_name}")
 
         self.api_model = preset_settings.api_model
-        self.gpt4free_model = preset_settings.g4f_model if preset_settings.is_g4f else self.settings.get("gpt4free_model", "")
+        self.gpt4free_model = (
+            preset_settings.g4f_model if preset_settings.is_g4f
+            else self.settings.get("gpt4free_model", "")
+        )
 
-        self._initialize_g4f()
+        # Runtime config
+        self.cfg_loader = ModelConfigLoader(self.settings)
+        self.cfg = self.cfg_loader.load()
 
         self.tool_manager = ToolManager()
 
+        # Retry runner
         self.request_runner = LLMRequestRunner(
             settings=self.settings,
             preset_resolver=self.preset_resolver,
             event_bus=self.event_bus
         )
 
+        # Tokenizer
         try:
             import tiktoken
             self.tokenizer = tiktoken.encoding_for_model("gpt-4o-mini")
@@ -59,41 +65,11 @@ class ChatModel:
             logger.error(f"Ошибка инициализации tiktoken: {e}")
             self.hasTokenizer = False
 
-        self.max_response_tokens = int(self.settings.get("MODEL_MAX_RESPONSE_TOKENS", 3200))
-        self.temperature = float(self.settings.get("MODEL_TEMPERATURE", 0.5))
-        self.presence_penalty = float(self.settings.get("MODEL_PRESENCE_PENALTY", 0.0))
-        self.top_k = int(self.settings.get("MODEL_TOP_K", 0))
-        self.top_p = float(self.settings.get("MODEL_TOP_P", 1.0))
-        self.thinking_budget = float(self.settings.get("MODEL_THINKING_BUDGET", 0.0))
-        self.presence_penalty = float(self.settings.get("MODEL_PRESENCE_PENALTY", 0.0))
-        self.frequency_penalty = float(self.settings.get("MODEL_FREQUENCY_PENALTY", 0.0))
-        self.log_probability = float(self.settings.get("MODEL_LOG_PROBABILITY", 0.0))
-
-        self.token_cost_input = float(self.settings.get("TOKEN_COST_INPUT", 0.0432))
-        self.token_cost_output = float(self.settings.get("TOKEN_COST_OUTPUT", 0.1728))
-        self.max_model_tokens = int(self.settings.get("MAX_MODEL_TOKENS", 128000))
-
-        self.memory_limit = int(self.settings.get("MODEL_MESSAGE_LIMIT", 40))
-
-        self.enable_history_compression_on_limit = bool(self.settings.get("ENABLE_HISTORY_COMPRESSION_ON_LIMIT", False))
-        self.enable_history_compression_periodic = bool(self.settings.get("ENABLE_HISTORY_COMPRESSION_PERIODIC", False))
-        self.history_compression_periodic_interval = int(self.settings.get("HISTORY_COMPRESSION_PERIODIC_INTERVAL", 20))
-        self.history_compression_prompt_template = str(self.settings.get("HISTORY_COMPRESSION_PROMPT_TEMPLATE", "Prompts/System/compression_prompt.txt"))
-        self.history_compression_output_target = str(self.settings.get("HISTORY_COMPRESSION_OUTPUT_TARGET", "memory"))
-
-        self._messages_since_last_periodic_compression = 0
-
         self.current_character: Character = None
         self.GameMaster: Character = None
-        self.characters = {}  # optional alias для legacy
+        self.characters = {}
 
-        self.image_quality_reduction_enabled = bool(self.settings.get("IMAGE_QUALITY_REDUCTION_ENABLED", False))
-        self.image_quality_reduction_start_index = int(self.settings.get("IMAGE_QUALITY_REDUCTION_START_INDEX", 25))
-        self.image_quality_reduction_use_percentage = bool(self.settings.get("IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE", False))
-        min_quolity = self.settings.get("IMAGE_QUALITY_REDUCTION_MIN_QUALITY", 30)
-        self.image_quality_reduction_min_quality = int(min_quolity) if min_quolity != '' else 30
-        self.image_quality_reduction_decrease_rate = int(self.settings.get("IMAGE_QUALITY_REDUCTION_DECREASE_RATE", 5))
-
+        # Game-specific state (оставляем пока тут)
         self.distance = 0.0
         self.roomPlayer = -1
         self.roomMita = -1
@@ -114,74 +90,7 @@ class ChatModel:
         }
 
         self.HideAiData = True
-        self.max_request_attempts = int(self.settings.get("MODEL_MESSAGE_ATTEMPTS_COUNT", 5))
-        self.request_delay = float(self.settings.get("MODEL_MESSAGE_ATTEMPTS_TIME", 0.20))
-
-    def _initialize_g4f(self):
-        logger.info("Проверка и инициализация g4f (после возможного обновления при запуске)...")
-        try:
-            from g4f.client import Client as g4fClient
-            logger.info("g4f найден (при проверке), попытка инициализации клиента...")
-            try:
-                self.g4fClient = g4fClient()
-                self.g4f_available = True
-                logger.info("g4fClient успешно инициализирован.")
-            except Exception as e:
-                logger.error(f"Ошибка при инициализации g4fClient: {e}")
-                self.g4fClient = None
-                self.g4f_available = False
-        except ImportError:
-            logger.info("Модуль g4f не найден (при проверке). Попытка первоначальной установки...")
-
-            target_version = self.settings.get("G4F_VERSION", "0.4.7.7")  # Using "0.x.y.z" format
-            package_spec = f"g4f=={target_version}" if target_version != "latest" else "g4f"
-
-            if self.pip_installer:
-                success = self.pip_installer.install_package(
-                    package_spec,
-                    description=f"Первоначальная установка g4f версии {target_version}..."
-                )
-                if success:
-                    logger.success("Первоначальная установка g4f (файлы) прошла успешно. Очистка кэша импорта...")
-                    try:
-                        importlib.invalidate_caches()
-                        logger.info("Кэш импорта очищен.")
-                    except Exception as e_invalidate:
-                        logger.error(f"Ошибка при очистке кэша импорта: {e_invalidate}")
-
-                    logger.info("Повторная попытка импорта и инициализации...")
-                    try:
-                        from g4f.client import Client as g4fClient  # Re-import
-                        logger.info("Повторный импорт g4f успешен. Попытка инициализации клиента...")
-                        try:
-                            self.g4fClient = g4fClient()
-                            self.g4f_available = True
-                            logger.info("g4fClient успешно инициализирован после установки.")
-                        except Exception as e_init_after_install:  # More specific exception name
-                            logger.error(f"Ошибка при инициализации g4fClient после установки: {e_init_after_install}")
-                            self.g4fClient = None
-                            self.g4f_available = False
-                    except ImportError:
-                        logger.error("Не удалось импортировать g4f даже после успешной установки и очистки кэша.")
-                        self.g4fClient = None
-                        self.g4f_available = False
-                    except Exception as e_import_after:
-                        logger.error(f"Непредвиденная ошибка при повторном импорте/инициализации g4f: {e_import_after}")
-                        self.g4fClient = None
-                        self.g4f_available = False
-                else:
-                    logger.error("Первоначальная установка g4f не удалась (ошибка pip).")
-                    self.g4fClient = None
-                    self.g4f_available = False
-            else:
-                logger.error("Экземпляр PipInstaller не передан в ChatModel, установка g4f невозможна.")
-                self.g4fClient = None
-                self.g4f_available = False
-        except Exception as e_initial:
-            logger.error(f"Непредвиденная ошибка при первичной инициализации g4f: {e_initial}")
-            self.g4fClient = None
-            self.g4f_available = False
-    
+        
     def generate(
         self,
         messages: List[Dict[str, Any]],
@@ -201,39 +110,39 @@ class ChatModel:
         return raw_text
 
     def _generate_chat_response(self, combined_messages, stream_callback: callable = None, preset_id: Optional[int] = None):
-        max_attempts = self.max_request_attempts
-        retry_delay = self.request_delay
+        max_attempts = self.cfg.max_request_attempts
+        retry_delay = self.cfg.request_delay
         request_timeout = 45
 
         self._log_generation_start(preset_id)
 
         tools_on = self.settings.get("TOOLS_ON", True)
         tools_mode = self.settings.get("TOOLS_MODE", "native")
-
         if tools_mode == "off":
             tools_on = False
 
-        # legacy tools: подмешиваем system prompt один раз
         if tools_on and tools_mode == "legacy":
             tools_desc = json.dumps(self.tool_manager.json_schema())
             legacy_prompt = self.tool_manager.tools_prompt().format(tools_json=tools_desc)
             combined_messages.insert(0, {"role": "system", "content": legacy_prompt})
 
         from handlers.llm_providers.base import LLMRequest
+        from handlers.llm_providers.param_mapper import build_unified_generation_params
 
         def build_request(preset_settings, effective_model: str, use_g4f_for_this_attempt: bool) -> LLMRequest:
-            from handlers.llm_providers.param_mapper import build_unified_generation_params
+            # FUTURE HOOK: здесь можно будет применить overrides из пресета
+            cfg = self.cfg_loader.effective_for_preset(self.cfg, preset_settings, effective_model)
 
             params = build_unified_generation_params(
                 settings=self.settings,
-                temperature=self.temperature,
-                max_response_tokens=self.max_response_tokens,
-                presence_penalty=self.presence_penalty,
-                frequency_penalty=self.frequency_penalty,
-                log_probability=self.log_probability,
-                top_k=self.top_k,
-                top_p=self.top_p,
-                thinking_budget=self.thinking_budget,
+                temperature=cfg.temperature,
+                max_response_tokens=cfg.max_response_tokens,
+                presence_penalty=cfg.presence_penalty,
+                frequency_penalty=cfg.frequency_penalty,
+                log_probability=cfg.log_probability,
+                top_k=cfg.top_k,
+                top_p=cfg.top_p,
+                thinking_budget=cfg.thinking_budget,
             )
 
             tools_payload = None
@@ -260,17 +169,14 @@ class ChatModel:
                 tools_mode=tools_mode,
                 tools_payload=tools_payload,
                 extra=params,
-                tool_manager=self.tool_manager
+                tool_manager=self.tool_manager,
+                settings=self.settings,
+                pip_installer=self.pip_installer,
             )
 
-            # для обратной совместимости с текущими провайдерами (они местами читают tool_manager из extra)
+            # backward compat (часть провайдеров читает tool_manager из extra)
             req.extra["tool_manager"] = self.tool_manager
 
-            logger.info(
-                f"Request configured: preset={preset_settings.preset_name}, "
-                f"model={effective_model}, stream={req.stream}, make_request={preset_settings.make_request}, "
-                f"gemini_case={preset_settings.gemini_case}, g4f={use_g4f_for_this_attempt}"
-            )
             return req
 
         try:
@@ -299,16 +205,15 @@ class ChatModel:
             return None, False
 
         return None, False
-
     
     def _log_generation_start(self, preset_id: Optional[int] = None):
         logger.info("Preparing to generate LLM response.")
         preset_settings = self.preset_resolver.resolve(preset_id)
 
         logger.info(f"Using preset: {preset_settings.preset_name}")
-        logger.info(f"Max Response Tokens: {self.max_response_tokens}, Temperature: {self.temperature}")
+        logger.info(f"Max Response Tokens: {self.cfg.max_response_tokens}, Temperature: {self.cfg.temperature}")
         logger.info(
-            f"Presence Penalty: {self.presence_penalty} (Used: {bool(self.settings.get('USE_MODEL_PRESENCE_PENALTY'))})"
+            f"Presence Penalty: {self.cfg.presence_penalty} (Used: {bool(self.settings.get('USE_MODEL_PRESENCE_PENALTY'))})"
         )
         logger.info(f"API URL: {preset_settings.api_url}, API Model: {preset_settings.api_model}")
         logger.info(f"g4f Enabled: {preset_settings.is_g4f}, g4f Model: {preset_settings.g4f_model or 'N/A'}")
@@ -366,50 +271,41 @@ class ChatModel:
 
     # region TokensCounting
     def get_max_model_tokens(self) -> int:
-        """
-        Возвращает максимальное количество токенов для текущей активной модели.
-        """
         preset_settings = self.preset_resolver.resolve()
         current_model = preset_settings.api_model
 
         if preset_settings.is_g4f:
             current_model = preset_settings.g4f_model or self.gpt4free_model
 
-        if self.max_model_tokens > 0:
-            return self.max_model_tokens
+        if self.cfg.max_model_tokens > 0:
+            return self.cfg.max_model_tokens
 
         return self._model_token_limits.get(current_model, 128000)
 
-    
     def get_current_context_token_count(self) -> int:
         if not self.hasTokenizer:
             return 0
-
         if not self.current_character:
             return 0
 
-        # Текущий ввод пользователя (как и раньше)
         user_input = self.event_bus.emit_and_wait(Events.Speech.GET_USER_INPUT)
         user_input_from_gui = user_input[0] if user_input else ""
 
-        # Конфиг качества изображений — чтобы PromptController/HistoryController собрали тот же контекст,
-        # что и реальная генерация (но без compression).
         screen_quality = self.settings.get("SCREEN_CAPTURE_QUALITY", 75)
         screen_quality = int(screen_quality) if str(screen_quality) != '' else 75
 
         image_quality_cfg = {
-            'enabled': bool(self.settings.get("IMAGE_QUALITY_REDUCTION_ENABLED", False)),
-            'start_index': int(self.settings.get("IMAGE_QUALITY_REDUCTION_START_INDEX", 25)),
-            'use_percentage': bool(self.settings.get("IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE", False)),
-            'min_quality': int(self.settings.get("IMAGE_QUALITY_REDUCTION_MIN_QUALITY", 30) or 30),
-            'decrease_rate': int(self.settings.get("IMAGE_QUALITY_REDUCTION_DECREASE_RATE", 5)),
+            'enabled': bool(self.cfg.image_quality_reduction_enabled),
+            'start_index': int(self.cfg.image_quality_reduction_start_index),
+            'use_percentage': bool(self.cfg.image_quality_reduction_use_percentage),
+            'min_quality': int(self.cfg.image_quality_reduction_min_quality),
+            'decrease_rate': int(self.cfg.image_quality_reduction_decrease_rate),
             'screen_capture_quality': screen_quality,
         }
 
         separate_prompts = bool(self.settings.get("SEPARATE_PROMPTS", True))
         is_game_master = (self.current_character == getattr(self, "GameMaster", None))
 
-        # Важно: не сохраняем missed history и не запускаем compression (это только для токенкаунта)
         try:
             prompt_res = self.event_bus.emit_and_wait(
                 Events.Prompt.BUILD_PROMPT,
@@ -419,7 +315,7 @@ class ChatModel:
                     'user_input': user_input_from_gui,
                     'system_input': '',
                     'image_data': [],
-                    'memory_limit': int(self.memory_limit),
+                    'memory_limit': int(self.cfg.memory_limit),
                     'is_game_master': bool(is_game_master),
                     'save_missed_history': False,
                     'image_quality': image_quality_cfg,
@@ -462,24 +358,18 @@ class ChatModel:
                     if item.get("type") == "text" and item.get("text"):
                         total_tokens += len(self.tokenizer.encode(item["text"]))
                     elif item.get("type") == "image_url" and item.get("image_url", {}).get("url"):
-                        # как и раньше: грубая оценка “картинка ~1000 токенов”
                         total_tokens += 1000
 
         return total_tokens
 
+
     def calculate_cost_for_current_context(self) -> float:
-        """
-        Рассчитывает ориентировочную стоимость текущего контекста в токенах.
-        """
         if not self.hasTokenizer:
             logger.warning("Tokenizer not available, cannot calculate cost accurately.")
             return 0.0
 
         token_count = self.get_current_context_token_count()
-        # Используем стоимость из настроек
-        cost = (token_count / 1000) * self.token_cost_input
-        return cost
-
+        return (token_count / 1000.0) * float(self.cfg.token_cost_input)
     #endregion
 
     def get_room_name(self, room_id):  # This seems generally useful, kept.

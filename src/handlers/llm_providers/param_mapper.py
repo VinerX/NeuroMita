@@ -1,12 +1,10 @@
-﻿from __future__ import annotations
+﻿# src/handlers/llm_providers/param_mapper.py
+from __future__ import annotations
 
 from typing import Any, Dict
 
 
 def _strip_nuls_in_strings(obj: Any) -> Any:
-    """
-    Убираем '\x00' из строк рекурсивно (раньше это делалось clear_endline_sim в разных местах).
-    """
     if isinstance(obj, str):
         return obj.replace("'\x00", "").replace("\x00", "")
     if isinstance(obj, list):
@@ -17,9 +15,6 @@ def _strip_nuls_in_strings(obj: Any) -> Any:
 
 
 def filter_jsonable_params(params: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Оставляем только значения, которые нормально уходят в json/SDK.
-    """
     allowed = (str, int, float, bool, list, dict, type(None))
     return {k: v for k, v in (params or {}).items() if isinstance(v, allowed)}
 
@@ -37,8 +32,7 @@ def build_unified_generation_params(
     thinking_budget: float | None,
 ) -> Dict[str, Any]:
     """
-    Унифицированные параметры (canonical), НЕ зависящие от провайдера.
-    Провайдеры сами маппят на свои названия/структуры.
+    Canonical/unified параметры. Провайдеры сами решают, что реально поддерживают.
     """
     params: Dict[str, Any] = {}
 
@@ -72,39 +66,62 @@ def build_unified_generation_params(
 
 
 def map_unified_params_to_gemini_generation_config(unified: Dict[str, Any], *, model: str) -> Dict[str, Any]:
-    """
-    Перевод canonical params -> Gemini generationConfig.
-
-    Gemini ожидает:
-      maxOutputTokens, presencePenalty, frequencyPenalty, topP, topK, temperature, ...
-    """
     u = unified or {}
     cfg: Dict[str, Any] = {}
 
     if "temperature" in u:
         cfg["temperature"] = u["temperature"]
-
     if "max_tokens" in u:
         cfg["maxOutputTokens"] = u["max_tokens"]
-
     if "presence_penalty" in u:
         cfg["presencePenalty"] = u["presence_penalty"]
-
     if "frequency_penalty" in u:
         cfg["frequencyPenalty"] = u["frequency_penalty"]
-
     if "top_p" in u:
         cfg["topP"] = u["top_p"]
-
     if "top_k" in u:
         cfg["topK"] = u["top_k"]
 
-    # logprobs/thinking_budget — прямого аналога в текущем Gemini payload тут не добавляем
-
-    # Поведение как было в ChatModel.remove_unsupported_params()
     if model in ("gemini-2.5-pro-exp-03-25", "gemini-2.5-flash-preview-04-17"):
         cfg.pop("presencePenalty", None)
 
     cfg = filter_jsonable_params(cfg)
     cfg = _strip_nuls_in_strings(cfg)
     return cfg
+
+
+def map_unified_params_to_openai_kwargs(unified: Dict[str, Any], *, model: str) -> Dict[str, Any]:
+    """
+    Canonical -> kwargs для OpenAI SDK / OpenAI-compatible API.
+
+    Важно: НЕ прокидываем то, что OpenAI не принимает (например top_k, thinking_budget),
+    чтобы не ловить 400/validation errors.
+
+    Исключение: deepseek-* часто принимает top_k в openai-совместимых прокси — оставляем
+    только для моделей с 'deepseek' в имени.
+    """
+    u = unified or {}
+    m = (model or "").lower()
+
+    out: Dict[str, Any] = {}
+
+    for k in ("temperature", "max_tokens", "presence_penalty", "frequency_penalty", "top_p"):
+        if k in u:
+            out[k] = u[k]
+
+    # top_k — только для deepseek-подобных openai-proxy
+    if "top_k" in u and "deepseek" in m:
+        out["top_k"] = u["top_k"]
+
+    # logprobs: OpenAI ожидает bool, а раньше у вас там мог быть float.
+    if "logprobs" in u:
+        lp = u["logprobs"]
+        if isinstance(lp, bool):
+            out["logprobs"] = lp
+        else:
+            out["logprobs"] = bool(lp)
+
+    # thinking_budget — не отправляем в OpenAI-compatible
+    out = filter_jsonable_params(out)
+    out = _strip_nuls_in_strings(out)
+    return out

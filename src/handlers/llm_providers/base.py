@@ -1,3 +1,4 @@
+# src/handlers/llm_providers/base.py
 from dataclasses import dataclass, field
 from typing import List, Dict, Callable, Optional, Any
 from abc import ABC, abstractmethod
@@ -19,6 +20,7 @@ class LLMRequest:
     tools_payload: Optional[Any] = None
     extra: Dict[str, Any] = field(default_factory=dict)
     settings: Optional[Any] = None
+    pip_installer: Optional[Any] = None
     depth: int = 0
     tool_manager: Optional[Any] = None
 

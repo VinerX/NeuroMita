@@ -1,9 +1,12 @@
+# src/handlers/llm_providers/common_provider.py
 from .base import BaseProvider, LLMRequest
 import requests
 import json
-import re
 from main_logger import logger
 from utils import save_combined_messages
+
+from handlers.llm_providers.param_mapper import map_unified_params_to_openai_kwargs
+
 
 class CommonProvider(BaseProvider):
     name = "common"
@@ -28,9 +31,8 @@ class CommonProvider(BaseProvider):
             "messages": [{"role": m["role"], "content": m["content"]} for m in req.messages]
         }
 
-        params = {k: v for k, v in req.extra.items() if isinstance(v, (str, int, float, bool, list, dict, type(None)))}
-        self.clear_endline_sim(params)
-        data.update(params)
+        # NEW: unified -> openai kwargs (без unsupported ключей)
+        data.update(map_unified_params_to_openai_kwargs(req.extra, model=req.model))
 
         if req.tools_on and req.tools_mode == "native" and req.tools_payload:
             data["tools"] = req.tools_payload
@@ -39,6 +41,7 @@ class CommonProvider(BaseProvider):
 
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {req.api_key}"}
         response = requests.post(req.api_url, headers=headers, json=data, stream=req.stream)
+
         if response.status_code != 200:
             try:
                 err = response.json()
@@ -46,14 +49,15 @@ class CommonProvider(BaseProvider):
                 err = response.text
             logger.error(f"Ошибка генерации при Common запросе: {err}")
             return None
+
         if req.stream:
             return self._handle_common_stream(response, req.stream_cb)
+
         try:
             resp_json = response.json()
             message = resp_json.get("choices", [{}])[0].get("message", {}) or {}
             tool_calls = message.get("tool_calls") or []
 
-            # Только если реально есть вызовы инструментов и есть tool_manager
             if tool_calls and req.tool_manager:
                 from tools.manager import mk_tool_call_msg, mk_tool_resp_msg
                 for call in tool_calls:
@@ -65,11 +69,10 @@ class CommonProvider(BaseProvider):
                 req.depth += 1
                 return self.generate_request_common(req)
 
-            # Иначе просто возвращаем текст
             return (message.get("content") or "").strip()
         except Exception as ex:
-            logger.error(f"Произошла ошибка: {ex}") 
-        return ""
+            logger.error(f"Произошла ошибка: {ex}", exc_info=True)
+            return ""
 
     def _handle_common_stream(self, response, stream_callback: callable = None) -> str:
         full_response_parts = []
@@ -98,8 +101,3 @@ class CommonProvider(BaseProvider):
         except Exception as e:
             logger.error(f"Error processing common (SSE) stream: {e}", exc_info=True)
             return "".join(full_response_parts)
-
-    def clear_endline_sim(self, params):
-        for key, value in params.items():
-            if isinstance(value, str):
-                params[key] = value.replace("'\x00", "").replace("\x00", "")

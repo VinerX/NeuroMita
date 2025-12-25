@@ -85,57 +85,13 @@ class ModelController:
     def _on_setting_changed(self, event: Event):
         key = event.data.get('key')
         value = event.data.get('value')
-        
+
         if key == "CHARACTER":
             self.change_character(value)
-        elif key == "MODEL_MAX_RESPONSE_TOKENS":
-            self.model.max_response_tokens = int(value)
-        elif key == "MODEL_TEMPERATURE":
-            self.model.temperature = float(value)
-        elif key == "MODEL_PRESENCE_PENALTY":
-            self.model.presence_penalty = float(value)
-        elif key == "MODEL_FREQUENCY_PENALTY":
-            self.model.frequency_penalty = float(value)
-        elif key == "MODEL_LOG_PROBABILITY":
-            self.model.log_probability = float(value)
-        elif key == "MODEL_TOP_K":
-            self.model.top_k = int(value)
-        elif key == "MODEL_TOP_P":
-            self.model.top_p = float(value)
-        elif key == "MODEL_THOUGHT_PROCESS":
-            self.model.thinking_budget = float(value)
-        elif key == "MODEL_MESSAGE_LIMIT":
-            self.model.memory_limit = int(value)
-        elif key == "MODEL_MESSAGE_ATTEMPTS_COUNT":
-            self.model.max_request_attempts = int(value)
-        elif key == "MODEL_MESSAGE_ATTEMPTS_TIME":
-            self.model.request_delay = float(value)
-        elif key == "IMAGE_QUALITY_REDUCTION_ENABLED":
-            self.model.image_quality_reduction_enabled = bool(value)
-        elif key == "IMAGE_QUALITY_REDUCTION_START_INDEX":
-            self.model.image_quality_reduction_start_index = int(value)
-        elif key == "IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE":
-            self.model.image_quality_reduction_use_percentage = bool(value)
-        elif key == "IMAGE_QUALITY_REDUCTION_MIN_QUALITY":
-            self.model.image_quality_reduction_min_quality = int(value)
-        elif key == "IMAGE_QUALITY_REDUCTION_DECREASE_RATE":
-            self.model.image_quality_reduction_decrease_rate = int(value)
-        elif key == "ENABLE_HISTORY_COMPRESSION_ON_LIMIT":
-            self.model.enable_history_compression_on_limit = bool(value)
-        elif key == "ENABLE_HISTORY_COMPRESSION_PERIODIC":
-            self.model.enable_history_compression_periodic = bool(value)
-        elif key == "HISTORY_COMPRESSION_OUTPUT_TARGET":
-            self.model.history_compression_output_target = str(value)
-        elif key == "HISTORY_COMPRESSION_PERIODIC_INTERVAL":
-            self.model.history_compression_periodic_interval = int(value)
-        elif key == "HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS":
-            self.model.history_compression_min_messages_to_compress = float(value)
-        elif key == "TOKEN_COST_INPUT":
-            self.model.token_cost_input = float(value)
-        elif key == "TOKEN_COST_OUTPUT":
-            self.model.token_cost_output = float(value)
-        elif key == "MAX_MODEL_TOKENS":
-            self.model.max_model_tokens = int(value)
+            return
+
+        if hasattr(self.model, "cfg") and self.model.cfg:
+            self.model.cfg.apply_setting(key, value)
                 
     def change_character(self, character):
         if not character:
@@ -278,10 +234,11 @@ class ModelController:
         return 0
     
     def _on_calculate_cost(self, event: Event):
-        self.model.token_cost_input = float(self.settings.get("TOKEN_COST_INPUT", 0.000001))
-        self.model.token_cost_output = float(self.settings.get("TOKEN_COST_OUTPUT", 0.000002))
-        self.model.max_model_tokens = int(self.settings.get("MAX_MODEL_TOKENS", 32000))
-        
+        if hasattr(self.model, "cfg") and self.model.cfg:
+            self.model.cfg.token_cost_input = float(self.settings.get("TOKEN_COST_INPUT", 0.000001))
+            self.model.cfg.token_cost_output = float(self.settings.get("TOKEN_COST_OUTPUT", 0.000002))
+            self.model.cfg.max_model_tokens = int(self.settings.get("MAX_MODEL_TOKENS", 32000))
+
         if hasattr(self.model, 'calculate_cost_for_current_context'):
             return self.model.calculate_cost_for_current_context()
         return 0.0
@@ -367,18 +324,20 @@ class ModelController:
         screen_quality = self.settings.get("SCREEN_CAPTURE_QUALITY", 75)
         screen_quality = int(screen_quality) if str(screen_quality) != '' else 75
 
+        cfg = self.model.cfg
+
         image_quality_cfg = {
-            'enabled': bool(self.model.image_quality_reduction_enabled),
-            'start_index': int(self.model.image_quality_reduction_start_index),
-            'use_percentage': bool(self.model.image_quality_reduction_use_percentage),
-            'min_quality': int(self.model.image_quality_reduction_min_quality),
-            'decrease_rate': int(self.model.image_quality_reduction_decrease_rate),
+            'enabled': bool(cfg.image_quality_reduction_enabled),
+            'start_index': int(cfg.image_quality_reduction_start_index),
+            'use_percentage': bool(cfg.image_quality_reduction_use_percentage),
+            'min_quality': int(cfg.image_quality_reduction_min_quality),
+            'decrease_rate': int(cfg.image_quality_reduction_decrease_rate),
             'screen_capture_quality': screen_quality,
         }
 
         separate_prompts = bool(self.settings.get("SEPARATE_PROMPTS", True))
         save_missed_history = bool(self.settings.get("SAVE_MISSED_HISTORY", True))
-        memory_limit = self.model.memory_limit
+        memory_limit = cfg.memory_limit
         is_game_master = (char == getattr(self.model, "GameMaster", None))
 
         try:
