@@ -19,6 +19,7 @@ class AudioController:
     - Local → LocalVoiceController
     Вся «локальная» логика вынесена в LocalVoiceController.
     """
+
     def __init__(self, main_controller):
         self.main_controller = main_controller
         self.settings = main_controller.settings
@@ -75,8 +76,11 @@ class AudioController:
 
         if not text:
             return
-        
-        text = process_text_to_voice(text)
+
+        # Сохраняем оригинальный текст (с командами) для логики
+        original_text = text
+        # Создаем очищенный текст для TTS (без команд)
+        text_for_voice = process_text_to_voice(text)
 
         loops = self.event_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
         loop = loops[0] if loops else None
@@ -93,13 +97,15 @@ class AudioController:
             if self.voiceover_method == "TG":
                 logger.info(f"Используем Telegram (Silero/Miku) для озвучки: {speaker}")
                 self.event_bus.emit(Events.Core.RUN_IN_LOOP, {
-                    'coroutine': self.run_send_and_receive(text, speaker, task_uid)
+                    # Передаем и очищенный текст (для звука), и оригинальный (для результата задачи)
+                    'coroutine': self.run_send_and_receive(text_for_voice, original_text, speaker, task_uid)
                 })
 
             elif self.voiceover_method == "Local":
                 # Схема с Future по аналогии с TG
                 self.event_bus.emit(Events.Core.RUN_IN_LOOP, {
-                    'coroutine': self._await_local_voiceover_and_postprocess(text, task_uid)
+                    # Передаем и очищенный текст (для звука), и оригинальный (для результата задачи)
+                    'coroutine': self._await_local_voiceover_and_postprocess(text_for_voice, original_text, task_uid)
                 })
 
             else:
@@ -115,16 +121,16 @@ class AudioController:
         finally:
             self.waiting_answer = False
 
-    async def run_send_and_receive(self, response, speaker_command, task_uid=None):
+    async def run_send_and_receive(self, voice_text, original_text, speaker_command, task_uid=None):
         """TG-озвучка (как было)."""
         import asyncio
         logger.info("Попытка получить фразу (Telegram)")
 
         future = asyncio.Future()
-        logger.notify(f"Отправка на озвучку в Telegram текста: {response[:50]}...")
+        logger.notify(f"Отправка на озвучку в Telegram текста: {voice_text[:50]}...")
 
         self.event_bus.emit(Events.Telegram.TELEGRAM_SEND_VOICE_REQUEST, {
-            'text': response,                  # Telegram сам преобразует
+            'text': voice_text,  # Telegram сам преобразует
             'speaker_command': speaker_command,
             'id': 0,
             'future': future,
@@ -141,7 +147,7 @@ class AudioController:
                     'uid': task_uid,
                     'status': TaskStatus.SUCCESS,
                     'result': {
-                        'response': response,
+                        'response': original_text,  # ВАЖНО: возвращаем оригинальный текст с командами
                         'voiceover_path': voiceover_path
                     }
                 })
@@ -152,13 +158,14 @@ class AudioController:
 
         logger.info("Завершение получения фразы (Telegram)")
 
-    async def _await_local_voiceover_and_postprocess(self, response: str, task_uid: Optional[str]):
+    async def _await_local_voiceover_and_postprocess(self, voice_text: str, original_text: str,
+                                                     task_uid: Optional[str]):
         """Локальная озвучка через LocalVoiceController (через Future) + пост-обработка."""
         import asyncio
 
         future = asyncio.Future()
         self.event_bus.emit(Events.Audio.LOCAL_SEND_VOICE_REQUEST, {
-            'text': response,
+            'text': voice_text,  # Отправляем очищенный текст в TTS
             'future': future,
             'task_uid': task_uid
         })
@@ -172,7 +179,7 @@ class AudioController:
                     'uid': task_uid,
                     'status': TaskStatus.SUCCESS,
                     'result': {
-                        'response': response,
+                        'response': original_text,  # ВАЖНО: возвращаем оригинальный текст с командами
                         'voiceover_path': result_path
                     }
                 })
@@ -184,7 +191,8 @@ class AudioController:
             if not is_connected and self.settings.get("VOICEOVER_LOCAL_CHAT"):
                 await AudioHandler.handle_voice_file(
                     result_path,
-                    self.settings.get("LOCAL_VOICE_DELETE_AUDIO", True) if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1" else True
+                    self.settings.get("LOCAL_VOICE_DELETE_AUDIO", True) if os.environ.get(
+                        "ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1" else True
                 )
             elif is_connected:
                 self.event_bus.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, result_path)
