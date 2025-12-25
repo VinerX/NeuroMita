@@ -5,7 +5,7 @@ import time
 import re
 import importlib
 from typing import List, Dict, Any, Optional
-from tools.manager import ToolManager,mk_tool_call_msg,mk_tool_resp_msg
+from tools.manager import ToolManager
 from main_logger import logger
 
 from characters.character import Character
@@ -145,14 +145,8 @@ class ChatModel:
                 thinking_budget=cfg.thinking_budget,
             )
 
-            tools_payload = None
-            if tools_on and tools_mode == "native":
-                if preset_settings.make_request and preset_settings.gemini_case:
-                    tools_payload = self.tool_manager.get_tools_payload("gemini")
-                elif preset_settings.make_request:
-                    tools_payload = self.tool_manager.get_tools_payload("deepseek")
-                else:
-                    tools_payload = self.tool_manager.get_tools_payload("openai")
+            dialect = "gemini" if (preset_settings.make_request and preset_settings.gemini_case) else "openai"
+            tools_payload = self.tool_manager.get_tools_payload(dialect)
 
             req = LLMRequest(
                 model=effective_model,
@@ -413,8 +407,11 @@ class ChatModel:
                 logger.info(f"Legacy tool call: {tool_name}({args})")
                 tool_result = self.tool_manager.run(tool_name, args)
 
-                messages.append(mk_tool_call_msg(tool_name, args))
-                messages.append(mk_tool_resp_msg(tool_name, tool_result))
+                preset_settings = self.preset_resolver.resolve()
+                dialect = "gemini" if (preset_settings.make_request and preset_settings.gemini_case) else "openai"
+
+                messages.append(self.tool_manager.mk_tool_call_msg(dialect, tool_name, args))
+                messages.append(self.tool_manager.mk_tool_resp_msg(dialect, tool_name, tool_result))
 
                 response_text = re.sub(parse_regex, "", response_text).strip()
 

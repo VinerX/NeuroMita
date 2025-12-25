@@ -1,71 +1,95 @@
-# tools/manager.py
+# src/tools/manager.py
+from __future__ import annotations
+
 import json
-import uuid
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
+
 from .calc import CalculatorTool
 from .web_read import WebPageReaderTool
-from .web_search  import WebSearchTool
-from .base        import Tool
+from .web_search import WebSearchTool
+from .base import Tool
+
+from tools.dialects.registry import ToolDialectRegistry
 
 
 class ToolManager:
     def __init__(self):
         self._tools: Dict[str, Tool] = {}
+
+        # Dialects registry (авто-дискавери из tools/dialects/*.py)
+        self.dialects = ToolDialectRegistry(auto_discover=True)
+
+        # Backward-compat aliases (можно убрать позже, когда везде будет "openai"/"gemini")
+        self.dialects.add_alias("deepseek", "openai")
+        self.dialects.add_alias("anthropic", "openai")
+
         self.register(CalculatorTool())
         self.register(WebSearchTool())
-        self.register(WebPageReaderTool())   # ← регистрация
+        self.register(WebPageReaderTool())
 
     # -------------------------------------------------
-    #  Регистрация / базовая схема (OpenAI-style)
+    #  Регистрация инструментов / базовая схема
     # -------------------------------------------------
     def register(self, tool: Tool):
         self._tools[tool.name] = tool
 
     def json_schema(self) -> List[dict]:
-        """OpenAI-style: [{name, description, parameters}, …]"""
+        """
+        Ваш internal schema (OpenAI-style minimal):
+        [{name, description, parameters}, …]
+        """
         return [
             {
-                "name":        t.name,
+                "name": t.name,
                 "description": t.description,
-                "parameters":  t.parameters
-            } for t in self._tools.values()
+                "parameters": t.parameters
+            }
+            for t in self._tools.values()
         ]
 
     # -------------------------------------------------
-    #  Универсальная «прослойка» для любого провайдера
+    #  Dialects API
     # -------------------------------------------------
-    def get_tools_payload(self, model_name: str) -> List[dict]:
-        """
-        Возвращает tools-массив в формате,
-        который понимает конкретная модель/провайдер.
+    def available_dialects(self) -> List[dict]:
+        return self.dialects.list_meta()
 
-        • OpenAI / DeepSeek / Anthropic  → [{name, …}] (как json_schema)
-        • Gemini / Gemma                → [{functionDeclarations:[{name, …}]}]
-        • остальные                     → пустой список
+    def get_tools_payload(self, dialect_id: str) -> Any:
         """
-        if not model_name:
+        Возвращает tools payload в конкретном диалекте.
+        dialect_id: "openai", "gemini", ...
+        """
+        d = self.dialects.get(dialect_id)
+        if not d:
+            # Не хардкодим логику моделей здесь — только дефолт “без tools”
             return []
+        return d.build_tools_payload(self.json_schema())
 
-        model_lower = model_name.lower()
-        # Gemini-совместимые
-        if "gemini" in model_lower or "gemma" in model_lower:
-            return [{"functionDeclarations": self.json_schema()}]
+    def mk_tool_call_msg(self, dialect_id: str, name: str, args: dict, tool_call_id: Optional[str] = None) -> dict:
+        d = self.dialects.get(dialect_id)
+        if not d:
+            raise ValueError(f"Unknown tools dialect: {dialect_id}")
+        return d.mk_tool_call_msg(name=name, args=args or {}, tool_call_id=tool_call_id)
 
-        # OpenAI-совместимые
-        else:
-            return self.json_schema()
+    def mk_tool_resp_msg(
+        self,
+        dialect_id: str,
+        name: str,
+        result: str | dict,
+        tool_call_id: Optional[str] = None
+    ) -> dict:
+        d = self.dialects.get(dialect_id)
+        if not d:
+            raise ValueError(f"Unknown tools dialect: {dialect_id}")
+        return d.mk_tool_resp_msg(name=name, result=result, tool_call_id=tool_call_id)
 
-
+    # -------------------------------------------------
+    #  Execution
+    # -------------------------------------------------
     def run(self, name: str, arguments: dict):
-        """
-        Выполняет инструмент по имени и возвращает строковый результат.
-        Если такого инструмента нет – возвращает сообщение об ошибке.
-        """
         tool = self._tools.get(name)
         if not tool:
             return f"[Tool-Error] Неизвестный инструмент: {name}"
 
-        # инструмент может ожидать **kwargs; если arguments=None, даём {}
         try:
             return tool.run(**(arguments or {}))
         except Exception as e:
@@ -77,28 +101,33 @@ class ToolManager:
             "For example: {{ \"tool\": \"tool_name\", \"args\": {{ \"param\": \"value\" }} }}."
         )
 
-def mk_tool_call_msg(name: str, args: dict, provider: str = "gemini"):
-    if provider in ("openai", "deepseek"):
-        return {
-            "role": "assistant",
-            "tool_calls": [{
-                "id": f"call_{uuid.uuid4().hex[:8]}",  # Генерируем ID (нужен import uuid)
-                "type": "function",
-                "function": {"name": name, "arguments": json.dumps(args)}
-            }]
-        }
-    else:  # gemini
-        return { "role": "assistant", "content": {"functionCall": {"name": name, "args": args}} }
 
-def mk_tool_resp_msg(name: str, result: str | dict, provider: str = "gemini", tool_call_id: str = None):
-    if provider in ("openai", "deepseek"):
-        content = json.dumps(result) if isinstance(result, dict) else result
-        return {
-            "role": "tool",
-            "content": content,
-            "tool_call_id": tool_call_id or f"call_{uuid.uuid4().hex[:8]}"
-        }
-    else:  # gemini
-        response = result if isinstance(result, dict) else {"result": result}
-        return { "role": "tool", "content": {"functionResponse": {"name": name, "response": response}} }
+# -------------------------------------------------
+# Backward-compatible wrappers (чтобы не ломать существующие импорты)
+# -------------------------------------------------
+# Эти функции раньше принимали provider=("gemini"/"openai"/"deepseek") и генерировали сообщения.
+# Теперь они используют реестр диалектов.
 
+_DEFAULT_REGISTRY = ToolDialectRegistry(auto_discover=True)
+_DEFAULT_REGISTRY.add_alias("deepseek", "openai")
+_DEFAULT_REGISTRY.add_alias("anthropic", "openai")
+
+def mk_tool_call_msg(name: str, args: dict, provider: str = "gemini", tool_call_id: str | None = None):
+    dialect = provider  # provider == dialect_id (совместимость)
+    d = _DEFAULT_REGISTRY.get(dialect)
+    if not d:
+        # fallback: как было раньше — gemini
+        d = _DEFAULT_REGISTRY.get("gemini")
+    return d.mk_tool_call_msg(name=name, args=args or {}, tool_call_id=tool_call_id)
+
+def mk_tool_resp_msg(
+    name: str,
+    result: str | dict,
+    provider: str = "gemini",
+    tool_call_id: str | None = None
+):
+    dialect = provider
+    d = _DEFAULT_REGISTRY.get(dialect)
+    if not d:
+        d = _DEFAULT_REGISTRY.get("gemini")
+    return d.mk_tool_resp_msg(name=name, result=result, tool_call_id=tool_call_id)

@@ -10,18 +10,12 @@ from .base import BaseProvider, LLMRequest
 
 
 class OpenAICompatibleProvider(BaseProvider, ABC):
-    """
-    Общая логика:
-    - чистка messages от 'time'
-    - маппинг canonical params -> допустимые kwargs для openai-compatible
-    - tools (native) => stream off
-    - streaming handler
-    - tool_calls recursion
-    """
-
     supports_tools_native = True
     supports_streaming = True
     supports_streaming_with_tools = False
+
+    # NEW: какой tools dialect использовать для сообщений/пейлоада
+    tools_dialect_id: str = "openai"
 
     @abstractmethod
     def _get_client(self, req: LLMRequest) -> Any:
@@ -39,7 +33,6 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
             return None
 
         model_to_use = self._get_model_to_use(req)
-
         client = self._get_client(req)
         if not client:
             return None
@@ -57,13 +50,7 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
 
             if req.tools_on and req.tools_mode == "native" and req.tools_payload:
                 params["tools"] = req.tools_payload
-                # OpenAI-compatible инструменты часто ломают streaming
                 params["stream"] = False
-
-            logger.info(
-                f"[{self.name}] completion: model={model_to_use}, "
-                f"temp={params.get('temperature')}, max_tokens={params.get('max_tokens')}, stream={req.stream}"
-            )
 
             completion = client.chat.completions.create(**params, stream=req.stream)
 
@@ -72,26 +59,31 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
 
             if completion and getattr(completion, "choices", None):
                 message = completion.choices[0].message
-
                 tool_calls = getattr(message, "tool_calls", None)
+
                 if tool_calls:
                     tm = req.tool_manager or (req.extra or {}).get("tool_manager")
-                    if tm:
-                        for tool_call in tool_calls:
-                            name = tool_call.function.name
-                            args = json.loads(tool_call.function.arguments)
-                            from tools.manager import mk_tool_call_msg, mk_tool_resp_msg
-                            tool_result = tm.run(name, args)
-                            req.messages.append(mk_tool_call_msg(name, args))
-                            req.messages.append(mk_tool_resp_msg(name, tool_result))
-                        req.depth += 1
-                        return self._generate(req)
+                    if not tm:
+                        return None
+
+                    for tool_call in tool_calls:
+                        call_id = getattr(tool_call, "id", None)
+                        name = tool_call.function.name
+                        args = json.loads(tool_call.function.arguments)
+
+                        tool_result = tm.run(name, args)
+
+                        # Важно: id должен совпадать у call и response
+                        req.messages.append(tm.mk_tool_call_msg(self.tools_dialect_id, name, args, tool_call_id=call_id))
+                        req.messages.append(tm.mk_tool_resp_msg(self.tools_dialect_id, name, tool_result, tool_call_id=call_id))
+
+                    req.depth += 1
+                    return self._generate(req)
 
                 content = message.content
                 return content.strip() if content else None
 
             logger.warning(f"[{self.name}] No completion choices.")
-            self._try_print_error(completion)
             return None
 
         except Exception as e:
@@ -101,10 +93,6 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
             return None
 
     def _map_unified_params(self, unified: Dict[str, Any], model_to_use: str) -> Dict[str, Any]:
-        """
-        Canonical -> openai-compatible kwargs.
-        Ничего лишнего: иначе многие прокси/SDK падают на unknown fields.
-        """
         u = unified or {}
         m = (model_to_use or "").lower()
         out: Dict[str, Any] = {}
@@ -113,11 +101,9 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
             if k in u:
                 out[k] = u[k]
 
-        # top_k — часто невалиден в OpenAI, но некоторые deepseek-openai прокси принимают
         if "top_k" in u and "deepseek" in m:
             out["top_k"] = u["top_k"]
 
-        # logprobs: OpenAI SDK обычно ожидает bool
         if "logprobs" in u:
             lp = u["logprobs"]
             out["logprobs"] = lp if isinstance(lp, bool) else bool(lp)
@@ -132,7 +118,6 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                 try:
                     if chunk.choices and chunk.choices[0].delta:
                         text = chunk.choices[0].delta.content or ""
-                    # иногда встречаются альтернативные структуры
                     elif hasattr(chunk, "candidates") and chunk.candidates and chunk.candidates[0].content and \
                             chunk.candidates[0].content.parts:
                         text = chunk.candidates[0].content.parts[0].text or ""
@@ -151,18 +136,5 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
     def _change_last_message_to_user_for_gemini(self, api_model: str, messages: List[Dict]) -> None:
         if messages and ("gemini" in (api_model or "").lower() or "gemma" in (api_model or "").lower()) and \
                 messages[-1].get("role") in {"system", "model", "assistant"}:
-            logger.info(f"[{self.name}] Adjusting last message for {api_model}: -> user with [SYSTEM INFO]")
             messages[-1]["role"] = "user"
             messages[-1]["content"] = f"[SYSTEM INFO] {messages[-1].get('content', '')}"
-
-    def _try_print_error(self, completion_or_error):
-        if not completion_or_error:
-            return
-        if hasattr(completion_or_error, "error") and completion_or_error.error:
-            err = completion_or_error.error
-            logger.warning(
-                f"[{self.name}] API Error: code={getattr(err, 'code', 'N/A')}, "
-                f"message={getattr(err, 'message', 'N/A')}, type={getattr(err, 'type', 'N/A')}"
-            )
-        elif isinstance(completion_or_error, dict) and "error" in completion_or_error:
-            logger.warning(f"[{self.name}] API Error (dict): {completion_or_error['error']}")

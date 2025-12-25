@@ -15,6 +15,7 @@ class GeminiProvider(BaseProvider):
     supports_tools_native = True
     supports_streaming = True
     supports_streaming_with_tools = False
+    tools_dialect_id: str = "gemini"
 
     def is_applicable(self, req: LLMRequest) -> bool:
         return bool(req.make_request and req.gemini_case)
@@ -77,7 +78,6 @@ class GeminiProvider(BaseProvider):
         if "top_k" in u:
             cfg["topK"] = u["top_k"]
 
-        # Поведение как раньше (remove_unsupported_params)
         if model in ("gemini-2.5-pro-exp-03-25", "gemini-2.5-flash-preview-04-17"):
             cfg.pop("presencePenalty", None)
 
@@ -142,10 +142,11 @@ class GeminiProvider(BaseProvider):
                 tm = req.tool_manager
                 if tm:
                     tool_result = tm.run(name, args)
-                    from tools.manager import mk_tool_call_msg, mk_tool_resp_msg
+
                     new_messages = copy.deepcopy(req.messages)
-                    new_messages.append(mk_tool_call_msg(name, args))
-                    new_messages.append(mk_tool_resp_msg(name, tool_result))
+                    new_messages.append(tm.mk_tool_call_msg(self.tools_dialect_id, name, args))
+                    new_messages.append(tm.mk_tool_resp_msg(self.tools_dialect_id, name, tool_result))
+
                     req.messages = new_messages
                     req.depth += 1
                     return self.generate_request_gemini(req)

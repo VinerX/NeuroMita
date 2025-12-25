@@ -12,6 +12,7 @@ class CommonProvider(BaseProvider):
     name = "common"
     priority = 30
     supports_tools_native = True
+    tools_dialect_id: str = "openai"
 
     def is_applicable(self, req: LLMRequest) -> bool:
         if req.g4f_flag:
@@ -47,9 +48,8 @@ class CommonProvider(BaseProvider):
 
         data = {
             "model": req.model,
-            "messages": [{"role": m["role"], "content": m["content"]} for m in req.messages]
+            "messages": [{"role": m["role"], "content": m.get("content")} for m in req.messages]
         }
-
         data.update(self._map_unified_params(req.extra, req.model))
 
         if req.tools_on and req.tools_mode == "native" and req.tools_payload:
@@ -77,13 +77,16 @@ class CommonProvider(BaseProvider):
             tool_calls = message.get("tool_calls") or []
 
             if tool_calls and req.tool_manager:
-                from tools.manager import mk_tool_call_msg, mk_tool_resp_msg
+                tm = req.tool_manager
                 for call in tool_calls:
+                    call_id = call.get("id")
                     name = call["function"]["name"]
                     args = json.loads(call["function"]["arguments"])
-                    tool_result = req.tool_manager.run(name, args)
-                    req.messages.append(mk_tool_call_msg(name, args))
-                    req.messages.append(mk_tool_resp_msg(name, tool_result))
+                    tool_result = tm.run(name, args)
+
+                    req.messages.append(tm.mk_tool_call_msg(self.tools_dialect_id, name, args, tool_call_id=call_id))
+                    req.messages.append(tm.mk_tool_resp_msg(self.tools_dialect_id, name, tool_result, tool_call_id=call_id))
+
                 req.depth += 1
                 return self.generate_request_common(req)
 
