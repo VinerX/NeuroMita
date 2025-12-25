@@ -532,7 +532,6 @@ def wire_api_settings_logic(self):
             self.api_model_entry.setText(current_text)
 
         # Применяем настройки и запоминаем последний пресет
-        _apply_settings_from_preset(preset)
         self.settings.set("LAST_API_PRESET_ID", preset_id)
         self.settings.save_settings()
 
@@ -752,22 +751,7 @@ def wire_api_settings_logic(self):
                 'id': self.current_preset_id,
                 'state': state
             })
-    
-    def _apply_settings_from_preset(preset):
-        self._save_setting("NM_API_URL", self.api_url_entry.text())
-        self._save_setting("NM_API_MODEL", self.api_model_entry.text())
-        self._save_setting("NM_API_KEY", self.api_key_entry.text())
-        if preset.get('is_g4f'):
-            self._save_setting("gpt4free", True)
-            self._save_setting("gpt4free_model", self.api_model_entry.text())
-        else:
-            self._save_setting("gpt4free", False)
-            self._save_setting("NM_API_REQ", preset.get('use_request', False))
-            if preset.get('gemini_case') is not None:
-                self._save_setting("GEMINI_CASE", preset.get('gemini_case'))
-            elif self.gemini_case_checkbox:
-                self._save_setting("GEMINI_CASE", self.gemini_case_checkbox.isChecked())
-    
+            
     def _on_key_changed():
         if self.is_loading_preset:
             return

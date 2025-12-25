@@ -22,9 +22,6 @@ class PresetSettings:
     reserve_keys: List[str]
 
     def to_safe_dict(self) -> Dict[str, Any]:
-        """
-        Безопасный для логов словарь (без ключей).
-        """
         return {
             "preset_name": self.preset_name,
             "api_url": self.api_url,
@@ -39,39 +36,20 @@ class PresetSettings:
 
 
 class ApiPresetResolver:
-    """
-    Единственная ответственность:
-    - получить пресет из ApiPresetsController через EventBus
-    - собрать url/model/key/gemini_case
-    - дать удобные методы для ротации ключей и резолва id по имени
-    """
-
     def __init__(self, settings: Any, event_bus: Any):
         self.settings = settings
         self.event_bus = event_bus
 
     def resolve(self, preset_id: Optional[int] = None) -> PresetSettings:
-        """
-        Загружает настройки из пресета по ID.
-        Если preset_id не указан — берёт текущий из LAST_API_PRESET_ID.
-        Полностью повторяет старую логику ChatModel.load_preset_settings().
-        """
         if preset_id is None:
             preset_id = self.settings.get("LAST_API_PRESET_ID", 0)
 
-        try:
-            preset_data = self.event_bus.emit_and_wait(
-                Events.ApiPresets.GET_PRESET_FULL,
-                {"id": preset_id},
-                timeout=1.0
-            )
-        except Exception as e:
-            logger.error(f"[ApiPresetResolver] Failed to load preset via bus: {e}", exc_info=True)
-            preset_data = None
+        preset = self._load_preset_full(preset_id)
+        if not preset:
+            preset_id = self._pick_fallback_preset_id()
+            preset = self._load_preset_full(preset_id)
 
-        if preset_data and preset_data[0]:
-            preset = preset_data[0]
-
+        if preset:
             url = preset.get("url", "") or ""
             if preset.get("url_tpl"):
                 model = preset.get("default_model", "") or ""
@@ -87,7 +65,7 @@ class ApiPresetResolver:
                 try:
                     state = self.event_bus.emit_and_wait(
                         Events.ApiPresets.LOAD_PRESET_STATE,
-                        {"id": preset_id},
+                        {"id": preset.get("id")},
                         timeout=1.0
                     )
                     if state and state[0]:
@@ -111,30 +89,53 @@ class ApiPresetResolver:
                 reserve_keys=[str(k) for k in reserve_keys if str(k).strip()],
             )
 
-        # --- fallback (как раньше) ---
-        reserve_keys_str = self.settings.get("NM_API_KEY_RES", "")
-        reserve_keys = (
-            [key.strip() for key in str(reserve_keys_str).split() if key.strip()]
-            if reserve_keys_str else []
+        return PresetSettings(
+            api_key="",
+            api_url="",
+            api_model="",
+            make_request=False,
+            gemini_case=False,
+            is_g4f=False,
+            g4f_model="",
+            preset_name="Fallback",
+            reserve_keys=[],
         )
 
-        return PresetSettings(
-            api_key=str(self.settings.get("NM_API_KEY", "") or ""),
-            api_url=str(self.settings.get("NM_API_URL", "") or ""),
-            api_model=str(self.settings.get("NM_API_MODEL", "") or ""),
-            make_request=bool(self.settings.get("NM_API_REQ", False)),
-            gemini_case=bool(self.settings.get("GEMINI_CASE", False)),
-            is_g4f=bool(self.settings.get("gpt4free", False)),
-            g4f_model=str(self.settings.get("gpt4free_model", "") or ""),
-            preset_name="Fallback",
-            reserve_keys=reserve_keys,
-        )
+    def _load_preset_full(self, preset_id: Optional[int]) -> Optional[Dict[str, Any]]:
+        if not preset_id:
+            return None
+        try:
+            preset_data = self.event_bus.emit_and_wait(
+                Events.ApiPresets.GET_PRESET_FULL,
+                {"id": int(preset_id)},
+                timeout=1.0
+            )
+            if preset_data and preset_data[0]:
+                return preset_data[0]
+        except Exception as e:
+            logger.error(f"[ApiPresetResolver] Failed to load preset via bus: {e}", exc_info=True)
+        return None
+
+    def _pick_fallback_preset_id(self) -> Optional[int]:
+        try:
+            meta_res = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
+            meta = meta_res[0] if meta_res else None
+            if not meta:
+                return None
+
+            builtin = meta.get("builtin", []) or []
+            custom = meta.get("custom", []) or []
+
+            candidates = list(custom) + list(builtin)
+            for pm in candidates:
+                pid = getattr(pm, "id", None)
+                if isinstance(pid, int) and pid > 0:
+                    return pid
+        except Exception:
+            return None
+        return None
 
     def resolve_preset_id_by_name(self, display_name: str) -> Optional[int]:
-        """
-        Возвращает ID пользовательского пресета по его отображаемому имени.
-        Полный перенос логики ChatModel._get_preset_id_by_name().
-        """
         if not display_name:
             return None
         try:
@@ -142,24 +143,18 @@ class ApiPresetResolver:
             meta = meta_res[0] if meta_res else None
             if not meta:
                 return None
-            custom_list = meta.get("custom", []) or []
-            for pm in custom_list:
-                if getattr(pm, "name", None) == display_name:
-                    return getattr(pm, "id", None)
+
+            for bucket in ("custom", "builtin"):
+                items = meta.get(bucket, []) or []
+                for pm in items:
+                    if getattr(pm, "name", None) == display_name:
+                        pid = getattr(pm, "id", None)
+                        return pid if isinstance(pid, int) else None
         except Exception as e:
             logger.error(f"[ApiPresetResolver] Failed to resolve preset id by name '{display_name}': {e}", exc_info=True)
         return None
 
-    def select_key_for_attempt(
-        self,
-        current_key: str,
-        reserve_keys: List[str],
-        attempt_index: int
-    ) -> Optional[str]:
-        """
-        Поведение = старый ChatModel.GetReserveKey().
-        attempt_index — 0-based (в старом коде передавали attempt-1).
-        """
+    def select_key_for_attempt(self, current_key: str, reserve_keys: List[str], attempt_index: int) -> Optional[str]:
         all_keys: List[str] = []
         if current_key:
             all_keys.append(current_key)
@@ -180,10 +175,6 @@ class ApiPresetResolver:
         return unique_keys[key_index]
 
     def apply_key_rotation(self, preset: PresetSettings, attempt: int) -> PresetSettings:
-        """
-        Если attempt > 1 и есть reserve_keys — выбираем новый ключ циклически.
-        Поведение сохраняет старый код: на 1й попытке не меняем ключ.
-        """
         if attempt <= 1:
             return preset
         if not preset.reserve_keys:
@@ -198,7 +189,6 @@ class ApiPresetResolver:
             return preset
 
         new_url = preset.api_url
-        # В старом коде URL обновлялся только когда там уже есть key=...
         if preset.make_request and "key=" in (new_url or ""):
             new_url = re.sub(r"key=[^&]*", f"key={new_key}", new_url)
 
