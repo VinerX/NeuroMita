@@ -15,9 +15,13 @@ class LLMRequest:
     g4f_model: Optional[str] = None
     stream: bool = False
     stream_cb: Optional[Callable[[str], None]] = None
+
     tools_on: bool = False
     tools_mode: str = "native"
+
     tools_payload: Optional[Any] = None
+    tools_dialect: Optional[str] = None
+
     extra: Dict[str, Any] = field(default_factory=dict)
     settings: Optional[Any] = None
     pip_installer: Optional[Any] = None

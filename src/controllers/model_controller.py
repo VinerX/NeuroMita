@@ -1,5 +1,6 @@
 import datetime
 import re
+import copy
 
 from handlers.chat_handler import ChatModel
 from utils import _, process_text_to_voice
@@ -7,6 +8,8 @@ from core.events import get_event_bus, Events, Event
 from main_logger import logger
 from managers.character_manager import CharacterManager
 from managers.api_preset_resolver import ApiPresetResolver
+from managers.game_state_manager import GameState
+from managers.context_counter import ContextCounter
 
 # Контроллер для работы с моделью LLM
 
@@ -24,6 +27,12 @@ class ModelController:
 
         self.model = ChatModel(settings, pip_installer)
 
+        self.context_counter = ContextCounter(encoding_model="gpt-4o-mini")
+        self._base_prompt_cache: dict[tuple[str, str], list[dict]] = {}
+
+        self.game_state = GameState()
+        self._temporary_system_infos: list[dict] = []
+
         initial_char = str(self.settings.get("CHARACTER") or "")
         self.character_manager = CharacterManager(initial_character_id=initial_char)
 
@@ -38,6 +47,7 @@ class ModelController:
         # Существующие события
         self.event_bus.subscribe("model_settings_loaded", self._on_model_settings_loaded, weak=False)
         self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
+        self.event_bus.subscribe(Events.Model.GET_GAME_STATE, self._on_get_game_state, weak=False)
         
         # События персонажей
         self.event_bus.subscribe(Events.Model.GET_ALL_CHARACTERS, self._on_get_all_characters, weak=False)
@@ -53,6 +63,7 @@ class ModelController:
         # События истории
         self.event_bus.subscribe(Events.Model.LOAD_HISTORY, self._on_load_history, weak=False)
         self.event_bus.subscribe(Events.Model.LOAD_MORE_HISTORY, self._on_load_more_history, weak=False)
+        self.event_bus.subscribe(Events.Model.PEEK_TEMPORARY_SYSTEM_INFOS, self._on_peek_temporary_system_infos, weak=False)
         
         # События информации
         self.event_bus.subscribe(Events.Model.GET_CHARACTER_NAME, self._on_get_character_name, weak=False)
@@ -222,6 +233,11 @@ class ModelController:
                 })
         finally:
             self.loading_more_history = False
+
+    
+
+    def _on_peek_temporary_system_infos(self, event: Event):
+        return list(self._temporary_system_infos)
     
     # События информации
     def _on_get_character_name(self, event: Event):
@@ -229,19 +245,47 @@ class ModelController:
         return ch.name if ch else ""
     
     def _on_get_current_context_tokens(self, event: Event):
-        if hasattr(self.model, 'get_current_context_token_count'):
-            return self.model.get_current_context_token_count()
-        return 0
+        ch = self.character_manager.current_character
+        if not ch:
+            return 0
+
+        char_id = getattr(ch, "char_id", "") or ""
+        if not char_id:
+            return 0
+
+        event_type = "chat"
+
+        base = self._base_prompt_cache.get((char_id, event_type))
+        if not base:
+            return 0
+
+        user_input_res = self.event_bus.emit_and_wait(Events.Speech.GET_USER_INPUT, timeout=1.0)
+        user_text = user_input_res[0] if user_input_res else ""
+
+        try:
+            extra_infos_res = self.event_bus.emit_and_wait(Events.Model.PEEK_TEMPORARY_SYSTEM_INFOS, timeout=1.0)
+            extra_infos = extra_infos_res[0] if extra_infos_res and isinstance(extra_infos_res[0], list) else []
+        except Exception:
+            extra_infos = []
+
+        messages = list(base)
+        if extra_infos:
+            messages.extend([x for x in extra_infos if isinstance(x, dict)])
+
+        messages = self.context_counter.with_user_text(messages, str(user_text or ""))
+
+        return self.context_counter.count_tokens(messages)
     
     def _on_calculate_cost(self, event: Event):
-        if hasattr(self.model, "cfg") and self.model.cfg:
-            self.model.cfg.token_cost_input = float(self.settings.get("TOKEN_COST_INPUT", 0.000001))
-            self.model.cfg.token_cost_output = float(self.settings.get("TOKEN_COST_OUTPUT", 0.000002))
-            self.model.cfg.max_model_tokens = int(self.settings.get("MAX_MODEL_TOKENS", 32000))
+        tokens = self._on_get_current_context_tokens(event)
+        cfg = getattr(self.model, "cfg", None)
+        if not cfg:
+            return 0.0
 
-        if hasattr(self.model, 'calculate_cost_for_current_context'):
-            return self.model.calculate_cost_for_current_context()
-        return 0.0
+        try:
+            return (float(tokens) / 1000.0) * float(cfg.token_cost_input)
+        except Exception:
+            return 0.0
     
     def _on_get_debug_info(self, event: Event):
         ch = self.character_manager.current_character
@@ -251,16 +295,17 @@ class ModelController:
     
     # События игры
     def _on_set_game_data(self, event: Event):
-        self.model.distance = event.data.get('distance', 0.0)
-        self.model.roomPlayer = event.data.get('roomPlayer', -1)
-        self.model.roomMita = event.data.get('roomMita', -1)
-        self.model.nearObjects = event.data.get('nearObjects', '')
-        self.model.actualInfo = event.data.get('actualInfo', '')
+        self.game_state.update_from_event_data(event.data or {})
     
     def _on_add_temporary_system_info(self, event: Event):
-        content = event.data.get('content', '')
-        if content and hasattr(self.model, 'add_temporary_system_info'):
-            self.model.add_temporary_system_info(content)
+        content = (event.data or {}).get('content', '')
+        if not content:
+            return False
+        self._temporary_system_infos.append({"role": "system", "content": str(content)})
+        return True
+
+    def _on_get_game_state(self, event: Event):
+        return self.game_state.to_prompt_dict()
     
     # События генерации
     def _on_generate_response(self, event: Event):
@@ -310,16 +355,10 @@ class ModelController:
                 logger.error(f"Ошибка при сжатии истории через GENERATE_RESPONSE: {e}", exc_info=True)
                 return None
 
-        game_state = {
-            'distance': self.model.distance,
-            'roomPlayer': self.model.roomPlayer,
-            'roomMita': self.model.roomMita,
-            'nearObjects': self.model.nearObjects,
-            'actualInfo': self.model.actualInfo,
-        }
+        game_state = self.game_state.to_prompt_dict()
 
-        extra_system_infos = self.model.infos_to_add_to_history.copy()
-        self.model.infos_to_add_to_history.clear()
+        extra_system_infos = list(self._temporary_system_infos)
+        self._temporary_system_infos.clear()
 
         screen_quality = self.settings.get("SCREEN_CAPTURE_QUALITY", 75)
         screen_quality = int(screen_quality) if str(screen_quality) != '' else 75
@@ -376,6 +415,11 @@ class ModelController:
         prompt_data = prompt_res[0]
         combined_messages = prompt_data.get("messages", []) or []
         history_for_save = prompt_data.get("history_messages", []) or []
+
+        try:
+            self._cache_base_prompt(char_id, event_type, combined_messages)
+        except Exception:
+            pass
 
         # --- preset routing (react/char_provider) ---
         preset_id = None
@@ -481,10 +525,15 @@ class ModelController:
 
             history_for_save.append(assistant_message)
 
-            self.event_bus.emit(Events.History.SAVE_AFTER_RESPONSE, {
-                'character_id': char_id,
-                'messages': history_for_save
-            })
+            if event_type != 'react':
+                history_for_save.append(assistant_message)
+
+                self.event_bus.emit(Events.History.SAVE_AFTER_RESPONSE, {
+                    'character_id': char_id,
+                    'messages': history_for_save
+                })
+            else:
+                logger.info("[react] История не сохраняется (react branch separated).")
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
             logger.success(
@@ -575,3 +624,21 @@ class ModelController:
             return "Current"
         key = f"CHAR_PROVIDER_{char_id}"
         return self.settings.get(key, "Current")
+    
+    def _cache_base_prompt(self, char_id: str, event_type: str, messages: list[dict]) -> None:
+        """
+        Кэшируем базовый промпт БЕЗ user-сообщения.
+        Важно: копию, чтобы tool-рекурсия/провайдеры не мутировали кэш.
+        """
+        if not char_id:
+            return
+        if not isinstance(messages, list):
+            return
+
+        safe = copy.deepcopy(messages)
+
+        # убираем последний user-message (PromptController всегда добавляет user chunk в конце)
+        if safe and isinstance(safe[-1], dict) and safe[-1].get("role") == "user":
+            safe = safe[:-1]
+
+        self._base_prompt_cache[(char_id, event_type)] = safe

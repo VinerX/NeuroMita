@@ -15,11 +15,7 @@ class CommonProvider(BaseProvider):
     tools_dialect_id: str = "openai"
 
     def is_applicable(self, req: LLMRequest) -> bool:
-        if req.g4f_flag:
-            return False
-        if not req.make_request:
-            return False
-        return True
+        return (not req.g4f_flag) and bool(req.make_request)
 
     def generate(self, req: LLMRequest) -> str:
         return self.generate_request_common(req)
@@ -28,18 +24,14 @@ class CommonProvider(BaseProvider):
         u = unified or {}
         m = (model_to_use or "").lower()
         out = {}
-
         for k in ("temperature", "max_tokens", "presence_penalty", "frequency_penalty", "top_p"):
             if k in u:
                 out[k] = u[k]
-
         if "top_k" in u and "deepseek" in m:
             out["top_k"] = u["top_k"]
-
         if "logprobs" in u:
             lp = u["logprobs"]
             out["logprobs"] = lp if isinstance(lp, bool) else bool(lp)
-
         return out
 
     def generate_request_common(self, req: LLMRequest) -> str:
@@ -52,8 +44,11 @@ class CommonProvider(BaseProvider):
         }
         data.update(self._map_unified_params(req.extra, req.model))
 
-        if req.tools_on and req.tools_mode == "native" and req.tools_payload:
-            data["tools"] = req.tools_payload
+        if req.tools_on and req.tools_mode == "native" and req.tool_manager:
+            dialect = req.tools_dialect or self.tools_dialect_id
+            tools_payload = req.tools_payload or req.tool_manager.get_tools_payload(dialect)
+            if tools_payload:
+                data["tools"] = tools_payload
 
         save_combined_messages(data["messages"], "SavedMessages/last_request_common_log")
 
@@ -78,14 +73,16 @@ class CommonProvider(BaseProvider):
 
             if tool_calls and req.tool_manager:
                 tm = req.tool_manager
+                dialect = req.tools_dialect or self.tools_dialect_id
+
                 for call in tool_calls:
                     call_id = call.get("id")
                     name = call["function"]["name"]
                     args = json.loads(call["function"]["arguments"])
                     tool_result = tm.run(name, args)
 
-                    req.messages.append(tm.mk_tool_call_msg(self.tools_dialect_id, name, args, tool_call_id=call_id))
-                    req.messages.append(tm.mk_tool_resp_msg(self.tools_dialect_id, name, tool_result, tool_call_id=call_id))
+                    req.messages.append(tm.mk_tool_call_msg(dialect, name, args, tool_call_id=call_id))
+                    req.messages.append(tm.mk_tool_resp_msg(dialect, name, tool_result, tool_call_id=call_id))
 
                 req.depth += 1
                 return self.generate_request_common(req)
@@ -111,12 +108,8 @@ class CommonProvider(BaseProvider):
                             if stream_callback:
                                 stream_callback(decoded_chunk)
                             full_response_parts.append(decoded_chunk)
-                    except json.JSONDecodeError:
-                        logger.warning(f"Could not decode JSON from SSE streaming line: {line_data}")
-                    except (IndexError, KeyError) as e:
-                        logger.warning(f"Could not parse SSE streaming chunk structure: {line_data}, error: {e}")
-
+                    except Exception:
+                        pass
             return "".join(full_response_parts)
-        except Exception as e:
-            logger.error(f"Error processing common (SSE) stream: {e}", exc_info=True)
+        except Exception:
             return "".join(full_response_parts)

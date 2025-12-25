@@ -1,4 +1,4 @@
-﻿# src/tools/dialects/registry.py
+﻿# src/managers/tools/dialects/registry.py
 from __future__ import annotations
 
 import importlib
@@ -11,22 +11,22 @@ from .base import ToolDialect
 
 class ToolDialectRegistry:
     """
-    Автодискавери диалектов в tools.dialects.*:
-      - модуль должен экспортировать Dialect (класс) или create_dialect() (фабрика)
+    Автодискавери диалектов в package (по умолчанию managers.tools.dialects.*).
+    Модуль должен экспортировать Dialect (класс) или create_dialect() (фабрика).
     """
 
-    def __init__(self, auto_discover: bool = True):
+    def __init__(self, package: str = "managers.tools.dialects", auto_discover: bool = True):
+        self._package = package
         self._dialects: Dict[str, ToolDialect] = {}
         self._aliases: Dict[str, str] = {}
-
         if auto_discover:
             self.discover()
 
     def discover(self) -> None:
         try:
-            pkg = importlib.import_module("tools.dialects")
+            pkg = importlib.import_module(self._package)
         except Exception as e:
-            logger.error(f"[ToolDialectRegistry] Cannot import tools.dialects: {e}", exc_info=True)
+            logger.error(f"[ToolDialectRegistry] Cannot import {self._package}: {e}", exc_info=True)
             return
 
         try:
@@ -34,7 +34,8 @@ class ToolDialectRegistry:
                 name = mod.name
                 if name in ("base", "registry", "__init__"):
                     continue
-                full = f"tools.dialects.{name}"
+                full = f"{self._package}.{name}"
+
                 try:
                     module = importlib.import_module(full)
                 except Exception as e:
@@ -74,9 +75,8 @@ class ToolDialectRegistry:
     def add_alias(self, alias: str, target_id: str) -> None:
         alias = (alias or "").strip()
         target_id = (target_id or "").strip()
-        if not alias or not target_id:
-            return
-        self._aliases[alias] = target_id
+        if alias and target_id:
+            self._aliases[alias] = target_id
 
     def get(self, dialect_id_or_alias: str) -> Optional[ToolDialect]:
         key = (dialect_id_or_alias or "").strip()
@@ -88,12 +88,9 @@ class ToolDialectRegistry:
             return self._dialects.get(self._aliases[key])
         return None
 
-    def list_ids(self) -> List[str]:
-        return sorted(self._dialects.keys())
-
     def list_meta(self) -> List[dict]:
         out = []
-        for did in self.list_ids():
+        for did in sorted(self._dialects.keys()):
             d = self._dialects[did]
             out.append({"id": d.id, "title": getattr(d, "title", d.id)})
         return out

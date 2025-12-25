@@ -1,4 +1,5 @@
-﻿from __future__ import annotations
+﻿# src/controllers/prompt_controller.py
+from __future__ import annotations
 from typing import Dict, Any, List, Optional
 import os
 import base64
@@ -131,7 +132,6 @@ class PromptController:
         extra_system_infos: List[Any] = data.get('extra_system_infos') or []
         game_state: Dict[str, Any] = data.get('game_state') or {}
 
-        # НОВОЕ: чтобы token_count/preview не триггерили компрессию истории
         disable_history_compression: bool = bool(data.get('disable_history_compression', False))
 
         try:
@@ -164,23 +164,25 @@ class PromptController:
         if game_state_prompt_content:
             messages.append({"role": "system", "content": game_state_prompt_content})
 
-        hist_res = self.event_bus.emit_and_wait(
-            Events.History.PREPARE_FOR_PROMPT,
-            {
-                'character_id': char_id,
-                'event_type': event_type,
-                'memory_limit': memory_limit,
-                'is_game_master': is_game_master,
-                'save_missed_history': save_missed_history,
-                'image_quality': image_cfg,
-                # НОВОЕ:
-                'disable_compression': disable_history_compression,
-            },
-            timeout=5.0
-        )
         history_limited: List[Dict[str, Any]] = []
-        if hist_res and isinstance(hist_res[0], dict):
-            history_limited = hist_res[0].get('history', []) or []
+        if event_type != "react":
+            hist_res = self.event_bus.emit_and_wait(
+                Events.History.PREPARE_FOR_PROMPT,
+                {
+                    'character_id': char_id,
+                    'event_type': event_type,
+                    'memory_limit': memory_limit,
+                    'is_game_master': is_game_master,
+                    'save_missed_history': save_missed_history,
+                    'image_quality': image_cfg,
+                    'disable_compression': disable_history_compression,
+                },
+                timeout=5.0
+            )
+            if hist_res and isinstance(hist_res[0], dict):
+                history_limited = hist_res[0].get('history', []) or []
+        else:
+            logger.info(f"[PromptController][{char_id}] react: history is skipped (no chat history in prompt).")
 
         for info in extra_system_infos:
             if isinstance(info, dict):

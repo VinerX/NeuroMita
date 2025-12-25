@@ -369,6 +369,8 @@ class Events:
         ADD_TEMPORARY_SYSTEM_INFO = "add_temporary_system_info"
         GENERATE_RESPONSE = "generate_response"
         GET_LLM_PROCESSING_STATUS = "get_llm_processing_status"
+        GET_GAME_STATE = "get_game_state"
+        PEEK_TEMPORARY_SYSTEM_INFOS = "peek_temporary_system_infos"
 
     class Chat:
         """События, управляющие логикой чата и отправкой сообщений"""

@@ -112,8 +112,11 @@ class GeminiProvider(BaseProvider):
         if gen_cfg:
             data["generationConfig"] = gen_cfg
 
-        if req.tools_on and req.tools_payload:
-            data["tools"] = req.tools_payload
+        if req.tools_on and req.tools_mode == "native" and req.tool_manager:
+            dialect = req.tools_dialect or "gemini"
+            tools_payload = req.tools_payload or req.tool_manager.get_tools_payload(dialect)
+            if tools_payload:
+                data["tools"] = tools_payload
 
         need_stream = req.stream and "tools" not in data
 

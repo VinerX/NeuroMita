@@ -1,22 +1,18 @@
 # File: chat_handler.py
 import json
-import time
 #import tiktoken
 import re
-import importlib
 from typing import List, Dict, Any, Optional
-from tools.manager import ToolManager
 from main_logger import logger
 
 from characters.character import Character
 from utils.pip_installer import PipInstaller
 
-from utils import SH, save_combined_messages
-from utils import _ as translate
-
 from managers.api_preset_resolver import ApiPresetResolver
 from managers.llm_request_runner import LLMRequestRunner
 from managers.model_config_loader import ModelConfigLoader
+from managers.tools.legacy_executor import LegacyToolExecutor
+from managers.tools.tool_manager import ToolManager
 
 from core.events import get_event_bus, Events
 
@@ -52,31 +48,16 @@ class ChatModel:
             event_bus=self.event_bus
         )
 
-        # Tokenizer
-        try:
-            import tiktoken
-            self.tokenizer = tiktoken.encoding_for_model("gpt-4o-mini")
-            self.hasTokenizer = True
-            logger.info("Tiktoken успешно инициализирован.")
-        except ImportError:
-            logger.warning("Модуль 'tiktoken' не найден. Подсчет токенов будет недоступен.")
-            self.hasTokenizer = False
-        except Exception as e:
-            logger.error(f"Ошибка инициализации tiktoken: {e}")
-            self.hasTokenizer = False
 
         self.current_character: Character = None
         self.GameMaster: Character = None
         self.characters = {}
 
-        # Game-specific state (оставляем пока тут)
-        self.distance = 0.0
-        self.roomPlayer = -1
-        self.roomMita = -1
-        self.nearObjects = ""
-        self.actualInfo = ""
-
-        self.infos_to_add_to_history: List[Dict] = []
+        self.legacy_tools = LegacyToolExecutor(
+            settings=self.settings,
+            tool_manager=self.tool_manager,
+            preset_resolver=self.preset_resolver
+        )
 
         self._model_token_limits: Dict[str, int] = {
             "gpt-4o-mini": 128000,
@@ -124,7 +105,15 @@ class ChatModel:
         if tools_on and tools_mode == "legacy":
             tools_desc = json.dumps(self.tool_manager.json_schema())
             legacy_prompt = self.tool_manager.tools_prompt().format(tools_json=tools_desc)
-            combined_messages.insert(0, {"role": "system", "content": legacy_prompt})
+
+            already = False
+            for m in (combined_messages[:3] if isinstance(combined_messages, list) else []):
+                if isinstance(m, dict) and m.get("role") == "system" and m.get("content") == legacy_prompt:
+                    already = True
+                    break
+
+            if not already:
+                combined_messages.insert(0, {"role": "system", "content": legacy_prompt})
 
         from handlers.llm_providers.base import LLMRequest
         from handlers.llm_providers.param_mapper import build_unified_generation_params
@@ -161,7 +150,8 @@ class ChatModel:
                 stream_cb=stream_callback,
                 tools_on=tools_on,
                 tools_mode=tools_mode,
-                tools_payload=tools_payload,
+                tools_payload=None,
+                tools_dialect=None,
                 extra=params,
                 tool_manager=self.tool_manager,
                 settings=self.settings,
@@ -189,7 +179,14 @@ class ChatModel:
             return None, False
 
         if response_text and tools_on and tools_mode == "legacy":
-            response_text = self._handle_legacy_tool_calls(response_text, combined_messages, stream_callback)
+            response_text = self.legacy_tools.process(
+                response_text=response_text,
+                messages=combined_messages,
+                generate_fn=self._generate_chat_response,
+                stream_callback=stream_callback,
+                preset_id=preset_id,
+                depth=0
+            )
 
         if response_text:
             cleaned_response = self._clean_response(response_text)
@@ -257,167 +254,3 @@ class ChatModel:
             logger.info(f"Character {self.current_character.name} data reloaded.")
         else:
             logger.warning("No current character selected to reload.")
-
-    def add_temporary_system_info(self, content: str):
-        system_info_message = {"role": "system", "content": content}
-        self.infos_to_add_to_history.append(system_info_message)
-        logger.info(f"Queued temporary system info: {content[:100]}...")
-
-    # region TokensCounting
-    def get_max_model_tokens(self) -> int:
-        preset_settings = self.preset_resolver.resolve()
-        current_model = preset_settings.api_model
-
-        if preset_settings.is_g4f:
-            current_model = preset_settings.g4f_model or self.gpt4free_model
-
-        if self.cfg.max_model_tokens > 0:
-            return self.cfg.max_model_tokens
-
-        return self._model_token_limits.get(current_model, 128000)
-
-    def get_current_context_token_count(self) -> int:
-        if not self.hasTokenizer:
-            return 0
-        if not self.current_character:
-            return 0
-
-        user_input = self.event_bus.emit_and_wait(Events.Speech.GET_USER_INPUT)
-        user_input_from_gui = user_input[0] if user_input else ""
-
-        screen_quality = self.settings.get("SCREEN_CAPTURE_QUALITY", 75)
-        screen_quality = int(screen_quality) if str(screen_quality) != '' else 75
-
-        image_quality_cfg = {
-            'enabled': bool(self.cfg.image_quality_reduction_enabled),
-            'start_index': int(self.cfg.image_quality_reduction_start_index),
-            'use_percentage': bool(self.cfg.image_quality_reduction_use_percentage),
-            'min_quality': int(self.cfg.image_quality_reduction_min_quality),
-            'decrease_rate': int(self.cfg.image_quality_reduction_decrease_rate),
-            'screen_capture_quality': screen_quality,
-        }
-
-        separate_prompts = bool(self.settings.get("SEPARATE_PROMPTS", True))
-        is_game_master = (self.current_character == getattr(self, "GameMaster", None))
-
-        try:
-            prompt_res = self.event_bus.emit_and_wait(
-                Events.Prompt.BUILD_PROMPT,
-                {
-                    'character_id': getattr(self.current_character, "char_id", ""),
-                    'event_type': 'chat',
-                    'user_input': user_input_from_gui,
-                    'system_input': '',
-                    'image_data': [],
-                    'memory_limit': int(self.cfg.memory_limit),
-                    'is_game_master': bool(is_game_master),
-                    'save_missed_history': False,
-                    'image_quality': image_quality_cfg,
-                    'separate_prompts': separate_prompts,
-                    'extra_system_infos': list(self.infos_to_add_to_history) if self.infos_to_add_to_history else [],
-                    'game_state': {
-                        'distance': float(getattr(self, "distance", 0.0)),
-                        'roomPlayer': int(getattr(self, "roomPlayer", -1)),
-                        'roomMita': int(getattr(self, "roomMita", -1)),
-                        'nearObjects': str(getattr(self, "nearObjects", "")),
-                        'actualInfo': str(getattr(self, "actualInfo", "")),
-                    },
-                    'disable_history_compression': True,
-                },
-                timeout=2.0
-            )
-        except Exception:
-            return 0
-
-        if not prompt_res or not isinstance(prompt_res[0], dict):
-            return 0
-
-        combined_messages: List[Dict[str, Any]] = prompt_res[0].get("messages", []) or []
-
-        total_tokens = 0
-        for msg in combined_messages:
-            if not isinstance(msg, dict) or "content" not in msg:
-                continue
-
-            content = msg["content"]
-
-            if isinstance(content, str):
-                total_tokens += len(self.tokenizer.encode(content))
-                continue
-
-            if isinstance(content, list):
-                for item in content:
-                    if not isinstance(item, dict):
-                        continue
-                    if item.get("type") == "text" and item.get("text"):
-                        total_tokens += len(self.tokenizer.encode(item["text"]))
-                    elif item.get("type") == "image_url" and item.get("image_url", {}).get("url"):
-                        total_tokens += 1000
-
-        return total_tokens
-
-
-    def calculate_cost_for_current_context(self) -> float:
-        if not self.hasTokenizer:
-            logger.warning("Tokenizer not available, cannot calculate cost accurately.")
-            return 0.0
-
-        token_count = self.get_current_context_token_count()
-        return (token_count / 1000.0) * float(self.cfg.token_cost_input)
-    #endregion
-
-    def get_room_name(self, room_id):  # This seems generally useful, kept.
-        room_names = {
-            0: "Кухня",
-            1: "Зал",
-            2: "Комната",
-            3: "Туалет",
-            4: "Подвал"
-        }
-        return room_names.get(room_id, "?")
-
-    def add_temporary_system_message(self, messages: List[Dict], content: str):
-        if not isinstance(messages, list):
-            logger.error("add_temporary_system_message ожидает список сообщений.")
-            return
-        system_message = {
-            "role": "system",
-            "content": content
-        }
-        messages.append(system_message)
-        logger.debug(f"Временно добавлено системное сообщение в переданный список: {content[:100]}...")
-
-
-    def _handle_legacy_tool_calls(self, response_text: str, messages: List[Dict], stream_callback,
-                                  _depth: int = 0) -> str:
-        if _depth > 3:
-            logger.error("Слишком много рекурсивных legacy tool-вызовов.")
-            return response_text
-
-        parse_regex = self.settings.get("LEGACY_TOOLS_PARSE_REGEX",
-                                                   r'\{.*?"tool":\s*"(.*?)",\s*"args":\s*(\{.*?\})\}')
-        matches = re.findall(parse_regex, response_text)
-
-        if not matches:
-            return response_text
-
-        for tool_name, args_str in matches:
-            try:
-                args = json.loads(args_str)
-                logger.info(f"Legacy tool call: {tool_name}({args})")
-                tool_result = self.tool_manager.run(tool_name, args)
-
-                preset_settings = self.preset_resolver.resolve()
-                dialect = "gemini" if (preset_settings.make_request and preset_settings.gemini_case) else "openai"
-
-                messages.append(self.tool_manager.mk_tool_call_msg(dialect, tool_name, args))
-                messages.append(self.tool_manager.mk_tool_resp_msg(dialect, tool_name, tool_result))
-
-                response_text = re.sub(parse_regex, "", response_text).strip()
-
-            except Exception as e:
-                logger.error(f"Ошибка legacy tool: {e}")
-                self.add_temporary_system_message(messages, f"Tool call failed: {e}")
-
-        new_response, _ = self._generate_chat_response(messages, stream_callback)
-        return new_response or response_text

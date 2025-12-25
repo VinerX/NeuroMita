@@ -14,7 +14,6 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
     supports_streaming = True
     supports_streaming_with_tools = False
 
-    # NEW: какой tools dialect использовать для сообщений/пейлоада
     tools_dialect_id: str = "openai"
 
     @abstractmethod
@@ -38,19 +37,18 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
             return None
 
         try:
-            self._change_last_message_to_user_for_gemini(model_to_use, req.messages)
-
             cleaned_messages = [{k: v for k, v in m.items() if k != "time"} for m in (req.messages or [])]
 
-            params: Dict[str, Any] = {
-                "model": model_to_use,
-                "messages": cleaned_messages,
-            }
+            params: Dict[str, Any] = {"model": model_to_use, "messages": cleaned_messages}
             params.update(self._map_unified_params(req.extra or {}, model_to_use))
 
-            if req.tools_on and req.tools_mode == "native" and req.tools_payload:
-                params["tools"] = req.tools_payload
-                params["stream"] = False
+            # NEW: tools payload строит провайдер
+            if req.tools_on and req.tools_mode == "native" and req.tool_manager:
+                dialect = req.tools_dialect or self.tools_dialect_id
+                tools_payload = req.tools_payload or req.tool_manager.get_tools_payload(dialect)
+                if tools_payload:
+                    params["tools"] = tools_payload
+                    params["stream"] = False
 
             completion = client.chat.completions.create(**params, stream=req.stream)
 
@@ -62,9 +60,8 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                 tool_calls = getattr(message, "tool_calls", None)
 
                 if tool_calls:
-                    tm = req.tool_manager or (req.extra or {}).get("tool_manager")
-                    if not tm:
-                        return None
+                    tm = req.tool_manager
+                    dialect = req.tools_dialect or self.tools_dialect_id
 
                     for tool_call in tool_calls:
                         call_id = getattr(tool_call, "id", None)
@@ -73,9 +70,8 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
 
                         tool_result = tm.run(name, args)
 
-                        # Важно: id должен совпадать у call и response
-                        req.messages.append(tm.mk_tool_call_msg(self.tools_dialect_id, name, args, tool_call_id=call_id))
-                        req.messages.append(tm.mk_tool_resp_msg(self.tools_dialect_id, name, tool_result, tool_call_id=call_id))
+                        req.messages.append(tm.mk_tool_call_msg(dialect, name, args, tool_call_id=call_id))
+                        req.messages.append(tm.mk_tool_resp_msg(dialect, name, tool_result, tool_call_id=call_id))
 
                     req.depth += 1
                     return self._generate(req)
@@ -88,8 +84,6 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
 
         except Exception as e:
             logger.error(f"[{self.name}] Error during API call: {e}", exc_info=True)
-            if hasattr(e, "response") and e.response:
-                logger.error(f"[{self.name}] API Error details: Status={e.response.status_code}, Body={e.response.text}")
             return None
 
     def _map_unified_params(self, unified: Dict[str, Any], model_to_use: str) -> Dict[str, Any]:
@@ -118,9 +112,6 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                 try:
                     if chunk.choices and chunk.choices[0].delta:
                         text = chunk.choices[0].delta.content or ""
-                    elif hasattr(chunk, "candidates") and chunk.candidates and chunk.candidates[0].content and \
-                            chunk.candidates[0].content.parts:
-                        text = chunk.candidates[0].content.parts[0].text or ""
                 except Exception:
                     continue
 
@@ -132,9 +123,3 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
             logger.error(f"[{self.name}] stream error: {e}", exc_info=True)
 
         return "".join(parts)
-
-    def _change_last_message_to_user_for_gemini(self, api_model: str, messages: List[Dict]) -> None:
-        if messages and ("gemini" in (api_model or "").lower() or "gemma" in (api_model or "").lower()) and \
-                messages[-1].get("role") in {"system", "model", "assistant"}:
-            messages[-1]["role"] = "user"
-            messages[-1]["content"] = f"[SYSTEM INFO] {messages[-1].get('content', '')}"
