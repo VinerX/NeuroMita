@@ -59,11 +59,8 @@ class ApiPresetsController:
     def __init__(self):
         self.event_bus = get_event_bus()
 
-        # Новые раздельные файлы
         self.templates_path = Path("Settings/api_templates.json")
         self.presets_path = Path("Settings/api_presets.json")
-
-        # Старый файл для миграции
         self.legacy_path = Path("Settings/presets.json")
 
         self.templates: Dict[int, ApiTemplate] = {}
@@ -71,38 +68,139 @@ class ApiPresetsController:
         self.presets_order: List[int] = []
 
         self.current_preset_id: Optional[int] = None
-
-        # Транзиентные состояния (UI-снапшоты)
         self.preset_states: Dict[int, Dict[str, Any]] = {}
 
-        # МИГРАЦИЯ: удаляем старые ключи API из настроек
-        self._migrate_old_api_keys()
-        
         self._load_data()
         self._subscribe_to_events()
+
+        self._migrate_old_api_keys()
+
+    def _mask_key(self, s: str) -> str:
+        s = str(s or "")
+        if len(s) <= 8:
+            return "***"
+        return s[:3] + "***" + s[-3:]
     
+    def _find_template_id_by_url(self, url: str) -> Optional[int]:
+        u = (url or "").strip().lower()
+        if not u:
+            return None
+
+        # сперва по доменам/паттернам
+        if "api.mistral.ai" in u or "mistral.ai" in u:
+            for tid, tpl in self.templates.items():
+                if "mistral" in (tpl.name or "").lower():
+                    return int(tid)
+
+        if "openrouter.ai" in u:
+            for tid, tpl in self.templates.items():
+                if "openrouter" in (tpl.name or "").lower():
+                    return int(tid)
+
+        if "generativelanguage.googleapis.com" in u:
+            for tid, tpl in self.templates.items():
+                if "google" in (tpl.name or "").lower() or "ai studio" in (tpl.name or "").lower():
+                    return int(tid)
+
+        if "intelligence.io.solutions" in u:
+            for tid, tpl in self.templates.items():
+                if "ai.i" in (tpl.name or "").lower() or "ai.io" in (tpl.name or "").lower():
+                    return int(tid)
+
+        # иначе — пробуем совпасть по tpl.url / tpl.url_tpl (если оно есть)
+        for tid, tpl in self.templates.items():
+            if tpl.url and tpl.url.strip().lower() == u:
+                return int(tid)
+            if tpl.url_tpl and tpl.url_tpl.strip().lower() in u:
+                return int(tid)
+
+        return None
+    
+    def _find_existing_custom_preset_by_name(self, name: str) -> Optional[int]:
+        target = str(name or "")
+        for pid, up in self.presets.items():
+            if str(up.name or "") == target:
+                return int(pid)
+        return None
+
     def _migrate_old_api_keys(self):
         """
-        Безопасно удаляем старые ключи API из настроек.
-        Выполняется один раз при первом запуске новой версии.
+        Безопасная миграция NM_API_*:
+        - создаём/обновляем кастомный пресет из старых ключей
+        - НЕ удаляем LAST_API_PRESET_ID, USE_NEW_API, CHAR_PROVIDER_* и т.п.
+        - удаляем NM_API_* только если миграция успешна
         """
         try:
             from managers.settings_manager import SettingsManager
-            
-            settings_manager = SettingsManager.instance
-            if not settings_manager:
-                logger.warning("SettingsManager не инициализирован, пропускаем миграцию")
+            sm = SettingsManager.instance
+            if not sm:
+                logger.warning("SettingsManager не инициализирован, миграция пропущена")
                 return
-            
-            settings = settings_manager.settings
-            
-            # Проверяем, выполнена ли уже миграция
+
+            settings = sm.settings
+
             if settings.get("_API_MIGRATION_DONE", False):
-                logger.debug("Миграция API уже выполнена ранее, пропускаем")
                 return
-            
-            # Старые ключи API, которые нужно удалить
-            old_keys = [
+
+            legacy_url = str(settings.get("NM_API_URL", "") or "").strip()
+            legacy_model = str(settings.get("NM_API_MODEL", "") or "").strip()
+            legacy_key = str(settings.get("NM_API_KEY", "") or "").strip()
+            legacy_req = bool(settings.get("NM_API_REQ", False))
+            legacy_gemini = bool(settings.get("GEMINI_CASE", False))
+            legacy_res = str(settings.get("NM_API_KEY_RES", "") or "").strip()
+
+            has_any_legacy = any([
+                bool(legacy_url),
+                bool(legacy_model),
+                bool(legacy_key),
+                bool(legacy_res),
+                "NM_API_REQ" in settings,
+                "GEMINI_CASE" in settings,
+            ])
+
+            if not has_any_legacy:
+                settings["_API_MIGRATION_DONE"] = True
+                sm.save_settings()
+                return
+
+            base_id = self._find_template_id_by_url(legacy_url)
+            if base_id is None:
+                logger.warning("Legacy NM_API_URL не соответствует известным шаблонам; миграция пропущена (ключи не удалены)")
+                return
+
+            reserve_keys: List[str] = []
+            if legacy_res:
+                reserve_keys = [k.strip() for k in legacy_res.split() if k.strip()]
+
+            migrated_name = "Migrated Legacy API"
+            existing_id = self._find_existing_custom_preset_by_name(migrated_name)
+
+            payload = {
+                "id": existing_id,
+                "name": migrated_name,
+                "base": int(base_id),
+                "default_model": legacy_model,
+                "key": legacy_key,
+                "reserve_keys": reserve_keys,
+            }
+
+            saved_id = self._on_save_custom_preset(Event(
+                name=Events.ApiPresets.SAVE_CUSTOM_PRESET,
+                data={"data": payload}
+            ))
+
+            if not isinstance(saved_id, int) or saved_id <= 0:
+                logger.warning("Миграция не смогла создать пресет; ключи не удалены")
+                return
+
+            last_id = settings.get("LAST_API_PRESET_ID", None)
+            last_id_valid = isinstance(last_id, int) and (last_id in self.presets or last_id in self.templates)
+
+            if not last_id_valid:
+                settings["LAST_API_PRESET_ID"] = int(saved_id)
+                self.current_preset_id = int(saved_id)
+
+            keys_to_delete = [
                 "API_PROVIDER",
                 "NM_API_URL",
                 "NM_API_MODEL",
@@ -112,55 +210,27 @@ class ApiPresetsController:
                 "NM_API_KEY_RES",
                 "API_PROVIDER_DATA",
                 "CUSTOM_API_PRESETS",
-                "LAST_API_PRESET_ID",
                 "GEMINI_CASE_UI",
-                "USE_NEW_API",
             ]
-            
-            # Также удаляем все CHAR_PROVIDER_* ключи
-            char_keys_to_remove = []
-            for key in settings.keys():
-                if key.startswith("CHAR_PROVIDER_"):
-                    char_keys_to_remove.append(key)
-            
-            # Проверяем, есть ли вообще старые ключи
-            has_old_keys = False
-            for key in old_keys + char_keys_to_remove:
-                if key in settings:
-                    has_old_keys = True
-                    break
-            
-            # Если старых ключей нет, просто ставим флаг и выходим
-            if not has_old_keys:
-                settings["_API_MIGRATION_DONE"] = True
-                settings_manager.save_settings()
-                logger.debug("Старых ключей API не найдено, флаг миграции установлен")
-                return
-            
-            # Удаляем ключи
-            changed = False
-            for key in old_keys + char_keys_to_remove:
-                if key in settings:
-                    del settings[key]
-                    changed = True
-                    logger.info(f"Удалён устаревший ключ API: {key}")
-            
-            if changed:
-                # Ставим флаг, что миграция выполнена
-                settings["_API_MIGRATION_DONE"] = True
-                # Сохраняем настройки через менеджер
-                settings_manager.save_settings()
-                logger.info("Старые ключи API удалены из настроек, флаг миграции установлен")
-            else:
-                # Если почему-то ничего не удалили, но были старые ключи
-                settings["_API_MIGRATION_DONE"] = True
-                settings_manager.save_settings()
-                logger.debug("Флаг миграции установлен без изменений")
-                
+
+            for k in keys_to_delete:
+                if k in settings:
+                    try:
+                        del settings[k]
+                    except Exception:
+                        pass
+
+            settings["_API_MIGRATION_DONE"] = True
+            sm.save_settings()
+
+            logger.info(
+                f"Legacy API migrated to preset '{migrated_name}' (ID={saved_id}), "
+                f"base={base_id}, key={self._mask_key(legacy_key)}"
+            )
+
         except Exception as e:
-            logger.error(f"Ошибка при миграции старых ключей API: {e}")
-            # Не падаем, просто логируем ошибку
-    
+            logger.error(f"Ошибка при миграции старых ключей API: {e}", exc_info=True)
+
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.ApiPresets.GET_PRESET_LIST, self._on_get_preset_list, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.GET_PRESET_FULL, self._on_get_preset_full, weak=False)
