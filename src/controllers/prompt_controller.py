@@ -210,8 +210,13 @@ class PromptController:
         }
         messages.append(current_state_message)
 
+        event_types_as_event_role = {"idle_timeout", "idle", "timer"}
+
         if system_input:
-            messages.append({"role": "system", "content": system_input})
+            if event_type in event_types_as_event_role:
+                messages.append({"role": "event", "content": system_input})
+            else:
+                messages.append({"role": "system", "content": system_input})
 
         user_message_for_history: Optional[Dict[str, Any]] = None
         user_content_chunks: List[Dict[str, Any]] = []

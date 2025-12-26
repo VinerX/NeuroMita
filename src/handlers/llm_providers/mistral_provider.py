@@ -27,6 +27,7 @@ class MistralProvider(OpenAIHTTPProviderBase):
         Менее агрессивно, чем AI.IO:
         - объединяем все system в один system (чтобы не было кучи system сообщений)
         - порядок: [system] + остальное
+        - ВАЖНО: Mistral требует, чтобы последнее сообщение было от user.
         """
         system_parts: List[str] = []
         rest: List[Dict[str, Any]] = []
@@ -44,8 +45,15 @@ class MistralProvider(OpenAIHTTPProviderBase):
             else:
                 rest.append(m)
 
-        if not system_parts:
-            return messages
+        final_messages = []
 
-        system_msg = {"role": "system", "content": "\n\n".join(system_parts)}
-        return [system_msg] + rest
+        if system_parts:
+            system_msg = {"role": "system", "content": "\n\n".join(system_parts)}
+            final_messages = [system_msg] + rest
+        else:
+            final_messages = list(rest)
+
+        if final_messages and final_messages[-1].get("role") == "assistant":
+            final_messages.append({"role": "user", "content": "."})
+
+        return final_messages
