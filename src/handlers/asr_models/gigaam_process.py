@@ -43,87 +43,131 @@ class GigaAMProcessWorker:
         """Инициализация распознавателя - только импорт и загрузка модели"""
         try:
             self.info("Инициализация GigaAM в отдельном процессе...")
-            
+
             self.gigaam_device = options.get('device', 'auto')
             self.gigaam_model = options.get('model', 'v2_rnnt')
             self.gigaam_onnx_export_path = options.get('onnx_path', 'SpeechRecognitionModels/GigaAM_ONNX')
             self.gigaam_model_path = options.get('model_path', 'SpeechRecognitionModels/GigaAM')
-            
+
             import torch
             import gigaam
             from utils.gpu_utils import check_gpu_provider
             from utils import getTranslationVariant as _
-            
+
             import omegaconf, typing, collections
             torch.serialization.add_safe_globals([
-                omegaconf.dictconfig.DictConfig, 
-                omegaconf.base.ContainerMetadata, 
-                typing.Any, 
-                dict, 
-                collections.defaultdict, 
-                omegaconf.nodes.AnyNode, 
-                omegaconf.nodes.Metadata, 
-                omegaconf.listconfig.ListConfig, 
-                list, 
+                omegaconf.dictconfig.DictConfig,
+                omegaconf.base.ContainerMetadata,
+                typing.Any,
+                dict,
+                collections.defaultdict,
+                omegaconf.nodes.AnyNode,
+                omegaconf.nodes.Metadata,
+                omegaconf.listconfig.ListConfig,
+                list,
                 int
             ])
-            
-            current_gpu = check_gpu_provider() or "CPU"
-            device_choice = self.gigaam_device
-            is_nvidia = current_gpu == "NVIDIA"
-            
-            if is_nvidia and device_choice in ["auto", "cuda", "cpu"]:
-                device = "cuda" if device_choice in ["auto", "cuda"] else "cpu"
+
+            # ---- GPU detect: НИКОГДА не валим инициализацию из-за ошибок/None ----
+            try:
+                detected_gpu = check_gpu_provider()
+            except Exception as e:
+                self.warning(f"Не удалось определить GPU ({e}). Переходим на CPU.")
+                detected_gpu = None
+
+            current_gpu = detected_gpu or "CPU"
+            device_choice = (self.gigaam_device or "auto").strip().lower()
+            is_nvidia = (current_gpu == "NVIDIA")
+
+            want_cuda = device_choice in ("cuda",)
+            want_dml = device_choice in ("dml",)
+            is_auto = device_choice in ("auto",)
+
+            if want_cuda and (not is_nvidia or not torch.cuda.is_available()):
+                self.warning("Запрошен CUDA, но NVIDIA/CUDA недоступны. Переходим на CPU.")
+                device_choice = "cpu"
+                want_cuda = False
+                want_dml = False
+                is_auto = False
+
+            if is_nvidia and torch.cuda.is_available() and (device_choice in ("auto", "cuda")):
+                device = "cuda"
                 self.info(f"Загрузка PyTorch модели GigaAM на {device}...")
-                
+
                 model = gigaam.load_model(
-                    self.gigaam_model, 
+                    self.gigaam_model,
                     device=device,
                     download_root=self.gigaam_model_path
                 )
                 self._gigaam_model_instance = model
+                self._gigaam_onnx_sessions = None
+
                 self.info(f"Модель GigaAM '{self.gigaam_model}' успешно загружена на {device}.")
-                
+                self.result_queue.put(('init_success', True))
+                self.info("GigaAM успешно инициализирован в отдельном процессе")
+                return
+
+            import onnxruntime as rt
+
+            providers = ["CPUExecutionProvider"]
+
+            if want_dml:
+                providers = ["DmlExecutionProvider", "CPUExecutionProvider"]
+            elif is_auto:
+                if current_gpu not in ("CPU", "", None) and not is_nvidia:
+                    providers = ["DmlExecutionProvider", "CPUExecutionProvider"]
+                else:
+                    providers = ["CPUExecutionProvider"]
             else:
-                import onnxruntime as rt
-                
-                provider = 'CPUExecutionProvider'
-                if device_choice in ["auto", "dml"] and not is_nvidia:
-                    provider = 'DmlExecutionProvider'
-                
-                self.info(f"Загрузка ONNX модели GigaAM с провайдером: {provider}")
-                
-                onnx_dir = self.gigaam_onnx_export_path
-                encoder_path = os.path.join(onnx_dir, f"{self.gigaam_model}_encoder.onnx")
-                
-                if not os.path.exists(encoder_path):
-                    self.warning("ONNX модель не найдена, выполняется экспорт...")
-                    os.makedirs(onnx_dir, exist_ok=True)
-                    
-                    temp_model = gigaam.load_model(
-                        self.gigaam_model,
-                        device="cpu",
-                        fp16_encoder=False,
-                        use_flash=False,
-                        download_root=self.gigaam_model_path
-                    )
-                    temp_model.to_onnx(dir_path=onnx_dir)
-                    del temp_model
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    self.info(f"Модель GigaAM успешно экспортирована в ONNX")
-                
-                sessions = self._load_onnx_sessions(onnx_dir, self.gigaam_model, provider)
-                self._gigaam_onnx_sessions = sessions
-                self.info(f"ONNX сессии для GigaAM успешно загружены с провайдером {provider}.")
-            
+                providers = ["CPUExecutionProvider"]
+
+            try:
+                available = set(rt.get_available_providers())
+            except Exception:
+                available = set()
+
+            if "DmlExecutionProvider" in providers and "DmlExecutionProvider" not in available:
+                self.warning(
+                    f"DmlExecutionProvider недоступен (доступно: {sorted(available)}). "
+                    f"Используем CPUExecutionProvider."
+                )
+                providers = ["CPUExecutionProvider"]
+
+            self.info(f"Загрузка ONNX модели GigaAM с провайдерами: {providers}")
+
+            onnx_dir = self.gigaam_onnx_export_path
+            encoder_path = os.path.join(onnx_dir, f"{self.gigaam_model}_encoder.onnx")
+
+            if not os.path.exists(encoder_path):
+                self.warning("ONNX модель не найдена, выполняется экспорт...")
+                os.makedirs(onnx_dir, exist_ok=True)
+
+                temp_model = gigaam.load_model(
+                    self.gigaam_model,
+                    device="cpu",
+                    fp16_encoder=False,
+                    use_flash=False,
+                    download_root=self.gigaam_model_path
+                )
+                temp_model.to_onnx(dir_path=onnx_dir)
+                del temp_model
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                self.info("Модель GigaAM успешно экспортирована в ONNX")
+
+            sessions = self._load_onnx_sessions(onnx_dir, self.gigaam_model, providers)
+            self._gigaam_onnx_sessions = sessions
+            self._gigaam_model_instance = None
+
+            self.info(f"ONNX сессии для GigaAM успешно загружены с провайдерами {providers}.")
+
             self.result_queue.put(('init_success', True))
             self.info("GigaAM успешно инициализирован в отдельном процессе")
-            
+
         except Exception as e:
             self.error(f"Ошибка инициализации GigaAM: {e}", exc_info=True)
             self.result_queue.put(('init_error', str(e)))
-    
+
     def _load_onnx_sessions(self, onnx_dir: str, model_version: str, providers):
         """Загрузка ONNX сессий"""
         import onnxruntime as rt

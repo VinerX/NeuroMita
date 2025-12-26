@@ -311,25 +311,24 @@ class ModelController:
     
     # События генерации
     def _on_generate_response(self, event: Event):
-        user_input = event.data.get('user_input', '')
-        system_input = event.data.get('system_input', '')
-        image_data = event.data.get('image_data', [])
+        user_input = event.data.get('user_input', '') or ''
+        system_input = event.data.get('system_input', '') or ''
+        image_data = event.data.get('image_data', []) or []
         stream_callback = event.data.get('stream_callback', None)
         message_id = event.data.get('message_id', None)
-        event_type = event.data.get('event_type', None) or 'chat'
+        event_type = (event.data.get('event_type') or 'chat') or 'chat'
         preset_id_override = event.data.get('preset_id', None)
 
-        if not hasattr(self.model, 'current_character') or not self.model.current_character:
-            logger.error("Генерация невозможна: текущий персонаж не выбран.")
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                'error': _("Персонаж не выбран.", "Character not selected.")
-            })
-            return None
+        # character override from upstream (server/game/react)
+        character_override = (
+            event.data.get('character')
+            or event.data.get('character_id')
+            or event.data.get('char_id')
+        )
 
-        char = self.model.current_character
-        char_id = getattr(char, 'char_id', '') or ''
-        char_name = getattr(char, 'name', '') or ''
-
+        # ----------------------------
+        # helpers (локально, чтобы функция была самодостаточной)
+        # ----------------------------
         def _is_current_label(label: str | None) -> bool:
             s = str(label or "").strip()
             return s in ("", "Current", "Текущий", _("Текущий", "Current"))
@@ -339,30 +338,50 @@ class ModelController:
                 return None
             if _is_current_label(label):
                 return None
-
             s = str(label).strip()
             try:
                 return int(s)
             except ValueError:
                 pass
-
             try:
                 return self.preset_resolver.resolve_preset_id_by_name(s)
             except Exception:
                 return None
 
-        def _get_char_provider_label() -> str:
-            """
-            Поддержка обеих схем ключей:
-            - CHAR_PROVIDER_{char_id}
-            - CHAR_PROVIDER_{char_name}
-            """
+        def _get_char_provider_label(char_id: str, char_name: str) -> str:
+            # поддержка обоих вариантов ключа: id и name (на случай старых настроек)
             v = self.settings.get(f"CHAR_PROVIDER_{char_id}", None)
             if v is None and char_name:
                 v = self.settings.get(f"CHAR_PROVIDER_{char_name}", None)
             return str(v if v is not None else "Current")
 
+        # ----------------------------
+        # choose character for this request
+        # ----------------------------
+        char = self.character_manager.current_character
+        if character_override:
+            try:
+                cand = self.character_manager.get_character(str(character_override))
+                if cand:
+                    char = cand
+                else:
+                    logger.warning(f"Character override '{character_override}' not found, using current character.")
+            except Exception as e:
+                logger.warning(f"Character override failed: {e}")
+
+        if not char:
+            logger.error("Генерация невозможна: текущий персонаж не выбран.")
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                'error': _("Персонаж не выбран.", "Character not selected.")
+            })
+            return None
+
+        char_id = getattr(char, 'char_id', '') or ''
+        char_name = getattr(char, 'name', '') or ''
+
+        # ----------------------------
         # compress branch
+        # ----------------------------
         if event_type == 'compress':
             messages = []
             if system_input:
@@ -372,7 +391,6 @@ class ModelController:
             if preset_id is None:
                 hc_provider = self.settings.get("HC_PROVIDER", "Current")
                 preset_id = _resolve_label_to_preset_id(str(hc_provider))
-
                 if preset_id is None and not _is_current_label(str(hc_provider)):
                     logger.warning(f"[compress] HC_PROVIDER='{hc_provider}' не найден, используем текущий пресет.")
 
@@ -385,32 +403,40 @@ class ModelController:
                 logger.error(f"Ошибка при сжатии истории через GENERATE_RESPONSE: {e}", exc_info=True)
                 return None
 
-        # normal chat/react branch
+        # ----------------------------
+        # collect game_state & temporary system infos (controller-side if present)
+        # ----------------------------
         try:
-            game_state = self.game_state.to_prompt_dict()
+            game_state = self.game_state.to_prompt_dict()  # if you moved it to controller
         except Exception:
-            try:
-                gs_res = self.event_bus.emit_and_wait(Events.Model.GET_GAME_STATE, timeout=1.0)
-                game_state = gs_res[0] if gs_res and isinstance(gs_res[0], dict) else {}
-            except Exception:
-                game_state = {}
+            game_state = {
+                'distance': getattr(self.model, "distance", 0.0),
+                'roomPlayer': getattr(self.model, "roomPlayer", -1),
+                'roomMita': getattr(self.model, "roomMita", -1),
+                'nearObjects': getattr(self.model, "nearObjects", ''),
+                'actualInfo': getattr(self.model, "actualInfo", ''),
+            }
 
-        try:
-            extra_system_infos = list(getattr(self, "_temporary_system_infos", []) or [])
-            if hasattr(self, "_temporary_system_infos"):
-                self._temporary_system_infos.clear()
-        except Exception:
-            extra_system_infos = []
+        # temporary infos queue: controller-first, fallback to model legacy field
+        extra_system_infos = []
+        if hasattr(self, "_temporary_system_infos"):
+            extra_system_infos = list(self._temporary_system_infos or [])
+            self._temporary_system_infos.clear()
+        else:
+            extra_system_infos = list(getattr(self.model, "infos_to_add_to_history", []) or [])
+            if hasattr(self.model, "infos_to_add_to_history"):
+                self.model.infos_to_add_to_history.clear()
 
+        # cfg (если есть ModelRuntimeConfig), иначе fallback на старые поля модели
         cfg = getattr(self.model, "cfg", None)
-
-        screen_quality = self.settings.get("SCREEN_CAPTURE_QUALITY", 75)
-        screen_quality = int(screen_quality) if str(screen_quality) != '' else 75
 
         def _cfg_get(attr: str, default):
             if cfg is not None and hasattr(cfg, attr):
                 return getattr(cfg, attr)
             return getattr(self.model, attr, default)
+
+        screen_quality = self.settings.get("SCREEN_CAPTURE_QUALITY", 75)
+        screen_quality = int(screen_quality) if str(screen_quality) != '' else 75
 
         image_quality_cfg = {
             'enabled': bool(_cfg_get("image_quality_reduction_enabled", False)),
@@ -425,8 +451,13 @@ class ModelController:
         save_missed_history = bool(self.settings.get("SAVE_MISSED_HISTORY", True))
         memory_limit = int(_cfg_get("memory_limit", 40))
 
-        is_game_master = (char == getattr(self.model, "GameMaster", None))
+        is_game_master = bool(
+            char == getattr(self.model, "GameMaster", None) or (getattr(char, "char_id", "") == "GameMaster")
+        )
 
+        # ----------------------------
+        # build prompt for the chosen character
+        # ----------------------------
         try:
             prompt_res = self.event_bus.emit_and_wait(
                 Events.Prompt.BUILD_PROMPT,
@@ -464,7 +495,9 @@ class ModelController:
         combined_messages = prompt_data.get("messages", []) or []
         history_for_save = prompt_data.get("history_messages", []) or []
 
-        # preset routing
+        # ----------------------------
+        # preset routing (react/char_provider)
+        # ----------------------------
         preset_id: Optional[int] = None
 
         if event_type == 'react':
@@ -475,16 +508,15 @@ class ModelController:
                     logger.warning(f"REACT_PROVIDER '{react_provider_label}' не найден, используем CHAR_PROVIDER.")
 
             if preset_id is None:
-                char_provider_label = _get_char_provider_label()
+                char_provider_label = _get_char_provider_label(char_id, char_name)
                 preset_id = _resolve_label_to_preset_id(char_provider_label)
 
                 if preset_id is not None:
                     logger.info(f"react: используем CHAR_PROVIDER preset ID: {preset_id}")
                 elif not _is_current_label(char_provider_label):
                     logger.warning(f"react: CHAR_PROVIDER='{char_provider_label}' не найден, используем текущий пресет.")
-
         else:
-            char_provider_label = _get_char_provider_label()
+            char_provider_label = _get_char_provider_label(char_id, char_name)
             preset_id = _resolve_label_to_preset_id(char_provider_label)
 
             if preset_id is not None:
@@ -494,6 +526,9 @@ class ModelController:
 
         self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION)
 
+        # ----------------------------
+        # generate
+        # ----------------------------
         try:
             use_stream_cb = stream_callback if event_type != 'react' else None
             raw_text = self.model.generate(
@@ -509,6 +544,7 @@ class ModelController:
                 })
                 return None
 
+            # IMPORTANT: process response using the chosen character (not current_character)
             processed_response_text = char.process_response_nlp_commands(
                 raw_text,
                 self.settings.get("SAVE_MISSED_MEMORY", False)
@@ -516,7 +552,7 @@ class ModelController:
 
             final_response_text = processed_response_text
 
-            # command replacer
+            # command replacer (как было)
             try:
                 use_cmd_replacer = self.settings.get("USE_COMMAND_REPLACER", False)
                 if use_cmd_replacer:
@@ -527,31 +563,18 @@ class ModelController:
                         from utils.command_parser import CommandParser
                         self.parser = CommandParser(model_handler=self.model_handler)
 
-                    min_sim = float(self.settings.get("MIN_SIMILARITY_THRESHOLD", 0.40))
-                    cat_switch = float(self.settings.get("CATEGORY_SWITCH_THRESHOLD", 0.18))
-                    skip_comma = bool(self.settings.get("SKIP_COMMA_PARAMETERS", True))
-
-                    prefix = "[react]" if event_type == 'react' else ""
-                    logger.info(f"{prefix} Attempting command replacement on: {processed_response_text[:100]}...")
                     final_response_text, __ = self.parser.parse_and_replace(
                         processed_response_text,
-                        min_similarity_threshold=min_sim,
-                        category_switch_threshold=cat_switch,
-                        skip_comma_params=skip_comma
+                        min_similarity_threshold=float(self.settings.get("MIN_SIMILARITY_THRESHOLD", 0.40)),
+                        category_switch_threshold=float(self.settings.get("CATEGORY_SWITCH_THRESHOLD", 0.18)),
+                        skip_comma_params=bool(self.settings.get("SKIP_COMMA_PARAMETERS", True))
                     )
-                    logger.info(f"{prefix} After command replacement: {final_response_text[:100]}...")
-                else:
-                    if event_type == 'react':
-                        logger.info("[react] Command replacer disabled.")
-                    else:
-                        logger.info("Command replacer disabled.")
             except Exception as ex:
                 logger.error(f"Error during command replacement: {ex}", exc_info=True)
 
             assistant_message_content = final_response_text
 
             if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
-                logger.info("REPLACE_IMAGES_WITH_PLACEHOLDERS включена. Заменяю изображения заглушками.")
                 assistant_message_content = re.sub(
                     r'https?://\S+\.(?:png|jpg|jpeg|gif|bmp)|data:image/\S+;base64,\S+',
                     '[Изображение]',
@@ -561,6 +584,7 @@ class ModelController:
             assistant_message = {"role": "assistant", "content": assistant_message_content}
             assistant_message["time"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
 
+            # Save history only for non-react (react separated)
             if event_type != 'react':
                 history_for_save.append(assistant_message)
 
@@ -572,18 +596,14 @@ class ModelController:
                 logger.info("[react] История не сохраняется (react branch separated).")
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
-            logger.success(
-                _("Получен успешный react-ответ от API.", "Successful react response from API.")
-                if event_type == 'react'
-                else _("Получен успешный ответ от API.", "Successful response from API.")
-            )
             return final_response_text
 
         except Exception as e:
             logger.error(f"Error during LLM response generation or processing: {e}", exc_info=True)
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {'error': str(e)})
             return f"Ошибка: {e}"
-        
+
+
     def _on_raw_generate(self, event: Event):
         """
         Обрабатывает Events.LLM.RAW_GENERATE:

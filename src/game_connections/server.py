@@ -222,7 +222,9 @@ class ChatServerNew:
                     'user_input': user_input,
                     'system_input': collected_sys,
                     'image_data': context.get('image_base64_list', []),
-                    'task_uid': task.uid
+                    'task_uid': task.uid,
+                    'event_type': 'chat',
+                    'character': character
                 })
             else:
                 await self._send_aborted_update(client_id, event_type, character, reason="Failed to create task", req_id=req_id)
@@ -268,7 +270,9 @@ class ChatServerNew:
                     'user_input': '',
                     'system_input': idle_prompt,
                     'image_data': [],
-                    'task_uid': task.uid
+                    'task_uid': task.uid,
+                    'event_type': 'idle_timeout',
+                    'character': character
                 })
             else:
                 await self._send_aborted_update(client_id, event_type, character, reason="Failed to create idle task", req_id=req_id)
@@ -316,7 +320,9 @@ class ChatServerNew:
                     'user_input': '',
                     'system_input': collected_sys,
                     'image_data': [],
-                    'task_uid': task.uid
+                    'task_uid': task.uid,
+                    'event_type': 'chat',
+                    'character': character
                 })
             else:
                 await self._send_aborted_update(client_id, event_type, character, reason="Failed to flush system info", req_id=req_id)
@@ -363,7 +369,8 @@ class ChatServerNew:
                     'system_input': react_system_input,
                     'image_data': context.get('image_base64_list', []),
                     'task_uid': task.uid,
-                    'event_type': 'react'
+                    'event_type': 'react',
+                    'character': character
                 })
             else:
                 await self._send_aborted_update(client_id, event_type, character,

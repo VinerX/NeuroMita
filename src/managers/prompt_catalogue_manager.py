@@ -5,14 +5,9 @@ import datetime
 from PyQt6.QtWidgets import QMessageBox
 import logging
 
-# Initialize logger
 from main_logger import logger
 
 def list_prompt_sets(catalogue_path, character_name=None):
-    """
-    Returns a list of subdirectory names in catalogue_path,
-    filtered by character_name if provided.
-    """
     try:
         all_sets = [d for d in os.listdir(catalogue_path) if os.path.isdir(os.path.join(catalogue_path, d))]
         if character_name:
@@ -25,17 +20,19 @@ def list_prompt_sets(catalogue_path, character_name=None):
             return all_sets
     except Exception as e:
         logger.exception(f"Error listing prompt sets in {catalogue_path}: {e}")
-        # QMessageBox.critical(None, "Error", f"Error listing prompt sets: {e}") #  ВРЕМЕННО УБРАЛ
         return []
 
 def read_info_json(set_path):
-    """
-    Reads and returns the JSON data from info.json in set_path.
-    """
     info_file_path = os.path.join(set_path, "info.json")
     try:
         with open(info_file_path, "r", encoding="utf-8") as f:
             return json.load(f)
+    except UnicodeDecodeError:
+        try:
+            with open(info_file_path, "r", encoding="cp1251") as f:
+                return json.load(f)
+        except Exception:
+            return {}
     except FileNotFoundError:
         logger.warning(f"info.json not found in {set_path}")
         return {}
@@ -49,9 +46,6 @@ def read_info_json(set_path):
         return {}
 
 def write_info_json(set_path, data):
-    """
-    Writes the JSON data to info.json in set_path.
-    """
     info_file_path = os.path.join(set_path, "info.json")
     try:
         with open(info_file_path, "w", encoding="utf-8") as f:
@@ -61,11 +55,8 @@ def write_info_json(set_path, data):
         logger.exception(f"Error writing info.json to {info_file_path}: {e}")
         QMessageBox.critical(None, "Error", f"Error writing info.json: {e}")
         return False
+
 def copy_prompt_set(set_path: str, character_path: str, clean_target: bool = True) -> bool:
-    """Копирует набор промптов в папку персонажа.
-    Если в наборе НЕТ config.json, то существующий config.json в Prompts/<char> сохраняется и пробрасывается обратно.
-    Если в наборе ЕСТЬ config.json — он заменяет существующий.
-    """
     try:
         set_config = os.path.join(set_path, "config.json")
         target_config = os.path.join(character_path, "config.json")
@@ -81,7 +72,7 @@ def copy_prompt_set(set_path: str, character_path: str, clean_target: bool = Tru
                 logger.info(f"Preserving existing config.json for '{character_path}' (no config.json in set).")
             except Exception as e:
                 logger.warning(f"Failed to back up existing config.json at {target_config}: {e}")
-                tmp_config = None  # если не смогли сохранить — продолжим без восстановления
+                tmp_config = None
 
         if clean_target and os.path.exists(character_path):
             shutil.rmtree(character_path)
@@ -107,18 +98,12 @@ def copy_prompt_set(set_path: str, character_path: str, clean_target: bool = Tru
         except Exception:
             pass
 
-        
 def create_new_set(character_name, catalogue_path, prompts_path):
-    """
-    Creates a new set directory in catalogue_path with name character_name_YYYYMMDD_HHMMSS,
-    copies the contents of the character's prompts_path to the new set, and creates a default info.json.
-    """
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     new_set_name = f"{character_name}_{timestamp}"
     new_set_path = os.path.join(catalogue_path, new_set_name)
     try:
         shutil.copytree(prompts_path, new_set_path)
-        # Create default info.json
         info_data = {
             "character": character_name,
             "folder": new_set_name,
@@ -129,7 +114,6 @@ def create_new_set(character_name, catalogue_path, prompts_path):
         if write_info_json(new_set_path, info_data):
             return new_set_path
         else:
-            # If writing info.json fails, remove the created directory
             shutil.rmtree(new_set_path)
             return None
     except Exception as e:
@@ -138,9 +122,6 @@ def create_new_set(character_name, catalogue_path, prompts_path):
         return None
 
 def delete_prompt_set(set_path):
-    """
-    Deletes the directory at set_path after confirmation.
-    """
     reply = QMessageBox.question(None, "Confirm Delete", f"Are you sure you want to delete the prompt set at {set_path}?",
                                  QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
     if reply == QMessageBox.StandardButton.Yes:
@@ -155,15 +136,18 @@ def delete_prompt_set(set_path):
         return False
 
 def get_prompt_catalogue_folder_name(character_prompts_path):
-    """
-    Reads info.json from character_prompts_path and returns the 'name' field,
-    or the basename of the path if info.json is not found or doesn't contain the 'name' field.
-    """
     info_file_path = os.path.join(character_prompts_path, "info.json")
     try:
         with open(info_file_path, "r", encoding="utf-8") as f:
             info = json.load(f)
         return info.get("folder", os.path.basename(character_prompts_path))
+    except UnicodeDecodeError:
+        try:
+            with open(info_file_path, "r", encoding="cp1251") as f:
+                info = json.load(f)
+            return info.get("folder", os.path.basename(character_prompts_path))
+        except Exception:
+            return os.path.basename(character_prompts_path)
     except FileNotFoundError:
         return os.path.basename(character_prompts_path)
     except json.JSONDecodeError:
