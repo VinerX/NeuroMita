@@ -1,6 +1,7 @@
+﻿# src/managers/tools/builtin/web_search.py
 import json
 from ddgs import DDGS
-from tools.base import Tool
+from managers.tools.base import Tool
 
 
 class WebSearchTool(Tool):
@@ -27,10 +28,8 @@ class WebSearchTool(Tool):
 
     def run(self, query: str, max_results: int = 5, **_) -> str:
         try:
-            # Выполняем поиск
             results = self.ddgs.text(query, max_results=max_results)
 
-            # Форматируем результаты
             formatted_results = []
             for result in results:
                 if 'body' in result:

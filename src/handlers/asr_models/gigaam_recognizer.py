@@ -96,7 +96,11 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             self.logger.info(f"Устройство для GigaAM установлено на: {device}")
     
     def is_installed(self) -> bool:
-        """Проверка установленности модели GigaAM (пакет + веса/onnx)."""
+        """Проверка установленности GigaAM:
+        - зависимости должны импортироваться
+        - веса модели должны быть на диске (.ckpt)
+        - для CPU/DML допускаем отсутствие ONNX, т.к. он экспортится при init()
+        """
         # обязательные зависимости
         try:
             if self._torch is None:
@@ -119,36 +123,59 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             self.logger.debug(f"GigaAM import failed: {e}")
             return False
 
+        # определение GPU (если не смогли — считаем CPU)
         if self._current_gpu is None:
-            self._current_gpu = check_gpu_provider() or "CPU"
+            try:
+                self._current_gpu = check_gpu_provider() or "CPU"
+            except Exception:
+                self._current_gpu = "CPU"
 
-        is_nvidia = self._current_gpu == "NVIDIA"
-        device_choice = self.gigaam_device
+        device_choice = (self.gigaam_device or "auto").strip().lower()
+        is_nvidia = (self._current_gpu == "NVIDIA")
 
-        if is_nvidia and device_choice in ["auto", "cuda"]:
-            model_name = self.gigaam_model
-            if model_name in ["ctc", "rnnt", "ssl"]:
-                model_name = f"v2_{model_name}"
-            pt_file = os.path.join(self.gigaam_model_path, f"{model_name}.ckpt")
-            return os.path.exists(pt_file)
+        # имя ckpt такое же, как в _install_model()
+        model_name = self.gigaam_model
+        if model_name in ["ctc", "rnnt", "ssl"]:
+            model_name = f"v2_{model_name}"
+        if model_name == "emo":
+            model_name = "v1_emo"
+
+        ckpt_path = os.path.join(self.gigaam_model_path, f"{model_name}.ckpt")
+        ckpt_exists = os.path.exists(ckpt_path)
+
+        # CUDA/PyTorch ветка (только если реально доступна CUDA)
+        if is_nvidia and device_choice in ["auto", "cuda"] and self._torch.cuda.is_available():
+            return ckpt_exists
+
+        # CPU/DML ветка: нужен onnxruntime, но сами .onnx могут отсутствовать (экспортятся при init)
+        try:
+            import onnxruntime  # noqa: F401
+        except Exception as e:
+            self.logger.debug(f"onnxruntime import failed: {e}")
+            return False
+
+        # если ONNX уже есть — ок
+        onnx_dir = self.gigaam_onnx_export_path
+        name = self.gigaam_model
+        if "_" in name:
+            version, model_type = name.split("_", 1)
         else:
-            onnx_dir = self.gigaam_onnx_export_path
-            name = self.gigaam_model
-            if "_" in name:
-                version, model_type = name.split("_", 1)
-            else:
-                version, model_type = "v2", name
+            version, model_type = "v2", name
 
-            if model_type == "ctc":
-                return os.path.exists(os.path.join(onnx_dir, f"{version}_{model_type}.onnx"))
-            else:
-                base = os.path.join(onnx_dir, f"{version}_{model_type}")
-                return all([
-                    os.path.exists(f"{base}_encoder.onnx"),
-                    os.path.exists(f"{base}_decoder.onnx"),
-                    os.path.exists(f"{base}_joint.onnx"),
-                ])    
-            
+        if model_type == "ctc":
+            onnx_ok = os.path.exists(os.path.join(onnx_dir, f"{version}_{model_type}.onnx"))
+        else:
+            base = os.path.join(onnx_dir, f"{version}_{model_type}")
+            onnx_ok = all([
+                os.path.exists(f"{base}_encoder.onnx"),
+                os.path.exists(f"{base}_decoder.onnx"),
+                os.path.exists(f"{base}_joint.onnx"),
+            ])
+
+        # главное исправление: если ONNX ещё нет, но ckpt уже скачан — считаем установленной
+        # (ONNX будет экспортирован при init_recognizer в отдельном процессе)
+        return onnx_ok or ckpt_exists
+
     def _get_libs_abs(self):
         import os
         libs_abs = getattr(self.pip_installer, "libs_path_abs", None)

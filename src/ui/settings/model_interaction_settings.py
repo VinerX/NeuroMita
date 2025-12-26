@@ -53,7 +53,7 @@ def setup_model_interaction_controls(self, parent):
                     'Maximum number of tokens in the model response')},
 
         {'label': _('Температура', 'Temperature'), 'key': 'MODEL_TEMPERATURE',
-         'type': 'entry', 'default': 0.5, 'validation': self.validate_float_0_to_2,
+         'type': 'entry', 'default': 1.0, 'validation': self.validate_float_0_to_2,
          'tooltip': _('Креативность ответа (0.0 = строго, 2.0 = очень творчески)',
                       'Creativity of response (0.0 = strict, 2.0 = very creative)')},
 
@@ -147,6 +147,11 @@ def setup_model_interaction_controls(self, parent):
         all_presets = presets_meta[0].get('custom', [])
         for preset in all_presets:
             hc_provider_names.append(preset.name)
+    react_provider_names = [_('Текущий', 'Current')]
+    if presets_meta and presets_meta[0]:
+        all_presets = presets_meta[0].get('custom', [])
+        for preset in all_presets:
+            react_provider_names.append(preset.name)
 
     history_compression_config = [
         {'label': _('Сжимать историю при достижении лимита', 'Compress history on limit'),
@@ -190,6 +195,42 @@ def setup_model_interaction_controls(self, parent):
     create_settings_section(self, parent,
                            _("Сжатие истории", "History Compression"),
                            history_compression_config)
+    
+    react_settings_config = [
+        {
+            'label': _('Использовать реакции (react)', 'Use react events'),
+            'key': 'REACT_ENABLED',
+            'type': 'checkbutton',
+            'default_checkbutton': False,
+            'tooltip': _(
+                'Включить генерацию реакций на действия игрока (react-задачи). '
+                'Отключение полностью блокирует вызовы модели для react.',
+                'Enable generation of reactions to player actions (react tasks). '
+                'Disabling completely blocks model calls for react.'
+            )
+        },
+        {
+            'label': _('Провайдер для реакций', 'Provider for react events'),
+            'key': 'REACT_PROVIDER',
+            'type': 'combobox',
+            'options': react_provider_names,
+            'default': _('Текущий', 'Current'),
+            'depends_on': 'REACT_ENABLED',
+            'tooltip': _(
+                'Какой API-пресет использовать для react-сообщений. '
+                '«Текущий» — использовать тот же пресет, что и основной чат.',
+                'Which API preset to use for react messages. '
+                '"Current" — use the same preset as the main chat.'
+            )
+        },
+    ]
+
+    create_settings_section(
+        self,
+        parent,
+        _("Настройки реакций", "React settings"),
+        react_settings_config
+    )
 
     token_settings_config = [
         {'label': _('Показывать информацию о токенах', 'Show Token Info'), 'key': 'SHOW_TOKEN_INFO',

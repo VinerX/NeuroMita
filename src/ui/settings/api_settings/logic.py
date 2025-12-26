@@ -1,7 +1,10 @@
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtWidgets import (
-    QMessageBox, QInputDialog, QFileDialog, QLineEdit, QLabel
+    QMessageBox, QInputDialog, QFileDialog, QLineEdit, QLabel,
+    QDialog, QVBoxLayout, QTextEdit, QPushButton, QDialogButtonBox
 )
+from PyQt6.QtGui import QTextCursor
+from PyQt6.QtGui import QGuiApplication as QApplication
 import qtawesome as qta
 
 from utils import _
@@ -256,6 +259,10 @@ def wire_api_settings_logic(self):
         template = template_data[0]
         self.is_loading_preset = True
         
+        # ставим дефолтную модель нового шаблона
+        default_model = template.get('default_model', '')
+        self.api_model_entry.setText(default_model)  # Даже если пустая строка
+        
         url_tpl = template.get('url_tpl', '')
         if url_tpl:
             current_model = self.api_model_entry.text()
@@ -331,7 +338,18 @@ def wire_api_settings_logic(self):
         known_models = template.get('known_models', [])
         if known_models:
             self.api_model_list_model.setStringList(known_models)
-        
+            # Обновляем модель автодополнения для QLineEdit
+            current_text = self.api_model_entry.text()
+            self.api_model_entry.completer().setModel(self.api_model_list_model)
+            self.api_model_entry.setText(current_text)
+
+        # Устанавливаем модель по умолчанию только если поле пустое
+        current_model = self.api_model_entry.text()
+        if not current_model:
+            default_model = template.get('default_model', '')
+            if default_model:
+                self.api_model_entry.setText(default_model)
+
         self.current_preset_data['base'] = template_id
         self.current_preset_data['is_g4f'] = is_g4f
         self.current_preset_data['use_request'] = template.get('use_request', False)
@@ -508,13 +526,16 @@ def wire_api_settings_logic(self):
         known_models = preset.get('known_models', [])
         if known_models:
             self.api_model_list_model.setStringList(known_models)
+            # Обновляем модель автодополнения для QLineEdit
+            current_text = self.api_model_entry.text()
+            self.api_model_entry.completer().setModel(self.api_model_list_model)
+            self.api_model_entry.setText(current_text)
 
         # Применяем настройки и запоминаем последний пресет
-        _apply_settings_from_preset(preset)
         self.settings.set("LAST_API_PRESET_ID", preset_id)
         self.settings.save_settings()
 
-        # ОРИГИНАЛЬНОЕ СОСТОЯНИЕ — ПОСЛЕ всех setText/setIndex/setChecked
+        # ОРИГИНАЛЬНОЕ СОСТОЯНИЕ
         self.original_preset_state = _get_current_state()
 
         # Кнопки сохранения (только для кастомных)
@@ -730,22 +751,7 @@ def wire_api_settings_logic(self):
                 'id': self.current_preset_id,
                 'state': state
             })
-    
-    def _apply_settings_from_preset(preset):
-        self._save_setting("NM_API_URL", self.api_url_entry.text())
-        self._save_setting("NM_API_MODEL", self.api_model_entry.text())
-        self._save_setting("NM_API_KEY", self.api_key_entry.text())
-        if preset.get('is_g4f'):
-            self._save_setting("gpt4free", True)
-            self._save_setting("gpt4free_model", self.api_model_entry.text())
-        else:
-            self._save_setting("gpt4free", False)
-            self._save_setting("NM_API_REQ", preset.get('use_request', False))
-            if preset.get('gemini_case') is not None:
-                self._save_setting("GEMINI_CASE", preset.get('gemini_case'))
-            elif self.gemini_case_checkbox:
-                self._save_setting("GEMINI_CASE", self.gemini_case_checkbox.isChecked())
-    
+            
     def _on_key_changed():
         if self.is_loading_preset:
             return
@@ -776,42 +782,217 @@ def wire_api_settings_logic(self):
         logger.info(f"Handling test result in UI: success={data.get('success')}, message={data.get('message')}")
         
         if data.get('success'):
-            message = data.get('message', 'OK')
             models = data.get('models', [])
-            if models:
-                message = f"{message}\n{_('Найдено моделей:', 'Models found:')} {len(models)}"
-            QMessageBox.information(self, _("Успех", "Success"), message)
-            if models:
-                self.event_bus.emit(Events.ApiPresets.UPDATE_PRESET_MODELS, {
-                    'id': self.current_preset_id,
-                    'models': models
-                })
-                logger.info(f"Emitted update models for preset {self.current_preset_id}")
-                preset_data = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_FULL, 
-                                                           {'id': self.current_preset_id}, timeout=1.0)
-                if preset_data and preset_data[0]:
-                    preset = preset_data[0]
-                    known_models = preset.get('known_models', [])
-                    self.api_model_list_model.setStringList(known_models)
-                    logger.info(f"Reloaded and updated completer with {len(known_models)} models")
+            current_template = self.template_combo.currentText().lower()
+            current_url = self.api_url_entry.text().lower()
+
+            # Определяем провайдера
+            is_ai_io = "ai.io" in current_template or "intelligence.io" in current_url
+            is_openrouter = 'openrouter' in current_template
+        
+            # Для AI.IO и OpenRouter обрабатываем модели
+            if is_ai_io or is_openrouter:
+                logger.info(f"Logic: {'AI.IO' if is_ai_io else 'OpenRouter'} detected. Processing models...")
+            
+                # Карта префиксов (общая для обоих провайдеров)
+                prefix_map = {
+                    "kimi-k2": "moonshotai/",
+                    "deepseek": "deepseek-ai/",
+                    "glm-4": "zai-org/",
+                    "llama-3": "meta-llama/",
+                    "llama-4": "meta-llama/",
+                    "gpt-oss": "openai/",
+                    "qwen2": "Qwen/",
+                    "qwen3": "Qwen/",
+                    "qwen-2.5": "Qwen/",
+                    "mistral": "mistralai/",
+                    "devstral": "mistralai/",
+                    "magistral": "mistralai/",
+                    "nemo": "mistralai/",
+                    "olmo-3": "allenai/",
+                    "olmo-3.1": "allenai/",
+                    "nemotron": "nvidia/",
+                    "mimo": "mistralai/",
+                    "trinity": "allenai/",
+                    "tng-r1t": "allenai/",
+                    "kat-coder": "cohere/",
+                    "tongyi": "alibaba/",
+                    "dolphin": "cognitivecomputations/",
+                    "gemma": "google/",
+                    "gemini": "google/",
+                    "claude": "anthropic/",
+                    "command": "cohere/",
+                    "phi": "microsoft/",
+                    "dbrx": "databricks/",
+                    "amazon": "amazon/",
+                    "ai21": "ai21/",
+                    "allenai": "allenai/",
+                    "cohere": "cohere/",
+                    "arcee-ai": "arcee-ai/",
+                    "bert": "openrouter/"
+                }
+
+                fixed_models = []
+                for m in models:
+                    # Извлекаем ID модели в зависимости от формата
+                    m_id = ''
+                    if isinstance(m, dict):
+                        # Для словарей берем 'id' или 'name'
+                        m_id = m.get('id', m.get('name', ''))
+                    else:
+                        # Для строк просто используем значение
+                        m_id = str(m).strip()
+                    
+                    if not m_id:
+                        continue
+                    
+                    # Добавляем префикс, если его нет
+                    if "/" not in m_id:
+                        m_lower = m_id.lower()
+                        for key, prefix in prefix_map.items():
+                            if key in m_lower:
+                                m_id = prefix + m_id
+                                break
+                    
+                    fixed_models.append(m_id)
+                
+                # Подменяем список на исправленный
+                models = fixed_models
+                # Сохраняем обратно в data, чтобы при сохранении пресета записалось полное имя
+                data['models'] = fixed_models
+
+            # РАБОТА С ПРОБЛЕМНЫМИ МОДЕЛЯМИ
+            is_openrouter_temp = False
+            if 'openrouter' in current_template:
+                is_openrouter_temp = True
+            elif models and len(models) > 0:
+                first_model = str(models[0]).lower()
+                if ":free" in first_model:
+                    is_openrouter_temp = True
+            
+            if is_openrouter_temp:
+                logger.info("Logic: OpenRouter detected. Applying specific fixes...")
+                fixed_models = []
+                for m in models:
+                    # Извлекаем строку из словаря или просто берём строку
+                    m_str = m.get('id', '') if isinstance(m, dict) else str(m)
+                    m_str = m_str.strip()
+                    
+                    # Конкретные замены для проблемных моделей OpenRouter (Можно добавить другие замены здесь)
+                    if "deepseek-v3.1-nex-n1" in m_str:
+                        # Заменяем ЛЮБОЙ префикс перед моделью на правильный
+                        m_str = "nex-agi/deepseek-v3.1-nex-n1" + m_str.split("deepseek-v3.1-nex-n1")[-1]
+                    elif "hermes-3-llama-3.1-405b" in m_str:
+                        m_str = "nousresearch/hermes-3-llama-3.1-405b" + m_str.split("hermes-3-llama-3.1-405b")[-1]
+                    elif "glm-4.5-air" in m_str:
+                        m_str = "z-ai/glm-4.5-air" + m_str.split("glm-4.5-air")[-1]
+                    
+                    fixed_models.append(m_str)
+                
+                models = fixed_models
+                data['models'] = fixed_models
+
+            # Формируем текст для окошка
+            model_texts = []
+            for i, model_name in enumerate(models[:150], 1):
+                model_texts.append(f"{i}. {model_name}")
+            
+            model_text = '\n'.join(model_texts)
+            if len(models) > 150:
+                model_text += f"\n... и еще {len(models) - 150} моделей"
+            
+            # Заголовок сообщения
+            if is_openrouter:
+                message = f"✅ Подключение успешно\n\n"
+                message += f"📊 Найдено бесплатных моделей OpenRouter: {len(models)}"
+                message += f"\n\n💡 Бесплатные модели имеют лимиты (~50 запросов в день)."
+            else:
+                message = f"✅ Подключение успешно\nНайдено моделей: {len(models)}"
+            
+            # Создаем диалог для отображения списка моделей
+            dialog = QDialog(self)
+            dialog.setWindowTitle(_("Результат тестирования", "Test Result"))
+            dialog.setModal(True)
+            
+            layout = QVBoxLayout(dialog)
+            
+            # Сообщение об успехе
+            success_label = QLabel(message)
+            success_label.setStyleSheet("font-weight: bold; color: #27ae60;")
+            success_label.setWordWrap(True)
+            layout.addWidget(success_label)
+            
+            # Поле со списком моделей для копирования
+            text_edit = QTextEdit()
+            text_edit.setReadOnly(True)
+            text_edit.setPlainText(model_text)
+            text_edit.setMinimumHeight(400)
+            text_edit.setMinimumWidth(500)
+            layout.addWidget(text_edit)
+            
+            # Кнопки
+            button_box = QDialogButtonBox()
+            copy_button = QPushButton(_("Копировать список", "Copy list"))
+            ok_button = QPushButton("OK")
+            ok_button.setDefault(True)
+            
+            button_box.addButton(copy_button, QDialogButtonBox.ButtonRole.ActionRole)
+            button_box.addButton(ok_button, QDialogButtonBox.ButtonRole.AcceptRole)
+            layout.addWidget(button_box)
+            
+            # Сигналы
+            def copy_to_clipboard():
+                clipboard = QApplication.clipboard()
+                clipboard.setText(model_text)
+                copy_button.setText(_("Скопировано!", "Copied!"))
+                QTimer.singleShot(1500, lambda: copy_button.setText(_("Копировать список", "Copy list")))
+            
+            copy_button.clicked.connect(copy_to_clipboard)
+            ok_button.clicked.connect(dialog.accept)
+            
+            dialog.exec()
         else:
             error_message = data.get('message', _('Неизвестная ошибка', 'Unknown error'))
             detailed_message = _("Не удалось подключиться к API", "Failed to connect to API")
             detailed_message += f"\n\n{_('Причина:', 'Reason:')} {error_message}"
-            if "Invalid API key" in error_message or "403" in error_message:
-                detailed_message += f"\n\n{_('Рекомендация:', 'Recommendation:')}"
-                detailed_message += f"\n{_('Проверьте правильность API ключа', 'Check if API key is correct')}"
-            elif "timeout" in error_message.lower():
-                detailed_message += f"\n\n{_('Рекомендация:', 'Recommendation:')}"
-                detailed_message += f"\n{_('Проверьте подключение к интернету или попробуйте позже', 'Check internet connection or try again later')}"
-            elif "400" in error_message:
-                detailed_message += f"\n\n{_('Рекомендация:', 'Recommendation:')}"
-                detailed_message += f"\n{_('Проверьте правильность URL и формата запроса', 'Check URL and request format')}"
-            elif "404" in error_message:
-                detailed_message += f"\n\n{_('Рекомендация:', 'Recommendation:')}"
-                detailed_message += f"\n{_('Проверьте правильность URL адреса', 'Check if URL is correct')}"
-            QMessageBox.critical(self, _("Ошибка подключения", "Connection Error"), detailed_message)
-    
+            
+            # Диалог для ошибок тоже с возможностью копирования
+            dialog = QDialog(self)
+            dialog.setWindowTitle(_("Ошибка подключения", "Connection Error"))
+            dialog.setModal(True)
+            
+            layout = QVBoxLayout(dialog)
+            
+            error_label = QLabel(f"❌ {detailed_message}")
+            error_label.setWordWrap(True)
+            layout.addWidget(error_label)
+            
+            text_edit = QTextEdit()
+            text_edit.setReadOnly(True)
+            text_edit.setPlainText(detailed_message)
+            text_edit.setMaximumHeight(150)
+            layout.addWidget(text_edit)
+            
+            button_box = QDialogButtonBox()
+            copy_button = QPushButton(_("Копировать текст", "Copy text"))
+            ok_button = QPushButton("OK")
+            ok_button.setDefault(True)
+            
+            button_box.addButton(copy_button, QDialogButtonBox.ButtonRole.ActionRole)
+            button_box.addButton(ok_button, QDialogButtonBox.ButtonRole.AcceptRole)
+            layout.addWidget(button_box)
+            
+            def copy_error_to_clipboard():
+                clipboard = QApplication.clipboard()
+                clipboard.setText(detailed_message)
+                copy_button.setText(_("Скопировано!", "Copied!"))
+                QTimer.singleShot(1500, lambda: copy_button.setText(_("Копировать текст", "Copy text")))
+            
+            copy_button.clicked.connect(copy_error_to_clipboard)
+            ok_button.clicked.connect(dialog.accept)
+            
+            dialog.exec()
+
     def _on_test_failed(event):
         data = event.data
         self.test_result_failed.emit(data)

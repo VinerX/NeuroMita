@@ -239,13 +239,12 @@ class LocalVoice:
             if self.current_model_id:
                 logger.warning(f"Активная модель '{self.current_model_id}' не инициализирована. Попытка автоматической инициализации...")
                 if not self.initialize_model(self.current_model_id, init=False):
-                     raise Exception(f"Не удалось инициализировать модель '{self.current_model_id}'.")
+                    raise Exception(f"Не удалось инициализировать модель '{self.current_model_id}'.")
             else:
-                 raise ValueError("Модель не выбрана или не инициализирована.")
+                raise ValueError("Модель не выбрана или не инициализирована.")
         logger.info(f"Запуск озвучки c персонажем: {character} ")
 
         if character is not None:
-            logger.info(f"НО ЗАШЕЛ Я В NOT NONE")
             self.current_character = character
             voice_paths = get_character_voice_paths(character, self.provider)
             self.current_character_name = voice_paths['character_name']
@@ -253,15 +252,7 @@ class LocalVoice:
             self.index_path = voice_paths['index_path']
             self.clone_voice_filename = voice_paths['clone_voice_filename']
             self.clone_voice_text = voice_paths['clone_voice_text']
-        else:
-            logger.info(f"НО ЗАШЕЛ Я В NONE")
-            voice_paths = get_character_voice_paths(None, self.provider)
-            self.current_character_name = voice_paths['character_name']
-            self.pth_path = voice_paths['pth_path']
-            self.index_path = voice_paths['index_path']
-            self.clone_voice_filename = voice_paths['clone_voice_filename']
-            self.clone_voice_text = voice_paths['clone_voice_text']
-        
+
         return await self.active_model_instance.voiceover(text, character)
 
     # =========================================================================

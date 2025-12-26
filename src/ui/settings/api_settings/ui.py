@@ -252,7 +252,28 @@ def build_api_settings_ui(self, parent_layout):
     self.api_model_list_model = QStringListModel()
     self.api_model_completer.setModel(self.api_model_list_model)
     self.api_model_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+    # Включаем режим всплывающего списка
+    self.api_model_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+    self.api_model_completer.setFilterMode(Qt.MatchFlag.MatchContains)
     self.api_model_entry.setCompleter(self.api_model_completer)
+    
+    completer = self.api_model_completer
+    
+    # Создаём свою функцию для обработки клика мышью
+    def show_completer_on_click(event):
+        # 1. Сначала вызываем стандартную обработку клика от QLineEdit
+        from PyQt6.QtWidgets import QLineEdit
+        QLineEdit.mousePressEvent(self.api_model_entry, event)
+        
+        # 2. Если поле ввода пустое - принудительно показываем ВСЕ варианты
+        if self.api_model_entry.text() == "":
+            # Убираем любой фильтр (устанавливаем пустой префикс)
+            completer.setCompletionPrefix("")
+            # Команда для показа всплывающего окна со всеми вариантами
+            completer.complete()
+    
+    # Подменяем стандартный обработчик клика на нашу функцию
+    self.api_model_entry.mousePressEvent = show_completer_on_click
     
     # Делегат для шаблонов
     self.provider_delegate = ProviderDelegate(self.template_combo)

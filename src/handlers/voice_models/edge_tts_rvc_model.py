@@ -194,6 +194,7 @@ class EdgeTTS_RVC_Model(IVoiceModel):
 
             from tts_with_rvc import TTS_RVC
             self.tts_rvc_module = TTS_RVC
+            from silero import silero_tts
         except ImportError:
             self.tts_rvc_module = None
     
@@ -245,6 +246,14 @@ class EdgeTTS_RVC_Model(IVoiceModel):
             )
             if not success:
                 status_cb(_("Ошибка при установке omegaconf", "Error installing omegaconf"))
+                return False
+            
+            success = installer.install_package(
+                "silero",
+                description=_("Установка библиотеки silero...", "Installing silero library...")
+            )
+            if not success:
+                status_cb(_("Ошибка при установке silero", "Error installing silero"))
                 return False
 
             progress_cb(70)
@@ -357,10 +366,13 @@ class EdgeTTS_RVC_Model(IVoiceModel):
                     silero_device = settings.get("silero_device", "cuda" if self.parent.provider == "NVIDIA" else "cpu")
                     self.current_silero_sample_rate = int(settings.get("silero_sample_rate", 48000))
                     language = 'en' if self.parent.voice_language == 'en' else 'ru'
-                    model_id_silero = 'v3_en' if language == 'en' else 'v4_ru'
+                    model_id_silero = 'v3_en' if language == 'en' else 'v5_ru'
                     
                     logger.info(f"Загрузка модели Silero ({language}/{model_id_silero}) на устройство {silero_device}...")
-                    model, _ = torch.hub.load(repo_or_dir='snakers4/silero-models', model='silero_tts', language=language, speaker=model_id_silero, trust_repo=True)
+                    
+                    from silero import silero_tts
+                    model, _ = silero_tts(language=language, speaker=model_id_silero)
+                    
                     model.to(silero_device)
                     self.current_silero_model = model
                     logger.info("Компонент Silero для 'low+' успешно инициализирован.")
@@ -383,6 +395,8 @@ class EdgeTTS_RVC_Model(IVoiceModel):
             logger.error(f"Не все компоненты для модели '{current_mode}' удалось инициализировать.")
             self.initialized = False
             return False
+
+        self.initialized = True
 
         # Тестовый прогон
         if init:
@@ -409,8 +423,7 @@ class EdgeTTS_RVC_Model(IVoiceModel):
                 self.initialized = False
                 return False
 
-        self.initialized = True
-        return True
+        return self.initialized
 
     def _update_parent_paths(self, character=None):
         """Обновляет пути в parent на основе персонажа"""
@@ -723,7 +736,9 @@ class EdgeTTS_RVC_Model(IVoiceModel):
                 speaker=character_speaker, 
                 sample_rate=self.current_silero_sample_rate,
                 put_accent=settings.get("silero_put_accent", True), 
-                put_yo=settings.get("silero_put_yo", True)
+                put_yo=settings.get("silero_put_yo", True),
+                put_stress_homo=settings.get("silero_put_accent", True),
+                put_yo_homo=settings.get("silero_put_yo", True),
             )
             
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_wav_file:
