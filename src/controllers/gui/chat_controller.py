@@ -104,7 +104,7 @@ class ChatController(BaseController):
     def _on_insert_text_to_input(self, event: Event):
         text = event.data.get('text', '')
         if self.view and self.view.user_entry:
-            self.view.user_entry.insertPlainText(text)
+            QTimer.singleShot(0, lambda: self.view.user_entry.insertPlainText(text + " "))
             
     def _on_check_user_entry_exists(self, event: Event):
         return bool(self.view and self.view.user_entry)

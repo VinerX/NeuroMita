@@ -36,6 +36,8 @@ from ui.widgets.image_viewer_widget import ImageViewerWidget
 from ui.widgets.image_preview_widget import ImagePreviewBar
 from ui.widgets.mita_status_widget import MitaStatusWidget
 
+from ui.window_manager import WindowManager
+
 from controllers.voice_model_controller import VoiceModelController
 
 from core.events import get_event_bus, Events, Event
@@ -109,6 +111,7 @@ class ChatGUI(QMainWindow):
         
         self.event_bus = get_event_bus()
         self._connect_signals()
+        self._init_window_manager()
         
         self.voice_language_var = None
         self.local_voice_combobox = None
@@ -180,6 +183,16 @@ class ChatGUI(QMainWindow):
         self.current_local_voice_id = None
         self.model_loading_cancelled = False
 
+    def _window_specs(self) -> dict:
+        return {
+            "voice_models": {
+                "factory": self._factory_voice_models_dialog,
+                "singleton": True,
+                "hide_on_close": True,
+                "modal": False
+            }
+        }
+
     def _connect_signals(self):
         self.history_loaded_signal.connect(self._on_history_loaded)
         self.more_history_loaded_signal.connect(self._on_more_history_loaded)
@@ -202,14 +215,42 @@ class ChatGUI(QMainWindow):
         self.update_model_loading_status_signal.connect(self._on_update_model_loading_status)
         self.finish_model_loading_signal.connect(self._on_finish_model_loading)
         self.cancel_model_loading_signal.connect(self._on_cancel_model_loading)
+
         self.create_dialog_signal.connect(self._create_dialog_for_voice_model)
 
         self.asr_install_progress_signal.connect(self._on_asr_install_progress)
         self.asr_install_finished_signal.connect(self._on_asr_install_finished)
         self.asr_install_failed_signal.connect(self._on_asr_install_failed)
 
+    def _init_window_manager(self):
+        self.window_manager = WindowManager(parent=self)
+
+        for window_id, spec in self._window_specs().items():
+            self.window_manager.register_dialog(
+                window_id,
+                factory=spec["factory"],
+                singleton=spec.get("singleton", True),
+                hide_on_close=spec.get("hide_on_close", True),
+                modal=spec.get("modal", False),
+                on_ready=spec.get("on_ready", None),
+            )
+
+    def _factory_voice_models_dialog(self, parent, payload: dict):
+        dialog = QDialog(parent)
+        dialog.setWindowTitle(_("Управление локальными моделями", "Manage Local Models"))
+        dialog.setModal(False)
+        dialog.resize(875, 800)
+
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(0, 0, 0, 0)
+        dialog_layout.setSpacing(0)
+
+        return dialog
+
     def _create_dialog_for_voice_model(self, data):
-        handle_voice_model_dialog(self, data)
+        if not hasattr(self, "window_manager") or self.window_manager is None:
+            return
+        self.window_manager.show_dialog("voice_models", data if isinstance(data, dict) else {})
 
     def setup_ui(self):
         central_widget = QWidget()
@@ -598,13 +639,13 @@ class ChatGUI(QMainWindow):
         self.event_bus.emit(Events.Capture.STOP_CAMERA_CAPTURE)
         self.event_bus.emit(Events.Audio.DELETE_SOUND_FILES)
         self.event_bus.emit(Events.Server.STOP_SERVER)
-        if self._voice_model_dialog:
-            try:
-                self._voice_model_dialog.close()
-                self._voice_model_dialog.deleteLater()
-            except:
-                pass
-            self._voice_model_dialog = None
+
+        try:
+            if hasattr(self, "window_manager") and self.window_manager:
+                self.window_manager.close_all(destroy=True)
+        except Exception:
+            pass
+
         logger.info("Закрываемся")
         event.accept()
 
@@ -923,10 +964,10 @@ class ChatGUI(QMainWindow):
 
     def open_local_model_installation_window(self):
         try:
-            self.event_bus.emit(Events.Audio.OPEN_VOICE_MODEL_SETTINGS_DIALOG)
+            self.event_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "voice_models"})
         except Exception as e:
             logger.error(f"Ошибка при вызове окна установки моделей: {e}", exc_info=True)
-            QMessageBox.critical(self, _("Ошибка", "Error"), 
+            QMessageBox.critical(self, _("Ошибка", "Error"),
                 _("Не удалось открыть окно установки моделей.", "Failed to open model installation window."))
 
     def _show_ffmpeg_installing_popup(self):

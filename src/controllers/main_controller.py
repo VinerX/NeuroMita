@@ -17,6 +17,7 @@ from controllers.api_presets_controller import ApiPresetsController
 from controllers.local_voice_controller import LocalVoiceController
 from controllers.prompt_controller import PromptController
 from controllers.history_controller import HistoryController
+from controllers.voice_model_controller import VoiceModelController
 
 from main_logger import logger
 from utils.ffmpeg_installer import install_ffmpeg
@@ -88,6 +89,9 @@ class MainController:
 
         self.audio_controller = AudioController(self)
         logger.notify("AudioController успешно инициализирован.")
+
+        self.voice_model_controller = VoiceModelController(config_dir="Settings")
+        logger.notify("VoiceModelController (backend) успешно инициализирован.")
         
         self.model_controller = ModelController(self.settings, self.pip_installer)
         logger.notify("ModelController успешно инициализирован.")

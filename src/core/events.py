@@ -341,6 +341,9 @@ class Events:
         SHOW_EULA_DIALOG = "show_eula_dialog"
         SHOW_GUIDE = "show_guide"
         HIDE_GUIDE = "hide_guide"
+        SHOW_WINDOW = "show_window"
+        CLOSE_WINDOW = "close_window"
+        CLOSE_ALL_WINDOWS = "close_all_windows"
 
     class Model:
         """События для управления LLM, персонажами и историей"""

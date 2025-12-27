@@ -259,9 +259,9 @@ class SpeechController:
         else:
             connected = self.events_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
             if connected and connected[0]:
-                pass
-            else:
-                self.events_bus.emit(Events.GUI.INSERT_TEXT_TO_INPUT, {"text": text})
+                pass # сюда добавить отправку клиенту.
+            
+            self.events_bus.emit(Events.GUI.INSERT_TEXT_TO_INPUT, {"text": text})
 
     def _send_instant(self, text):
         self.events_bus.emit(Events.GUI.UPDATE_CHAT_UI, {'role': 'user', 'response': text, 'is_initial': False, 'emotion': ''})

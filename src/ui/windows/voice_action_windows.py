@@ -32,7 +32,6 @@ class VoiceInstallationWindow(QDialog):
     def __init__(self, parent, title, initial_status=None):
         super().__init__(parent)
         self.setWindowTitle(title)
-        # Разрешаем ресайз и добавляем size grip
         self.setMinimumSize(720, 420)
         self.resize(820, 520)
         self.setModal(True)
@@ -66,14 +65,10 @@ class VoiceInstallationWindow(QDialog):
             QPushButton:hover { background-color: #555555; }
         """)
 
-        # Буферы логов:
-        # - _full_log_lines: полный лог (для копирования/сохранения)
-        # - _display_lines: окно последних строк (видимое содержимое)
         self._full_log_lines: list[str] = []
         self._display_lines: deque[str] = deque()
-        self._max_display_blocks: int = 200  # пересчитается после компоновки
+        self._max_display_blocks: int = 200
 
-        # Таймер прошедшего времени
         self._start_time = QTime.currentTime()
         self._elapsed_timer = QTimer(self)
         self._elapsed_timer.setInterval(1000)
@@ -87,7 +82,6 @@ class VoiceInstallationWindow(QDialog):
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
 
-        # Верхняя информационная строка
         info_layout = QHBoxLayout()
         self.status_label = QLabel(initial_status or _("Подготовка...", "Preparing..."))
         self.status_label.setFont(QFont("Segoe UI", 9))
@@ -120,7 +114,6 @@ class VoiceInstallationWindow(QDialog):
         self.log_text.setFont(QFont("Consolas", 9))
         layout.addWidget(self.log_text, 1)
 
-        # Панель действий
         actions_layout = QHBoxLayout()
         copy_btn = QPushButton(_("Копировать лог", "Copy Log"))
         copy_btn.clicked.connect(self._copy_log)
@@ -142,12 +135,11 @@ class VoiceInstallationWindow(QDialog):
         actions_layout.addWidget(close_btn)
         layout.addLayout(actions_layout)
 
-        # Сигналы
-        self.progress_updated.connect(self._on_progress_update)
-        self.status_updated.connect(self._on_status_update)
-        self.log_updated.connect(self._on_log_update)
+        # ВАЖНО: queued, чтобы UI обновлялся в UI-треде даже если emit из фонового потока
+        self.progress_updated.connect(self._on_progress_update, type=Qt.ConnectionType.QueuedConnection)
+        self.status_updated.connect(self._on_status_update, type=Qt.ConnectionType.QueuedConnection)
+        self.log_updated.connect(self._on_log_update, type=Qt.ConnectionType.QueuedConnection)
 
-        # Центровка
         if parent and hasattr(parent, 'geometry'):
             parent_rect = parent.geometry()
             self.move(
@@ -155,9 +147,15 @@ class VoiceInstallationWindow(QDialog):
                 parent_rect.center().y() - self.height() // 2
             )
 
-        # Инициализация лимита видимых строк
         QTimer.singleShot(0, self._recalc_max_blocks_and_refresh)
 
+    def get_threadsafe_callbacks(self):
+        return (
+            self.progress_updated.emit,
+            self.status_updated.emit,
+            self.log_updated.emit,
+        )
+    
     def _update_elapsed(self):
         secs = self._start_time.secsTo(QTime.currentTime())
         if secs < 0:
@@ -293,7 +291,6 @@ class VoiceActionWindow(QDialog):
     def __init__(self, parent, title, initial_status=None):
         super().__init__(parent)
         self.setWindowTitle(title)
-        # Разрешаем ресайз
         self.setMinimumSize(700, 380)
         self.resize(780, 460)
         self.setModal(True)
@@ -317,12 +314,10 @@ class VoiceActionWindow(QDialog):
             QPushButton:hover { background-color: #555555; }
         """)
 
-        # Буферы логов
         self._full_log_lines: list[str] = []
         self._display_lines: deque[str] = deque()
-        self._max_display_blocks: int = 200  # пересчитается после компоновки
+        self._max_display_blocks: int = 200
 
-        # Таймер прошедшего времени
         self._start_time = QTime.currentTime()
         self._elapsed_timer = QTimer(self)
         self._elapsed_timer.setInterval(1000)
@@ -357,7 +352,6 @@ class VoiceActionWindow(QDialog):
         self.log_text.setFont(QFont("Consolas", 9))
         layout.addWidget(self.log_text, 1)
 
-        # Панель действий
         actions_layout = QHBoxLayout()
         copy_btn = QPushButton(_("Копировать лог", "Copy Log"))
         copy_btn.clicked.connect(self._copy_log)
@@ -379,8 +373,9 @@ class VoiceActionWindow(QDialog):
         actions_layout.addWidget(close_btn)
         layout.addLayout(actions_layout)
 
-        self.status_updated.connect(self._on_status_update)
-        self.log_updated.connect(self._on_log_update)
+        # ВАЖНО: queued, чтобы UI обновлялся в UI-треде
+        self.status_updated.connect(self._on_status_update, type=Qt.ConnectionType.QueuedConnection)
+        self.log_updated.connect(self._on_log_update, type=Qt.ConnectionType.QueuedConnection)
 
         if parent and hasattr(parent, 'geometry'):
             parent_rect = parent.geometry()
@@ -389,9 +384,8 @@ class VoiceActionWindow(QDialog):
                 parent_rect.center().y() - self.height() // 2
             )
 
-        # Инициализация лимита видимых строк
         QTimer.singleShot(0, self._recalc_max_blocks_and_refresh)
-
+    
     def _update_elapsed(self):
         secs = self._start_time.secsTo(QTime.currentTime())
         if secs < 0:
