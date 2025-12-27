@@ -327,7 +327,7 @@ class ModelController:
         )
 
         # ----------------------------
-        # helpers (локально, чтобы функция была самодостаточной)
+        # helpers
         # ----------------------------
         def _is_current_label(label: str | None) -> bool:
             s = str(label or "").strip()
@@ -524,7 +524,10 @@ class ModelController:
             elif not _is_current_label(char_provider_label):
                 logger.warning(f"chat: CHAR_PROVIDER='{char_provider_label}' не найден, используем текущий пресет.")
 
-        self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION)
+        self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
+            "character": getattr(char, "name", "") or getattr(char, "char_id", "") or "Мита",
+            "char_id": getattr(char, "char_id", "") or ""
+        })
 
         # ----------------------------
         # generate
