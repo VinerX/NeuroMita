@@ -27,10 +27,9 @@ API_TEMPLATES_DATA = [
         "name": "OpenRouter",
         "pricing": "mixed",
         "url": "https://openrouter.ai/api/v1/chat/completions",
-        "default_model": "amazon/nova-2-lite-v1:free",
+        "default_model": "z-ai/glm-4.5-air:free",
         "known_models": [
             "mistralai/devstral-2512:free",
-            "z-ai/glm-4.5-air:free",
             "arcee-ai/trinity-mini:free",
             "nex-agi/deepseek-v3.1-nex-n1:free"
         ],
