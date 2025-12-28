@@ -145,7 +145,7 @@ class SettingsController:
         }
 
         flag_vars: Dict[str, Any] = {
-            key: bool(SettingsManager.get(key, False))
+            key: bool(self.settings.get(key, False))
             for key in bool_keys
         }
 
