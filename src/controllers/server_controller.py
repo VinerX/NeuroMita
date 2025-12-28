@@ -108,11 +108,11 @@ class ServerController:
             return
         self.ConnectedToGame = is_connected
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
-		
+        
         self.event_bus.emit(Events.Settings.SAVE_SETTING, {
             'key': 'GAME_CONNECTED', 
             'value': is_connected
-    })
+        })
 
     def _on_update_game_connection(self, event: Event):
         if self._destroyed:
