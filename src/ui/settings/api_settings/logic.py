@@ -796,6 +796,8 @@ def wire_api_settings_logic(self):
             
                 # Карта префиксов (общая для обоих провайдеров)
                 prefix_map = {
+                    "trinity": "arcee-ai/",
+                    "tng-": "tngtech/",
                     "kimi-k2": "moonshotai/",
                     "deepseek": "deepseek-ai/",
                     "glm-4": "zai-org/",
@@ -808,27 +810,19 @@ def wire_api_settings_logic(self):
                     "mistral": "mistralai/",
                     "devstral": "mistralai/",
                     "magistral": "mistralai/",
-                    "nemo": "mistralai/",
-                    "olmo-3": "allenai/",
-                    "olmo-3.1": "allenai/",
+                    "olmo-": "allenai/",
                     "nemotron": "nvidia/",
-                    "mimo": "mistralai/",
-                    "trinity": "allenai/",
-                    "tng-r1t": "allenai/",
-                    "kat-coder": "cohere/",
+                    "mimo-": "xiaomi/",
+                    "kat-coder": "kwaipilot/",
                     "tongyi": "alibaba/",
-                    "dolphin": "cognitivecomputations/",
+                    "dolphin-": "cognitivecomputations/",
                     "gemma": "google/",
                     "gemini": "google/",
                     "claude": "anthropic/",
                     "command": "cohere/",
-                    "phi": "microsoft/",
                     "dbrx": "databricks/",
                     "amazon": "amazon/",
-                    "ai21": "ai21/",
-                    "allenai": "allenai/",
-                    "cohere": "cohere/",
-                    "arcee-ai": "arcee-ai/",
+                    "jamba": "ai21/",
                     "bert": "openrouter/"
                 }
 
@@ -886,6 +880,14 @@ def wire_api_settings_logic(self):
                         m_str = "nousresearch/hermes-3-llama-3.1-405b" + m_str.split("hermes-3-llama-3.1-405b")[-1]
                     elif "glm-4.5-air" in m_str:
                         m_str = "z-ai/glm-4.5-air" + m_str.split("glm-4.5-air")[-1]
+                    elif "deepseek-r1t2-chimera" in m_str:
+                        m_str = "tngtech/deepseek-r1t2-chimera" + m_str.split("deepseek-r1t2-chimera")[-1]
+                    elif "deepseek-r1-0528" in m_str:
+                        m_str = "deepseek/deepseek-r1-0528" + m_str.split("deepseek-r1-0528")[-1]
+                    elif "deepseek-r1t-chimera" in m_str:
+                        m_str = "tngtech/deepseek-r1t-chimera" + m_str.split("deepseek-r1t-chimera")[-1]
+                    elif "dolphin-mistral-24b-venice-edition" in m_str:
+                        m_str = "cognitivecomputations/dolphin-mistral-24b-venice-edition" + m_str.split("dolphin-mistral-24b-venice-edition")[-1]
                     
                     fixed_models.append(m_str)
                 

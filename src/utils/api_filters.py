@@ -50,6 +50,8 @@ def openrouter_filter(data: dict) -> dict:
     
     # Карта префиксов
     prefix_map = {
+        "trinity": "arcee-ai/",
+        "tng-": "tngtech/",
         "kimi-k2": "moonshotai/",
         "deepseek": "deepseek-ai/",
         "glm-4": "zai-org/",
@@ -62,27 +64,19 @@ def openrouter_filter(data: dict) -> dict:
         "mistral": "mistralai/",
         "devstral": "mistralai/",
         "magistral": "mistralai/",
-        "nemo": "mistralai/",
-        "olmo-3": "allenai/",
-        "olmo-3.1": "allenai/",
+        "olmo-": "allenai/",
         "nemotron": "nvidia/",
-        "mimo": "mistralai/",
-        "trinity": "allenai/",
-        "tng-r1t": "allenai/",
-        "kat-coder": "cohere/",
+        "mimo-": "xiaomi/",
+        "kat-coder": "kwaipilot/",
         "tongyi": "alibaba/",
-        "dolphin": "cognitivecomputations/",
+        "dolphin-": "cognitivecomputations/",
         "gemma": "google/",
         "gemini": "google/",
         "claude": "anthropic/",
         "command": "cohere/",
-        "phi": "microsoft/",
         "dbrx": "databricks/",
         "amazon": "amazon/",
-        "ai21": "ai21/",
-        "allenai": "allenai/",
-        "cohere": "cohere/",
-        "arcee-ai": "arcee-ai/",
+        "jamba": "ai21/",
         "bert": "openrouter/"
     }
     
@@ -126,6 +120,8 @@ def aiio_filter(data: dict) -> dict:
     raw_models = data.get('data', []) or data.get('models', [])
     
     prefix_map = {
+        "trinity": "arcee-ai/",
+        "tng-": "tngtech/",
         "kimi-k2": "moonshotai/",
         "deepseek": "deepseek-ai/",
         "glm-4": "zai-org/",
@@ -138,27 +134,19 @@ def aiio_filter(data: dict) -> dict:
         "mistral": "mistralai/",
         "devstral": "mistralai/",
         "magistral": "mistralai/",
-        "nemo": "mistralai/",
-        "olmo-3": "allenai/",
-        "olmo-3.1": "allenai/",
+        "olmo-": "allenai/",
         "nemotron": "nvidia/",
-        "mimo": "mistralai/",
-        "trinity": "allenai/",
-        "tng-r1t": "allenai/",
-        "kat-coder": "cohere/",
+        "mimo-": "xiaomi/",
+        "kat-coder": "kwaipilot/",
         "tongyi": "alibaba/",
-        "dolphin": "cognitivecomputations/",
+        "dolphin-": "cognitivecomputations/",
         "gemma": "google/",
         "gemini": "google/",
         "claude": "anthropic/",
         "command": "cohere/",
-        "phi": "microsoft/",
         "dbrx": "databricks/",
         "amazon": "amazon/",
-        "ai21": "ai21/",
-        "allenai": "allenai/",
-        "cohere": "cohere/",
-        "arcee-ai": "arcee-ai/",
+        "jamba": "ai21/",
         "bert": "openrouter/"
     }
     
