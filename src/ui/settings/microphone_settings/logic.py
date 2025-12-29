@@ -1,3 +1,4 @@
+# src/ui/settings/microphone_settings/logic.py
 import re
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFontMetrics
@@ -15,13 +16,12 @@ from .ui import make_row
 
 def wire_microphone_settings_logic(self):
     """
-    Подключает всю логику к уже построенному UI.
-    self — это ваш MainView (или аналог).
+    UI-only: подключаем обработчики виджетов и реагируем на Qt-сигналы.
+    Никаких подписок на EventBus тут не делаем.
     """
     bus = get_event_bus()
     theme = get_theme()
 
-    # --- Вспомогательная "пилюля" (через сигнал главного окна)
     def set_pill_called(lbl: QLabel, text: str, kind: str = "info"):
         self.asr_set_pill.emit({
             "label": lbl,
@@ -61,9 +61,7 @@ def wire_microphone_settings_logic(self):
     set_pill_called(self.asr_status_label, "—", "info")
     set_pill_called(self.asr_init_status, "—", "info")
 
-    # --- Хелперы
     def truncate_text_for_width(text, widget, max_width):
-        """Обрезает текст чтобы он помещался в заданную ширину с учетом '...' """
         metrics = QFontMetrics(widget.font())
         ellipsis = "..."
         ellipsis_width = metrics.horizontalAdvance(ellipsis)
@@ -85,7 +83,6 @@ def wire_microphone_settings_logic(self):
 
         return result + ellipsis if result else ellipsis
 
-    # --- Микрофоны
     def populate_mics():
         res = bus.emit_and_wait(Events.Speech.GET_MICROPHONE_LIST, timeout=1.0)
         mic_list = res[0] if res else [_("Микрофоны не найдены", "No microphones found")]
@@ -114,6 +111,35 @@ def wire_microphone_settings_logic(self):
         finally:
             self.mic_combobox.blockSignals(False)
 
+    def populate_engines():
+        res = bus.emit_and_wait(Events.Speech.GET_ASR_MODELS_GLOSSARY, timeout=1.0)
+        glossary_data = res[0] if res else []
+        
+        engines = [
+            item["id"] for item in glossary_data 
+            if item.get("installed", False)
+        ]
+        
+        self.recognizer_combobox.blockSignals(True)
+        try:
+            self.recognizer_combobox.clear()
+            self.recognizer_combobox.addItems(engines)
+            
+            current_engine = self.settings.get('RECOGNIZER_TYPE', 'google')
+            
+            index = self.recognizer_combobox.findText(current_engine)
+            if index >= 0:
+                self.recognizer_combobox.setCurrentIndex(index)
+            else:
+                if self.recognizer_combobox.count() > 0:
+                    self.recognizer_combobox.setCurrentIndex(0)
+                    new_default = self.recognizer_combobox.currentText()
+                    self._save_setting('RECOGNIZER_TYPE', new_default)
+                    
+                    rebuild_model_settings(new_default)
+        finally:
+            self.recognizer_combobox.blockSignals(False)
+
     def on_mic_changed(index):
         if index < 0:
             return
@@ -124,8 +150,11 @@ def wire_microphone_settings_logic(self):
 
     self.mic_combobox.currentIndexChanged.connect(on_mic_changed)
     self.mic_refresh_button.clicked.connect(populate_mics)
+    if hasattr(self, "asr_manage_button") and self.asr_manage_button:
+        self.asr_manage_button.clicked.connect(
+            lambda: bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "asr_glossary"})
+        )
 
-    # --- Движок распознавания
     def clear_layout(lay: QVBoxLayout):
         while lay.count():
             item = lay.takeAt(0)
@@ -201,112 +230,44 @@ def wire_microphone_settings_logic(self):
         return _("Установить модель распознавания", "Install ASR model")
 
     def apply_asr_install_status(engine: str):
-        """
-        Единая логика статуса: для любого движка показываем Installed/Not installed.
-        Если не установлен — показываем полноширинную кнопку установки и блокируем
-        чекбокс активности микрофона.
-        """
         res = bus.emit_and_wait(Events.Speech.CHECK_ASR_MODEL_INSTALLED, {'model': engine}, timeout=1.0)
         installed = bool(res and res[0])
 
-        # Сброс подписи под кнопкой
-        self.install_status_label.setText("")
-        self.install_status_label.setVisible(False)
-
-        # Восстановим внешний вид кнопки, текст и enable (на всякий случай)
-        self.install_model_button.setEnabled(True)
-        self.install_model_button.setText(_default_install_text())
-        if hasattr(self, "_install_btn_default_style"):
-            self.install_model_button.setStyleSheet(self._install_btn_default_style)
-        else:
-            self._install_btn_default_style = self.install_model_button.styleSheet()
-
         if installed:
             set_pill_called(self.asr_status_label, _('Установлено', 'Installed'), "ok")
-            self.install_model_button.setVisible(False)
             self.mic_active_checkbox.setEnabled(True)
         else:
-            set_pill_called(self.asr_status_label, _('Не установлено', 'Not installed'), "warn")
-            self.install_model_button.setVisible(True)
+            # Этот кейс редкий (если удалили файлы при запущенном приложении)
+            set_pill_called(self.asr_status_label, _('Повреждено', 'Corrupted'), "warn")
             self.mic_active_checkbox.setChecked(False)
-            self._save_setting('MIC_ACTIVE', False)
             self.mic_active_checkbox.setEnabled(False)
 
-    def start_install():
-        engine = self.recognizer_combobox.currentText()
-        # Сохраним исходный стиль, если ещё не
-        if not hasattr(self, "_install_btn_default_style"):
-            self._install_btn_default_style = self.install_model_button.styleSheet()
-
-        # Визуально "блокируем" кнопку и меняем текст
-        self.install_model_button.setEnabled(False)
-        self.install_model_button.setText(_("Установка...", "Installing..."))
-        self.install_model_button.setStyleSheet("""
-            QPushButton {
-                background-color: #7f8c8d;
-                color: #ecf0f1;
-                border: none;
-                padding: 8px;
-                border-radius: 4px;
-            }
-        """)
-
-        set_pill_called(self.asr_status_label, _('Установка...', 'Installing...'), "progress")
-        self.install_status_label.setVisible(True)
-        self.install_status_label.setText(_("Подготовка...", "Preparing..."))
-        subs = []
-
-        def cleanup():
-            for name, cb in subs:
-                bus.unsubscribe(name, cb)
-            subs.clear()
-            # Включать кнопку назад не обязательно — apply_asr_install_status сам решит видимость,
-            # но если видна, вернём стиль и текст.
-            self.install_model_button.setEnabled(True)
-            self.install_model_button.setText(_default_install_text())
-            if hasattr(self, "_install_btn_default_style"):
-                self.install_model_button.setStyleSheet(self._install_btn_default_style)
-            self.install_status_label.setVisible(False)
-
-        def on_progress(event):
-            if event.data.get('model') == engine:
-                pr = event.data.get('progress', 0)
-                self.install_status_label.setText(f"{pr}%")
-
-        def on_finished(event):
-            if event.data.get('model') == engine:
-                self.install_status_label.setText(_("Готово", "Done"))
-                cleanup()
-                apply_asr_install_status(engine)
-
-        def on_failed(event):
-            if event.data.get('model') == engine:
-                self.install_status_label.setText(_("Ошибка", "Error"))
-                set_pill_called(self.asr_status_label, _('Ошибка', 'Error'), "warn")
-                cleanup()
-                apply_asr_install_status(engine)
-
-        subs.extend([
-            (Events.Speech.ASR_MODEL_INSTALL_PROGRESS, on_progress),
-            (Events.Speech.ASR_MODEL_INSTALL_FINISHED, on_finished),
-            (Events.Speech.ASR_MODEL_INSTALL_FAILED, on_failed),
-        ])
-        for n, cb in subs:
-            bus.subscribe(n, cb, weak=False)
-
-        bus.emit(Events.Speech.INSTALL_ASR_MODEL, {'model': engine})
-
-    self.install_model_button.clicked.connect(start_install)
-
     def set_engine(engine: str):
-        # Сохраняем, перестраиваем и обновляем статус именно выбранного движка
+        if not engine: return
         self._save_setting('RECOGNIZER_TYPE', engine)
         rebuild_model_settings(engine)
         apply_asr_install_status(engine)
 
     self.recognizer_combobox.currentTextChanged.connect(set_engine)
 
-    # Переключатели
+    self._asr_installing_engine = None
+
+    try:
+        if hasattr(self, "_on_asr_install_progress"):
+            self.asr_install_progress_signal.disconnect(self._on_asr_install_progress)
+    except Exception:
+        pass
+    try:
+        if hasattr(self, "_on_asr_install_finished"):
+            self.asr_install_finished_signal.disconnect(self._on_asr_install_finished)
+    except Exception:
+        pass
+    try:
+        if hasattr(self, "_on_asr_install_failed"):
+            self.asr_install_failed_signal.disconnect(self._on_asr_install_failed)
+    except Exception:
+        pass
+
     def on_active_toggled(state: int):
         self._save_setting('MIC_ACTIVE', bool(state))
 
@@ -316,32 +277,19 @@ def wire_microphone_settings_logic(self):
     self.mic_active_checkbox.stateChanged.connect(on_active_toggled)
     self.mic_instant_checkbox.stateChanged.connect(on_instant_toggled)
 
-    # События инициализации (начало/готово)
-    def on_asr_init_started(_event):
-        set_pill_called(self.asr_init_status, _("Инициализация...", "Initializing..."), "progress")
-
-    def on_asr_initialized(_event):
-        set_pill_called(self.asr_init_status, _("Готово", "Ready"), "ok")
-
-    bus.subscribe(Events.Speech.ASR_MODEL_INIT_STARTED, on_asr_init_started, weak=False)
-    bus.subscribe(Events.Speech.ASR_MODEL_INITIALIZED, on_asr_initialized, weak=False)
-
-    # Инициализация UI
     def refresh_engine_ui():
         eng = self.recognizer_combobox.currentText()
-        rebuild_model_settings(eng)
-        apply_asr_install_status(eng)
+        if eng:
+            rebuild_model_settings(eng)
+            apply_asr_install_status(eng)
 
     populate_mics()
+    populate_engines()
     refresh_engine_ui()
     QTimer.singleShot(400, refresh_engine_ui)
 
 
 def on_mic_selected(gui, full_device_name=None):
-    """
-    Устанавливает микрофон по строке вида "Name (ID)".
-    Исправлен разбор ID (корректный regex).
-    """
     if not hasattr(gui, 'mic_combobox'):
         return
     bus = get_event_bus()
@@ -355,7 +303,7 @@ def on_mic_selected(gui, full_device_name=None):
     if selection and '(' in selection:
         try:
             microphone_name = selection.rsplit(" (", 1)[0]
-            m = re.search(r'KATEX_INLINE_OPEN(\d+)KATEX_INLINE_CLOSE\s*$', selection)
+            m = re.search(r'\((\d+)\)\s*$', selection)
             if m:
                 device_id = int(m.group(1))
                 bus.emit(Events.Speech.SET_MICROPHONE, {'name': microphone_name, 'device_id': device_id})
@@ -366,9 +314,6 @@ def on_mic_selected(gui, full_device_name=None):
 
 
 def load_mic_settings(gui):
-    """
-    Совместимость: выставляет сохранённый микрофон и активность.
-    """
     try:
         bus = get_event_bus()
         device_id = gui.settings.get("NM_MICROPHONE_ID", 0)

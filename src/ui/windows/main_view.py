@@ -52,6 +52,8 @@ from ui.widgets.chat_panel import setup_chat_panel
 from ui.chat import message_renderer
 from ui.chat.chat_delegate import ChatMessageDelegate
 
+from ui.windows.voice_action_windows import VoiceInstallationWindow
+
 class ChatGUI(QMainWindow):
     update_chat_signal = pyqtSignal(str, str, bool, str)
     update_status_signal = pyqtSignal()
@@ -79,6 +81,7 @@ class ChatGUI(QMainWindow):
     hide_loading_popup_signal = pyqtSignal()          
 
     clear_user_input_signal = pyqtSignal()
+    insert_user_input_signal = pyqtSignal(str) 
     update_chat_font_size_signal = pyqtSignal(int)
     switch_voiceover_settings_signal = pyqtSignal()
     load_chat_history_signal = pyqtSignal()
@@ -90,7 +93,8 @@ class ChatGUI(QMainWindow):
     cancel_model_loading_signal = pyqtSignal()
 
     create_dialog_signal = pyqtSignal(dict)
-
+    create_installation_window_signal = pyqtSignal(str, str, object)  # title, initial_status, holder(dict)
+    close_installation_window_signal = pyqtSignal(object)
     
     asr_install_progress_signal = pyqtSignal(dict)
     asr_install_finished_signal = pyqtSignal(dict)
@@ -190,7 +194,13 @@ class ChatGUI(QMainWindow):
                 "singleton": True,
                 "hide_on_close": True,
                 "modal": False
-            }
+            },
+            "asr_glossary": {
+                "factory": self._factory_asr_glossary_dialog,
+                "singleton": True,
+                "hide_on_close": True,
+                "modal": False,
+            },
         }
 
     def _connect_signals(self):
@@ -210,6 +220,7 @@ class ChatGUI(QMainWindow):
         self.load_chat_history_signal.connect(self.load_chat_history)
         self.check_triton_dependencies_signal.connect(self.check_triton_dependencies)
         self.clear_user_input_signal.connect(self._on_clear_user_input)
+        self.insert_user_input_signal.connect(self._on_insert_user_input)
         self.show_info_message_signal.connect(self._on_show_info_message)
         self.show_error_message_signal.connect(self._on_show_error_message)
         self.update_model_loading_status_signal.connect(self._on_update_model_loading_status)
@@ -218,9 +229,29 @@ class ChatGUI(QMainWindow):
 
         self.create_dialog_signal.connect(self._create_dialog_for_voice_model)
 
-        self.asr_install_progress_signal.connect(self._on_asr_install_progress)
-        self.asr_install_finished_signal.connect(self._on_asr_install_finished)
-        self.asr_install_failed_signal.connect(self._on_asr_install_failed)
+        # Окно установки.
+        self.create_installation_window_signal.connect(
+            self._on_create_installation_window,
+            type=Qt.ConnectionType.QueuedConnection
+        )
+
+        self.close_installation_window_signal.connect(
+            self._on_close_installation_window,
+            type=Qt.ConnectionType.QueuedConnection
+        )
+
+        self.asr_install_progress_signal.connect(
+            self._on_asr_install_progress,
+            type=Qt.ConnectionType.QueuedConnection
+        )
+        self.asr_install_finished_signal.connect(
+            self._on_asr_install_finished,
+            type=Qt.ConnectionType.QueuedConnection
+        )
+        self.asr_install_failed_signal.connect(
+            self._on_asr_install_failed,
+            type=Qt.ConnectionType.QueuedConnection
+        )
 
     def _init_window_manager(self):
         self.window_manager = WindowManager(parent=self)
@@ -246,11 +277,47 @@ class ChatGUI(QMainWindow):
         dialog_layout.setSpacing(0)
 
         return dialog
+    
+    def _factory_asr_glossary_dialog(self, parent, payload: dict):
+        dialog = QDialog(parent)
+        dialog.setWindowTitle(_("ASR модели", "ASR Models"))
+        dialog.setModal(False)
+        dialog.resize(900, 650)
+        lay = QVBoxLayout(dialog)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        return dialog
 
     def _create_dialog_for_voice_model(self, data):
         if not hasattr(self, "window_manager") or self.window_manager is None:
             return
         self.window_manager.show_dialog("voice_models", data if isinstance(data, dict) else {})
+
+    def _on_create_installation_window(self, title: str, initial_status: str, holder: dict):
+        win = VoiceInstallationWindow(self, title, initial_status)
+        win.show()
+
+        holder["window"] = win
+        if hasattr(win, "get_threadsafe_callbacks"):
+            holder["callbacks"] = win.get_threadsafe_callbacks()
+        else:
+            holder["callbacks"] = (win.update_progress, win.update_status, win.update_log)
+
+        ev = holder.get("ready_event")
+        if ev is not None and hasattr(ev, "set"):
+            try:
+                ev.set()
+            except Exception:
+                pass
+
+
+    def _on_close_installation_window(self, win_obj: object):
+        try:
+            if win_obj is None:
+                return
+            win_obj.close()
+        except Exception:
+            pass
 
     def setup_ui(self):
         central_widget = QWidget()
@@ -1087,6 +1154,11 @@ class ChatGUI(QMainWindow):
     def _on_clear_user_input(self):
         if self.user_entry:
             self.user_entry.clear()
+    
+    def _on_insert_user_input(self, text: str):
+        if self.user_entry:
+            self.user_entry.insertPlainText(text + " ")
+            self.user_entry.ensureCursorVisible()
 
     def _on_show_info_message(self, data: dict):
         title = data.get('title', 'Информация')

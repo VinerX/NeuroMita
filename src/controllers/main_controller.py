@@ -18,6 +18,7 @@ from controllers.local_voice_controller import LocalVoiceController
 from controllers.prompt_controller import PromptController
 from controllers.history_controller import HistoryController
 from controllers.voice_model_controller import VoiceModelController
+from controllers.install_controller import InstallController
 
 from main_logger import logger
 from utils.ffmpeg_installer import install_ffmpeg
@@ -70,10 +71,11 @@ class MainController:
 
         self._check_and_perform_pending_update()
 
+        self.install_controller = InstallController(script_path=r"libs\python\python.exe", libs_path="Lib")
+        logger.notify("InstallController успешно инициализирован.")
         
         self.local_voice_controller = LocalVoiceController(self)
         logger.notify("LocalVoiceController успешно инициализирован.")
-
         
         self.task_controller = TaskController()
         logger.notify("TaskController успешно инициализирован.")

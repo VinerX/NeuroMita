@@ -48,9 +48,12 @@ class GigaAMProcessWorker:
             self.gigaam_model = options.get('model', 'v2_rnnt')
             self.gigaam_onnx_export_path = options.get('onnx_path', 'SpeechRecognitionModels/GigaAM_ONNX')
             self.gigaam_model_path = options.get('model_path', 'SpeechRecognitionModels/GigaAM')
-
+            import sys
             import torch
-            import gigaam
+            import handlers.asr_models.gigaam as gigaam
+            sys.modules["gigaam"] = gigaam
+
+
             from utils.gpu_utils import check_gpu_provider
             from utils import getTranslationVariant as _
 
@@ -68,7 +71,6 @@ class GigaAMProcessWorker:
                 int
             ])
 
-            # ---- GPU detect: НИКОГДА не валим инициализацию из-за ошибок/None ----
             try:
                 detected_gpu = check_gpu_provider()
             except Exception as e:

@@ -51,8 +51,6 @@ def build_microphone_settings_ui(self, parent_layout):
 
     self.recognizer_combobox = QComboBox()
     self.recognizer_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    self.recognizer_combobox.addItems(["google", "gigaam"])
-    self.recognizer_combobox.setCurrentText(self.settings.get('RECOGNIZER_TYPE', 'google'))
     self.recognizer_combobox.setToolTip(_("Выберите движок распознавания речи", "Select speech recognition engine"))
     eng_h.addWidget(self.recognizer_combobox, 1)
 
@@ -63,18 +61,12 @@ def build_microphone_settings_ui(self, parent_layout):
     root_lay.addWidget(make_row(_("Распознавание", "Recognition"), engine_field, label_w))
 
     # ----- Полноширинная кнопка установки + мини-строка статуса (без левого отступа под лейбл) -----
-    self.install_model_button = QPushButton(_("Установить модель распознавания", "Install ASR model"))
-    self.install_model_button.setObjectName("SecondaryButton")
-    self.install_model_button.setIcon(qta.icon('fa5s.download', color='#ffffff'))
-    self.install_model_button.setVisible(False)
-    self.install_model_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    root_lay.addWidget(self.install_model_button, 0)
 
-    # Компактная строка статуса установки (слева, без левого отступа)
-    self.install_status_label = QLabel("")
-    self.install_status_label.setStyleSheet(f"color: {theme['muted']}; font-size: 10px;")
-    self.install_status_label.setVisible(False)
-    root_lay.addWidget(self.install_status_label, 0, Qt.AlignmentFlag.AlignLeft)
+    self.asr_manage_button = QPushButton(_("Каталог ASR моделей", "ASR Model Catalogue"))
+    self.asr_manage_button.setObjectName("SecondaryButton")
+    self.asr_manage_button.setIcon(qta.icon('fa5s.list', color='#ffffff'))
+    self.asr_manage_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    root_lay.addWidget(self.asr_manage_button, 0)
 
     # ----- Строка: Микрофон + кнопка "Обновить"
     mic_field = QWidget()

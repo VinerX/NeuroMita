@@ -13,7 +13,9 @@ from .gui.model_event_controller import ModelEventController
 from .gui.view_event_controller import ViewEventController
 from .gui.voice_model_controller import VoiceModelGuiController
 from .gui.window_manager_controller import WindowManagerController
-
+from .gui.asr_events_controller import AsrEventsController
+from .gui.asr_glossary_controller import AsrGlossaryGuiController
+from .gui.install_gui_controller import InstallGuiController
 
 class GuiController:
     def __init__(self, main_controller, view):
@@ -44,9 +46,13 @@ class GuiController:
         self.settings_controller = SettingsController(main_controller, view)
         self.model_event_controller = ModelEventController(main_controller, view)
         self.view_event_controller = ViewEventController(main_controller, view)
-
         self.voice_model_gui_controller = VoiceModelGuiController(main_controller, view)
+        self.asr_events_controller = AsrEventsController(main_controller, view)
+        self.asr_glossary_controller = AsrGlossaryGuiController(main_controller, view)
+        self.install_gui_controller = InstallGuiController(main_controller, view)
+
         self.window_manager_controller = WindowManagerController(main_controller, view)
+        
 
         self._connect_view_signals()
         logger.info("GuiController подписался на события")
