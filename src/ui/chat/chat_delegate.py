@@ -1,7 +1,7 @@
 from typing import List, Dict, Tuple
 import re
 from PyQt6.QtGui import QColor
-from utils import getTranslationVariant as _, process_text_to_voice
+from utils import getTranslationVariant as _
 
 class ChatMessageDelegate:
     def __init__(self):
@@ -36,7 +36,12 @@ class ChatMessageDelegate:
 
     def split_text_with_tags(self, text: str, hide_tags: bool) -> List[Dict]:
         if hide_tags:
-            return [{"type": "text", "content": process_text_to_voice(text), "tag": "default"}]
+            pattern = r'(<([^>]+)>)(.*?)(</\2>)|(<([^>]+)>)'
+            clean_text = re.sub(pattern, "", text, flags=re.DOTALL)
+            
+            clean_text = re.sub(r' +', ' ', clean_text).strip()
+            
+            return [{"type": "text", "content": clean_text, "tag": "default"}]
 
         parts = []
         matches = list(re.finditer(r'(<([^>]+)>)(.*?)(</\2>)|(<([^>]+)>)', text))

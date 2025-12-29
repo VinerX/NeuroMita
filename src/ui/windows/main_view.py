@@ -26,7 +26,7 @@ from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor, QFont, QImage, QIc
 from ui.settings import (
     api_settings, character_settings, game_settings, 
     microphone_settings, screen_analysis_settings, voiceover_settings,
-    prompt_catalogue_settings, model_interaction_settings, interface_settings
+    prompt_catalogue_settings, model_interaction_settings, general_settings
 )
 
 from ui.widgets import (status_indicators_widget)
@@ -340,8 +340,7 @@ class ChatGUI(QMainWindow):
 
     def _init_settings_containers(self):
         callbacks = {
-            "general":     self.setup_common_controls,
-            "interface":   interface_settings.setup_interface_controls,
+            "general":     general_settings.setup_general_settings_controls,
             "api":         api_settings.setup_api_controls,
             "models":      model_interaction_settings.setup_model_interaction_controls,
             "voice":       voiceover_settings.setup_voiceover_controls,
@@ -426,12 +425,6 @@ class ChatGUI(QMainWindow):
         news_label.setWordWrap(True)
         parent.addWidget(news_label)
 
-    def setup_common_controls(self, parent_layout):
-        common_config = [
-            {'label': _('Скрывать (приватные) данные', 'Hide (private) data'), 'key': 'HIDE_PRIVATE',
-            'type': 'checkbutton', 'default_checkbutton': True},
-        ]
-        gui_templates.create_settings_direct(self, parent_layout, common_config)
 
     def setup_debug_controls(self, parent):
         self.debug_window = QTextEdit()

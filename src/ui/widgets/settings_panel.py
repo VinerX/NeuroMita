@@ -22,7 +22,6 @@ def setup_settings_panel(gui, main_layout):
     
     settings_categories = [
         ("fa6s.gear", _("Общие", "General"), "general"),
-        ("fa6s.palette", _("Интерфейс", "Interface"), "interface"),
         ("fa6s.plug", _("API", "API"), "api"),
         ("fa6s.robot", _("Модели", "Models"), "models"),
         ("fa6s.volume-high", _("Озвучка", "Voice"), "voice"),
