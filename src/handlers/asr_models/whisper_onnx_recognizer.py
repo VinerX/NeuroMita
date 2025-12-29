@@ -131,6 +131,7 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
             "encoder": os.path.join(d, "encoder_model.onnx"),
             "encoder_data": os.path.join(d, "encoder_model.onnx_data"),
             "decoder": os.path.join(d, "decoder_model.onnx"),
+            "decoder_with_past": os.path.join(d, "decoder_with_past_model.onnx"),
         }
 
     def requirements(self):
