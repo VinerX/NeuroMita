@@ -1,8 +1,17 @@
+# src/handlers/asr_models/speech_recognizer_base.py
 from abc import ABC, abstractmethod
 from typing import Optional, List
 import numpy as np
 
+from handlers.asr_models.requirements import AsrRequirement
+
+
 class SpeechRecognizerInterface(ABC):
+    MODEL_CONFIGS: List[dict] = []
+
+    def get_model_configs(self) -> List[dict]:
+        return list(getattr(self, "MODEL_CONFIGS", []) or [])
+
     def __init__(self, pip_installer, logger):
         self.pip_installer = pip_installer
         self.logger = logger
@@ -10,6 +19,7 @@ class SpeechRecognizerInterface(ABC):
 
     @abstractmethod
     async def install(self) -> bool:
+        """Только артефакты/веса/подготовка. Pip-установка должна быть вынесена наружу."""
         pass
 
     @abstractmethod
@@ -33,21 +43,19 @@ class SpeechRecognizerInterface(ABC):
     def is_installed(self) -> bool:
         pass
 
-    # ===== Optional modular settings API (не обязательны к реализации) =====
+    def requirements(self) -> List[AsrRequirement]:
+        return []
+
+    def pip_install_steps(self, ctx: dict) -> List[dict]:
+        return []
+
     def settings_spec(self) -> List[dict]:
-        """Вернуть схему полей настроек для UI. Пример:
-        [
-          {"key":"device", "label_ru":"Устройство", "label_en":"Device",
-           "type":"combobox", "options":["auto","cuda","cpu","dml"], "default":"auto"}
-        ]
-        """
         return []
 
     def get_default_settings(self) -> dict:
         return {}
 
     def apply_settings(self, settings: dict) -> None:
-        """Применить настройки на лету. По умолчанию ничего не делает."""
         return
 
     @property

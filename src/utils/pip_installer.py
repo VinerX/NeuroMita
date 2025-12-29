@@ -709,18 +709,23 @@ class PipInstaller:
             ok, ret = self._run_with_pipes(cmd, env, state)
 
         # Завершение
-        self.update_progress(100)
-        self.update_log(f"pip завершился с кодом {ret}")
         elapsed = time.time() - state.start
         self.update_status(f"{description} — завершено за {self._fmt_hms(elapsed)}")
 
         is_uninstall = any("uninstall" == x for x in cmd) or "uninstall" in " ".join(cmd).lower()
         if is_uninstall and ret in (1, 2):
             logger.info(f"UV вернул код {ret} при удалении - возможно пакет не был установлен")
+            self.update_progress(100)
             return True
+            
         if not ok or ret != 0:
+            err_msg = f"ОШИБКА: Процесс завершился с кодом {ret}. Проверьте лог выше."
             if not state.error_seen:
-                self.update_log(f"Команда завершилась с ошибкой, код {ret}. Проверьте лог выше.")
-            logger.error(f"pip завершился с ошибкой, код {ret}")
+                self.update_log(err_msg)
+            # Принудительно пишем в основной логгер
+            logger.error(f"pip завершился с ошибкой, код {ret}. Команда: {cmd}")
             return False
+        
+        self.update_progress(100)
+        self.update_log(f"pip завершился успешно (код {ret})")
         return True

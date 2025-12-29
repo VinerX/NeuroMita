@@ -10,6 +10,8 @@ from utils import getTranslationVariant as _
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
 from handlers.asr_models.google_recognizer import GoogleRecognizer
 from handlers.asr_models.gigaam_recognizer import GigaAMRecognizer
+from handlers.asr_models.whisper_recognizer import WhisperRecognizer
+from handlers.asr_models.whisper_onnx_recognizer import WhisperOnnxRecognizer
 from core.events import get_event_bus, Events
 
 
@@ -65,7 +67,9 @@ class SpeechRecognition:
 
     _registry: Dict[str, type[SpeechRecognizerInterface]] = {
         "google": GoogleRecognizer,
-        "gigaam": GigaAMRecognizer
+        "gigaam": GigaAMRecognizer,
+        "whisper": WhisperRecognizer,
+        "whisper_onnx": WhisperOnnxRecognizer,
     }
 
     @staticmethod
@@ -150,14 +154,26 @@ class SpeechRecognition:
             pass
 
     @staticmethod
-    def check_model_installed(recognizer_type: Optional[str] = None) -> bool:
+    def check_model_installed(recognizer_type: Optional[str] = None, settings: Optional[dict] = None) -> bool:
         engine = recognizer_type or SpeechRecognition._recognizer_type
+        settings = settings or {}
+
         SpeechRecognition._ensure_instance()
         inst = SpeechRecognition._get_recognizer_snapshot()
         if not inst or engine != SpeechRecognition._recognizer_type:
             inst = SpeechRecognition._new_instance(engine)
+
+        if not inst:
+            return False
+
         try:
-            return inst.is_installed() if inst else False
+            if hasattr(inst, "apply_settings"):
+                inst.apply_settings(settings)
+        except Exception:
+            pass
+
+        try:
+            return inst.is_installed()
         except Exception as e:
             logger.warning(f"is_installed error: {e}")
             return False

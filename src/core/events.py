@@ -29,7 +29,12 @@ class EventBus:
     def __init__(self, max_workers: int = 5):
         self._subscribers: Dict[str, List[weakref.ref]] = {}
         self._lock = threading.RLock()
+
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
+
+        wait_workers = max(8, max_workers * 2)
+        self._wait_executor = ThreadPoolExecutor(max_workers=wait_workers)
+
         self._event_queue = Queue()
         self._running = True
         self._processor_thread = threading.Thread(target=self._process_events, daemon=True)
@@ -101,14 +106,13 @@ class EventBus:
     def emit_and_wait(self, event_name: str, data: Any = None, timeout: float = 5.0) -> List[Any]:
         """
         Отправить событие и дождаться результатов от всех подписчиков
-        
+
         Returns:
             Список результатов от подписчиков
         """
-        results = []
-        result_queue = Queue()
-        
-        # Создаем специальный wrapper для сбора результатов
+        results: List[Any] = []
+        result_queue: Queue = Queue()
+
         def result_wrapper(callback):
             def wrapper(*args, **kwargs):
                 try:
@@ -116,36 +120,32 @@ class EventBus:
                     result_queue.put(result)
                 except Exception as e:
                     logger.error("Произошла ошибка в событии, коллектим:")
-                    # Логируем с максимальной информацией: имя обработчика, имя события и полный traceback
-                    callback_name = getattr(callback, '__qualname__', callback.__name__)
-                
-                    # Попытка получить имя события из аргументов
+                    callback_name = getattr(callback, "__qualname__", getattr(callback, "__name__", "unknown"))
                     event_name_for_log = "неизвестного события"
                     if args and isinstance(args[0], Event):
                         event_name_for_log = f"события '{args[0].name}'"
                     logger.error(
                         f"Ошибка в обработчике '{callback_name}' для {event_name_for_log}: {e}",
-                        exc_info=True 
+                        exc_info=True
                     )
                     result_queue.put(None)
             return wrapper
-        
+
         with self._lock:
             subscribers = self._get_active_subscribers(event_name)
-        
+
         if not subscribers:
             return results
-        
-        # Запускаем все обработчики
+
         for subscriber in subscribers:
             wrapped = result_wrapper(subscriber)
-            self._executor.submit(wrapped, Event(name=event_name, data=data))
-        
-        # Собираем результаты с таймаутом
+            self._wait_executor.submit(wrapped, Event(name=event_name, data=data))
+
         start_time = time.time()
         collected = 0
-        
-        while collected < len(subscribers) and (time.time() - start_time) < timeout:
+        target = len(subscribers)
+
+        while collected < target and (time.time() - start_time) < float(timeout):
             try:
                 result = result_queue.get(timeout=0.1)
                 if result is not None:
@@ -153,15 +153,20 @@ class EventBus:
                 collected += 1
             except Empty:
                 continue
-        
+
         return results
+
     
     def shutdown(self) -> None:
         """Остановить систему событий"""
         self._running = False
         self._event_queue.put(None)  # Сигнал для остановки
         self._processor_thread.join(timeout=5)
-        self._executor.shutdown(wait=True)
+
+        try:
+            self._executor.shutdown(wait=True)
+        finally:
+            self._wait_executor.shutdown(wait=True)
     
     def _process_events(self) -> None:
         """Обработчик очереди событий (работает в отдельном потоке)"""
@@ -341,6 +346,9 @@ class Events:
         SHOW_EULA_DIALOG = "show_eula_dialog"
         SHOW_GUIDE = "show_guide"
         HIDE_GUIDE = "hide_guide"
+        SHOW_WINDOW = "show_window"
+        CLOSE_WINDOW = "close_window"
+        CLOSE_ALL_WINDOWS = "close_all_windows"
 
     class Model:
         """События для управления LLM, персонажами и историей"""
@@ -437,6 +445,8 @@ class Events:
         SET_RECOGNIZER_OPTION = "set_recognizer_option"
         APPLY_RECOGNIZER_SETTINGS = "apply_recognizer_settings"
         ASR_MODEL_INIT_STARTED = "asr_model_init_started"
+        GET_ASR_MODELS_GLOSSARY = "get_asr_models_glossary"
+        GET_ASR_ENGINES_LIST = "get_asr_engines_list"
         
 
     class Capture:
@@ -553,3 +563,8 @@ class Events:
         """Работа с историей диалога"""
         PREPARE_FOR_PROMPT = "prepare_history_for_prompt"
         SAVE_AFTER_RESPONSE = "save_history_after_response"
+
+    class Install:
+        """Унифицированные события для менеджера установок"""
+        RUN_WITH_UI = "run_install_with_ui"
+        RUN_HEADLESS = "run_install_headless"

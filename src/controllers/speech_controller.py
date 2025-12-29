@@ -70,7 +70,8 @@ class SpeechController:
         eb.subscribe(Events.Speech.GET_MICROPHONE_LIST, self._on_get_microphone_list, weak=False)
         eb.subscribe(Events.Speech.REFRESH_MICROPHONE_LIST, self._on_refresh_microphone_list, weak=False)
 
-        # Новые универсальные события настроек распознавателя
+        eb.subscribe(Events.Speech.GET_ASR_MODELS_GLOSSARY, self._on_get_asr_models_glossary, weak=False)
+
         eb.subscribe(Events.Speech.GET_RECOGNIZER_SETTINGS_SCHEMA, self._on_get_recognizer_settings_schema, weak=False)
         eb.subscribe(Events.Speech.GET_RECOGNIZER_SETTINGS, self._on_get_recognizer_settings, weak=False)
         eb.subscribe(Events.Speech.SET_RECOGNIZER_OPTION, self._on_set_recognizer_option, weak=False)
@@ -78,6 +79,7 @@ class SpeechController:
 
         eb.subscribe(Events.Speech.INSTALL_ASR_MODEL, self._on_install_asr_model, weak=False)
         eb.subscribe(Events.Speech.CHECK_ASR_MODEL_INSTALLED, self._on_check_asr_model_installed, weak=False)
+        eb.subscribe(Events.Speech.GET_ASR_ENGINES_LIST, self._on_get_asr_engines_list, weak=False)
 
     # ——— event handlers
     def _on_speech_settings_loaded(self, event: Event):
@@ -152,13 +154,35 @@ class SpeechController:
     def _start_maybe_install(self):
         if self.mic_recognition_active:
             return
+
         engine = self._asr_settings.get("engine", "google")
+
         if not self._check_model_installed(engine):
             self.events_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
                 'title': _('Требуется установка', 'Installation required'),
-                'message': _('Модель распознавания речи не установлена. Начинается установка...', 'ASR model is not installed. Installing now...')
+                'message': _(
+                    'ASR-модель не установлена. Установите её через "Каталог ASR моделей".',
+                    'ASR model is not installed. Install it via the "ASR Model Catalogue".'
+                )
             })
-            self._install_model_async(engine)
+
+            try:
+                if self.settings:
+                    self.settings.set("MIC_ACTIVE", False)
+                    self.settings.save_settings()
+            except Exception:
+                pass
+
+            try:
+                self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+            except Exception:
+                pass
+
+            try:
+                self.events_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "asr_glossary"})
+            except Exception:
+                pass
+
             return
 
         loop_res = self.events_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
@@ -208,31 +232,67 @@ class SpeechController:
     # —— install/check
     def _on_install_asr_model(self, event: Event):
         model_type = (event.data or {}).get('model', self._asr_settings.get("engine", "google"))
-        self._install_model_async(model_type)
+        engine_settings = (self._asr_settings.get("models", {}) or {}).get(model_type, {}) or {}
+
+        # UI-установка через InstallGuiController + InstallController
+        self.events_bus.emit(Events.Install.RUN_WITH_UI, {
+            "kind": "asr",
+            "engine": model_type,
+            "engine_settings": engine_settings,
+            "title": _("Установка ASR", "ASR Install") + f": {model_type}",
+            "initial_status": _("Подготовка...", "Preparing..."),
+            "timeout_sec": 3600.0
+        })
 
     def _on_check_asr_model_installed(self, event: Event):
         model_type = (event.data or {}).get('model', self._asr_settings.get("engine", "google"))
         return self._check_model_installed(model_type)
 
     def _check_model_installed(self, model_type: str) -> bool:
-        return SpeechRecognition.check_model_installed(model_type)
+        engine_settings = {}
+        try:
+            engine_settings = (self._asr_settings.get("models", {}) or {}).get(model_type, {}) or {}
+        except Exception:
+            engine_settings = {}
+        return SpeechRecognition.check_model_installed(model_type, settings=engine_settings)
+    
+    def _on_get_asr_engines_list(self, _event: Event):
+        """Returns a list of registered ASR engine IDs (e.g. ['google', 'gigaam', 'whisper'])"""
+        return list(SpeechRecognition._registry.keys())
 
     def _install_model_async(self, model_type: str):
         def install():
             try:
-                loop = self.events_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)[0]
+                loop_res = self.events_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
+                loop = loop_res[0] if loop_res else None
+                if not loop:
+                    err = "Event loop not available"
+                    logger.error(err)
+                    self.events_bus.emit(Events.Speech.ASR_MODEL_INSTALL_FAILED, {"model": model_type, "error": err})
+                    return
+
+                # Унифицированное событие "старт установки" (даже если модель сама тоже эмитит)
+                self.events_bus.emit(Events.Speech.ASR_MODEL_INSTALL_STARTED, {"model": model_type})
+
                 import asyncio
                 fut = asyncio.run_coroutine_threadsafe(SpeechRecognition.install_model(model_type), loop)
                 success = fut.result(timeout=3600)
+
                 if success:
                     logger.success(f"Модель {model_type} успешно установлена")
+                    self.events_bus.emit(Events.Speech.ASR_MODEL_INSTALL_FINISHED, {"model": model_type})
+
                     if self.settings and self.settings.get("MIC_ACTIVE", False):
                         self.events_bus.emit(Events.Speech.START_SPEECH_RECOGNITION, {'device_id': self.device_id})
                 else:
-                    logger.error(f"Не удалось установить модель {model_type}")
+                    msg = f"Не удалось установить модель {model_type}"
+                    logger.error(msg)
+                    self.events_bus.emit(Events.Speech.ASR_MODEL_INSTALL_FAILED, {"model": model_type, "error": msg})
+
             except Exception as e:
-                logger.error(f"Ошибка при установке модели: {e}")
+                logger.error(f"Ошибка при установке модели: {e}", exc_info=True)
                 self.events_bus.emit(Events.Speech.ASR_MODEL_INSTALL_FAILED, {"model": model_type, "error": str(e)})
+
         threading.Thread(target=install, daemon=True).start()
 
     # —— mic & pipeline glue
@@ -259,9 +319,9 @@ class SpeechController:
         else:
             connected = self.events_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
             if connected and connected[0]:
-                pass
-            else:
-                self.events_bus.emit(Events.GUI.INSERT_TEXT_TO_INPUT, {"text": text})
+                pass # сюда добавить отправку клиенту.
+            logger.info(f"Распознано: {text}")
+            self.events_bus.emit(Events.GUI.INSERT_TEXT_TO_INPUT, {"text": text})
 
     def _send_instant(self, text):
         self.events_bus.emit(Events.GUI.UPDATE_CHAT_UI, {'role': 'user', 'response': text, 'is_initial': False, 'emotion': ''})
@@ -331,3 +391,89 @@ class SpeechController:
     def _on_refresh_microphone_list(self, event: Event):
         """Просто переиспользуем логику получения списка."""
         return self._on_get_microphone_list(event)
+    
+    def _on_get_asr_models_glossary(self, event: Event):
+        """
+        Возвращает список ASR-движков для UI глоссария:
+        - installed/details/missing_* считаются через check_requirements
+        - name/description/tags/languages/gpu_vendor/links берём из MODEL_CONFIGS движка (как LocalVoice)
+        """
+        try:
+            from handlers.asr_models.requirements import check_requirements
+            from utils.gpu_utils import check_gpu_provider
+            from handlers.asr_handler import SpeechRecognition
+
+            try:
+                gpu_vendor = check_gpu_provider() or "CPU"
+            except Exception:
+                gpu_vendor = "CPU"
+
+            if not self._asr_settings or not self._asr_settings.get("models"):
+                self._load_asr_settings()
+
+            models_map = self._asr_settings.get("models", {}) or {}
+            registry = getattr(SpeechRecognition, "_registry", {}) or {}
+            engines = list(registry.keys())
+
+            result = []
+            for engine in engines:
+                engine_settings = models_map.get(engine, {}) or {}
+
+                inst = None
+                try:
+                    inst = SpeechRecognition._new_instance(engine)
+                    if inst and hasattr(inst, "apply_settings"):
+                        inst.apply_settings(engine_settings)
+                except Exception:
+                    inst = None
+
+                # --- META из MODEL_CONFIGS (как в LocalVoice) ---
+                meta = {}
+                try:
+                    cfgs = inst.get_model_configs() if inst else (getattr(registry.get(engine), "MODEL_CONFIGS", []) or [])
+                    if isinstance(cfgs, list):
+                        for c in cfgs:
+                            if isinstance(c, dict) and str(c.get("id") or "") == str(engine):
+                                meta = c
+                                break
+                except Exception:
+                    meta = {}
+
+                # --- requirements status ---
+                reqs = []
+                try:
+                    if inst and hasattr(inst, "requirements"):
+                        reqs = inst.requirements() or []
+                except Exception:
+                    reqs = []
+
+                ctx = {
+                    "device": engine_settings.get("device"),
+                    "gpu_vendor": gpu_vendor,
+                }
+
+                status = check_requirements(reqs, ctx=ctx) if reqs else {
+                    "ok": True, "missing_required": [], "missing_optional": [], "details": []
+                }
+
+                result.append({
+                    "id": engine,
+
+                    "name": meta.get("name") or engine,
+                    "description": meta.get("description") or "",
+                    "languages": meta.get("languages", []) if isinstance(meta.get("languages"), list) else [],
+                    "gpu_vendor": meta.get("gpu_vendor", []) if isinstance(meta.get("gpu_vendor"), list) else [],
+                    "tags": meta.get("tags", []) if isinstance(meta.get("tags"), list) else [],
+                    "links": meta.get("links", []) if isinstance(meta.get("links"), list) else [],
+
+                    "installed": bool(status.get("ok")),
+                    "missing_required": status.get("missing_required", []),
+                    "missing_optional": status.get("missing_optional", []),
+                    "details": status.get("details", []),
+                })
+
+            return result
+
+        except Exception as e:
+            logger.error(f"GET_ASR_MODELS_GLOSSARY error: {e}", exc_info=True)
+            return []

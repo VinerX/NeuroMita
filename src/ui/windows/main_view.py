@@ -36,6 +36,8 @@ from ui.widgets.image_viewer_widget import ImageViewerWidget
 from ui.widgets.image_preview_widget import ImagePreviewBar
 from ui.widgets.mita_status_widget import MitaStatusWidget
 
+from ui.window_manager import WindowManager
+
 from controllers.voice_model_controller import VoiceModelController
 
 from core.events import get_event_bus, Events, Event
@@ -49,6 +51,8 @@ from ui.widgets.settings_panel import setup_settings_panel
 from ui.widgets.chat_panel import setup_chat_panel
 from ui.chat import message_renderer
 from ui.chat.chat_delegate import ChatMessageDelegate
+
+from ui.windows.voice_action_windows import VoiceInstallationWindow
 
 class ChatGUI(QMainWindow):
     update_chat_signal = pyqtSignal(str, str, bool, str)
@@ -77,6 +81,7 @@ class ChatGUI(QMainWindow):
     hide_loading_popup_signal = pyqtSignal()          
 
     clear_user_input_signal = pyqtSignal()
+    insert_user_input_signal = pyqtSignal(str) 
     update_chat_font_size_signal = pyqtSignal(int)
     switch_voiceover_settings_signal = pyqtSignal()
     load_chat_history_signal = pyqtSignal()
@@ -88,7 +93,8 @@ class ChatGUI(QMainWindow):
     cancel_model_loading_signal = pyqtSignal()
 
     create_dialog_signal = pyqtSignal(dict)
-
+    create_installation_window_signal = pyqtSignal(str, str, object)  # title, initial_status, holder(dict)
+    close_installation_window_signal = pyqtSignal(object)
     
     asr_install_progress_signal = pyqtSignal(dict)
     asr_install_finished_signal = pyqtSignal(dict)
@@ -109,6 +115,7 @@ class ChatGUI(QMainWindow):
         
         self.event_bus = get_event_bus()
         self._connect_signals()
+        self._init_window_manager()
         
         self.voice_language_var = None
         self.local_voice_combobox = None
@@ -180,6 +187,22 @@ class ChatGUI(QMainWindow):
         self.current_local_voice_id = None
         self.model_loading_cancelled = False
 
+    def _window_specs(self) -> dict:
+        return {
+            "voice_models": {
+                "factory": self._factory_voice_models_dialog,
+                "singleton": True,
+                "hide_on_close": True,
+                "modal": False
+            },
+            "asr_glossary": {
+                "factory": self._factory_asr_glossary_dialog,
+                "singleton": True,
+                "hide_on_close": True,
+                "modal": False,
+            },
+        }
+
     def _connect_signals(self):
         self.history_loaded_signal.connect(self._on_history_loaded)
         self.more_history_loaded_signal.connect(self._on_more_history_loaded)
@@ -197,19 +220,104 @@ class ChatGUI(QMainWindow):
         self.load_chat_history_signal.connect(self.load_chat_history)
         self.check_triton_dependencies_signal.connect(self.check_triton_dependencies)
         self.clear_user_input_signal.connect(self._on_clear_user_input)
+        self.insert_user_input_signal.connect(self._on_insert_user_input)
         self.show_info_message_signal.connect(self._on_show_info_message)
         self.show_error_message_signal.connect(self._on_show_error_message)
         self.update_model_loading_status_signal.connect(self._on_update_model_loading_status)
         self.finish_model_loading_signal.connect(self._on_finish_model_loading)
         self.cancel_model_loading_signal.connect(self._on_cancel_model_loading)
+
         self.create_dialog_signal.connect(self._create_dialog_for_voice_model)
 
-        self.asr_install_progress_signal.connect(self._on_asr_install_progress)
-        self.asr_install_finished_signal.connect(self._on_asr_install_finished)
-        self.asr_install_failed_signal.connect(self._on_asr_install_failed)
+        # Окно установки.
+        self.create_installation_window_signal.connect(
+            self._on_create_installation_window,
+            type=Qt.ConnectionType.QueuedConnection
+        )
+
+        self.close_installation_window_signal.connect(
+            self._on_close_installation_window,
+            type=Qt.ConnectionType.QueuedConnection
+        )
+
+        self.asr_install_progress_signal.connect(
+            self._on_asr_install_progress,
+            type=Qt.ConnectionType.QueuedConnection
+        )
+        self.asr_install_finished_signal.connect(
+            self._on_asr_install_finished,
+            type=Qt.ConnectionType.QueuedConnection
+        )
+        self.asr_install_failed_signal.connect(
+            self._on_asr_install_failed,
+            type=Qt.ConnectionType.QueuedConnection
+        )
+
+    def _init_window_manager(self):
+        self.window_manager = WindowManager(parent=self)
+
+        for window_id, spec in self._window_specs().items():
+            self.window_manager.register_dialog(
+                window_id,
+                factory=spec["factory"],
+                singleton=spec.get("singleton", True),
+                hide_on_close=spec.get("hide_on_close", True),
+                modal=spec.get("modal", False),
+                on_ready=spec.get("on_ready", None),
+            )
+
+    def _factory_voice_models_dialog(self, parent, payload: dict):
+        dialog = QDialog(parent)
+        dialog.setWindowTitle(_("Управление локальными моделями", "Manage Local Models"))
+        dialog.setModal(False)
+        dialog.resize(875, 800)
+
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(0, 0, 0, 0)
+        dialog_layout.setSpacing(0)
+
+        return dialog
+    
+    def _factory_asr_glossary_dialog(self, parent, payload: dict):
+        dialog = QDialog(parent)
+        dialog.setWindowTitle(_("ASR модели", "ASR Models"))
+        dialog.setModal(False)
+        dialog.resize(900, 650)
+        lay = QVBoxLayout(dialog)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        return dialog
 
     def _create_dialog_for_voice_model(self, data):
-        handle_voice_model_dialog(self, data)
+        if not hasattr(self, "window_manager") or self.window_manager is None:
+            return
+        self.window_manager.show_dialog("voice_models", data if isinstance(data, dict) else {})
+
+    def _on_create_installation_window(self, title: str, initial_status: str, holder: dict):
+        win = VoiceInstallationWindow(self, title, initial_status)
+        win.show()
+
+        holder["window"] = win
+        if hasattr(win, "get_threadsafe_callbacks"):
+            holder["callbacks"] = win.get_threadsafe_callbacks()
+        else:
+            holder["callbacks"] = (win.update_progress, win.update_status, win.update_log)
+
+        ev = holder.get("ready_event")
+        if ev is not None and hasattr(ev, "set"):
+            try:
+                ev.set()
+            except Exception:
+                pass
+
+
+    def _on_close_installation_window(self, win_obj: object):
+        try:
+            if win_obj is None:
+                return
+            win_obj.close()
+        except Exception:
+            pass
 
     def setup_ui(self):
         central_widget = QWidget()
@@ -598,13 +706,13 @@ class ChatGUI(QMainWindow):
         self.event_bus.emit(Events.Capture.STOP_CAMERA_CAPTURE)
         self.event_bus.emit(Events.Audio.DELETE_SOUND_FILES)
         self.event_bus.emit(Events.Server.STOP_SERVER)
-        if self._voice_model_dialog:
-            try:
-                self._voice_model_dialog.close()
-                self._voice_model_dialog.deleteLater()
-            except:
-                pass
-            self._voice_model_dialog = None
+
+        try:
+            if hasattr(self, "window_manager") and self.window_manager:
+                self.window_manager.close_all(destroy=True)
+        except Exception:
+            pass
+
         logger.info("Закрываемся")
         event.accept()
 
@@ -923,10 +1031,10 @@ class ChatGUI(QMainWindow):
 
     def open_local_model_installation_window(self):
         try:
-            self.event_bus.emit(Events.Audio.OPEN_VOICE_MODEL_SETTINGS_DIALOG)
+            self.event_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "voice_models"})
         except Exception as e:
             logger.error(f"Ошибка при вызове окна установки моделей: {e}", exc_info=True)
-            QMessageBox.critical(self, _("Ошибка", "Error"), 
+            QMessageBox.critical(self, _("Ошибка", "Error"),
                 _("Не удалось открыть окно установки моделей.", "Failed to open model installation window."))
 
     def _show_ffmpeg_installing_popup(self):
@@ -1046,6 +1154,11 @@ class ChatGUI(QMainWindow):
     def _on_clear_user_input(self):
         if self.user_entry:
             self.user_entry.clear()
+    
+    def _on_insert_user_input(self, text: str):
+        if self.user_entry:
+            self.user_entry.insertPlainText(text + " ")
+            self.user_entry.ensureCursorVisible()
 
     def _on_show_info_message(self, data: dict):
         title = data.get('title', 'Информация')

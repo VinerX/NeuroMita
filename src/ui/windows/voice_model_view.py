@@ -650,34 +650,31 @@ class VoiceModelSettingsView(QWidget):
     open_vc_redist_dialog = pyqtSignal(object)            # result_holder
     open_triton_dialog = pyqtSignal(dict, object)         # deps, result_holder
 
-    def __init__(self):
+    def __init__(self, auto_initialize: bool = True):
         super().__init__()
 
         self.setWindowTitle(_("Настройки и Установка Локальных Моделей", "Settings and Installation of Local Models"))
         self.setMinimumSize(900, 650)
         self.resize(1100, 720)
 
-        # Style
         self.setStyleSheet(get_stylesheet())
 
-        # EB
         self.event_bus = get_event_bus()
 
-        # State
         self._cached_dependencies_status = None
         self.models_data = []
         self.installed_models = set()
 
-        # UI refs
         self.desc_label = None
         self.tabs = None
         self.list = None
         self.search = None
         self.detail = None
 
+        self._initialized = False
+
         self._build_ui()
 
-        # Signals
         self.update_description_signal.connect(self._on_update_description)
         self.clear_description_signal.connect(self._on_clear_description)
         self.install_started_signal.connect(self._on_install_started)
@@ -697,8 +694,35 @@ class VoiceModelSettingsView(QWidget):
             type=Qt.ConnectionType.BlockingQueuedConnection
         )
 
-        # Data
-        self._initialize_data()
+        if auto_initialize:
+            self.refresh_all()
+
+    def refresh_all(self):
+        """
+        Вызывай при показе окна:
+        - 1-й раз: полноценная инициализация данных;
+        - далее: обновление данных и UI.
+        """
+        if not self._initialized:
+            self._initialize_data()
+            self._initialized = True
+            return
+
+        self.models_data = self._get_models_data()
+        self.installed_models = self._get_installed_models()
+        self._cached_dependencies_status = self._get_dependencies_status()
+
+        self._on_clear_description()
+        self._populate_list()
+        if self.list and self.list.count() and self.list.currentRow() < 0:
+            self.list.setCurrentRow(0)
+
+        self.refresh_dependencies_panel()
+        self._on_selection_changed()
+
+    def ensure_initialized(self):
+        if not self._initialized:
+            self.refresh_all()
 
     # ---------- UI build ----------
     def _build_ui(self):

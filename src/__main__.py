@@ -42,7 +42,7 @@ logger.success(f"\n\n{banner}\n\n")
 from dotenv import load_dotenv
 ENV_FILENAME = "features.env" 
 loaded = load_dotenv(dotenv_path=ENV_FILENAME)
-
+os.environ["WHISPER_ONNX_DEBUG"]="1"
 if loaded:
     logger.notify(f"Переменные окружения успешно загружены из файла: {ENV_FILENAME}")
 else:
