@@ -155,6 +155,7 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
             AsrRequirement(id="whisper_onnx_encoder", kind="file", required=True, path=p["encoder"]),
             AsrRequirement(id="whisper_onnx_encoder_data", kind="file", required=True, path=p["encoder_data"]),
             AsrRequirement(id="whisper_onnx_decoder", kind="file", required=True, path=p["decoder"]),
+            AsrRequirement(id="whisper_onnx_decoder_with_past", kind="file", required=True, path=p["decoder_with_past"]),
         ]
 
     def pip_install_steps(self, ctx: dict) -> List[dict]:
@@ -303,7 +304,10 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
                 _download(f"{repo_onnx}/encoder_model.onnx_data", p["encoder_data"], 88, 96)
 
             if not (os.path.exists(p["decoder"]) and os.path.getsize(p["decoder"]) > 0):
-                _download(f"{repo_onnx}/decoder_model_merged.onnx", p["decoder"], 96, 99)
+                _download(f"{repo_onnx}/decoder_model.onnx", p["decoder"], 96, 99)
+
+            if not (os.path.exists(p["decoder_with_past"]) and os.path.getsize(p["decoder_with_past"]) > 0):
+                _download(f"{repo_onnx}/decoder_with_past_model.onnx", p["decoder"], 96, 99)
 
             self._event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
                 "model": "whisper_onnx",
