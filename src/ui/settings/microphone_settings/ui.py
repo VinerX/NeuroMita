@@ -99,4 +99,8 @@ def build_microphone_settings_ui(self, parent_layout):
     self.mic_instant_checkbox.setToolTip(_("Мгновенная отправка распознанного текста", "Send recognized text immediately"))
     root_lay.addWidget(make_row(_("Мгновенная отправка", "Instant send"), self.mic_instant_checkbox, label_w))
 
+    # 5) Статус (как раньше) — под кнопками
+    self.asr_init_status = QLabel("—")
+    root_lay.addWidget(make_row(_("Статус", "Status"), self.asr_init_status, label_w))
+
     parent_layout.addWidget(root)

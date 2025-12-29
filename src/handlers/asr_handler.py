@@ -10,6 +10,7 @@ from utils import getTranslationVariant as _
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
 from handlers.asr_models.google_recognizer import GoogleRecognizer
 from handlers.asr_models.gigaam_recognizer import GigaAMRecognizer
+from handlers.asr_models.gigaam_onnx_recognizer import GigaAMOnnxRecognizer
 from handlers.asr_models.whisper_recognizer import WhisperRecognizer
 from handlers.asr_models.whisper_onnx_recognizer import WhisperOnnxRecognizer
 from core.events import get_event_bus, Events
@@ -68,6 +69,7 @@ class SpeechRecognition:
     _registry: Dict[str, type[SpeechRecognizerInterface]] = {
         "google": GoogleRecognizer,
         "gigaam": GigaAMRecognizer,
+        "gigaam_onnx": GigaAMOnnxRecognizer,
         "whisper": WhisperRecognizer,
         "whisper_onnx": WhisperOnnxRecognizer,
     }

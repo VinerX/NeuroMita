@@ -40,6 +40,7 @@ class AsrEventsController(BaseController):
     def _on_asr_init_started(self, _event: Event):
         if not self.view:
             return
+        # Обновляем "пилюлю" в настройках
         if hasattr(self.view, "asr_set_pill") and hasattr(self.view, "asr_init_status"):
             try:
                 self.view.asr_set_pill.emit({
@@ -49,10 +50,14 @@ class AsrEventsController(BaseController):
                 })
             except Exception as e:
                 logger.debug(f"ASR init pill update failed: {e}")
+        
+        # Заставляем главное окно обновить иконки (чекбоксы)
+        self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
     def _on_asr_initialized(self, _event: Event):
         if not self.view:
             return
+        # Обновляем "пилюлю" в настройках
         if hasattr(self.view, "asr_set_pill") and hasattr(self.view, "asr_init_status"):
             try:
                 self.view.asr_set_pill.emit({
@@ -62,6 +67,10 @@ class AsrEventsController(BaseController):
                 })
             except Exception as e:
                 logger.debug(f"ASR initialized pill update failed: {e}")
+        
+        # <--- ГЛАВНОЕ: Заставляем главное окно обновить иконки. 
+        # Теперь SpeechController.mic_status вернет True (т.к. ready=True), и галочка загорится.
+        self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
     def _on_install_started(self, event: Event):
         data = event.data or {}
