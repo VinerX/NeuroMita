@@ -61,10 +61,9 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
         self._model = None  # PyTorch модель
 
         self._model_names = [
-            "v1_ctc", "v1_rnnt", "v1_ssl", "v1_emo",
-            "v2_ctc", "v2_rnnt", "v2_ssl",
-            "v3_ctc", "v3_rnnt", "v3_ssl",
-            "emo",
+            "v2_rnnt", "v2_ctc",
+            "v3_rnnt", "v3_ctc",
+            "v3_e2e_ctc", "v3_e2e_rnnt"
         ]
 
     # ---------- UI schema ----------
@@ -75,16 +74,15 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             {"key": "model", "label_ru": "Модель", "label_en": "Model",
              "type": "combobox",
              "options": [
-                 "v2_rnnt", "v2_ctc", "v2_ssl",
-                 "v3_rnnt", "v3_ctc", "v3_ssl",
-                 "v1_rnnt", "v1_ctc", "v1_ssl",
-                 "emo", "v1_emo"
+                 "v2_rnnt", "v2_ctc",
+                 "v3_rnnt", "v3_ctc",
+                 "v3_e2e_ctc", "v3_e2e_rnnt"
              ],
-             "default": "v2_rnnt"}
+             "default": "v3_e2e_rnnt"}
         ]
 
     def get_default_settings(self):
-        return {"device": "auto", "model": "v2_rnnt"}
+        return {"device": "auto", "model": "v3_e2e_rnnt"}
 
     def apply_settings(self, settings: dict):
         dev = settings.get("device")
@@ -136,8 +134,6 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             AsrRequirement(id="silero_vad", kind="python_module", module="silero_vad", required=True),
             AsrRequirement(id="sounddevice", kind="python_module", module="sounddevice", required=True),
             AsrRequirement(id="numpy", kind="python_module", module="numpy", required=True),
-
-            AsrRequirement(id="gigaam_ckpt", kind="file", required=True, path_fn=ckpt_path),
         ]
 
     def pip_install_steps(self, ctx: dict) -> List[dict]:

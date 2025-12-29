@@ -80,9 +80,9 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
         self._url_dir = "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM"
 
         self._model_names = [
-            "v1_ctc", "v1_rnnt",
-            "v2_ctc", "v2_rnnt",
-            "v3_ctc", "v3_rnnt",
+            "v2_rnnt", "v2_ctc",
+            "v3_rnnt", "v3_ctc",
+            "v3_e2e_ctc", "v3_e2e_rnnt"
         ]
 
     # ---------- UI schema ----------
@@ -92,7 +92,11 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
              "type": "combobox", "options": ["auto", "cpu", "dml"], "default": "auto"},
             {"key": "model", "label_ru": "Модель", "label_en": "Model",
              "type": "combobox",
-             "options": ["v2_rnnt", "v2_ctc", "v3_rnnt", "v3_ctc", "v1_rnnt", "v1_ctc"],
+             "options": [
+                "v2_rnnt", "v2_ctc",
+                "v3_rnnt", "v3_ctc",
+                "v3_e2e_ctc", "v3_e2e_rnnt"
+             ],
              "default": "v2_rnnt"}
         ]
 
@@ -152,8 +156,6 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
             AsrRequirement(id="numpy", kind="python_module", module="numpy", required=True),
 
             AsrRequirement(id="onnxruntime", kind="python_module", module="onnxruntime", required=True),
-
-            AsrRequirement(id="gigaam_ckpt", kind="file", required=True, path_fn=ckpt_path),
         ]
 
     def pip_install_steps(self, ctx: dict) -> List[dict]:
