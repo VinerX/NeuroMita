@@ -345,8 +345,17 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
         return False
 
     async def transcribe(self, audio_data: np.ndarray, sample_rate: int) -> Optional[str]:
-        if not self._is_initialized or not self._process or not self._process.is_alive():
-            return None
+        if not self._is_initialized or self._model is None:
+            ok = await self.init()
+            if not ok or self._model is None:
+                self.logger.error("GigaAM не инициализирован (init failed)")
+                return None
+
+        if self._torch is None:
+            import torch
+            self._torch = torch
+
+        torch = self._torch
 
         self._transcribe_event.clear()
         self._transcribe_result = None
@@ -359,29 +368,47 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
         return None
 
     async def live_recognition(self, microphone_index: int, handle_voice_callback,
-                              vad_model, active_flag, **kwargs) -> None:
-        if not self._is_initialized or not self._process or not self._process.is_alive():
-            self.logger.error("Whisper ONNX процесс не инициализирован")
-            return
+                            vad_model, active_flag, **kwargs) -> None:
+        if not self._is_initialized or self._model is None:
+            ok = await self.init()
+            if not ok or self._model is None:
+                self.logger.error("GigaAM не инициализирован (init failed) — live_recognition остановлен")
+                return
 
-        sample_rate = int(kwargs.get("sample_rate", 16000))
-        chunk_size = int(kwargs.get("chunk_size", 512))
-        vad_threshold = float(kwargs.get("vad_threshold", 0.5))
-        silence_timeout = float(kwargs.get("silence_timeout", 1.0))
-        pre_buffer_duration = float(kwargs.get("pre_buffer_duration", 0.3))
+        if self._torch is None or self._sd is None or self._np is None:
+            try:
+                import torch
+                import sounddevice as sd
+                import numpy as np
+                self._torch = self._torch or torch
+                self._sd = self._sd or sd
+                self._np = self._np or np
+            except Exception as e:
+                self.logger.error(f"live_recognition imports failed: {e}")
+                return
+
+        torch = self._torch
+        sd = self._sd
+        np = self._np
+
+        sample_rate = kwargs.get('sample_rate', 16000)
+        chunk_size = kwargs.get('chunk_size', 512)
+        vad_threshold = kwargs.get('vad_threshold', 0.5)
+        silence_timeout = kwargs.get('silence_timeout', 1.0)
+        pre_buffer_duration = kwargs.get('pre_buffer_duration', 0.3)
 
         silence_chunks_needed = int(silence_timeout * sample_rate / chunk_size)
         pre_buffer_size = int(pre_buffer_duration * sample_rate / chunk_size)
 
-        pre_speech_buffer = deque(maxlen=max(1, pre_buffer_size))
+        pre_speech_buffer = deque(maxlen=pre_buffer_size)
         speech_buffer = []
         is_speaking = False
         silence_counter = 0
 
-        stream = self._sd.InputStream(
+        stream = sd.InputStream(
             samplerate=sample_rate,
             channels=1,
-            dtype="float32",
+            dtype='float32',
             blocksize=chunk_size,
             device=microphone_index
         )
@@ -403,7 +430,7 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
                 if not is_speaking:
                     pre_speech_buffer.append(audio_chunk)
 
-                audio_tensor = self._torch.from_numpy(audio_chunk.flatten())
+                audio_tensor = torch.from_numpy(audio_chunk.flatten())
                 speech_prob = vad_model(audio_tensor, sample_rate).item()
 
                 if speech_prob > vad_threshold:
@@ -418,7 +445,7 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
                     speech_buffer.append(audio_chunk)
                     silence_counter += 1
                     if silence_counter > silence_chunks_needed:
-                        audio_to_process = self._np.concatenate(speech_buffer)
+                        audio_to_process = np.concatenate(speech_buffer)
 
                         is_speaking = False
                         speech_buffer.clear()
@@ -431,7 +458,6 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
                             await self._save_failed_audio(audio_to_process, sample_rate)
 
                 await asyncio.sleep(0.01)
-
         finally:
             try:
                 stream.stop()
