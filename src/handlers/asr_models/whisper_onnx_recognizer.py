@@ -487,10 +487,15 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
             self.logger.error(f"Не удалось сохранить аудиофрагмент: {e}")
 
     def cleanup(self) -> None:
-        self._stop_process()
-        self._torch = None
-        self._sd = None
-        self._np = None
+        try:
+            if self._model is not None:
+                del self._model
+            if self._torch is not None and self._torch.cuda.is_available():
+                self._torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+        self._model = None
         self._is_initialized = False
 
     def _monitor_process(self):
