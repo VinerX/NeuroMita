@@ -87,18 +87,11 @@ class AsrEventsController(BaseController):
         })
 
     def _on_install_finished(self, event: Event):
-        
-        logger.notify("[DEBUG] asr_events_controller.py: зашёл")
         data = event.data or {}
         model = data.get("model")
         if not model:
-            
-            logger.notify("[DEBUG] asr_events_controller.py: NOT MODEL!")
             return
-        
-        logger.notify("[DEBUG] asr_events_controller.py: Перед эмитом _emit_install_finished.")
         self._emit_install_finished({"model": model})
-        logger.notify("[DEBUG] asr_events_controller.py: После эмита _emit_install_finished.")
 
     def _on_install_failed(self, event: Event):
         data = event.data or {}

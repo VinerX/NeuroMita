@@ -1,3 +1,4 @@
+# src/handlers/asr_models/google_recognizer.py
 import asyncio
 from typing import Optional
 import numpy as np
@@ -14,6 +15,27 @@ class GoogleRecognizer(SpeechRecognizerInterface):
     - install() ничего не скачивает (артефактов нет) и возвращает True
     - is_installed() проверяет наличие python-модулей по requirements
     """
+
+    MODEL_CONFIGS = [
+        {
+            "id": "google",
+            "name": "Google",
+            "languages": ["Russian", "English"],
+            "gpu_vendor": ["CPU"],
+            "tags": [
+                _("Онлайн", "Online"),
+            ],
+            "description": _(
+                "Онлайн-распознавание через SpeechRecognition (Google Web Speech API). "
+                "Без скачивания весов модели, но нужен интернет.",
+                "Online recognition via SpeechRecognition (Google Web Speech API). "
+                "No model weights download, but internet is required.",
+            ),
+            "links": [
+                {"label": "SpeechRecognition (PyPI)", "url": "https://pypi.org/project/SpeechRecognition/"}
+            ],
+        }
+    ]
 
     def __init__(self, pip_installer, logger):
         super().__init__(pip_installer, logger)
@@ -35,8 +57,6 @@ class GoogleRecognizer(SpeechRecognizerInterface):
         ]
 
     def pip_install_steps(self, ctx: dict):
-        # Минимум для работы: пакет SpeechRecognition (модуль speech_recognition)
-        # pyaudio оставим опциональным — сильно зависит от окружения/OS.
         return [
             {
                 "progress": 20,
@@ -44,13 +64,6 @@ class GoogleRecognizer(SpeechRecognizerInterface):
                 "packages": ["SpeechRecognition"],
                 "extra_args": None
             },
-            # Опционально — если хочешь ставить pyaudio автоматически, раскомментируй:
-            # {
-            #     "progress": 35,
-            #     "description": _("Установка PyAudio (опционально)...", "Installing PyAudio (optional)..."),
-            #     "packages": ["pyaudio"],
-            #     "extra_args": None
-            # },
         ]
 
     def is_installed(self) -> bool:
@@ -58,7 +71,6 @@ class GoogleRecognizer(SpeechRecognizerInterface):
         return bool(st.get("ok"))
 
     async def install(self) -> bool:
-        # Никаких весов/файлов. Всё, что нужно — pip зависимости.
         return True
 
     async def init(self, **kwargs) -> bool:
@@ -100,14 +112,14 @@ class GoogleRecognizer(SpeechRecognizerInterface):
             pa = pyaudio.PyAudio()
             try:
                 device_info = pa.get_device_info_by_index(microphone_index)
-                if device_info['maxInputChannels'] == 0:
+                if device_info["maxInputChannels"] == 0:
                     return False, "Выбранное устройство не поддерживает аудио ввод"
 
                 try:
                     test_stream = pa.open(
                         format=pyaudio.paInt16,
                         channels=1,
-                        rate=int(device_info['defaultSampleRate']),
+                        rate=int(device_info["defaultSampleRate"]),
                         input=True,
                         input_device_index=microphone_index,
                         frames_per_buffer=1024
@@ -118,10 +130,9 @@ class GoogleRecognizer(SpeechRecognizerInterface):
                     error_msg = str(stream_error).lower()
                     if "invalid device" in error_msg:
                         return False, "Устройство недоступно или отключено"
-                    elif "unanticipated host error" in error_msg or "access denied" in error_msg:
+                    if "unanticipated host error" in error_msg or "access denied" in error_msg:
                         return False, "Нет разрешения на доступ к микрофону"
-                    else:
-                        return False, f"Ошибка доступа к микрофону: {stream_error}"
+                    return False, f"Ошибка доступа к микрофону: {stream_error}"
             finally:
                 pa.terminate()
         except Exception as e:
@@ -162,9 +173,11 @@ class GoogleRecognizer(SpeechRecognizerInterface):
         chosen_cfg = None
         for cfg in configs:
             try:
-                with self._sr.Microphone(device_index=microphone_index,
-                                         sample_rate=cfg["sample_rate"],
-                                         chunk_size=cfg["chunk_size"]) as test_source:
+                with self._sr.Microphone(
+                    device_index=microphone_index,
+                    sample_rate=cfg["sample_rate"],
+                    chunk_size=cfg["chunk_size"]
+                ) as test_source:
                     try:
                         recognizer.adjust_for_ambient_noise(test_source, duration=0.5)
                     except Exception:
@@ -199,9 +212,7 @@ class GoogleRecognizer(SpeechRecognizerInterface):
                 text = rec.recognize_google(audio, language="ru-RU")
                 if text and text.strip():
                     self.logger.info(f"Распознано (google): {text}")
-                    loop.call_soon_threadsafe(
-                        lambda t=text: asyncio.create_task(handle_voice_callback(t))
-                    )
+                    loop.call_soon_threadsafe(lambda t=text: asyncio.create_task(handle_voice_callback(t)))
             except self._sr.UnknownValueError:
                 pass
             except self._sr.RequestError as e:

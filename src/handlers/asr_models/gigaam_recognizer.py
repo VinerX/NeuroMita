@@ -22,15 +22,31 @@ from core.events import get_event_bus, Events
 
 
 class GigaAMRecognizer(SpeechRecognizerInterface):
-    """
-    ВАЖНО:
-    - pip-установка ЗДЕСЬ НЕ ДЕЛАЕТСЯ. Её выполняет внешний InstallController.
-    - Этот класс:
-      * объявляет requirements() и pip_install_steps(ctx)
-      * is_installed() проверяет requirements + веса на диске
-      * install() скачивает веса (ckpt + tokenizer при необходимости)
-      * init()/live_recognition используют уже установленные зависимости
-    """
+
+    MODEL_CONFIGS = [
+        {
+            "id": "gigaam",
+            "name": _("GigaAM", "GigaAM"),
+            "description": _(
+                "Офлайн-распознавание речи на базе GigaAM (SberDevices). Работает локально, "
+                "требует скачивания весов. Поддерживает разные варианты модели (v1/v2/v3, rnnt/ctc/ssl) "
+                "и разные устройства (CPU/CUDA/DirectML).",
+                "Offline speech recognition based on GigaAM (SberDevices). Runs locally, "
+                "requires downloading model weights. Supports multiple variants (v1/v2/v3, rnnt/ctc/ssl) "
+                "and multiple devices (CPU/CUDA/DirectML)."
+            ),
+            "languages": ["Russian"],
+            "gpu_vendor": ["NVIDIA", "AMD", "CPU"],
+            "tags": [
+                _("Офлайн", "Offline"),
+                _("Локально", "Local"),
+                _("С VAD", "With VAD"),
+                _("CPU/CUDA/DML", "CPU/CUDA/DML"),
+                _("Несколько вариантов модели", "Multiple model variants"),
+            ],
+            "links": []
+        }
+    ]
 
     def __init__(self, pip_installer, logger):
         super().__init__(pip_installer, logger)

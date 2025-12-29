@@ -1,3 +1,4 @@
+# src/handlers/asr_models/speech_recognizer_base.py
 from abc import ABC, abstractmethod
 from typing import Optional, List
 import numpy as np
@@ -6,6 +7,11 @@ from handlers.asr_models.requirements import AsrRequirement
 
 
 class SpeechRecognizerInterface(ABC):
+    MODEL_CONFIGS: List[dict] = []
+
+    def get_model_configs(self) -> List[dict]:
+        return list(getattr(self, "MODEL_CONFIGS", []) or [])
+
     def __init__(self, pip_installer, logger):
         self.pip_installer = pip_installer
         self.logger = logger

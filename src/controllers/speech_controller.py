@@ -394,25 +394,26 @@ class SpeechController:
     
     def _on_get_asr_models_glossary(self, event: Event):
         """
-        Возвращает список ASR-движков с их dependency status для UI глоссария.
+        Возвращает список ASR-движков для UI глоссария:
+        - installed/details/missing_* считаются через check_requirements
+        - name/description/tags/languages/gpu_vendor/links берём из MODEL_CONFIGS движка (как LocalVoice)
         """
         try:
             from handlers.asr_models.requirements import check_requirements
             from utils.gpu_utils import check_gpu_provider
             from handlers.asr_handler import SpeechRecognition
 
-            gpu_vendor = None
             try:
                 gpu_vendor = check_gpu_provider() or "CPU"
             except Exception:
                 gpu_vendor = "CPU"
 
-            # ensure asr settings loaded
             if not self._asr_settings or not self._asr_settings.get("models"):
                 self._load_asr_settings()
 
             models_map = self._asr_settings.get("models", {}) or {}
-            engines = list(getattr(SpeechRecognition, "_registry", {}).keys())
+            registry = getattr(SpeechRecognition, "_registry", {}) or {}
+            engines = list(registry.keys())
 
             result = []
             for engine in engines:
@@ -426,6 +427,19 @@ class SpeechController:
                 except Exception:
                     inst = None
 
+                # --- META из MODEL_CONFIGS (как в LocalVoice) ---
+                meta = {}
+                try:
+                    cfgs = inst.get_model_configs() if inst else (getattr(registry.get(engine), "MODEL_CONFIGS", []) or [])
+                    if isinstance(cfgs, list):
+                        for c in cfgs:
+                            if isinstance(c, dict) and str(c.get("id") or "") == str(engine):
+                                meta = c
+                                break
+                except Exception:
+                    meta = {}
+
+                # --- requirements status ---
                 reqs = []
                 try:
                     if inst and hasattr(inst, "requirements"):
@@ -444,6 +458,14 @@ class SpeechController:
 
                 result.append({
                     "id": engine,
+
+                    "name": meta.get("name") or engine,
+                    "description": meta.get("description") or "",
+                    "languages": meta.get("languages", []) if isinstance(meta.get("languages"), list) else [],
+                    "gpu_vendor": meta.get("gpu_vendor", []) if isinstance(meta.get("gpu_vendor"), list) else [],
+                    "tags": meta.get("tags", []) if isinstance(meta.get("tags"), list) else [],
+                    "links": meta.get("links", []) if isinstance(meta.get("links"), list) else [],
+
                     "installed": bool(status.get("ok")),
                     "missing_required": status.get("missing_required", []),
                     "missing_optional": status.get("missing_optional", []),

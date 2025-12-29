@@ -16,10 +16,28 @@ from core.events import get_event_bus, Events
 
 
 class WhisperRecognizer(SpeechRecognizerInterface):
-    """
-    Whisper через faster-whisper (CTranslate2). Без transformers.
-    VAD: внешний (silero-vad), передаётся из asr_handler.
-    """
+    
+    MODEL_CONFIGS = [
+        {
+            "id": "whisper",
+            "name": "Whisper Large v3 turbo",
+            "description": _(
+                "Офлайн Whisper через faster-whisper (CTranslate2). Быстро работает на NVIDIA GPU (CUDA), "
+                "на CPU тоже поддерживается. Требует скачивания модели в локальный кэш.",
+                "Offline Whisper via faster-whisper (CTranslate2). Fast on NVIDIA GPU (CUDA), "
+                "CPU is supported as well. Requires downloading the model into local cache."
+            ),
+            "languages": ["Multilingual"],
+            "gpu_vendor": ["NVIDIA", "CPU"],
+            "tags": [
+                _("Офлайн", "Offline"),
+                _("Локально", "Local"),
+            ],
+            "links": [
+                {"label": "faster-whisper (PyPI)", "url": "https://pypi.org/project/faster-whisper/"}
+            ]
+        }
+    ]
 
     def __init__(self, pip_installer, logger):
         super().__init__(pip_installer, logger)

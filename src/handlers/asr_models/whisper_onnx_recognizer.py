@@ -28,6 +28,32 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
     VAD: внешний (silero-vad), передаётся из asr_handler.
     """
 
+    MODEL_CONFIGS = [
+        {
+            "id": "whisper_onnx",
+            "name": "Whisper Large v3 turbo (ONNX)",
+            "description": _(
+                "Офлайн Whisper в формате ONNX. Работает через onnxruntime, а на AMD/не‑NVIDIA может "
+                "использовать DirectML. Модель и файлы transformers скачиваются локально.",
+                "Offline Whisper in ONNX format. Runs via onnxruntime, and on AMD/non‑NVIDIA can "
+                "use DirectML. Model and transformers files are downloaded locally."
+            ),
+            "languages": ["Multilingual"],
+            "gpu_vendor": ["NVIDIA", "AMD"],
+            "tags": [
+                _("Локально", "Local"),
+                _("ONNX", "ONNX"),
+            ],
+            "links": [
+                {
+                    "label": "onnx-community/whisper-large-v3-turbo-onnx (HF)",
+                    "url": "https://huggingface.co/onnx-community/whisper-large-v3-turbo-onnx"
+                },
+                {"label": "optimum (PyPI)", "url": "https://pypi.org/project/optimum/"}
+            ]
+        }
+    ]
+
     def __init__(self, pip_installer, logger):
         super().__init__(pip_installer, logger)
 
