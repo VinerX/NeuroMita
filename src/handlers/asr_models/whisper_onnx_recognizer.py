@@ -308,7 +308,7 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
                 _download(f"{repo_onnx}/decoder_model.onnx", p["decoder"], 96, 99)
 
             if not (os.path.exists(p["decoder_with_past"]) and os.path.getsize(p["decoder_with_past"]) > 0):
-                _download(f"{repo_onnx}/decoder_with_past_model.onnx", p["decoder"], 96, 99)
+                _download(f"{repo_onnx}/decoder_with_past_model.onnx", p["decoder_with_past"], 96, 99)
 
             self._event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
                 "model": "whisper_onnx",
