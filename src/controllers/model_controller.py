@@ -151,8 +151,9 @@ class ModelController:
         self.model.GameMaster = self.character_manager.GameMaster
     
     def _on_get_character(self, event: Event):
-        character_name = (event.data or {}).get('name')
-        return self.character_manager.get_character(character_name)
+        data = event.data or {}
+        character_id = data.get('char_id') or data.get('character') or data.get('name')
+        return self.character_manager.get_character(character_id)
     
     def _on_reload_character_prompts(self, event: Event):
         character_name = (event.data or {}).get('character')

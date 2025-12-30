@@ -96,16 +96,33 @@ class ChatController:
                 voice_character = None
 
                 if character:
+                    logger.notify(f"Текущий персонаж: {character}")
                     voice_character_res = self.event_bus.emit_and_wait(
                         Events.Model.GET_CHARACTER,
                         {'char_id': character, 'character': character},
                         timeout=3.0
                     )
+                    
+                    logger.notify(f"Получил {character}")
                     vc = voice_character_res[0] if voice_character_res else None
-                    if isinstance(vc, dict):
-                        voice_character = vc
+                    logger.notify(f"Получил {vc} из {voice_character_res}")
+
+                    if vc is not None:
+                        
+                        voice_character = {
+                            'name': getattr(vc, 'name', ''),
+                            'char_id': getattr(vc, 'char_id', ''),
+                            'is_cartridge': bool(getattr(vc, 'is_cartridge', False)),
+                            'silero_command': getattr(vc, 'silero_command', ''),
+                            'short_name': getattr(vc, 'short_name', ''),
+                            'miku_tts_name': getattr(vc, 'miku_tts_name', 'Player'),
+                            'silero_turn_off_video': bool(getattr(vc, 'silero_turn_off_video', False)),
+                        }
+                        logger.success("Зашёл в isinstance")
 
                 if not voice_character:
+                    
+                    logger.notify(f"Текущий персонаж не найден: {character}")
                     current_res = self.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CHARACTER, timeout=3.0)
                     cc = current_res[0] if current_res else None
                     if isinstance(cc, dict):

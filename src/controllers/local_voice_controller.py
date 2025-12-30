@@ -396,14 +396,25 @@ class LocalVoiceController:
             if isinstance(character, dict):
                 resolved_character = character
             elif isinstance(character_id, str) and character_id:
-                ch_res = self.event_bus.emit_and_wait(
+                character_res = self.event_bus.emit_and_wait(
                     Events.Model.GET_CHARACTER,
                     {'char_id': character_id, 'character': character_id},
                     timeout=3.0
                 )
-                ch = ch_res[0] if ch_res else None
-                if isinstance(ch, dict):
-                    resolved_character = ch
+                character = character_res[0] if character_res else None
+                
+                if character and not isinstance(character, dict) and hasattr(character, 'char_id'):
+                    resolved_character = {
+                        'name': getattr(character, 'name', ''),
+                        'char_id': getattr(character, 'char_id', ''),
+                        'is_cartridge': bool(getattr(character, 'is_cartridge', False)),
+                        'silero_command': getattr(character, 'silero_command', ''),
+                        'short_name': getattr(character, 'short_name', ''),
+                        'miku_tts_name': getattr(character, 'miku_tts_name', 'Player'),
+                        'silero_turn_off_video': bool(getattr(character, 'silero_turn_off_video', False)),
+                    }
+                elif isinstance(character, dict):
+                    resolved_character = character
 
             if not resolved_character:
                 current_res = self.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CHARACTER, timeout=3.0)
