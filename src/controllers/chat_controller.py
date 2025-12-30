@@ -93,29 +93,54 @@ class ChatController:
                 return None
 
             if response and self.settings.get("USE_VOICEOVER") and not is_react:
-                character_result = self.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CHARACTER, timeout=3.0)
-                current_character = character_result[0] if character_result else None
+                voice_character = None
 
-                logger.info(current_character)
-                if current_character:
-                    is_game_master = current_character.get('name') == 'GameMaster'
-                    if not is_game_master or self.settings.get("GM_VOICE"):
+                if character:
+                    voice_character_res = self.event_bus.emit_and_wait(
+                        Events.Model.GET_CHARACTER,
+                        {'char_id': character, 'character': character},
+                        timeout=3.0
+                    )
+                    vc = voice_character_res[0] if voice_character_res else None
+                    if isinstance(vc, dict):
+                        voice_character = vc
+
+                if not voice_character:
+                    current_res = self.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CHARACTER, timeout=3.0)
+                    cc = current_res[0] if current_res else None
+                    if isinstance(cc, dict):
+                        voice_character = cc
+
+                logger.info(voice_character)
+
+                if voice_character:
+                    is_game_master = (voice_character.get('name') == 'GameMaster')
+                    if (not is_game_master) or self.settings.get("GM_VOICE"):
                         if task_uid:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 'uid': task_uid,
                                 'status': TaskStatus.VOICING
                             })
 
-                        speaker = current_character.get("silero_command")
+                        speaker = voice_character.get("silero_command")
                         if self.settings.get("AUDIO_BOT") == "@CrazyMitaAIbot":
-                            speaker = current_character.get("miku_tts_name")
+                            speaker = voice_character.get("miku_tts_name")
 
                         self.event_bus.emit(Events.Audio.VOICEOVER_REQUESTED, {
                             'text': response,
                             'speaker': speaker,
-                            'task_uid': task_uid
+                            'task_uid': task_uid,
+                            'character': voice_character,
+                            'character_id': character,
                         })
                         logger.info(f"Озвучка запрошена с task_uid: {task_uid}")
+                else:
+                    if task_uid:
+                        self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
+                            'uid': task_uid,
+                            'status': TaskStatus.SUCCESS,
+                            'result': {'response': response}
+                        })
             else:
                 if task_uid:
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {

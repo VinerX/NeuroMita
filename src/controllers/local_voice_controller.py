@@ -358,31 +358,58 @@ class LocalVoiceController:
                 log_cb(f"Ошибка: {e}")
             return False
 
+    
     def _on_local_send_voice_request(self, event: Event):
         data = event.data or {}
         text = data.get('text', '')
         future = data.get('future')
+        character = data.get('character')
+        character_id = data.get('character_id')
 
         if not text or not future:
             if future and not future.done():
-                future.set_exception(Exception("Invalid voice request arguments"))
+                try:
+                    future.set_exception(Exception("Invalid voice request arguments"))
+                except Exception:
+                    pass
             return
 
-        coro = self._async_local_voiceover(text, future)
+        coro = self._async_local_voiceover(text, future, character=character, character_id=character_id)
 
         def handle_result(result, error):
             if error and future and not future.done():
-                future.set_exception(error)
+                try:
+                    future.set_exception(error)
+                except Exception:
+                    pass
 
         self.event_bus.emit(Events.Core.RUN_IN_LOOP, {
             'coroutine': coro,
             'callback': handle_result
         })
 
-    async def _async_local_voiceover(self, text: str, future):
+
+    async def _async_local_voiceover(self, text: str, future, character: Optional[dict] = None, character_id: Optional[str] = None):
         try:
-            character_result = self.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CHARACTER, timeout=3.0)
-            character = character_result[0] if character_result else None
+            resolved_character = None
+
+            if isinstance(character, dict):
+                resolved_character = character
+            elif isinstance(character_id, str) and character_id:
+                ch_res = self.event_bus.emit_and_wait(
+                    Events.Model.GET_CHARACTER,
+                    {'char_id': character_id, 'character': character_id},
+                    timeout=3.0
+                )
+                ch = ch_res[0] if ch_res else None
+                if isinstance(ch, dict):
+                    resolved_character = ch
+
+            if not resolved_character:
+                current_res = self.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CHARACTER, timeout=3.0)
+                cc = current_res[0] if current_res else None
+                if isinstance(cc, dict):
+                    resolved_character = cc
 
             output_file = f"MitaVoices/output_{uuid.uuid4()}.wav"
             absolute_audio_path = os.path.abspath(output_file)
@@ -393,7 +420,7 @@ class LocalVoiceController:
             result_path = await self.local_voice.voiceover(
                 text=text,
                 output_file=absolute_audio_path,
-                character=character
+                character=resolved_character
             )
 
             if future and not future.done():
@@ -403,6 +430,8 @@ class LocalVoiceController:
                     future.set_exception(Exception("Local voiceover failed: empty result"))
 
         except Exception as e:
-            #logger.error(f"Ошибка локальной озвучки: {e}", exc_info=False)
             if future and not future.done():
-                future.set_exception(e)
+                try:
+                    future.set_exception(e)
+                except Exception:
+                    pass
