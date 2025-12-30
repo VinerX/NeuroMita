@@ -4,7 +4,7 @@ from typing import Optional
 import numpy as np
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
-from handlers.asr_models.requirements import AsrRequirement, check_requirements
+from core.install_requirements import InstallRequirement, check_requirements
 from utils import getTranslationVariant as _
 
 
@@ -52,8 +52,8 @@ class GoogleRecognizer(SpeechRecognizerInterface):
 
     def requirements(self):
         return [
-            AsrRequirement(id="speech_recognition", kind="python_module", module="speech_recognition", required=True),
-            AsrRequirement(id="pyaudio", kind="python_module", module="pyaudio", required=False),
+            InstallRequirement(id="speech_recognition", kind="python_module", module="speech_recognition", required=True),
+            InstallRequirement(id="pyaudio", kind="python_module", module="pyaudio", required=False),
         ]
 
     def pip_install_steps(self, ctx: dict):
@@ -65,6 +65,9 @@ class GoogleRecognizer(SpeechRecognizerInterface):
                 "extra_args": None
             },
         ]
+
+    def install_manifest(self) -> list[dict]:
+        return []
 
     def is_installed(self) -> bool:
         st = check_requirements(self.requirements(), ctx={})

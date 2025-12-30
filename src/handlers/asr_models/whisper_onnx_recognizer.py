@@ -14,11 +14,10 @@ import urllib.request
 import urllib.error
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
-from handlers.asr_models.requirements import AsrRequirement, check_requirements
+from core.install_requirements import InstallRequirement, check_requirements
 
 from utils import getTranslationVariant as _
 from utils.gpu_utils import check_gpu_provider
-from core.events import get_event_bus, Events
 
 
 class WhisperOnnxRecognizer(SpeechRecognizerInterface):
@@ -82,8 +81,6 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
         self._transcribe_result = None
         self._transcribe_event = Event()
 
-        self._event_bus = get_event_bus()
-
         self._hf_base = "https://huggingface.co/onnx-community/whisper-large-v3-turbo-onnx/resolve/main/onnx"
 
     def settings_spec(self):
@@ -131,32 +128,32 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
             "encoder": os.path.join(d, "encoder_model.onnx"),
             "encoder_data": os.path.join(d, "encoder_model.onnx_data"),
             "decoder": os.path.join(d, "decoder_model.onnx"),
-            "decoder_with_past": os.path.join(d, "decoder_with_past.onnx"),
+            "decoder_with_past": os.path.join(d, "decoder_with_past_model.onnx"),
         }
 
     def requirements(self):
         p = self._paths()
         return [
-            AsrRequirement(id="torch", kind="python_module", module="torch", required=True),
-            AsrRequirement(id="torchaudio", kind="python_module", module="torchaudio", required=True),
-            AsrRequirement(id="sounddevice", kind="python_module", module="sounddevice", required=True),
-            AsrRequirement(id="numpy", kind="python_module", module="numpy", required=True),
-            AsrRequirement(id="silero_vad", kind="python_module", module="silero_vad", required=True),
+            InstallRequirement(id="torch", kind="python_module", module="torch", required=True),
+            InstallRequirement(id="torchaudio", kind="python_module", module="torchaudio", required=True),
+            InstallRequirement(id="sounddevice", kind="python_module", module="sounddevice", required=True),
+            InstallRequirement(id="numpy", kind="python_module", module="numpy", required=True),
+            InstallRequirement(id="silero_vad", kind="python_module", module="silero_vad", required=True),
 
-            AsrRequirement(id="transformers", kind="python_module", module="transformers", required=True),
-            AsrRequirement(id="optimum_ort", kind="python_module", module="optimum.onnxruntime", required=True),
-            AsrRequirement(id="onnxruntime", kind="python_module", module="onnxruntime", required=True),
+            InstallRequirement(id="transformers", kind="python_module", module="transformers", required=True),
+            InstallRequirement(id="optimum_ort", kind="python_module", module="optimum.onnxruntime", required=True),
+            InstallRequirement(id="onnxruntime", kind="python_module", module="onnxruntime", required=True),
 
-            AsrRequirement(id="whisper_cfg", kind="file", required=True, path=os.path.join(self.model_dir, "config.json")),
-            AsrRequirement(id="whisper_tok", kind="file", required=True, path=os.path.join(self.model_dir, "tokenizer.json")),
-            AsrRequirement(id="whisper_tok_cfg", kind="file", required=True, path=os.path.join(self.model_dir, "tokenizer_config.json")),
-            AsrRequirement(id="whisper_special", kind="file", required=True, path=os.path.join(self.model_dir, "special_tokens_map.json")),
-            AsrRequirement(id="whisper_preproc", kind="file", required=True, path=os.path.join(self.model_dir, "preprocessor_config.json")),
+            InstallRequirement(id="whisper_cfg", kind="file", required=True, path=os.path.join(self.model_dir, "config.json")),
+            InstallRequirement(id="whisper_tok", kind="file", required=True, path=os.path.join(self.model_dir, "tokenizer.json")),
+            InstallRequirement(id="whisper_tok_cfg", kind="file", required=True, path=os.path.join(self.model_dir, "tokenizer_config.json")),
+            InstallRequirement(id="whisper_special", kind="file", required=True, path=os.path.join(self.model_dir, "special_tokens_map.json")),
+            InstallRequirement(id="whisper_preproc", kind="file", required=True, path=os.path.join(self.model_dir, "preprocessor_config.json")),
 
-            AsrRequirement(id="whisper_onnx_encoder", kind="file", required=True, path=p["encoder"]),
-            AsrRequirement(id="whisper_onnx_encoder_data", kind="file", required=True, path=p["encoder_data"]),
-            AsrRequirement(id="whisper_onnx_decoder", kind="file", required=True, path=p["decoder"]),
-            AsrRequirement(id="whisper_onnx_decoder_with_past", kind="file", required=True, path=p["decoder_with_past"]),
+            InstallRequirement(id="whisper_onnx_encoder", kind="file", required=True, path=p["encoder"]),
+            InstallRequirement(id="whisper_onnx_encoder_data", kind="file", required=True, path=p["encoder_data"]),
+            InstallRequirement(id="whisper_onnx_decoder", kind="file", required=True, path=p["decoder"]),
+            InstallRequirement(id="whisper_onnx_decoder_with_past", kind="file", required=True, path=p["decoder_with_past"]),
         ]
 
     def pip_install_steps(self, ctx: dict) -> List[dict]:
@@ -217,104 +214,75 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
         ctx = {"device": self.device, "gpu_vendor": self._current_gpu}
         st = check_requirements(self.requirements(), ctx=ctx)
         return bool(st.get("ok"))
+    
+    def install_manifest(self) -> list[dict]:
+        repo_root = "https://huggingface.co/onnx-community/whisper-large-v3-turbo-onnx/resolve/main"
+        repo_onnx = repo_root + "/onnx"
 
-    async def install(self) -> bool:
         p = self._paths()
-        os.makedirs(self._onnx_dir(), exist_ok=True)
+        onnx_dir = self._onnx_dir()
+        os.makedirs(onnx_dir, exist_ok=True)
         os.makedirs(self.model_dir, exist_ok=True)
 
-        def _download(url: str, dest: str, start_prog: int, end_prog: int):
-            tmp = dest + ".part"
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Python-urllib", "Accept": "*/*"},
-                method="GET",
-            )
+        tf_files = [
+            ("config.json", os.path.join(self.model_dir, "config.json")),
+            ("tokenizer.json", os.path.join(self.model_dir, "tokenizer.json")),
+            ("tokenizer_config.json", os.path.join(self.model_dir, "tokenizer_config.json")),
+            ("special_tokens_map.json", os.path.join(self.model_dir, "special_tokens_map.json")),
+            ("preprocessor_config.json", os.path.join(self.model_dir, "preprocessor_config.json")),
+            ("generation_config.json", os.path.join(self.model_dir, "generation_config.json")),
+        ]
 
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                total = int(resp.headers.get("Content-Length") or 0)
-                done = 0
-                last_emit = 0.0
+        items: list[dict] = []
+        for fname, dest in tf_files:
+            items.append({"url": f"{repo_root}/{fname}", "dest": dest})
 
-                with open(tmp, "wb") as f:
-                    while True:
-                        chunk = resp.read(1024 * 1024 * 4)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        done += len(chunk)
+        items.append({"url": f"{repo_onnx}/encoder_model.onnx", "dest": p["encoder"]})
+        items.append({"url": f"{repo_onnx}/encoder_model.onnx_data", "dest": p["encoder_data"]})
+        items.append({"url": f"{repo_onnx}/decoder_model.onnx", "dest": p["decoder"]})
+        items.append({"url": f"{repo_onnx}/decoder_with_past_model.onnx", "dest": p["decoder_with_past"]})
 
-                        now = time.time()
-                        if now - last_emit < 0.4:
-                            continue
-                        last_emit = now
+        return items
 
-                        pct = (done * 100.0 / total) if total > 0 else 0.0
-                        prog = start_prog + int((end_prog - start_prog) * (pct / 100.0))
-                        self._event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
-                            "model": "whisper_onnx",
-                            "progress": int(max(0, min(99, prog))),
-                            "status": _(f"Загрузка: {pct:.1f}%", f"Downloading: {pct:.1f}%")
-                        })
-
-            if os.path.exists(dest):
-                try:
-                    os.remove(dest)
-                except Exception:
-                    pass
-            os.replace(tmp, dest)
-
+    async def install(self) -> bool:
         try:
-            repo_root = "https://huggingface.co/onnx-community/whisper-large-v3-turbo-onnx/resolve/main"
-            repo_onnx = repo_root + "/onnx"
-
-            self._event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
-                "model": "whisper_onnx",
-                "progress": 75,
-                "status": _("Загрузка файлов transformers (локально)...", "Downloading transformers files (local)...")
-            })
-
-            tf_files = [
-                ("config.json", os.path.join(self.model_dir, "config.json")),
-                ("tokenizer.json", os.path.join(self.model_dir, "tokenizer.json")),
-                ("tokenizer_config.json", os.path.join(self.model_dir, "tokenizer_config.json")),
-                ("special_tokens_map.json", os.path.join(self.model_dir, "special_tokens_map.json")),
-                ("preprocessor_config.json", os.path.join(self.model_dir, "preprocessor_config.json")),
-                ("generation_config.json", os.path.join(self.model_dir, "generation_config.json")),
-            ]
-
-            prog_a, prog_b = 75, 80
-            span = max(1, len(tf_files))
-            for idx, (fname, dest) in enumerate(tf_files):
-                if os.path.exists(dest) and os.path.getsize(dest) > 0:
+            items = self.install_manifest()
+            for it in items:
+                dest = str(it.get("dest") or "")
+                if dest and os.path.exists(dest) and os.path.getsize(dest) > 0:
                     continue
-                s = prog_a + int((prog_b - prog_a) * (idx / span))
-                e = prog_a + int((prog_b - prog_a) * ((idx + 1) / span))
-                _download(f"{repo_root}/{fname}", dest, s, e)
 
-            self._event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
-                "model": "whisper_onnx",
-                "progress": 80,
-                "status": _("Загрузка ONNX модели Whisper...", "Downloading Whisper ONNX model...")
-            })
+                url = str(it.get("url") or "")
+                if not url or not dest:
+                    continue
 
-            if not (os.path.exists(p["encoder"]) and os.path.getsize(p["encoder"]) > 0):
-                _download(f"{repo_onnx}/encoder_model.onnx", p["encoder"], 80, 88)
+                os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
 
-            if not (os.path.exists(p["encoder_data"]) and os.path.getsize(p["encoder_data"]) > 0):
-                _download(f"{repo_onnx}/encoder_model.onnx_data", p["encoder_data"], 88, 96)
+                tmp = dest + ".part"
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Python-urllib",
+                        "Accept": "*/*"
+                    },
+                    method="GET",
+                )
 
-            if not (os.path.exists(p["decoder"]) and os.path.getsize(p["decoder"]) > 0):
-                _download(f"{repo_onnx}/decoder_model.onnx", p["decoder"], 96, 99)
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    with open(tmp, "wb") as f:
+                        while True:
+                            chunk = resp.read(1024 * 1024 * 4)
+                            if not chunk:
+                                break
+                            f.write(chunk)
 
-            if not (os.path.exists(p["decoder_with_past"]) and os.path.getsize(p["decoder_with_past"]) > 0):
-                _download(f"{repo_onnx}/decoder_with_past_model.onnx", p["decoder_with_past"], 96, 99)
+                if os.path.exists(dest):
+                    try:
+                        os.remove(dest)
+                    except Exception:
+                        pass
+                os.replace(tmp, dest)
 
-            self._event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
-                "model": "whisper_onnx",
-                "progress": 100,
-                "status": _("Файлы модели готовы.", "Model files are ready.")
-            })
             return True
 
         except urllib.error.HTTPError as e:

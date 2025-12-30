@@ -3,6 +3,7 @@ import asyncio
 from collections import deque
 from threading import Lock, RLock
 from typing import Optional, List, Dict
+
 from main_logger import logger
 
 from utils.pip_installer import PipInstaller
@@ -13,7 +14,7 @@ from handlers.asr_models.gigaam_recognizer import GigaAMRecognizer
 from handlers.asr_models.gigaam_onnx_recognizer import GigaAMOnnxRecognizer
 from handlers.asr_models.whisper_recognizer import WhisperRecognizer
 from handlers.asr_models.whisper_onnx_recognizer import WhisperOnnxRecognizer
-from core.events import get_event_bus, Events
+from core.events import get_event_bus, Events, Event
 
 
 class AudioState:
@@ -36,12 +37,79 @@ class AudioState:
 audio_state = AudioState()
 
 
+def _asr_install_runner(engine: str, engine_settings: Optional[dict], timeout_sec: float):
+    def _runner(*args, **kwargs):
+        pip_installer = kwargs.get("pip_installer") if isinstance(kwargs, dict) else None
+        callbacks = kwargs.get("callbacks") if isinstance(kwargs, dict) else None
+        ctx = kwargs.get("ctx") if isinstance(kwargs, dict) else None
+
+        if pip_installer is None and len(args) >= 1:
+            pip_installer = args[0]
+        if callbacks is None and len(args) >= 2:
+            callbacks = args[1]
+        if ctx is None and len(args) >= 3:
+            ctx = args[2]
+
+        return SpeechRecognition.build_install_plan(
+            engine,
+            pip_installer=pip_installer,
+            engine_settings=engine_settings or {},
+            callbacks=callbacks,
+            timeout_sec=float(timeout_sec or 3600.0),
+        )
+
+    return _runner
+
+
+def _on_install_asr_model_event(event: Event):
+    data = event.data if isinstance(event.data, dict) else {}
+
+    engine = data.get("model") or data.get("engine") or data.get("item_id")
+    if not engine:
+        logger.error("INSTALL_ASR_MODEL: missing 'model' in payload")
+        return
+
+    engine_settings = data.get("settings") or data.get("engine_settings") or {}
+    with_ui = bool(data.get("with_ui", True))
+    timeout_sec = float(data.get("timeout_sec", 3600.0) or 3600.0)
+
+    runner = _asr_install_runner(str(engine), engine_settings, timeout_sec)
+
+    payload = {
+        "kind": "asr",
+        "item_id": str(engine),
+        "task_id": f"asr:{engine}",
+        "title": _("Установка ASR модели: ", "Installing ASR model: ") + str(engine),
+        "initial_status": _("Подготовка...", "Preparing..."),
+        "timeout_sec": float(timeout_sec),
+        "meta": {
+            "kind": "asr",
+            "item_id": str(engine),
+        },
+        "runner": runner,
+    }
+
+    eb = get_event_bus()
+    eb.emit(Events.Install.RUN_WITH_UI if with_ui else Events.Install.RUN_HEADLESS, payload)
+
+
+_ASR_INSTALL_EVENTS_REGISTERED = False
+
+
+def register_asr_install_events() -> None:
+    global _ASR_INSTALL_EVENTS_REGISTERED
+    if _ASR_INSTALL_EVENTS_REGISTERED:
+        return
+    eb = get_event_bus()
+    eb.subscribe(Events.Speech.INSTALL_ASR_MODEL, _on_install_asr_model_event, weak=False)
+    _ASR_INSTALL_EVENTS_REGISTERED = True
+
+
 class SpeechRecognition:
     microphone_index = 0
     active = True
     _recognizer_type = "google"
 
-    # глобальные VAD-параметры (для движков, которые их используют)
     VOSK_SAMPLE_RATE = 16000
     CHUNK_SIZE = 512
     VAD_THRESHOLD = 0.5
@@ -110,7 +178,6 @@ class SpeechRecognition:
             logger.warning(f"Неизвестный движок ASR: {engine}")
             return
         with SpeechRecognition._rec_instance_lock:
-            # Если движок тот же — ничего не делаем
             if engine == SpeechRecognition._recognizer_type:
                 return
             if SpeechRecognition._recognizer_instance:
@@ -119,11 +186,136 @@ class SpeechRecognition:
             SpeechRecognition._recognizer_type = engine
         logger.info(f"Тип распознавателя установлен на: {engine}")
 
-    # ——— универсальные настройки
+    @staticmethod
+    def build_install_plan(
+        engine: str,
+        *,
+        pip_installer: PipInstaller,
+        engine_settings: Optional[dict] = None,
+        callbacks: Optional[object] = None,
+        timeout_sec: float = 3600.0,
+    ) -> "InstallPlan":
+        from core.install_types import InstallPlan, InstallAction
+        from utils.gpu_utils import check_gpu_provider
+
+        engine_settings = engine_settings or {}
+
+        try:
+            gpu_vendor = check_gpu_provider() or "CPU"
+        except Exception:
+            gpu_vendor = "CPU"
+
+        ctx = {
+            "gpu_vendor": gpu_vendor,
+            "device": engine_settings.get("device"),
+        }
+
+        reg = getattr(SpeechRecognition, "_registry", {}) or {}
+        cls = reg.get(engine)
+        if not cls:
+            return InstallPlan(
+                actions=[InstallAction(type="call", description="Failed", progress=1, fn=lambda: False)],
+                already_installed=False,
+            )
+
+        recognizer = cls(pip_installer, logger)
+        try:
+            if hasattr(recognizer, "apply_settings"):
+                recognizer.apply_settings(engine_settings)
+        except Exception:
+            pass
+
+        try:
+            if recognizer.is_installed():
+                return InstallPlan(actions=[], already_installed=True, already_installed_status="Already installed")
+        except Exception:
+            pass
+
+        try:
+            steps = recognizer.pip_install_steps(ctx) if hasattr(recognizer, "pip_install_steps") else []
+            steps = steps or []
+        except Exception:
+            steps = []
+
+        actions: list[InstallAction] = []
+
+        for step in steps:
+            try:
+                pr = int(step.get("progress", 10) or 10)
+            except Exception:
+                pr = 10
+            desc = str(step.get("description", "Installing...") or "Installing...")
+            pkgs = step.get("packages")
+            extra = step.get("extra_args")
+
+            if isinstance(pkgs, str):
+                pkgs_list = [pkgs]
+            elif pkgs:
+                pkgs_list = list(pkgs)
+            else:
+                pkgs_list = []
+
+            actions.append(
+                InstallAction(
+                    type="pip",
+                    description=desc,
+                    progress=pr,
+                    packages=pkgs_list,
+                    extra_args=extra,
+                )
+            )
+
+        manifest = None
+        if hasattr(recognizer, "install_manifest"):
+            try:
+                manifest = recognizer.install_manifest()
+            except Exception:
+                manifest = None
+
+        if manifest:
+            actions.append(
+                InstallAction(
+                    type="download_http",
+                    description="Downloading model files...",
+                    progress=75,
+                    progress_to=99,
+                    files=list(manifest),
+                )
+            )
+        else:
+            async def _install_artifacts_async(**_kwargs) -> bool:
+                return bool(await recognizer.install())
+
+            actions.append(
+                InstallAction(
+                    type="call_async",
+                    description="Downloading model files...",
+                    progress=75,
+                    fn=_install_artifacts_async,
+                    timeout_sec=float(timeout_sec or 3600.0),
+                )
+            )
+
+        def _final_check(**_kwargs) -> bool:
+            try:
+                return bool(recognizer.is_installed())
+            except Exception:
+                return True
+
+        actions.append(
+            InstallAction(
+                type="call",
+                description="Finalizing...",
+                progress=99,
+                fn=_final_check,
+            )
+        )
+
+        return InstallPlan(actions=actions, already_installed=False, ok_status="Done")
+
     @staticmethod
     def get_settings_schema(engine: Optional[str] = None) -> List[dict]:
         engine = engine or SpeechRecognition._recognizer_type
-        # используем текущий инстанс если совпадает
         inst = SpeechRecognition._get_recognizer_snapshot()
         if not inst or engine != SpeechRecognition._recognizer_type:
             inst = SpeechRecognition._new_instance(engine)
@@ -138,7 +330,6 @@ class SpeechRecognition:
 
     @staticmethod
     def apply_settings(engine: str, settings: dict):
-        # применяем только если этот движок активный/инициализирован
         inst = SpeechRecognition._get_recognizer_snapshot()
         if inst and engine == SpeechRecognition._recognizer_type and hasattr(inst, "apply_settings"):
             try:
@@ -146,7 +337,6 @@ class SpeechRecognition:
             except Exception as e:
                 logger.warning(f"apply_settings error: {e}")
 
-        # глобальные VAD (если в настройках переданы такие ключи)
         try:
             if "silence_threshold" in settings:
                 SpeechRecognition.VAD_THRESHOLD = float(settings["silence_threshold"])
@@ -191,7 +381,6 @@ class SpeechRecognition:
             return await inst.install()
         return False
 
-    # ——— поток распознавания
     @staticmethod
     async def _init_vad_dependencies():
         try:
@@ -204,6 +393,7 @@ class SpeechRecognition:
             if SpeechRecognition._np is None:
                 import numpy as np
                 SpeechRecognition._np = np
+
             if SpeechRecognition._silero_vad_loader is None:
                 try:
                     from silero_vad import load_silero_vad
@@ -214,9 +404,11 @@ class SpeechRecognition:
                     )
                     from silero_vad import load_silero_vad
                 SpeechRecognition._silero_vad_loader = load_silero_vad
+
             if SpeechRecognition._silero_vad_model is None:
                 model = SpeechRecognition._silero_vad_loader()
                 SpeechRecognition._silero_vad_model = model
+
             return True
         except Exception as e:
             logger.error(f"Ошибка инициализации VAD: {e}")
@@ -241,7 +433,6 @@ class SpeechRecognition:
                         logger.warning("ASR-модель не установлена. Остановлено распознавание.")
                         return
 
-                    # уведомляем GUI, что инициализация началась
                     eb.emit(Events.Speech.ASR_MODEL_INIT_STARTED)
 
                     ok = await inst.init()
@@ -282,7 +473,10 @@ class SpeechRecognition:
                     break
                 except Exception as e:
                     retry += 1
-                    logger.error(f"Ошибка в цикле распознавания (попытка {retry}/{max_retries}): {e}", exc_info=True)
+                    logger.error(
+                        f"Ошибка в цикле распознавания (попытка {retry}/{max_retries}): {e}",
+                        exc_info=True
+                    )
                     if retry < max_retries and SpeechRecognition.active:
                         await asyncio.sleep(2)
                     else:
@@ -319,7 +513,6 @@ class SpeechRecognition:
         if not SpeechRecognition._is_running:
             return
         SpeechRecognition.active = False
-        # аккуратно закрыть ресурсы движка
         try:
             inst = SpeechRecognition._get_recognizer_snapshot()
             if inst:
@@ -332,7 +525,6 @@ class SpeechRecognition:
             try:
                 if not task.done():
                     task.cancel()
-                    # дождаться корректного завершения корутины
                     task.result(timeout=3)
             except Exception:
                 pass
@@ -340,7 +532,6 @@ class SpeechRecognition:
         SpeechRecognition._is_running = False
         SpeechRecognition._recognition_task = None
 
-    # utils
     @staticmethod
     def receive_text() -> str:
         with SpeechRecognition._text_lock:
@@ -348,3 +539,6 @@ class SpeechRecognition:
             SpeechRecognition._text_buffer.clear()
             SpeechRecognition._current_text = ""
             return result
+
+
+register_asr_install_events()

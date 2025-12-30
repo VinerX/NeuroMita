@@ -568,3 +568,9 @@ class Events:
         """Унифицированные события для менеджера установок"""
         RUN_WITH_UI = "run_install_with_ui"
         RUN_HEADLESS = "run_install_headless"
+
+        TASK_STARTED = "install_task_started"
+        TASK_PROGRESS = "install_task_progress"
+        TASK_LOG = "install_task_log"
+        TASK_FINISHED = "install_task_finished"
+        TASK_FAILED = "install_task_failed"

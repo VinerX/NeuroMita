@@ -5,6 +5,8 @@ from main_logger import logger
 from core.events import Events, Event
 from .base_controller import BaseController
 
+from core.install_types import InstallCallbacks
+
 
 class InstallGuiController(BaseController):
     def subscribe_to_events(self):
@@ -66,18 +68,20 @@ class InstallGuiController(BaseController):
 
     def _on_run_with_ui(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
-        kind = data.get("kind")
-        if kind != "asr":
-            logger.error(f"InstallGuiController: unsupported kind='{kind}'")
+
+        runner = data.get("runner")
+        if not callable(runner):
+            logger.error("InstallGuiController: missing callable 'runner' in Events.Install.RUN_WITH_UI payload")
             return
 
-        engine = data.get("engine")
-        if not engine:
-            return
+        kind = data.get("kind") or (data.get("meta") or {}).get("kind") or "install"
+        item_id = data.get("item_id") or data.get("engine") or (data.get("meta") or {}).get("item_id") or "task"
+        task_id = data.get("task_id") or f"{kind}:{item_id}"
 
-        engine_settings = data.get("engine_settings") or {}
-        title = data.get("title") or f"Installing {engine}"
+        title = data.get("title") or f"Installing {item_id}"
         initial_status = data.get("initial_status") or "Preparing..."
+
+        meta = data.get("meta") or {"kind": kind, "item_id": item_id}
 
         backend = self._get_backend()
         if backend is None:
@@ -88,23 +92,20 @@ class InstallGuiController(BaseController):
 
         def worker():
             try:
-                from controllers.install_controller import InstallCallbacks
-                # Запускаем установку
-                ok = backend.install_asr_engine(
-                    engine,
-                    engine_settings=engine_settings,
+                ok = backend.run_task(
+                    task_id=str(task_id),
+                    runner=runner,
+                    meta=meta,
                     callbacks=InstallCallbacks(progress=progress_cb, status=status_cb, log=log_cb),
-                    timeout_sec=float(data.get("timeout_sec", 3600.0))
+                    timeout_sec=float(data.get("timeout_sec", 3600.0)),
                 )
-                
+
                 if ok:
                     status_cb("Done")
-                    # Закрываем окно только при успешном завершении
                     self._close_window_threadsafe(win)
                 else:
                     status_cb("Failed")
                     log_cb("Installation failed (see logs above).")
-                    # Окно НЕ закрываем, чтобы пользователь видел ошибку
 
             except Exception as e:
                 logger.error(f"Install worker failed: {e}", exc_info=True)
@@ -113,19 +114,21 @@ class InstallGuiController(BaseController):
                     log_cb(f"Critical error: {str(e)}")
                 except Exception:
                     pass
-                # При исключении окно тоже НЕ закрываем
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_run_headless(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
-        kind = data.get("kind")
-        if kind != "asr":
+
+        runner = data.get("runner")
+        if not callable(runner):
+            logger.error("InstallGuiController: missing callable 'runner' in Events.Install.RUN_HEADLESS payload")
             return
 
-        engine = data.get("engine")
-        if not engine:
-            return
+        kind = data.get("kind") or (data.get("meta") or {}).get("kind") or "install"
+        item_id = data.get("item_id") or data.get("engine") or (data.get("meta") or {}).get("item_id") or "task"
+        task_id = data.get("task_id") or f"{kind}:{item_id}"
+        meta = data.get("meta") or {"kind": kind, "item_id": item_id}
 
         backend = self._get_backend()
         if backend is None:
@@ -133,15 +136,16 @@ class InstallGuiController(BaseController):
 
         def worker():
             try:
-                ok = backend.install_asr_engine(
-                    engine,
-                    engine_settings=data.get("engine_settings") or {},
+                ok = backend.run_task(
+                    task_id=str(task_id),
+                    runner=runner,
+                    meta=meta,
                     callbacks=None,
-                    timeout_sec=float(data.get("timeout_sec", 3600.0))
+                    timeout_sec=float(data.get("timeout_sec", 3600.0)),
                 )
                 if not ok:
-                    logger.error(f"Headless install failed for {engine}")
+                    logger.error(f"Headless install failed for task_id={task_id}")
             except Exception as e:
-                logger.error(f"Headless install exception for {engine}: {e}", exc_info=True)
+                logger.error(f"Headless install exception for task_id={task_id}: {e}", exc_info=True)
 
         threading.Thread(target=worker, daemon=True).start()

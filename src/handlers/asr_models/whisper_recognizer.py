@@ -8,11 +8,10 @@ from collections import deque
 import numpy as np
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
-from handlers.asr_models.requirements import AsrRequirement, check_requirements
+from core.install_requirements import InstallRequirement, check_requirements
 
 from utils import getTranslationVariant as _
 from utils.gpu_utils import check_gpu_provider
-from core.events import get_event_bus, Events
 
 
 class WhisperRecognizer(SpeechRecognizerInterface):
@@ -59,8 +58,6 @@ class WhisperRecognizer(SpeechRecognizerInterface):
         self.model_download_root = "SpeechRecognitionModels/WhisperFW"
         self.FAILED_AUDIO_DIR = "FailedAudios"
         self.TEMP_AUDIO_DIR = "TempAudios"
-
-        self._event_bus = get_event_bus()
 
     # ---------- UI schema ----------
     def settings_spec(self):
@@ -112,11 +109,11 @@ class WhisperRecognizer(SpeechRecognizerInterface):
     # ---------- dependency model ----------
     def requirements(self):
         return [
-            AsrRequirement(id="torch", kind="python_module", module="torch", required=True),
-            AsrRequirement(id="silero_vad", kind="python_module", module="silero_vad", required=True),
-            AsrRequirement(id="sounddevice", kind="python_module", module="sounddevice", required=True),
-            AsrRequirement(id="numpy", kind="python_module", module="numpy", required=True),
-            AsrRequirement(id="faster_whisper", kind="python_module", module="faster_whisper", required=True),
+            InstallRequirement(id="torch", kind="python_module", module="torch", required=True),
+            InstallRequirement(id="silero_vad", kind="python_module", module="silero_vad", required=True),
+            InstallRequirement(id="sounddevice", kind="python_module", module="sounddevice", required=True),
+            InstallRequirement(id="numpy", kind="python_module", module="numpy", required=True),
+            InstallRequirement(id="faster_whisper", kind="python_module", module="faster_whisper", required=True),
         ]
 
     def pip_install_steps(self, ctx: dict) -> List[dict]:
@@ -178,17 +175,14 @@ class WhisperRecognizer(SpeechRecognizerInterface):
         ctx = {"device": self.whisper_device, "gpu_vendor": self._current_gpu}
         st = check_requirements(self.requirements(), ctx=ctx)
         return bool(st.get("ok"))
+        
+    def install_manifest(self) -> list[dict]:
+        return []
 
     # ---------- artifacts install ----------
     async def install(self) -> bool:
         if not self.is_installed():
             return False
-
-        self._event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
-            "model": "whisper",
-            "progress": 80,
-            "status": _("Загрузка модели Whisper (кэш)...", "Downloading Whisper model (cache)...")
-        })
 
         try:
             from faster_whisper import WhisperModel
@@ -206,12 +200,8 @@ class WhisperRecognizer(SpeechRecognizerInterface):
             )
             del _m
 
-            self._event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
-                "model": "whisper",
-                "progress": 100,
-                "status": _("Файлы модели готовы.", "Model files are ready.")
-            })
             return True
+
         except Exception as e:
             self.logger.error(f"Whisper install failed: {e}", exc_info=True)
             return False

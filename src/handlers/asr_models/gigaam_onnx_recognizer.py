@@ -13,11 +13,10 @@ import urllib.request
 import urllib.error
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
-from handlers.asr_models.requirements import AsrRequirement, check_requirements
+from core.install_requirements import InstallRequirement, check_requirements
 
 from utils import getTranslationVariant as _
 from utils.gpu_utils import check_gpu_provider
-from core.events import get_event_bus, Events
 
 
 class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
@@ -76,7 +75,6 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
         self._transcribe_result = None
         self._transcribe_event = Event()
 
-        self._event_bus = get_event_bus()
         self._url_dir = "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM"
 
         self._model_names = [
@@ -140,22 +138,18 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
 
     # ---------- dependency model ----------
     def requirements(self):
-        def ckpt_path(_ctx: dict) -> str:
-            return self._ckpt_path()
-
-        # ONNX-версия: onnxruntime нужен всегда
         return [
-            AsrRequirement(id="torch", kind="python_module", module="torch", required=True),
-            AsrRequirement(id="torchaudio", kind="python_module", module="torchaudio", required=True),
-            AsrRequirement(id="omegaconf", kind="python_module", module="omegaconf", required=True),
-            AsrRequirement(id="hydra", kind="python_module", module="hydra", required=True),
-            AsrRequirement(id="sentencepiece", kind="python_module", module="sentencepiece", required=True),
+            InstallRequirement(id="torch", kind="python_module", module="torch", required=True),
+            InstallRequirement(id="torchaudio", kind="python_module", module="torchaudio", required=True),
+            InstallRequirement(id="omegaconf", kind="python_module", module="omegaconf", required=True),
+            InstallRequirement(id="hydra", kind="python_module", module="hydra", required=True),
+            InstallRequirement(id="sentencepiece", kind="python_module", module="sentencepiece", required=True),
 
-            AsrRequirement(id="silero_vad", kind="python_module", module="silero_vad", required=True),
-            AsrRequirement(id="sounddevice", kind="python_module", module="sounddevice", required=True),
-            AsrRequirement(id="numpy", kind="python_module", module="numpy", required=True),
+            InstallRequirement(id="silero_vad", kind="python_module", module="silero_vad", required=True),
+            InstallRequirement(id="sounddevice", kind="python_module", module="sounddevice", required=True),
+            InstallRequirement(id="numpy", kind="python_module", module="numpy", required=True),
 
-            AsrRequirement(id="onnxruntime", kind="python_module", module="onnxruntime", required=True),
+            InstallRequirement(id="onnxruntime", kind="python_module", module="onnxruntime", required=True),
         ]
 
     def pip_install_steps(self, ctx: dict) -> List[dict]:
@@ -223,55 +217,90 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
         ctx = {"device": self.gigaam_device, "gpu_vendor": self._current_gpu}
         st = check_requirements(self.requirements(), ctx=ctx)
         return bool(st.get("ok"))
+    
+    def install_manifest(self) -> list[dict]:
+        model_name = self._normalized_ckpt_name()
+        if model_name not in self._model_names:
+            return []
+
+        ckpt_dest = self._ckpt_path()
+
+        items: list[dict] = [
+            {"url": f"{self._url_dir}/{model_name}.ckpt", "dest": ckpt_dest},
+        ]
+
+        if model_name == "v1_rnnt":
+            items.append({
+                "url": f"{self._url_dir}/{model_name}_tokenizer.model",
+                "dest": self._tokenizer_path(),
+            })
+
+        return items
 
     # ---------- artifacts install (NO pip) ----------
+    
     async def install(self) -> bool:
         model_name = self._normalized_ckpt_name()
         if model_name not in self._model_names:
-            raise RuntimeError(f"Unknown GigaAM model: {model_name}")
+            self.logger.error(f"Unknown GigaAM model: {model_name}")
+            return False
 
-        os.makedirs(self.gigaam_model_path, exist_ok=True)
+        try:
+            os.makedirs(self.gigaam_model_path, exist_ok=True)
 
-        ckpt_path = self._ckpt_path()
-        if not os.path.exists(ckpt_path):
-            self._event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
-                "model": "gigaam_onnx",
-                "progress": 80,
-                "status": _("Загрузка весов модели...", "Downloading model weights...")
-            })
-            ok = self._download_file_with_progress(
-                f"{self._url_dir}/{model_name}.ckpt",
-                ckpt_path,
-                80,
-                95
-            )
-            if not ok:
-                raise RuntimeError("Failed to download ckpt")
+            items = self.install_manifest()
+            for it in items:
+                url = str(it.get("url") or "").strip()
+                dest = str(it.get("dest") or "").strip()
+                if not url or not dest:
+                    continue
 
-        # токенизатор нужен для v1_rnnt
-        if model_name == "v1_rnnt":
-            tok_path = self._tokenizer_path()
-            if not os.path.exists(tok_path):
-                self._event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
-                    "model": "gigaam_onnx",
-                    "progress": 95,
-                    "status": _("Загрузка токенизатора...", "Downloading tokenizer...")
-                })
-                ok = self._download_file_with_progress(
-                    f"{self._url_dir}/{model_name}_tokenizer.model",
-                    tok_path,
-                    95,
-                    99
-                )
-                if not ok:
-                    raise RuntimeError("Failed to download tokenizer")
+                if os.path.exists(dest) and os.path.getsize(dest) > 0:
+                    continue
 
-        self._event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
-            "model": "gigaam_onnx",
-            "progress": 100,
-            "status": _("Файлы модели готовы.", "Model files are ready.")
-        })
-        return True
+                os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+
+                tmp = dest + ".part"
+                try:
+                    req = urllib.request.Request(
+                        url,
+                        headers={
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Python-urllib",
+                            "Accept": "*/*",
+                        },
+                        method="GET",
+                    )
+
+                    with urllib.request.urlopen(req, timeout=60) as resp:
+                        with open(tmp, "wb") as f:
+                            while True:
+                                chunk = resp.read(1024 * 1024 * 4)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+
+                    if os.path.exists(dest):
+                        try:
+                            os.remove(dest)
+                        except Exception:
+                            pass
+                    os.replace(tmp, dest)
+
+                finally:
+                    try:
+                        if os.path.exists(tmp):
+                            os.remove(tmp)
+                    except Exception:
+                        pass
+
+            return True
+
+        except urllib.error.HTTPError as e:
+            self.logger.error(f"GigaAM ONNX download failed: HTTP {e.code} {e.reason}", exc_info=True)
+            return False
+        except Exception as e:
+            self.logger.error(f"GigaAM ONNX install failed: {e}", exc_info=True)
+            return False
 
     def _download_file_with_progress(self, url: str, dest: str, start_prog: int, end_prog: int) -> bool:
         tmp = dest + ".part"

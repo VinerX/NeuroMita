@@ -15,7 +15,6 @@ class AsrGlossaryGuiController(BaseController):
 
         self._register_window_on_ready()
 
-        # wiring view actions
         self._glossary_view.request_install.connect(self._request_install)
         self._glossary_view.request_refresh.connect(self._request_refresh)
 
@@ -26,10 +25,9 @@ class AsrGlossaryGuiController(BaseController):
 
     def subscribe_to_events(self):
         eb = self.event_bus
-
-        eb.subscribe(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, self._on_install_progress, weak=False)
-        eb.subscribe(Events.Speech.ASR_MODEL_INSTALL_FINISHED, self._on_install_finished, weak=False)
-        eb.subscribe(Events.Speech.ASR_MODEL_INSTALL_FAILED, self._on_install_failed, weak=False)
+        eb.subscribe(Events.Install.TASK_PROGRESS, self._on_install_progress, weak=False)
+        eb.subscribe(Events.Install.TASK_FINISHED, self._on_install_finished, weak=False)
+        eb.subscribe(Events.Install.TASK_FAILED, self._on_install_failed, weak=False)
 
     def _on_dialog_ready(self, dialog, payload: dict):
         self._dialog = dialog
@@ -64,11 +62,25 @@ class AsrGlossaryGuiController(BaseController):
         if self._glossary_view:
             self._glossary_view.refresh()
 
+    def _is_asr_task(self, data: dict) -> bool:
+        if not isinstance(data, dict):
+            return False
+        if data.get("kind") == "asr":
+            return True
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+        return meta.get("kind") == "asr"
+
+    def _task_model_id(self, data: dict) -> str | None:
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+        return data.get("item_id") or meta.get("item_id") or data.get("model")
+
     def _on_install_progress(self, event: Event):
         if not self._glossary_view:
             return
         data = event.data or {}
-        model = data.get("model")
+        if not self._is_asr_task(data):
+            return
+        model = self._task_model_id(data)
         if not model:
             return
         self._glossary_view.on_install_progress(
@@ -81,7 +93,9 @@ class AsrGlossaryGuiController(BaseController):
         if not self._glossary_view:
             return
         data = event.data or {}
-        model = data.get("model")
+        if not self._is_asr_task(data):
+            return
+        model = self._task_model_id(data)
         if not model:
             return
         self._glossary_view.on_install_finished(str(model))
@@ -90,7 +104,9 @@ class AsrGlossaryGuiController(BaseController):
         if not self._glossary_view:
             return
         data = event.data or {}
-        model = data.get("model")
+        if not self._is_asr_task(data):
+            return
+        model = self._task_model_id(data)
         if not model:
             return
         self._glossary_view.on_install_failed(str(model), str(data.get("error", "") or ""))

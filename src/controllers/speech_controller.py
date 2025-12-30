@@ -16,7 +16,7 @@ class SpeechController:
         self.device_id = 0
         self.selected_microphone = ""
         self.mic_recognition_active = False
-        self.asr_is_ready = False  # <--- НОВОЕ: Флаг готовности модели
+        self.asr_is_ready = False
         self.instant_send = False
         self.events_bus = get_event_bus()
 
@@ -78,28 +78,24 @@ class SpeechController:
         eb.subscribe(Events.Speech.SET_RECOGNIZER_OPTION, self._on_set_recognizer_option, weak=False)
         eb.subscribe(Events.Speech.APPLY_RECOGNIZER_SETTINGS, self._on_apply_recognizer_settings, weak=False)
 
-        eb.subscribe(Events.Speech.INSTALL_ASR_MODEL, self._on_install_asr_model, weak=False)
+        # INSTALL_ASR_MODEL больше не обрабатываем здесь.
+        # Установка уехала в handlers/asr_handler.py (через InstallController и Events.Install.*).
         eb.subscribe(Events.Speech.CHECK_ASR_MODEL_INSTALLED, self._on_check_asr_model_installed, weak=False)
         eb.subscribe(Events.Speech.GET_ASR_ENGINES_LIST, self._on_get_asr_engines_list, weak=False)
 
-        # ——— НОВЫЕ ПОДПИСКИ ДЛЯ ОТСЛЕЖИВАНИЯ СТАТУСА ГОТОВНОСТИ ———
         eb.subscribe(Events.Speech.ASR_MODEL_INIT_STARTED, self._on_asr_init_started_backend, weak=False)
         eb.subscribe(Events.Speech.ASR_MODEL_INITIALIZED, self._on_asr_initialized_backend, weak=False)
 
-    # ——— event handlers
-    
-    # <--- НОВЫЕ МЕТОДЫ --->
-    def _on_asr_init_started_backend(self, event: Event):
-        """Модель начала грузиться — мы еще не готовы."""
+    # ——— readiness tracking
+    def _on_asr_init_started_backend(self, _event: Event):
         self.asr_is_ready = False
         self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
-    def _on_asr_initialized_backend(self, event: Event):
-        """Модель загрузилась — теперь мы полностью готовы."""
+    def _on_asr_initialized_backend(self, _event: Event):
         self.asr_is_ready = True
         self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
-    # <--- КОНЕЦ НОВЫХ МЕТОДОВ --->
 
+    # ——— settings loaded
     def _on_speech_settings_loaded(self, event: Event):
         self.settings = event.data.get('settings')
         self._load_asr_settings()
@@ -117,7 +113,6 @@ class SpeechController:
         if self.selected_microphone:
             logger.info(f"Загружен микрофон из настроек: {self.selected_microphone} (ID: {self.device_id})")
 
-        # Автозапуск, если включено
         if self.settings.get("MIC_ACTIVE", False) and not self.mic_recognition_active:
             def _delayed_start():
                 try:
@@ -126,6 +121,7 @@ class SpeechController:
                     logger.error(f"Автозапуск распознавания не удался: {e}")
             threading.Thread(target=_delayed_start, daemon=True).start()
 
+    # ——— settings changed
     def _on_setting_changed(self, event: Event):
         key = event.data.get('key')
         value = event.data.get('value')
@@ -136,17 +132,15 @@ class SpeechController:
             else:
                 SpeechRecognition.speech_recognition_stop()
                 self.mic_recognition_active = False
-                self.asr_is_ready = False # Сбрасываем готовность при выключении
+                self.asr_is_ready = False
             self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
         elif key == "RECOGNIZER_TYPE":
             engine = str(value)
             current = self._asr_settings.get("engine", "google")
 
-            # если движок не поменялся — ничего не делаем, чтобы не рвать текущий поток
             if engine == current:
                 logger.info(f"Тип распознавателя установлен на: {engine}")
-                # на всякий случай применим актуальные настройки для текущего движка
                 SpeechRecognition.apply_settings(engine, self._asr_settings["models"].get(engine, {}))
                 return
 
@@ -156,7 +150,7 @@ class SpeechController:
             if self.mic_recognition_active:
                 SpeechRecognition.speech_recognition_stop()
                 self.mic_recognition_active = False
-                self.asr_is_ready = False # Сбрасываем готовность
+                self.asr_is_ready = False
                 time.sleep(0.2)
 
             SpeechRecognition.set_recognizer_type(engine)
@@ -166,10 +160,18 @@ class SpeechController:
 
             if self.settings and self.settings.get("MIC_ACTIVE", False):
                 self._start_maybe_install()
+
         elif key == "SILENCE_THRESHOLD":
-            SpeechRecognition.SILENCE_THRESHOLD = float(value)
+            try:
+                SpeechRecognition.VAD_THRESHOLD = float(value)
+            except Exception:
+                pass
+
         elif key == "SILENCE_DURATION":
-            SpeechRecognition.SILENCE_DURATION = float(value)
+            try:
+                SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC = float(value)
+            except Exception:
+                pass
 
     def _start_maybe_install(self):
         if self.mic_recognition_active:
@@ -208,7 +210,7 @@ class SpeechController:
         loop_res = self.events_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
         loop = loop_res[0] if loop_res else None
         if loop:
-            self.asr_is_ready = False # Сначала не готовы, ждем инициализацию
+            self.asr_is_ready = False
             SpeechRecognition.speech_recognition_start(self.device_id or 0, loop)
             self.mic_recognition_active = True
         else:
@@ -237,7 +239,6 @@ class SpeechController:
             return
         self._asr_settings.setdefault("models", {}).setdefault(engine, {})[key] = value
         self._save_asr_settings()
-        # применим для текущего движка на лету
         if engine == self._asr_settings.get("engine"):
             SpeechRecognition.apply_settings(engine, self._asr_settings["models"][engine])
 
@@ -251,20 +252,6 @@ class SpeechController:
             SpeechRecognition.apply_settings(engine, settings)
 
     # —— install/check
-    def _on_install_asr_model(self, event: Event):
-        model_type = (event.data or {}).get('model', self._asr_settings.get("engine", "google"))
-        engine_settings = (self._asr_settings.get("models", {}) or {}).get(model_type, {}) or {}
-
-        # UI-установка через InstallGuiController + InstallController
-        self.events_bus.emit(Events.Install.RUN_WITH_UI, {
-            "kind": "asr",
-            "engine": model_type,
-            "engine_settings": engine_settings,
-            "title": _("Установка ASR", "ASR Install") + f": {model_type}",
-            "initial_status": _("Подготовка...", "Preparing..."),
-            "timeout_sec": 3600.0
-        })
-
     def _on_check_asr_model_installed(self, event: Event):
         model_type = (event.data or {}).get('model', self._asr_settings.get("engine", "google"))
         return self._check_model_installed(model_type)
@@ -276,13 +263,16 @@ class SpeechController:
         except Exception:
             engine_settings = {}
         return SpeechRecognition.check_model_installed(model_type, settings=engine_settings)
-    
+
     def _on_get_asr_engines_list(self, _event: Event):
         return list(SpeechRecognition._registry.keys())
 
     # —— mic & pipeline glue
     def _on_get_instant_send_status(self, _event: Event):
-        return bool(self.settings.get("MIC_INSTANT_SENT"))
+        try:
+            return bool(self.settings.get("MIC_INSTANT_SENT"))
+        except Exception:
+            return False
 
     def _on_set_instant_send_status(self, event: Event):
         self.instant_send = event.data.get('status', False)
@@ -299,12 +289,10 @@ class SpeechController:
             waiting_answer = waiting[0] if waiting else False
             if not waiting_answer:
                 self._send_instant(text)
-            else:
-                pass
         else:
             connected = self.events_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
             if connected and connected[0]:
-                pass 
+                pass
             logger.info(f"Распознано: {text}")
             self.events_bus.emit(Events.GUI.INSERT_TEXT_TO_INPUT, {"text": text})
 
@@ -313,7 +301,6 @@ class SpeechController:
         self.events_bus.emit(Events.Chat.SEND_MESSAGE, {'user_input': text, 'system_input': '', 'image_data': []})
 
     def _on_get_mic_status(self, _event: Event):
-        # <--- ИЗМЕНЕНИЕ: Возвращаем True только если активно И модель готова --->
         return self.mic_recognition_active and self.asr_is_ready
 
     def _on_set_microphone(self, event: Event):
@@ -333,7 +320,7 @@ class SpeechController:
         loop_result = self.events_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
         loop = loop_result[0] if loop_result else None
         if loop:
-            self.asr_is_ready = False # Сбрасываем готовность перед стартом
+            self.asr_is_ready = False
             SpeechRecognition.speech_recognition_start(dev_id, loop)
             self.mic_recognition_active = True
         else:
@@ -342,7 +329,7 @@ class SpeechController:
     def _on_stop_speech_recognition(self, _event: Event):
         SpeechRecognition.speech_recognition_stop()
         self.mic_recognition_active = False
-        self.asr_is_ready = False # Сбрасываем готовность
+        self.asr_is_ready = False
 
     def _on_restart_speech_recognition(self, event: Event):
         dev_id = event.data.get('device_id', self.device_id)
@@ -360,9 +347,9 @@ class SpeechController:
         threading.Thread(target=restart, daemon=True).start()
 
     def _on_get_user_input(self, _event: Event):
-        return "" 
-    
-    def _on_get_microphone_list(self, event: Event):
+        return ""
+
+    def _on_get_microphone_list(self, _event: Event):
         try:
             devices = sd.query_devices()
             result = []
@@ -377,12 +364,11 @@ class SpeechController:
 
     def _on_refresh_microphone_list(self, event: Event):
         return self._on_get_microphone_list(event)
-    
-    def _on_get_asr_models_glossary(self, event: Event):
+
+    def _on_get_asr_models_glossary(self, _event: Event):
         try:
-            from handlers.asr_models.requirements import check_requirements
+            from core.install_requirements import check_requirements
             from utils.gpu_utils import check_gpu_provider
-            from handlers.asr_handler import SpeechRecognition
 
             try:
                 gpu_vendor = check_gpu_provider() or "CPU"
@@ -408,7 +394,6 @@ class SpeechController:
                 except Exception:
                     inst = None
 
-                # --- META ---
                 meta = {}
                 try:
                     cfgs = inst.get_model_configs() if inst else (getattr(registry.get(engine), "MODEL_CONFIGS", []) or [])
@@ -420,7 +405,6 @@ class SpeechController:
                 except Exception:
                     meta = {}
 
-                # --- requirements status ---
                 reqs = []
                 try:
                     if inst and hasattr(inst, "requirements"):

@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, List
 import numpy as np
 
-from handlers.asr_models.requirements import AsrRequirement
+from core.install_requirements import InstallRequirement
 
 
 class SpeechRecognizerInterface(ABC):
@@ -16,6 +16,15 @@ class SpeechRecognizerInterface(ABC):
         self.pip_installer = pip_installer
         self.logger = logger
         self._is_initialized = False
+
+    def requirements(self) -> List[InstallRequirement]:
+        return []
+
+    def pip_install_steps(self, ctx: dict) -> List[dict]:
+        return []
+
+    def install_manifest(self) -> list[dict]:
+        return []
 
     @abstractmethod
     async def install(self) -> bool:
@@ -42,12 +51,6 @@ class SpeechRecognizerInterface(ABC):
     @abstractmethod
     def is_installed(self) -> bool:
         pass
-
-    def requirements(self) -> List[AsrRequirement]:
-        return []
-
-    def pip_install_steps(self, ctx: dict) -> List[dict]:
-        return []
 
     def settings_spec(self) -> List[dict]:
         return []

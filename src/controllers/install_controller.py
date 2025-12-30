@@ -1,28 +1,27 @@
-﻿import asyncio
-from dataclasses import dataclass
-from typing import Callable, Optional
+﻿from __future__ import annotations
+
+from typing import Callable, Optional, Any, Iterable
+import os
+import time
+import urllib.request
+import urllib.error
 
 from main_logger import logger
 from core.events import get_event_bus, Events
 from utils.pip_installer import PipInstaller
-from utils.gpu_utils import check_gpu_provider
-
-
-@dataclass
-class InstallCallbacks:
-    progress: Callable[[int], None]
-    status: Callable[[str], None]
-    log: Callable[[str], None]
+from core.install_types import InstallCallbacks, InstallAction, InstallPlan
 
 
 class InstallController:
     """
-    MVP install controller (ASR only):
-    - создаёт PipInstaller с UI callbacks
-    - строит ctx (gpu_vendor/device)
-    - выполняет recognizer.pip_install_steps(ctx)
-    - проверяет recognizer.is_installed()/requirements
-    - вызывает recognizer.install() (только веса/артефакты)
+    Generic install orchestrator.
+
+    - Creates PipInstaller wired to callbacks
+    - Runs a runner(pip_installer, callbacks, ctx) which may:
+        a) return bool (legacy mode), or
+        b) return InstallPlan (preferred mode)
+    - Executes InstallPlan with built-in skip for pip specs (generic).
+    - Emits generic install events: Events.Install.TASK_*
     """
 
     def __init__(self, script_path: str = r"libs\python\python.exe", libs_path: str = "Lib"):
@@ -37,240 +36,425 @@ class InstallController:
             update_status=cb.status,
             update_log=cb.log,
             update_progress=cb.progress,
-            progress_window=None
+            progress_window=None,
         )
 
-    def install_asr_engine(
-        self,
-        engine: str,
-        *,
-        engine_settings: Optional[dict] = None,
-        callbacks: Optional[InstallCallbacks] = None,
-        timeout_sec: float = 3600.0
-    ) -> bool:
-        import asyncio
-        import importlib
-
-        from handlers.asr_models.requirements import check_requirements, missing_pip_specs
-
-        engine_settings = engine_settings or {}
-        cb = callbacks or InstallCallbacks(
-            progress=lambda *_: None,
-            status=lambda *_: None,
-            log=lambda m: logger.info(m)
-        )
-
-        def emit_progress(progress: int, status: str = ""):
-            try:
-                self.event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
-                    "model": engine,
-                    "progress": int(progress),
-                    "status": status
-                })
-            except Exception:
-                pass
-
+    def _emit(self, event_name: str, payload: dict) -> None:
         try:
-            self.event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_STARTED, {"model": engine})
+            self.event_bus.emit(event_name, payload)
         except Exception:
             pass
 
-        cb.status("Preparing...")
-        cb.progress(1)
-        emit_progress(1, "Preparing...")
-
-        # ctx (gpu/device)
+    def _call_flex(self, fn: Callable[..., Any], **kwargs) -> Any:
         try:
-            gpu_vendor = check_gpu_provider() or "CPU"
+            return fn(**kwargs)
+        except TypeError:
+            return fn()
+
+    def _dist_exists_and_version(self, dist_name: str) -> tuple[bool, Optional[str]]:
+        try:
+            import importlib.metadata as md
         except Exception:
-            gpu_vendor = "CPU"
+            return False, None
 
-        ctx = {
-            "gpu_vendor": gpu_vendor,
-            "device": engine_settings.get("device"),
-        }
+        names_to_try = [dist_name]
+        n = (dist_name or "").strip()
+        if n:
+            names_to_try.append(n.replace("_", "-"))
+            names_to_try.append(n.replace("-", "_"))
 
-        pip_installer = self._make_pip_installer(cb)
-
-        # create recognizer
-        try:
-            from handlers.asr_handler import SpeechRecognition
-        except Exception as e:
-            msg = f"ASR handler import failed: {e}"
-            cb.log(msg)
+        for name in names_to_try:
+            if not name:
+                continue
             try:
-                self.event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_FAILED, {"model": engine, "error": msg})
+                ver = md.version(name)
+                return True, ver
             except Exception:
-                pass
-            return False
+                continue
+        return False, None
 
-        reg = getattr(SpeechRecognition, "_registry", {}) or {}
-        cls = reg.get(engine)
-        if not cls:
-            msg = f"Unknown ASR engine: {engine}"
-            cb.log(msg)
-            try:
-                self.event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_FAILED, {"model": engine, "error": msg})
-            except Exception:
-                pass
-            return False
+    def _is_pip_spec_satisfied(self, spec: str) -> bool:
+        spec = (spec or "").strip()
+        if not spec:
+            return True
 
         try:
-            recognizer = cls(pip_installer, logger)
-        except Exception as e:
-            msg = f"Failed to create recognizer '{engine}': {e}"
-            cb.log(msg)
-            try:
-                self.event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_FAILED, {"model": engine, "error": msg})
-            except Exception:
-                pass
-            return False
-
-        try:
-            if hasattr(recognizer, "apply_settings"):
-                recognizer.apply_settings(engine_settings)
+            from packaging.requirements import Requirement
         except Exception:
-            pass
+            ok, _ver = self._dist_exists_and_version(spec)
+            return bool(ok)
 
-        # pip steps (dependencies)
         try:
-            steps = recognizer.pip_install_steps(ctx) if hasattr(recognizer, "pip_install_steps") else []
-            steps = steps or []
-        except Exception as e:
-            steps = []
-            cb.log(f"pip_install_steps error: {e}")
+            req = Requirement(spec)
+        except Exception:
+            return False
 
-        # Если уже полностью установлен (deps+файлы) — выходим
         try:
-            if recognizer.is_installed():
-                cb.status("Already installed")
-                cb.progress(100)
-                emit_progress(100, "Already installed")
-                self.event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_FINISHED, {"model": engine})
+            if req.marker is not None and not req.marker.evaluate():
                 return True
         except Exception:
             pass
 
-        # 1) Выполняем pip шаги (скипаем уже удовлетворённые по checkers из requirements.py)
-        for step in steps:
+        ok, ver = self._dist_exists_and_version(req.name)
+        if not ok:
+            return False
+
+        if not req.specifier:
+            return True
+
+        if not ver:
+            return False
+
+        try:
+            return bool(req.specifier.contains(ver, prereleases=True))
+        except Exception:
+            return False
+
+    def _missing_pip_specs(self, specs: Iterable[str]) -> list[str]:
+        missing: list[str] = []
+        for s in specs or []:
+            s = (s or "").strip()
+            if not s:
+                continue
+            if not self._is_pip_spec_satisfied(s):
+                missing.append(s)
+        return missing
+
+    def _download_http_files(
+        self,
+        files: list[dict],
+        *,
+        cb: InstallCallbacks,
+        start_progress: int,
+        end_progress: int,
+        headers: Optional[dict[str, str]] = None,
+    ) -> bool:
+        start_progress = max(0, min(99, int(start_progress)))
+        end_progress = max(start_progress, min(99, int(end_progress)))
+
+        filtered: list[dict] = []
+        for it in files or []:
+            url = str(it.get("url") or "").strip()
+            dest = str(it.get("dest") or "").strip()
+            if not url or not dest:
+                continue
+            if os.path.exists(dest) and os.path.getsize(dest) > 0:
+                continue
+            filtered.append({"url": url, "dest": dest})
+
+        if not filtered:
+            return True
+
+        req_headers = dict(headers or {})
+        if "User-Agent" not in req_headers:
+            req_headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Python-urllib"
+        if "Accept" not in req_headers:
+            req_headers["Accept"] = "*/*"
+
+        totals: list[Optional[int]] = []
+        for it in filtered:
             try:
-                pr = int(step.get("progress", 10) or 10)
-                desc = str(step.get("description", "Installing...") or "Installing...")
-                pkgs = step.get("packages")
-                extra = step.get("extra_args")
+                r = urllib.request.Request(it["url"], headers=req_headers, method="HEAD")
+                with urllib.request.urlopen(r, timeout=30) as resp:
+                    cl = resp.headers.get("Content-Length")
+                    totals.append(int(cl) if cl else None)
+            except Exception:
+                totals.append(None)
 
+        known_total = sum([t for t in totals if isinstance(t, int) and t > 0])
+        have_known_total = known_total > 0 and all(isinstance(t, int) and t > 0 for t in totals)
+
+        done_overall = 0
+        file_done: list[int] = [0 for _ in filtered]
+        last_emit = 0.0
+
+        def emit_progress(status: str):
+            nonlocal last_emit
+            now = time.time()
+            if now - last_emit < 0.25:
+                return
+            last_emit = now
+
+            if have_known_total:
+                pct = (done_overall * 1.0 / known_total) if known_total else 0.0
+            else:
+                completed = 0
+                for i, t in enumerate(totals):
+                    if os.path.exists(filtered[i]["dest"]) and os.path.getsize(filtered[i]["dest"]) > 0:
+                        completed += 1
+                    elif isinstance(t, int) and t > 0 and file_done[i] >= t:
+                        completed += 1
+                pct = completed / max(1, len(filtered))
+
+            prog = start_progress + int((end_progress - start_progress) * pct)
+            cb.status(status)
+            cb.progress(int(max(start_progress, min(end_progress, prog))))
+
+        for idx, it in enumerate(filtered):
+            url = it["url"]
+            dest = it["dest"]
+            tmp = dest + ".part"
+
+            os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+
+            try:
+                emit_progress(f"Downloading: {os.path.basename(dest)}")
+                req = urllib.request.Request(url, headers=req_headers, method="GET")
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    cl = resp.headers.get("Content-Length")
+                    total = int(cl) if cl else None
+                    totals[idx] = total
+
+                    with open(tmp, "wb") as f:
+                        while True:
+                            chunk = resp.read(1024 * 1024 * 4)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+
+                            file_done[idx] += len(chunk)
+                            if have_known_total:
+                                done_overall += len(chunk)
+
+                            if total and total > 0:
+                                pct_file = (file_done[idx] * 100.0 / total)
+                                emit_progress(f"Downloading: {os.path.basename(dest)} ({pct_file:.1f}%)")
+                            else:
+                                emit_progress(f"Downloading: {os.path.basename(dest)}")
+
+                if os.path.exists(dest):
+                    try:
+                        os.remove(dest)
+                    except Exception:
+                        pass
+                os.replace(tmp, dest)
+
+            except urllib.error.HTTPError as e:
+                cb.log(f"HTTP error {e.code} {e.reason} for {url}")
+                cb.status("Failed")
+                return False
+            except Exception as e:
+                cb.log(f"Download failed for {url}: {e}")
+                cb.status("Failed")
+                return False
+
+        cb.progress(end_progress)
+        return True
+
+    def _execute_plan(
+        self,
+        plan: InstallPlan,
+        *,
+        pip_installer: PipInstaller,
+        callbacks: InstallCallbacks,
+        ctx: dict,
+    ) -> bool:
+        cb = callbacks
+
+        if plan.already_installed:
+            cb.status(plan.already_installed_status or "Already installed")
+            cb.progress(100)
+            return True
+
+        actions = plan.actions or []
+        for act in actions:
+            atype = (act.type or "").strip().lower()
+
+            desc = str(act.description or "")
+            pr = int(act.progress or 0)
+            pr = max(0, min(99, pr))
+
+            if desc:
                 cb.status(desc)
-                emit_progress(pr, desc)
-                cb.progress(min(99, pr))
+            if pr > 0:
+                cb.progress(pr)
 
-                if not pkgs:
-                    continue
-
-                if isinstance(pkgs, str):
-                    pkgs_list = [pkgs]
-                else:
-                    pkgs_list = list(pkgs)
-
-                to_install = missing_pip_specs(pkgs_list, ctx=ctx)
+            if atype == "pip":
+                pkgs = act.packages or []
+                to_install = self._missing_pip_specs(pkgs)
                 if not to_install:
-                    cb.log(f"Skip pip step (already satisfied): {', '.join(pkgs_list)}")
+                    if pkgs:
+                        cb.log(f"Skip pip step (already satisfied): {', '.join(pkgs)}")
                     continue
 
                 cb.log(f"Installing: {', '.join(to_install)}")
-                ok = pip_installer.install_package(to_install, description=desc, extra_args=extra)
+                ok = pip_installer.install_package(
+                    to_install,
+                    description=desc or "Installing...",
+                    extra_args=act.extra_args,
+                )
                 if not ok:
-                    raise RuntimeError(f"pip step failed: {desc}")
+                    cb.status("Failed")
+                    cb.log("pip step failed")
+                    return False
 
-                importlib.invalidate_caches()
+            elif atype == "download_http":
+                files = act.files or []
+                end_pr = act.progress_to if act.progress_to is not None else 99
+                ok = self._download_http_files(
+                    files,
+                    cb=cb,
+                    start_progress=pr,
+                    end_progress=int(end_pr),
+                    headers=act.headers,
+                )
+                if not ok:
+                    return False
 
-            except Exception as e:
-                msg = str(e)
-                cb.status("Failed")
-                cb.log(msg)
+            elif atype == "call":
+                if not callable(act.fn):
+                    cb.status("Failed")
+                    cb.log("Invalid plan action: call without fn")
+                    return False
                 try:
-                    self.event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_FAILED, {"model": engine, "error": msg})
-                except Exception:
-                    pass
-                return False
+                    res = self._call_flex(act.fn, pip_installer=pip_installer, callbacks=cb, ctx=ctx)
+                    if res is False:
+                        cb.status("Failed")
+                        cb.log("call step returned False")
+                        return False
+                except Exception as e:
+                    cb.status("Failed")
+                    cb.log(str(e))
+                    return False
 
-        try:
-            reqs = recognizer.requirements() if hasattr(recognizer, "requirements") else []
-            py_reqs = [r for r in (reqs or []) if getattr(r, "kind", None) == "python_module"]
-            st = check_requirements(py_reqs, ctx=ctx) if py_reqs else {"ok": True, "missing_required": []}
-
-            missing = st.get("missing_required", []) or []
-            if missing:
-                details = st.get("details", []) or []
-                miss_details = []
-                for d in details:
-                    if d.get("id") in missing:
-                        extra = d.get("extra") or {}
-                        mod = extra.get("module")
-                        path = extra.get("path")
-                        if mod:
-                            miss_details.append(f"{d.get('id')} (module={mod})")
-                        elif path:
-                            miss_details.append(f"{d.get('id')} (path={path})")
-                        else:
-                            miss_details.append(str(d.get("id")))
-                msg = "Missing python deps after pip: " + ", ".join(miss_details or missing)
-
-                cb.status("Failed")
-                cb.log(msg)
+            elif atype == "call_async":
+                if not callable(act.fn):
+                    cb.status("Failed")
+                    cb.log("Invalid plan action: call_async without fn")
+                    return False
                 try:
-                    self.event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_FAILED, {"model": engine, "error": msg})
-                except Exception:
-                    pass
-                return False
-        except Exception:
-            pass
+                    import asyncio
 
-        # 3) Скачивание артефактов/весов
-        try:
-            cb.status("Downloading model files...")
-            emit_progress(90, "Downloading model files...")
-            cb.progress(90)
+                    timeout = float(act.timeout_sec or ctx.get("timeout_sec", 3600.0) or 3600.0)
+                    coro = self._call_flex(act.fn, pip_installer=pip_installer, callbacks=cb, ctx=ctx)
+                    ok = bool(asyncio.run(asyncio.wait_for(coro, timeout=timeout)))
+                    if not ok:
+                        cb.status("Failed")
+                        cb.log("async step returned False")
+                        return False
+                except Exception as e:
+                    cb.status("Failed")
+                    cb.log(str(e))
+                    return False
 
-            ok = bool(asyncio.run(asyncio.wait_for(recognizer.install(), timeout=timeout_sec)))
-            if not ok:
-                msg = "Artifacts install returned False"
+            else:
+                cb.log(f"Unknown plan action type: {atype}")
                 cb.status("Failed")
-                cb.log(msg)
-                try:
-                    self.event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_FAILED, {"model": engine, "error": msg})
-                except Exception:
-                    pass
                 return False
-
-        except Exception as e:
-            msg = str(e)
-            cb.status("Failed")
-            cb.log(msg)
-            try:
-                self.event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_FAILED, {"model": engine, "error": msg})
-            except Exception:
-                pass
-            return False
-
-        # 4) Финальная проверка уже должна учитывать файлы
-        try:
-            if hasattr(recognizer, "is_installed") and not recognizer.is_installed():
-                msg = "Artifacts downloaded, but requirements still not satisfied"
-                cb.status("Failed")
-                cb.log(msg)
-                try:
-                    self.event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_FAILED, {"model": engine, "error": msg})
-                except Exception:
-                    pass
-                return False
-        except Exception:
-            pass
 
         cb.progress(100)
-        cb.status("Done")
-        emit_progress(100, "Done")
-        try:
-            self.event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_FINISHED, {"model": engine})
-        except Exception:
-            pass
+        cb.status(plan.ok_status or "Done")
         return True
+
+    def run_task(
+        self,
+        *,
+        task_id: str,
+        runner: Callable[..., Any],
+        callbacks: Optional[InstallCallbacks] = None,
+        meta: Optional[dict] = None,
+        timeout_sec: float = 3600.0,
+    ) -> bool:
+        meta = meta or {}
+
+        user_cb = callbacks or InstallCallbacks(
+            progress=lambda *_: None,
+            status=lambda *_: None,
+            log=lambda m: logger.info(m),
+        )
+
+        state = {"progress": 0, "status": ""}
+
+        def base_payload(extra: Optional[dict] = None) -> dict:
+            p = {
+                "task_id": str(task_id),
+                "meta": meta,
+                "kind": meta.get("kind"),
+                "item_id": meta.get("item_id"),
+            }
+            if extra:
+                p.update(extra)
+            return p
+
+        def cb_progress(v: int) -> None:
+            try:
+                v = int(v)
+            except Exception:
+                v = 0
+            v = max(0, min(100, v))
+            state["progress"] = v
+            try:
+                user_cb.progress(v)
+            except Exception:
+                pass
+            self._emit(Events.Install.TASK_PROGRESS, base_payload({"progress": v, "status": state.get("status", "")}))
+
+        def cb_status(s: str) -> None:
+            s = "" if s is None else str(s)
+            state["status"] = s
+            try:
+                user_cb.status(s)
+            except Exception:
+                pass
+            self._emit(Events.Install.TASK_PROGRESS, base_payload({"progress": state.get("progress", 0), "status": s}))
+
+        def cb_log(m: str) -> None:
+            m = "" if m is None else str(m)
+            try:
+                user_cb.log(m)
+            except Exception:
+                pass
+            self._emit(Events.Install.TASK_LOG, base_payload({"message": m}))
+
+        cb = InstallCallbacks(progress=cb_progress, status=cb_status, log=cb_log)
+        pip_installer = self._make_pip_installer(cb)
+
+        self._emit(Events.Install.TASK_STARTED, base_payload({"progress": 0, "status": "Preparing..."}))
+        cb.status("Preparing...")
+        cb.progress(1)
+
+        ctx = {
+            "task_id": str(task_id),
+            "meta": meta,
+            "timeout_sec": float(timeout_sec),
+            "event_bus": self.event_bus,
+        }
+
+        try:
+            result: Any
+            try:
+                result = runner(pip_installer=pip_installer, callbacks=cb, ctx=ctx)
+            except TypeError:
+                result = runner(pip_installer, cb, ctx)
+
+            if isinstance(result, InstallPlan):
+                ok = self._execute_plan(result, pip_installer=pip_installer, callbacks=cb, ctx=ctx)
+            elif isinstance(result, dict) and "actions" in result:
+                actions = result.get("actions") or []
+                plan = InstallPlan(
+                    actions=[InstallAction(**a) if isinstance(a, dict) else a for a in actions],
+                    already_installed=bool(result.get("already_installed", False)),
+                    ok_status=str(result.get("ok_status", "Done") or "Done"),
+                    already_installed_status=str(result.get("already_installed_status", "Already installed") or "Already installed"),
+                )
+                ok = self._execute_plan(plan, pip_installer=pip_installer, callbacks=cb, ctx=ctx)
+            else:
+                ok = bool(result)
+                if ok:
+                    cb.progress(100)
+                    cb.status("Done")
+
+            if ok:
+                self._emit(Events.Install.TASK_FINISHED, base_payload({"ok": True}))
+                return True
+
+            cb.status("Failed")
+            self._emit(Events.Install.TASK_FAILED, base_payload({"ok": False, "error": "Task failed"}))
+            return False
+
+        except Exception as e:
+            err = str(e) or repr(e)
+            cb.status("Failed")
+            cb.log(err)
+            self._emit(Events.Install.TASK_FAILED, base_payload({"ok": False, "error": err}))
+            return False
