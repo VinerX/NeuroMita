@@ -48,7 +48,7 @@ from ui.dialogs.telegram_auth_dialogs import show_tg_code_dialog, show_tg_passwo
 from ui.dialogs.voice_model_dialog_manager import handle_voice_model_dialog
 
 from ui.widgets.settings_panel import setup_settings_panel
-from ui.widgets.chat_panel import setup_chat_panel
+from ui.widgets.chat_panel import setup_chat_panel, hide_image_preview_bar, update_send_button_state
 from ui.chat import message_renderer
 from ui.chat.chat_delegate import ChatMessageDelegate
 
@@ -596,10 +596,18 @@ class ChatGUI(QMainWindow):
         self.event_bus.emit(Events.Chat.CLEAR_CHAT)
 
     def send_message(self, system_input: str = "", image_data: list[bytes] = None):
-        from ui.widgets.chat_panel import hide_image_preview_bar, update_send_button_state
         user_input = self.user_entry.toPlainText().strip()
         current_image_data = []
         staged_image_data = self.staged_image_data.copy()
+
+        character_id = ""
+        try:
+            prof_res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
+            prof = prof_res[0] if prof_res else {}
+            if isinstance(prof, dict):
+                character_id = str(prof.get("character_id") or "")
+        except Exception:
+            character_id = ""
 
         if self._get_setting("ENABLE_SCREEN_ANALYSIS", False):
             history_limit = int(self._get_setting("SCREEN_CAPTURE_HISTORY_LIMIT", 1))
@@ -643,9 +651,11 @@ class ChatGUI(QMainWindow):
             message_renderer.insert_message(self, "user", image_content_for_display)
 
         self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
-            'user_input': user_input,
-            'system_input': system_input,
-            'image_data': all_image_data
+            "user_input": user_input,
+            "system_input": system_input,
+            "image_data": all_image_data,
+            "character_id": character_id,
+            "sender": "Player",
         })
 
         if staged_image_data:

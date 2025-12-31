@@ -3,6 +3,7 @@ import os
 import asyncio
 import tempfile
 import base64
+from typing import Any
 
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
@@ -32,6 +33,35 @@ class ChatController:
             return None
         return data.get("character_id") or data.get("char_id") or data.get("character") or None
 
+    def _normalize_sender(self, data: dict) -> str:
+        if not isinstance(data, dict):
+            return "Player"
+        return str(data.get("sender") or data.get("from") or "Player")
+
+    def _normalize_participants(self, value: Any) -> list[str]:
+        if not value:
+            return []
+        if isinstance(value, str):
+            parts = [p.strip() for p in value.split(",")]
+            value = [p for p in parts if p]
+
+        if not isinstance(value, list):
+            return []
+
+        out: list[str] = []
+        seen = set()
+        for x in value:
+            s = str(x or "").strip()
+            if not s:
+                continue
+            if s.lower() == "player":
+                s = "Player"
+            if s in seen:
+                continue
+            out.append(s)
+            seen.add(s)
+        return out
+
     def _resolve_character_name(self, character_id: str | None) -> str:
         if not character_id:
             return ""
@@ -57,6 +87,8 @@ class ChatController:
         task_uid: str | None = None,
         event_type: str | None = None,
         character_id: str | None = None,
+        sender: str = "Player",
+        participants: list[str] | None = None,
     ):
         try:
             self.llm_processing = True
@@ -96,6 +128,8 @@ class ChatController:
                     "message_id": task_uid,
                     "event_type": event_type,
                     "character_id": character_id,
+                    "sender": sender,
+                    "participants": participants or [],
                 },
                 timeout=600.0
             )
@@ -114,10 +148,13 @@ class ChatController:
                     self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": "Превышено время ожидания ответа"})
                 return None
 
+            target = "Player"
+
             if isinstance(payload, dict):
                 response_text = payload.get("text")
                 voice_profile = payload.get("voice_profile")
                 effective_character_id = payload.get("character_id") or character_id
+                target = str(payload.get("target") or "Player")
             else:
                 response_text = payload
                 voice_profile = None
@@ -141,6 +178,7 @@ class ChatController:
                 self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
                     "character_id": effective_character_id or "",
                     "character_name": effective_character_name or "",
+                    "speaker_name": effective_character_name or "",
                 })
 
             if response_text and self.settings.get("USE_VOICEOVER") and not is_react:
@@ -170,21 +208,21 @@ class ChatController:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.SUCCESS,
-                                "result": {"response": response_text}
+                                "result": {"response": response_text, "target": target}
                             })
                 else:
                     if task_uid:
                         self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                             "uid": task_uid,
                             "status": TaskStatus.SUCCESS,
-                            "result": {"response": response_text}
+                            "result": {"response": response_text, "target": target}
                         })
             else:
                 if task_uid:
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                         "uid": task_uid,
                         "status": TaskStatus.SUCCESS,
-                        "result": {"response": response_text}
+                        "result": {"response": response_text, "target": target}
                     })
 
             if is_streaming and not is_react:
@@ -197,23 +235,13 @@ class ChatController:
                     "emotion": "",
                     "character_id": effective_character_id or "",
                     "character_name": effective_character_name or "",
+                    "speaker_name": effective_character_name or "",
+                    "target": target,
                 })
 
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)
             self.event_bus.emit(Events.GUI.UPDATE_TOKEN_COUNT)
-
-            if not task_uid:
-                server_result = self.event_bus.emit_and_wait(Events.Server.GET_CHAT_SERVER, timeout=1.0)
-                server = server_result[0] if server_result else None
-
-                if server and hasattr(server, "client_socket") and server.client_socket:
-                    final_response_text = response_text if response_text else "..."
-                    try:
-                        server.send_message_to_server(final_response_text)
-                        logger.info("Ответ отправлен в игру.")
-                    except Exception as e:
-                        logger.error(f"Не удалось отправить ответ в игру: {e}")
 
             self.llm_processing = False
             return response_text
@@ -251,6 +279,8 @@ class ChatController:
         task_uid = data.get("task_uid")
         event_type = data.get("event_type")
         character_id = self._normalize_character_id(data)
+        sender = self._normalize_sender(data)
+        participants = self._normalize_participants(data.get("participants"))
 
         if image_data:
             self.event_bus.emit(Events.Capture.UPDATE_LAST_IMAGE_REQUEST_TIME)
@@ -260,7 +290,10 @@ class ChatController:
 
         if loop and loop.is_running():
             fut = asyncio.run_coroutine_threadsafe(
-                self.async_send_message(user_input, system_input, image_data, task_uid, event_type, character_id),
+                self.async_send_message(
+                    user_input, system_input, image_data, task_uid, event_type,
+                    character_id, sender, participants
+                ),
                 loop
             )
             try:
@@ -271,7 +304,10 @@ class ChatController:
                 return None
         else:
             response = asyncio.run(
-                self.async_send_message(user_input, system_input, image_data, task_uid, event_type, character_id)
+                self.async_send_message(
+                    user_input, system_input, image_data, task_uid, event_type,
+                    character_id, sender, participants
+                )
             )
             return response
 
@@ -285,6 +321,8 @@ class ChatController:
             self.event_bus.emit(Events.Capture.UPDATE_LAST_IMAGE_REQUEST_TIME)
 
         character_id = self._normalize_character_id(data)
+        sender = self._normalize_sender(data)
+        participants = self._normalize_participants(data.get("participants"))
 
         coro = self.async_send_message(
             user_input=data.get("user_input", ""),
@@ -293,6 +331,8 @@ class ChatController:
             task_uid=data.get("task_uid"),
             event_type=data.get("event_type"),
             character_id=character_id,
+            sender=sender,
+            participants=participants,
         )
 
         self.event_bus.emit(Events.Core.RUN_IN_LOOP, {

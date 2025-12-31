@@ -18,12 +18,17 @@ class ChatMessageDelegate:
 
     def get_label(self, gui, role: str, speaker_name: str = "") -> Tuple[str, QColor, bool]:
         if role == "user":
+            if speaker_name and speaker_name != "Player":
+                return (f"{speaker_name}: ", self.role_label_colors["user"], True)
             return (_("Вы: ", "You: "), self.role_label_colors["user"], True)
-        elif role == "assistant":
+
+        if role == "assistant":
             name = speaker_name or (gui._get_character_name() if hasattr(gui, "_get_character_name") else "Assistant")
             return (f"{name}: ", self.role_label_colors["assistant"], True)
-        elif role == "system":
+
+        if role == "system":
             return (_("Система: ", "System: "), self.role_label_colors["system"], True)
+
         return (f"{role}: ", QColor("#dcdcdc"), True)
 
     def get_content_color(self, role: str):

@@ -62,16 +62,19 @@ class ApiPresetResolver:
 
             effective_gemini = bool(preset.get("gemini_case", False))
             if preset.get("gemini_case") is None:
-                try:
-                    state = self.event_bus.emit_and_wait(
-                        Events.ApiPresets.LOAD_PRESET_STATE,
-                        {"id": preset.get("id")},
-                        timeout=1.0
-                    )
-                    if state and state[0]:
-                        effective_gemini = bool(state[0].get("gemini_case", False))
-                except Exception as e:
-                    logger.warning(f"[ApiPresetResolver] Failed to load preset state: {e}")
+                if preset.get("gemini_case_override") is not None:
+                    effective_gemini = bool(preset.get("gemini_case_override"))
+                else:
+                    try:
+                        state = self.event_bus.emit_and_wait(
+                            Events.ApiPresets.LOAD_PRESET_STATE,
+                            {"id": preset.get("id")},
+                            timeout=1.0
+                        )
+                        if state and state[0]:
+                            effective_gemini = bool(state[0].get("gemini_case", False))
+                    except Exception as e:
+                        logger.warning(f"[ApiPresetResolver] Failed to load preset state: {e}")
 
             reserve_keys = preset.get("reserve_keys", []) or []
             if not isinstance(reserve_keys, list):

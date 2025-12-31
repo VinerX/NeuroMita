@@ -91,7 +91,9 @@ class Character:
             ),
         )
 
-        self.history_manager = HistoryManager(self.char_id)
+        self._pending_target: str | None = None
+
+        self.history_manager = HistoryManager(character_name=self.name, character_id=self.char_id)
         self.memory_system = MemoryManager(self.char_id)
 
         self.load_history()
@@ -267,6 +269,23 @@ class Character:
         self.variables[name] = value
         # logger.debug(f"Variable '{name}' set to: {value} (type: {type(value)}) for char '{self.char_id}'")
 
+    def consume_pending_target(self) -> str | None:
+        t = getattr(self, "_pending_target", None)
+        self._pending_target = None
+        return t
+
+    def _extract_to_tag(self, response: str) -> tuple[str, str | None]:
+        if not isinstance(response, str) or not response:
+            return response, None
+
+        m = re.search(r"<To>\s*([^<]+?)\s*</To>", response, flags=re.IGNORECASE)
+        target = m.group(1).strip() if m else None
+
+        if m:
+            response = re.sub(r"<To>\s*([^<]+?)\s*</To>", "", response, flags=re.IGNORECASE).strip()
+
+        return response, target
+
     def process_response_nlp_commands(self, response: str, save_as_missed=False) -> str:
         original_response_for_log = (
             response[:200] + "..." if len(response) > 200 else response
@@ -306,7 +325,9 @@ class Character:
                 f"[{self.char_id}] Не удалось получить app_vars через события: {e}"
             )
             self.update_app_vars({})
+
         response = self.extract_and_process_memory_data(response, save_as_missed)
+
         try:
             response = self._process_behavior_changes_from_llm(response)
         except Exception as e:
@@ -321,6 +342,9 @@ class Character:
             logger.error(
                 f"[{self.char_id}] Error during game tag processing: {e}", exc_info=True
             )
+
+        response, target = self._extract_to_tag(response)
+        self._pending_target = target
 
         final_response_for_log = (
             response[:200] + "..." if len(response) > 200 else response

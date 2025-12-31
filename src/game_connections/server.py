@@ -27,6 +27,8 @@ class ChatServerNew:
         self.game_block_level: str = 'Idle events'
         self.game_master_voice: bool = False
 
+        self.last_participants: Dict[str, list[str]] = {}
+
         self._subscribe_to_events()
 
     def _subscribe_to_events(self):
@@ -172,6 +174,23 @@ class ChatServerNew:
         context = request.get("context", {})
         req_id = request.get("req_id", None)
 
+        sender = str(request.get("sender") or data.get("sender") or "Player")
+
+
+        participants = request.get("participants")
+        logger.notify(f"ПРИШЁЛ ОТ СЕРВЕРА ПЕРСОНАЖ: {character_id}, А Участники: {participants}")
+        if participants is None:
+            participants = data.get("participants")
+        if participants is None or participants == []:
+            participants = self.last_participants.get(client_id, [])
+        else:
+            if isinstance(participants, str):
+                participants = [p.strip() for p in participants.split(",") if p.strip()]
+            if isinstance(participants, list):
+                participants = [str(x) for x in participants if str(x).strip()]
+            else:
+                participants = []
+            self.last_participants[client_id] = participants
 
         self.event_bus.emit(Events.Server.SET_GAME_DATA, {
             "distance": float(str(context.get("distance", "0")).replace(",", ".")),
@@ -193,7 +212,8 @@ class ChatServerNew:
                     "role": "user",
                     "response": user_input,
                     "is_initial": False,
-                    "emotion": ""
+                    "emotion": "",
+                    "speaker_name": (sender if sender != "Player" else ""),
                 })
 
             collected_sys = "\n".join(self.pending_sysinfo.pop(character_id, []))
@@ -207,7 +227,9 @@ class ChatServerNew:
                     "system_info": context.get("currentInfo", ""),
                     "client_id": client_id,
                     "event_type": event_type,
-                    "req_id": req_id
+                    "req_id": req_id,
+                    "sender": sender,
+                    "participants": participants,
                 }
             }, timeout=5.0)
 
@@ -223,7 +245,9 @@ class ChatServerNew:
                     "image_data": context.get("image_base64_list", []),
                     "task_uid": task.uid,
                     "event_type": "chat",
-                    "character_id": character_id
+                    "character_id": character_id,
+                    "sender": sender,
+                    "participants": participants,
                 })
             else:
                 await self._send_aborted_update(client_id, event_type, character_id, reason="Failed to create task", req_id=req_id)
@@ -231,11 +255,8 @@ class ChatServerNew:
         elif event_type == "idle_timeout":
             last_idle_uid = self.last_idle_tasks.get(character_id)
             if last_idle_uid:
-                last_task_result = self.event_bus.emit_and_wait(Events.Task.GET_TASK, {
-                    "uid": last_idle_uid
-                }, timeout=1.0)
+                last_task_result = self.event_bus.emit_and_wait(Events.Task.GET_TASK, {"uid": last_idle_uid}, timeout=1.0)
                 last_task = last_task_result[0] if last_task_result else None
-
                 if last_task and last_task.status == TaskStatus.PENDING:
                     await self.send_task_update(client_id, last_task)
                     return
@@ -250,7 +271,9 @@ class ChatServerNew:
                     "system_input": collected_sys,
                     "client_id": client_id,
                     "event_type": event_type,
-                    "req_id": req_id
+                    "req_id": req_id,
+                    "sender": sender,
+                    "participants": participants,
                 }
             }, timeout=5.0)
 
@@ -271,19 +294,17 @@ class ChatServerNew:
                     "image_data": [],
                     "task_uid": task.uid,
                     "event_type": "idle_timeout",
-                    "character_id": character_id
+                    "character_id": character_id,
+                    "sender": sender,
+                    "participants": participants,
                 })
             else:
                 await self._send_aborted_update(client_id, event_type, character_id, reason="Failed to create idle task", req_id=req_id)
-
-        elif event_type == "position_move":
-            logger.info(f"Position move event from {character_id}: {data}")
 
         elif event_type == "system_info":
             msg = data.get("message", "")
             if msg:
                 self.pending_sysinfo.setdefault(character_id, []).append(msg)
-                logger.info(f"Buffered system_info for {character_id}: {msg[:60]}...")
 
             await self.send_json(self.active_connections[client_id], {
                 "type": "info",
@@ -306,7 +327,9 @@ class ChatServerNew:
                     "system_info": context.get("currentInfo", ""),
                     "client_id": client_id,
                     "event_type": event_type,
-                    "req_id": req_id
+                    "req_id": req_id,
+                    "sender": sender,
+                    "participants": participants,
                 }
             }, timeout=5.0)
 
@@ -321,7 +344,9 @@ class ChatServerNew:
                     "image_data": [],
                     "task_uid": task.uid,
                     "event_type": "chat",
-                    "character_id": character_id
+                    "character_id": character_id,
+                    "sender": sender,
+                    "participants": participants,
                 })
             else:
                 await self._send_aborted_update(client_id, event_type, character_id, reason="Failed to flush system info", req_id=req_id)
@@ -337,9 +362,7 @@ class ChatServerNew:
                 f"Look duration (seconds): {duration:.1f}",
             ]
             if current_info:
-                react_system_input_lines.append("")
-                react_system_input_lines.append("Current game info:")
-                react_system_input_lines.append(str(current_info))
+                react_system_input_lines += ["", "Current game info:", str(current_info)]
 
             react_system_input = "\n".join(react_system_input_lines)
 
@@ -354,6 +377,8 @@ class ChatServerNew:
                     "req_id": req_id,
                     "reason": reason,
                     "duration": duration,
+                    "sender": sender,
+                    "participants": participants,
                 }
             }, timeout=5.0)
 
@@ -369,11 +394,13 @@ class ChatServerNew:
                     "image_data": context.get("image_base64_list", []),
                     "task_uid": task.uid,
                     "event_type": "react",
-                    "character_id": character_id
+                    "character_id": character_id,
+                    "sender": sender,
+                    "participants": participants,
                 })
             else:
-                await self._send_aborted_update(client_id, event_type, character_id,
-                                                reason="Failed to create react task", req_id=req_id)
+                await self._send_aborted_update(client_id, event_type, character_id, reason="Failed to create react task", req_id=req_id)
+
         else:
             await self._send_aborted_update(client_id, event_type, character_id, reason=f"Unknown event type: {event_type}", req_id=req_id)
 

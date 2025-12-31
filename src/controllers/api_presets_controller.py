@@ -70,6 +70,8 @@ class ApiPresetsController:
         self.current_preset_id: Optional[int] = None
         self.preset_states: Dict[int, Dict[str, Any]] = {}
 
+        self._io_lock = threading.RLock()
+
         self._load_data()
         self._subscribe_to_events()
 
@@ -80,6 +82,48 @@ class ApiPresetsController:
         if len(s) <= 8:
             return "***"
         return s[:3] + "***" + s[-3:]
+    
+    def _atomic_write_json(self, path: Path, data: Dict[str, Any]) -> bool:
+        try:
+            with self._io_lock:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+                os.replace(tmp, path)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to write json atomically: {path}: {e}", exc_info=True)
+            return False
+
+
+    def _normalize_presets_order(self, order: Any) -> List[int]:
+        result: List[int] = []
+        seen = set()
+
+        if not isinstance(order, list):
+            order = []
+
+        for x in order:
+            try:
+                pid = int(x)
+            except Exception:
+                continue
+            if pid in self.presets and pid not in seen:
+                result.append(pid)
+                seen.add(pid)
+
+        for pid in sorted(self.presets.keys()):
+            if pid not in seen:
+                result.append(pid)
+                seen.add(pid)
+
+        return result
     
     def _find_template_id_by_url(self, url: str) -> Optional[int]:
         u = (url or "").strip().lower()
@@ -317,10 +361,16 @@ class ApiPresetsController:
 
     def _load_presets_only(self):
         try:
-            with open(self.presets_path, 'r', encoding='utf-8') as f:
-                pdata = json.load(f)
-            self.presets = {int(k): UserPreset(**v) for k, v in pdata.get('presets', {}).items()}
-            self.presets_order = pdata.get('order', list(self.presets.keys()))
+            with self._io_lock:
+                with open(self.presets_path, 'r', encoding='utf-8') as f:
+                    pdata = json.load(f)
+
+            raw_presets = pdata.get('presets', {}) or {}
+            self.presets = {int(k): UserPreset(**v) for k, v in raw_presets.items()}
+
+            raw_order = pdata.get('order', list(self.presets.keys()))
+            self.presets_order = self._normalize_presets_order(raw_order)
+
         except Exception as e:
             logger.error(f"Failed to load presets file: {e}", exc_info=True)
             self.presets = {}
@@ -335,12 +385,17 @@ class ApiPresetsController:
             with open(self.legacy_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
-            # custom -> presets
             self.presets = {}
-            for _, preset_data in data.get('custom', {}).items():
+            for _, preset_data in (data.get('custom', {}) or {}).items():
                 base = preset_data.get('base')
+                if base is not None:
+                    try:
+                        base = int(base)
+                    except Exception:
+                        base = None
+
                 up = UserPreset(
-                    id=preset_data['id'],
+                    id=int(preset_data['id']),
                     name=preset_data['name'],
                     base=base,
                     pricing=preset_data.get('pricing', 'mixed'),
@@ -351,9 +406,10 @@ class ApiPresetsController:
                 )
                 self.presets[up.id] = up
 
-            self.presets_order = data.get('custom_order', list(self.presets.keys()))
-            # Сохраняем после миграции
-            self._save_templates()  # шаблоны уже из кода, просто фиксируем файл
+            raw_order = data.get('custom_order', list(self.presets.keys()))
+            self.presets_order = self._normalize_presets_order(raw_order)
+
+            self._save_templates()
             self._save_presets()
             logger.info(f"Migrated legacy custom presets only. Presets: {len(self.presets)}")
         except Exception as e:
@@ -379,20 +435,16 @@ class ApiPresetsController:
         self._save_presets()
         logger.info("Created default templates and presets (fallback)")
 
-    def _save_templates(self):
-        os.makedirs("Settings", exist_ok=True)
+    def _save_templates(self) -> bool:
         data = {'templates': {str(t.id): asdict(t) for t in self.templates.values()}}
-        with open(self.templates_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        return self._atomic_write_json(self.templates_path, data)
 
-    def _save_presets(self):
-        os.makedirs("Settings", exist_ok=True)
+    def _save_presets(self) -> bool:
         data = {
             'presets': {str(p.id): asdict(p) for p in self.presets.values()},
             'order': self.presets_order
         }
-        with open(self.presets_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        return self._atomic_write_json(self.presets_path, data)
 
     def _generate_new_id(self) -> int:
         all_ids = set(self.templates.keys()) | set(self.presets.keys())
@@ -402,7 +454,6 @@ class ApiPresetsController:
 
     def _build_effective_preset_dict(self, preset_id: int) -> Optional[Dict[str, Any]]:
         if preset_id in self.templates:
-            # Запрашивают сам шаблон
             return asdict(self.templates[preset_id])
 
         p = self.presets.get(preset_id)
@@ -416,13 +467,13 @@ class ApiPresetsController:
             'name': p.name,
             'pricing': (tpl.pricing if tpl else p.pricing),
             'base': p.base,
-            # ВАЖНО: если пресет от шаблона и у шаблона есть прямой url — отдать его сразу
             'url': p.url if not tpl else (tpl.url if tpl and tpl.url else ""),
             'url_tpl': tpl.url_tpl if tpl else "",
             'add_key': tpl.add_key if tpl else False,
             'default_model': p.default_model or (tpl.default_model if tpl else ""),
             'known_models': (tpl.known_models if tpl else []),
             'gemini_case': (tpl.gemini_case if tpl else None),
+            'gemini_case_override': p.gemini_case_override,
             'use_request': tpl.use_request if tpl is not None else True,
             'is_g4f': tpl.is_g4f if tpl else False,
             'test_url': tpl.test_url if tpl else "",
@@ -430,7 +481,6 @@ class ApiPresetsController:
             'documentation_url': tpl.documentation_url if tpl else "",
             'models_url': tpl.models_url if tpl else "",
             'key_url': tpl.key_url if tpl else "",
-            # Секреты/резервы — из пресета
             'key': p.key,
             'reserve_keys': p.reserve_keys or [],
         }
@@ -486,7 +536,13 @@ class ApiPresetsController:
             preset_id = self._generate_new_id()
             data['id'] = preset_id
 
-        base = data.get('base')
+        base = data.get('base', None)
+        if base is not None:
+            try:
+                base = int(base)
+            except Exception:
+                base = None
+
         name = data.get('name') or f"Preset {preset_id}"
 
         up = self.presets.get(preset_id) or UserPreset(id=preset_id, name=name)
@@ -494,20 +550,37 @@ class ApiPresetsController:
         up.base = base
         up.pricing = data.get('pricing', up.pricing)
         up.default_model = data.get('default_model', up.default_model)
-        # url храним только если base отсутствует
         up.url = data.get('url', up.url) if not base else ""
         up.key = data.get('key', up.key)
-        up.reserve_keys = data.get('reserve_keys', up.reserve_keys) or up.reserve_keys
+
+        if 'reserve_keys' in data:
+            rk = data.get('reserve_keys') or []
+            if not isinstance(rk, list):
+                rk = []
+            up.reserve_keys = [str(k) for k in rk if str(k).strip()]
+
+        if ('gemini_case_override' in data) or ('gemini_case' in data):
+            raw_val = data.get('gemini_case_override', data.get('gemini_case', None))
+            if raw_val is not None:
+                tpl = self.templates.get(up.base) if up.base else None
+                allow_override = (tpl is None) or (tpl.gemini_case is None)
+                if allow_override:
+                    up.gemini_case_override = bool(raw_val)
 
         self.presets[preset_id] = up
         if preset_id not in self.presets_order:
             self.presets_order.append(preset_id)
 
-        self._save_presets()
+        if hasattr(self, "_normalize_presets_order"):
+            self.presets_order = self._normalize_presets_order(self.presets_order)
+
+        ok = self._save_presets()
+        if not ok:
+            return None
 
         self.event_bus.emit(Events.ApiPresets.PRESET_SAVED, {'id': preset_id})
         return preset_id
-    
+
     def _on_delete_custom_preset(self, event: Event):
         preset_id = event.data.get('id')
         if preset_id in self.presets:
@@ -522,12 +595,12 @@ class ApiPresetsController:
         return False
     
     def _on_save_presets_order(self, event: Event):
-        order = event.data.get('order', [])
-        if order:
-            self.presets_order = order
-            self._save_presets()
-            return True
-        return False
+        order = event.data.get('order', None)
+        if order is None:
+            return False
+        self.presets_order = self._normalize_presets_order(order)
+        self._save_presets()
+        return True
     
     def _on_export_preset(self, event: Event):
         preset_id = event.data.get('id')
@@ -768,31 +841,6 @@ class ApiPresetsController:
         if not new_models:
             return False
 
-        # Если это кастом — обновляем его базовый шаблон.
-        # if preset_id in self.presets:
-        #     up = self.presets[preset_id]
-        #     if up.base and up.base in self.templates:
-        #         tpl = self.templates[up.base]
-        #         existing = set(tpl.known_models or [])
-        #         updated = list(existing.union(set(new_models)))
-        #         updated.sort(reverse=True)
-        #         tpl.known_models = updated
-        #         self._save_templates()
-        #         logger.info(f"Updated base template {up.base} with sorted models")
-        #         return True
-        #     return False
-
-        # Если это сам шаблон — обновляем его
-        # if preset_id in self.templates:
-        #     tpl = self.templates[preset_id]
-        #     existing = set(tpl.known_models or [])
-        #     updated = list(existing.union(set(new_models)))
-        #     updated.sort(reverse=True)
-        #     tpl.known_models = updated
-        #     self._save_templates()
-        #     logger.info(f"Updated and sorted models for template {preset_id}")
-        #     return True
-        
         # Просто логируем, что получили запрос, но ничего не делаем
         logger.info(f"Received model update request for preset {preset_id}, but not saving to template (feature disabled)")
 
@@ -801,16 +849,25 @@ class ApiPresetsController:
     def _on_set_gemini_case(self, event: Event):
         preset_id = event.data.get('id')
         value = event.data.get('value')
-        # Вкл/выкл логики Gemini запоминаем в пресете, но только если шаблон разрешает (gemini_case=None)
+
         up = self.presets.get(preset_id)
         if not up:
             return False
+
         tpl = self.templates.get(up.base) if up.base else None
-        if tpl and tpl.gemini_case is None:
-            up.gemini_case_override = bool(value)
-            self._save_presets()
-            return True
-        return False
+        allow_override = (tpl is None) or (tpl.gemini_case is None)
+        if not allow_override:
+            return False
+
+        up.gemini_case_override = bool(value)
+        ok = self._save_presets()
+        if not ok:
+            return False
+
+        st = self.preset_states.get(preset_id, {}) or {}
+        st['gemini_case'] = bool(value)
+        self.preset_states[preset_id] = st
+        return True
     
     def _on_save_preset_state(self, event: Event):
         preset_id = event.data.get('id')
@@ -818,7 +875,6 @@ class ApiPresetsController:
         if not preset_id or not state:
             return False
 
-        # Обновляем «живые» поля пресета (persist)
         if preset_id in self.presets:
             up = self.presets[preset_id]
             if 'key' in state:
@@ -828,27 +884,34 @@ class ApiPresetsController:
             if 'url' in state and not up.base:
                 up.url = state['url']
             if 'gemini_case' in state:
-                up.gemini_case_override = bool(state['gemini_case'])
-            self._save_presets()
+                tpl = self.templates.get(up.base) if up.base else None
+                allow_override = (tpl is None) or (tpl.gemini_case is None)
+                if allow_override:
+                    up.gemini_case_override = bool(state['gemini_case'])
 
-        # Параллельно держим снапшот state для UI
+            ok = self._save_presets()
+            if not ok:
+                return False
+
         self.preset_states[preset_id] = state
         return True
-    
-   # def _on_load_preset_state(self, event: Event):
-   #     preset_id = event.data.get('id')
-   #     state = self.preset_states.get(preset_id, {})
-   #     return state
 
     def _on_load_preset_state(self, event: Event):
         preset_id = event.data.get('id')
-        state = self.preset_states.get(preset_id, {})
-        # Если в state нет модели - получаем её из пресета
+        state = self.preset_states.get(preset_id, {}) or {}
+
+        if 'gemini_case' not in state:
+            up = self.presets.get(preset_id)
+            if up and up.base:
+                tpl = self.templates.get(up.base)
+                if tpl and tpl.gemini_case is None and up.gemini_case_override is not None:
+                    state = {**state, 'gemini_case': bool(up.gemini_case_override)}
+
         if not state.get('model'):
             preset_dict = self._build_effective_preset_dict(preset_id)
             if preset_dict and preset_dict.get('default_model'):
-                # Возвращаем обновлённый state (но не сохраняем, чтобы не менять оригинал)
                 return {**state, 'model': preset_dict['default_model']}
+
         return state
 
     def _on_get_current_preset_id(self, event: Event):

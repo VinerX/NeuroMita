@@ -25,14 +25,6 @@ class ChatController(BaseController):
         else:
             logger.error("ChatController: view или user_entry не найден!")
 
-    def get_user_input(self):
-        if self.view and self.view.user_entry:
-            result = self.view.user_entry.toPlainText().strip()
-            logger.debug(f"ChatController: get_user_input возвращает: '{result}'")
-            return result
-        logger.warning("ChatController: view или user_entry не найден!")
-        return ""
-
     def stream_callback_handler(self, chunk: str):
         logger.debug(f"ChatController: stream_callback_handler: {chunk[:50]}...")
         if self.view:
@@ -54,21 +46,17 @@ class ChatController(BaseController):
         else:
             logger.error("ChatController: view не найден!")
 
-    def update_chat(self, role, response, is_initial, emotion, character_name: str = ""):
-        logger.info(
-            f"ChatController: update_chat - role: {role}, response: {str(response)[:50]}..., "
-            f"is_initial: {is_initial}, emotion: {emotion}, character_name: {character_name}"
-        )
+    def update_chat(self, role, response, is_initial, emotion, speaker_label: str = ""):
         if not self.view:
             logger.error("ChatController: view не найден!")
             return
 
         payload = response
-        if character_name and role in ("assistant", "system"):
+        if speaker_label:
             if isinstance(payload, list):
-                payload = [{"type": "meta", "speaker": character_name}] + payload
+                payload = [{"type": "meta", "speaker": speaker_label}] + payload
             else:
-                payload = [{"type": "meta", "speaker": character_name}, {"type": "text", "text": str(payload)}]
+                payload = [{"type": "meta", "speaker": speaker_label}, {"type": "text", "text": str(payload)}]
 
         self.view.update_chat_signal.emit(role, payload, is_initial, emotion)
 
@@ -84,36 +72,37 @@ class ChatController(BaseController):
         self.clear_user_input()
 
     def _on_update_chat_ui(self, event: Event):
-        logger.info(f"ChatController: получено событие UPDATE_CHAT_UI с данными: {event.data}")
         data = event.data or {}
         role = data.get('role', '')
         response = data.get('response', '')
         is_initial = data.get('is_initial', False)
         emotion = data.get('emotion', '')
 
-        character_name = str(data.get("character_name") or "")
-        self.update_chat(role, response, is_initial, emotion, character_name=character_name)
+        speaker_name = str(data.get("speaker_name") or data.get("character_name") or "")
+        target = str(data.get("target") or "")
+
+        speaker_label = speaker_name
+        if role == "assistant" and speaker_name and target and target != "Player":
+            speaker_label = f"{speaker_name} → {target}"
+
+        self.update_chat(role, response, is_initial, emotion, speaker_label=speaker_label)
 
     def _on_prepare_stream_ui(self, event: Event):
-        logger.debug("ChatController: получено событие PREPARE_STREAM_UI")
         data = event.data or {}
         if self.view is not None:
-            self.view._stream_speaker_name = str(data.get("character_name") or "")  # используется рендерером
+            self.view._stream_speaker_name = str(data.get("speaker_name") or data.get("character_name") or "")
         self.prepare_stream()
 
     def _on_append_stream_chunk_ui(self, event: Event):
         chunk = (event.data or {}).get('chunk', '')
-        logger.debug(f"ChatController: получено событие APPEND_STREAM_CHUNK_UI с chunk: {chunk[:30]}...")
         self.stream_callback_handler(chunk)
 
     def _on_finish_stream_ui(self, event: Event):
-        logger.debug("ChatController: получено событие FINISH_STREAM_UI")
         self.finish_stream()
         if self.view is not None and hasattr(self.view, "_stream_speaker_name"):
             self.view._stream_speaker_name = ""
 
     def _on_update_token_count(self, event: Event):
-        logger.debug("ChatController: получено событие UPDATE_TOKEN_COUNT")
         self.update_token_count()
 
     def _on_update_token_count_ui(self, event: Event):

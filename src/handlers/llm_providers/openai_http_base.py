@@ -37,8 +37,30 @@ class OpenAIHTTPProviderBase(BaseProvider):
         return headers
 
     def _preprocess_messages(self, req: LLMRequest) -> List[Dict[str, Any]]:
-        # remove "time" field
-        return [{k: v for k, v in m.items() if k != "time"} for m in (req.messages or []) if isinstance(m, dict)]
+        """
+        Sanitize messages for OpenAI-compatible HTTP endpoints.
+        Keep only fields that are typically accepted by chat/completions APIs.
+        This prevents 4xx errors on strict providers (e.g., Mistral) when
+        history/UI metadata is present in stored messages.
+        """
+        allowed_keys = {
+            "role",
+            "content",
+            "name",
+            # tools recursion support
+            "tool_calls",
+            "tool_call_id",
+            # legacy function calling
+            "function_call",
+        }
+
+        cleaned: List[Dict[str, Any]] = []
+        for m in (req.messages or []):
+            if not isinstance(m, dict):
+                continue
+            cleaned.append({k: v for k, v in m.items() if k in allowed_keys})
+
+        return cleaned
 
     def _normalize_messages(self, req: LLMRequest, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # default: no changes

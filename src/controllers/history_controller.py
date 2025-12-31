@@ -106,11 +106,17 @@ class HistoryController:
             out.append(mm)
         return out
 
+    def _messages_equal_shallow(self, a: dict, b: dict) -> bool:
+        if not isinstance(a, dict) or not isinstance(b, dict):
+            return False
+        if a.get("role") != b.get("role"):
+            return False
+        return a.get("content") == b.get("content")
+
 
     def _on_save_after_response(self, event: Event):
         data = event.data or {}
         char_id: str = data.get('character_id')
-        messages: List[Dict[str, Any]] = data.get('messages') or []
 
         if not char_id:
             logger.error("[HistoryController] SAVE_AFTER_RESPONSE без character_id")
@@ -128,16 +134,36 @@ class HistoryController:
             )
             return False
 
-        try:
-            character_name = str(getattr(character, "name", "") or "")
-            messages = self._decorate_messages_with_character_info(messages, char_id, character_name)
+        append_mode = bool(data.get("append", False))
+        new_messages: List[Dict[str, Any]] = data.get("new_messages") or []
+        full_messages: List[Dict[str, Any]] = data.get("messages") or []
 
-            character.save_character_state_to_history(messages)
-            logger.debug(f"[HistoryController] История персонажа {char_id} сохранена ({len(messages)} сообщений).")
+        try:
+            if append_mode:
+                history_data = character.history_manager.load_history()
+                existing = history_data.get("messages", []) or []
+                if not isinstance(existing, list):
+                    existing = []
+
+                for m in new_messages:
+                    if not isinstance(m, dict):
+                        continue
+                    if existing and self._messages_equal_shallow(existing[-1], m):
+                        continue
+                    existing.append(m)
+
+                character.save_character_state_to_history(existing)
+                logger.debug(f"[HistoryController] История персонажа {char_id} append (+{len(new_messages)}).")
+                return True
+
+            character.save_character_state_to_history(full_messages)
+            logger.debug(f"[HistoryController] История персонажа {char_id} сохранена ({len(full_messages)} сообщений).")
             return True
+
         except Exception as e:
             logger.error(f"[HistoryController] Ошибка сохранения истории для {char_id}: {e}", exc_info=True)
             return False
+        
 
     def _process_history_compression(
         self,

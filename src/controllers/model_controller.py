@@ -186,12 +186,108 @@ class ModelController:
     # History UI
     # ---------------------------------------------------------------------
 
+    def _normalize_character_id_from_data(self, data: dict) -> Optional[str]:
+        if not isinstance(data, dict):
+            return None
+        cid = data.get("character_id") or data.get("char_id") or data.get("character")
+        return str(cid) if cid else None
+    
+    def _normalize_participants(self, participants: Any) -> list[str]:
+        if not participants:
+            return []
+        if isinstance(participants, str):
+            participants = [p.strip() for p in participants.split(",") if p.strip()]
+        if not isinstance(participants, list):
+            return []
+
+        all_ids_res = self.event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
+        all_ids = all_ids_res[0] if all_ids_res and isinstance(all_ids_res[0], list) else []
+        id_set = set(str(x) for x in all_ids)
+
+        out: list[str] = []
+        seen = set()
+
+        for p in participants:
+            s = str(p or "").strip()
+            if not s:
+                continue
+            if s.lower() == "player":
+                s = "Player"
+
+            if s != "Player" and s not in id_set:
+                match = None
+                sl = s.lower()
+                for cid in id_set:
+                    if cid.lower() == sl:
+                        match = cid
+                        break
+                if match is None:
+                    continue
+                s = match
+
+            if s in seen:
+                continue
+            out.append(s)
+            seen.add(s)
+
+        return out
+
+
+    def _fanout_player_user_message_to_participants(self, user_message: dict | None, participants: list[str], current_char_id: str, sender: str):
+        if sender != "Player":
+            return
+        if not user_message or not isinstance(user_message, dict):
+            return
+
+        content = user_message.get("content")
+        if not isinstance(content, list):
+            return
+
+        has_text = False
+        for it in content:
+            if isinstance(it, dict) and it.get("type") == "text":
+                txt = it.get("text")
+                if txt is None:
+                    txt = it.get("content", "")
+                if str(txt or "").strip():
+                    has_text = True
+                    break
+        if not has_text:
+            return
+
+        for pid in participants:
+            if not pid or pid in ("Player", current_char_id):
+                continue
+
+            ch = self._get_character_ref(pid)
+            if ch is None or not hasattr(ch, "history_manager"):
+                continue
+
+            try:
+                hist = ch.history_manager.load_history()
+                msgs = hist.get("messages", []) or []
+                msg_copy = copy.deepcopy(user_message)
+                msg_copy["fanout_from"] = current_char_id
+                msgs.append(msg_copy)
+                hist["messages"] = msgs
+
+                if not isinstance(hist.get("variables"), dict):
+                    hist["variables"] = getattr(ch, "variables", {}).copy() if hasattr(ch, "variables") else {}
+
+                ch.history_manager.save_history(hist)
+            except Exception as e:
+                logger.warning(f"[ModelController] Fanout истории в {pid} не удался: {e}", exc_info=True)
+
     def _on_load_history(self, event: Event):
+        data = event.data or {}
+
         self.loaded_messages_offset = 0
         self.total_messages_in_history = 0
         self.loading_more_history = False
 
-        ch = self._get_current_character_ref()
+        requested_cid = self._normalize_character_id_from_data(data)
+        ch = self._get_character_ref(requested_cid) if requested_cid else self._get_current_character_ref()
+
         if not ch:
             self.event_bus.emit("history_loaded", {"messages": [], "total_messages": 0, "loaded_offset": 0})
             return
@@ -216,9 +312,12 @@ class ModelController:
         if self.loaded_messages_offset >= self.total_messages_in_history:
             return
 
+        data = event.data or {}
+        requested_cid = self._normalize_character_id_from_data(data)
+
         self.loading_more_history = True
         try:
-            ch = self._get_current_character_ref()
+            ch = self._get_character_ref(requested_cid) if requested_cid else self._get_current_character_ref()
             if not ch:
                 return
 
@@ -239,7 +338,10 @@ class ModelController:
             self.loading_more_history = False
 
     def _on_get_debug_info(self, event: Event):
-        ch = self._get_current_character_ref()
+        data = event.data or {}
+        requested_cid = self._normalize_character_id_from_data(data)
+        ch = self._get_character_ref(requested_cid) if requested_cid else self._get_current_character_ref()
+
         if ch and hasattr(ch, "current_variables_string"):
             return ch.current_variables_string()
         return "Debug info not available"
@@ -307,34 +409,36 @@ class ModelController:
         stream_callback = data.get("stream_callback", None)
         event_type = (data.get("event_type") or "chat") or "chat"
 
-        preset_id_override = data.get("preset_id", None)
-        character_id_override = data.get("character_id")  # строго один ключ
+        sender = str(data.get("sender") or "Player")
+        participants = self._normalize_participants(data.get("participants") or [])
 
-        # choose character for this request
+        preset_id_override = data.get("preset_id", None)
+        character_id_override = self._normalize_character_id_from_data(data)
+
         char = None
         if character_id_override:
             char = self._get_character_ref(str(character_id_override))
-        if char is None:
+            if char is None:
+                logger.error(f"GENERATE_RESPONSE: неизвестный character_id='{character_id_override}' (нет фолбэка на current).")
+                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": _("Неизвестный персонаж.", "Unknown character.")})
+                return None
+        else:
             char = self._get_current_character_ref()
 
         if not char:
             logger.error("Генерация невозможна: персонаж не выбран.")
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                "error": _("Персонаж не выбран.", "Character not selected.")
-            })
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": _("Персонаж не выбран.", "Character not selected.")})
             return None
 
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
 
-        # ---- compress branch (must return plain text) ----
         if event_type == "compress":
             messages = []
             if system_input:
                 messages.append({"role": "system", "content": system_input})
 
             preset_id = preset_id_override
-
             self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
                 "character_id": char_id,
                 "character_name": char_name or char_id or "Мита",
@@ -346,7 +450,6 @@ class ModelController:
                 logger.error(f"Ошибка при сжатии истории: {e}", exc_info=True)
                 return None
 
-        # game_state + temp infos
         game_state = self.game_state.to_prompt_dict()
 
         extra_system_infos = list(self._temporary_system_infos or [])
@@ -375,8 +478,8 @@ class ModelController:
         save_missed_history = bool(self.settings.get("SAVE_MISSED_HISTORY", True))
         memory_limit = int(_cfg_get("memory_limit", 40))
         is_game_master = (char_id == "GameMaster")
+        disable_history_compression = bool(data.get("disable_history_compression", False))
 
-        # build prompt
         try:
             prompt_res = self.event_bus.emit_and_wait(
                 Events.Prompt.BUILD_PROMPT,
@@ -394,32 +497,37 @@ class ModelController:
                     "separate_prompts": separate_prompts,
                     "extra_system_infos": extra_system_infos,
                     "game_state": game_state,
+                    "disable_history_compression": disable_history_compression,
+                    "sender": sender,
+                    "participants": participants,
                 },
                 timeout=10.0
             )
         except Exception as e:
             logger.error(f"Ошибка при BUILD_PROMPT: {e}", exc_info=True)
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                "error": _("Не удалось сформировать промпт.", "Failed to build prompt.")
-            })
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": _("Не удалось сформировать промпт.", "Failed to build prompt.")})
             return None
 
         if not prompt_res or not isinstance(prompt_res[0], dict):
             logger.error("BUILD_PROMPT не вернул валидный результат")
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                "error": _("Не удалось сформировать промпт.", "Failed to build prompt.")
-            })
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": _("Не удалось сформировать промпт.", "Failed to build prompt.")})
             return None
 
         prompt_data = prompt_res[0]
         combined_messages = prompt_data.get("messages", []) or []
         history_for_save = prompt_data.get("history_messages", []) or []
+        user_message_for_history = prompt_data.get("user_message", None)
 
-        # cache for token count
         if event_type == "chat":
             self._cache_base_prompt(char_id, "chat", combined_messages)
 
-        # preset routing (как было, но без legacy-перс логики)
+        self._fanout_player_user_message_to_participants(
+            user_message=user_message_for_history,
+            participants=participants,
+            current_char_id=char_id,
+            sender=sender
+        )
+
         preset_id: Optional[int] = None
 
         def _is_current_label(label: str | None) -> bool:
@@ -458,25 +566,22 @@ class ModelController:
             "character_name": char_name or char_id or "Мита",
         })
 
-        # generate
         try:
             use_stream_cb = stream_callback if event_type != "react" else None
-            raw_text = self.model.generate(
-                combined_messages,
-                stream_callback=use_stream_cb,
-                preset_id=preset_id
-            )
+            raw_text = self.model.generate(combined_messages, stream_callback=use_stream_cb, preset_id=preset_id)
 
             if not raw_text:
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                    "error": _("Не удалось получить ответ.", "Text generation failed.")
-                })
+                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": _("Не удалось получить ответ.", "Text generation failed.")})
                 return None
 
-            processed = char.process_response_nlp_commands(
-                raw_text,
-                self.settings.get("SAVE_MISSED_MEMORY", False)
-            )
+            processed = char.process_response_nlp_commands(raw_text, self.settings.get("SAVE_MISSED_MEMORY", False))
+
+            target = None
+            if hasattr(char, "consume_pending_target"):
+                try:
+                    target = char.consume_pending_target()
+                except Exception:
+                    target = None
 
             final_text = processed
 
@@ -489,13 +594,21 @@ class ModelController:
 
             assistant_message = {"role": "assistant", "content": final_text}
             assistant_message["time"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+            if target:
+                assistant_message["target"] = target
 
             if event_type != "react":
-                history_for_save.append(assistant_message)
+                new_messages = []
+                user_msg = prompt_data.get("user_message")
+                if isinstance(user_msg, dict):
+                    new_messages.append(user_msg)
+                new_messages.append(assistant_message)
+
                 self.event_bus.emit(Events.History.SAVE_AFTER_RESPONSE, {
                     "character_id": char_id,
                     "character_ref": char,
-                    "messages": history_for_save
+                    "append": True,
+                    "new_messages": new_messages,
                 })
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
@@ -511,6 +624,7 @@ class ModelController:
                 "text": final_text,
                 "character_id": char_id,
                 "voice_profile": voice_profile,
+                "target": target or "Player",
             }
 
         except Exception as e:

@@ -9,6 +9,8 @@ from characters import (
     GameMaster, SpaceCartridge, DivanCartridge, GhostMita, Mitaphone
 )
 
+from managers.history_manager import HistoryManager
+
 
 class CharacterManager:
     """
@@ -28,7 +30,6 @@ class CharacterManager:
         self.crazy_mita_character: Optional[Character] = self.characters.get("Crazy")
         self.GameMaster: Optional[Character] = self.characters.get("GameMaster")
 
-        # Выбор стартового персонажа
         self.current_character = (
             self.characters.get(self.current_character_to_change)
             or self.crazy_mita_character
@@ -40,6 +41,18 @@ class CharacterManager:
             logger.info(f"[CharacterManager] Current character: {self.current_character.char_id}")
         else:
             logger.error("[CharacterManager] No characters initialized!")
+
+    def _ensure_unique_history_manager(self, ch: Character) -> None:
+        char_id = str(getattr(ch, "char_id", "") or "").strip()
+        name = str(getattr(ch, "name", "") or "").strip()
+
+        if not char_id:
+            return
+
+        try:
+            ch.history_manager = HistoryManager(character_name=name or char_id, character_id=char_id)
+        except Exception as e:
+            logger.error(f"[CharacterManager] Failed to attach unique HistoryManager for {char_id}: {e}", exc_info=True)
 
     def _init_characters(self) -> None:
         character_classes: List[Type[Character]] = [
@@ -60,6 +73,7 @@ class CharacterManager:
         self.characters = {}
         for cls in character_classes:
             ch = cls()
+            self._ensure_unique_history_manager(ch)
             self.characters[ch.char_id] = ch
 
         logger.info(f"[CharacterManager] Initialized {len(self.characters)} characters: {list(self.characters.keys())}")
