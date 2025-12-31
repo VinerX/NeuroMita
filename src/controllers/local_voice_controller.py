@@ -358,13 +358,13 @@ class LocalVoiceController:
                 log_cb(f"Ошибка: {e}")
             return False
 
-    
     def _on_local_send_voice_request(self, event: Event):
         data = event.data or {}
-        text = data.get('text', '')
-        future = data.get('future')
-        character = data.get('character')
-        character_id = data.get('character_id')
+        text = data.get("text", "")
+        future = data.get("future")
+
+        character_id = data.get("character_id")
+        voice_profile = data.get("voice_profile")
 
         if not text or not future:
             if future and not future.done():
@@ -374,7 +374,12 @@ class LocalVoiceController:
                     pass
             return
 
-        coro = self._async_local_voiceover(text, future, character=character, character_id=character_id)
+        coro = self._async_local_voiceover(
+            text=text,
+            future=future,
+            character_id=character_id,
+            voice_profile=voice_profile,
+        )
 
         def handle_result(result, error):
             if error and future and not future.done():
@@ -384,43 +389,38 @@ class LocalVoiceController:
                     pass
 
         self.event_bus.emit(Events.Core.RUN_IN_LOOP, {
-            'coroutine': coro,
-            'callback': handle_result
+            "coroutine": coro,
+            "callback": handle_result
         })
 
-
-    async def _async_local_voiceover(self, text: str, future, character: Optional[dict] = None, character_id: Optional[str] = None):
+    async def _async_local_voiceover(
+        self,
+        text: str,
+        future,
+        character_id: Optional[str] = None,
+        voice_profile: Optional[dict] = None,
+    ):
         try:
-            resolved_character = None
+            resolved_profile = voice_profile if isinstance(voice_profile, dict) else None
 
-            if isinstance(character, dict):
-                resolved_character = character
-            elif isinstance(character_id, str) and character_id:
+            if not resolved_profile and isinstance(character_id, str) and character_id:
                 character_res = self.event_bus.emit_and_wait(
-                    Events.Model.GET_CHARACTER,
-                    {'char_id': character_id, 'character': character_id},
+                    Events.Character.GET,
+                    {"character_id": character_id},
                     timeout=3.0
                 )
-                character = character_res[0] if character_res else None
-                
-                if character and not isinstance(character, dict) and hasattr(character, 'char_id'):
-                    resolved_character = {
-                        'name': getattr(character, 'name', ''),
-                        'char_id': getattr(character, 'char_id', ''),
-                        'is_cartridge': bool(getattr(character, 'is_cartridge', False)),
-                        'silero_command': getattr(character, 'silero_command', ''),
-                        'short_name': getattr(character, 'short_name', ''),
-                        'miku_tts_name': getattr(character, 'miku_tts_name', 'Player'),
-                        'silero_turn_off_video': bool(getattr(character, 'silero_turn_off_video', False)),
-                    }
-                elif isinstance(character, dict):
-                    resolved_character = character
+                ch = character_res[0] if character_res else None
+                if ch is not None and hasattr(ch, "to_voice_profile"):
+                    resolved_profile = ch.to_voice_profile()
 
-            if not resolved_character:
-                current_res = self.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CHARACTER, timeout=3.0)
+            if not resolved_profile:
+                current_res = self.event_bus.emit_and_wait(
+                    Events.Character.GET_CURRENT_PROFILE,
+                    timeout=3.0
+                )
                 cc = current_res[0] if current_res else None
                 if isinstance(cc, dict):
-                    resolved_character = cc
+                    resolved_profile = cc
 
             output_file = f"MitaVoices/output_{uuid.uuid4()}.wav"
             absolute_audio_path = os.path.abspath(output_file)
@@ -431,7 +431,7 @@ class LocalVoiceController:
             result_path = await self.local_voice.voiceover(
                 text=text,
                 output_file=absolute_audio_path,
-                character=resolved_character
+                character=resolved_profile
             )
 
             if future and not future.done():

@@ -8,6 +8,7 @@ from controllers.audio_controller import AudioController
 from controllers.telegram_controller import TelegramController
 from controllers.capture_controller import CaptureController
 from controllers.model_controller import ModelController
+from controllers.character_controller import CharacterController
 from controllers.speech_controller import SpeechController
 from controllers.settings_controller import SettingsController
 from controllers.chat_controller import ChatController
@@ -94,6 +95,9 @@ class MainController:
 
         self.voice_model_controller = VoiceModelController(config_dir="Settings")
         logger.notify("VoiceModelController (backend) успешно инициализирован.")
+
+        self.character_controller = CharacterController(self.settings)
+        logger.notify("CharacterController успешно инициализирован.")
         
         self.model_controller = ModelController(self.settings, self.pip_installer)
         logger.notify("ModelController успешно инициализирован.")

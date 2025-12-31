@@ -166,49 +166,48 @@ class ChatServerNew:
         logger.info(f"Отправлен ABORTED для {event_type} ({character})")
 
     async def handle_create_task(self, request: Dict[str, Any], client_id: str):
-        event_type = request.get('type', 'answer')
-        character = request.get('character', 'Mita')
-        data = request.get('data', {})
-        context = request.get('context', {})
-        req_id = request.get('req_id', None)
+        event_type = request.get("type", "answer")
+        character_id = request.get("character", "Mita")
+        data = request.get("data", {})
+        context = request.get("context", {})
+        req_id = request.get("req_id", None)
 
-        self.event_bus.emit(Events.Model.SET_CHARACTER_TO_CHANGE, {'character': character})
 
         self.event_bus.emit(Events.Server.SET_GAME_DATA, {
-            'distance': float(str(context.get('distance', '0')).replace(',', '.')),
-            'roomPlayer': int(context.get('roomPlayer', 0)),
-            'roomMita': int(context.get('roomMita', 0)),
-            'nearObjects': context.get('hierarchy', ''),
-            'actualInfo': context.get('currentInfo', '')
+            "distance": float(str(context.get("distance", "0")).replace(",", ".")),
+            "roomPlayer": int(context.get("roomPlayer", 0)),
+            "roomMita": int(context.get("roomMita", 0)),
+            "nearObjects": context.get("hierarchy", ""),
+            "actualInfo": context.get("currentInfo", "")
         })
 
         if self._should_block_event(event_type):
-            await self._send_aborted_update(client_id, event_type, character, req_id=req_id)
+            await self._send_aborted_update(client_id, event_type, character_id, req_id=req_id)
             return
 
-        if event_type == 'answer':
-            user_input = data.get('message', '')
+        if event_type == "answer":
+            user_input = data.get("message", "")
 
             if user_input:
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
-                    'role': 'user',
-                    'response': user_input,
-                    'is_initial': False,
-                    'emotion': ''
+                    "role": "user",
+                    "response": user_input,
+                    "is_initial": False,
+                    "emotion": ""
                 })
 
-            collected_sys = "\n".join(self.pending_sysinfo.pop(character, []))
+            collected_sys = "\n".join(self.pending_sysinfo.pop(character_id, []))
 
             task_result = self.event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
-                'type': 'chat',
-                'data': {
-                    'character': character,
-                    'user_input': user_input,
-                    'system_input': collected_sys,
-                    'system_info': context.get('currentInfo', ''),
-                    'client_id': client_id,
-                    'event_type': event_type,
-                    'req_id': req_id
+                "type": "chat",
+                "data": {
+                    "character": character_id,
+                    "user_input": user_input,
+                    "system_input": collected_sys,
+                    "system_info": context.get("currentInfo", ""),
+                    "client_id": client_id,
+                    "event_type": event_type,
+                    "req_id": req_id
                 }
             }, timeout=5.0)
 
@@ -219,21 +218,21 @@ class ChatServerNew:
                 await self.send_task_update(client_id, task)
 
                 self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
-                    'user_input': user_input,
-                    'system_input': collected_sys,
-                    'image_data': context.get('image_base64_list', []),
-                    'task_uid': task.uid,
-                    'event_type': 'chat',
-                    'character': character
+                    "user_input": user_input,
+                    "system_input": collected_sys,
+                    "image_data": context.get("image_base64_list", []),
+                    "task_uid": task.uid,
+                    "event_type": "chat",
+                    "character_id": character_id
                 })
             else:
-                await self._send_aborted_update(client_id, event_type, character, reason="Failed to create task", req_id=req_id)
+                await self._send_aborted_update(client_id, event_type, character_id, reason="Failed to create task", req_id=req_id)
 
-        elif event_type == 'idle_timeout':
-            last_idle_uid = self.last_idle_tasks.get(character)
+        elif event_type == "idle_timeout":
+            last_idle_uid = self.last_idle_tasks.get(character_id)
             if last_idle_uid:
                 last_task_result = self.event_bus.emit_and_wait(Events.Task.GET_TASK, {
-                    'uid': last_idle_uid
+                    "uid": last_idle_uid
                 }, timeout=1.0)
                 last_task = last_task_result[0] if last_task_result else None
 
@@ -241,17 +240,17 @@ class ChatServerNew:
                     await self.send_task_update(client_id, last_task)
                     return
 
-            collected_sys = "\n".join(self.pending_sysinfo.pop(character, []))
+            collected_sys = "\n".join(self.pending_sysinfo.pop(character_id, []))
 
             task_result = self.event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
-                'type': 'idle',
-                'data': {
-                    'character': character,
-                    'message': data.get('message', 'Player idle for 90 seconds'),
-                    'system_input': collected_sys,
-                    'client_id': client_id,
-                    'event_type': event_type,
-                    'req_id': req_id
+                "type": "idle",
+                "data": {
+                    "character": character_id,
+                    "message": data.get("message", "Player idle for 90 seconds"),
+                    "system_input": collected_sys,
+                    "client_id": client_id,
+                    "event_type": event_type,
+                    "req_id": req_id
                 }
             }, timeout=5.0)
 
@@ -259,7 +258,7 @@ class ChatServerNew:
 
             if task:
                 self.client_tasks[client_id].add(task.uid)
-                self.last_idle_tasks[character] = task.uid
+                self.last_idle_tasks[character_id] = task.uid
                 await self.send_task_update(client_id, task)
 
                 idle_prompt = "The player has been silent for 90 seconds. React naturally to this silence."
@@ -267,47 +266,47 @@ class ChatServerNew:
                     idle_prompt += f"\n\nAdditional context:\n{collected_sys}"
 
                 self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
-                    'user_input': '',
-                    'system_input': idle_prompt,
-                    'image_data': [],
-                    'task_uid': task.uid,
-                    'event_type': 'idle_timeout',
-                    'character': character
+                    "user_input": "",
+                    "system_input": idle_prompt,
+                    "image_data": [],
+                    "task_uid": task.uid,
+                    "event_type": "idle_timeout",
+                    "character_id": character_id
                 })
             else:
-                await self._send_aborted_update(client_id, event_type, character, reason="Failed to create idle task", req_id=req_id)
+                await self._send_aborted_update(client_id, event_type, character_id, reason="Failed to create idle task", req_id=req_id)
 
-        elif event_type == 'position_move':
-            logger.info(f"Position move event from {character}: {data}")
+        elif event_type == "position_move":
+            logger.info(f"Position move event from {character_id}: {data}")
 
-        elif event_type == 'system_info':
-            msg = data.get('message', '')
+        elif event_type == "system_info":
+            msg = data.get("message", "")
             if msg:
-                self.pending_sysinfo.setdefault(character, []).append(msg)
-                logger.info(f"Buffered system_info for {character}: {msg[:60]}...")
+                self.pending_sysinfo.setdefault(character_id, []).append(msg)
+                logger.info(f"Buffered system_info for {character_id}: {msg[:60]}...")
 
             await self.send_json(self.active_connections[client_id], {
                 "type": "info",
-                "stored": len(self.pending_sysinfo.get(character, []))
+                "stored": len(self.pending_sysinfo.get(character_id, []))
             })
 
-        elif event_type == 'system_info_flush':
-            collected_sys = "\n".join(self.pending_sysinfo.pop(character, []))
+        elif event_type == "system_info_flush":
+            collected_sys = "\n".join(self.pending_sysinfo.pop(character_id, []))
 
             if not collected_sys:
-                await self._send_aborted_update(client_id, event_type, character, reason="No pending system_info to flush", req_id=req_id)
+                await self._send_aborted_update(client_id, event_type, character_id, reason="No pending system_info to flush", req_id=req_id)
                 return
 
             task_result = self.event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
-                'type': 'chat',
-                'data': {
-                    'character': character,
-                    'user_input': '',
-                    'system_input': collected_sys,
-                    'system_info': context.get('currentInfo', ''),
-                    'client_id': client_id,
-                    'event_type': event_type,
-                    'req_id': req_id
+                "type": "chat",
+                "data": {
+                    "character": character_id,
+                    "user_input": "",
+                    "system_input": collected_sys,
+                    "system_info": context.get("currentInfo", ""),
+                    "client_id": client_id,
+                    "event_type": event_type,
+                    "req_id": req_id
                 }
             }, timeout=5.0)
 
@@ -317,20 +316,20 @@ class ChatServerNew:
                 await self.send_task_update(client_id, task)
 
                 self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
-                    'user_input': '',
-                    'system_input': collected_sys,
-                    'image_data': [],
-                    'task_uid': task.uid,
-                    'event_type': 'chat',
-                    'character': character
+                    "user_input": "",
+                    "system_input": collected_sys,
+                    "image_data": [],
+                    "task_uid": task.uid,
+                    "event_type": "chat",
+                    "character_id": character_id
                 })
             else:
-                await self._send_aborted_update(client_id, event_type, character, reason="Failed to flush system info", req_id=req_id)
+                await self._send_aborted_update(client_id, event_type, character_id, reason="Failed to flush system info", req_id=req_id)
 
-        elif event_type == 'react':
-            reason = data.get('reason', '')
-            duration = data.get('duration', 0.0)
-            current_info = context.get('currentInfo', '')
+        elif event_type == "react":
+            reason = data.get("reason", "")
+            duration = data.get("duration", 0.0)
+            current_info = context.get("currentInfo", "")
 
             react_system_input_lines = [
                 "This is a react event from the game.",
@@ -345,16 +344,16 @@ class ChatServerNew:
             react_system_input = "\n".join(react_system_input_lines)
 
             task_result = self.event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
-                'type': 'react',
-                'data': {
-                    'character': character,
-                    'user_input': '',
-                    'system_input': react_system_input,
-                    'client_id': client_id,
-                    'event_type': event_type,
-                    'req_id': req_id,
-                    'reason': reason,
-                    'duration': duration,
+                "type": "react",
+                "data": {
+                    "character": character_id,
+                    "user_input": "",
+                    "system_input": react_system_input,
+                    "client_id": client_id,
+                    "event_type": event_type,
+                    "req_id": req_id,
+                    "reason": reason,
+                    "duration": duration,
                 }
             }, timeout=5.0)
 
@@ -365,18 +364,18 @@ class ChatServerNew:
                 await self.send_task_update(client_id, task)
 
                 self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
-                    'user_input': '',
-                    'system_input': react_system_input,
-                    'image_data': context.get('image_base64_list', []),
-                    'task_uid': task.uid,
-                    'event_type': 'react',
-                    'character': character
+                    "user_input": "",
+                    "system_input": react_system_input,
+                    "image_data": context.get("image_base64_list", []),
+                    "task_uid": task.uid,
+                    "event_type": "react",
+                    "character_id": character_id
                 })
             else:
-                await self._send_aborted_update(client_id, event_type, character,
+                await self._send_aborted_update(client_id, event_type, character_id,
                                                 reason="Failed to create react task", req_id=req_id)
         else:
-            await self._send_aborted_update(client_id, event_type, character, reason=f"Unknown event type: {event_type}", req_id=req_id)
+            await self._send_aborted_update(client_id, event_type, character_id, reason=f"Unknown event type: {event_type}", req_id=req_id)
 
     async def handle_get_task_status(self, request: Dict[str, Any], client_id: str):
         task_uid = request.get('task_uid')
@@ -402,20 +401,26 @@ class ChatServerNew:
                 silero_result = self.event_bus.emit_and_wait(Events.Telegram.GET_SILERO_STATUS, timeout=1.0)
                 response['silero_connected'] = silero_result[0] if silero_result else False
 
-                gm_character = self.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CHARACTER, timeout=1.0)
-                current_char = gm_character[0] if gm_character else {}
-                is_gm = current_char.get('name') == 'GameMaster'
+                current_profile_res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+                current_profile = current_profile_res[0] if current_profile_res else {}
+                current_character_id = current_profile.get("character_id", "") if isinstance(current_profile, dict) else ""
+                is_gm = (current_character_id == "GameMaster")
 
                 response['GM_ON'] = is_gm
                 response['GM_READ'] = is_gm
-                response['GM_VOICE'] = is_gm and self.event_bus.emit_and_wait(
-                    Events.Settings.GET_SETTING, {'key': 'GM_VOICE'}, timeout=1.0
-                )[0]
+
+                gm_voice_res = self.event_bus.emit_and_wait(
+                    Events.Settings.GET_SETTING,
+                    {'key': 'GM_VOICE', 'default': False},
+                    timeout=1.0
+                )
+                gm_voice = bool(gm_voice_res[0]) if gm_voice_res else False
+                response['GM_VOICE'] = bool(is_gm and gm_voice)
 
             await self.send_json(self.active_connections[client_id], response)
         else:
             await self.send_error(self.active_connections[client_id], f"Task {task_uid} not found")
-
+    
     def _on_task_status_changed(self, event: Event):
         task = event.data.get('task')
         if not task or not getattr(task, 'data', None):

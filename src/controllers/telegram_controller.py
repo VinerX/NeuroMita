@@ -26,7 +26,7 @@ class TelegramController:
     def _subscribe_to_events(self):
         self.event_bus.subscribe("telegram_settings_loaded", self._on_telegram_settings_loaded, weak=False)
         self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
-        self.event_bus.subscribe("telegram_send_voice_request", self._on_send_voice_request, weak=False)
+        self.event_bus.subscribe(Events.Telegram.TELEGRAM_SEND_VOICE_REQUEST, self._on_send_voice_request, weak=False)
         self.event_bus.subscribe(Events.Telegram.SET_SILERO_CONNECTED, self._on_set_silero_connected, weak=False)
         self.event_bus.subscribe(Events.Telegram.GET_SILERO_STATUS, self._on_get_silero_status, weak=False)
         self.event_bus.subscribe(Events.Core.LOOP_READY, self._on_loop_ready, weak=False)

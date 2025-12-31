@@ -766,5 +766,20 @@ class Character:
             f"[{self.char_id}] Stress changed by {amount:.2f} to {self.get_variable('stress'):.2f}"
         )
 
+    def to_voice_profile(self) -> Dict[str, Any]:
+        """
+        Плоский профиль персонажа для озвучки и внешних контроллеров.
+        Не содержит тяжёлых ссылок/менеджеров и безопасен для передачи по EventBus.
+        """
+        return {
+            "character_id": str(getattr(self, "char_id", "") or ""),
+            "name": str(getattr(self, "name", "") or ""),
+            "is_cartridge": bool(getattr(self, "is_cartridge", False)),
+            "silero_command": str(getattr(self, "silero_command", "") or ""),
+            "short_name": str(getattr(self, "short_name", "") or ""),
+            "miku_tts_name": str(getattr(self, "miku_tts_name", "Player") or "Player"),
+            "silero_turn_off_video": bool(getattr(self, "silero_turn_off_video", False)),
+        }
+
     def __str__(self):
         return f"Character(id='{self.char_id}', name='{self.name}')"

@@ -1,5 +1,4 @@
-﻿# src/controllers/prompt_controller.py
-from __future__ import annotations
+﻿from __future__ import annotations
 from typing import Dict, Any, List, Optional
 import os
 import base64
@@ -17,18 +16,6 @@ class PromptController:
 
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.Prompt.BUILD_PROMPT, self._on_build_prompt, weak=False)
-
-    def _get_character(self, char_id: str):
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Model.GET_CHARACTER,
-                {'name': char_id},
-                timeout=1.0
-            )
-            return res[0] if res else None
-        except Exception as e:
-            logger.error(f"[PromptController] Не удалось получить персонажа '{char_id}': {e}", exc_info=True)
-            return None
 
     def _load_app_vars(self) -> Dict[str, Any]:
         app_vars: Dict[str, Any] = {}
@@ -109,14 +96,22 @@ class PromptController:
 
     def _on_build_prompt(self, event: Event) -> Dict[str, Any]:
         data = event.data or {}
+
         char_id: str = data.get('character_id')
         if not char_id:
             logger.error("[PromptController] BUILD_PROMPT без character_id")
             return {'messages': [], 'history_messages': []}
 
-        character = self._get_character(char_id)
-        if not character:
-            logger.error(f"[PromptController] Персонаж '{char_id}' не найден")
+        character = data.get("character_ref")
+        if character is None:
+            logger.error(f"[PromptController] BUILD_PROMPT для '{char_id}' без character_ref")
+            return {'messages': [], 'history_messages': []}
+
+        if getattr(character, "char_id", None) != char_id:
+            logger.error(
+                f"[PromptController] character_ref.char_id != character_id "
+                f"({getattr(character, 'char_id', None)} != {char_id})"
+            )
             return {'messages': [], 'history_messages': []}
 
         event_type: str = data.get('event_type', 'chat')
@@ -170,6 +165,7 @@ class PromptController:
                 Events.History.PREPARE_FOR_PROMPT,
                 {
                     'character_id': char_id,
+                    'character_ref': character,
                     'event_type': event_type,
                     'memory_limit': memory_limit,
                     'is_game_master': is_game_master,

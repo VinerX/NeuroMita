@@ -29,28 +29,24 @@ class HistoryController:
         except Exception:
             return default
 
-    def _get_character(self, char_id: str):
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Model.GET_CHARACTER,
-                {'name': char_id},
-                timeout=1.0
-            )
-            return res[0] if res else None
-        except Exception as e:
-            logger.error(f"[HistoryController] Не удалось получить персонажа '{char_id}': {e}", exc_info=True)
-            return None
-
     def _on_prepare_for_prompt(self, event: Event) -> Dict[str, Any]:
         data = event.data or {}
+
         char_id: str = data.get('character_id')
         if not char_id:
             logger.error("[HistoryController] PREPARE_FOR_PROMPT без character_id")
             return {'history': []}
 
-        character = self._get_character(char_id)
-        if not character:
-            logger.error(f"[HistoryController] Персонаж '{char_id}' не найден")
+        character = data.get("character_ref")
+        if character is None:
+            logger.error(f"[HistoryController] PREPARE_FOR_PROMPT для '{char_id}' без character_ref")
+            return {'history': []}
+
+        if getattr(character, "char_id", None) != char_id:
+            logger.error(
+                f"[HistoryController] character_ref.char_id != character_id "
+                f"({getattr(character, 'char_id', None)} != {char_id})"
+            )
             return {'history': []}
 
         event_type: str = data.get('event_type', 'chat')
@@ -58,8 +54,6 @@ class HistoryController:
         is_gm: bool = bool(data.get('is_game_master', False))
         save_missed_history: bool = bool(data.get('save_missed_history', True))
         image_cfg: Dict[str, Any] = data.get('image_quality', {}) or {}
-
-        # НОВОЕ: даём возможность безопасно получить “контекст для подсчёта” без компрессии истории
         disable_compression: bool = bool(data.get('disable_compression', False))
 
         effective_limit = 8 if is_gm else memory_limit
@@ -69,7 +63,6 @@ class HistoryController:
         history_data = character.history_manager.load_history()
         llm_messages_history: List[Dict[str, Any]] = history_data.get("messages", [])
 
-        # ВАЖНО: compression может мутировать историю/память -> отключаем для token_count и похожих запросов
         if not disable_compression:
             llm_messages_history = self._process_history_compression(
                 character, llm_messages_history, effective_limit
@@ -100,9 +93,16 @@ class HistoryController:
             logger.error("[HistoryController] SAVE_AFTER_RESPONSE без character_id")
             return False
 
-        character = self._get_character(char_id)
-        if not character:
-            logger.error(f"[HistoryController] Персонаж '{char_id}' не найден при сохранении истории")
+        character = data.get("character_ref")
+        if character is None:
+            logger.error(f"[HistoryController] SAVE_AFTER_RESPONSE для '{char_id}' без character_ref")
+            return False
+
+        if getattr(character, "char_id", None) != char_id:
+            logger.error(
+                f"[HistoryController] SAVE_AFTER_RESPONSE mismatch "
+                f"({getattr(character, 'char_id', None)} != {char_id})"
+            )
             return False
 
         try:
@@ -178,7 +178,6 @@ class HistoryController:
             else:
                 logger.warning(f"[HistoryController][{char_id}] Сжатие истории по лимиту не удалось.")
 
-        # --- Periodic compression ---
         if enable_periodic and periodic_interval > 0:
             cnt = self._messages_since_last_periodic_compression.get(char_id, 0) + 1
             self._messages_since_last_periodic_compression[char_id] = cnt
@@ -208,7 +207,6 @@ class HistoryController:
                         else:
                             logger.warning(f"[HistoryController][{char_id}] MemorySystem недоступен для сводки.")
 
-                        # Удаляем сжатый префикс и держим хвост
                         llm_messages_history = llm_messages_history[len(messages_to_compress):]
                         llm_messages_history = llm_messages_history[-keep_tail:]
 

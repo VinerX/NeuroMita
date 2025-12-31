@@ -1,23 +1,21 @@
-import uuid
 import os
 import glob
 import asyncio
+from typing import Optional
 
 from handlers.audio_handler import AudioHandler
 from main_logger import logger
 from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
 from core.events import get_event_bus, Events, Event
 from managers.task_manager import TaskStatus
-from typing import Optional
 from utils import process_text_to_voice
 
 
 class AudioController:
     """
-    Агрегатор озвучки:
-    - TG → TelegramController
-    - Local → LocalVoiceController
-    Вся «локальная» логика вынесена в LocalVoiceController.
+    Агрегатор озвучки.
+    Получает на вход уже определённый speaker и voice_profile (если есть),
+    не делает повторных запросов персонажа в рамках одного запроса.
     """
 
     def __init__(self, main_controller):
@@ -53,28 +51,36 @@ class AudioController:
         return self.waiting_answer
 
     def _on_set_waiting_answer(self, event: Event):
-        self.waiting_answer = event.data.get('waiting', False)
+        self.waiting_answer = (event.data or {}).get("waiting", False)
 
     def get_speaker_text(self):
         if self.settings.get("AUDIO_BOT") == "@CrazyMitaAIbot":
             return self.textSpeakerMiku
-        else:
-            return self.textSpeaker
+        return self.textSpeaker
 
     def _update_task_failed_voiceover(self, task_uid: str, error: str):
         self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
-            'uid': task_uid,
-            'status': TaskStatus.FAILED_ON_VOICEOVER,
-            'error': error
+            "uid": task_uid,
+            "status": TaskStatus.FAILED_ON_VOICEOVER,
+            "error": error
         })
 
     def _on_voiceover_requested(self, event: Event):
         data = event.data or {}
-        text = data.get('text', '')
-        speaker = data.get('speaker', self.get_speaker_text())
-        task_uid = data.get('task_uid')
-        character = data.get('character')
-        character_id = data.get('character_id')
+        text = data.get("text", "")
+        task_uid = data.get("task_uid")
+
+        character_id = data.get("character_id")
+        voice_profile = data.get("voice_profile")
+
+        speaker = data.get("speaker")
+        if not speaker:
+            if isinstance(voice_profile, dict):
+                if self.settings.get("AUDIO_BOT") == "@CrazyMitaAIbot":
+                    speaker = voice_profile.get("miku_tts_name")
+                else:
+                    speaker = voice_profile.get("silero_command")
+            speaker = speaker or self.get_speaker_text()
 
         if not text:
             return
@@ -98,7 +104,7 @@ class AudioController:
             if self.voiceover_method == "TG":
                 logger.info(f"Используем Telegram (Silero/Miku) для озвучки: {speaker}")
                 self.event_bus.emit(Events.Core.RUN_IN_LOOP, {
-                    'coroutine': self.run_send_and_receive(
+                    "coroutine": self.run_send_and_receive(
                         text_for_voice,
                         original_text,
                         speaker,
@@ -108,12 +114,12 @@ class AudioController:
 
             elif self.voiceover_method == "Local":
                 self.event_bus.emit(Events.Core.RUN_IN_LOOP, {
-                    'coroutine': self._await_local_voiceover_and_postprocess(
+                    "coroutine": self._await_local_voiceover_and_postprocess(
                         text_for_voice,
                         original_text,
                         task_uid,
-                        character,
-                        character_id
+                        character_id=character_id,
+                        voice_profile=voice_profile,
                     )
                 })
 
@@ -131,20 +137,18 @@ class AudioController:
                 self._update_task_failed_voiceover(task_uid, str(e))
             self.waiting_answer = False
 
-
     async def run_send_and_receive(self, voice_text, original_text, speaker_command, task_uid=None):
-        import asyncio
         logger.info("Попытка получить фразу (Telegram)")
 
         future = asyncio.Future()
         logger.notify(f"Отправка на озвучку в Telegram текста: {voice_text[:50]}...")
 
         self.event_bus.emit(Events.Telegram.TELEGRAM_SEND_VOICE_REQUEST, {
-            'text': voice_text,
-            'speaker_command': speaker_command,
-            'id': 0,
-            'future': future,
-            'task_uid': task_uid
+            "text": voice_text,
+            "speaker_command": speaker_command,
+            "id": 0,
+            "future": future,
+            "task_uid": task_uid
         })
 
         try:
@@ -154,11 +158,11 @@ class AudioController:
 
             if task_uid:
                 self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
-                    'uid': task_uid,
-                    'status': TaskStatus.SUCCESS,
-                    'result': {
-                        'response': original_text,
-                        'voiceover_path': voiceover_path
+                    "uid": task_uid,
+                    "status": TaskStatus.SUCCESS,
+                    "result": {
+                        "response": original_text,
+                        "voiceover_path": voiceover_path
                     }
                 })
         except Exception as e:
@@ -170,24 +174,21 @@ class AudioController:
 
         logger.info("Завершение получения фразы (Telegram)")
 
-
     async def _await_local_voiceover_and_postprocess(
         self,
         voice_text: str,
         original_text: str,
         task_uid: Optional[str],
-        character: Optional[dict] = None,
         character_id: Optional[str] = None,
+        voice_profile: Optional[dict] = None,
     ):
-        import asyncio
-
         future = asyncio.Future()
         self.event_bus.emit(Events.Audio.LOCAL_SEND_VOICE_REQUEST, {
-            'text': voice_text,
-            'future': future,
-            'task_uid': task_uid,
-            'character': character,
-            'character_id': character_id,
+            "text": voice_text,
+            "future": future,
+            "task_uid": task_uid,
+            "character_id": character_id,
+            "voice_profile": voice_profile,
         })
 
         try:
@@ -196,11 +197,11 @@ class AudioController:
 
             if task_uid:
                 self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
-                    'uid': task_uid,
-                    'status': TaskStatus.SUCCESS,
-                    'result': {
-                        'response': original_text,
-                        'voiceover_path': result_path
+                    "uid": task_uid,
+                    "status": TaskStatus.SUCCESS,
+                    "result": {
+                        "response": original_text,
+                        "voiceover_path": result_path
                     }
                 })
 
@@ -210,8 +211,8 @@ class AudioController:
             if not is_connected and self.settings.get("VOICEOVER_LOCAL_CHAT"):
                 await AudioHandler.handle_voice_file(
                     result_path,
-                    self.settings.get("LOCAL_VOICE_DELETE_AUDIO", True) if os.environ.get(
-                        "ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1" else True
+                    self.settings.get("LOCAL_VOICE_DELETE_AUDIO", True)
+                    if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1" else True
                 )
             elif is_connected:
                 self.event_bus.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, result_path)

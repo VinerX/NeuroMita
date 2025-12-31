@@ -680,7 +680,7 @@ class ChatGUI(QMainWindow):
         return self.settings.get(key, default)
 
     def _get_character_name(self):
-        result = self.event_bus.emit_and_wait(Events.Model.GET_CHARACTER_NAME, timeout=0.5)
+        result = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_NAME, timeout=0.5)
         return result[0] if result else "Assistant"
 
     def get_news_content(self):

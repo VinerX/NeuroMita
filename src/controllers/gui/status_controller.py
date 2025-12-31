@@ -73,14 +73,8 @@ class StatusController(BaseController):
         logger.info("StatusController: получено событие ON_STARTED_RESPONSE_GENERATION")
 
         character_name = None
-        if event and event.data and isinstance(event.data, dict):
-            character_name = event.data.get("character") or event.data.get("character_name")
-
-        if not character_name:
-            results = self.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CHARACTER, timeout=1.0)
-            if results and results[0]:
-                character_data = results[0]
-                character_name = character_data.get('name', None)
+        if event and isinstance(getattr(event, "data", None), dict):
+            character_name = event.data.get("character_name")
 
         if not character_name:
             character_name = "Мита"

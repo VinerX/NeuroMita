@@ -12,16 +12,11 @@ from ui.settings.prompt_catalogue_settings import list_prompt_sets
 from managers.prompt_catalogue_manager import copy_prompt_set, get_prompt_catalogue_folder_name
 
 
-# ─── Вспомогательные функции ────────────────────────────────────────────────
-def _prompt_set_key(char_name: str) -> str:
-    """Ключ Settings для конкретного персонажа"""
-    return f"PROMPT_SET_{char_name}"
+def _prompt_set_key(character_id: str) -> str:
+    return f"PROMPT_SET_{character_id}"
 
 
 def _dir_file_hashes(folder: str, exclude=None) -> dict:
-    """Возвращает словарь {relative_path: sha256} по всем файлам в папке.
-    Исключаем info.json, системный мусор и всё, что передано в exclude.
-    """
     result = {}
     if not os.path.isdir(folder):
         return result
@@ -50,12 +45,7 @@ def _dir_file_hashes(folder: str, exclude=None) -> dict:
     return result
 
 
-def _prompts_match(char_name: str, set_name: str, gui=None) -> bool:
-    """True, если состав и содержимое файлов в Prompts/<char> совпадают с PromptsCatalogue/<set> (пофайлово).
-    Особый случай: если в наборе НЕТ config.json, игнорируем наличие/содержимое config.json в Prompts/<char>.
-    Если в наборе ЕСТЬ config.json — он заменяет существующий и должен совпадать.
-    Логи-уведомления (logger.notify) выводятся только если включён чекбокс SHOW_PROMPT_SYNC_LOGS.
-    """
+def _prompts_match(character_id: str, set_name: str, gui=None) -> bool:
     show_logs = False
     try:
         if gui and hasattr(gui, "settings"):
@@ -70,10 +60,10 @@ def _prompts_match(char_name: str, set_name: str, gui=None) -> bool:
             except Exception:
                 logger.info(msg)
 
-    if not char_name or not set_name:
+    if not character_id or not set_name:
         return False
 
-    char_dir = os.path.join("Prompts", char_name)
+    char_dir = os.path.join("Prompts", character_id)
     set_dir = os.path.join("PromptsCatalogue", set_name)
 
     if not os.path.isdir(char_dir) or not os.path.isdir(set_dir):
@@ -123,9 +113,8 @@ def _prompts_match(char_name: str, set_name: str, gui=None) -> bool:
 
 
 def _update_sync_indicator(gui):
-    """Красим точку индикатора (создаём при первом вызове)"""
     if not hasattr(gui, "prompt_sync_label"):
-        gui.prompt_sync_label = QLabel("●")  # маленькая точка
+        gui.prompt_sync_label = QLabel("●")
         gui.prompt_sync_label.setToolTip(_("Индикатор соответствия промптов", "Prompts sync indicator"))
 
         if hasattr(gui, 'prompt_pack_combobox'):
@@ -136,10 +125,10 @@ def _update_sync_indicator(gui):
     if not hasattr(gui, 'character_combobox') or not hasattr(gui, 'prompt_pack_combobox'):
         return
 
-    char_name = gui.character_combobox.currentText()
+    character_id = gui.character_combobox.currentText()
     set_name = gui.prompt_pack_combobox.currentText()
 
-    ok = _prompts_match(char_name, set_name, gui=gui)
+    ok = _prompts_match(character_id, set_name, gui=gui)
     color = "#2ecc71" if ok else "#e74c3c"
     gui.prompt_sync_label.setStyleSheet(f"color: {color}; font-size: 16px;")
 
@@ -148,12 +137,10 @@ def _update_sync_indicator(gui):
     gui.prompt_sync_label.setToolTip(tooltip)
 
 
-# ─── Публичные функции (логика) ─────────────────────────────────────────────
 def wire_character_settings_logic(self):
     event_bus = get_event_bus()
 
-    # Заполнить список персонажей
-    all_characters = event_bus.emit_and_wait(Events.Model.GET_ALL_CHARACTERS, timeout=1.0)
+    all_characters = event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
     character_list = all_characters[0] if all_characters else ["Crazy"]
 
     self.character_combobox.blockSignals(True)
@@ -161,7 +148,6 @@ def wire_character_settings_logic(self):
     self.character_combobox.addItems(character_list if character_list else ["Crazy"])
     self.character_combobox.blockSignals(False)
 
-    # Провайдеры: "Текущий" + кастомные пресеты
     presets_meta = event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
     provider_names = [_("Текущий", "Current")]
     if presets_meta and presets_meta[0]:
@@ -171,25 +157,23 @@ def wire_character_settings_logic(self):
     self.char_provider_combobox.clear()
     self.char_provider_combobox.addItems(provider_names)
 
-    # Чек логов сравнения промптов
     if hasattr(self, "show_prompt_sync_logs_check"):
         self.show_prompt_sync_logs_check.setChecked(bool(self.settings.get("SHOW_PROMPT_SYNC_LOGS", False)))
         self.show_prompt_sync_logs_check.stateChanged.connect(
             lambda state: self.settings.set("SHOW_PROMPT_SYNC_LOGS", bool(state))
         )
 
-    # Текущий персонаж
-    current_char_data = event_bus.emit_and_wait(Events.Model.GET_CURRENT_CHARACTER, timeout=1.0)
-    current_char_id = current_char_data[0]['char_id'] if current_char_data and current_char_data[0] else "Crazy"
+    current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+    current_profile = current_profile_res[0] if current_profile_res else {}
+    current_char_id = current_profile.get('character_id', 'Crazy') if isinstance(current_profile, dict) else "Crazy"
+
     if current_char_id:
         idx = self.character_combobox.findText(current_char_id, Qt.MatchFlag.MatchFixedString)
         if idx >= 0:
             self.character_combobox.setCurrentIndex(idx)
 
-    # Заполнить наборы промптов для текущего персонажа
     change_character_actions(self, current_char_id)
 
-    # Сигналы
     if hasattr(self, 'prompt_pack_combobox'):
         self.prompt_pack_combobox.currentTextChanged.connect(lambda: on_prompt_set_changed(self))
     if hasattr(self, 'character_combobox'):
@@ -208,25 +192,23 @@ def wire_character_settings_logic(self):
     if hasattr(self, 'btn_reload_prompts'):
         self.btn_reload_prompts.clicked.connect(lambda: reload_prompts(self))
 
-    # Первичный индикатор
     _update_sync_indicator(self)
     QTimer.singleShot(300, lambda: _update_sync_indicator(self))
 
 
 def on_prompt_set_changed(gui):
-    """Обработчик изменения выбранного набора промптов"""
     _update_sync_indicator(gui)
 
     if not hasattr(gui, 'character_combobox') or not hasattr(gui, 'prompt_pack_combobox'):
         return
 
-    char = gui.character_combobox.currentText()
+    character_id = gui.character_combobox.currentText()
     set_ = gui.prompt_pack_combobox.currentText()
 
-    if not char or not set_:
+    if not character_id or not set_:
         return
 
-    if not _prompts_match(char, set_, gui=gui):
+    if not _prompts_match(character_id, set_, gui=gui):
         reply = QMessageBox.question(
             gui,
             _("Несоответствие промптов", "Prompts differ"),
@@ -237,29 +219,29 @@ def on_prompt_set_changed(gui):
         if reply == QMessageBox.StandardButton.Yes:
             apply_prompt_set(gui)
     else:
-        gui.settings.set(_prompt_set_key(char), set_)
+        gui.settings.set(_prompt_set_key(character_id), set_)
         gui.settings.save_settings()
 
 
 def set_default_prompt_pack(gui, combobox):
-    character_name = gui.character_combobox.currentText()
-    character_prompts_path = os.path.join("Prompts", character_name)
+    character_id = gui.character_combobox.currentText()
+    character_prompts_path = os.path.join("Prompts", character_id)
     folder_name = get_prompt_catalogue_folder_name(character_prompts_path)
     combobox.setCurrentText(folder_name)
 
 
-def change_character_actions(gui, character=None):
+def change_character_actions(gui, character_id=None):
     event_bus = get_event_bus()
 
-    if character:
-        selected_character = character
+    if character_id:
+        selected_character = character_id
     elif hasattr(gui, 'character_combobox'):
         selected_character = gui.character_combobox.currentText()
     else:
         return
 
-    event_bus.emit(Events.Model.SET_CHARACTER_TO_CHANGE, {'character': selected_character})
-    event_bus.emit(Events.Model.CHECK_CHANGE_CHARACTER)
+    if selected_character:
+        event_bus.emit(Events.Character.SET_CURRENT, {'character_id': selected_character})
 
     if hasattr(gui, 'char_provider_combobox'):
         provider_key = f"CHAR_PROVIDER_{selected_character}"
@@ -319,8 +301,8 @@ def apply_prompt_set(gui, force_apply=True):
 
             if force_apply:
                 QMessageBox.information(gui, _("Успех", "Success"),
-                                         _("Набор промптов успешно применен.", "Prompt set applied successfully."))
-            event_bus.emit(Events.Model.RELOAD_CHARACTER_DATA)
+                                        _("Набор промптов успешно применен.", "Prompt set applied successfully."))
+            event_bus.emit(Events.Character.RELOAD_DATA)
     else:
         if force_apply:
             QMessageBox.warning(gui, _("Внимание", "Warning"), _("Персонаж не выбран.", "No character selected."))
@@ -336,21 +318,17 @@ def open_folder(path):
 
 def open_character_folder(gui):
     event_bus = get_event_bus()
-    current_char_data = event_bus.emit_and_wait(Events.Model.GET_CURRENT_CHARACTER, timeout=1.0)
+    current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+    profile = current_profile_res[0] if current_profile_res else {}
 
-    if current_char_data and current_char_data[0]:
-        char_data = current_char_data[0]
-        character_name = char_data.get('char_id')
-        if character_name:
-            character_folder_path = os.path.join("Prompts", character_name)
-            if os.path.exists(character_folder_path):
-                open_folder(character_folder_path)
-            else:
-                QMessageBox.warning(gui, _("Внимание", "Warning"),
-                                    _("Папка персонажа не найдена: ", "Character folder not found: ") + character_folder_path)
+    character_id = profile.get("character_id") if isinstance(profile, dict) else None
+    if character_id:
+        character_folder_path = os.path.join("Prompts", character_id)
+        if os.path.exists(character_folder_path):
+            open_folder(character_folder_path)
         else:
-            QMessageBox.information(gui, _("Информация", "Information"),
-                                    _("Персонаж не выбран или его имя недоступно.", "No character selected or its name is not available."))
+            QMessageBox.warning(gui, _("Внимание", "Warning"),
+                                _("Папка персонажа не найдена: ", "Character folder not found: ") + character_folder_path)
     else:
         QMessageBox.information(gui, _("Информация", "Information"),
                                 _("Персонаж не выбран или его имя недоступно.", "No character selected or its name is not available."))
@@ -358,21 +336,17 @@ def open_character_folder(gui):
 
 def open_character_history_folder(gui):
     event_bus = get_event_bus()
-    current_char_data = event_bus.emit_and_wait(Events.Model.GET_CURRENT_CHARACTER, timeout=1.0)
+    current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+    profile = current_profile_res[0] if current_profile_res else {}
 
-    if current_char_data and current_char_data[0]:
-        char_data = current_char_data[0]
-        character_name = char_data.get('char_id')
-        if character_name:
-            history_folder_path = os.path.join("Histories", character_name)
-            if os.path.exists(history_folder_path):
-                open_folder(history_folder_path)
-            else:
-                QMessageBox.warning(gui, _("Внимание", "Warning"),
-                                    _("Папка истории персонажа не найдена: ", "Character history folder not found: ") + history_folder_path)
+    character_id = profile.get("character_id") if isinstance(profile, dict) else None
+    if character_id:
+        history_folder_path = os.path.join("Histories", character_id)
+        if os.path.exists(history_folder_path):
+            open_folder(history_folder_path)
         else:
-            QMessageBox.information(gui, _("Информация", "Information"),
-                                    _("Персонаж не выбран или его имя недоступно.", "No character selected or its name is not available."))
+            QMessageBox.warning(gui, _("Внимание", "Warning"),
+                                _("Папка истории персонажа не найдена: ", "Character history folder not found: ") + history_folder_path)
     else:
         QMessageBox.information(gui, _("Информация", "Information"),
                                 _("Персонаж не выбран или его имя недоступно.", "No character selected or its name is not available."))
@@ -380,8 +354,9 @@ def open_character_history_folder(gui):
 
 def clear_history(gui):
     event_bus = get_event_bus()
-    current_char_data = event_bus.emit_and_wait(Events.Model.GET_CURRENT_CHARACTER, timeout=1.0)
-    char_id = current_char_data[0].get('char_id') if current_char_data and current_char_data[0] else None
+    current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+    profile = current_profile_res[0] if current_profile_res else {}
+    char_id = profile.get("character_id") if isinstance(profile, dict) else None
     char_name_for_text = char_id or _("(не выбран)", "(not selected)")
 
     title = _("Подтверждение удаления", "Confirm deletion")
@@ -392,7 +367,7 @@ def clear_history(gui):
     if reply != QMessageBox.StandardButton.Yes:
         return
 
-    event_bus.emit(Events.Model.CLEAR_CHARACTER_HISTORY)
+    event_bus.emit(Events.Character.CLEAR_HISTORY)
     if hasattr(gui, 'clear_chat_display'):
         gui.clear_chat_display()
     if hasattr(gui, 'update_debug_info'):
@@ -409,7 +384,7 @@ def clear_history_all(gui):
         return
 
     event_bus = get_event_bus()
-    event_bus.emit(Events.Model.CLEAR_ALL_HISTORIES)
+    event_bus.emit(Events.Character.CLEAR_ALL_HISTORIES)
     if hasattr(gui, 'clear_chat_display'):
         gui.clear_chat_display()
     if hasattr(gui, 'update_debug_info'):
@@ -433,8 +408,6 @@ def reload_prompts(gui):
 
 
 def save_character_provider(gui, provider: str):
-    event_bus = get_event_bus()
-
     selected_character = gui.character_combobox.currentText() if hasattr(gui, 'character_combobox') else None
     if not selected_character:
         QMessageBox.warning(gui, _("Внимание", "Warning"), _("Персонаж не выбран.", "No character selected."))
@@ -442,4 +415,3 @@ def save_character_provider(gui, provider: str):
     provider_key = f"CHAR_PROVIDER_{selected_character}"
     gui.settings.set(provider_key, provider)
     logger.info(f"Saved provider '{provider}' for character '{selected_character}'")
-    event_bus.emit(Events.Model.CHECK_CHANGE_CHARACTER)
