@@ -1,10 +1,10 @@
 import io
 import base64
-import time
 from PyQt6.QtGui import QTextCursor, QColor, QImage, QFont, QPalette
 from utils import _
 from main_logger import logger
 from ui.chat.chat_delegate import ChatMessageDelegate
+
 
 def _get_delegate(gui) -> ChatMessageDelegate:
     if hasattr(gui, "chat_delegate") and gui.chat_delegate:
@@ -13,22 +13,46 @@ def _get_delegate(gui) -> ChatMessageDelegate:
     setattr(gui, "chat_delegate", d)
     return d
 
+
 def insert_message(gui, role, content, insert_at_start=False, message_time=""):
     if not hasattr(gui, '_images_in_chat'):
         gui._images_in_chat = []
 
     processed_content_parts = []
     has_image_content = False
+    speaker_name = ""
 
     if isinstance(content, list):
         for item in content:
-            if isinstance(item, dict):
-                if item.get("type") == "text":
-                    processed_content_parts.append({"type": "text", "content": item.get("text", ""), "tag": "default"})
-                elif item.get("type") == "image_url":
-                    has_image_content = process_image_for_chat(gui, has_image_content, item, processed_content_parts)
-        if has_image_content and not any(part["type"] == "text" and part["content"].strip() for part in processed_content_parts):
-            processed_content_parts.insert(0, {"type": "text", "content": _("<Изображение экрана>", "<Screen Image>") + "\n", "tag": "default"})
+            if not isinstance(item, dict):
+                continue
+
+            if item.get("type") == "meta":
+                speaker_name = str(
+                    item.get("speaker")
+                    or item.get("character_name")
+                    or item.get("name")
+                    or ""
+                )
+                continue
+
+            if item.get("type") == "text":
+                txt = item.get("text")
+                if txt is None:
+                    txt = item.get("content", "")
+                processed_content_parts.append({"type": "text", "content": txt, "tag": "default"})
+            elif item.get("type") == "image_url":
+                has_image_content = process_image_for_chat(gui, has_image_content, item, processed_content_parts)
+
+        if has_image_content and not any(
+            part["type"] == "text" and part["content"].strip() for part in processed_content_parts
+        ):
+            processed_content_parts.insert(0, {
+                "type": "text",
+                "content": _("<Изображение экрана>", "<Screen Image>") + "\n",
+                "tag": "default"
+            })
+
     elif isinstance(content, str):
         processed_content_parts.append({"type": "text", "content": content, "tag": "default"})
     else:
@@ -37,7 +61,6 @@ def insert_message(gui, role, content, insert_at_start=False, message_time=""):
     delegate = _get_delegate(gui)
     hide_tags = gui._get_setting("HIDE_CHAT_TAGS", False)
 
-    # Разбиваем текст на части делегатом
     normalized_parts = []
     for part in processed_content_parts:
         if part["type"] == "text":
@@ -57,20 +80,17 @@ def insert_message(gui, role, content, insert_at_start=False, message_time=""):
     if show_timestamps and timestamp_str:
         _insert_formatted_text(gui, cursor, timestamp_str, QColor("#888888"), italic=True)
 
-    # Лейбл спикера (включая system)
-    label_text, label_color, label_bold = delegate.get_label(gui, role)
+    label_text, label_color, label_bold = delegate.get_label(gui, role, speaker_name=speaker_name)
     _insert_formatted_text(gui, cursor, label_text, label_color, bold=label_bold)
 
-    # Контент (системным — отдельный цвет)
     content_color = delegate.get_content_color(role)
 
     for part in normalized_parts:
         if part["type"] == "text":
-            color = None
             if part.get("tag") == "tag_green":
                 color = delegate.tag_color
             else:
-                color = content_color  # для system — окрашиваем контент
+                color = content_color
             _insert_formatted_text(gui, cursor, part["content"], color)
         elif part["type"] == "image":
             cursor.insertImage(part["content"])
@@ -81,6 +101,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time=""):
     if not insert_at_start:
         gui.chat_window.verticalScrollBar().setValue(gui.chat_window.verticalScrollBar().maximum())
 
+
 def insert_message_end(gui, cursor=None, role="assistant"):
     if not cursor:
         cursor = gui.chat_window.textCursor()
@@ -89,12 +110,17 @@ def insert_message_end(gui, cursor=None, role="assistant"):
     elif role in {"assistant", "system"}:
         cursor.insertText("\n\n")
 
+
 def insert_speaker_name(gui, cursor=None, role="assistant"):
     delegate = _get_delegate(gui)
     if not cursor:
         cursor = gui.chat_window.textCursor()
-    label_text, label_color, label_bold = delegate.get_label(gui, role)
+    speaker_name = ""
+    if role == "assistant":
+        speaker_name = str(getattr(gui, "_stream_speaker_name", "") or "")
+    label_text, label_color, label_bold = delegate.get_label(gui, role, speaker_name=speaker_name)
     _insert_formatted_text(gui, cursor, label_text, label_color, bold=label_bold)
+
 
 def _insert_formatted_text(gui, cursor, text, color=None, bold=False, italic=False):
     char_format = cursor.charFormat()
@@ -109,20 +135,25 @@ def _insert_formatted_text(gui, cursor, text, color=None, bold=False, italic=Fal
     char_format.setFont(font)
     cursor.insertText(text, char_format)
 
+
 def append_message(gui, text):
     cursor = gui.chat_window.textCursor()
     cursor.movePosition(QTextCursor.MoveOperation.End)
     _insert_formatted_text(gui, cursor, text)
     gui.chat_window.verticalScrollBar().setValue(gui.chat_window.verticalScrollBar().maximum())
 
+
 def prepare_stream_slot(gui):
     insert_speaker_name(gui, role="assistant")
+
 
 def append_stream_chunk_slot(gui, chunk):
     append_message(gui, chunk)
 
+
 def finish_stream_slot(gui):
     insert_message_end(gui, role="assistant")
+
 
 def process_image_for_chat(gui, has_image_content, item, processed_content_parts):
     image_data_base64 = item.get("image_url", {}).get("url", "")

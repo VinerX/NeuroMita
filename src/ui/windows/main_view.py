@@ -55,7 +55,7 @@ from ui.chat.chat_delegate import ChatMessageDelegate
 from ui.windows.voice_action_windows import VoiceInstallationWindow
 
 class ChatGUI(QMainWindow):
-    update_chat_signal = pyqtSignal(str, str, bool, str)
+    update_chat_signal = pyqtSignal(str, object, bool, str)
     update_status_signal = pyqtSignal()
     update_debug_signal = pyqtSignal()
 

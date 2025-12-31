@@ -84,6 +84,29 @@ class HistoryController:
 
         return {'history': history_limited}
 
+    def _decorate_messages_with_character_info(
+        self,
+        messages: List[Dict[str, Any]],
+        char_id: str,
+        character_name: str
+    ) -> List[Dict[str, Any]]:
+        if not messages:
+            return messages
+
+        out: List[Dict[str, Any]] = []
+        for m in messages:
+            if not isinstance(m, dict):
+                out.append(m)
+                continue
+
+            mm = m.copy()
+            mm.setdefault("character_id", char_id)
+            if character_name:
+                mm.setdefault("character_name", character_name)
+            out.append(mm)
+        return out
+
+
     def _on_save_after_response(self, event: Event):
         data = event.data or {}
         char_id: str = data.get('character_id')
@@ -106,6 +129,9 @@ class HistoryController:
             return False
 
         try:
+            character_name = str(getattr(character, "name", "") or "")
+            messages = self._decorate_messages_with_character_info(messages, char_id, character_name)
+
             character.save_character_state_to_history(messages)
             logger.debug(f"[HistoryController] История персонажа {char_id} сохранена ({len(messages)} сообщений).")
             return True

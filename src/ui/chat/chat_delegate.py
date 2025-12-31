@@ -3,24 +3,25 @@ import re
 from PyQt6.QtGui import QColor
 from utils import getTranslationVariant as _
 
+
 class ChatMessageDelegate:
     def __init__(self):
         self.role_label_colors = {
             "user": QColor("gold"),
             "assistant": QColor("hot pink"),
-            "system": QColor("#66ccff"),  # цвет лейбла "Система:"
+            "system": QColor("#66ccff"),
         }
         self.role_content_colors = {
-            "system": QColor("#a7d8ff"),  # цвет текста системных сообщений
+            "system": QColor("#a7d8ff"),
         }
-        self.tag_color = QColor("#00FF00")  # цвет для <tag>
+        self.tag_color = QColor("#00FF00")
 
-    def get_label(self, gui, role: str) -> Tuple[str, QColor, bool]:
+    def get_label(self, gui, role: str, speaker_name: str = "") -> Tuple[str, QColor, bool]:
         if role == "user":
             return (_("Вы: ", "You: "), self.role_label_colors["user"], True)
         elif role == "assistant":
-            character_name = gui._get_character_name() if hasattr(gui, "_get_character_name") else "Assistant"
-            return (f"{character_name}: ", self.role_label_colors["assistant"], True)
+            name = speaker_name or (gui._get_character_name() if hasattr(gui, "_get_character_name") else "Assistant")
+            return (f"{name}: ", self.role_label_colors["assistant"], True)
         elif role == "system":
             return (_("Система: ", "System: "), self.role_label_colors["system"], True)
         return (f"{role}: ", QColor("#dcdcdc"), True)
@@ -38,9 +39,7 @@ class ChatMessageDelegate:
         if hide_tags:
             pattern = r'(<([^>]+)>)(.*?)(</\2>)|(<([^>]+)>)'
             clean_text = re.sub(pattern, "", text, flags=re.DOTALL)
-            
             clean_text = re.sub(r' +', ' ', clean_text).strip()
-            
             return [{"type": "text", "content": clean_text, "tag": "default"}]
 
         parts = []

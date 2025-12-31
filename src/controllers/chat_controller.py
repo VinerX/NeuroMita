@@ -32,6 +32,23 @@ class ChatController:
             return None
         return data.get("character_id") or data.get("char_id") or data.get("character") or None
 
+    def _resolve_character_name(self, character_id: str | None) -> str:
+        if not character_id:
+            return ""
+        try:
+            res = self.event_bus.emit_and_wait(
+                Events.Character.GET,
+                {"character_id": str(character_id)},
+                timeout=0.5
+            )
+            ch = res[0] if res else None
+            name = getattr(ch, "name", None)
+            if name:
+                return str(name)
+        except Exception:
+            pass
+        return str(character_id)
+
     async def async_send_message(
         self,
         user_input: str,
@@ -55,9 +72,6 @@ class ChatController:
 
             def stream_callback_handler(chunk: str):
                 self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": chunk})
-
-            if is_streaming and not is_react:
-                self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI)
 
             if image_data:
                 prepared: list[bytes] = []
@@ -121,6 +135,14 @@ class ChatController:
                     self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": "Пустой ответ модели"})
                 return None
 
+            effective_character_name = self._resolve_character_name(effective_character_id)
+
+            if is_streaming and not is_react:
+                self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                    "character_id": effective_character_id or "",
+                    "character_name": effective_character_name or "",
+                })
+
             if response_text and self.settings.get("USE_VOICEOVER") and not is_react:
                 if isinstance(voice_profile, dict):
                     is_game_master = (voice_profile.get("character_id") == "GameMaster")
@@ -172,7 +194,9 @@ class ChatController:
                     "role": "assistant",
                     "response": response_text if response_text is not None else "...",
                     "is_initial": False,
-                    "emotion": ""
+                    "emotion": "",
+                    "character_id": effective_character_id or "",
+                    "character_name": effective_character_name or "",
                 })
 
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
