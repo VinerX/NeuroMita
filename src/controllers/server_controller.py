@@ -12,7 +12,7 @@ class ServerController:
         self.ConnectedToGame = False
         self._destroyed = False
 
-        self.settings_to_send = ['ACTION_MENU', 'MITAS_MENU', 'IGNORE_GAME_REQUESTS', 'GAME_BLOCK_LEVEL']
+        self.settings_to_send = ['ACTION_MENU', 'MITAS_MENU', 'IGNORE_GAME_REQUESTS', 'GAME_BLOCK_LEVEL','CHARACTER']
 
         self._subscribe_to_events()
         self._init_server()
