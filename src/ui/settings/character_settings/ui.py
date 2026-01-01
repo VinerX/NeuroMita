@@ -1,7 +1,9 @@
+# src/ui/settings/character_settings/ui.py
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QComboBox,
-    QPushButton, QSizePolicy, QFrame, QCheckBox, QStyle
+    QPushButton, QSizePolicy, QStyle
 )
 import qtawesome as qta
 
@@ -26,25 +28,21 @@ def _make_row(label_text: str, field_widget: QWidget, label_w: int) -> QWidget:
 
 
 def build_character_settings_ui(self, parent_layout):
-    # Резерв под вертикальный скролл, чтобы при его появлении ширина не «прыгала»
     try:
         scrollbar_guard = max(12, self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent))
     except Exception:
         scrollbar_guard = 14
 
-    # Контейнер с правым отступом (защита от перекрытия сайдбаром + запас под скролл)
-    base_right_pad = getattr(self, "SETTINGS_SIDEBAR_WIDTH", 50) + 8
-    right_pad = base_right_pad + scrollbar_guard
+    sidebar_w = getattr(self, "SETTINGS_SIDEBAR_WIDTH", 50)
+    right_pad = max(scrollbar_guard, min(18, int(sidebar_w * 0.25)))
 
     container = QWidget()
     container_lay = QVBoxLayout(container)
     container_lay.setContentsMargins(0, 0, right_pad, 0)
     container_lay.setSpacing(6)
 
-    # Заголовок секции
     create_section_header(container_lay, _("Настройки персонажей", "Characters Settings"))
 
-    # Расчёт ширины колонки меток
     overlay_w = getattr(self, "SETTINGS_PANEL_WIDTH", 400)
     label_w = max(90, min(120, int(overlay_w * 0.3)))
     self.mic_label_width = label_w
@@ -54,7 +52,6 @@ def build_character_settings_ui(self, parent_layout):
     lay.setContentsMargins(0, 0, 0, 0)
     lay.setSpacing(6)
 
-    # --- Персонажи
     character_field = QWidget()
     ch_h = QHBoxLayout(character_field)
     ch_h.setContentsMargins(0, 0, 0, 0)
@@ -66,7 +63,6 @@ def build_character_settings_ui(self, parent_layout):
 
     lay.addWidget(_make_row(_("Персонажи", "Characters"), character_field, label_w))
 
-    # --- Набор промтов (+ индикатор)
     prompt_field = QWidget()
     pr_h = QHBoxLayout(prompt_field)
     pr_h.setContentsMargins(0, 0, 0, 0)
@@ -76,14 +72,8 @@ def build_character_settings_ui(self, parent_layout):
     self.prompt_pack_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     pr_h.addWidget(self.prompt_pack_combobox, 1)
 
-    self.prompt_sync_label = QLabel("●")
-    self.prompt_sync_label.setToolTip(_("Индикатор соответствия промптов", "Prompts sync indicator"))
-    self.prompt_sync_label.setStyleSheet("color: #bdc3c7; font-size: 16px;")
-    pr_h.addWidget(self.prompt_sync_label, 0, Qt.AlignmentFlag.AlignVCenter)
+    lay.addWidget(_make_row(_("Набор промптов", "Prompt set"), prompt_field, label_w))
 
-    lay.addWidget(_make_row(_("Набор промтов", "Prompt set"), prompt_field, label_w))
-
-    # --- Провайдер для персонажа
     provider_field = QWidget()
     pv_h = QHBoxLayout(provider_field)
     pv_h.setContentsMargins(0, 0, 0, 0)
@@ -95,21 +85,22 @@ def build_character_settings_ui(self, parent_layout):
 
     lay.addWidget(_make_row(_("Провайдер для персонажа", "Provider for character"), provider_field, label_w))
 
-    # --- Показ логов сравнения промптов
-    self.show_prompt_sync_logs_check = QCheckBox(_("Показывать логи сравнения промптов", "Show prompt comparison logs"))
-    lay.addWidget(_make_row(_("Логи", "Logs"), self.show_prompt_sync_logs_check, label_w))
-
-    # --- Управление персонажем (подзаголовок)
     sub_title1 = QLabel(_("Управление персонажем", "Character management"))
     sub_title1.setStyleSheet("font-weight: 600;")
     lay.addWidget(sub_title1)
+
+    self.btn_reload_character_data = QPushButton(_("Перезагрузить", "Reload"))
+    self.btn_reload_character_data.setObjectName("SecondaryButton")
+    self.btn_reload_character_data.setIcon(qta.icon('fa5s.sync', color='#ffffff'))
+    self.btn_reload_character_data.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    lay.addWidget(self.btn_reload_character_data)
 
     mgmt_row = QWidget()
     mg_h = QHBoxLayout(mgmt_row)
     mg_h.setContentsMargins(0, 0, 0, 0)
     mg_h.setSpacing(6)
 
-    self.btn_open_character_folder = QPushButton(_("Открыть папку персонажа", "Open character folder"))
+    self.btn_open_character_folder = QPushButton(_("Открыть папку набора", "Open prompt set folder"))
     self.btn_open_character_folder.setObjectName("SecondaryButton")
     self.btn_open_character_folder.setIcon(qta.icon('fa5s.folder-open', color='#ffffff'))
     mg_h.addWidget(self.btn_open_character_folder, 1)
@@ -121,20 +112,16 @@ def build_character_settings_ui(self, parent_layout):
 
     lay.addWidget(mgmt_row)
 
-    # Небольшой визуальный отступ перед внутренней секцией
     lay.addSpacing(6)
 
-    # --- История и очистка (внутренняя секция)
     self.history_section = InnerCollapsibleSection(_("История и очистка", "History & cleanup"), parent=self)
     lay.addWidget(self.history_section)
 
-    # На старте — всегда закрыта. Сохраняем состояние только при клике.
     try:
         orig_toggle = self.history_section.toggle
 
         def _toggle_and_save(_=None):
             orig_toggle()
-            # сохраняем состояние, но не читаем его при старте — секция всегда закрыта на открытие окна
             if hasattr(self, "settings"):
                 self.settings.set("SHOW_HISTORY_RESET_SECTION", not self.history_section.is_collapsed)
 
@@ -142,21 +129,18 @@ def build_character_settings_ui(self, parent_layout):
     except Exception:
         pass
 
-    # Чуть меньше левый отступ, чтобы выглядело аккуратнее и не давало лишней ширины
     try:
         self.history_section.content_layout.setContentsMargins(16, 8, 12, 8)
         self.history_section.content_layout.setSpacing(8)
     except Exception:
         pass
 
-    # Группа кнопок: очистка истории и всех историй
     history_row = QWidget()
     hr_h = QHBoxLayout(history_row)
     hr_h.setContentsMargins(0, 0, 0, 0)
     hr_h.setSpacing(6)
 
     def _mark_danger_hover(btn: QPushButton):
-        # Серый стиль + красный hover через глобальный QSS
         btn.setObjectName("SecondaryButton")
         btn.setProperty("dangerHover", True)
         btn.style().unpolish(btn)
@@ -174,13 +158,6 @@ def build_character_settings_ui(self, parent_layout):
     hr_h.addWidget(self.btn_clear_all_histories, 1)
 
     self.history_section.add_widget(history_row)
-
-    # Отдельной строкой — перекачка промптов (тоже с danger-hover)
-    self.btn_reload_prompts = QPushButton(_("Перекачать промпты", "Reload prompts"))
-    self.btn_reload_prompts.setIcon(qta.icon('fa5s.download', color='#ffffff'))
-    self.btn_reload_prompts.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    _mark_danger_hover(self.btn_reload_prompts)
-    self.history_section.add_widget(self.btn_reload_prompts)
 
     container_lay.addWidget(root)
     parent_layout.addWidget(container)

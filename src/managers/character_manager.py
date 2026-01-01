@@ -5,8 +5,9 @@ from typing import Dict, List, Optional, Type
 from main_logger import logger
 from characters.character import Character
 from characters import (
-    CrazyMita, KindMita, ShortHairMita, CappyMita, MilaMita, CreepyMita, SleepyMita,
-    GameMaster, SpaceCartridge, DivanCartridge, GhostMita, Mitaphone
+    CrazyMita, KindMita, ShortHairMita, Cappie, MilaMita, CreepyMita, SleepyMita,
+    GameMaster, GhostMita, 
+    # SpaceCartridge, DivanCartridge, Mitaphone
 )
 
 from managers.history_manager import HistoryManager
@@ -58,16 +59,16 @@ class CharacterManager:
         character_classes: List[Type[Character]] = [
             CrazyMita,
             KindMita,
-            CappyMita,
+            Cappie,
             ShortHairMita,
             MilaMita,
             SleepyMita,
             CreepyMita,
             GhostMita,
-            SpaceCartridge,
-            DivanCartridge,
+            # SpaceCartridge,
+            # DivanCartridge,
             GameMaster,
-            Mitaphone,
+            # Mitaphone,
         ]
 
         self.characters = {}

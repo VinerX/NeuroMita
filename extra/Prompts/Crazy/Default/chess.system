@@ -1,0 +1,58 @@
+// File: Prompts/Crazy/chess.script
+// (или для другого персонажа)
+// Этот скрипт формирует системное сообщение с состоянием шахматной партии.
+
+SET LOCAL prompt_text = ""
+
+SET prompt_text = prompt_text + f"--- СОСТОЯНИЕ ШАХМАТНОЙ ПАРТИИ (Maia ELO {GAME_STATE_ELO}) ---\n"
+SET prompt_text = prompt_text + f"ТЫ ИГРАЕШЬ: {GAME_STATE_LLM_COLOR_TEXT}.\n"
+SET prompt_text = prompt_text + f"ТВОЙ ОППОНЕНТ (Игрок GUI) ИГРАЕТ: {GAME_STATE_PLAYER_COLOR_TEXT}.\n"
+
+// --- Последний ход ---
+IF GAME_STATE_LAST_MOVE_SAN != "Нет (начало игры)" THEN
+    IF GAME_STATE_IS_LLM_LAST_MOVER == True THEN
+        SET prompt_text = prompt_text + f"ПОСЛЕДНИЙ ХОД СДЕЛАЛ ТЫ ({GAME_STATE_LLM_COLOR_TEXT}): {GAME_STATE_LAST_MOVE_SAN}.\n"
+    ELSE
+        SET prompt_text = prompt_text + f"ПОСЛЕДНИЙ ХОД СДЕЛАЛ Игрок GUI ({GAME_STATE_PLAYER_COLOR_TEXT}): {GAME_STATE_LAST_MOVE_SAN}.\n"
+    ENDIF
+ELSE
+    SET prompt_text = prompt_text + "ПОСЛЕДНИЙ ХОД: Это начало партии, ходов еще не было.\n"
+ENDIF
+
+SET prompt_text = prompt_text + f"ТЕКУЩАЯ ПОЗИЦИЯ (FEN): {GAME_STATE_FEN}.\n"
+SET prompt_text = prompt_text + f"СЕЙЧАС ХОДЯТ: {GAME_STATE_TURN_COLOR_TEXT}.\n"
+
+// --- Статус игры и инструкции ---
+IF GAME_STATE_IS_OVER == True THEN
+    SET prompt_text = prompt_text + "СТАТУС ИГРЫ: ОКОНЧЕНА.\n"
+    SET prompt_text = prompt_text + f"РЕЗУЛЬТАТ: {GAME_STATE_OUTCOME}.\n"
+ELSE
+    SET prompt_text = prompt_text + "СТАТУС ИГРЫ: ПРОДОЛЖАЕТСЯ.\n"
+    IF GAME_STATE_IS_LLM_TURN == True THEN
+        SET prompt_text = prompt_text + "ЭТО ТВОЙ ХОД.\n"
+        IF GAME_STATE_HAS_LEGAL_MOVES == True THEN
+            SET prompt_text = prompt_text + f"ТВОИ ЛЕГАЛЬНЫЕ ХОДЫ (UCI, первые 15): {GAME_STATE_LEGAL_MOVES_STRING}.\n"
+            SET prompt_text = prompt_text + "Используй тег <MakeChessMoveAsLLM>uci_ход</MakeChessMoveAsLLM> чтобы сделать ход.\n"
+            SET prompt_text = prompt_text + "Пример: <MakeChessMoveAsLLM>e2e4</MakeChessMoveAsLLM>\n"
+            IF GAME_STATE_HAS_PROMOTION_MOVE == True THEN
+                SET prompt_text = prompt_text + "Для превращения пешки добавь букву фигуры, напр.: e7e8q.\n"
+            ENDIF
+        ELSE
+            SET prompt_text = prompt_text + "У ТЕБЯ НЕТ ДОСТУПНЫХ ХОДОВ.\n"
+        ENDIF
+    ELSE
+        SET prompt_text = prompt_text + f"СЕЙЧАС ХОД {GAME_STATE_PLAYER_COLOR_TEXT.upper()} (GUI). Ожидай.\n"
+    ENDIF
+ENDIF
+
+// --- Системные ошибки ---
+IF GAME_STATE_ERROR_MSG != None THEN
+    SET prompt_text = prompt_text + f"СИСТЕМНОЕ СООБЩЕНИЕ ШАХМАТНОГО МОДУЛЯ: {GAME_STATE_ERROR_MSG}.\n"
+ENDIF
+IF GAME_STATE_INVALID_MOVE_TEXT != None AND GAME_STATE_IS_LLM_TURN == True THEN
+    SET prompt_text = prompt_text + f"ВАЖНО: Предыдущий ход ({GAME_STATE_INVALID_MOVE_TEXT}) неверен: {GAME_STATE_INVALID_MOVE_REASON}.\n"
+ENDIF
+
+SET prompt_text = prompt_text + "--- КОНЕЦ ШАХМАТНОЙ ИНФОРМАЦИИ ---"
+
+RETURN prompt_text

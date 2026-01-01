@@ -139,7 +139,29 @@ class PromptController:
                     old_values[k] = None
                 character.set_variable(k, v)
 
-            content, _ = character.dsl_interpreter.process_file("../System/participants_dialogue.system", sys_msgs=[])
+            base = str(getattr(character, "base_data_path", "") or "")
+            if not base:
+                return None
+
+            candidates: list[tuple[str, str]] = [
+                ("participants_dialogue.system", os.path.join(base, "participants_dialogue.system")),
+                ("System/participants_dialogue.system", os.path.join(base, "System", "participants_dialogue.system")),
+            ]
+
+            global_abs = os.path.normpath(os.path.join(base, "..", "..", "System", "participants_dialogue.system"))
+            global_rel = os.path.relpath(global_abs, base).replace(os.sep, "/")
+            candidates.append((global_rel, global_abs))
+
+            chosen_rel = None
+            for rel, abs_path in candidates:
+                if os.path.exists(abs_path):
+                    chosen_rel = rel
+                    break
+
+            if not chosen_rel:
+                return None
+
+            content, _ = character.dsl_interpreter.process_file(chosen_rel, sys_msgs=[])
             content = (content or "").strip()
             return content if content else None
 
@@ -159,7 +181,6 @@ class PromptController:
                         character.set_variable(k, old)
                 except Exception:
                     pass
-
 
     def _on_build_prompt(self, event: Event) -> Dict[str, Any]:
         data = event.data or {}

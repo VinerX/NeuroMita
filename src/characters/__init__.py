@@ -91,7 +91,7 @@ class GhostMita(Character):
         )
         
 
-class CappyMita(Character):
+class Cappie(Character):
     DEFAULT_OVERRIDES: Dict[str, Any] = {
         "boredom": 25.0,
         "current_fsm_state": "Default",
@@ -99,8 +99,8 @@ class CappyMita(Character):
 
     def __init__(self):
         super().__init__(
-            char_id="Cappy",
-            name="Cappy Mita",
+            char_id="Cappie",
+            name="Cappie",
             silero_command="/speaker cap",
             short_name="CappieMita",
             miku_tts_name="/set_person CapMita",
@@ -160,40 +160,40 @@ class SleepyMita(Character):
         )
         
 
-class SpaceCartridge(Character):
-    DEFAULT_OVERRIDES: Dict[str, Any] = {
-        "attitude": 50.0,
-        "current_fsm_state": "Space"
-    }
+# class SpaceCartridge(Character):
+#     DEFAULT_OVERRIDES: Dict[str, Any] = {
+#         "attitude": 50.0,
+#         "current_fsm_state": "Space"
+#     }
 
-    def __init__(self):
-        super().__init__(
-            char_id="Cart_portal",
-            name="Cart_portal",
-            silero_command="/speaker wheatley",
-            short_name="Player",
-            miku_tts_name="/set_person Player",
-            silero_turn_off_video=True,
-            is_cartridge=True
-        )
+#     def __init__(self):
+#         super().__init__(
+#             char_id="Cart_portal",
+#             name="Cart_portal",
+#             silero_command="/speaker wheatley",
+#             short_name="Player",
+#             miku_tts_name="/set_person Player",
+#             silero_turn_off_video=True,
+#             is_cartridge=True
+#         )
         
 
-class DivanCartridge(Character):
-    DEFAULT_OVERRIDES: Dict[str, Any] = {
-        "attitude": 50.0,
-        "current_fsm_state": "Divan"
-    }
+# class DivanCartridge(Character):
+#     DEFAULT_OVERRIDES: Dict[str, Any] = {
+#         "attitude": 50.0,
+#         "current_fsm_state": "Divan"
+#     }
 
-    def __init__(self):
-        super().__init__(
-            char_id="Cart_divan",
-            name="Cart_divan",
-            silero_command="/speaker engineer",
-            short_name="Player",
-            miku_tts_name="/set_person Player",
-            silero_turn_off_video=True,
-            is_cartridge=True
-        )
+#     def __init__(self):
+#         super().__init__(
+#             char_id="Cart_divan",
+#             name="Cart_divan",
+#             silero_command="/speaker engineer",
+#             short_name="Player",
+#             miku_tts_name="/set_person Player",
+#             silero_turn_off_video=True,
+#             is_cartridge=True
+#         )
         
 
 class GameMaster(Character):
@@ -219,16 +219,16 @@ class GameMaster(Character):
         response = re.sub(r"<p>.*?</p>", "", response).strip()
         return response
 
-class Mitaphone(Character):
-    DEFAULT_OVERRIDES: Dict[str, Any] = {}
+# class Mitaphone(Character):
+#     DEFAULT_OVERRIDES: Dict[str, Any] = {}
 
-    def __init__(self):
-        super().__init__(
-            char_id="Mitaphone",
-            name="Mitaphone",
-            silero_command="/speaker dryad",
-            short_name="PhoneMita",
-            miku_tts_name="/set_person PhoneMita",
-            silero_turn_off_video=True
-        )
+#     def __init__(self):
+#         super().__init__(
+#             char_id="Mitaphone",
+#             name="Mitaphone",
+#             silero_command="/speaker dryad",
+#             short_name="PhoneMita",
+#             miku_tts_name="/set_person PhoneMita",
+#             silero_turn_off_video=True
+#         )
         

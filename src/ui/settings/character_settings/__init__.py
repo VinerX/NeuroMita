@@ -8,9 +8,10 @@ from .logic import (
     open_character_history_folder,
     clear_history,
     clear_history_all,
-    reload_prompts,
+    reload_character_data,
     save_character_provider,
 )
+
 
 def setup_mita_controls(self, parent_layout):
     """
@@ -21,6 +22,7 @@ def setup_mita_controls(self, parent_layout):
     build_character_settings_ui(self, parent_layout)
     wire_character_settings_logic(self)
 
+
 __all__ = [
     "setup_mita_controls",
     "on_prompt_set_changed",
@@ -30,6 +32,6 @@ __all__ = [
     "open_character_history_folder",
     "clear_history",
     "clear_history_all",
-    "reload_prompts",
+    "reload_character_data",
     "save_character_provider",
 ]
