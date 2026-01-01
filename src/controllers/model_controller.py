@@ -15,6 +15,8 @@ from main_logger import logger
 from managers.api_preset_resolver import ApiPresetResolver
 from managers.game_state_manager import GameState
 from managers.context_counter import ContextCounter
+from managers.conversation_event_writer import ConversationEventWriter
+from managers.history_ui_projector import HistoryUiProjector
 
 
 class ModelController:
@@ -49,7 +51,9 @@ class ModelController:
         self.game_state = GameState()
         self._temporary_system_infos: list[dict] = []
 
-        # legacy compatibility (ChatModel держит ссылки на персонажей)
+        self.event_writer = ConversationEventWriter(character_ref_resolver=self._get_character_ref)
+        self.ui_projector = HistoryUiProjector(resolve_name=lambda cid: str(getattr(self._get_character_ref(cid), "name", "") or cid))
+
         self._refresh_chat_model_character_refs()
 
         self._subscribe_to_events()
@@ -216,8 +220,9 @@ class ModelController:
                 s = "Player"
 
             if s != "Player" and s not in id_set:
-                match = None
+                # case-insensitive match
                 sl = s.lower()
+                match = None
                 for cid in id_set:
                     if cid.lower() == sl:
                         match = cid
@@ -234,50 +239,186 @@ class ModelController:
         return out
 
 
-    def _fanout_player_user_message_to_participants(self, user_message: dict | None, participants: list[str], current_char_id: str, sender: str):
-        if sender != "Player":
-            return
-        if not user_message or not isinstance(user_message, dict):
+    def _make_message_id(self, prefix: str, base: str | None = None) -> str:
+        base_s = str(base or "").strip()
+        if base_s:
+            return f"{prefix}:{base_s}"
+        import uuid
+        return f"{prefix}:{uuid.uuid4().hex}"
+
+
+    def _has_message_id_recent(self, messages: list[dict], message_id: str, tail: int = 250) -> bool:
+        if not message_id or not isinstance(messages, list):
+            return False
+        for m in messages[-tail:]:
+            if isinstance(m, dict) and str(m.get("message_id") or "") == message_id:
+                return True
+        return False
+
+
+    def _append_history_message(self, ch_ref, msg: dict) -> bool:
+        if ch_ref is None or not isinstance(msg, dict):
+            return False
+
+        try:
+            history_data = ch_ref.history_manager.load_history()
+            messages = history_data.get("messages", []) or []
+            if not isinstance(messages, list):
+                messages = []
+
+            mid = str(msg.get("message_id") or "")
+            if mid and self._has_message_id_recent(messages, mid):
+                return False
+
+            messages.append(msg)
+            ch_ref.save_character_state_to_history(messages)
+            return True
+        except Exception as e:
+            logger.warning(f"[ModelController] append_history_message failed for {getattr(ch_ref,'char_id','?')}: {e}", exc_info=True)
+            return False
+
+
+    def _fanout_event(self, event_msg: dict, participants: list[str]) -> None:
+        if not isinstance(event_msg, dict):
             return
 
-        content = user_message.get("content")
-        if not isinstance(content, list):
-            return
-
-        has_text = False
-        for it in content:
-            if isinstance(it, dict) and it.get("type") == "text":
-                txt = it.get("text")
-                if txt is None:
-                    txt = it.get("content", "")
-                if str(txt or "").strip():
-                    has_text = True
-                    break
-        if not has_text:
+        speaker = str(event_msg.get("speaker") or "")
+        if not speaker:
             return
 
         for pid in participants:
-            if not pid or pid in ("Player", current_char_id):
+            if not pid or pid == "Player":
                 continue
 
             ch = self._get_character_ref(pid)
-            if ch is None or not hasattr(ch, "history_manager"):
+            if ch is None:
                 continue
 
-            try:
-                hist = ch.history_manager.load_history()
-                msgs = hist.get("messages", []) or []
-                msg_copy = copy.deepcopy(user_message)
-                msg_copy["fanout_from"] = current_char_id
-                msgs.append(msg_copy)
-                hist["messages"] = msgs
+            local = dict(event_msg)
 
-                if not isinstance(hist.get("variables"), dict):
-                    hist["variables"] = getattr(ch, "variables", {}).copy() if hasattr(ch, "variables") else {}
+            # локальная роль относительно владельца файла
+            local["role"] = "assistant" if pid == speaker else "user"
 
-                ch.history_manager.save_history(hist)
-            except Exception as e:
-                logger.warning(f"[ModelController] Fanout истории в {pid} не удался: {e}", exc_info=True)
+            # для совместимости: пусть "sender" дублирует speaker
+            local.setdefault("sender", speaker)
+
+            self._append_history_message(ch, local)
+
+
+    def _build_user_event_message(
+        self,
+        *,
+        speaker: str,
+        target: str,
+        participants: list[str],
+        user_input: str,
+        image_data: list[Any],
+        event_type: str,
+        base_id: str | None,
+    ) -> dict | None:
+        has_text = bool(str(user_input or "").strip())
+        has_images = bool(image_data)
+
+        if not has_text and not has_images:
+            return None
+
+        chunks: list[dict] = []
+
+        if has_text:
+            chunks.append({"type": "text", "text": str(user_input)})
+
+        for img in image_data or []:
+            if isinstance(img, bytes):
+                b64 = base64.b64encode(img).decode("utf-8")
+            else:
+                b64 = str(img)
+            chunks.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+            })
+
+        return {
+            "message_id": self._make_message_id("in", base_id),
+            "role": "user",  # будет перезаписано в fanout локально, но пусть тут остаётся "user"
+            "speaker": speaker,
+            "sender": speaker,
+            "target": target,
+            "participants": list(participants),
+            "event_type": event_type,
+            "time": datetime.datetime.now().strftime("%d.%m.%Y_%H.%M"),
+            "content": chunks,
+        }
+
+
+    def _build_assistant_event_message(
+        self,
+        *,
+        speaker: str,
+        target: str,
+        participants: list[str],
+        final_text: str,
+        event_type: str,
+        base_id: str | None,
+    ) -> dict:
+        return {
+            "message_id": self._make_message_id("out", base_id),
+            "role": "assistant",  # будет перезаписано в fanout локально
+            "speaker": speaker,
+            "sender": speaker,
+            "target": target,
+            "participants": list(participants),
+            "event_type": event_type,
+            "time": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "content": final_text,
+        }
+
+
+    def _ui_wrap_history_message(self, msg: dict) -> dict | None:
+        """
+        Превращает сохранённый history-msg в формат, который message_renderer умеет рисовать:
+        - роль для UI: Player -> user (жёлтый), иначе -> assistant (розовый)
+        - meta speaker-label: "Name → Target" если target != Player
+        """
+        if not isinstance(msg, dict):
+            return None
+
+        role = str(msg.get("role") or "")
+        if role not in ("user", "assistant", "system"):
+            return None
+
+        # фильтр пустых user
+        if role == "user":
+            content = msg.get("content")
+            if not self._has_visible_user_text(content):
+                return None
+
+        speaker = str(msg.get("speaker") or msg.get("sender") or "")
+        target = str(msg.get("target") or "")
+
+        # UI роль по speaker, а не по role из истории
+        ui_role = "user" if speaker == "Player" else ("assistant" if role in ("user", "assistant") else role)
+
+        mm = dict(msg)
+        mm["role"] = ui_role
+
+        # meta label
+        speaker_label = ""
+        if speaker and speaker != "Player":
+            speaker_label = speaker
+            if target and target != "Player":
+                speaker_label = f"{speaker_label} → {target}"
+
+        if speaker_label:
+            content = mm.get("content")
+            if isinstance(content, list):
+                mm["content"] = [{"type": "meta", "speaker": speaker_label}] + content
+            elif isinstance(content, str):
+                mm["content"] = [{"type": "meta", "speaker": speaker_label}, {"type": "text", "text": content}]
+            else:
+                mm["content"] = [{"type": "meta", "speaker": speaker_label}, {"type": "text", "text": str(content)}]
+
+        return mm
+
 
     def _on_load_history(self, event: Event):
         self.loaded_messages_offset = 0
@@ -289,125 +430,18 @@ class ModelController:
             self.event_bus.emit("history_loaded", {"messages": [], "total_messages": 0, "loaded_offset": 0})
             return
 
-        base_history = ch.load_history()
-        base_messages = base_history.get("messages", []) or []
-        group = self._detect_group_participants(base_messages)
+        chat_history = ch.load_history()
+        all_messages = chat_history.get("messages", []) or []
+        if not isinstance(all_messages, list):
+            all_messages = []
 
-        def load_for(cid: str):
-            cref = self._get_character_ref(cid)
-            if not cref:
-                return [], ""
-            h = cref.load_history()
-            msgs = h.get("messages", []) or []
-            name = str(getattr(cref, "name", "") or cid)
+        prepared = self.ui_projector.project_for_ui(all_messages)
 
-            out = []
-            for m in msgs:
-                if not isinstance(m, dict):
-                    continue
-                mm = dict(m)
-                mm["character_id"] = cid
-                mm["character_name"] = name
-                out.append(mm)
-            return out, name
-
-        merged_raw: list[dict] = []
-        if group:
-            for cid in group:
-                msgs, _ = load_for(cid)
-                merged_raw.extend(msgs)
-        else:
-            cid = str(getattr(ch, "char_id", "") or "")
-            cname = str(getattr(ch, "name", "") or cid)
-            merged_raw = []
-            for m in base_messages:
-                if not isinstance(m, dict):
-                    continue
-                mm = dict(m)
-                mm["character_id"] = cid
-                mm["character_name"] = cname
-                merged_raw.append(mm)
-
-        decorated: list[tuple[float, int, dict]] = []
-        seq = 0
-        for m in merged_raw:
-            if not isinstance(m, dict):
-                continue
-            ts = self._parse_msg_time_to_epoch(m.get("time", "") or "")
-            decorated.append((ts, seq, m))
-            seq += 1
-        decorated.sort(key=lambda x: (x[0], x[1]))
-
-        seen = set()
-        final_msgs: list[dict] = []
-
-        for _, _, m in decorated:
-            role = str(m.get("role") or "")
-            sender = str(m.get("sender") or "Player")
-            target = str(m.get("target") or "")
-
-            content = m.get("content")
-            text = self._content_to_text(content)
-
-            if role == "user" and not self._has_visible_user_text(content):
-                continue
-
-            if role == "assistant":
-                speaker_id = str(m.get("character_id") or "")
-                speaker_name = str(m.get("character_name") or speaker_id)
-            elif role == "user" and sender != "Player":
-                speaker_id = sender
-                speaker_name = sender
-                role = "assistant"
-                if isinstance(content, list):
-                    new_list = []
-                    for it in content:
-                        if isinstance(it, dict) and it.get("type") == "text":
-                            txt = it.get("text")
-                            if txt is None:
-                                txt = it.get("content", "")
-                            cleaned = self._strip_interlocutor_prefix(str(txt or ""))
-                            it2 = dict(it)
-                            if "text" in it2:
-                                it2["text"] = cleaned
-                            else:
-                                it2["content"] = cleaned
-                            new_list.append(it2)
-                        else:
-                            new_list.append(it)
-                    content = new_list
-                    text = self._content_to_text(content)
-                elif isinstance(content, str):
-                    content = self._strip_interlocutor_prefix(content)
-                    text = content
-            else:
-                speaker_id = "Player"
-                speaker_name = ""
-
-            sig = self._signature_for_merge(m, as_speaker=speaker_id, text=text)
-            if sig in seen:
-                continue
-            seen.add(sig)
-
-            speaker_label = speaker_name
-            if role == "assistant":
-                if target and target != "Player":
-                    speaker_label = f"{speaker_name} → {target}"
-
-            mm = dict(m)
-            mm["role"] = role
-            mm["content"] = content
-
-            if speaker_label:
-                mm = self._decorate_for_ui(mm, speaker_label)
-
-            final_msgs.append(mm)
-
-        self.total_messages_in_history = len(final_msgs)
+        self.total_messages_in_history = len(prepared)
 
         max_display_messages = int(self.settings.get("MAX_CHAT_HISTORY_DISPLAY", 200))
         start_index = max(0, self.total_messages_in_history - max_display_messages)
-        messages_to_load = final_msgs[start_index:]
+        messages_to_load = prepared[start_index:]
 
         self.loaded_messages_offset = len(messages_to_load)
 
@@ -416,6 +450,7 @@ class ModelController:
             "total_messages": self.total_messages_in_history,
             "loaded_offset": self.loaded_messages_offset
         })
+
 
     # def _on_load_more_history(self, event: Event):
     #     if self.loaded_messages_offset >= self.total_messages_in_history:
@@ -449,8 +484,33 @@ class ModelController:
     def _on_load_more_history(self, event: Event):
         if self.loaded_messages_offset >= self.total_messages_in_history:
             return
-        # Для merged-режима можно сделать пагинацию, но пока безопасно не догружать (чтобы не путать offsets).
-        return
+
+        self.loading_more_history = True
+        try:
+            ch = self._get_current_character_ref()
+            if not ch:
+                return
+
+            chat_history = ch.load_history()
+            all_messages = chat_history.get("messages", []) or []
+            if not isinstance(all_messages, list):
+                all_messages = []
+
+            prepared = self.ui_projector.project_for_ui(all_messages)
+            self.total_messages_in_history = len(prepared)
+
+            end_index = self.total_messages_in_history - self.loaded_messages_offset
+            start_index = max(0, end_index - self.lazy_load_batch_size)
+            messages_to_prepend = prepared[start_index:end_index]
+
+            if messages_to_prepend:
+                self.loaded_messages_offset += len(messages_to_prepend)
+                self.event_bus.emit("more_history_loaded", {
+                    "messages": messages_to_prepend,
+                    "loaded_offset": self.loaded_messages_offset
+                })
+        finally:
+            self.loading_more_history = False
 
     def _on_get_debug_info(self, event: Event):
         data = event.data or {}
@@ -525,24 +585,31 @@ class ModelController:
         event_type = (data.get("event_type") or "chat") or "chat"
 
         sender = str(data.get("sender") or "Player")
-        participants = self._normalize_participants(data.get("participants") or [])
+        participants = data.get("participants") or []
 
         preset_id_override = data.get("preset_id", None)
         character_id_override = self._normalize_character_id_from_data(data)
+
+        req_id = str(data.get("req_id") or "") or None
+        task_uid = str(data.get("message_id") or "") or None  # у тебя сюда прилетает task_uid
 
         char = None
         if character_id_override:
             char = self._get_character_ref(str(character_id_override))
             if char is None:
                 logger.error(f"GENERATE_RESPONSE: неизвестный character_id='{character_id_override}' (нет фолбэка на current).")
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": _("Неизвестный персонаж.", "Unknown character.")})
+                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                    "error": _("Неизвестный персонаж.", "Unknown character.")
+                })
                 return None
         else:
             char = self._get_current_character_ref()
 
         if not char:
             logger.error("Генерация невозможна: персонаж не выбран.")
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": _("Персонаж не выбран.", "Character not selected.")})
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                "error": _("Персонаж не выбран.", "Character not selected.")
+            })
             return None
 
         char_id = getattr(char, "char_id", "") or ""
@@ -554,6 +621,7 @@ class ModelController:
                 messages.append({"role": "system", "content": system_input})
 
             preset_id = preset_id_override
+
             self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
                 "character_id": char_id,
                 "character_name": char_name or char_id or "Мита",
@@ -620,28 +688,23 @@ class ModelController:
             )
         except Exception as e:
             logger.error(f"Ошибка при BUILD_PROMPT: {e}", exc_info=True)
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": _("Не удалось сформировать промпт.", "Failed to build prompt.")})
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                "error": _("Не удалось сформировать промпт.", "Failed to build prompt.")
+            })
             return None
 
         if not prompt_res or not isinstance(prompt_res[0], dict):
             logger.error("BUILD_PROMPT не вернул валидный результат")
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": _("Не удалось сформировать промпт.", "Failed to build prompt.")})
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                "error": _("Не удалось сформировать промпт.", "Failed to build prompt.")
+            })
             return None
 
         prompt_data = prompt_res[0]
         combined_messages = prompt_data.get("messages", []) or []
-        history_for_save = prompt_data.get("history_messages", []) or []
-        user_message_for_history = prompt_data.get("user_message", None)
 
         if event_type == "chat":
             self._cache_base_prompt(char_id, "chat", combined_messages)
-
-        self._fanout_player_user_message_to_participants(
-            user_message=user_message_for_history,
-            participants=participants,
-            current_char_id=char_id,
-            sender=sender
-        )
 
         preset_id: Optional[int] = None
 
@@ -686,7 +749,9 @@ class ModelController:
             raw_text = self.model.generate(combined_messages, stream_callback=use_stream_cb, preset_id=preset_id)
 
             if not raw_text:
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": _("Не удалось получить ответ.", "Text generation failed.")})
+                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                    "error": _("Не удалось получить ответ.", "Text generation failed.")
+                })
                 return None
 
             processed = char.process_response_nlp_commands(raw_text, self.settings.get("SAVE_MISSED_MEMORY", False))
@@ -697,9 +762,9 @@ class ModelController:
                     target = char.consume_pending_target()
                 except Exception:
                     target = None
+            target = str(target or "Player")
 
             final_text = processed
-
             if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
                 final_text = re.sub(
                     r'https?://\S+\.(?:png|jpg|jpeg|gif|bmp)|data:image/\S+;base64,\S+',
@@ -707,24 +772,19 @@ class ModelController:
                     final_text
                 )
 
-            assistant_message = {"role": "assistant", "content": final_text}
-            assistant_message["time"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
-            if target:
-                assistant_message["target"] = target
-
             if event_type != "react":
-                new_messages = []
-                user_msg = prompt_data.get("user_message")
-                if isinstance(user_msg, dict):
-                    new_messages.append(user_msg)
-                new_messages.append(assistant_message)
-
-                self.event_bus.emit(Events.History.SAVE_AFTER_RESPONSE, {
-                    "character_id": char_id,
-                    "character_ref": char,
-                    "append": True,
-                    "new_messages": new_messages,
-                })
+                self.event_writer.write_turn(
+                    responder_character_id=char_id,
+                    sender=sender,
+                    participants=participants,
+                    user_input=user_input,
+                    image_data=image_data,
+                    req_id=req_id,
+                    assistant_text=final_text,
+                    assistant_target=target,
+                    event_type=event_type,
+                    task_uid=task_uid,
+                )
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
@@ -739,7 +799,7 @@ class ModelController:
                 "text": final_text,
                 "character_id": char_id,
                 "voice_profile": voice_profile,
-                "target": target or "Player",
+                "target": target,
             }
 
         except Exception as e:
@@ -781,21 +841,6 @@ class ModelController:
     # Helpers
     # ---------------------------------------------------------------------
 
-    def _parse_msg_time_to_epoch(self, time_str: str) -> float:
-        if not time_str:
-            return 0.0
-        s = str(time_str).strip()
-        if not s or s == "???":
-            return 0.0
-
-        for fmt in ("%d.%m.%Y_%H.%M", "%d.%m.%Y %H:%M", "%d.%m.%Y %H:%M:%S"):
-            try:
-                dt = datetime.datetime.strptime(s, fmt)
-                return dt.timestamp()
-            except Exception:
-                continue
-        return 0.0
-
 
     def _has_visible_user_text(self, content: Any) -> bool:
         if isinstance(content, str):
@@ -814,95 +859,3 @@ class ModelController:
                     return True
         return False
 
-
-    def _normalize_message_for_merge_key(self, msg: dict) -> str:
-        role = msg.get("role", "")
-        time_s = msg.get("time", "") or ""
-        sender = msg.get("sender", "") or ""
-        target = msg.get("target", "") or ""
-        content = msg.get("content")
-
-        try:
-            content_norm = json.dumps(content, ensure_ascii=False, sort_keys=True)
-        except Exception:
-            content_norm = str(content)
-
-        if role == "user" and str(sender or "Player") == "Player":
-            return f"{role}|{time_s}|{sender}|{content_norm}"
-        return f"{role}|{time_s}|{sender}|{target}|{msg.get('character_id','')}|{content_norm}"
-
-
-    def _decorate_for_ui(self, msg: dict, speaker_name: str) -> dict:
-        mm = dict(msg)
-        role = mm.get("role")
-
-        if role in ("user", "assistant"):
-            content = mm.get("content")
-            if isinstance(content, list):
-                mm["content"] = [{"type": "meta", "speaker": speaker_name}] + content
-            elif isinstance(content, str):
-                mm["content"] = [{"type": "meta", "speaker": speaker_name}, {"type": "text", "text": content}]
-            else:
-                mm["content"] = [{"type": "meta", "speaker": speaker_name}, {"type": "text", "text": str(content)}]
-
-        return mm
-
-
-    def _detect_group_participants(self, messages: list[dict]) -> list[str]:
-        if not messages:
-            return []
-        for m in reversed(messages[-50:]):
-            if not isinstance(m, dict):
-                continue
-            pts = m.get("participants")
-            if isinstance(pts, list):
-                cleaned = [str(x) for x in pts if str(x).strip() and str(x) != "Player"]
-                cleaned = list(dict.fromkeys(cleaned))
-                if len(cleaned) >= 2:
-                    return cleaned
-        return []
-    
-    def _strip_interlocutor_prefix(self, s: str) -> str:
-        if not isinstance(s, str):
-            return str(s)
-        s2 = s.strip()
-        # убираем "[Собеседник: X]" из начала (чтобы не мусорить в UI и для дедупа)
-        s2 = re.sub(r"^\[Собеседник:\s*[^\]]+\]\s*", "", s2, flags=re.IGNORECASE)
-        return s2
-
-
-    def _content_to_text(self, content: Any) -> str:
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            out = []
-            for it in content:
-                if not isinstance(it, dict):
-                    continue
-                if it.get("type") == "text":
-                    txt = it.get("text")
-                    if txt is None:
-                        txt = it.get("content", "")
-                    out.append(str(txt or ""))
-            return "\n".join(out)
-        return str(content)
-
-
-    def _minute_bucket(self, time_str: str) -> int:
-        ts = 0.0
-        try:
-            ts = self._parse_msg_time_to_epoch(time_str)
-        except Exception:
-            ts = 0.0
-        if ts <= 0:
-            return -1
-        return int(ts // 60)
-
-
-    def _signature_for_merge(self, msg: dict, *, as_speaker: str, text: str) -> str:
-        mb = self._minute_bucket(msg.get("time", "") or "")
-        t = self._strip_interlocutor_prefix(text).strip()
-        # ограничим длину для устойчивости дедупа на очень длинных тегированных сообщениях
-        if len(t) > 2000:
-            t = t[:2000]
-        return f"{as_speaker}|{mb}|{t}"

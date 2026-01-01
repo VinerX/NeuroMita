@@ -177,21 +177,16 @@ class ChatServerNew:
 
         sender = str(request.get("sender") or data.get("sender") or "Player")
 
-
         participants = request.get("participants")
-        logger.notify(f"ПРИШЁЛ ОТ СЕРВЕРА ПЕРСОНАЖ: {character_id}, А Участники: {participants}")
         if participants is None:
             participants = data.get("participants")
-        if participants is None or participants == []:
-            participants = self.last_participants.get(client_id, [])
-        else:
-            if isinstance(participants, str):
-                participants = [p.strip() for p in participants.split(",") if p.strip()]
-            if isinstance(participants, list):
-                participants = [str(x) for x in participants if str(x).strip()]
-            else:
-                participants = []
-            self.last_participants[client_id] = participants
+        if participants is None:
+            participants = []
+        if isinstance(participants, str):
+            participants = [p.strip() for p in participants.split(",") if p.strip()]
+        if not isinstance(participants, list):
+            participants = []
+        participants = [str(x) for x in participants if str(x).strip()]
 
         self.event_bus.emit(Events.Server.SET_GAME_DATA, {
             "distance": float(str(context.get("distance", "0")).replace(",", ".")),
@@ -208,21 +203,15 @@ class ChatServerNew:
         if event_type == "answer":
             user_input = data.get("message", "")
 
+            # ---- UI echo handling ----
             if user_input:
-                if sender != "Player":
-                    last = self._last_sent_dialogue_text.get((str(client_id), str(sender)))
-                    if isinstance(last, str) and last.strip() == str(user_input).strip():
-                        user_input = ""
-
-                if user_input:
-                    ui_role = "user" if sender == "Player" else "assistant"
-                    self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
-                        "role": ui_role,
-                        "response": user_input,
-                        "is_initial": False,
-                        "emotion": "",
-                        "speaker_name": ("" if sender == "Player" else sender),
-                    })
+                self.event_bus.emit(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, {
+                    "client_id": client_id,
+                    "sender": sender,
+                    "text": user_input,
+                    "message_id": req_id,  # это id входящего сообщения (request)
+                    "origin_message_id": request.get("origin_message_id") or data.get("origin_message_id"),
+                })
 
             collected_sys = "\n".join(self.pending_sysinfo.pop(character_id, []))
 
@@ -230,7 +219,7 @@ class ChatServerNew:
                 "type": "chat",
                 "data": {
                     "character": character_id,
-                    "user_input": user_input,
+                    "user_input": str(user_input or ""),
                     "system_input": collected_sys,
                     "system_info": context.get("currentInfo", ""),
                     "client_id": client_id,
@@ -248,7 +237,7 @@ class ChatServerNew:
                 await self.send_task_update(client_id, task)
 
                 self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
-                    "user_input": user_input,
+                    "user_input": str(user_input or ""),
                     "system_input": collected_sys,
                     "image_data": context.get("image_base64_list", []),
                     "task_uid": task.uid,
@@ -256,6 +245,7 @@ class ChatServerNew:
                     "character_id": character_id,
                     "sender": sender,
                     "participants": participants,
+                    "req_id": req_id,
                 })
             else:
                 await self._send_aborted_update(client_id, event_type, character_id, reason="Failed to create task", req_id=req_id)
@@ -305,6 +295,7 @@ class ChatServerNew:
                     "character_id": character_id,
                     "sender": sender,
                     "participants": participants,
+                    "req_id": req_id,
                 })
             else:
                 await self._send_aborted_update(client_id, event_type, character_id, reason="Failed to create idle task", req_id=req_id)
@@ -355,6 +346,7 @@ class ChatServerNew:
                     "character_id": character_id,
                     "sender": sender,
                     "participants": participants,
+                    "req_id": req_id,
                 })
             else:
                 await self._send_aborted_update(client_id, event_type, character_id, reason="Failed to flush system info", req_id=req_id)
@@ -405,6 +397,7 @@ class ChatServerNew:
                     "character_id": character_id,
                     "sender": sender,
                     "participants": participants,
+                    "req_id": req_id,
                 })
             else:
                 await self._send_aborted_update(client_id, event_type, character_id, reason="Failed to create react task", req_id=req_id)
@@ -465,7 +458,6 @@ class ChatServerNew:
         character = task.data.get('character')
         event_type = task.data.get('event_type')
 
-        # кешируем последний реально выданный текст персонажа (для подавления эха в GUI)
         try:
             if client_id and character and getattr(task, "status", None) == TaskStatus.SUCCESS and getattr(task, "result", None):
                 resp = task.result.get("response") if isinstance(task.result, dict) else None
@@ -489,7 +481,6 @@ class ChatServerNew:
                             TaskStatus.ABORTED):
                 if self.last_idle_tasks.get(character) == task.uid:
                     del self.last_idle_tasks[character]
-
 
     def _on_send_task_update(self, event: Event):
         task = event.data.get('task')

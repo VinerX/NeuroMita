@@ -161,7 +161,6 @@ class AudioController:
                     "uid": task_uid,
                     "status": TaskStatus.SUCCESS,
                     "result": {
-                        "response": original_text,
                         "voiceover_path": voiceover_path
                     }
                 })
@@ -200,7 +199,6 @@ class AudioController:
                     "uid": task_uid,
                     "status": TaskStatus.SUCCESS,
                     "result": {
-                        "response": original_text,
                         "voiceover_path": result_path
                     }
                 })
