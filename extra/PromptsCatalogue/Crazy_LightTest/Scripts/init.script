@@ -1,0 +1,13 @@
+LOG "Initialization of variables"
+
+IF Love == None THEN
+	LOG "Love is null"
+	SET Love = 1
+	LOG f"now it is: {Love}"
+ELSE 
+	LOG f"Love is not null {Love}"
+ENDIF
+
+//SET count_times = count_times + 1
+
+LOG "Initialization of variables"

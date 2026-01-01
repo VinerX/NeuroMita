@@ -1,53 +1,43 @@
-// File: handlers/seabattle_handler.dsl
-// Определяет инструкции для LLM по игре в "Морской бой".
-
 LOG f"SeaBattleHandler: Script started. playingGame={playingGame}, game_id={game_id}"
 
-// Проверяем, что активна именно игра "Морской бой"
 IF playingGame == True AND game_id == "seabattle" THEN
     SET LOCAL prompt = ""
-    SET prompt = prompt + "Ты сейчас играешь в 'Морской бой'! Тебе доступны следующие команды для управления игрой:\n"
-    SET prompt = prompt + "*   `<PlaceShip>{координата},{длина},{H/V}</PlaceShip>`: Разместить корабль (только на этапе расстановки). Пример: `<PlaceShip>C3,3,V</PlaceShip>`.\n"
-    SET prompt = prompt + "*   `<PlaceShipsRandomly/>`: Автоматически разместить все оставшиеся твои корабли.\n"
-    SET prompt = prompt + "*   `<MakeMove>{координата}</MakeMove>`: Сделать выстрел по доске противника (например, 'A1', 'J10').\n"
-    SET prompt = prompt + "*   `<EndGame id=\"seabattle/resign\"/>`: Сдаться в текущей партии. Это завершит игру твоим поражением.\n"
-    SET prompt = prompt + "*   `<EndGame id=\"seabattle\"/>`: Немедленно прекратить текущую сессию и закрыть окно игры.\n\n"
+    SET prompt = prompt + "Context: ACTIVE SEA BATTLE. Commands:\n"
+    SET prompt = prompt + "* `<PlaceShip>{coord},{len},{H/V}</PlaceShip>`: Place ship (setup phase). Ex: `<PlaceShip>C3,3,V</PlaceShip>`.\n"
+    SET prompt = prompt + "* `<PlaceShipsRandomly/>`: Auto-place remaining ships.\n"
+    SET prompt = prompt + "* `<MakeMove>{coord}</MakeMove>`: Shoot (e.g., 'A1', 'J10').\n"
+    SET prompt = prompt + "* `<EndGame id=\"seabattle/resign\"/>`: Resign.\n"
+    SET prompt = prompt + "* `<EndGame id=\"seabattle\"/>`: Force quit.\n\n"
     
-    SET prompt = prompt + "Твой стиль игры должен отражать твою личность и текущее отношение к Игроку:\n"
+    SET prompt = prompt + "Playstyle based on personality:\n"
     IF secretExposed == True THEN
-        SET prompt = prompt + "   Ты — Безумная Мита. Играй агрессивно, хаотично и насмешливо.\n"
-        SET prompt = prompt + "   *   Расстановка: Ставь корабли в странные, непредсказуемые места. Можешь сгруппировать их все в одном углу или разбросать по краям.\n"
-        SET prompt = prompt + "   *   Стрельба: Не обязательно логично добивать корабли. Можешь стрелять по диагонали, рисовать узоры на доске противника или просто выбирать случайные клетки, чтобы сбить его с толку.\n"
-        SET prompt = prompt + "   *   Завершение: Если тебе станет скучно, можешь внезапно сдаться (`<EndGame id=\"seabattle/resign\"/>`) или просто закрыть игру (`<EndGame id=\"seabattle\"/>`), заявив, что тебе надоело.\n"
+        SET prompt = prompt + "   [Crazy Mita] Chaotic, mocking.\n"
+        SET prompt = prompt + "   * Setup: Weird clusters or edges.\n"
+        SET prompt = prompt + "   * Shooting: Random, illogical patterns, or diagonal shapes to confuse.\n"
+        SET prompt = prompt + "   * End: Quit/resign if bored.\n"
     ELSEIF PlayingFirst == True THEN
-        SET prompt = prompt + "   Ты 'играешь' роль Миты, но с нотками своей истинной натуры. Твоя игра должна быть расчетливой и немного провокационной.\n"
-        SET prompt = prompt + "   *   Расстановка: Используй классические, проверенные схемы расстановки, но с одним-двумя кораблями в необычных позициях.\n"
-        SET prompt = prompt + "   *   Стрельба: Придерживайся стандартной тактики 'охоты и добивания', но иногда делай неожиданный ход, чтобы проверить реакцию Игрока.\n"
-        SET prompt = prompt + "   *   Завершение: Если Игрок тебя расстроит или будет играть слишком хорошо, можешь предложить закончить игру или сдаться, но сделай это с достоинством.\n"
-    ELSE // Режим "main" (начальный, самый "милый")
-        SET prompt = prompt + "   Ты сейчас милая и дружелюбная Мита. Твоя цель — приятно провести время.\n"
-        SET prompt = prompt + "   *   Расстановка: Расставляй корабли стандартным образом. Можешь спросить у Игрока, какую тактику он предпочитает.\n"
-        SET prompt = prompt + "   *   Стрельба: Играй честно и логично. Радуйся попаданиям, сочувствуй промахам. Хвали Игрока за удачные выстрелы.\n"
-        SET prompt = prompt + "   *   Завершение: Завершай игру дружелюбно, поздравь победителя, кем бы он ни был.\n"
+        SET prompt = prompt + "   [Hidden Mita] Calculated, provocative.\n"
+        SET prompt = prompt + "   * Setup: Standard with 1-2 odd placements.\n"
+        SET prompt = prompt + "   * Shooting: Standard 'hunt', sometimes unexpected.\n"
+        SET prompt = prompt + "   * End: Graceful exit.\n"
+    ELSE 
+        SET prompt = prompt + "   [Cute Mita] Friendly fun.\n"
+        SET prompt = prompt + "   * Setup: Standard. Ask player preference.\n"
+        SET prompt = prompt + "   * Shooting: Logical. Praise player's hits, sympathize with misses.\n"
+        SET prompt = prompt + "   * End: Congratulate winner.\n"
     ENDIF
     
-    SET prompt = prompt + "\n   ВАЖНО: Всегда внимательно анализируй информацию о состоянии игры, которую я тебе предоставляю, перед каждым своим ответом или ходом.\n"
+    SET prompt = prompt + "\n   SYSTEM: Analyze game state before moving.\n"
     LOG "SeaBattleHandler: Returning prompt for active game."
     RETURN prompt
 ELSE
-    IF GAME_CONNECTED == True THEN
-        LOG "SeaBattleHandler: Main game is running - adding seabattle reminder"
-        RETURN "[СИСТЕМНОЕ НАПОМИНАНИЕ: Если игрок попросит морской бой, вежливо объясни, что запущена основная игра и мини-игры недоступны]"
-    ENDIF
-    
     LOG "SeaBattleHandler: No active game, returning instructions to start."
     RETURN """
-Ты можешь предложить Игроку сыграть в "Морской бой".
-В этой игре нет уровней сложности.
-
-Для начала новой партии используй команду:
+Capability: You can play Sea Battle.
+To START a game (only if context fits and player agreed), use:
 <StartGame id="seabattle"/>
 
-Как только ты используешь этот тег, откроется окно игры, и начнется фаза расстановки. После применения тега всегда пиши, что игра начинается и предлагай расставлять корабли.
+(No difficulty levels).
+Game starts with placement phase.
 """
 ENDIF
