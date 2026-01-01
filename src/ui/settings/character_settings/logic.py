@@ -10,7 +10,7 @@ from main_logger import logger
 from core.events import get_event_bus, Events
 from ui.settings.prompt_catalogue_settings import list_prompt_sets
 from managers.prompt_catalogue_manager import copy_prompt_set, get_prompt_catalogue_folder_name
-
+from utils.migrate_json_to_sqlite import migrate as run_json_migration
 
 def _prompt_set_key(character_id: str) -> str:
     return f"PROMPT_SET_{character_id}"
@@ -191,6 +191,8 @@ def wire_character_settings_logic(self):
         self.btn_clear_all_histories.clicked.connect(lambda: clear_history_all(self))
     if hasattr(self, 'btn_reload_prompts'):
         self.btn_reload_prompts.clicked.connect(lambda: reload_prompts(self))
+    if hasattr(self, 'btn_migrate_db'):
+        self.btn_migrate_db.clicked.connect(lambda: migrate_to_db(self))
 
     _update_sync_indicator(self)
     QTimer.singleShot(300, lambda: _update_sync_indicator(self))
@@ -415,3 +417,53 @@ def save_character_provider(gui, provider: str):
     provider_key = f"CHAR_PROVIDER_{selected_character}"
     gui.settings.set(provider_key, provider)
     logger.info(f"Saved provider '{provider}' for character '{selected_character}'")
+
+def migrate_to_db(gui):
+    """Логика миграции JSON -> SQLite"""
+    if run_json_migration is None:
+        QMessageBox.critical(gui, _("Ошибка", "Error"),
+                             _("Скрипт миграции не найден (utils.migrate_to_sql).",
+                               "Migration script not found (utils.migrate_to_sql)."))
+        return
+
+    title = _("Миграция в базу данных", "Database Migration")
+    text = _("Вы хотите перенести историю из JSON файлов в базу данных SQLite (Histories/world.db)?\n\n"
+             "Дубликаты могут быть пропущены. Старые файлы не удаляются.",
+             "Do you want to migrate history from JSON files to SQLite database (Histories/world.db)?\n\n"
+             "Duplicates might be skipped. Old files are not deleted.")
+
+    reply = QMessageBox.question(gui, title, text,
+                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+
+    if hasattr(gui, '_show_loading_popup'):
+        gui._show_loading_popup(_("Миграция данных...", "Migrating data..."))
+
+    # Запускаем с задержкой, чтобы отрисовался попап
+    QTimer.singleShot(100, lambda: _execute_migration(gui))
+
+def _execute_migration(gui):
+    try:
+        run_json_migration()
+
+        # Перезагружаем данные текущего персонажа
+        event_bus = get_event_bus()
+        event_bus.emit(Events.Character.RELOAD_DATA)
+
+        if hasattr(gui, '_hide_loading_popup'):
+            gui._hide_loading_popup()
+
+        QMessageBox.information(gui, _("Успех", "Success"),
+                                _("Миграция завершена успешно.", "Migration completed successfully."))
+
+        # Обновляем дебаг инфо если открыто
+        if hasattr(gui, 'update_debug_info'):
+            gui.update_debug_info()
+
+    except Exception as e:
+        if hasattr(gui, '_hide_loading_popup'):
+            gui._hide_loading_popup()
+        logger.error(f"Migration failed: {e}", exc_info=True)
+        QMessageBox.critical(gui, _("Ошибка", "Error"), f"Migration failed: {e}")

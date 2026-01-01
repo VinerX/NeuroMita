@@ -1,164 +1,181 @@
-import json
 import logging
-import os
 import datetime
+from managers.database_manager import DatabaseManager
 
 
 class MemoryManager:
     def __init__(self, character_name):
-        self.character_name = character_name
-        self.history_dir = f"Histories\\{character_name}"
-        os.makedirs(self.history_dir, exist_ok=True)
-
-        self.filename = os.path.join(self.history_dir, f"{character_name}_memories.json")
-        self.memories = []
-        self.total_characters = 0  # Новый атрибут для подсчета символов
-        self.last_memory_number = 1
-
-        self.load_memories()
-
-    def load_memories(self):
-
-        if os.path.exists(self.filename):
-            with open(self.filename, 'r', encoding='utf-8') as file:
-                self.memories = json.load(file)
-                self.last_memory_number = len(self.memories) + 1
-                self._calculate_total_characters()
-        else:
-            logging.warning(f"No memories file {self.filename} found!")
-            self.memories = []
-            self.save_memories() # Создаем пустой файл
-            logging.info(f"Created new memories file: {self.filename}")
+        self.character_name = character_name  # В новой логике это character_id
+        self.db = DatabaseManager()
+        self.total_characters = 0
+        self._calculate_total_characters()
 
     def _calculate_total_characters(self):
-        """Пересчитывает общее количество символов"""
-        self.total_characters = sum(len(memory["content"]) for memory in self.memories)
+        """Считаем символы SQL запросом"""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT SUM(LENGTH(content)) FROM memories WHERE character_id = ? AND is_deleted = 0",
+            (self.character_name,)
+        )
+        result = cursor.fetchone()[0]
+        self.total_characters = result if result else 0
+        conn.close()
+
+    def load_memories(self):
+        # В SQL версии явная загрузка не нужна, данные всегда там.
+        # Но обновляем счетчик для верности.
+        self._calculate_total_characters()
 
     def save_memories(self):
-        with open(self.filename, 'w', encoding='utf-8') as file:
-            json.dump(self.memories, file, ensure_ascii=False, indent=4)
+        # Пустышка для совместимости
+        pass
 
-    def add_memory(self, content, date=datetime.datetime.now().strftime("%d.%m.%Y_%H.%M"), priority="Normal", memory_type="fact"):
-        if not self.memories:
-            new_id = 1
-        else:
-            new_id = max(memory['N'] for memory in self.memories) + 1
+    def add_memory(self, content, date=None, priority="Normal", memory_type="fact"):
+        if date is None:
+            date = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M")
 
-        memory = {
-            "N": new_id,
-            "date": date,
-            "priority": priority,
-            "content": content,
-            "memory_type": memory_type  # Добавляем тип памяти
-        }
-        self.memories.append(memory)
-        self.total_characters += len(content)  # Обновляем счетчик
-        self.last_memory_number += 1
-        self.save_memories()
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        # 1. Вычисляем новый Eternal ID (Max + 1)
+        cursor.execute(
+            "SELECT MAX(eternal_id) FROM memories WHERE character_id = ?",
+            (self.character_name,)
+        )
+        res = cursor.fetchone()[0]
+        new_id = (res + 1) if res is not None else 1
+
+        # 2. Вставляем
+        cursor.execute('''
+            INSERT INTO memories (character_id, eternal_id, content, priority, type, date_created, is_deleted)
+            VALUES (?, ?, ?, ?, ?, ?, 0)
+        ''', (self.character_name, new_id, content, priority, memory_type, date))
+
+        conn.commit()
+        conn.close()
+
+        self.total_characters += len(content)
+        # logging.info(f"Memory added for {self.character_name}, ID: {new_id}")
 
     def update_memory(self, number, content, priority=None):
-        for memory in self.memories:
-            if memory["N"] == number:
-                # Обновляем счетчик символов
-                self.total_characters -= len(memory["content"])
-                self.total_characters += len(content)
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
 
-                memory["date"] = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M")
-                memory["content"] = content
-                if priority:
-                    memory["priority"] = priority
-                self.save_memories()
-                return True
-        return False
+        # Сначала получим старую длину для коррекции счетчика
+        cursor.execute(
+            "SELECT content FROM memories WHERE character_id = ? AND eternal_id = ? AND is_deleted = 0",
+            (self.character_name, number)
+        )
+        row = cursor.fetchone()
 
-    def delete_memory(self, number, save_as_missing = False):
-        for i, memory in enumerate(self.memories):
-            if memory["N"] == number:
-                if save_as_missing:
-                    # Сохраняем копию в missed перед удалением
-                    missed_memory = memory.copy()  # Полная копия воспоминания
-                    self.save_missed_memory(missed_memory)
+        if not row:
+            conn.close()
+            return False
 
-                # Обновляем счетчик и удаляем
-                self.total_characters -= len(memory["content"])
-                del self.memories[i]
-                self.save_memories()
-                logging.info(f"Memory {number} deleted")
-                return True
-        logging.warning(f"Memory {number} not found for deletion.")
-        return False
+        old_len = len(row[0])
 
-    def save_missed_memory(self, missed_memory: dict):
+        # Обновляем
+        if priority:
+            cursor.execute('''
+                UPDATE memories SET content = ?, priority = ?, date_created = ?
+                WHERE character_id = ? AND eternal_id = ?
+            ''', (content, priority, datetime.datetime.now().strftime("%d.%m.%Y_%H.%M"), self.character_name, number))
+        else:
+            cursor.execute('''
+                UPDATE memories SET content = ?, date_created = ?
+                WHERE character_id = ? AND eternal_id = ?
+            ''', (content, datetime.datetime.now().strftime("%d.%m.%Y_%H.%M"), self.character_name, number))
+
+        conn.commit()
+        conn.close()
+
+        self.total_characters = self.total_characters - old_len + len(content)
+        return True
+
+    def delete_memory(self, number, save_as_missing=False):
         """
-        Сохраняет удалённое воспоминание в отдельный файл для персонажа.
-        Воспоминание добавляется к существующему файлу, если он есть.
+        В SQL версии save_as_missing по сути не нужен,
+        так как мы просто ставим is_deleted=1, и данные остаются в базе.
+        Но флаг is_deleted=1 как раз и выполняет роль 'missed'.
         """
-        missed_dir = self.history_dir  # Используем ту же директорию
-        os.makedirs(missed_dir, exist_ok=True)
-        missed_file_path = os.path.join(missed_dir, f"{self.character_name}_missed_memories.json")
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
 
-        existing_missed_memories = []
-        if os.path.exists(missed_file_path):
-            try:
-                with open(missed_file_path, 'r', encoding='utf-8') as f:
-                    existing_missed_memories = json.load(f)
-                    if not isinstance(existing_missed_memories, list):
-                        logging.warning(
-                            f"Файл пропущенных воспоминаний {missed_file_path} поврежден или имеет неверный формат. Создаю новый.")
-                        existing_missed_memories = []
-            except (json.JSONDecodeError, FileNotFoundError):
-                logging.warning(
-                    f"Не удалось загрузить существующие пропущенные воспоминания из {missed_file_path}. Создаю новый файл.")
-                existing_missed_memories = []
+        cursor.execute(
+            "SELECT content FROM memories WHERE character_id = ? AND eternal_id = ? AND is_deleted = 0",
+            (self.character_name, number)
+        )
+        row = cursor.fetchone()
 
-        # Добавляем новое пропущенное воспоминание
-        existing_missed_memories.append(missed_memory)
+        if not row:
+            conn.close()
+            logging.warning(f"Memory {number} not found for deletion.")
+            return False
 
-        try:
-            with open(missed_file_path, 'w', encoding='utf-8') as f:
-                json.dump(existing_missed_memories, f, ensure_ascii=False, indent=4)
-            logging.info(f"Пропущенное воспоминание сохранено в {missed_file_path}")
-        except Exception as e:
-            logging.error(f"Ошибка при сохранении пропущенного воспоминания в {missed_file_path}: {e}", exc_info=True)
+        # Soft Delete
+        cursor.execute(
+            "UPDATE memories SET is_deleted = 1 WHERE character_id = ? AND eternal_id = ?",
+            (self.character_name, number)
+        )
+        conn.commit()
+        conn.close()
+
+        self.total_characters -= len(row[0])
+        logging.info(f"Memory {number} deleted (soft delete).")
+        return True
 
     def clear_memories(self):
-        self.memories = []
-        self.total_characters = 0  # Сбрасываем счетчик
-        self.save_memories()
-        self.last_memory_number = 1
+        # Удаляем (soft delete) всё
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE memories SET is_deleted = 1 WHERE character_id = ?",
+            (self.character_name,)
+        )
+        conn.commit()
+        conn.close()
+        self.total_characters = 0
 
     def get_memories_formatted(self):
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT eternal_id, date_created, priority, content, type 
+            FROM memories 
+            WHERE character_id = ? AND is_deleted = 0 
+            ORDER BY eternal_id ASC
+        ''', (self.character_name,))
+
+        rows = cursor.fetchall()
+        conn.close()
+
         formatted_memories = []
-        for memory in self.memories:
-            if memory.get('memory_type', "") == "summary":
-                formatted_memories.append(
-                    f"N:{memory['N']}, Date {memory['date']}, Type: Summary: {memory['content']}"
-                )
+        for r in rows:
+            mid, date, prio, content, mtype = r
+            if mtype == "summary":
+                formatted_memories.append(f"N:{mid}, Date {date}, Type: Summary: {content}")
             else:
-                formatted_memories.append(
-                    f"N:{memory['N']}, Date {memory['date']}, Priority: {memory['priority']}: {memory['content']}"
-                )
+                formatted_memories.append(f"N:{mid}, Date {date}, Priority: {prio}: {content}")
 
-        memory_stats = f"\nMemory status: {len(self.memories)} facts, {self.total_characters} characters"
+        memory_stats = f"\nMemory status: {len(rows)} facts, {self.total_characters} characters"
 
-        # Правила для управления памятью
+        # Правила (копируем из старого кода)
         management_tips = []
         if self.total_characters > 10000:
-            management_tips.append("CRITICAL: Memory limit exceeded! Delete old or useless memories immediately!")
+            management_tips.append("CRITICAL: Memory limit exceeded!")
         elif self.total_characters > 5000:
-            management_tips.append("WARNING: Memory size is large. Consider optimization or summarization")
+            management_tips.append("WARNING: Memory size is large.")
 
-        if len(self.memories) > 75:
-            management_tips.append("Too many memories! Delete unimportant ones using <-memory>N</memory> syntax")
-        elif len(self.memories) > 40:
-            management_tips.append("Many memories stored. Review lower priority entries")
+        if len(rows) > 75:
+            management_tips.append("Too many memories!")
 
-        # Примеры команд
         examples = [
             "Example of memory commands:",
-            "<-memory>2</memory> - delete memory 2",
-            "<+memory>high|new content</memory> - add memory with priority high",
-            "<#memory>4|low|content</memory> - change memory 4 to content with priority low"
+            "<-memory>2</memory>",
+            "<+memory>high|content</memory>",
+            "<#memory>4|low|content</memory>"
         ]
 
         full_message = (
@@ -169,5 +186,4 @@ class MemoryManager:
                 "\n".join(management_tips) + "\n" +
                 "\n".join(examples)
         )
-
         return full_message

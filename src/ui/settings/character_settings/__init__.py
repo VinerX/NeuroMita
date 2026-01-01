@@ -10,6 +10,7 @@ from .logic import (
     clear_history_all,
     reload_prompts,
     save_character_provider,
+    migrate_to_db,
 )
 
 def setup_mita_controls(self, parent_layout):
@@ -32,4 +33,5 @@ __all__ = [
     "clear_history_all",
     "reload_prompts",
     "save_character_provider",
+    "migrate_to_db"
 ]

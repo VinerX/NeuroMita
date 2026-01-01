@@ -249,7 +249,6 @@ class Character:
                 value = True
             elif val_lower == "false":
                 value = False
-
             elif value.isdigit():
                 try:
                     value = int(value)
@@ -261,13 +260,15 @@ class Character:
                 except ValueError:
                     pass
             else:
-                if (value.startswith("'") and value.endswith("'")) or (
-                    value.startswith('"') and value.endswith('"')
-                ):
+                if (value.startswith("'") and value.endswith("'")) or (value.startswith('"') and value.endswith('"')):
                     value = value[1:-1]
 
         self.variables[name] = value
-        # logger.debug(f"Variable '{name}' set to: {value} (type: {type(value)}) for char '{self.char_id}'")
+
+        # [NEW] Сразу пишем в БД, чтобы не ждать конца хода
+        # Это защитит от потери данных при краше
+        if hasattr(self, "history_manager"):
+            self.history_manager.update_variable(name, value)
 
     def consume_pending_target(self) -> str | None:
         t = getattr(self, "_pending_target", None)
@@ -585,11 +586,13 @@ class Character:
         return data
 
     def save_character_state_to_history(self, messages: List[Dict[str, str]]):
+        # [ОБНОВЛЕНИЕ]
+        # Так как мы перешли на точечные add_message и update_variable,
+        # этот метод по сути становится "Legacy" или "Force Sync".
+        # Можно оставить его для надежности, но HistoryManager.save_history теперь делает
+        # DELETE активных и INSERT новых, что безопасно.
         history_data = {"messages": messages, "variables": self.variables.copy()}
         self.history_manager.save_history(history_data)
-        logger.debug(
-            f"[{self.char_id}] Saved character state and {len(messages)} messages to history."
-        )
 
     def clear_history(self):
         logger.info(f"[{self.char_id}] Clearing history and resetting state.")
@@ -611,11 +614,16 @@ class Character:
             f"[{self.char_id}] History cleared and state reset to initial defaults/overrides."
         )
 
+    # --- ИЗМЕНЕНИЯ В add_message_to_history ---
     def add_message_to_history(self, message: Dict[str, str]):
-        current_history_data = self.history_manager.load_history()
-        messages = current_history_data.get("messages", [])
-        messages.append(message)
-        self.save_character_state_to_history(messages)
+        # [NEW] Используем точечное добавление вместо перезаписи всего списка
+        # Это сильно ускорит работу на длинных историях
+        self.history_manager.add_message(message)
+
+        # Обновлять локальный список в памяти (если он нужен для контекста) можно перезагрузкой
+        # или просто не хранить его в классе Character, полагаясь на history_manager.load_history()
+        # Но чтобы не ломать старую логику, которая может ожидать messages внутри history_data,
+        # оставим всё как есть, просто база обновляется инкрементально.
 
     # endregion
 

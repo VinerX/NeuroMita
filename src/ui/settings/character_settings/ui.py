@@ -182,5 +182,15 @@ def build_character_settings_ui(self, parent_layout):
     _mark_danger_hover(self.btn_reload_prompts)
     self.history_section.add_widget(self.btn_reload_prompts)
 
+
+    self.btn_migrate_db = QPushButton(_("Миграция JSON -> SQLite", "Migrate JSON -> SQLite"))
+    self.btn_migrate_db.setToolTip(
+        _("Перенести старую файловую историю в базу данных", "Migrate old file history to database"))
+    self.btn_migrate_db.setIcon(qta.icon('fa5s.database', color='#ffffff'))
+    self.btn_migrate_db.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    self.btn_migrate_db.setObjectName("SecondaryButton")
+    self.history_section.add_widget(self.btn_migrate_db)
+
+
     container_lay.addWidget(root)
     parent_layout.addWidget(container)
