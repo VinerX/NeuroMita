@@ -89,6 +89,8 @@ class ChatController:
         character_id: str | None = None,
         sender: str = "Player",
         participants: list[str] | None = None,
+        req_id: str | None = None,
+        origin_message_id: str | None = None,
     ):
         try:
             self.llm_processing = True
@@ -130,12 +132,13 @@ class ChatController:
                     "character_id": character_id,
                     "sender": sender,
                     "participants": participants or [],
+                    "req_id": req_id,
+                    "origin_message_id": origin_message_id,
                 },
                 timeout=600.0
             )
 
             payload = response_result[0] if response_result else None
-
             if not payload:
                 if task_uid:
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
@@ -149,7 +152,6 @@ class ChatController:
                 return None
 
             target = "Player"
-
             if isinstance(payload, dict):
                 response_text = payload.get("text")
                 voice_profile = payload.get("voice_profile")
@@ -189,10 +191,7 @@ class ChatController:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.VOICING,
-                                "result": {
-                                    "response": response_text,
-                                    "target": target,
-                                }
+                                "result": {"response": response_text, "target": target}
                             })
 
                         speaker = voice_profile.get("silero_command", "")
@@ -205,8 +204,8 @@ class ChatController:
                             "task_uid": task_uid,
                             "character_id": effective_character_id,
                             "voice_profile": voice_profile,
+                            "target": target,
                         })
-                        logger.info(f"Озвучка запрошена с task_uid: {task_uid}")
                     else:
                         if task_uid:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
@@ -285,6 +284,8 @@ class ChatController:
         character_id = self._normalize_character_id(data)
         sender = self._normalize_sender(data)
         participants = self._normalize_participants(data.get("participants"))
+        req_id = data.get("req_id")
+        origin_message_id = data.get("origin_message_id")
 
         if image_data:
             self.event_bus.emit(Events.Capture.UPDATE_LAST_IMAGE_REQUEST_TIME)
@@ -295,25 +296,39 @@ class ChatController:
         if loop and loop.is_running():
             fut = asyncio.run_coroutine_threadsafe(
                 self.async_send_message(
-                    user_input, system_input, image_data, task_uid, event_type,
-                    character_id, sender, participants
+                    user_input=user_input,
+                    system_input=system_input,
+                    image_data=image_data,
+                    task_uid=task_uid,
+                    event_type=event_type,
+                    character_id=character_id,
+                    sender=sender,
+                    participants=participants,
+                    req_id=req_id,
+                    origin_message_id=origin_message_id,
                 ),
                 loop
             )
             try:
-                response = fut.result(timeout=600)
-                return response
+                return fut.result(timeout=600)
             except Exception as e:
                 logger.error(f"async_send_message failed: {e}", exc_info=True)
                 return None
         else:
-            response = asyncio.run(
+            return asyncio.run(
                 self.async_send_message(
-                    user_input, system_input, image_data, task_uid, event_type,
-                    character_id, sender, participants
+                    user_input=user_input,
+                    system_input=system_input,
+                    image_data=image_data,
+                    task_uid=task_uid,
+                    event_type=event_type,
+                    character_id=character_id,
+                    sender=sender,
+                    participants=participants,
+                    req_id=req_id,
+                    origin_message_id=origin_message_id,
                 )
             )
-            return response
 
     def _on_get_llm_processing_status(self, event: Event):
         return self.llm_processing

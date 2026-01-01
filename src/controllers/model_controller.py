@@ -773,6 +773,8 @@ class ModelController:
                 )
 
             if event_type != "react":
+                origin_message_id = str(data.get("origin_message_id") or "") or None
+
                 self.event_writer.write_turn(
                     responder_character_id=char_id,
                     sender=sender,
@@ -780,6 +782,7 @@ class ModelController:
                     user_input=user_input,
                     image_data=image_data,
                     req_id=req_id,
+                    origin_message_id=origin_message_id,
                     assistant_text=final_text,
                     assistant_target=target,
                     event_type=event_type,
