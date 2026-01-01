@@ -28,6 +28,7 @@ class ChatServerNew:
         self.game_master_voice: bool = False
 
         self.last_participants: Dict[str, list[str]] = {}
+        self._last_sent_dialogue_text: dict[tuple[str, str], str] = {}
 
         self._subscribe_to_events()
 
@@ -208,13 +209,20 @@ class ChatServerNew:
             user_input = data.get("message", "")
 
             if user_input:
-                self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
-                    "role": "user",
-                    "response": user_input,
-                    "is_initial": False,
-                    "emotion": "",
-                    "speaker_name": (sender if sender != "Player" else ""),
-                })
+                if sender != "Player":
+                    last = self._last_sent_dialogue_text.get((str(client_id), str(sender)))
+                    if isinstance(last, str) and last.strip() == str(user_input).strip():
+                        user_input = ""
+
+                if user_input:
+                    ui_role = "user" if sender == "Player" else "assistant"
+                    self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
+                        "role": ui_role,
+                        "response": user_input,
+                        "is_initial": False,
+                        "emotion": "",
+                        "speaker_name": ("" if sender == "Player" else sender),
+                    })
 
             collected_sys = "\n".join(self.pending_sysinfo.pop(character_id, []))
 
@@ -457,6 +465,15 @@ class ChatServerNew:
         character = task.data.get('character')
         event_type = task.data.get('event_type')
 
+        # кешируем последний реально выданный текст персонажа (для подавления эха в GUI)
+        try:
+            if client_id and character and getattr(task, "status", None) == TaskStatus.SUCCESS and getattr(task, "result", None):
+                resp = task.result.get("response") if isinstance(task.result, dict) else None
+                if isinstance(resp, str) and resp.strip():
+                    self._last_sent_dialogue_text[(str(client_id), str(character))] = resp.strip()
+        except Exception:
+            pass
+
         if client_id and client_id in self.active_connections:
             asyncio.run_coroutine_threadsafe(
                 self.send_task_update(client_id, task),
@@ -465,13 +482,14 @@ class ChatServerNew:
 
         if event_type in ('idle', 'idle_timeout') and character:
             if task.status in (TaskStatus.SUCCESS,
-                               TaskStatus.FAILED,
-                               TaskStatus.CANCELLED,
-                               TaskStatus.FAILED_ON_GENERATION,
-                               TaskStatus.FAILED_ON_VOICEOVER,
-                               TaskStatus.ABORTED):
+                            TaskStatus.FAILED,
+                            TaskStatus.CANCELLED,
+                            TaskStatus.FAILED_ON_GENERATION,
+                            TaskStatus.FAILED_ON_VOICEOVER,
+                            TaskStatus.ABORTED):
                 if self.last_idle_tasks.get(character) == task.uid:
                     del self.last_idle_tasks[character]
+
 
     def _on_send_task_update(self, event: Event):
         task = event.data.get('task')

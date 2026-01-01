@@ -1,6 +1,7 @@
 # src/controllers/model_controller.py
 from __future__ import annotations
 
+import json
 import datetime
 import re
 import copy
@@ -279,26 +280,134 @@ class ModelController:
                 logger.warning(f"[ModelController] Fanout истории в {pid} не удался: {e}", exc_info=True)
 
     def _on_load_history(self, event: Event):
-        data = event.data or {}
-
         self.loaded_messages_offset = 0
         self.total_messages_in_history = 0
         self.loading_more_history = False
 
-        requested_cid = self._normalize_character_id_from_data(data)
-        ch = self._get_character_ref(requested_cid) if requested_cid else self._get_current_character_ref()
-
+        ch = self._get_current_character_ref()
         if not ch:
             self.event_bus.emit("history_loaded", {"messages": [], "total_messages": 0, "loaded_offset": 0})
             return
 
-        chat_history = ch.load_history()
-        all_messages = chat_history.get("messages", []) or []
-        self.total_messages_in_history = len(all_messages)
+        base_history = ch.load_history()
+        base_messages = base_history.get("messages", []) or []
+        group = self._detect_group_participants(base_messages)
 
-        max_display_messages = int(self.settings.get("MAX_CHAT_HISTORY_DISPLAY", 100))
+        def load_for(cid: str):
+            cref = self._get_character_ref(cid)
+            if not cref:
+                return [], ""
+            h = cref.load_history()
+            msgs = h.get("messages", []) or []
+            name = str(getattr(cref, "name", "") or cid)
+
+            out = []
+            for m in msgs:
+                if not isinstance(m, dict):
+                    continue
+                mm = dict(m)
+                mm["character_id"] = cid
+                mm["character_name"] = name
+                out.append(mm)
+            return out, name
+
+        merged_raw: list[dict] = []
+        if group:
+            for cid in group:
+                msgs, _ = load_for(cid)
+                merged_raw.extend(msgs)
+        else:
+            cid = str(getattr(ch, "char_id", "") or "")
+            cname = str(getattr(ch, "name", "") or cid)
+            merged_raw = []
+            for m in base_messages:
+                if not isinstance(m, dict):
+                    continue
+                mm = dict(m)
+                mm["character_id"] = cid
+                mm["character_name"] = cname
+                merged_raw.append(mm)
+
+        decorated: list[tuple[float, int, dict]] = []
+        seq = 0
+        for m in merged_raw:
+            if not isinstance(m, dict):
+                continue
+            ts = self._parse_msg_time_to_epoch(m.get("time", "") or "")
+            decorated.append((ts, seq, m))
+            seq += 1
+        decorated.sort(key=lambda x: (x[0], x[1]))
+
+        seen = set()
+        final_msgs: list[dict] = []
+
+        for _, _, m in decorated:
+            role = str(m.get("role") or "")
+            sender = str(m.get("sender") or "Player")
+            target = str(m.get("target") or "")
+
+            content = m.get("content")
+            text = self._content_to_text(content)
+
+            if role == "user" and not self._has_visible_user_text(content):
+                continue
+
+            if role == "assistant":
+                speaker_id = str(m.get("character_id") or "")
+                speaker_name = str(m.get("character_name") or speaker_id)
+            elif role == "user" and sender != "Player":
+                speaker_id = sender
+                speaker_name = sender
+                role = "assistant"
+                if isinstance(content, list):
+                    new_list = []
+                    for it in content:
+                        if isinstance(it, dict) and it.get("type") == "text":
+                            txt = it.get("text")
+                            if txt is None:
+                                txt = it.get("content", "")
+                            cleaned = self._strip_interlocutor_prefix(str(txt or ""))
+                            it2 = dict(it)
+                            if "text" in it2:
+                                it2["text"] = cleaned
+                            else:
+                                it2["content"] = cleaned
+                            new_list.append(it2)
+                        else:
+                            new_list.append(it)
+                    content = new_list
+                    text = self._content_to_text(content)
+                elif isinstance(content, str):
+                    content = self._strip_interlocutor_prefix(content)
+                    text = content
+            else:
+                speaker_id = "Player"
+                speaker_name = ""
+
+            sig = self._signature_for_merge(m, as_speaker=speaker_id, text=text)
+            if sig in seen:
+                continue
+            seen.add(sig)
+
+            speaker_label = speaker_name
+            if role == "assistant":
+                if target and target != "Player":
+                    speaker_label = f"{speaker_name} → {target}"
+
+            mm = dict(m)
+            mm["role"] = role
+            mm["content"] = content
+
+            if speaker_label:
+                mm = self._decorate_for_ui(mm, speaker_label)
+
+            final_msgs.append(mm)
+
+        self.total_messages_in_history = len(final_msgs)
+
+        max_display_messages = int(self.settings.get("MAX_CHAT_HISTORY_DISPLAY", 200))
         start_index = max(0, self.total_messages_in_history - max_display_messages)
-        messages_to_load = all_messages[start_index:]
+        messages_to_load = final_msgs[start_index:]
 
         self.loaded_messages_offset = len(messages_to_load)
 
@@ -308,34 +417,40 @@ class ModelController:
             "loaded_offset": self.loaded_messages_offset
         })
 
+    # def _on_load_more_history(self, event: Event):
+    #     if self.loaded_messages_offset >= self.total_messages_in_history:
+    #         return
+
+    #     data = event.data or {}
+    #     requested_cid = self._normalize_character_id_from_data(data)
+
+    #     self.loading_more_history = True
+    #     try:
+    #         ch = self._get_character_ref(requested_cid) if requested_cid else self._get_current_character_ref()
+    #         if not ch:
+    #             return
+
+    #         chat_history = ch.load_history()
+    #         all_messages = chat_history.get("messages", []) or []
+
+    #         end_index = self.total_messages_in_history - self.loaded_messages_offset
+    #         start_index = max(0, end_index - self.lazy_load_batch_size)
+    #         messages_to_prepend = all_messages[start_index:end_index]
+
+    #         if messages_to_prepend:
+    #             self.loaded_messages_offset += len(messages_to_prepend)
+    #             self.event_bus.emit("more_history_loaded", {
+    #                 "messages": messages_to_prepend,
+    #                 "loaded_offset": self.loaded_messages_offset
+    #             })
+    #     finally:
+    #         self.loading_more_history = False
+
     def _on_load_more_history(self, event: Event):
         if self.loaded_messages_offset >= self.total_messages_in_history:
             return
-
-        data = event.data or {}
-        requested_cid = self._normalize_character_id_from_data(data)
-
-        self.loading_more_history = True
-        try:
-            ch = self._get_character_ref(requested_cid) if requested_cid else self._get_current_character_ref()
-            if not ch:
-                return
-
-            chat_history = ch.load_history()
-            all_messages = chat_history.get("messages", []) or []
-
-            end_index = self.total_messages_in_history - self.loaded_messages_offset
-            start_index = max(0, end_index - self.lazy_load_batch_size)
-            messages_to_prepend = all_messages[start_index:end_index]
-
-            if messages_to_prepend:
-                self.loaded_messages_offset += len(messages_to_prepend)
-                self.event_bus.emit("more_history_loaded", {
-                    "messages": messages_to_prepend,
-                    "loaded_offset": self.loaded_messages_offset
-                })
-        finally:
-            self.loading_more_history = False
+        # Для merged-режима можно сделать пагинацию, но пока безопасно не догружать (чтобы не путать offsets).
+        return
 
     def _on_get_debug_info(self, event: Event):
         data = event.data or {}
@@ -661,3 +776,133 @@ class ModelController:
         except Exception as e:
             logger.error(f"Ошибка при обновлении промптов: {e}", exc_info=True)
             self.event_bus.emit("reload_prompts_failed", {"error": str(e)})
+
+    # ---------------------------------------------------------------------
+    # Helpers
+    # ---------------------------------------------------------------------
+
+    def _parse_msg_time_to_epoch(self, time_str: str) -> float:
+        if not time_str:
+            return 0.0
+        s = str(time_str).strip()
+        if not s or s == "???":
+            return 0.0
+
+        for fmt in ("%d.%m.%Y_%H.%M", "%d.%m.%Y %H:%M", "%d.%m.%Y %H:%M:%S"):
+            try:
+                dt = datetime.datetime.strptime(s, fmt)
+                return dt.timestamp()
+            except Exception:
+                continue
+        return 0.0
+
+
+    def _has_visible_user_text(self, content: Any) -> bool:
+        if isinstance(content, str):
+            return bool(content.strip())
+        if isinstance(content, list):
+            for it in content:
+                if not isinstance(it, dict):
+                    continue
+                if it.get("type") == "text":
+                    txt = it.get("text")
+                    if txt is None:
+                        txt = it.get("content", "")
+                    if str(txt or "").strip():
+                        return True
+                if it.get("type") == "image_url":
+                    return True
+        return False
+
+
+    def _normalize_message_for_merge_key(self, msg: dict) -> str:
+        role = msg.get("role", "")
+        time_s = msg.get("time", "") or ""
+        sender = msg.get("sender", "") or ""
+        target = msg.get("target", "") or ""
+        content = msg.get("content")
+
+        try:
+            content_norm = json.dumps(content, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            content_norm = str(content)
+
+        if role == "user" and str(sender or "Player") == "Player":
+            return f"{role}|{time_s}|{sender}|{content_norm}"
+        return f"{role}|{time_s}|{sender}|{target}|{msg.get('character_id','')}|{content_norm}"
+
+
+    def _decorate_for_ui(self, msg: dict, speaker_name: str) -> dict:
+        mm = dict(msg)
+        role = mm.get("role")
+
+        if role in ("user", "assistant"):
+            content = mm.get("content")
+            if isinstance(content, list):
+                mm["content"] = [{"type": "meta", "speaker": speaker_name}] + content
+            elif isinstance(content, str):
+                mm["content"] = [{"type": "meta", "speaker": speaker_name}, {"type": "text", "text": content}]
+            else:
+                mm["content"] = [{"type": "meta", "speaker": speaker_name}, {"type": "text", "text": str(content)}]
+
+        return mm
+
+
+    def _detect_group_participants(self, messages: list[dict]) -> list[str]:
+        if not messages:
+            return []
+        for m in reversed(messages[-50:]):
+            if not isinstance(m, dict):
+                continue
+            pts = m.get("participants")
+            if isinstance(pts, list):
+                cleaned = [str(x) for x in pts if str(x).strip() and str(x) != "Player"]
+                cleaned = list(dict.fromkeys(cleaned))
+                if len(cleaned) >= 2:
+                    return cleaned
+        return []
+    
+    def _strip_interlocutor_prefix(self, s: str) -> str:
+        if not isinstance(s, str):
+            return str(s)
+        s2 = s.strip()
+        # убираем "[Собеседник: X]" из начала (чтобы не мусорить в UI и для дедупа)
+        s2 = re.sub(r"^\[Собеседник:\s*[^\]]+\]\s*", "", s2, flags=re.IGNORECASE)
+        return s2
+
+
+    def _content_to_text(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            out = []
+            for it in content:
+                if not isinstance(it, dict):
+                    continue
+                if it.get("type") == "text":
+                    txt = it.get("text")
+                    if txt is None:
+                        txt = it.get("content", "")
+                    out.append(str(txt or ""))
+            return "\n".join(out)
+        return str(content)
+
+
+    def _minute_bucket(self, time_str: str) -> int:
+        ts = 0.0
+        try:
+            ts = self._parse_msg_time_to_epoch(time_str)
+        except Exception:
+            ts = 0.0
+        if ts <= 0:
+            return -1
+        return int(ts // 60)
+
+
+    def _signature_for_merge(self, msg: dict, *, as_speaker: str, text: str) -> str:
+        mb = self._minute_bucket(msg.get("time", "") or "")
+        t = self._strip_interlocutor_prefix(text).strip()
+        # ограничим длину для устойчивости дедупа на очень длинных тегированных сообщениях
+        if len(t) > 2000:
+            t = t[:2000]
+        return f"{as_speaker}|{mb}|{t}"

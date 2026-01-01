@@ -118,25 +118,48 @@ class PromptController:
 
         return out
 
-    def _load_participants_system(self, character_name: str, participants: List[str], sender: str) -> Optional[str]:
-        base = os.path.abspath("Prompts")
-        path = os.path.join(base, "System", "participants_dialogue.system")
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                txt = f.read()
-        except FileNotFoundError:
-            logger.warning(f"[PromptController] participants_dialogue.system не найден: {path}")
-            return None
-        except Exception as e:
-            logger.warning(f"[PromptController] Ошибка чтения participants_dialogue.system: {e}")
+    def _load_participants_system(self, character, participants: List[str], sender: str) -> Optional[str]:
+        if character is None or not hasattr(character, "dsl_interpreter") or character.dsl_interpreter is None:
             return None
 
-        participants_lines = "\n".join(f"- {x}" for x in participants) if participants else "- (none)"
-        txt = txt.replace("{{CHARACTER}}", str(character_name or "Character"))
-        txt = txt.replace("{{PARTICIPANTS}}", participants_lines)
-        txt = txt.replace("{{SENDER}}", str(sender or "Player"))
-        txt = txt.strip()
-        return txt if txt else None
+        participants_lines = "\n".join(f"- {x}" for x in (participants or [])) if participants else "- (none)"
+
+        vars_to_set = {
+            "CHARACTER_NAME": str(getattr(character, "name", "") or getattr(character, "char_id", "") or "Character"),
+            "PARTICIPANTS_TEXT": participants_lines,
+            "SENDER_NAME": str(sender or "Player"),
+        }
+
+        old_values: dict[str, object] = {}
+        try:
+            for k, v in vars_to_set.items():
+                try:
+                    old_values[k] = character.get_variable(k, None)
+                except Exception:
+                    old_values[k] = None
+                character.set_variable(k, v)
+
+            content, _ = character.dsl_interpreter.process_file("../System/participants_dialogue.system", sys_msgs=[])
+            content = (content or "").strip()
+            return content if content else None
+
+        except Exception as e:
+            logger.warning(f"[PromptController] Не удалось обработать participants_dialogue.system через DSL: {e}", exc_info=True)
+            return None
+
+        finally:
+            for k, old in old_values.items():
+                try:
+                    if old is None:
+                        if hasattr(character, "variables") and isinstance(character.variables, dict):
+                            character.variables.pop(k, None)
+                        else:
+                            character.set_variable(k, None)
+                    else:
+                        character.set_variable(k, old)
+                except Exception:
+                    pass
+
 
     def _on_build_prompt(self, event: Event) -> Dict[str, Any]:
         data = event.data or {}
@@ -203,11 +226,7 @@ class PromptController:
 
         non_player_participants = [p for p in participants if p and p != "Player"]
         if len(non_player_participants) >= 2:
-            sys_txt = self._load_participants_system(
-                character_name=str(getattr(character, "name", "") or char_id),
-                participants=non_player_participants,
-                sender=sender
-            )
+            sys_txt = self._load_participants_system(character, non_player_participants, sender)
             if sys_txt:
                 messages.append({"role": "system", "content": sys_txt})
 
