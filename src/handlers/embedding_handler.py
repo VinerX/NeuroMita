@@ -1,4 +1,5 @@
 # Файл с моделью для эмбеддингов
+from threading import Lock
 
 from utils.gpu_utils import check_gpu_provider
 from utils.pip_installer import PipInstaller
@@ -47,7 +48,7 @@ except ImportError:
             )
     else:
         success = pip_installer.install_package(
-                ["torch==2.7.1", "torchaudio==2.7.1"],
+                ["torch", "torchaudio"],
                 description=_("Установка PyTorch CPU", "Installing PyTorch CPU"),
             )
     if not success:
@@ -88,11 +89,26 @@ QUERY_PREFIX = 'query: '
 
 class EmbeddingModelHandler:
     """Управляет загрузкой модели Snowflake и получением эмбеддингов."""
+    _instance = None
+    _lock = Lock()
+
+    def __new__(cls, *args, **kwargs):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(EmbeddingModelHandler, cls).__new__(cls)
+                cls._instance._initialized = False
+            return cls._instance
+
     def __init__(self, model_name: str = MODEL_NAME):
+        if self._initialized:
+            return
+
         self.model_name = model_name
         self.device = self._get_device()
         self.tokenizer, self.model = self._load_model()
         self.hidden_size = self.model.config.hidden_size # Сохраняем размерность
+
+        self._initialized = True  # Помечаем как готовое
 
     def _get_device(self) -> torch.device:
         """Определяет устройство для вычислений (CPU/GPU)."""

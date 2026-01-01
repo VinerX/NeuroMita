@@ -815,3 +815,28 @@ class Character:
 
     def __str__(self):
         return f"Character(id='{self.char_id}', name='{self.name}')"
+
+    def get_relevant_context(self, user_query: str) -> str:
+        """Возвращает строку с найденными фактами для системного промпта"""
+        if not hasattr(self, "memory_system"):
+            return ""
+
+        # Предположим, мы добавили rag в memory_system или character имеет свой RAGManager
+        # Лучше инициализировать RAGManager внутри Character
+        if not hasattr(self, "rag_manager"):
+            from managers.rag_manager import RAGManager
+            self.rag_manager = RAGManager(self.char_id)
+
+        results = self.rag_manager.search_relevant(user_query, limit=5, threshold=0.35)
+
+        if not results:
+            return ""
+
+        context_str = "Relevant memories/history:\n"
+        for r in results:
+            if r['source'] == 'memory':
+                context_str += f"- [Memory {r['date']}] {r['content']}\n"
+            else:
+                context_str += f"- [History {r['date']}] {r['role']}: {r['content']}\n"
+
+        return context_str

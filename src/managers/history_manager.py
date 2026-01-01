@@ -7,6 +7,7 @@ import re
 import uuid
 from main_logger import logger
 from managers.database_manager import DatabaseManager
+from managers.rag_manager import RAGManager
 
 
 class HistoryManager:
@@ -16,6 +17,7 @@ class HistoryManager:
         self.storage_key = self.character_id or self.character_name
 
         self.db = DatabaseManager()
+        self.rag = RAGManager(self.storage_key)
 
     def _save_base64_image_to_disk(self, base64_string: str) -> str:
         """
@@ -296,8 +298,14 @@ class HistoryManager:
             VALUES (?, ?, ?, 1, ?, ?)
         ''', (self.storage_key, message.get("role"), db_content, db_meta, datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
 
+        new_row_id = cursor.lastrowid
         conn.commit()
         conn.close()
+
+        # Генерируем вектор асинхронно или синхронно (пока синхронно для простоты)
+        content_text = message.get("content", "")
+        if isinstance(content_text, str) and content_text:
+            self.rag.update_history_embedding(new_row_id, content_text)
 
     def update_variable(self, key, value):
         conn = self.db.get_connection()

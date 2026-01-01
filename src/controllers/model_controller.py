@@ -1,6 +1,7 @@
 # src/controllers/model_controller.py
 from __future__ import annotations
 
+import base64
 import json
 import datetime
 import re
@@ -614,6 +615,34 @@ class ModelController:
 
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
+
+        # ---------------------------------------------------------------------
+        # [RAG INTEGRATION] Внедрение контекста из памяти
+        # ---------------------------------------------------------------------
+        # Мы проверяем, есть ли текст от пользователя и метод RAG у персонажа.
+        # Если есть релевантные воспоминания, добавляем их в system_input.
+        final_input = False
+        if user_input:
+            final_input = user_input
+        elif system_input:
+            final_input = system_input
+
+        if final_input and hasattr(char, "get_relevant_context"):
+            try:
+                # Ищем похожие воспоминания/историю
+                rag_context = char.get_relevant_context(str(final_input))
+
+                if rag_context:
+                    # Если system_input уже есть, добавляем через отступ, иначе просто присваиваем
+                    separator = "\n\n" if system_input else ""
+                    system_input = f"{system_input}{separator}{rag_context}"
+                    logger.info(f"[{char_id}] RAG context injected into system_input.")
+            except Exception as e:
+                # Не роняем генерацию, если RAG упал (например, модель не загрузилась)
+                logger.warning(f"[{char_id}] Failed to get RAG context: {e}")
+        # ---------------------------------------------------------------------
+
+
 
         if event_type == "compress":
             messages = []

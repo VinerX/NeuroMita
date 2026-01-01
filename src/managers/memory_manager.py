@@ -1,6 +1,7 @@
 import logging
 import datetime
 from managers.database_manager import DatabaseManager
+from managers.rag_manager import RAGManager
 
 
 class MemoryManager:
@@ -9,6 +10,7 @@ class MemoryManager:
         self.db = DatabaseManager()
         self.total_characters = 0
         self._calculate_total_characters()
+        self.rag = RAGManager(self.character_name)
 
     def _calculate_total_characters(self):
         """Считаем символы SQL запросом"""
@@ -56,6 +58,8 @@ class MemoryManager:
         conn.close()
 
         self.total_characters += len(content)
+        self.rag.update_memory_embedding(new_id, content)
+
         # logging.info(f"Memory added for {self.character_name}, ID: {new_id}")
 
     def update_memory(self, number, content, priority=None):
@@ -91,6 +95,9 @@ class MemoryManager:
         conn.close()
 
         self.total_characters = self.total_characters - old_len + len(content)
+
+        self.rag.update_memory_embedding(number, content)
+
         return True
 
     def delete_memory(self, number, save_as_missing=False):
