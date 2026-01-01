@@ -168,25 +168,38 @@ class ChatServerNew:
         await self.send_json(writer, message)
         logger.info(f"Отправлен ABORTED для {event_type} ({character})")
 
+
     async def handle_create_task(self, request: Dict[str, Any], client_id: str):
         event_type = request.get("type", "answer")
         character_id = request.get("character", "Mita")
-        data = request.get("data", {})
-        context = request.get("context", {})
+        data = request.get("data", {}) or {}
+        context = request.get("context", {}) or {}
         req_id = request.get("req_id", None)
 
         sender = str(request.get("sender") or data.get("sender") or "Player")
 
+        origin_message_id = request.get("origin_message_id") or data.get("origin_message_id")
+
         participants = request.get("participants")
         if participants is None:
             participants = data.get("participants")
-        if participants is None:
-            participants = []
-        if isinstance(participants, str):
-            participants = [p.strip() for p in participants.split(",") if p.strip()]
-        if not isinstance(participants, list):
-            participants = []
-        participants = [str(x) for x in participants if str(x).strip()]
+
+        if participants is None or participants == []:
+            last_map = getattr(self, "last_participants", None)
+            if isinstance(last_map, dict):
+                participants = last_map.get(client_id, [])
+            else:
+                participants = []
+        else:
+            if isinstance(participants, str):
+                participants = [p.strip() for p in participants.split(",") if p.strip()]
+            elif not isinstance(participants, list):
+                participants = []
+            participants = [str(x) for x in participants if str(x).strip()]
+
+            last_map = getattr(self, "last_participants", None)
+            if isinstance(last_map, dict):
+                last_map[client_id] = participants
 
         self.event_bus.emit(Events.Server.SET_GAME_DATA, {
             "distance": float(str(context.get("distance", "0")).replace(",", ".")),
@@ -203,14 +216,13 @@ class ChatServerNew:
         if event_type == "answer":
             user_input = data.get("message", "")
 
-            # ---- UI echo handling ----
             if user_input:
                 self.event_bus.emit(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, {
                     "client_id": client_id,
                     "sender": sender,
-                    "text": user_input,
-                    "message_id": req_id,  # это id входящего сообщения (request)
-                    "origin_message_id": request.get("origin_message_id") or data.get("origin_message_id"),
+                    "text": str(user_input),
+                    "message_id": req_id,                 
+                    "origin_message_id": origin_message_id,
                 })
 
             collected_sys = "\n".join(self.pending_sysinfo.pop(character_id, []))
@@ -227,6 +239,7 @@ class ChatServerNew:
                     "req_id": req_id,
                     "sender": sender,
                     "participants": participants,
+                    "origin_message_id": origin_message_id,
                 }
             }, timeout=5.0)
 
@@ -246,6 +259,7 @@ class ChatServerNew:
                     "sender": sender,
                     "participants": participants,
                     "req_id": req_id,
+                    "origin_message_id": origin_message_id,
                 })
             else:
                 await self._send_aborted_update(client_id, event_type, character_id, reason="Failed to create task", req_id=req_id)
@@ -253,8 +267,11 @@ class ChatServerNew:
         elif event_type == "idle_timeout":
             last_idle_uid = self.last_idle_tasks.get(character_id)
             if last_idle_uid:
-                last_task_result = self.event_bus.emit_and_wait(Events.Task.GET_TASK, {"uid": last_idle_uid}, timeout=1.0)
+                last_task_result = self.event_bus.emit_and_wait(Events.Task.GET_TASK, {
+                    "uid": last_idle_uid
+                }, timeout=1.0)
                 last_task = last_task_result[0] if last_task_result else None
+
                 if last_task and last_task.status == TaskStatus.PENDING:
                     await self.send_task_update(client_id, last_task)
                     return
@@ -272,6 +289,7 @@ class ChatServerNew:
                     "req_id": req_id,
                     "sender": sender,
                     "participants": participants,
+                    "origin_message_id": origin_message_id,
                 }
             }, timeout=5.0)
 
@@ -296,14 +314,19 @@ class ChatServerNew:
                     "sender": sender,
                     "participants": participants,
                     "req_id": req_id,
+                    "origin_message_id": origin_message_id,
                 })
             else:
                 await self._send_aborted_update(client_id, event_type, character_id, reason="Failed to create idle task", req_id=req_id)
+
+        elif event_type == "position_move":
+            logger.info(f"Position move event from {character_id}: {data}")
 
         elif event_type == "system_info":
             msg = data.get("message", "")
             if msg:
                 self.pending_sysinfo.setdefault(character_id, []).append(msg)
+                logger.info(f"Buffered system_info for {character_id}: {msg[:60]}...")
 
             await self.send_json(self.active_connections[client_id], {
                 "type": "info",
@@ -329,6 +352,7 @@ class ChatServerNew:
                     "req_id": req_id,
                     "sender": sender,
                     "participants": participants,
+                    "origin_message_id": origin_message_id,
                 }
             }, timeout=5.0)
 
@@ -347,6 +371,7 @@ class ChatServerNew:
                     "sender": sender,
                     "participants": participants,
                     "req_id": req_id,
+                    "origin_message_id": origin_message_id,
                 })
             else:
                 await self._send_aborted_update(client_id, event_type, character_id, reason="Failed to flush system info", req_id=req_id)
@@ -362,7 +387,9 @@ class ChatServerNew:
                 f"Look duration (seconds): {duration:.1f}",
             ]
             if current_info:
-                react_system_input_lines += ["", "Current game info:", str(current_info)]
+                react_system_input_lines.append("")
+                react_system_input_lines.append("Current game info:")
+                react_system_input_lines.append(str(current_info))
 
             react_system_input = "\n".join(react_system_input_lines)
 
@@ -379,6 +406,7 @@ class ChatServerNew:
                     "duration": duration,
                     "sender": sender,
                     "participants": participants,
+                    "origin_message_id": origin_message_id,
                 }
             }, timeout=5.0)
 
@@ -398,6 +426,7 @@ class ChatServerNew:
                     "sender": sender,
                     "participants": participants,
                     "req_id": req_id,
+                    "origin_message_id": origin_message_id,
                 })
             else:
                 await self._send_aborted_update(client_id, event_type, character_id, reason="Failed to create react task", req_id=req_id)

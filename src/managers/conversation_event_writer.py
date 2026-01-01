@@ -166,6 +166,7 @@ class ConversationEventWriter:
         user_input: str,
         image_data: list[Any],
         req_id: str | None,
+        origin_message_id: str | None,
         assistant_text: str,
         assistant_target: str,
         event_type: str,
@@ -174,20 +175,23 @@ class ConversationEventWriter:
         sender = str(sender or "Player")
         responder_character_id = str(responder_character_id or "").strip()
         assistant_target = str(assistant_target or "Player")
+        origin_message_id = str(origin_message_id or "").strip() or None
 
         pts = self.normalize_participants(participants)
         if responder_character_id and responder_character_id not in pts:
             pts.append(responder_character_id)
 
-        user_event = self._build_user_event_message(
-            speaker=sender,
-            target=responder_character_id,
-            participants=pts,
-            user_input=user_input,
-            image_data=image_data,
-            event_type=event_type,
-            req_id=req_id,
-        )
+        user_event = None
+        if not (sender != "Player" and origin_message_id):
+            user_event = self._build_user_event_message(
+                speaker=sender,
+                target=responder_character_id,
+                participants=pts,
+                user_input=user_input,
+                image_data=image_data,
+                event_type=event_type,
+                req_id=req_id,
+            )
 
         assistant_event = self._build_assistant_event_message(
             speaker=responder_character_id,
