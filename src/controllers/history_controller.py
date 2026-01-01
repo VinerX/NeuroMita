@@ -61,7 +61,19 @@ class HistoryController:
             effective_limit = 1
 
         history_data = character.history_manager.load_history()
-        llm_messages_history: List[Dict[str, Any]] = history_data.get("messages", [])
+        llm_messages_history: List[Dict[str, Any]] = history_data.get("messages", []) or []
+        if not isinstance(llm_messages_history, list):
+            llm_messages_history = []
+
+        # фильтр мусорных user (например " " из старых цепочек)
+        filtered: List[Dict[str, Any]] = []
+        for m in llm_messages_history:
+            if not isinstance(m, dict):
+                continue
+            if m.get("role") == "user" and not self._has_visible_user_text(m.get("content")):
+                continue
+            filtered.append(m)
+        llm_messages_history = filtered
 
         if not disable_compression:
             llm_messages_history = self._process_history_compression(
@@ -72,17 +84,16 @@ class HistoryController:
         history_limited: List[Dict[str, Any]] = llm_messages_history[-effective_limit:]
 
         if missed_messages and save_missed_history:
-            logger.info(
-                f"[HistoryController] Сохраняю {len(missed_messages)} пропущенных сообщений для персонажа {char_id}."
-            )
+            logger.info(f"[HistoryController] Сохраняю {len(missed_messages)} пропущенных сообщений для персонажа {char_id}.")
             character.history_manager.save_missed_history(missed_messages)
 
         if image_cfg.get('enabled', False):
-            history_limited = self._apply_history_image_quality_reduction(
-                history_limited, image_cfg
-            )
+            history_limited = self._apply_history_image_quality_reduction(history_limited, image_cfg)
 
-        return {'history': history_limited}
+        # ключевая часть: подготовка для LLM (без лишних полей + с префиксами speaker/target)
+        history_for_llm = self._sanitize_history_for_llm(character, history_limited)
+
+        return {'history': history_for_llm}
 
     def _decorate_messages_with_character_info(
         self,
@@ -134,9 +145,10 @@ class HistoryController:
             )
             return False
 
+        # backward compat: либо append new_messages, либо overwrite messages
         append_mode = bool(data.get("append", False))
         new_messages: List[Dict[str, Any]] = data.get("new_messages") or []
-        full_messages: List[Dict[str, Any]] = data.get("messages") or []
+        messages: List[Dict[str, Any]] = data.get("messages") or []
 
         try:
             if append_mode:
@@ -145,25 +157,33 @@ class HistoryController:
                 if not isinstance(existing, list):
                     existing = []
 
+                existing_ids = set()
+                for m in existing[-300:]:
+                    if isinstance(m, dict):
+                        mid = str(m.get("message_id") or "")
+                        if mid:
+                            existing_ids.add(mid)
+
                 for m in new_messages:
                     if not isinstance(m, dict):
                         continue
-                    if existing and self._messages_equal_shallow(existing[-1], m):
+                    mid = str(m.get("message_id") or "")
+                    if mid and mid in existing_ids:
                         continue
                     existing.append(m)
+                    if mid:
+                        existing_ids.add(mid)
 
                 character.save_character_state_to_history(existing)
                 logger.debug(f"[HistoryController] История персонажа {char_id} append (+{len(new_messages)}).")
                 return True
 
-            character.save_character_state_to_history(full_messages)
-            logger.debug(f"[HistoryController] История персонажа {char_id} сохранена ({len(full_messages)} сообщений).")
+            character.save_character_state_to_history(messages)
+            logger.debug(f"[HistoryController] История персонажа {char_id} сохранена ({len(messages)} сообщений).")
             return True
-
         except Exception as e:
             logger.error(f"[HistoryController] Ошибка сохранения истории для {char_id}: {e}", exc_info=True)
             return False
-        
 
     def _process_history_compression(
         self,
@@ -484,3 +504,97 @@ class HistoryController:
                 updated_messages.append(msg)
 
         return updated_messages
+    
+    def _apply_llm_prefix(self, role: str, speaker: str, target: str, content):
+        speaker = str(speaker or "Player")
+        target = str(target or "Player")
+
+        prefix = ""
+        if role == "user":
+            if speaker != "Player":
+                if target and target != "Player":
+                    prefix = f"[Собеседник: {speaker} -> {target}] "
+                else:
+                    prefix = f"[Собеседник: {speaker}] "
+        elif role == "assistant":
+            if target and target != "Player":
+                prefix = f"[To: {target}] "
+
+        if not prefix:
+            return content
+
+        if isinstance(content, str):
+            return prefix + content
+
+        if isinstance(content, list):
+            new_chunks = []
+            inserted = False
+            for it in content:
+                if isinstance(it, dict) and it.get("type") == "text" and not inserted:
+                    txt = it.get("text")
+                    if txt is None:
+                        txt = it.get("content", "")
+                    it2 = dict(it)
+                    if "text" in it2:
+                        it2["text"] = prefix + str(txt or "")
+                    else:
+                        it2["content"] = prefix + str(txt or "")
+                    new_chunks.append(it2)
+                    inserted = True
+                else:
+                    new_chunks.append(it)
+            if not inserted:
+                new_chunks.insert(0, {"type": "text", "text": prefix})
+            return new_chunks
+
+        return prefix + str(content)
+
+
+    def _sanitize_history_for_llm(self, character, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Возвращает историю в формате, безопасном для провайдеров:
+        только role/content (+ префиксы по speaker/target для понимания диалога).
+        """
+        if not messages:
+            return []
+
+        owner_id = str(getattr(character, "char_id", "") or "")
+        out: List[Dict[str, Any]] = []
+
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+
+            role = str(m.get("role") or "")
+            if role not in ("user", "assistant", "system", "event"):
+                continue
+
+            content = m.get("content")
+
+            speaker = str(m.get("speaker") or m.get("sender") or ("Player" if role == "user" else owner_id) or "Player")
+            target = str(m.get("target") or "Player")
+
+            content = self._apply_llm_prefix(role, speaker, target, content)
+
+            # sanitize keys: strict role/content only
+            out.append({"role": role, "content": content})
+
+        return out
+
+
+    def _has_visible_user_text(self, content: Any) -> bool:
+        if isinstance(content, str):
+            return bool(content.strip())
+        if isinstance(content, list):
+            for it in content:
+                if not isinstance(it, dict):
+                    continue
+                if it.get("type") == "text":
+                    txt = it.get("text")
+                    if txt is None:
+                        txt = it.get("content", "")
+                    if str(txt or "").strip():
+                        return True
+                if it.get("type") == "image_url":
+                    return True
+        return False
