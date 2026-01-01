@@ -2,6 +2,9 @@ import json
 import logging
 import os
 import datetime
+import base64
+import re
+import uuid
 from main_logger import logger
 from managers.database_manager import DatabaseManager
 
@@ -14,16 +17,64 @@ class HistoryManager:
 
         self.db = DatabaseManager()
 
+    def _save_base64_image_to_disk(self, base64_string: str) -> str:
+        """
+        Сохраняет base64 изображение на диск и возвращает относительный путь.
+        """
+        try:
+            # 1. Парсим заголовок data:image/jpeg;base64,
+            match = re.match(r'data:image/(\w+);base64,(.+)', base64_string)
+            if not match:
+                return base64_string
+
+            ext = match.group(1)
+            img_data_str = match.group(2)
+            if ext == "jpeg": ext = "jpg"
+
+            # [ИЗМЕНЕНИЕ] Папка Histories/<Name>/Images
+            save_dir = os.path.join("Histories", self.character_name, "Images")
+            os.makedirs(save_dir, exist_ok=True)
+
+            filename = f"{uuid.uuid4()}.{ext}"
+            file_path = os.path.join(save_dir, filename)
+
+            img_bytes = base64.b64decode(img_data_str)
+            with open(file_path, "wb") as f:
+                f.write(img_bytes)
+
+            logger.info(f"Image saved: {file_path}")
+            return file_path
+
+        except Exception as e:
+            logger.error(f"Failed to save base64 image to disk: {e}")
+            return base64_string
+
+    def _image_file_to_base64(self, file_path: str) -> str:
+        """
+        Читает локальный файл и превращает обратно в data:image/...;base64
+        Нужно для обратной совместимости при загрузке истории.
+        """
+        try:
+            if not os.path.exists(file_path):
+                logger.warning(f"Image file not found: {file_path}")
+                return file_path  # Возвращаем путь, если файл потерян, чтобы не крашить
+
+            # Определяем расширение
+            ext = os.path.splitext(file_path)[1].replace(".", "").lower()
+            if ext == "jpg": ext = "jpeg"
+
+            with open(file_path, "rb") as f:
+                encoded_string = base64.b64encode(f.read()).decode('utf-8')
+
+            return f"data:image/{ext};base64,{encoded_string}"
+        except Exception as e:
+            logger.error(f"Error converting file to base64: {e}")
+            return file_path
+
     def _prepare_message_for_db(self, role: str, raw_content, raw_meta=None) -> tuple[str, str | None]:
-        """
-        Преобразует контент и метаданные для записи в БД.
-        - Если content - строка: пишет как есть.
-        - Если content - список (мультимодальный): извлекает текст в content, остальное в meta_data.
-        """
         db_content = ""
         meta_dict = {}
 
-        # 1. Загружаем существующую метадату (если есть)
         if raw_meta:
             if isinstance(raw_meta, str):
                 try:
@@ -33,49 +84,51 @@ class HistoryManager:
             elif isinstance(raw_meta, dict):
                 meta_dict = raw_meta.copy()
 
-        # 2. Обрабатываем контент
         if isinstance(raw_content, str):
             db_content = raw_content
 
         elif isinstance(raw_content, list):
-            # Это мультимодальный список [{'type': 'text', ...}, {'type': 'image_url', ...}]
             text_parts = []
             other_parts = []
 
             for item in raw_content:
                 if isinstance(item, dict):
-                    if item.get("type") == "text":
+                    item_type = item.get("type")
+                    if item_type == "text":
                         text_parts.append(item.get("text", ""))
+                    elif item_type == "image_url":
+                        image_url_dict = item.get("image_url", {})
+                        url_str = image_url_dict.get("url", "")
+
+                        if url_str.startswith("data:image"):
+                            # Сохраняем файл на диск
+                            saved_path = self._save_base64_image_to_disk(url_str)
+                            new_item = item.copy()
+                            new_item["image_url"] = image_url_dict.copy()
+                            new_item["image_url"]["url"] = saved_path
+                            other_parts.append(new_item)
+                        else:
+                            other_parts.append(item)
                     else:
-                        # Картинки и прочее сохраняем для метадаты
                         other_parts.append(item)
 
-            # Собираем весь текст в одну строку для БД (чтобы было читаемо и искалось)
             db_content = "\n".join(text_parts)
-
-            # Если были нетекстовые части, сохраняем их в мету
             if other_parts:
                 meta_dict["multimodal_parts"] = other_parts
-
-            # Маркер, что это был список, чтобы при загрузке восстановить формат списка
-            # даже если там был только текст (как в твоем логе)
             meta_dict["is_multimodal_list"] = True
 
         elif isinstance(raw_content, dict):
-            # Редкий кейс, если контент словарь - просто дампаем
             db_content = json.dumps(raw_content, ensure_ascii=False)
-
         else:
             db_content = str(raw_content) if raw_content is not None else ""
 
-        # 3. Сериализуем метадату
         db_meta = json.dumps(meta_dict, ensure_ascii=False) if meta_dict else None
-
         return db_content, db_meta
 
     def _reconstruct_message_from_db(self, role, db_content, db_meta_raw):
         """
-        Восстанавливает исходную структуру сообщения из БД.
+        Восстановление ИЗ БАЗЫ для API (Path -> Base64).
+        Строго фильтрует ключи.
         """
         meta = {}
         if db_meta_raw:
@@ -86,36 +139,70 @@ class HistoryManager:
 
         content = db_content
 
-        # Если это было мультимодальное сообщение (список), восстанавливаем список
+        # Проверяем флаги мультимодальности
         if meta.get("is_multimodal_list", False) or meta.get("multimodal_parts"):
             reconstructed_list = []
 
-            # 1. Добавляем текстовую часть (которую мы хранили в колонке content)
+            # 1. Текст
             if db_content:
-                reconstructed_list.append({"type": "text", "text": db_content})
+                reconstructed_list.append({"type": "text", "text": str(db_content)})
 
-            # 2. Добавляем остальные части (картинки и т.д.)
+            # 2. Мультимедиа части
             if "multimodal_parts" in meta:
-                reconstructed_list.extend(meta["multimodal_parts"])
+                parts = meta["multimodal_parts"]
+                for part in parts:
+                    part_type = part.get("type")
+
+                    if part_type == "image_url":
+                        url = part.get("image_url", {}).get("url", "")
+
+                        # Логика восстановления Base64
+                        final_url = url
+                        is_local = part.get("is_local_file", False)
+
+                        # Если помечено как локальный или не похоже на http/data
+                        if is_local or (url and not url.startswith("http") and not url.startswith("data:")):
+                            final_url = self._image_file_to_base64(url)
+
+                        # [ВАЖНО] Создаем ЧИСТЫЙ словарь для API.
+                        # Никаких лишних полей типа 'is_local_file' здесь быть не должно.
+                        clean_part = {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": final_url
+                            }
+                        }
+                        # Если API поддерживает detail, можно добавить, но лучше не рисковать лишним
+                        if "detail" in part.get("image_url", {}):
+                            clean_part["image_url"]["detail"] = part["image_url"]["detail"]
+
+                        reconstructed_list.append(clean_part)
+
+                    elif part_type == "text":
+                        # На случай если текст попал в parts
+                        reconstructed_list.append({
+                            "type": "text",
+                            "text": part.get("text", "")
+                        })
+                    else:
+                        # Неизвестные типы пропускаем или добавляем как есть, но очищая от мусора
+                        # Для безопасности лучше пропускать, если API строгое
+                        pass
 
             content = reconstructed_list
-
-            # Чистим служебные поля из меты перед отдачей в программу (опционально)
-            # meta.pop("multimodal_parts", None)
-            # meta.pop("is_multimodal_list", None)
 
         msg = {
             "role": role,
             "content": content
         }
 
-        # Вливаем остальные поля метадаты (например, image пути из старой версии)
+        # Восстанавливаем остальные поля метадаты (например, имя пользователя если есть),
+        # но фильтруем служебные поля DB
         for k, v in meta.items():
-            if k not in ["multimodal_parts", "is_multimodal_list"]:
+            if k not in ["multimodal_parts", "is_multimodal_list", "image"]:
                 msg[k] = v
 
         return msg
-
     def load_history(self):
         conn = self.db.get_connection()
         cursor = conn.cursor()
@@ -129,6 +216,7 @@ class HistoryManager:
             except:
                 variables[row[0]] = row[1]
 
+
         # 2. Сообщения
         cursor.execute('''
             SELECT role, content, meta_data, timestamp 
@@ -139,11 +227,11 @@ class HistoryManager:
 
         messages = []
         for row in cursor.fetchall():
-            role = row[0]
-            db_content = row[1]
-            db_meta = row[2]
+            db_timestamp = row[3]
 
-            msg = self._reconstruct_message_from_db(role, db_content, db_meta)
+            msg = self._reconstruct_message_from_db(row[0], row[1], row[2])
+
+            msg["time"] = db_timestamp if db_timestamp else ""
             messages.append(msg)
 
         conn.close()
@@ -156,9 +244,6 @@ class HistoryManager:
         }
 
     def save_history(self, data):
-        """
-        Режим ПОЛНОЙ ПЕРЕЗАПИСИ активной истории.
-        """
         messages = data.get("messages", [])
         variables = data.get("variables", {})
 
@@ -166,7 +251,6 @@ class HistoryManager:
         cursor = conn.cursor()
 
         try:
-            # 1. Сохраняем переменные
             for k, v in variables.items():
                 val_str = json.dumps(v, ensure_ascii=False)
                 cursor.execute('''
@@ -174,24 +258,21 @@ class HistoryManager:
                     ON CONFLICT(character_id, key) DO UPDATE SET value=excluded.value
                 ''', (self.storage_key, k, val_str))
 
-            # 2. Перезаписываем сообщения
             cursor.execute('DELETE FROM history WHERE character_id = ? AND is_active = 1', (self.storage_key,))
 
             for msg in messages:
                 raw_content = msg.get("content")
 
-                # Извлекаем спец поля типа image во временную мету
                 temp_meta = {}
                 if "image" in msg:
                     temp_meta["image"] = msg["image"]
 
-                # Подготовка данных (разделение текста и структуры)
                 db_content, db_meta = self._prepare_message_for_db(msg.get("role"), raw_content, temp_meta)
 
                 cursor.execute('''
                     INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
                     VALUES (?, ?, ?, 1, ?, ?)
-                ''', (self.storage_key, msg.get("role"), db_content, db_meta, datetime.datetime.now().isoformat()))
+                ''', (self.storage_key, msg.get("role"), db_content, db_meta, datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
 
             conn.commit()
         except Exception as e:
@@ -200,14 +281,10 @@ class HistoryManager:
             conn.close()
 
     def add_message(self, message: dict):
-        """
-        Точечное добавление сообщения.
-        """
         conn = self.db.get_connection()
         cursor = conn.cursor()
 
         raw_content = message.get("content")
-
         temp_meta = {}
         if "image" in message:
             temp_meta["image"] = message["image"]
@@ -217,7 +294,7 @@ class HistoryManager:
         cursor.execute('''
             INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
             VALUES (?, ?, ?, 1, ?, ?)
-        ''', (self.storage_key, message.get("role"), db_content, db_meta, datetime.datetime.now().isoformat()))
+        ''', (self.storage_key, message.get("role"), db_content, db_meta, datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
 
         conn.commit()
         conn.close()
@@ -239,7 +316,6 @@ class HistoryManager:
             os.makedirs(backup_dir, exist_ok=True)
             timestamp = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M")
             dst_db = os.path.join(backup_dir, f"world_backup_{timestamp}.db")
-
             conn = self.db.get_connection()
             conn.execute(f"VACUUM INTO '{dst_db}'")
             conn.close()
@@ -251,7 +327,6 @@ class HistoryManager:
         conn = self.db.get_connection()
         cursor = conn.cursor()
         for msg in missed_messages:
-
             raw_content = msg.get("content")
             temp_meta = {}
             if "image" in msg:
@@ -262,7 +337,7 @@ class HistoryManager:
             cursor.execute('''
                 INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
                 VALUES (?, ?, ?, 0, ?, ?)
-            ''', (self.storage_key, msg.get("role"), db_content, db_meta, datetime.datetime.now().isoformat()))
+            ''', (self.storage_key, msg.get("role"), db_content, db_meta, datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
         conn.commit()
         conn.close()
 
@@ -277,10 +352,6 @@ class HistoryManager:
         return {"fixed_parts": [], "messages": [], "variables": {}}
 
     def get_messages_for_compression(self, num_messages: int) -> list[dict]:
-        """
-        Возвращает старые сообщения для сжатия и помечает их is_active=0.
-        """
-        # Загружаем полную историю, чтобы вернуть объекты в правильном формате (восстановленные из меты)
         full_hist = self.load_history()
         messages = full_hist.get("messages", [])
 
@@ -289,7 +360,6 @@ class HistoryManager:
 
         messages_to_compress = messages[:num_messages]
 
-        # Теперь скрываем их в БД по ID
         conn = self.db.get_connection()
         cursor = conn.cursor()
 
@@ -311,7 +381,6 @@ class HistoryManager:
             conn.commit()
 
         conn.close()
-
         logger.info(f"Archived {len(messages_to_compress)} messages for compression.")
         return messages_to_compress
 

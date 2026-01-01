@@ -33,7 +33,7 @@ class MemoryManager:
 
     def add_memory(self, content, date=None, priority="Normal", memory_type="fact"):
         if date is None:
-            date = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M")
+            date = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
         conn = self.db.get_connection()
         cursor = conn.cursor()
@@ -80,12 +80,12 @@ class MemoryManager:
             cursor.execute('''
                 UPDATE memories SET content = ?, priority = ?, date_created = ?
                 WHERE character_id = ? AND eternal_id = ?
-            ''', (content, priority, datetime.datetime.now().strftime("%d.%m.%Y_%H.%M"), self.character_name, number))
+            ''', (content, priority, datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"), self.character_name, number))
         else:
             cursor.execute('''
                 UPDATE memories SET content = ?, date_created = ?
                 WHERE character_id = ? AND eternal_id = ?
-            ''', (content, datetime.datetime.now().strftime("%d.%m.%Y_%H.%M"), self.character_name, number))
+            ''', (content, datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"), self.character_name, number))
 
         conn.commit()
         conn.close()
