@@ -1,0 +1,35 @@
+LOG "PersonalitySelector: Script started. attitude=" + attitude + ", secretExposed=" + secretExposed + ", PlayingFirst=" + PlayingFirst + ", secretExposedFirst=" + secretExposedFirst
+IF (attitude <= 10 OR secretExposed == True) THEN
+    IF secretExposedFirst == False THEN
+        LOG "PersonalitySelector: Condition for CRAZY mode met for the FIRST TIME. Revealing secret."
+        SET secretExposed = True      
+        SET secretExposedFirst = True 
+        SET available_action_level = 2
+        LOG "PersonalitySelector: Switched to Crazy mode. secretExposed=True, secretExposedFirst=True, available_action_level=2."
+    ELSE
+        LOG "PersonalitySelector: Already in CRAZY mode (or secret was exposed externally)."
+        SET available_action_level = 2 
+        LOG "PersonalitySelector: Maintaining Crazy mode. available_action_level=2."
+    ENDIF
+	
+    RETURN LOAD "Main/mainCrazy.txt"
+ENDIF
+IF attitude < 40 AND secretExposed == False AND PlayingFirst == False THEN
+    LOG "PersonalitySelector: Condition for PLAYING mode met. (Attitude < 40, not secretExposed, not PlayingFirst)."
+    SET PlayingFirst = True 
+    SET available_action_level = 1 
+    LOG "PersonalitySelector: Switched to Playing mode. PlayingFirst=True, available_action_level=1."
+    RETURN LOAD "Main/mainPlaying.txt"
+ENDIF
+IF PlayingFirst == True AND secretExposed == False THEN
+    LOG "PersonalitySelector: Already in PlayingFirst mode and not secretExposed. Using mainPlaying."
+    SET available_action_level = 1 
+    LOG "PersonalitySelector: Maintaining Playing mode. available_action_level=1."
+    RETURN LOAD "Main/mainPlaying.txt"
+ENDIF
+LOG "PersonalitySelector: Defaulting to normal mode (main.txt)."
+SET available_action_level = 1
+LOG "PersonalitySelector: Switched to Default mode. available_action_level=1."
+
+
+RETURN LOAD "Main/main.txt"
