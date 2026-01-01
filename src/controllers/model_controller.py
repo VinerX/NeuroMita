@@ -15,6 +15,8 @@ from main_logger import logger
 from managers.api_preset_resolver import ApiPresetResolver
 from managers.game_state_manager import GameState
 from managers.context_counter import ContextCounter
+from managers.conversation_event_writer import ConversationEventWriter
+from managers.history_ui_projector import HistoryUiProjector
 
 
 class ModelController:
@@ -49,7 +51,9 @@ class ModelController:
         self.game_state = GameState()
         self._temporary_system_infos: list[dict] = []
 
-        # legacy compatibility (ChatModel держит ссылки на персонажей)
+        self.event_writer = ConversationEventWriter(character_ref_resolver=self._get_character_ref)
+        self.ui_projector = HistoryUiProjector(resolve_name=lambda cid: str(getattr(self._get_character_ref(cid), "name", "") or cid))
+
         self._refresh_chat_model_character_refs()
 
         self._subscribe_to_events()
@@ -431,11 +435,7 @@ class ModelController:
         if not isinstance(all_messages, list):
             all_messages = []
 
-        prepared: list[dict] = []
-        for m in all_messages:
-            mm = self._ui_wrap_history_message(m)
-            if mm is not None:
-                prepared.append(mm)
+        prepared = self.ui_projector.project_for_ui(all_messages)
 
         self.total_messages_in_history = len(prepared)
 
@@ -496,12 +496,7 @@ class ModelController:
             if not isinstance(all_messages, list):
                 all_messages = []
 
-            prepared: list[dict] = []
-            for m in all_messages:
-                mm = self._ui_wrap_history_message(m)
-                if mm is not None:
-                    prepared.append(mm)
-
+            prepared = self.ui_projector.project_for_ui(all_messages)
             self.total_messages_in_history = len(prepared)
 
             end_index = self.total_messages_in_history - self.loaded_messages_offset
@@ -590,39 +585,36 @@ class ModelController:
         event_type = (data.get("event_type") or "chat") or "chat"
 
         sender = str(data.get("sender") or "Player")
-        participants = self._normalize_participants(data.get("participants") or [])
+        participants = data.get("participants") or []
 
         preset_id_override = data.get("preset_id", None)
         character_id_override = self._normalize_character_id_from_data(data)
 
-        # task_uid в твоём пайплайне приходит как message_id (для outgoing)
-        base_out_id = str(data.get("message_id") or "") or None
-        base_in_id = (f"in:{base_out_id}" if base_out_id else None)
+        req_id = str(data.get("req_id") or "") or None
+        task_uid = str(data.get("message_id") or "") or None  # у тебя сюда прилетает task_uid
 
-        # resolve character
         char = None
         if character_id_override:
             char = self._get_character_ref(str(character_id_override))
             if char is None:
                 logger.error(f"GENERATE_RESPONSE: неизвестный character_id='{character_id_override}' (нет фолбэка на current).")
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": _("Неизвестный персонаж.", "Unknown character.")})
+                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                    "error": _("Неизвестный персонаж.", "Unknown character.")
+                })
                 return None
         else:
             char = self._get_current_character_ref()
 
         if not char:
             logger.error("Генерация невозможна: персонаж не выбран.")
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": _("Персонаж не выбран.", "Character not selected.")})
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                "error": _("Персонаж не выбран.", "Character not selected.")
+            })
             return None
 
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
 
-        # гарантируем, что отвечающий персонаж входит в participants (для fanout)
-        if char_id and char_id not in participants:
-            participants = participants + [char_id]
-
-        # compress branch
         if event_type == "compress":
             messages = []
             if system_input:
@@ -641,7 +633,6 @@ class ModelController:
                 logger.error(f"Ошибка при сжатии истории: {e}", exc_info=True)
                 return None
 
-        # game_state + temp infos
         game_state = self.game_state.to_prompt_dict()
 
         extra_system_infos = list(self._temporary_system_infos or [])
@@ -672,7 +663,6 @@ class ModelController:
         is_game_master = (char_id == "GameMaster")
         disable_history_compression = bool(data.get("disable_history_compression", False))
 
-        # build prompt
         try:
             prompt_res = self.event_bus.emit_and_wait(
                 Events.Prompt.BUILD_PROMPT,
@@ -698,12 +688,16 @@ class ModelController:
             )
         except Exception as e:
             logger.error(f"Ошибка при BUILD_PROMPT: {e}", exc_info=True)
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": _("Не удалось сформировать промпт.", "Failed to build prompt.")})
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                "error": _("Не удалось сформировать промпт.", "Failed to build prompt.")
+            })
             return None
 
         if not prompt_res or not isinstance(prompt_res[0], dict):
             logger.error("BUILD_PROMPT не вернул валидный результат")
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": _("Не удалось сформировать промпт.", "Failed to build prompt.")})
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                "error": _("Не удалось сформировать промпт.", "Failed to build prompt.")
+            })
             return None
 
         prompt_data = prompt_res[0]
@@ -712,7 +706,6 @@ class ModelController:
         if event_type == "chat":
             self._cache_base_prompt(char_id, "chat", combined_messages)
 
-        # preset routing (как было)
         preset_id: Optional[int] = None
 
         def _is_current_label(label: str | None) -> bool:
@@ -756,7 +749,9 @@ class ModelController:
             raw_text = self.model.generate(combined_messages, stream_callback=use_stream_cb, preset_id=preset_id)
 
             if not raw_text:
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": _("Не удалось получить ответ.", "Text generation failed.")})
+                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                    "error": _("Не удалось получить ответ.", "Text generation failed.")
+                })
                 return None
 
             processed = char.process_response_nlp_commands(raw_text, self.settings.get("SAVE_MISSED_MEMORY", False))
@@ -777,31 +772,19 @@ class ModelController:
                     final_text
                 )
 
-            # ---- SAVE HISTORY (полный диалог в каждый файл участников) ----
             if event_type != "react":
-                user_event = self._build_user_event_message(
-                    speaker=sender,
-                    target=char_id,  # кому адресовали вход
+                self.event_writer.write_turn(
+                    responder_character_id=char_id,
+                    sender=sender,
                     participants=participants,
                     user_input=user_input,
                     image_data=image_data,
+                    req_id=req_id,
+                    assistant_text=final_text,
+                    assistant_target=target,
                     event_type=event_type,
-                    base_id=base_in_id,
+                    task_uid=task_uid,
                 )
-
-                assistant_event = self._build_assistant_event_message(
-                    speaker=char_id,
-                    target=target,
-                    participants=participants,
-                    final_text=final_text,
-                    event_type=event_type,
-                    base_id=base_out_id,
-                )
-
-                # fanout: пишем в историю всех участников
-                if user_event is not None:
-                    self._fanout_event(user_event, participants)
-                self._fanout_event(assistant_event, participants)
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
