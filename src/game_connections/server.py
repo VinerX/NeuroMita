@@ -205,20 +205,13 @@ class ChatServerNew:
 
             # ---- UI echo handling ----
             if user_input:
-                if sender != "Player":
-                    last = self._last_sent_dialogue_text.get((str(client_id), str(sender)))
-                    if isinstance(last, str) and last.strip() == str(user_input).strip():
-                        user_input = ""
-
-                if user_input:
-                    ui_role = "user" if sender == "Player" else "assistant"
-                    self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
-                        "role": ui_role,
-                        "response": user_input,
-                        "is_initial": False,
-                        "emotion": "",
-                        "speaker_name": ("" if sender == "Player" else sender),
-                    })
+                self.event_bus.emit(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, {
+                    "client_id": client_id,
+                    "sender": sender,
+                    "text": user_input,
+                    "message_id": req_id,  # это id входящего сообщения (request)
+                    "origin_message_id": request.get("origin_message_id") or data.get("origin_message_id"),
+                })
 
             collected_sys = "\n".join(self.pending_sysinfo.pop(character_id, []))
 

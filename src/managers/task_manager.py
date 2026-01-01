@@ -70,24 +70,36 @@ class TaskManager:
             
             return task
     
-    def update_task_status(self, uid: str, status: TaskStatus, result: Optional[Dict[str, Any]] = None, error: Optional[str] = None) -> Optional[Task]:
+    def update_task_status(
+        self,
+        uid: str,
+        status: TaskStatus,
+        result: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None
+    ) -> Optional[Task]:
         with self._lock:
             if uid not in self._tasks:
                 logger.error(f"Task {uid} not found")
                 return None
-                
+
             task = self._tasks[uid]
             task.status = status
             task.updated_at = time.time()
-            
-            if result:
-                task.result = result
-            if error:
+
+            if result is not None:
+                if isinstance(result, dict):
+                    if task.result is None or not isinstance(task.result, dict):
+                        task.result = {}
+                    task.result.update(result)
+                else:
+                    task.result = result
+
+            if error is not None:
                 task.error = error
-                
+
             logger.info(f"Updated task {uid} status to {status.value}")
             return task
-    
+
     def get_task(self, uid: str) -> Optional[Task]:
         with self._lock:
             return self._tasks.get(uid)

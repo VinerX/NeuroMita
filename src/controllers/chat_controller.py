@@ -188,7 +188,11 @@ class ChatController:
                         if task_uid:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
-                                "status": TaskStatus.VOICING
+                                "status": TaskStatus.VOICING,
+                                "result": {
+                                    "response": response_text,
+                                    "target": target,
+                                }
                             })
 
                         speaker = voice_profile.get("silero_command", "")

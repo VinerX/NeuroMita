@@ -1,7 +1,97 @@
 # File: src/controllers/server_controller.py
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Tuple
+from collections import deque
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
+
+from managers.task_manager import TaskStatus
+
+
+class ServerEchoSuppressor:
+    """
+    Подавляет "эхо" при NPC->NPC цепочке:
+    Unity пересылает предыдущий ответ как user_input следующей задаче.
+    Мы не хотим показывать это как отдельное сообщение в Python GUI.
+
+    Надежно работает по origin_message_id (message_id предыдущего ответа).
+    Если origin_message_id не приходит, использует fallback по last_text.
+    """
+
+    def __init__(self, max_out_ids_per_speaker: int = 200, max_seen_in_ids: int = 500):
+        self._out_ids: dict[Tuple[str, str], deque[str]] = {}
+        self._out_text: dict[Tuple[str, str], str] = {}
+        self._seen_in_ids: dict[str, deque[str]] = {}
+        self._max_out_ids = int(max_out_ids_per_speaker)
+        self._max_seen_in = int(max_seen_in_ids)
+
+    def register_outgoing(self, client_id: str, speaker: str, message_id: str, text: str):
+        client_id = str(client_id or "")
+        speaker = str(speaker or "")
+        message_id = str(message_id or "")
+        text = str(text or "")
+
+        if not client_id or not speaker or not message_id:
+            return
+
+        key = (client_id, speaker)
+        dq = self._out_ids.get(key)
+        if dq is None:
+            dq = deque(maxlen=self._max_out_ids)
+            self._out_ids[key] = dq
+
+        dq.append(message_id)
+        if text.strip():
+            self._out_text[key] = text.strip()
+
+    def _seen_in(self, client_id: str) -> deque[str]:
+        client_id = str(client_id or "")
+        dq = self._seen_in_ids.get(client_id)
+        if dq is None:
+            dq = deque(maxlen=self._max_seen_in)
+            self._seen_in_ids[client_id] = dq
+        return dq
+
+    def should_echo_incoming(
+        self,
+        *,
+        client_id: str,
+        sender: str,
+        text: str,
+        incoming_message_id: Optional[str] = None,
+        origin_message_id: Optional[str] = None,
+    ) -> bool:
+        client_id = str(client_id or "")
+        sender = str(sender or "")
+        text = str(text or "")
+
+        if not client_id:
+            return True
+
+        # дедуп входящих по message_id (req_id)
+        if incoming_message_id:
+            seen = self._seen_in(client_id)
+            if incoming_message_id in seen:
+                return False
+            seen.append(incoming_message_id)
+
+        # Player всегда показываем
+        if sender == "Player":
+            return True
+
+        # 1) строгий путь: origin_message_id совпал с уже показанным outgoing id этого sender
+        if origin_message_id:
+            key = (client_id, sender)
+            dq = self._out_ids.get(key)
+            if dq and origin_message_id in dq:
+                return False
+
+        # 2) fallback: текст равен последнему outgoing тексту этого sender
+        key = (client_id, sender)
+        last = self._out_text.get(key, "")
+        if last and last == text.strip():
+            return False
+
+        return True
 
 
 class ServerController:
@@ -12,7 +102,9 @@ class ServerController:
         self.ConnectedToGame = False
         self._destroyed = False
 
-        self.settings_to_send = ['ACTION_MENU', 'MITAS_MENU', 'IGNORE_GAME_REQUESTS', 'GAME_BLOCK_LEVEL','CHARACTER']
+        self.settings_to_send = ['ACTION_MENU', 'MITAS_MENU', 'IGNORE_GAME_REQUESTS', 'GAME_BLOCK_LEVEL', 'CHARACTER']
+
+        self.echo_suppressor = ServerEchoSuppressor()
 
         self._subscribe_to_events()
         self._init_server()
@@ -25,6 +117,12 @@ class ServerController:
         self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
         self.event_bus.subscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings, weak=False)
 
+        # Новый поток: сервер просит "показать входящее сообщение" -> решаем тут
+        self.event_bus.subscribe(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, self._on_echo_chat_message_requested, weak=False)
+
+        # Регистрируем outgoing ответы для подавления эха по origin_message_id
+        self.event_bus.subscribe(Events.Task.TASK_STATUS_CHANGED, self._on_task_status_changed, weak=False)
+
     def _unsubscribe_from_events(self):
         if self.event_bus and not self._destroyed:
             self.event_bus.unsubscribe(Events.Server.STOP_SERVER, self._on_stop_server)
@@ -34,6 +132,9 @@ class ServerController:
             self.event_bus.unsubscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed)
             self.event_bus.unsubscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings)
 
+            self.event_bus.unsubscribe(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, self._on_echo_chat_message_requested)
+            self.event_bus.unsubscribe(Events.Task.TASK_STATUS_CHANGED, self._on_task_status_changed)
+
     def _init_server(self):
         from game_connections.server import ChatServerNew
         self.server = ChatServerNew()
@@ -42,7 +143,6 @@ class ServerController:
         self.start_server()
 
     def _apply_initial_settings(self):
-        # Применяем рантайм-флаги на сервер для блокировок
         try:
             ignore_game_requests_value = self._get_setting('IGNORE_GAME_REQUESTS', False)
             self.server.set_ignore_game_requests(bool(ignore_game_requests_value))
@@ -108,9 +208,9 @@ class ServerController:
             return
         self.ConnectedToGame = is_connected
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
-        
+
         self.event_bus.emit(Events.Settings.SAVE_SETTING, {
-            'key': 'GAME_CONNECTED', 
+            'key': 'GAME_CONNECTED',
             'value': is_connected
         })
 
@@ -142,7 +242,6 @@ class ServerController:
         key = event.data.get('key')
         value = event.data.get('value')
 
-        # Рантайм-флаги для логики блокировок
         if key == 'IGNORE_GAME_REQUESTS':
             self.server.set_ignore_game_requests(bool(value))
         elif key == 'GAME_BLOCK_LEVEL':
@@ -171,9 +270,7 @@ class ServerController:
         for setting in self.settings_to_send:
             settings[str(setting)] = self._get_setting(setting)
 
-        return {
-            "settings": settings
-        }
+        return {"settings": settings}
 
     def _get_setting(self, key: str, default=None):
         try:
@@ -182,7 +279,62 @@ class ServerController:
                 {'key': key, 'default': default},
                 timeout=1.0
             )
-            
             return result[0] if result else default
         except Exception:
             return default
+
+    def _on_task_status_changed(self, event: Event):
+        data = event.data or {}
+        task = data.get("task")
+        if not task or not getattr(task, "data", None):
+            return
+
+        # регистрируем outgoing по (client_id, speaker=character) -> task.uid
+        try:
+            client_id = str(task.data.get("client_id") or "")
+            speaker = str(task.data.get("character") or "")
+            if not client_id or not speaker:
+                return
+            if task.status != TaskStatus.SUCCESS:
+                return
+
+            result = getattr(task, "result", None) or {}
+            text = result.get("response") if isinstance(result, dict) else ""
+            message_id = str(getattr(task, "uid", "") or "")
+
+            if message_id:
+                self.echo_suppressor.register_outgoing(client_id, speaker, message_id, str(text or ""))
+        except Exception:
+            return
+
+    def _on_echo_chat_message_requested(self, event: Event):
+        if self._destroyed:
+            return
+
+        p = event.data or {}
+        client_id = str(p.get("client_id") or "")
+        sender = str(p.get("sender") or "Player")
+        text = str(p.get("text") or "")
+        incoming_message_id = p.get("message_id")
+        origin_message_id = p.get("origin_message_id")
+
+        if not text.strip():
+            return
+
+        if not self.echo_suppressor.should_echo_incoming(
+            client_id=client_id,
+            sender=sender,
+            text=text,
+            incoming_message_id=str(incoming_message_id) if incoming_message_id else None,
+            origin_message_id=str(origin_message_id) if origin_message_id else None,
+        ):
+            return
+
+        ui_role = "user" if sender == "Player" else "assistant"
+        self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
+            "role": ui_role,
+            "response": text,
+            "is_initial": False,
+            "emotion": "",
+            "speaker_name": ("" if sender == "Player" else sender),
+        })
