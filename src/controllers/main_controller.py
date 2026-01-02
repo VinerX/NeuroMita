@@ -20,6 +20,7 @@ from controllers.prompt_controller import PromptController
 from controllers.history_controller import HistoryController
 from controllers.voice_model_controller import VoiceModelController
 from controllers.install_controller import InstallController
+from controllers.embedding_controller import EmbeddingController
 
 from main_logger import logger
 from utils.ffmpeg_installer import install_ffmpeg
@@ -101,6 +102,9 @@ class MainController:
         
         self.model_controller = ModelController(self.settings, self.pip_installer)
         logger.notify("ModelController успешно инициализирован.")
+
+        self.embedding_controller = EmbeddingController()
+        logger.notify("EmbeddingController успешно инициализирован.")
 
         self.capture_controller = CaptureController(self.settings)
         logger.notify("CaptureController успешно инициализирован.")

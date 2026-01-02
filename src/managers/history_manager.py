@@ -17,7 +17,13 @@ class HistoryManager:
         self.storage_key = self.character_id or self.character_name
 
         self.db = DatabaseManager()
-        self.rag = RAGManager(self.storage_key)
+
+        # RAG опционален: любые проблемы не должны ломать основную логику
+        try:
+            self.rag = RAGManager(self.storage_key)
+        except Exception as e:
+            logger.warning(f"RAGManager init failed (RAG disabled for this session): {e}", exc_info=True)
+            self.rag = None
 
     def _save_base64_image_to_disk(self, base64_string: str) -> str:
         """
@@ -252,18 +258,28 @@ class HistoryManager:
         conn = self.db.get_connection()
         cursor = conn.cursor()
 
+        # Сюда собираем (row_id, text) и обновляем эмбеддинги ПОСЛЕ commit/close
+        pending_embeddings: list[tuple[int, str]] = []
+
         try:
             # 1. Переменные
             for k, v in variables.items():
                 val_str = json.dumps(v, ensure_ascii=False)
-                cursor.execute('''
-                      INSERT INTO variables (character_id, key, value) VALUES(?, ?, ?)
-                      ON CONFLICT(character_id, key) DO UPDATE SET value=excluded.value
-                  ''', (self.storage_key, k, val_str))
+                cursor.execute(
+                    '''
+                    INSERT INTO variables (character_id, key, value) VALUES(?, ?, ?)
+                    ON CONFLICT(character_id, key) DO UPDATE SET value=excluded.value
+                    ''',
+                    (self.storage_key, k, val_str)
+                )
 
             # 2. История
-            # Удаляем активные, чтобы перезаписать актуальным состоянием
-            cursor.execute('DELETE FROM history WHERE character_id = ? AND is_active = 1', (self.storage_key,))
+            cursor.execute(
+                'DELETE FROM history WHERE character_id = ? AND is_active = 1',
+                (self.storage_key,)
+            )
+
+            now_ts = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
             for msg in messages:
                 raw_content = msg.get("content")
@@ -274,29 +290,36 @@ class HistoryManager:
 
                 db_content, db_meta = self._prepare_message_for_db(msg.get("role"), raw_content, temp_meta)
 
-                # Вставляем сообщение
-                cursor.execute('''
-                      INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
-                      VALUES (?, ?, ?, 1, ?, ?)
-                  ''', (self.storage_key, msg.get("role"), db_content, db_meta,
-                        datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
+                cursor.execute(
+                    '''
+                    INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
+                    VALUES (?, ?, ?, 1, ?, ?)
+                    ''',
+                    (self.storage_key, msg.get("role"), db_content, db_meta, now_ts)
+                )
 
-                # [ИСПРАВЛЕНИЕ] Сразу генерируем вектор для вставленной строки!
                 new_row_id = cursor.lastrowid
                 if new_row_id and db_content:
-                    # Важно: это синхронный вызов. При сохранении большой истории может быть микро-фриз,
-                    # но зато данные будут целостными.
-                    # Если RAGManager инициализирован корректно, он обновит запись.
-                    try:
-                        self.rag.update_history_embedding(new_row_id, str(db_content))
-                    except Exception as e:
-                        logger.error(f"Failed to update embedding inside save_history: {e}")
+                    pending_embeddings.append((int(new_row_id), str(db_content)))
 
             conn.commit()
+
         except Exception as e:
             logger.error(f"DB Error saving history: {e}", exc_info=True)
+
         finally:
             conn.close()
+
+        # ВАЖНО: эмбеддинги обновляем после commit/close, чтобы не было self-deadlock по SQLite
+        if not pending_embeddings or not self.rag:
+            return
+
+        for row_id, text in pending_embeddings:
+            try:
+                self.rag.update_history_embedding(row_id, text)
+            except Exception as e:
+                # Не валим сохранение/генерацию из-за RAG
+                logger.warning(f"RAG failed to update history embedding (ignored): {e}", exc_info=True)
 
     def add_message(self, message: dict):
         conn = self.db.get_connection()
@@ -309,19 +332,29 @@ class HistoryManager:
 
         db_content, db_meta = self._prepare_message_for_db(message.get("role"), raw_content, temp_meta)
 
-        cursor.execute('''
+        cursor.execute(
+            '''
             INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
             VALUES (?, ?, ?, 1, ?, ?)
-        ''', (self.storage_key, message.get("role"), db_content, db_meta, datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
+            ''',
+            (self.storage_key, message.get("role"), db_content, db_meta,
+             datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
+        )
 
         new_row_id = cursor.lastrowid
         conn.commit()
         conn.close()
 
-        # Генерируем вектор асинхронно или синхронно (пока синхронно для простоты)
+        # RAG опционален и не должен валить основной флоу
+        if not self.rag:
+            return
+
         content_text = message.get("content", "")
         if isinstance(content_text, str) and content_text:
-            self.rag.update_history_embedding(new_row_id, content_text)
+            try:
+                self.rag.update_history_embedding(int(new_row_id), content_text)
+            except Exception as e:
+                logger.warning(f"RAG failed to update embedding for new message (ignored): {e}", exc_info=True)
 
     def update_variable(self, key, value):
         conn = self.db.get_connection()

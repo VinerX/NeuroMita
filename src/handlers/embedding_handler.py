@@ -1,5 +1,4 @@
 # Файл с моделью для эмбеддингов
-from threading import Lock
 
 from utils.gpu_utils import check_gpu_provider
 from utils.pip_installer import PipInstaller
@@ -9,15 +8,17 @@ current_gpu = check_gpu_provider()
 
 from managers.settings_manager import SettingsManager
 
-script_dir = os.path.dirname(sys.executable)  
+script_dir = os.path.dirname(sys.executable)
 checkpoints_dir = os.path.join(script_dir, "checkpoints")
 os.makedirs(checkpoints_dir, exist_ok=True)
+
 
 def getTranslationVariant(ru_str, en_str=""):
     lang = SettingsManager.get("LANGUAGE", "RU")
     if en_str and lang == "EN":
         return en_str
     return ru_str
+
 
 _ = getTranslationVariant
 
@@ -34,7 +35,6 @@ except Exception as e:
     logger.error(f"Не удалось инициализировать PipInstaller: {e}", exc_info=True)
     pip_installer = None
 
-
 try:
     import torch
 except ImportError:
@@ -42,28 +42,24 @@ except ImportError:
         raise Exception("PipInstaller не инициализирован - установку нельзя осуществить")
     if current_gpu in ["NVIDIA"]:
         success = pip_installer.install_package(
-                ["torch==2.7.1", "torchaudio==2.7.1"],
-                description=_("Установка PyTorch с поддержкой CUDA 12.8...", "Installing PyTorch with CUDA 12.8 support..."),
-                extra_args=["--index-url", "https://download.pytorch.org/whl/cu128"]
-            )
+            ["torch==2.7.1", "torchaudio==2.7.1"],
+            description=_("Установка PyTorch с поддержкой CUDA 12.8...",
+                          "Installing PyTorch with CUDA 12.8 support..."),
+            extra_args=["--index-url", "https://download.pytorch.org/whl/cu128"]
+        )
     else:
         success = pip_installer.install_package(
-                ["torch", "torchaudio"],
-                description=_("Установка PyTorch CPU", "Installing PyTorch CPU"),
-            )
+            ["torch==2.7.1", "torchaudio==2.7.1"],
+            description=_("Установка PyTorch CPU", "Installing PyTorch CPU"),
+        )
     if not success:
         raise Exception("Не удалось установить torch+cuda12.8")
-    
+
     try:
         import torch
     except ImportError:
         raise ImportError("Даже после установки TORCH - не получилось импортировать.")
-        
 
-    
-
-        
-    
 try:
     from transformers import AutoModel, AutoTokenizer
 except ImportError:
@@ -76,7 +72,7 @@ except ImportError:
         from transformers import AutoModel, AutoTokenizer
     except ImportError:
         raise ImportError("Даже после установки TRANSFORMERS - не получилось импортировать.")
-    
+
 from main_logger import logger
 import numpy as np
 import time
@@ -87,28 +83,15 @@ from typing import Tuple, Optional
 MODEL_NAME = 'Snowflake/snowflake-arctic-embed-m-v2.0'
 QUERY_PREFIX = 'query: '
 
+
 class EmbeddingModelHandler:
     """Управляет загрузкой модели Snowflake и получением эмбеддингов."""
-    _instance = None
-    _lock = Lock()
-
-    def __new__(cls, *args, **kwargs):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super(EmbeddingModelHandler, cls).__new__(cls)
-                cls._instance._initialized = False
-            return cls._instance
 
     def __init__(self, model_name: str = MODEL_NAME):
-        if self._initialized:
-            return
-
         self.model_name = model_name
         self.device = self._get_device()
         self.tokenizer, self.model = self._load_model()
-        self.hidden_size = self.model.config.hidden_size # Сохраняем размерность
-
-        self._initialized = True  # Помечаем как готовое
+        self.hidden_size = self.model.config.hidden_size  # Сохраняем размерность
 
     def _get_device(self) -> torch.device:
         """Определяет устройство для вычислений (CPU/GPU)."""
@@ -116,8 +99,8 @@ class EmbeddingModelHandler:
         if torch.cuda.is_available():
             cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
             if cuda_visible_devices == "" or cuda_visible_devices == "-1":
-                 logger.info("CUDA доступна, но скрыта. Используется CPU.")
-                 return torch.device('cpu')
+                logger.info("CUDA доступна, но скрыта. Используется CPU.")
+                return torch.device('cpu')
             else:
                 # ОСТАВЛЯЕМ ПРИНУДИТЕЛЬНЫЙ CPU, как и было
                 logger.info("CUDA доступна. Используется CPU принудительно.")
@@ -131,13 +114,13 @@ class EmbeddingModelHandler:
         logger.info(f"Загрузка токенизатора и модели '{self.model_name}' на {self.device.type.upper()}...")
         logger.info(f"Модель будет сохранена в {checkpoints_dir}")
         start_time = time.time()
-        
+
         # Используем папку checkpoints для кэширования
         tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name, 
+            self.model_name,
             cache_dir=checkpoints_dir
         )
-        
+
         try:
             model = AutoModel.from_pretrained(
                 self.model_name,
@@ -150,9 +133,12 @@ class EmbeddingModelHandler:
             logger.info("Модель успешно загружена с attn_implementation='sdpa'.")
         except ValueError as ve:
             # Тот же обработчик ошибок, но с добавленным cache_dir
-            sdpa_errors = ["SDPA implementation requires", "Cannot use SDPA on CPU", "Torch SDPA backend requires torch>=2.0", "flash attention is not available", "requires a GPU", "No available kernel"]
+            sdpa_errors = ["SDPA implementation requires", "Cannot use SDPA on CPU",
+                           "Torch SDPA backend requires torch>=2.0", "flash attention is not available",
+                           "requires a GPU", "No available kernel"]
             if any(error_msg in str(ve) for error_msg in sdpa_errors):
-                logger.error(f"ПРЕДУПРЕЖДЕНИЕ: Не удалось использовать 'sdpa'. Переключаемся на 'eager'. (Ошибка: {ve})")
+                logger.error(
+                    f"ПРЕДУПРЕЖДЕНИЕ: Не удалось использовать 'sdpa'. Переключаемся на 'eager'. (Ошибка: {ve})")
                 model = AutoModel.from_pretrained(
                     self.model_name,
                     trust_remote_code=True,
@@ -184,7 +170,8 @@ class EmbeddingModelHandler:
         try:
             inputs = [prefix + text]
             # Используем self.tokenizer и self.model
-            tokens = self.tokenizer(inputs, padding=True, truncation=True, return_tensors='pt', max_length=512).to(self.device)
+            tokens = self.tokenizer(inputs, padding=True, truncation=True, return_tensors='pt', max_length=512).to(
+                self.device)
             with torch.no_grad():
                 outputs = self.model(**tokens)
                 embedding = outputs.last_hidden_state[:, 0]
@@ -193,6 +180,7 @@ class EmbeddingModelHandler:
         except Exception as e:
             logger.error(f"Ошибка при вычислении эмбеддинга для текста '{text}': {e}")
             return None
+
 
 if __name__ == '__main__':
     print("Тестирование EmbeddingModelHandler...")

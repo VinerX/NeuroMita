@@ -24,7 +24,13 @@ class DatabaseManager:
         self._initialized = True
 
     def get_connection(self):
-        return sqlite3.connect(self.db_path, check_same_thread=False)
+        # timeout + busy_timeout: чтобы не падать сразу при конкурирующих записях
+        conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30)
+        try:
+            conn.execute("PRAGMA busy_timeout = 30000")
+        except Exception:
+            pass
+        return conn
 
     def _init_db(self):
         conn = self.get_connection()

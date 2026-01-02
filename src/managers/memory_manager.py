@@ -10,7 +10,13 @@ class MemoryManager:
         self.db = DatabaseManager()
         self.total_characters = 0
         self._calculate_total_characters()
-        self.rag = RAGManager(self.character_name)
+
+        # RAG опционален
+        try:
+            self.rag = RAGManager(self.character_name)
+        except Exception as e:
+            logging.warning(f"RAGManager init failed (RAG disabled for this session): {e}", exc_info=True)
+            self.rag = None
 
     def _calculate_total_characters(self):
         """Считаем символы SQL запросом"""
@@ -40,7 +46,6 @@ class MemoryManager:
         conn = self.db.get_connection()
         cursor = conn.cursor()
 
-        # 1. Вычисляем новый Eternal ID (Max + 1)
         cursor.execute(
             "SELECT MAX(eternal_id) FROM memories WHERE character_id = ?",
             (self.character_name,)
@@ -48,25 +53,30 @@ class MemoryManager:
         res = cursor.fetchone()[0]
         new_id = (res + 1) if res is not None else 1
 
-        # 2. Вставляем
-        cursor.execute('''
+        cursor.execute(
+            '''
             INSERT INTO memories (character_id, eternal_id, content, priority, type, date_created, is_deleted)
             VALUES (?, ?, ?, ?, ?, ?, 0)
-        ''', (self.character_name, new_id, content, priority, memory_type, date))
+            ''',
+            (self.character_name, new_id, content, priority, memory_type, date)
+        )
 
         conn.commit()
         conn.close()
 
         self.total_characters += len(content)
-        self.rag.update_memory_embedding(new_id, content)
 
-        # logging.info(f"Memory added for {self.character_name}, ID: {new_id}")
+        # RAG опционален и не должен валить основной флоу
+        if self.rag:
+            try:
+                self.rag.update_memory_embedding(new_id, content)
+            except Exception as e:
+                logging.warning(f"RAG failed to update memory embedding (ignored): {e}", exc_info=True)
 
     def update_memory(self, number, content, priority=None):
         conn = self.db.get_connection()
         cursor = conn.cursor()
 
-        # Сначала получим старую длину для коррекции счетчика
         cursor.execute(
             "SELECT content FROM memories WHERE character_id = ? AND eternal_id = ? AND is_deleted = 0",
             (self.character_name, number)
@@ -79,24 +89,34 @@ class MemoryManager:
 
         old_len = len(row[0])
 
-        # Обновляем
         if priority:
-            cursor.execute('''
+            cursor.execute(
+                '''
                 UPDATE memories SET content = ?, priority = ?, date_created = ?
                 WHERE character_id = ? AND eternal_id = ?
-            ''', (content, priority, datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"), self.character_name, number))
+                ''',
+                (content, priority, datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"), self.character_name, number)
+            )
         else:
-            cursor.execute('''
+            cursor.execute(
+                '''
                 UPDATE memories SET content = ?, date_created = ?
                 WHERE character_id = ? AND eternal_id = ?
-            ''', (content, datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"), self.character_name, number))
+                ''',
+                (content, datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"), self.character_name, number)
+            )
 
         conn.commit()
         conn.close()
 
         self.total_characters = self.total_characters - old_len + len(content)
 
-        self.rag.update_memory_embedding(number, content)
+        # RAG опционален и не должен валить основной флоу
+        if self.rag:
+            try:
+                self.rag.update_memory_embedding(number, content)
+            except Exception as e:
+                logging.warning(f"RAG failed to update memory embedding (ignored): {e}", exc_info=True)
 
         return True
 
