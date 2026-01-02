@@ -193,23 +193,27 @@ class DatabaseManager:
         }
 
         try:
-            for table, cols_to_ensure in desired.items():
-                try:
-                    cursor.execute(f"PRAGMA table_info({table})")
-                    existing_cols = {row[1] for row in cursor.fetchall() if row and len(row) > 1}
-                except Exception as e:
-                    logging.error(f"Failed to read PRAGMA table_info({table}): {e}")
-                    existing_cols = set()
+            # --- Индекс против дублей history по (character_id, message_id, timestamp) ---
+            try:
+                cursor.execute("PRAGMA table_info(history)")
+                hist_cols = {row[1] for row in cursor.fetchall() if row and len(row) > 1}
+            except Exception:
+                hist_cols = set()
 
-                for col, col_type in cols_to_ensure:
-                    if col in existing_cols:
-                        continue
-                    try:
-                        logging.info(f"DB upgrade: Adding column {table}.{col} {col_type} ...")
-                        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
-                    except Exception as e:
-                        # Не валим приложение, даже если не вышло (например, таблица отсутствует/повреждена)
-                        logging.error(f"DB upgrade: Error upgrading {table}.{col}: {e}")
+            if {"character_id", "message_id", "timestamp"}.issubset(hist_cols):
+                try:
+                    cursor.execute(
+                        """
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_history_unique_msg
+                        ON history(character_id, message_id, timestamp)
+                        WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
+                          AND timestamp  IS NOT NULL AND TRIM(timestamp)  != ''
+                        """
+                    )
+                    logging.info("DB upgrade: ensured UNIQUE index idx_history_unique_msg")
+                except Exception as e:
+                    # Если в БД уже есть дубли — индекс не создастся, это ок.
+                    logging.warning(f"DB upgrade: failed to create UNIQUE index idx_history_unique_msg (ignored): {e}")
 
             conn.commit()
         finally:

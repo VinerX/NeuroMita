@@ -201,6 +201,13 @@ def build_character_settings_ui(self, parent_layout):
     self.btn_db_viewer.setObjectName("SecondaryButton")
     dbt_h.addWidget(self.btn_db_viewer, 1)
 
+    self.btn_dedupe_history = QPushButton(_("Очистить дубли", "Remove duplicates"))
+    self.btn_dedupe_history.setToolTip(_("Удалить дубли истории по ключу (message_id + timestamp) для выбранного персонажа",
+                                         "Remove history duplicates by (message_id + timestamp) for selected character"))
+    self.btn_dedupe_history.setIcon(qta.icon('fa5s.broom', color='#ffffff'))
+    self.btn_dedupe_history.setObjectName("SecondaryButton")
+    dbt_h.addWidget(self.btn_dedupe_history, 1)
+
     self.btn_reindex = QPushButton(_("Переиндексация", "Re-index Knowledge"))
     self.btn_reindex.setToolTip(_("Заполнить пустые вектора для RAG", "Fill missing vectors for RAG"))
     self.btn_reindex.setIcon(qta.icon('fa5s.brain', color='#ffffff'))

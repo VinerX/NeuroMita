@@ -346,7 +346,8 @@ class ModelController:
             "target": target,
             "participants": list(participants),
             "event_type": event_type,
-            "time": datetime.datetime.now().strftime("%d.%m.%Y_%H.%M"),
+            # единый формат времени для user/assistant (чтобы не было каши в БД)
+            "time": datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
             "content": chunks,
         }
 
@@ -369,7 +370,8 @@ class ModelController:
             "target": target,
             "participants": list(participants),
             "event_type": event_type,
-            "time": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
+            # единый формат времени для user/assistant
+            "time": datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
             "content": final_text,
         }
 

@@ -5,6 +5,8 @@ import datetime
 import base64
 import re
 import uuid
+import hashlib
+from threading import Lock
 from typing import Any, Optional
 
 from main_logger import logger
@@ -53,6 +55,8 @@ class HistoryManager:
 
         # кеш фактических колонок history
         self._history_cols: set[str] = set()
+        # сериализация write-операций для дедуп/check-then-insert
+        self._write_lock = Lock()
 
         # Гарантируем схему (и наполняем кеш)
         self._ensure_history_schema()
@@ -125,6 +129,54 @@ class HistoryManager:
         # обновим кеш после попытки миграции
         self._refresh_history_columns()
 
+    def _dedupe_existing_history_duplicates(self) -> None:
+        """
+        Удаляем уже накопившиеся дубли строго по ключу:
+        (character_id, timestamp, message_id)
+
+        Важно:
+        - трогаем ТОЛЬКО строки, где message_id и timestamp непустые
+        - оставляем минимальный id, остальные удаляем
+        """
+        try:
+            self._ensure_history_schema()
+            if not self._history_cols:
+                return
+            if "message_id" not in self._history_cols or "timestamp" not in self._history_cols:
+                return
+
+            conn = self.db.get_connection()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    DELETE FROM history
+                    WHERE character_id = ?
+                      AND message_id IS NOT NULL AND TRIM(message_id) != ''
+                      AND timestamp  IS NOT NULL AND TRIM(timestamp)  != ''
+                      AND id NOT IN (
+                        SELECT MIN(id)
+                        FROM history
+                        WHERE character_id = ?
+                          AND message_id IS NOT NULL AND TRIM(message_id) != ''
+                          AND timestamp  IS NOT NULL AND TRIM(timestamp)  != ''
+                        GROUP BY message_id, timestamp
+                      )
+                    """,
+                    (self.storage_key, self.storage_key),
+                )
+                deleted = cur.rowcount if cur.rowcount is not None else 0
+                conn.commit()
+                if deleted:
+                    logger.info(f"[HistoryManager] Dedup: removed {deleted} duplicate history rows for {self.storage_key}")
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"[HistoryManager] Dedup existing duplicates failed (ignored): {e}", exc_info=True)
+
     # ---------------------------------------------------------------------
     # Helpers: images
     # ---------------------------------------------------------------------
@@ -145,14 +197,18 @@ class HistoryManager:
             save_dir = os.path.join("Histories", self.character_name, "Images")
             os.makedirs(save_dir, exist_ok=True)
 
-            filename = f"{uuid.uuid4()}.{ext}"
+            # Детерминированное имя файла: одинаковая картинка => один и тот же файл
+            img_bytes = base64.b64decode(img_data_str)
+            sha = hashlib.sha256(img_bytes).hexdigest()
+            filename = f"{sha}.{ext}"
             file_path = os.path.join(save_dir, filename)
 
-            img_bytes = base64.b64decode(img_data_str)
-            with open(file_path, "wb") as f:
-                f.write(img_bytes)
-
-            logger.info(f"Image saved: {file_path}")
+            if not os.path.exists(file_path):
+                with open(file_path, "wb") as f:
+                    f.write(img_bytes)
+                logger.info(f"Image saved: {file_path}")
+            else:
+                logger.info(f"Image reused (hash match): {file_path}")
             return file_path
 
         except Exception as e:
@@ -298,6 +354,35 @@ class HistoryManager:
 
         return meta
 
+    def _extract_text_for_embedding(self, content: Any) -> str:
+        """
+        Делает текст для эмбеддинга из content:
+        - str -> str
+        - list[{"type":"text"}...] -> склеиваем только text части
+        - остальное -> строковое представление (как fallback)
+        """
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for it in content:
+                if not isinstance(it, dict):
+                    continue
+                if it.get("type") == "text":
+                    txt = it.get("text")
+                    if txt is None:
+                        txt = it.get("content", "")
+                    s = str(txt or "").strip()
+                    if s:
+                        parts.append(s)
+            return "\n".join(parts).strip()
+        try:
+            return json.dumps(content, ensure_ascii=False).strip()
+        except Exception:
+            return str(content).strip()
+
     # ---------------------------------------------------------------------
     # Serialization: message <-> db
     # ---------------------------------------------------------------------
@@ -442,6 +527,39 @@ class HistoryManager:
 
         now_ts_default = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
         ts = self._coerce_text(msg.get("time")) or self._coerce_text(msg.get("timestamp")) or now_ts_default
+
+        # Дедуп по твоему правилу: character_id + timestamp + message_id
+        # (ничего другого не трогаем)
+        with self._write_lock:
+            try:
+                if "message_id" in self._history_cols and "timestamp" in self._history_cols:
+                    mid = self._coerce_text(msg.get("message_id"))
+                    if mid and ts:
+                        conn0 = self.db.get_connection()
+                        try:
+                            cur0 = conn0.cursor()
+                            cur0.execute(
+                                """
+                                SELECT id FROM history
+                                WHERE character_id = ?
+                                  AND message_id = ?
+                                  AND timestamp = ?
+                                ORDER BY id DESC
+                                LIMIT 1
+                                """,
+                                (self.storage_key, mid, ts),
+                            )
+                            row0 = cur0.fetchone()
+                            if row0 and row0[0]:
+                                return int(row0[0])
+                        finally:
+                            try:
+                                conn0.close()
+                            except Exception:
+                                pass
+            except Exception:
+                # если дедуп-чек не удался — просто продолжаем вставку
+                pass
 
         db_fields = self._extract_history_db_fields(msg)
         extra_meta = self._build_extra_meta_for_db(msg)
@@ -603,14 +721,10 @@ class HistoryManager:
 
             row_id = self._insert_history_row(msg=msg, is_active=1)
             if row_id:
-                # вектор строим только для текста
-                content_text = msg.get("content")
-                if isinstance(content_text, str) and content_text:
+                # эмбеддим текст из content (и если это list — берём только text части)
+                content_text = self._extract_text_for_embedding(msg.get("content"))
+                if content_text:
                     pending_embeddings.append((int(row_id), content_text))
-                else:
-                    # fallback: если мультимодальный list — эмбеддим текстовую часть, которую prepare_message_for_db кладёт в content
-                    # (чтобы не усложнять — пропускаем)
-                    pass
 
         # Эмбеддинги после записи в БД
         if not pending_embeddings or not self.rag:

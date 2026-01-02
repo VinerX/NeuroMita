@@ -263,8 +263,8 @@ class RAGManager:
         - считаем финальный скор по формуле:
           Score = (Sim*K1) + (TimeFactor*K2) + (PriorityBonus*K3) + (EntityBonus*K4) + Noise
         - RAG правила:
-          memories: is_deleted=0 AND is_forgotten=0
-          history: is_active=0 AND is_deleted=0
+          memories: is_deleted=0 AND is_forgotten=1
+          history: s_deleted=0 AND is_active=0
         """
         # weights (SettingsManager)
         K1 = self._get_float_setting("RAG_WEIGHT_SIMILARITY", 1.0)

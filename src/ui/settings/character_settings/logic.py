@@ -198,6 +198,8 @@ def wire_character_settings_logic(self):
         self.btn_migrate_db.clicked.connect(lambda: migrate_to_db(self))
     if hasattr(self, 'btn_db_viewer'):
         self.btn_db_viewer.clicked.connect(lambda: open_db_viewer(self))
+    if hasattr(self, 'btn_dedupe_history'):
+        self.btn_dedupe_history.clicked.connect(lambda: run_history_dedup(self))
     if hasattr(self, 'btn_reindex'):
         self.btn_reindex.clicked.connect(lambda: run_reindexing(self))
 
@@ -483,6 +485,294 @@ def open_db_viewer(gui):
 
     dialog = DbViewerDialog(gui, character_id=char_id)
     dialog.exec()
+
+def run_history_dedup(gui):
+    event_bus = get_event_bus()
+    res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+
+    if not res or not res[0]:
+        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Персонаж не найден.", "Character not found."))
+        return
+
+    character_id = res[0].get("character_id")
+    if not character_id:
+        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Некорректный ID персонажа.", "Invalid character ID."))
+        return
+
+    title = _("Подтверждение", "Confirmation")
+    text = _(
+        "Удалить дубли в истории для персонажа '{cid}'?\n\n"
+        "Критерий: совпадают character_id + message_id + timestamp.\n"
+        "Останется запись с минимальным id.",
+        "Remove duplicate history rows for character '{cid}'?\n\n"
+        "Criteria: same character_id + message_id + timestamp.\n"
+        "Row with minimal id will be kept."
+    ).format(cid=str(character_id))
+
+    reply = QMessageBox.question(gui, title, text,
+                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+
+    # IMPORTANT: сохраняем ссылки в self, иначе GC может снести QThread/диалог
+    gui._dedupe_worker = DedupeHistoryWorker(str(character_id))
+
+    progress = QProgressDialog(_("Очистка дублей...", "Removing duplicates..."), "", 0, 0, gui)
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setAutoClose(False)
+    progress.setAutoReset(False)
+    # Убираем cancel, чтобы не убить воркер раньше времени
+    try:
+        progress.setCancelButton(None)
+    except Exception:
+        pass
+
+    gui._dedupe_progress = progress
+
+    def on_finished(deleted_count: int):
+        try:
+            if hasattr(gui, "_dedupe_progress") and gui._dedupe_progress:
+                gui._dedupe_progress.close()
+        except Exception:
+            pass
+
+        QMessageBox.information(
+            gui,
+            _("Готово", "Done"),
+            _("Удалено дублей: {n}", "Duplicates removed: {n}").format(n=int(deleted_count))
+        )
+
+        gui._dedupe_worker = None
+        gui._dedupe_progress = None
+
+        # Обновим данные/дебаг инфо
+        try:
+            event_bus.emit(Events.Character.RELOAD_DATA)
+        except Exception:
+            pass
+        if hasattr(gui, 'update_debug_info'):
+            gui.update_debug_info()
+
+    def on_error(msg: str):
+        try:
+            if hasattr(gui, "_dedupe_progress") and gui._dedupe_progress:
+                gui._dedupe_progress.close()
+        except Exception:
+            pass
+        QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
+        gui._dedupe_worker = None
+        gui._dedupe_progress = None
+
+    gui._dedupe_worker.finished_signal.connect(on_finished)
+    gui._dedupe_worker.error_signal.connect(on_error)
+
+    progress.show()
+    gui._dedupe_worker.start()
+
+
+class DedupeHistoryWorker(QThread):
+    finished_signal = pyqtSignal(int)  # deleted count
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, character_id: str):
+        super().__init__()
+        self.character_id = str(character_id or "").strip()
+
+    def run(self):
+        try:
+            # IMPORTANT: никаких singleton-менеджеров БД из UI потока
+            import sqlite3
+
+            db_path = os.path.join("Histories", "world.db")
+            conn = sqlite3.connect(db_path, timeout=30)
+            try:
+                try:
+                    conn.execute("PRAGMA busy_timeout = 30000")
+                except Exception:
+                    pass
+
+                cur = conn.cursor()
+
+                # Проверим наличие нужных колонок (старые базы не ломаем)
+                cur.execute("PRAGMA table_info(history)")
+                cols = set(r[1] for r in cur.fetchall() if r and len(r) > 1)
+                if not {"character_id", "message_id", "timestamp", "id"}.issubset(cols):
+                    self.finished_signal.emit(0)
+                    return
+
+                before = conn.total_changes
+
+                # ДЕДУП строго по ключу: character_id + message_id + timestamp
+                cur.execute(
+                    """
+                    DELETE FROM history
+                    WHERE character_id = ?
+                      AND message_id IS NOT NULL AND TRIM(message_id) != ''
+                      AND timestamp  IS NOT NULL AND TRIM(timestamp)  != ''
+                      AND id NOT IN (
+                        SELECT MIN(id)
+                        FROM history
+                        WHERE character_id = ?
+                          AND message_id IS NOT NULL AND TRIM(message_id) != ''
+                          AND timestamp  IS NOT NULL AND TRIM(timestamp)  != ''
+                        GROUP BY message_id, timestamp
+                      )
+                    """,
+                    (self.character_id, self.character_id),
+                )
+
+                deleted = conn.total_changes - before
+
+                # Поставим защиту от повторного появления дублей (partial UNIQUE INDEX)
+                try:
+                    cur.execute(
+                        """
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_history_unique_msg
+                        ON history(character_id, message_id, timestamp)
+                        WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
+                          AND timestamp  IS NOT NULL AND TRIM(timestamp)  != ''
+                        """
+                    )
+                except Exception as e:
+                    # если не получилось — не падаем, просто логируем
+                    logger.warning(f"Failed to create UNIQUE index after dedupe (ignored): {e}")
+
+                conn.commit()
+                self.finished_signal.emit(int(deleted))
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error(f"Dedupe thread error: {e}", exc_info=True)
+            self.error_signal.emit(str(e))
+def run_history_dedup(gui):
+    # Берём ID персонажа через EventBus (как в run_reindexing)
+    event_bus = get_event_bus()
+    res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+
+    if not res or not res[0]:
+        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Персонаж не найден.", "Character not found."))
+        return
+
+    character_id = res[0].get("character_id")
+    if not character_id:
+        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Некорректный ID персонажа.", "Invalid character ID."))
+        return
+
+    title = _("Подтверждение", "Confirmation")
+    text = _(
+        "Удалить дубли в истории для персонажа '{cid}'?\n\n"
+        "Критерий: совпадают message_id + timestamp (и character_id).\n"
+        "Будет оставлена запись с минимальным id.",
+        "Remove duplicate history rows for character '{cid}'?\n\n"
+        "Criteria: same message_id + timestamp (and character_id).\n"
+        "Row with minimal id will be kept."
+    ).format(cid=str(character_id))
+
+    reply = QMessageBox.question(gui, title, text,
+                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+
+    gui._dedupe_worker = DedupeHistoryWorker(str(character_id))
+
+    progress = QProgressDialog(_("Очистка дублей...", "Removing duplicates..."),
+                               _("Отмена", "Cancel"),
+                               0, 0, gui)
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setAutoClose(False)
+    progress.setAutoReset(False)
+
+    def on_finished(deleted_count: int):
+        progress.close()
+        QMessageBox.information(
+            gui,
+            _("Готово", "Done"),
+            _("Удалено дублей: {n}", "Duplicates removed: {n}").format(n=int(deleted_count))
+        )
+        gui._dedupe_worker = None
+        # по желанию можно обновить UI/данные
+        try:
+            event_bus.emit(Events.Character.RELOAD_DATA)
+        except Exception:
+            pass
+        if hasattr(gui, 'update_debug_info'):
+            gui.update_debug_info()
+
+    def on_error(msg: str):
+        progress.close()
+        QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
+        gui._dedupe_worker = None
+
+    def on_cancel():
+        # Отмену потока без cooperative cancel не делаем (как и в reindex), просто закрываем UI
+        gui._dedupe_worker = None
+        progress.close()
+
+    gui._dedupe_worker.finished_signal.connect(on_finished)
+    gui._dedupe_worker.error_signal.connect(on_error)
+    progress.canceled.connect(on_cancel)
+
+    progress.show()
+    gui._dedupe_worker.start()
+
+
+class DedupeHistoryWorker(QThread):
+    finished_signal = pyqtSignal(int)  # deleted count
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, character_id: str):
+        super().__init__()
+        self.character_id = str(character_id or "")
+
+    def run(self):
+        try:
+            from managers.database_manager import DatabaseManager
+
+            db = DatabaseManager()
+            conn = db.get_connection()
+            try:
+                cur = conn.cursor()
+                cur.execute("PRAGMA table_info(history)")
+                cols = set(r[1] for r in cur.fetchall() if r and len(r) > 1)
+
+                # Без нужных колонок дедуп по ключу невозможен
+                if "character_id" not in cols or "message_id" not in cols or "timestamp" not in cols:
+                    self.finished_signal.emit(0)
+                    return
+
+                cur.execute(
+                    """
+                    DELETE FROM history
+                    WHERE character_id = ?
+                      AND message_id IS NOT NULL AND TRIM(message_id) != ''
+                      AND timestamp  IS NOT NULL AND TRIM(timestamp)  != ''
+                      AND id NOT IN (
+                        SELECT MIN(id)
+                        FROM history
+                        WHERE character_id = ?
+                          AND message_id IS NOT NULL AND TRIM(message_id) != ''
+                          AND timestamp  IS NOT NULL AND TRIM(timestamp)  != ''
+                        GROUP BY message_id, timestamp
+                      )
+                    """,
+                    (self.character_id, self.character_id),
+                )
+                deleted = cur.rowcount if cur.rowcount is not None else 0
+                conn.commit()
+                self.finished_signal.emit(int(deleted))
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error(f"Dedupe thread error: {e}", exc_info=True)
+            self.error_signal.emit(str(e))
 
 
 def run_reindexing(gui):
