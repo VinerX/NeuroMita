@@ -1,3 +1,4 @@
+import re
 import sqlite3
 import numpy as np
 import json
@@ -177,6 +178,9 @@ class RAGManager:
         if not text:
             return None
 
+        # Очистка от тегов
+        text = self.rag_clean_text(text)
+
         if use_event_bus:
             try:
                 results = self.event_bus.emit_and_wait(EMBED_EVENT_NAME, {"text": text, "prefix": prefix})
@@ -284,7 +288,6 @@ class RAGManager:
         memory_mode = str(SettingsManager.get("RAG_MEMORY_MODE", "forgotten") or "forgotten").strip().lower()
 
         noise_max = self._get_float_setting("RAG_NOISE_MAX", 0.05)
-        noise_max = max(0.0, min(0.2, noise_max))
 
         query_text = self._build_query_from_recent(query, tail=2)
         query_vec = self._get_embedding(query_text, use_event_bus=True)
@@ -329,6 +332,9 @@ class RAGManager:
         conn = self.db.get_connection()
         cursor = conn.cursor()
         scored: list[dict] = []
+
+        # Перенос инициализации now для использования в memories
+        now = datetime.datetime.now()
 
         def prio_bonus(p: str) -> float:
             pl = str(p or "Normal").strip().lower()
@@ -406,10 +412,18 @@ class RAGManager:
             if sim < float(threshold):
                 continue
 
+            ts = date_created
+            dt = self._parse_dt(ts)
+            if dt:
+                days = max(0.0, (now - dt).total_seconds() / 86400.0)
+                tf = 1.0 / (1.0 + (decay_rate * days))
+            else:
+                tf = 0.0
+
             pb = prio_bonus(priority)
             eb = entity_bonus_from_participants(self._json_loads_list(participants))
             noise = random.uniform(0.0, noise_max)
-            final = (sim * K1) + (pb * K3) + (eb * K4) + noise  # timefactor для memories не применяем
+            final = (sim * K1) + (tf * K2) + (pb * K3) + (eb * K4) + noise
 
             scored.append({
                 "source": "memory",
@@ -420,7 +434,7 @@ class RAGManager:
                 "date_created": date_created,
                 "score": float(final),
                 "_dbg": {
-                    "sim": sim, "time": 0.0, "prio": pb, "entity": eb, "noise": noise,
+                    "sim": sim, "time": tf, "prio": pb, "entity": eb, "noise": noise,
                     "final": final
                 }
             })
@@ -444,7 +458,6 @@ class RAGManager:
             logger.warning(f"RAGManager: failed to read history for search: {e}", exc_info=True)
             hist_rows = []
 
-        now = datetime.datetime.now()
 
         for row in hist_rows:
             rd = dict(zip(cols, row))
@@ -529,7 +542,6 @@ class RAGManager:
             it2.pop("_dbg", None)
             out.append(it2)
         return out
-
     def index_all_missing(self, progress_callback=None) -> int:
         """
         Проходит по всем записям без вектора и генерирует его.
@@ -609,3 +621,93 @@ class RAGManager:
             conn.close()
 
         return processed
+
+    def index_all(self, progress_callback=None) -> int:
+        """
+        Проходит по ВСЕМ записям и пересоздаёт вектора (даже если уже есть).
+        progress_callback(current, total) - для обновления UI
+        Возвращает количество обновленных записей.
+        """
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        # История - ВСЕ записи с контентом
+        hist_where = "character_id=? AND content != '' AND content IS NOT NULL"
+        if "is_deleted" in self._history_cols:
+            hist_where += " AND is_deleted=0"
+        cursor.execute(
+            f"SELECT id, content FROM history WHERE {hist_where}",
+            (self.character_id,),
+        )
+        hist_rows = cursor.fetchall()
+
+        # Воспоминания - ВСЕ
+        mem_where = "character_id=? AND is_deleted=0 AND content IS NOT NULL"
+        cursor.execute(
+            f"SELECT eternal_id, content FROM memories WHERE {mem_where}",
+            (self.character_id,),
+        )
+        mem_rows = cursor.fetchall()
+
+        total = len(hist_rows) + len(mem_rows)
+        if total == 0:
+            conn.close()
+            return 0
+
+        processed = 0
+
+        try:
+            for row_id, content in hist_rows:
+                if content and isinstance(content, str):
+                    vec = self._get_embedding(content, use_event_bus=False)
+                    if vec is not None:
+                        blob = self._array_to_blob(vec)
+                        cursor.execute("UPDATE history SET embedding = ? WHERE id = ?", (blob, row_id))
+
+                processed += 1
+                if progress_callback:
+                    progress_callback(processed, total)
+
+            conn.commit()
+
+            for eternal_id, content in mem_rows:
+                if content:
+                    vec = self._get_embedding(content, use_event_bus=False)
+                    if vec is not None:
+                        blob = self._array_to_blob(vec)
+                        cursor.execute(
+                            "UPDATE memories SET embedding = ? WHERE character_id = ? AND eternal_id = ?",
+                            (blob, self.character_id, eternal_id)
+                        )
+
+                processed += 1
+                if progress_callback:
+                    progress_callback(processed, total)
+
+            conn.commit()
+
+        except Exception as e:
+            logger.error(f"Error during full re-indexing: {e}", exc_info=True)
+        finally:
+            conn.close()
+
+        return processed
+
+    def rag_clean_text(self, text: str) -> str:
+        if not isinstance(text, str) or not text.strip():
+            return ""
+
+        t = text
+
+        # 1) убрать memory-команды целиком (обычно с закрывающим </memory>)
+        t = re.sub(r"<[+\-#]memory>.*?</memory>", " ", t, flags=re.S | re.I)
+
+        # 2) убрать pose/числовые векторы (часто повторяющиеся)
+        t = re.sub(r"<p>\s*[-0-9\.,\s]+\s*</p>", " ", t, flags=re.I)
+
+        # 3) убрать сами теги, но оставить внутренний текст
+        t = re.sub(r"</?[^>]+>", " ", t)
+
+        # 4) схлопнуть пробелы
+        t = re.sub(r"\s+", " ", t).strip()
+        return t

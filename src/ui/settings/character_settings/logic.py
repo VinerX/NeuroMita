@@ -202,6 +202,8 @@ def wire_character_settings_logic(self):
         self.btn_dedupe_history.clicked.connect(lambda: run_history_dedup(self))
     if hasattr(self, 'btn_reindex'):
         self.btn_reindex.clicked.connect(lambda: run_reindexing(self))
+    if hasattr(self, 'btn_reindex_all'):
+        self.btn_reindex_all.clicked.connect(lambda: run_full_reindexing(self))
 
     _update_sync_indicator(self)
     QTimer.singleShot(300, lambda: _update_sync_indicator(self))
@@ -877,3 +879,131 @@ class ReindexWorker(QThread):
         except Exception as e:
             logger.error(f"Reindexing thread error: {e}", exc_info=True)
             self.error_signal.emit(str(e))
+
+class FullReindexWorker(QThread):
+    """Воркер для полной переиндексации (пересоздаёт ВСЕ вектора)"""
+    progress_signal = pyqtSignal(int, int)  # current, total
+    finished_signal = pyqtSignal(int)       # count processed
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, character_id: str):
+        super().__init__()
+        self.character_id = character_id
+
+    def run(self):
+        try:
+            from managers.rag_manager import RAGManager
+
+            rag = RAGManager(self.character_id)
+
+            def callback(curr, tot):
+                self.progress_signal.emit(curr, tot)
+
+            updated_count = rag.index_all(progress_callback=callback)
+            self.finished_signal.emit(updated_count)
+
+        except Exception as e:
+            logger.error(f"Full reindexing thread error: {e}", exc_info=True)
+            self.error_signal.emit(str(e))
+
+
+def run_full_reindexing(gui):
+    """Полная переиндексация - пересоздаёт вектора для ВСЕХ записей"""
+    event_bus = get_event_bus()
+    res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+
+    if not res or not res[0]:
+        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Персонаж не найден.", "Character not found."))
+        return
+
+    character_id = res[0].get("character_id")
+    if not character_id:
+        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Некорректный ID персонажа.", "Invalid character ID."))
+        return
+
+    # Предупреждение - это долгая операция
+    title = _("Полная переиндексация", "Full Re-indexing")
+    text = _(
+        "Пересоздать ВСЕ вектора для персонажа '{cid}'?\n\n"
+        "Это перезапишет существующие эмбеддинги и может занять много времени.\n"
+        "Используйте только если данные повреждены или модель эмбеддингов изменилась.",
+        "Regenerate ALL embeddings for character '{cid}'?\n\n"
+        "This will overwrite existing embeddings and may take a long time.\n"
+        "Use only if data is corrupted or embedding model has changed."
+    ).format(cid=str(character_id))
+
+    reply = QMessageBox.question(gui, title, text,
+                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+
+    # Подсчёт общего количества
+    try:
+        from managers.rag_manager import RAGManager
+        rag = RAGManager(character_id)
+        conn = rag.db.get_connection()
+        c = conn.cursor()
+
+        hist_where = "character_id=? AND content != '' AND content IS NOT NULL"
+        c.execute(f"SELECT COUNT(*) FROM history WHERE {hist_where}", (character_id,))
+        h_c = c.fetchone()[0]
+
+        c.execute("SELECT COUNT(*) FROM memories WHERE character_id=? AND is_deleted=0", (character_id,))
+        m_c = c.fetchone()[0]
+        conn.close()
+
+        total_count = h_c + m_c
+        if total_count == 0:
+            QMessageBox.information(gui, _("Инфо", "Info"),
+                                    _("Нет записей для индексации.", "No records to index."))
+            return
+
+    except Exception as e:
+        logger.warning(f"Skipping count check: {e}")
+        total_count = 0
+
+    # Запуск воркера
+    gui._full_reindex_worker = FullReindexWorker(character_id)
+
+    progress = QProgressDialog(
+        _("Полная переиндексация...", "Full re-indexing..."),
+        _("Отмена", "Cancel"),
+        0, 100, gui
+    )
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setValue(0)
+    progress.setAutoClose(False)
+    progress.setAutoReset(False)
+
+    def on_progress(curr, total):
+        progress.setMaximum(total)
+        progress.setValue(curr)
+        progress.setLabelText(
+            _("Обработано: {c} / {t}", "Processed: {c} / {t}").format(c=curr, t=total)
+        )
+
+    def on_finished(count):
+        progress.close()
+        QMessageBox.information(
+            gui,
+            _("Готово", "Done"),
+            _("Переиндексировано записей: {n}", "Records re-indexed: {n}").format(n=count)
+        )
+        gui._full_reindex_worker = None
+
+    def on_error(msg):
+        progress.close()
+        QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
+        gui._full_reindex_worker = None
+
+    def on_cancel():
+        gui._full_reindex_worker = None
+
+    gui._full_reindex_worker.progress_signal.connect(on_progress)
+    gui._full_reindex_worker.finished_signal.connect(on_finished)
+    gui._full_reindex_worker.error_signal.connect(on_error)
+    progress.canceled.connect(on_cancel)
+
+    progress.show()
+    gui._full_reindex_worker.start()

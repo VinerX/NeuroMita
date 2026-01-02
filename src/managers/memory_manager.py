@@ -520,6 +520,7 @@ class MemoryManager:
             "<-memory>2</memory>",
             "<+memory>high|content</memory>",
             "<#memory>4|low|content</memory>"
+            "Prioritize English in memories to save tokens."
         ]
 
         full_message = (

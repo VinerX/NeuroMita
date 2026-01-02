@@ -214,6 +214,18 @@ def build_character_settings_ui(self, parent_layout):
     self.btn_reindex.setObjectName("SecondaryButton")
     dbt_h.addWidget(self.btn_reindex, 1)
 
+
+    # Отдельная кнопка: переиндексировать ВСЁ (все строки)
+    self.btn_reindex_all = QPushButton(_("Переиндексировать всё", "Re-index ALL"))
+    self.btn_reindex_all.setToolTip(_(
+            "Пересоздать вектора для всех строк выбранного персонажа (history + memories).",
+            "Regenerate embeddings for all rows of selected character (history + memories)."
+    ))
+    self.btn_reindex_all.setIcon(qta.icon('fa5s.sync-alt', color='#ffffff'))
+    self.btn_reindex_all.setObjectName("SecondaryButton")
+    self.history_section.add_widget(self.btn_reindex_all)
+
+
     # Добавляем сохраненный виджет
     self.history_section.add_widget(self.db_tools_row)
 
