@@ -290,6 +290,7 @@ class RAGManager:
         noise_max = self._get_float_setting("RAG_NOISE_MAX", 0.05)
 
         query_text = self._build_query_from_recent(query, tail=2)
+        query_text = self.rag_clean_text(query_text)
         query_vec = self._get_embedding(query_text, use_event_bus=True)
         if query_vec is None:
             return []
@@ -336,13 +337,14 @@ class RAGManager:
         # Перенос инициализации now для использования в memories
         now = datetime.datetime.now()
 
+        # У воспоминаний преимущество перед просто сообщениями
         def prio_bonus(p: str) -> float:
             pl = str(p or "Normal").strip().lower()
             if pl in ("critical", "high"):
-                return 0.2
+                return 0.25
             if pl == "low":
-                return -0.1
-            return 0.0
+                return 0
+            return 0.1
 
         def entity_bonus_from_participants(parts: list[str]) -> float:
             if not ctx_actors or not parts:
@@ -508,7 +510,7 @@ class RAGManager:
         # --- Detailed logging: Top 5 и Bottom 5
         try:
             if scored and detailed_logs:
-                def _clip(s: Any, n: int = 90) -> str:
+                def _clip(s: Any, n: int = 200) -> str:
                     t = str(s or "").replace("\n", " ").strip()
                     return (t[:n] + "…") if len(t) > n else t
 
@@ -522,7 +524,7 @@ class RAGManager:
                     logger.info(
                         f"[RAG] {src}:{rid} | Base:{dbg.get('sim'):.3f} | Time:{dbg.get('time'):.3f} "
                         f"| Prio:{dbg.get('prio'):.3f} | Ent:{dbg.get('entity'):.3f} | Final:{dbg.get('final'):.3f} "
-                        f"| Content:\"{_clip(item.get('content'))}\""
+                        f"| Content:\"{self.rag_clean_text(_clip(item.get('content')))}\""
                     )
 
                 logger.info("[RAG] ---- TOP 5 ----")
