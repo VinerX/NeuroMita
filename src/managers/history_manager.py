@@ -253,13 +253,16 @@ class HistoryManager:
         cursor = conn.cursor()
 
         try:
+            # 1. Переменные
             for k, v in variables.items():
                 val_str = json.dumps(v, ensure_ascii=False)
                 cursor.execute('''
-                    INSERT INTO variables (character_id, key, value) VALUES(?, ?, ?)
-                    ON CONFLICT(character_id, key) DO UPDATE SET value=excluded.value
-                ''', (self.storage_key, k, val_str))
+                      INSERT INTO variables (character_id, key, value) VALUES(?, ?, ?)
+                      ON CONFLICT(character_id, key) DO UPDATE SET value=excluded.value
+                  ''', (self.storage_key, k, val_str))
 
+            # 2. История
+            # Удаляем активные, чтобы перезаписать актуальным состоянием
             cursor.execute('DELETE FROM history WHERE character_id = ? AND is_active = 1', (self.storage_key,))
 
             for msg in messages:
@@ -271,10 +274,23 @@ class HistoryManager:
 
                 db_content, db_meta = self._prepare_message_for_db(msg.get("role"), raw_content, temp_meta)
 
+                # Вставляем сообщение
                 cursor.execute('''
-                    INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
-                    VALUES (?, ?, ?, 1, ?, ?)
-                ''', (self.storage_key, msg.get("role"), db_content, db_meta, datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
+                      INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
+                      VALUES (?, ?, ?, 1, ?, ?)
+                  ''', (self.storage_key, msg.get("role"), db_content, db_meta,
+                        datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
+
+                # [ИСПРАВЛЕНИЕ] Сразу генерируем вектор для вставленной строки!
+                new_row_id = cursor.lastrowid
+                if new_row_id and db_content:
+                    # Важно: это синхронный вызов. При сохранении большой истории может быть микро-фриз,
+                    # но зато данные будут целостными.
+                    # Если RAGManager инициализирован корректно, он обновит запись.
+                    try:
+                        self.rag.update_history_embedding(new_row_id, str(db_content))
+                    except Exception as e:
+                        logger.error(f"Failed to update embedding inside save_history: {e}")
 
             conn.commit()
         except Exception as e:
@@ -318,66 +334,7 @@ class HistoryManager:
         conn.commit()
         conn.close()
 
-    def save_history(self, data):
-        """
-        LEGACY/SYNC METHOD.
-        Используйте с осторожностью. Перезаписывает историю.
-        Теперь стараемся делать Smart Merge вместо полного удаления, чтобы сохранить эмбеддинги.
-        """
-        messages = data.get("messages", [])
-        variables = data.get("variables", {})
 
-        conn = self.db.get_connection()
-        cursor = conn.cursor()
-
-        try:
-            # 1. Сохраняем переменные (тут всё ок)
-            for k, v in variables.items():
-                val_str = json.dumps(v, ensure_ascii=False)
-                cursor.execute('''
-                    INSERT INTO variables (character_id, key, value) VALUES(?, ?, ?)
-                    ON CONFLICT(character_id, key) DO UPDATE SET value=excluded.value
-                ''', (self.storage_key, k, val_str))
-
-            # 2. История. Раньше тут был DELETE ALL. Это убивало эмбеддинги.
-            # Если мы хотим обновить контекст целиком, нам нужно быть аккуратнее.
-            # Для простоты и сохранения логики списка: если сообщения полностью изменились
-            # (удалены/отредактированы юзером), старый подход надежнее для целостности текста,
-            # НО мы потеряем вектора.
-
-            # КОМПРОМИСС: Мы удаляем только то, что отличается, или просто маркируем флаг.
-            # Но для текущей задачи "не дублировать и не терять вектора":
-            # Лучше всего НЕ вызывать save_history при обычном чате.
-            # Если же вызов идет при ручном редактировании истории - потеря вектора допустима (он пересоздастся кнопкой индексации).
-
-            # Оставляем DELETE для надежности структуры (список мог уменьшиться),
-            # но добавляем логирование, что это тяжелая операция.
-            # В будущем лучше реализовать ID-based update.
-
-            cursor.execute('DELETE FROM history WHERE character_id = ? AND is_active = 1', (self.storage_key,))
-
-            for msg in messages:
-                raw_content = msg.get("content")
-                temp_meta = {}
-                if "image" in msg:
-                    temp_meta["image"] = msg["image"]
-
-                db_content, db_meta = self._prepare_message_for_db(msg.get("role"), raw_content, temp_meta)
-
-                # Вставляем заново. Embedding будет NULL.
-                # Пользователю придется нажать "Переиндексация", если он отредактировал всю историю вручную.
-                cursor.execute('''
-                    INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
-                    VALUES (?, ?, ?, 1, ?, ?)
-                ''', (self.storage_key, msg.get("role"), db_content, db_meta,
-                      datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
-
-            conn.commit()
-            # logger.warning(f"History full rewrite triggered for {self.storage_key}. Embeddings regarding active history might be reset.")
-        except Exception as e:
-            logger.error(f"DB Error saving history: {e}", exc_info=True)
-        finally:
-            conn.close()
 
     def save_missed_history(self, missed_messages: list):
         conn = self.db.get_connection()
@@ -406,6 +363,44 @@ class HistoryManager:
 
     def _default_history(self):
         return {"fixed_parts": [], "messages": [], "variables": {}}
+
+    def get_total_messages_count(self) -> int:
+        """Возвращает общее количество активных сообщений."""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM history WHERE character_id = ? AND is_active = 1', (self.storage_key,))
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
+
+    def get_recent_messages(self, limit: int = 50, offset: int = 0) -> list[dict]:
+        """
+        Возвращает срез сообщений (для пагинации).
+        offset - сколько сообщений пропустить с КОНЦА (от новых к старым).
+        """
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        # Получаем данные в обратном порядке (сначала новые), применяем лимит и оффсет
+        cursor.execute('''
+              SELECT role, content, meta_data, timestamp 
+              FROM history 
+              WHERE character_id = ? AND is_active = 1
+              ORDER BY id DESC
+              LIMIT ? OFFSET ?
+          ''', (self.storage_key, limit, offset))
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        messages = []
+        for row in rows:
+            msg = self._reconstruct_message_from_db(row[0], row[1], row[2])
+            msg["time"] = row[3] if row[3] else ""
+            messages.append(msg)
+
+        # Разворачиваем обратно, чтобы они шли хронологически (от старых к новым)
+        return messages[::-1]
 
     def get_messages_for_compression(self, num_messages: int) -> list[dict]:
         full_hist = self.load_history()

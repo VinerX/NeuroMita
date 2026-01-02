@@ -256,26 +256,25 @@ class ModelController:
                 return True
         return False
 
-
     def _append_history_message(self, ch_ref, msg: dict) -> bool:
         if ch_ref is None or not isinstance(msg, dict):
             return False
 
         try:
-            history_data = ch_ref.history_manager.load_history()
-            messages = history_data.get("messages", []) or []
-            if not isinstance(messages, list):
-                messages = []
+            if hasattr(ch_ref, "add_message_to_history"):
+                ch_ref.add_message_to_history(msg)
+            else:
+                # Fallback для старых версий (если вдруг character не обновлен)
+                history_data = ch_ref.load_history()
+                messages = history_data.get("messages", []) or []
+                messages.append(msg)
+                ch_ref.save_character_state_to_history(messages)
 
-            mid = str(msg.get("message_id") or "")
-            if mid and self._has_message_id_recent(messages, mid):
-                return False
-
-            messages.append(msg)
-            ch_ref.save_character_state_to_history(messages)
             return True
         except Exception as e:
-            logger.warning(f"[ModelController] append_history_message failed for {getattr(ch_ref,'char_id','?')}: {e}", exc_info=True)
+            logger.warning(
+                f"[ModelController] append_history_message failed for {getattr(ch_ref, 'char_id', '?')}: {e}",
+                exc_info=True)
             return False
 
 
@@ -420,8 +419,10 @@ class ModelController:
 
         return mm
 
-
     def _on_load_history(self, event: Event):
+        """
+        Загрузка первой страницы истории (самые свежие сообщения).
+        """
         self.loaded_messages_offset = 0
         self.total_messages_in_history = 0
         self.loading_more_history = False
@@ -431,85 +432,97 @@ class ModelController:
             self.event_bus.emit("history_loaded", {"messages": [], "total_messages": 0, "loaded_offset": 0})
             return
 
-        chat_history = ch.load_history()
-        all_messages = chat_history.get("messages", []) or []
-        if not isinstance(all_messages, list):
-            all_messages = []
+        # [ИСПРАВЛЕНО] Оптимизация SQL
+        hm = getattr(ch, "history_manager", None)
 
-        prepared = self.ui_projector.project_for_ui(all_messages)
+        # Проверяем, поддерживает ли HM новые методы пагинации
+        if hm and hasattr(hm, "get_total_messages_count") and hasattr(hm, "get_recent_messages"):
+            self.total_messages_in_history = hm.get_total_messages_count()
 
-        self.total_messages_in_history = len(prepared)
+            # Загружаем только последние N сообщений
+            # Offset 0 = самые последние
+            raw_messages = hm.get_recent_messages(limit=self.lazy_load_batch_size, offset=0)
 
-        max_display_messages = int(self.settings.get("MAX_CHAT_HISTORY_DISPLAY", 200))
-        start_index = max(0, self.total_messages_in_history - max_display_messages)
-        messages_to_load = prepared[start_index:]
+            self.loaded_messages_offset = len(raw_messages)
 
-        self.loaded_messages_offset = len(messages_to_load)
+            # Проекция для UI (цвета, мета-теги)
+            prepared = self.ui_projector.project_for_ui(raw_messages)
 
-        self.event_bus.emit("history_loaded", {
-            "messages": messages_to_load,
-            "total_messages": self.total_messages_in_history,
-            "loaded_offset": self.loaded_messages_offset
-        })
+            self.event_bus.emit("history_loaded", {
+                "messages": prepared,
+                "total_messages": self.total_messages_in_history,
+                "loaded_offset": self.loaded_messages_offset
+            })
+        else:
+            # Fallback (Старый метод: грузим всё)
+            chat_history = ch.load_history()
+            all_messages = chat_history.get("messages", []) or []
+            self.total_messages_in_history = len(all_messages)
 
+            prepared_all = self.ui_projector.project_for_ui(all_messages)
 
-    # def _on_load_more_history(self, event: Event):
-    #     if self.loaded_messages_offset >= self.total_messages_in_history:
-    #         return
+            # Берем хвост списка
+            max_display = self.lazy_load_batch_size
+            start_index = max(0, self.total_messages_in_history - max_display)
+            messages_to_load = prepared_all[start_index:]
 
-    #     data = event.data or {}
-    #     requested_cid = self._normalize_character_id_from_data(data)
+            self.loaded_messages_offset = len(messages_to_load)
 
-    #     self.loading_more_history = True
-    #     try:
-    #         ch = self._get_character_ref(requested_cid) if requested_cid else self._get_current_character_ref()
-    #         if not ch:
-    #             return
-
-    #         chat_history = ch.load_history()
-    #         all_messages = chat_history.get("messages", []) or []
-
-    #         end_index = self.total_messages_in_history - self.loaded_messages_offset
-    #         start_index = max(0, end_index - self.lazy_load_batch_size)
-    #         messages_to_prepend = all_messages[start_index:end_index]
-
-    #         if messages_to_prepend:
-    #             self.loaded_messages_offset += len(messages_to_prepend)
-    #             self.event_bus.emit("more_history_loaded", {
-    #                 "messages": messages_to_prepend,
-    #                 "loaded_offset": self.loaded_messages_offset
-    #             })
-    #     finally:
-    #         self.loading_more_history = False
+            self.event_bus.emit("history_loaded", {
+                "messages": messages_to_load,
+                "total_messages": self.total_messages_in_history,
+                "loaded_offset": self.loaded_messages_offset
+            })
 
     def _on_load_more_history(self, event: Event):
+        """
+        Подгрузка старых сообщений при скролле вверх.
+        """
         if self.loaded_messages_offset >= self.total_messages_in_history:
             return
 
         self.loading_more_history = True
         try:
             ch = self._get_current_character_ref()
-            if not ch:
-                return
+            if not ch: return
 
-            chat_history = ch.load_history()
-            all_messages = chat_history.get("messages", []) or []
-            if not isinstance(all_messages, list):
-                all_messages = []
+            hm = getattr(ch, "history_manager", None)
 
-            prepared = self.ui_projector.project_for_ui(all_messages)
-            self.total_messages_in_history = len(prepared)
+            # [ИСПРАВЛЕНО] Оптимизация SQL
+            if hm and hasattr(hm, "get_recent_messages"):
+                # offset равен текущему количеству загруженных (мы идем от конца вглубь)
+                raw_messages = hm.get_recent_messages(
+                    limit=self.lazy_load_batch_size,
+                    offset=self.loaded_messages_offset
+                )
 
-            end_index = self.total_messages_in_history - self.loaded_messages_offset
-            start_index = max(0, end_index - self.lazy_load_batch_size)
-            messages_to_prepend = prepared[start_index:end_index]
+                if raw_messages:
+                    self.loaded_messages_offset += len(raw_messages)
+                    prepared = self.ui_projector.project_for_ui(raw_messages)
 
-            if messages_to_prepend:
-                self.loaded_messages_offset += len(messages_to_prepend)
-                self.event_bus.emit("more_history_loaded", {
-                    "messages": messages_to_prepend,
-                    "loaded_offset": self.loaded_messages_offset
-                })
+                    self.event_bus.emit("more_history_loaded", {
+                        "messages": prepared,
+                        "loaded_offset": self.loaded_messages_offset
+                    })
+            else:
+                # Fallback
+                chat_history = ch.load_history()
+                all_messages = chat_history.get("messages", []) or []
+                self.total_messages_in_history = len(all_messages)  # Обновляем на всякий случай
+
+                prepared_all = self.ui_projector.project_for_ui(all_messages)
+
+                end_index = self.total_messages_in_history - self.loaded_messages_offset
+                start_index = max(0, end_index - self.lazy_load_batch_size)
+
+                messages_to_prepend = prepared_all[start_index:end_index]
+
+                if messages_to_prepend:
+                    self.loaded_messages_offset += len(messages_to_prepend)
+                    self.event_bus.emit("more_history_loaded", {
+                        "messages": messages_to_prepend,
+                        "loaded_offset": self.loaded_messages_offset
+                    })
         finally:
             self.loading_more_history = False
 
