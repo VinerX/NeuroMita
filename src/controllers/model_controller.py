@@ -1,6 +1,7 @@
 # src/controllers/model_controller.py
 from __future__ import annotations
 
+from managers.rag_manager import RAGManager
 import base64
 import json
 import datetime
@@ -674,30 +675,9 @@ class ModelController:
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
 
-        # ---------------------------------------------------------------------
+
         # [RAG INTEGRATION] Внедрение контекста из памяти
-        # ---------------------------------------------------------------------
-        # Мы проверяем, есть ли текст от пользователя и метод RAG у персонажа.
-        # Если есть релевантные воспоминания, добавляем их в system_input.
-        final_input = False
-        if user_input:
-            final_input = user_input
-        elif system_input:
-            final_input = system_input
-
-        if final_input and hasattr(char, "get_relevant_context"):
-            try:
-                # Ищем похожие воспоминания/историю
-                rag_context = char.get_relevant_context(str(final_input))
-
-                if rag_context:
-                    # Если system_input уже есть, добавляем через отступ, иначе просто присваиваем
-                    separator = "\n\n" if system_input else ""
-                    system_input = f"{system_input}{separator}{rag_context}"
-                    logger.info(f"[{char_id}] RAG context injected into system_input.")
-            except Exception as e:
-                # Не роняем генерацию, если RAG упал (например, модель не загрузилась)
-                logger.warning(f"[{char_id}] Failed to get RAG context: {e}")
+        system_input = self.process_rag(char_id, system_input, user_input)
         # ---------------------------------------------------------------------
 
 
@@ -893,6 +873,73 @@ class ModelController:
             logger.error(f"Error during LLM generation/processing: {e}", exc_info=True)
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": str(e)})
             return None
+
+    def process_rag(self, char_id, system_input, user_input):
+        # ---------------------------------------------------------------------
+        # Требования:
+        # - RAG выполняется ДО BUILD_PROMPT
+        # - результаты НЕ смешиваются с chat history, а кладутся в system prompt
+        # - формат: <relevant_memories>...</relevant_memories> и <past_context>...</past_context>
+        final_input = False
+        if user_input:
+            final_input = user_input
+        elif system_input:
+            final_input = system_input
+        if final_input:
+            try:
+                rag = RAGManager(char_id)
+                results = rag.search_relevant(str(final_input), limit=8, threshold=0.4)
+
+                if results:
+                    mem_lines = []
+                    hist_lines = []
+
+                    def _clip(s: Any, n: int = 700) -> str:
+                        t = str(s or "").strip()
+                        return (t[:n] + "…") if len(t) > n else t
+
+                    for r in results:
+                        if not isinstance(r, dict):
+                            continue
+                        src = r.get("source")
+                        if src == "memory":
+                            pr = r.get("priority")
+                            tp = r.get("type")
+                            dt = r.get("date_created")
+                            mem_lines.append(
+                                f"- [{r.get('score'):.3f}] ({tp}, prio={pr}, date={dt}) {_clip(r.get('content'))}"
+                            )
+                        elif src == "history":
+                            dt = r.get("date")
+                            sp = r.get("speaker") or ""
+                            tg = r.get("target") or ""
+                            meta = ""
+                            if sp and tg:
+                                meta = f"{sp}→{tg}"
+                            elif sp:
+                                meta = sp
+                            elif tg:
+                                meta = f"→{tg}"
+                            meta_s = f" ({meta})" if meta else ""
+
+                            hist_lines.append(
+                                f"- [{r.get('score'):.3f}] ({dt}){meta_s} {_clip(r.get('content'))}"
+                            )
+
+                    blocks = []
+                    if mem_lines:
+                        blocks.append("<relevant_memories>\n" + "\n".join(mem_lines) + "\n</relevant_memories>")
+                    if hist_lines:
+                        blocks.append("<past_context>\n" + "\n".join(hist_lines) + "\n</past_context>")
+
+                    if blocks:
+                        separator = "\n\n" if system_input else ""
+                        system_input = f"{system_input}{separator}" + "\n\n".join(blocks)
+                        logger.info(
+                            f"[{char_id}] RAG blocks injected into system_input (mem={len(mem_lines)}, hist={len(hist_lines)}).")
+            except Exception as e:
+                logger.warning(f"[{char_id}] Failed to run RAG (ignored): {e}", exc_info=True)
+        return system_input
 
     # ---------------------------------------------------------------------
     # Reload prompts
