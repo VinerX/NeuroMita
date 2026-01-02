@@ -424,6 +424,12 @@ class HistoryManager:
                 base.append(col)
         return base
 
+    def _history_not_deleted_clause(self) -> str:
+        # старые БД могут ещё не иметь is_deleted — тогда не добавляем условие
+        if "is_deleted" in self._history_cols:
+            return " AND is_deleted = 0 "
+        return ""
+
     def _insert_history_row(self, *, msg: dict, is_active: int) -> Optional[int]:
         """
         Вставка строки history без падений на старых БД:
@@ -453,6 +459,9 @@ class HistoryManager:
         # всегда
         cols.extend(["character_id", "role", "content", "is_active", "meta_data", "timestamp"])
         vals.extend([self.storage_key, msg.get("role"), db_content, int(is_active), db_meta, ts])
+        if "is_deleted" in self._history_cols:
+            cols.append("is_deleted")
+            vals.append(0)
 
         # опциональные колонки (если они реально есть)
         for k in self._HISTORY_DESIRED_COLUMNS.keys():
@@ -518,7 +527,7 @@ class HistoryManager:
         sql = f"""
             SELECT {", ".join(select_cols)}
             FROM history
-            WHERE character_id = ? AND is_active = 1
+            WHERE character_id = ? AND is_active = 1 {self._history_not_deleted_clause()}
             ORDER BY id ASC
         """
         cursor.execute(sql, (self.storage_key,))
@@ -663,7 +672,7 @@ class HistoryManager:
     def get_total_messages_count(self) -> int:
         conn = self.db.get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM history WHERE character_id = ? AND is_active = 1", (self.storage_key,))
+        cursor.execute(f"SELECT COUNT(*) FROM history WHERE character_id = ? AND is_active = 1 {self._history_not_deleted_clause()}", (self.storage_key,))
         count = cursor.fetchone()[0]
         conn.close()
         return count
@@ -678,7 +687,7 @@ class HistoryManager:
         sql = f"""
             SELECT {", ".join(select_cols)}
             FROM history
-            WHERE character_id = ? AND is_active = 1
+            WHERE character_id = ? AND is_active = 1 {self._history_not_deleted_clause()}
             ORDER BY id DESC
             LIMIT ? OFFSET ?
         """
@@ -725,6 +734,7 @@ class HistoryManager:
             """
             SELECT id FROM history
             WHERE character_id = ? AND is_active = 1
+            {self._history_not_deleted_clause()}
             ORDER BY id ASC
             LIMIT ?
             """,
@@ -753,15 +763,26 @@ class HistoryManager:
     def get_missing_embeddings_count(self) -> int:
         conn = self.db.get_connection()
         cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT COUNT(*) FROM history
-            WHERE character_id = ? AND (embedding IS NULL) AND content != "" AND content IS NOT NULL
-            """,
-            (self.storage_key,),
-        )
-        hist_count = cursor.fetchone()[0]
+        # history: учитываем is_deleted, если колонка есть
+        try:
+            extra = " AND is_deleted = 0 " if "is_deleted" in self._history_cols else ""
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) FROM history
+                WHERE character_id = ? AND (embedding IS NULL) AND content != "" AND content IS NOT NULL {extra}
+                """,
+                (self.storage_key,),
+            )
+            hist_count = cursor.fetchone()[0]
+        except Exception:
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM history
+                WHERE character_id = ? AND (embedding IS NULL) AND content != "" AND content IS NOT NULL
+                """,
+                (self.storage_key,),
+            )
+            hist_count = cursor.fetchone()[0]
 
         cursor.execute(
             """
