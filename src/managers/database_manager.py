@@ -2,7 +2,7 @@ import sqlite3
 import logging
 import os
 from threading import Lock
-from typing import List, Tuple
+from typing import Iterable, Tuple, Set
 
 class DatabaseManager:
     _instance = None
@@ -23,6 +23,55 @@ class DatabaseManager:
         self.db_path = os.path.join("Histories", "world.db")
         self._init_db()
         self._initialized = True
+
+    def get_table_columns(self, table: str) -> Set[str]:
+        """Возвращает set фактических колонок таблицы (не падает)."""
+        conn = self.get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(f"PRAGMA table_info({table})")
+            return set(r[1] for r in cur.fetchall() if r and len(r) > 1)
+        except Exception as e:
+            logging.warning(f"Failed to read schema for table '{table}': {e}")
+            return set()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def ensure_columns(self, table: str, columns: Iterable[Tuple[str, str]]) -> Set[str]:
+        """
+        Гарантирует наличие колонок:
+        - если колонки нет -> пытаемся ALTER TABLE ADD COLUMN
+        - любые ошибки логируем, но НЕ валим приложение
+        Возвращает актуальный набор колонок после попытки.
+        """
+        with self._lock:
+            existing = self.get_table_columns(table)
+            to_add = [(c, t) for (c, t) in columns if c not in existing]
+            if not to_add:
+                return existing
+
+            conn = self.get_connection()
+            try:
+                cur = conn.cursor()
+                for col, col_type in to_add:
+                    try:
+                        logging.info(f"DB ensure: adding column {table}.{col} {col_type}")
+                        cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+                    except Exception as e:
+                        logging.warning(f"DB ensure: failed to add {table}.{col}: {e}")
+                conn.commit()
+            except Exception as e:
+                logging.warning(f"DB ensure: failed to ensure columns for {table}: {e}")
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+            return self.get_table_columns(table)
 
     def get_connection(self):
         # timeout + busy_timeout: чтобы не падать сразу при конкурирующих записях
@@ -93,34 +142,78 @@ class DatabaseManager:
         self._upgrade_schema()
 
     def _upgrade_schema(self):
-        """Добавляет недостающие колонки, если они не были созданы ранее"""
+        """Добавляет недостающие колонки, если они не были созданы ранее.
+        Принцип: если не хватает столбца — пытаемся добавить; если не получилось — не падаем.
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
 
-        # Добавлен ("history", "target", "TEXT") в список обновлений
-        updates = [
-            ("history", "target", "TEXT"),
-            ("history", "rag_id", "TEXT"),
-            ("history", "tags", "TEXT"),
-            ("history", "participants", "TEXT"),
-            ("history", "is_deleted", "INTEGER DEFAULT 0"),
-            ("memories", "tags", "TEXT"),
-            ("memories", "participants", "TEXT"),
+        # Полный список "желаемых" колонок по таблицам.
+        # ВАЖНО: SQLite позволяет ADD COLUMN, но не позволяет легко добавлять constraints/primary keys задним числом.
+        desired = {
+            "memories": [
+                ("character_id", "TEXT"),
+                ("eternal_id", "INTEGER"),
+                ("content", "TEXT"),
+                ("priority", "TEXT DEFAULT 'Normal'"),
+                ("type", "TEXT DEFAULT 'fact'"),
+                ("date_created", "TEXT"),
+                ("is_deleted", "INTEGER DEFAULT 0"),
+                ("is_forgotten", "INTEGER DEFAULT 0"),
+                ("embedding_id", "INTEGER"),
+                ("tags", "TEXT"),
+                ("participants", "TEXT"),
+                ("embedding", "BLOB"),
+            ],
+            "history": [
+                ("character_id", "TEXT"),
+                ("role", "TEXT"),
+                ("target", "TEXT"),
+                ("participants", "TEXT"),
+                ("tags", "TEXT"),
+                ("rag_id", "TEXT"),
+                ("message_id", "TEXT"),
+                ("speaker", "TEXT"),
+                ("sender", "TEXT"),
+                ("event_type", "TEXT"),
+                ("req_id", "TEXT"),
+                ("task_uid", "TEXT"),
+                ("content", "TEXT"),
+                ("timestamp", "TEXT"),
+                ("is_active", "INTEGER DEFAULT 1"),
+                ("is_deleted", "INTEGER DEFAULT 0"),
+                ("meta_data", "TEXT"),
+                ("embedding", "BLOB"),
+            ],
+            "variables": [
+                ("character_id", "TEXT"),
+                ("key", "TEXT"),
+                ("value", "TEXT"),
+            ],
+        }
 
-            ("memories", "embedding", "BLOB"),  # Храним вектор как байты
-            ("history", "embedding", "BLOB")  # Храним вектор сообщения
-        ]
-
-        for table, column, col_type in updates:
-            cursor.execute(f"PRAGMA table_info({table})")
-            columns = [info[1] for info in cursor.fetchall()]
-
-            if column not in columns:
-                logging.info(f"Adding column {column} to table {table}...")
+        try:
+            for table, cols_to_ensure in desired.items():
                 try:
-                    cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+                    cursor.execute(f"PRAGMA table_info({table})")
+                    existing_cols = {row[1] for row in cursor.fetchall() if row and len(row) > 1}
                 except Exception as e:
-                    logging.error(f"Error upgrading {table}.{column}: {e}")
+                    logging.error(f"Failed to read PRAGMA table_info({table}): {e}")
+                    existing_cols = set()
 
-        conn.commit()
-        conn.close()
+                for col, col_type in cols_to_ensure:
+                    if col in existing_cols:
+                        continue
+                    try:
+                        logging.info(f"DB upgrade: Adding column {table}.{col} {col_type} ...")
+                        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+                    except Exception as e:
+                        # Не валим приложение, даже если не вышло (например, таблица отсутствует/повреждена)
+                        logging.error(f"DB upgrade: Error upgrading {table}.{col}: {e}")
+
+            conn.commit()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
