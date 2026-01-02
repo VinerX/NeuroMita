@@ -2,6 +2,7 @@ import sqlite3
 import logging
 import os
 from threading import Lock
+from typing import List, Tuple
 
 class DatabaseManager:
     _instance = None
@@ -71,7 +72,9 @@ class DatabaseManager:
                    content TEXT,
                    timestamp TEXT,
                    is_active INTEGER DEFAULT 1,
+                   is_deleted INTEGER DEFAULT 0,
                    meta_data TEXT
+                   ,embedding BLOB
                )
            ''')
 
@@ -100,6 +103,7 @@ class DatabaseManager:
             ("history", "rag_id", "TEXT"),
             ("history", "tags", "TEXT"),
             ("history", "participants", "TEXT"),
+            ("history", "is_deleted", "INTEGER DEFAULT 0"),
             ("memories", "tags", "TEXT"),
             ("memories", "participants", "TEXT"),
 
