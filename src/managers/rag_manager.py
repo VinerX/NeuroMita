@@ -118,3 +118,81 @@ class RAGManager:
         # Сортируем по score (от большего к меньшему) и берем топ
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:limit]
+
+    def index_all_missing(self, progress_callback=None) -> int:
+        """
+        Проходит по всем записям без вектора и генерирует его.
+        progress_callback(current, total) - для обновления UI
+        Возвращает количество обновленных записей.
+        """
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        # 1. Собираем ID для обновления
+        # История
+        cursor.execute('''
+              SELECT id, content FROM history 
+              WHERE character_id = ? AND embedding IS NULL AND content != "" AND content IS NOT NULL
+          ''', (self.character_id,))
+        hist_rows = cursor.fetchall()
+
+        # Воспоминания
+        cursor.execute('''
+              SELECT eternal_id, content FROM memories 
+              WHERE character_id = ? AND embedding IS NULL AND is_deleted = 0
+          ''', (self.character_id,))
+        mem_rows = cursor.fetchall()
+
+        total = len(hist_rows) + len(mem_rows)
+        if total == 0:
+            conn.close()
+            return 0
+
+        processed = 0
+
+        try:
+            # Обработка истории
+            for row in hist_rows:
+                row_id, content = row
+                # Генерируем вектор
+                # (предполагаем, что контент - строка, если JSON - надо парсить, но обычно там строка или JSON-string)
+                if content and isinstance(content, str):
+                    # Простая эвристика: если это JSON мультимодальности, берем только текст
+                    if content.strip().startswith('[') or content.strip().startswith('{'):
+                        # Тут можно добавить логику извлечения текста из JSON, если хранится JSON
+                        # Для простоты пока берем как есть, эмбеддер обрежет или обработает
+                        pass
+
+                    vec = self.embedder.get_embedding(content)
+                    if vec is not None:
+                        blob = self._array_to_blob(vec)
+                        cursor.execute("UPDATE history SET embedding = ? WHERE id = ?", (blob, row_id))
+
+                processed += 1
+                if progress_callback:
+                    progress_callback(processed, total)
+
+            conn.commit()  # Промежуточный коммит
+
+            # Обработка воспоминаний
+            for row in mem_rows:
+                eternal_id, content = row
+                if content:
+                    vec = self.embedder.get_embedding(content)
+                    if vec is not None:
+                        blob = self._array_to_blob(vec)
+                        cursor.execute("UPDATE memories SET embedding = ? WHERE character_id = ? AND eternal_id = ?",
+                                       (blob, self.character_id, eternal_id))
+
+                processed += 1
+                if progress_callback:
+                    progress_callback(processed, total)
+
+            conn.commit()
+
+        except Exception as e:
+            logger.error(f"Error during re-indexing: {e}", exc_info=True)
+        finally:
+            conn.close()
+
+        return processed

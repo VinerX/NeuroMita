@@ -191,6 +191,24 @@ def build_character_settings_ui(self, parent_layout):
     self.btn_migrate_db.setObjectName("SecondaryButton")
     self.history_section.add_widget(self.btn_migrate_db)
 
+    self.db_tools_row = QWidget()
+    dbt_h = QHBoxLayout(self.db_tools_row)
+    dbt_h.setContentsMargins(0, 0, 0, 0)
+    dbt_h.setSpacing(6)
+
+    self.btn_db_viewer = QPushButton(_("Просмотр БД", "DB Viewer"))
+    self.btn_db_viewer.setIcon(qta.icon('fa5s.table', color='#ffffff'))
+    self.btn_db_viewer.setObjectName("SecondaryButton")
+    dbt_h.addWidget(self.btn_db_viewer, 1)
+
+    self.btn_reindex = QPushButton(_("Переиндексация", "Re-index Knowledge"))
+    self.btn_reindex.setToolTip(_("Заполнить пустые вектора для RAG", "Fill missing vectors for RAG"))
+    self.btn_reindex.setIcon(qta.icon('fa5s.brain', color='#ffffff'))
+    self.btn_reindex.setObjectName("SecondaryButton")
+    dbt_h.addWidget(self.btn_reindex, 1)
+
+    # Добавляем сохраненный виджет
+    self.history_section.add_widget(self.db_tools_row)
 
     container_lay.addWidget(root)
     parent_layout.addWidget(container)

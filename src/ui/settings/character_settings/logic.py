@@ -11,6 +11,8 @@ from core.events import get_event_bus, Events
 from ui.settings.prompt_catalogue_settings import list_prompt_sets
 from managers.prompt_catalogue_manager import copy_prompt_set, get_prompt_catalogue_folder_name
 from utils.migrate_json_to_sqlite import migrate as run_json_migration
+from ui.dialogs.db_viewer import DbViewerDialog
+from PyQt6.QtWidgets import QProgressDialog
 
 def _prompt_set_key(character_id: str) -> str:
     return f"PROMPT_SET_{character_id}"
@@ -193,6 +195,10 @@ def wire_character_settings_logic(self):
         self.btn_reload_prompts.clicked.connect(lambda: reload_prompts(self))
     if hasattr(self, 'btn_migrate_db'):
         self.btn_migrate_db.clicked.connect(lambda: migrate_to_db(self))
+    if hasattr(self, 'btn_db_viewer'):
+        self.btn_db_viewer.clicked.connect(lambda: open_db_viewer(self))
+    if hasattr(self, 'btn_reindex'):
+        self.btn_reindex.clicked.connect(lambda: run_reindexing(self))
 
     _update_sync_indicator(self)
     QTimer.singleShot(300, lambda: _update_sync_indicator(self))
@@ -467,3 +473,101 @@ def _execute_migration(gui):
             gui._hide_loading_popup()
         logger.error(f"Migration failed: {e}", exc_info=True)
         QMessageBox.critical(gui, _("Ошибка", "Error"), f"Migration failed: {e}")
+
+
+def open_db_viewer(gui):
+    # Получаем ID текущего персонажа для фильтрации
+    event_bus = get_event_bus()
+    current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+    profile = current_profile_res[0] if current_profile_res else {}
+    char_id = profile.get("character_id")
+
+    # Открываем диалог. Используем WindowManager если он есть, или напрямую
+    # Для простоты можно модально, так как это инструмент отладки
+    dialog = DbViewerDialog(gui, character_id=char_id)
+    dialog.exec()
+
+
+def run_reindexing(gui):
+    event_bus = get_event_bus()
+
+    # Сначала проверим, есть ли что индексировать
+    # Получаем доступ к текущему персонажу
+    # (Это немного хак, лучше через событие, но допустим у нас есть доступ к controller.character_manager через gui.main_controller)
+    # Используем EventBus для вызова логики, если возможно, или прямой вызов если мы внутри GUI логики.
+
+    # Но проще всего - запросить это действие у системы.
+    # Так как логика в logic.py, а RAG внутри Character, нам нужно добраться до инстанса.
+
+    # Вариант: отправить событие
+    # gui.event_bus.emit(Events.RAG.REINDEX, ...)
+    # Но давай сделаем проще, через CharacterRef, так как мы в UI Logic
+
+    char_ref = gui.main_controller.character_controller.get_current_ref()
+    if not char_ref:
+        return
+
+    rag = char_ref.rag_manager if hasattr(char_ref, "rag_manager") else None
+
+    # Если rag не инициализирован в Character (а он сейчас в MemoryManager), надо достать его.
+    # В Character.py: self.memory_system = MemoryManager(...) -> self.rag = RAGManager(...)
+    if hasattr(char_ref, "memory_system") and hasattr(char_ref.memory_system, "rag"):
+        rag = char_ref.memory_system.rag
+    else:
+        # Fallback если rag_manager прямо в character (как в твоем snippet в Character.get_relevant_context)
+        rag = getattr(char_ref, "rag_manager", None)
+
+    if not rag:
+        QMessageBox.warning(gui, "Error", "RAG Manager not found for this character.")
+        return
+
+    # Считаем сколько пропущено
+    # (Мы добавили get_missing_embeddings_count в HistoryManager, но логичнее было в RAGManager)
+    # Давай используем метод из history_manager, так как он там уже есть в моем примере выше?
+    # Нет, в RAGManager логичнее.
+    # Предположим мы добавили count метод в RAGManager тоже (аналогично коду выше).
+
+    # Запускаем прогресс бар
+    count_missing = 0
+    # SQL count (можно вынести в метод RAGManager.count_missing())
+    try:
+        conn = rag.db.get_connection()
+        c = conn.cursor()
+        c.execute(
+            f"SELECT COUNT(*) FROM history WHERE character_id='{char_ref.char_id}' AND embedding IS NULL AND content != ''")
+        h_c = c.fetchone()[0]
+        c.execute(f"SELECT COUNT(*) FROM memories WHERE character_id='{char_ref.char_id}' AND embedding IS NULL")
+        m_c = c.fetchone()[0]
+        conn.close()
+        count_missing = h_c + m_c
+    except:
+        pass
+
+    if count_missing == 0:
+        QMessageBox.information(gui, _("Инфо", "Info"),
+                                _("Все записи уже проиндексированы.", "All records are already indexed."))
+        return
+
+    progress = QProgressDialog(_("Генерация векторов...", "Generating embeddings..."), _("Отмена", "Cancel"), 0,
+                               count_missing, gui)
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.show()
+
+    def update_progress(current, total):
+        progress.setValue(current)
+        if progress.wasCanceled():
+            return
+
+    # Запускаем в потоке UI (синхронно) или через worker.
+    # Так как embedding на CPU может фризить, лучше бы асинхронно,
+    # но пока сделаем просто processEvents внутри колбэка
+
+    from PyQt6.QtWidgets import QApplication
+    def safe_callback(curr, tot):
+        progress.setValue(curr)
+        QApplication.processEvents()
+
+    updated = rag.index_all_missing(progress_callback=safe_callback)
+
+    progress.close()
+    QMessageBox.information(gui, "Done", f"Re-indexed {updated} records.")
