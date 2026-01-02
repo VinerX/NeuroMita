@@ -217,7 +217,7 @@ QCheckBox::indicator:disabled {
 }
 
 /* ========= Scrolls ========= */
-QScrollArea, QAbstractScrollArea {
+QScrollArea {
     background-color: transparent;
     border: none;
 }
