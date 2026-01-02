@@ -277,6 +277,12 @@ class RAGManager:
         include_forgotten = self._get_bool_setting("RAG_INCLUDE_FORGOTTEN", False)
         forgotten_penalty = self._get_float_setting("RAG_FORGOTTEN_PENALTY", -0.15)  # отрицательный = реже всплывает
 
+        # Как искать воспоминания:
+        # - "forgotten" (по умолчанию): только is_forgotten=1 (чтобы не дублировать активную память в промпте)
+        # - "active": только is_forgotten=0
+        # - "all": и те, и те (может давать дубли)
+        memory_mode = str(SettingsManager.get("RAG_MEMORY_MODE", "forgotten") or "forgotten").strip().lower()
+
         noise_max = self._get_float_setting("RAG_NOISE_MAX", 0.05)
         noise_max = max(0.0, min(0.2, noise_max))
 
@@ -349,20 +355,26 @@ class RAGManager:
             b += entity_bonus_from_participants(parts)
             return min(0.2, b)  # небольшой потолок
 
-        # 1) Memories (is_deleted=0 AND is_forgotten=0)
-        # По умолчанию забытые НЕ участвуют.
-        # Если include_forgotten=True — участвуют, но получат штраф forgotten_penalty в финальном скоре.
+        # 1) Memories
+        # ТВОЯ ЗАДУМКА: активные memories уже в промпте, поэтому RAG по умолчанию ищет только забытые.
         try:
             mem_where = "character_id=? AND is_deleted=0 AND embedding IS NOT NULL"
-            if "is_forgotten" in self._mem_cols and not include_forgotten:
-                mem_where += " AND is_forgotten=0"
+
+            has_forgotten_col = ("is_forgotten" in self._mem_cols)
+            if has_forgotten_col:
+                if memory_mode == "forgotten":
+                    mem_where += " AND is_forgotten=1"
+                elif memory_mode == "active":
+                    mem_where += " AND is_forgotten=0"
+                elif memory_mode == "all":
+                    pass  # без фильтра
 
             # если колонка is_forgotten есть — выберем её, чтобы применить штраф
             select_cols = [
                 "eternal_id", "content", "embedding", "type",
                 "priority", "date_created", "participants",
             ]
-            if "is_forgotten" in self._mem_cols:
+            if has_forgotten_col:
                 select_cols.append("is_forgotten")
 
             cursor.execute(
@@ -383,6 +395,10 @@ class RAGManager:
                 eternal_id, content, blob, mtype, priority, date_created, participants = row
                 is_forgotten = 0
 
+            # Если колонки нет (старая БД), а режим "forgotten" — просто ничего не тащим (иначе пойдут дубли).
+            if ("is_forgotten" not in self._mem_cols) and memory_mode == "forgotten":
+                continue
+
             vec = self._blob_to_array(blob)
             if vec is None:
                 continue
@@ -393,8 +409,7 @@ class RAGManager:
             pb = prio_bonus(priority)
             eb = entity_bonus_from_participants(self._json_loads_list(participants))
             noise = random.uniform(0.0, noise_max)
-            fp = forgotten_penalty if (include_forgotten and is_forgotten == 1) else 0.0
-            final = (sim * K1) + (pb * K3) + (eb * K4) + fp + noise  # timefactor для memories не применяем
+            final = (sim * K1) + (pb * K3) + (eb * K4) + noise  # timefactor для memories не применяем
 
             scored.append({
                 "source": "memory",
@@ -540,8 +555,7 @@ class RAGManager:
 
         # Воспоминания
         mem_where = "character_id=? AND embedding IS NULL AND is_deleted=0"
-        if "is_forgotten" in self._mem_cols:
-            mem_where += " AND is_forgotten=0"
+        # НЕ фильтруем is_forgotten: забытые тоже должны иметь embedding, раз мы их ищем RAG-ом
         cursor.execute(
             f"SELECT eternal_id, content FROM memories WHERE {mem_where}",
             (self.character_id,),

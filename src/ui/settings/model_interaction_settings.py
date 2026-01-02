@@ -364,3 +364,87 @@ def setup_model_interaction_controls(self, parent):
     create_settings_section(self, parent,
                            _("Обработка команд", "Command Processing"),
                            command_processing_config)
+
+    # ------------------------------------------------------------------
+    # RAG & Memory (NEW)
+    # ------------------------------------------------------------------
+    rag_memory_config = [
+        {'label': _('RAG и память', 'RAG & Memory'), 'type': 'subsection'},
+
+        {'label': _('Лимит активной памяти (MEMORY_CAPACITY)', 'Active memory limit (MEMORY_CAPACITY)'),
+         'key': 'MEMORY_CAPACITY', 'type': 'entry', 'default': 50,
+         'validation': self.validate_positive_integer,
+         'tooltip': _('Максимум активных воспоминаний. При превышении система помечает одну запись как is_forgotten=1.',
+                      'Maximum number of active memories. When exceeded, the system marks one record as is_forgotten=1.')},
+
+        {'label': _('Макс. результатов RAG', 'RAG max results'),
+         'key': 'RAG_MAX_RESULTS', 'type': 'entry', 'default': 8,
+         'validation': self.validate_positive_integer,
+         'tooltip': _('Сколько результатов RAG добавлять в system prompt.',
+                      'How many RAG results to inject into the system prompt.')},
+
+        {'label': _('Порог схожести (Sim threshold)', 'Similarity threshold (Sim threshold)'),
+         'key': 'RAG_SIM_THRESHOLD', 'type': 'entry', 'default': 0.40,
+         'validation': self.validate_float_0_to_1,
+         'tooltip': _('Минимальная косинусная схожесть (0..1).',
+                      'Minimum cosine similarity (0..1).')},
+
+        {'label': _('Хвост сообщений для query (1-3)', 'Query tail messages (1-3)'),
+         'key': 'RAG_QUERY_TAIL_MESSAGES', 'type': 'entry', 'default': 2,
+         'validation': self.validate_positive_integer,
+         'tooltip': _('Сколько последних активных сообщений использовать при построении RAG query.',
+                      'How many last active messages to use when building the RAG query.')},
+
+        {'label': _('Режим памяти для RAG', 'RAG memory mode'),
+         'key': 'RAG_MEMORY_MODE', 'type': 'combobox',
+         'options': ['forgotten', 'active', 'all'],
+         'default': 'forgotten',
+         'tooltip': _(
+             "forgotten: искать только забытые (is_forgotten=1) — без дублей с активной памятью.\n"
+             "active: искать только активные (может дублировать).\n"
+             "all: искать все.",
+             "forgotten: search only forgotten (is_forgotten=1) — avoids duplicates with active memory.\n"
+             "active: search only active (may duplicate).\n"
+             "all: search all."
+         )},
+
+        {'type': 'end'},
+
+        {'label': _('Веса и затухание', 'Weights & decay'), 'type': 'subsection'},
+
+        {'label': _('Вес схожести K1', 'Similarity weight K1'),
+         'key': 'RAG_WEIGHT_SIMILARITY', 'type': 'entry', 'default': 1.0,
+         'validation': self.validate_float_positive_or_zero},
+
+        {'label': _('Вес времени K2 (history)', 'Time weight K2 (history)'),
+         'key': 'RAG_WEIGHT_TIME', 'type': 'entry', 'default': 1.0,
+         'validation': self.validate_float_positive_or_zero},
+
+        {'label': _('Вес приоритета K3 (memories)', 'Priority weight K3 (memories)'),
+         'key': 'RAG_WEIGHT_PRIORITY', 'type': 'entry', 'default': 1.0,
+         'validation': self.validate_float_positive_or_zero},
+
+        {'label': _('Вес сущностей K4', 'Entity weight K4'),
+         'key': 'RAG_WEIGHT_ENTITY', 'type': 'entry', 'default': 0.5,
+         'validation': self.validate_float_positive_or_zero},
+
+        {'label': _('Скорость затухания (decay_rate)', 'Decay rate (decay_rate)'),
+         'key': 'RAG_TIME_DECAY_RATE', 'type': 'entry', 'default': 0.15,
+         'validation': self.validate_float_positive_or_zero},
+
+        {'label': _('Шум (serendipity) максимум', 'Noise (serendipity) max'),
+         'key': 'RAG_NOISE_MAX', 'type': 'entry', 'default': 0.05,
+         'validation': self.validate_float_0_to_1},
+
+        {'label': _('Подробные логи RAG', 'Detailed RAG logs'),
+         'key': 'RAG_DETAILED_LOGS', 'type': 'checkbutton', 'default_checkbutton': True},
+
+        {'type': 'end'},
+    ]
+
+    create_settings_section(
+        self,
+        parent,
+        _("RAG и память", "RAG & Memory"),
+        rag_memory_config
+    )
