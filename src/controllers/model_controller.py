@@ -372,7 +372,6 @@ class ModelController:
             "content": final_text,
         }
 
-
     def _ui_wrap_history_message(self, msg: dict) -> dict | None:
         """
         Превращает сохранённый history-msg в формат, который message_renderer умеет рисовать:
@@ -382,24 +381,61 @@ class ModelController:
         if not isinstance(msg, dict):
             return None
 
-        role = str(msg.get("role") or "")
-        if role not in ("user", "assistant", "system"):
+        raw_role = str(msg.get("role") or "").strip().lower()
+        # небольшая обратная совместимость на случай странных значений
+        if raw_role == "player":
+            raw_role = "user"
+        if raw_role not in ("user", "assistant", "system"):
             return None
 
         # фильтр пустых user
-        if role == "user":
+        if raw_role == "user":
             content = msg.get("content")
             if not self._has_visible_user_text(content):
                 return None
 
-        speaker = str(msg.get("speaker") or msg.get("sender") or "")
-        target = str(msg.get("target") or "")
+        def _norm_actor(v: Any) -> str:
+            s = str(v or "").strip()
+            if not s:
+                return ""
+            if s.lower() == "player":
+                return "Player"
+            return s
 
-        # UI роль по speaker, а не по role из истории
-        ui_role = "user" if speaker == "Player" else ("assistant" if role in ("user", "assistant") else role)
+        def _is_player(v: Any) -> bool:
+            return _norm_actor(v) == "Player"
+
+        # достаём поля максимально терпимо
+        speaker_raw = msg.get("speaker")
+        sender_raw = msg.get("sender")
+        target_raw = msg.get("target")
+
+        speaker = _norm_actor(speaker_raw or sender_raw)
+        sender = _norm_actor(sender_raw or speaker_raw)
+        target = _norm_actor(target_raw)
+
+        # IMPORTANT: приоритет Player/role=user (как просили)
+        is_player_msg = (raw_role == "user") or _is_player(speaker) or _is_player(sender)
+
+        if raw_role == "system":
+            ui_role = "system"
+        elif is_player_msg:
+            ui_role = "user"
+        else:
+            ui_role = "assistant"
 
         mm = dict(msg)
         mm["role"] = ui_role
+
+        # Для user-сообщений убираем любые speaker/meta намёки,
+        # чтобы делегат рисовал "You:" и жёлтую сторону.
+        if ui_role == "user":
+            mm["speaker"] = "Player"
+            mm["sender"] = "Player"
+            c = mm.get("content")
+            if isinstance(c, list):
+                mm["content"] = [it for it in c if not (isinstance(it, dict) and it.get("type") == "meta")]
+            return mm
 
         # meta label
         speaker_label = ""
@@ -447,6 +483,11 @@ class ModelController:
 
             # Проекция для UI (цвета, мета-теги)
             prepared = self.ui_projector.project_for_ui(raw_messages)
+            if isinstance(prepared, list):
+                prepared = [
+                    self._fix_projected_ui_message(r, m)
+                    for r, m in zip(raw_messages, prepared)
+                ]
 
             self.event_bus.emit("history_loaded", {
                 "messages": prepared,
@@ -460,7 +501,11 @@ class ModelController:
             self.total_messages_in_history = len(all_messages)
 
             prepared_all = self.ui_projector.project_for_ui(all_messages)
-
+            if isinstance(prepared_all, list):
+                prepared_all = [
+                    self._fix_projected_ui_message(r, m)
+                    for r, m in zip(all_messages, prepared_all)
+                ]
             # Берем хвост списка
             max_display = self.lazy_load_batch_size
             start_index = max(0, self.total_messages_in_history - max_display)
@@ -882,7 +927,28 @@ class ModelController:
     # ---------------------------------------------------------------------
     # Helpers
     # ---------------------------------------------------------------------
+    def _fix_projected_ui_message(self, raw: dict, ui_msg: dict) -> dict:
+        if not isinstance(raw, dict) or not isinstance(ui_msg, dict):
+            return ui_msg
 
+        raw_role = str(raw.get("role") or "").strip().lower()
+        speaker = str(raw.get("speaker") or "").strip()
+        sender = str(raw.get("sender") or "").strip()
+
+        def is_player(x: str) -> bool:
+            return str(x or "").strip().lower() == "player"
+
+        if raw_role == "user" or is_player(speaker) or is_player(sender) or sender == "Player" or speaker == "Player":
+            out = dict(ui_msg)
+            out["role"] = "user"
+            out["speaker"] = "Player"
+            out["sender"] = "Player"
+            c = out.get("content")
+            if isinstance(c, list):
+                out["content"] = [it for it in c if not (isinstance(it, dict) and it.get("type") == "meta")]
+            return out
+
+        return ui_msg
 
     def _has_visible_user_text(self, content: Any) -> bool:
         if isinstance(content, str):
