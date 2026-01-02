@@ -46,7 +46,10 @@ class DatabaseManager:
                    type TEXT DEFAULT 'fact',
                    date_created TEXT,
                    is_deleted INTEGER DEFAULT 0,
-                   embedding_id INTEGER
+                   embedding_id INTEGER,
+                   tags TEXT,
+                   participants TEXT,
+                   embedding BLOB
                )
            ''')
 
@@ -56,6 +59,15 @@ class DatabaseManager:
                    character_id TEXT NOT NULL,
                    role TEXT NOT NULL,
                    target TEXT,
+                   participants TEXT,
+                   tags TEXT,
+                   rag_id TEXT,
+                   message_id TEXT,
+                   speaker TEXT,
+                   sender TEXT,
+                   event_type TEXT,
+                   req_id TEXT,
+                   task_uid TEXT,
                    content TEXT,
                    timestamp TEXT,
                    is_active INTEGER DEFAULT 1,

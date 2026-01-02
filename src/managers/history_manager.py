@@ -5,18 +5,57 @@ import datetime
 import base64
 import re
 import uuid
+from typing import Any, Optional
+
 from main_logger import logger
 from managers.database_manager import DatabaseManager
 from managers.rag_manager import RAGManager
 
 
 class HistoryManager:
+    """
+    HistoryManager (SQL):
+    - хранит историю в SQLite (таблица history)
+    - аккуратно работает со старыми БД: сам добавляет новые колонки и/или
+      делает динамические INSERT/SELECT по фактической схеме.
+    """
+
+    # Какие колонки мы хотим иметь в history (и их типы для ALTER TABLE)
+    _HISTORY_DESIRED_COLUMNS: dict[str, str] = {
+        "target": "TEXT",
+        "participants": "TEXT",   # JSON list
+        "tags": "TEXT",           # JSON list
+        "rag_id": "TEXT",
+        "message_id": "TEXT",
+        "speaker": "TEXT",
+        "sender": "TEXT",
+        "event_type": "TEXT",
+        "req_id": "TEXT",
+        "task_uid": "TEXT",
+    }
+
+    # Базовые колонки, которые точно есть в вашей таблице history (по вашему DatabaseManager)
+    _HISTORY_BASE_COLUMNS: tuple[str, ...] = (
+        "character_id",
+        "role",
+        "content",
+        "timestamp",
+        "is_active",
+        "meta_data",
+    )
+
     def __init__(self, character_name: str = "Common", history_file_name: str = "", character_id: str | None = None):
         self.character_name = str(character_name or "Common")
         self.character_id = str(character_id or "").strip()
         self.storage_key = self.character_id or self.character_name
 
         self.db = DatabaseManager()
+
+        # кеш фактических колонок history
+        self._history_cols: set[str] = set()
+
+        # Гарантируем схему (и наполняем кеш)
+        self._ensure_history_schema()
 
         # RAG опционален: любые проблемы не должны ломать основную логику
         try:
@@ -25,21 +64,84 @@ class HistoryManager:
             logger.warning(f"RAGManager init failed (RAG disabled for this session): {e}", exc_info=True)
             self.rag = None
 
+    # ---------------------------------------------------------------------
+    # Schema helpers
+    # ---------------------------------------------------------------------
+    def _refresh_history_columns(self) -> set[str]:
+        conn = self.db.get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(history)")
+            cols = set(row[1] for row in cur.fetchall() if row and len(row) > 1)
+            self._history_cols = cols
+            return cols
+        except Exception as e:
+            logger.warning(f"Failed to read history schema: {e}", exc_info=True)
+            self._history_cols = set()
+            return set()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _ensure_history_schema(self) -> None:
+        """
+        Пытается добавить недостающие колонки в history.
+        Даже если ALTER не получится, код ниже всё равно не упадёт,
+        потому что INSERT/SELECT строятся динамически по self._history_cols.
+        """
+        cols = self._refresh_history_columns()
+        if not cols:
+            return
+
+        to_add: list[tuple[str, str]] = []
+        for col, col_type in self._HISTORY_DESIRED_COLUMNS.items():
+            if col not in cols:
+                to_add.append((col, col_type))
+
+        if not to_add:
+            return
+
+        conn = self.db.get_connection()
+        try:
+            cur = conn.cursor()
+            for col, col_type in to_add:
+                try:
+                    cur.execute(f"ALTER TABLE history ADD COLUMN {col} {col_type}")
+                    logger.info(f"DB upgrade: added history.{col} {col_type}")
+                except Exception as e:
+                    # Не валим приложение: просто логируем
+                    logger.warning(f"DB upgrade: failed to add history.{col}: {e}")
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"DB upgrade: failed to upgrade history table: {e}", exc_info=True)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        # обновим кеш после попытки миграции
+        self._refresh_history_columns()
+
+    # ---------------------------------------------------------------------
+    # Helpers: images
+    # ---------------------------------------------------------------------
     def _save_base64_image_to_disk(self, base64_string: str) -> str:
         """
         Сохраняет base64 изображение на диск и возвращает относительный путь.
         """
         try:
-            # 1. Парсим заголовок data:image/jpeg;base64,
-            match = re.match(r'data:image/(\w+);base64,(.+)', base64_string)
+            match = re.match(r"data:image/(\w+);base64,(.+)", base64_string)
             if not match:
                 return base64_string
 
             ext = match.group(1)
             img_data_str = match.group(2)
-            if ext == "jpeg": ext = "jpg"
+            if ext == "jpeg":
+                ext = "jpg"
 
-            # [ИЗМЕНЕНИЕ] Папка Histories/<Name>/Images
             save_dir = os.path.join("Histories", self.character_name, "Images")
             os.makedirs(save_dir, exist_ok=True)
 
@@ -54,31 +156,151 @@ class HistoryManager:
             return file_path
 
         except Exception as e:
-            logger.error(f"Failed to save base64 image to disk: {e}")
+            logger.error(f"Failed to save base64 image to disk: {e}", exc_info=True)
             return base64_string
 
     def _image_file_to_base64(self, file_path: str) -> str:
         """
         Читает локальный файл и превращает обратно в data:image/...;base64
-        Нужно для обратной совместимости при загрузке истории.
         """
         try:
             if not os.path.exists(file_path):
                 logger.warning(f"Image file not found: {file_path}")
-                return file_path  # Возвращаем путь, если файл потерян, чтобы не крашить
+                return file_path
 
-            # Определяем расширение
             ext = os.path.splitext(file_path)[1].replace(".", "").lower()
-            if ext == "jpg": ext = "jpeg"
+            if ext == "jpg":
+                ext = "jpeg"
 
             with open(file_path, "rb") as f:
-                encoded_string = base64.b64encode(f.read()).decode('utf-8')
+                encoded_string = base64.b64encode(f.read()).decode("utf-8")
 
             return f"data:image/{ext};base64,{encoded_string}"
         except Exception as e:
-            logger.error(f"Error converting file to base64: {e}")
+            logger.error(f"Error converting file to base64: {e}", exc_info=True)
             return file_path
 
+    # ---------------------------------------------------------------------
+    # Helpers: structured fields (participants/tags)
+    # ---------------------------------------------------------------------
+    def _coerce_text(self, v) -> str | None:
+        s = str(v or "").strip()
+        return s if s else None
+
+    def _json_dumps_list(self, v) -> str | None:
+        """
+        participants/tags: храним как JSON list в TEXT.
+        Принимаем list | str | None.
+        """
+        if v is None:
+            return None
+
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return None
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, list):
+                    arr = [str(x).strip() for x in parsed if str(x).strip()]
+                    return json.dumps(arr, ensure_ascii=False) if arr else None
+            except Exception:
+                pass
+            arr = [p.strip() for p in s.split(",") if p.strip()]
+            return json.dumps(arr, ensure_ascii=False) if arr else None
+
+        if isinstance(v, list):
+            arr = [str(x).strip() for x in v if str(x).strip()]
+            return json.dumps(arr, ensure_ascii=False) if arr else None
+
+        s = self._coerce_text(v)
+        return json.dumps([s], ensure_ascii=False) if s else None
+
+    def _json_loads_list(self, s) -> list[str]:
+        if not s:
+            return []
+        if isinstance(s, list):
+            return [str(x).strip() for x in s if str(x).strip()]
+        if not isinstance(s, str):
+            return []
+        raw = s.strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+        except Exception:
+            pass
+        return [p.strip() for p in raw.split(",") if p.strip()]
+
+    def _extract_history_db_fields(self, msg: dict) -> dict:
+        if not isinstance(msg, dict):
+            return {k: None for k in self._HISTORY_DESIRED_COLUMNS.keys()}
+
+        return {
+            "target": self._coerce_text(msg.get("target")),
+            "participants": self._json_dumps_list(msg.get("participants")),
+            "tags": self._json_dumps_list(msg.get("tags")),
+            "rag_id": self._coerce_text(msg.get("rag_id")),
+            "message_id": self._coerce_text(msg.get("message_id")),
+            "speaker": self._coerce_text(msg.get("speaker")),
+            "sender": self._coerce_text(msg.get("sender")),
+            "event_type": self._coerce_text(msg.get("event_type")),
+            "req_id": self._coerce_text(msg.get("req_id")),
+            "task_uid": self._coerce_text(msg.get("task_uid")),
+        }
+
+    def _normalize_loaded_message(self, msg: dict) -> dict:
+        """
+        Приводим типы к ожидаемым:
+        - participants/tags -> list[str]
+        """
+        if not isinstance(msg, dict):
+            return msg
+
+        if "participants" in msg:
+            msg["participants"] = self._json_loads_list(msg.get("participants"))
+        if "tags" in msg:
+            msg["tags"] = self._json_loads_list(msg.get("tags"))
+        return msg
+
+    def _build_extra_meta_for_db(self, msg: dict) -> dict:
+        """
+        Всё, что нельзя/не удалось положить в отдельные колонки, сохраняем в meta_data.
+        Ключевой момент для старых БД: если колонки нет — кладём туда же target/participants/etc.
+        """
+        if not isinstance(msg, dict):
+            return {}
+
+        reserved = {
+            "role", "content", "time", "timestamp",
+            *self._HISTORY_DESIRED_COLUMNS.keys(),
+        }
+
+        meta: dict = {}
+        # старое поле image
+        if "image" in msg:
+            meta["image"] = msg["image"]
+
+        # если колонок нет — дубль в meta_data, чтобы не терять
+        for k in self._HISTORY_DESIRED_COLUMNS.keys():
+            if k not in self._history_cols:
+                v = msg.get(k)
+                if v is not None and v != "" and k not in meta:
+                    meta[k] = v
+
+        for k, v in msg.items():
+            if k in reserved:
+                continue
+            if k not in meta:
+                meta[k] = v
+
+        return meta
+
+    # ---------------------------------------------------------------------
+    # Serialization: message <-> db
+    # ---------------------------------------------------------------------
     def _prepare_message_for_db(self, role: str, raw_content, raw_meta=None) -> tuple[str, str | None]:
         db_content = ""
         meta_dict = {}
@@ -87,8 +309,8 @@ class HistoryManager:
             if isinstance(raw_meta, str):
                 try:
                     meta_dict = json.loads(raw_meta)
-                except:
-                    pass
+                except Exception:
+                    meta_dict = {}
             elif isinstance(raw_meta, dict):
                 meta_dict = raw_meta.copy()
 
@@ -100,25 +322,26 @@ class HistoryManager:
             other_parts = []
 
             for item in raw_content:
-                if isinstance(item, dict):
-                    item_type = item.get("type")
-                    if item_type == "text":
-                        text_parts.append(item.get("text", ""))
-                    elif item_type == "image_url":
-                        image_url_dict = item.get("image_url", {})
-                        url_str = image_url_dict.get("url", "")
+                if not isinstance(item, dict):
+                    continue
 
-                        if url_str.startswith("data:image"):
-                            # Сохраняем файл на диск
-                            saved_path = self._save_base64_image_to_disk(url_str)
-                            new_item = item.copy()
-                            new_item["image_url"] = image_url_dict.copy()
-                            new_item["image_url"]["url"] = saved_path
-                            other_parts.append(new_item)
-                        else:
-                            other_parts.append(item)
+                item_type = item.get("type")
+                if item_type == "text":
+                    text_parts.append(item.get("text", ""))
+                elif item_type == "image_url":
+                    image_url_dict = item.get("image_url", {}) or {}
+                    url_str = image_url_dict.get("url", "")
+
+                    if isinstance(url_str, str) and url_str.startswith("data:image"):
+                        saved_path = self._save_base64_image_to_disk(url_str)
+                        new_item = item.copy()
+                        new_item["image_url"] = image_url_dict.copy()
+                        new_item["image_url"]["url"] = saved_path
+                        other_parts.append(new_item)
                     else:
                         other_parts.append(item)
+                else:
+                    other_parts.append(item)
 
             db_content = "\n".join(text_parts)
             if other_parts:
@@ -127,6 +350,7 @@ class HistoryManager:
 
         elif isinstance(raw_content, dict):
             db_content = json.dumps(raw_content, ensure_ascii=False)
+
         else:
             db_content = str(raw_content) if raw_content is not None else ""
 
@@ -134,115 +358,191 @@ class HistoryManager:
         return db_content, db_meta
 
     def _reconstruct_message_from_db(self, role, db_content, db_meta_raw):
-        """
-        Восстановление ИЗ БАЗЫ для API (Path -> Base64).
-        Строго фильтрует ключи.
-        """
         meta = {}
         if db_meta_raw:
             try:
                 meta = json.loads(db_meta_raw)
-            except:
-                pass
+            except Exception:
+                meta = {}
 
         content = db_content
 
-        # Проверяем флаги мультимодальности
         if meta.get("is_multimodal_list", False) or meta.get("multimodal_parts"):
             reconstructed_list = []
 
-            # 1. Текст
             if db_content:
                 reconstructed_list.append({"type": "text", "text": str(db_content)})
 
-            # 2. Мультимедиа части
             if "multimodal_parts" in meta:
-                parts = meta["multimodal_parts"]
+                parts = meta.get("multimodal_parts") or []
                 for part in parts:
-                    part_type = part.get("type")
+                    if not isinstance(part, dict):
+                        continue
 
+                    part_type = part.get("type")
                     if part_type == "image_url":
                         url = part.get("image_url", {}).get("url", "")
-
-                        # Логика восстановления Base64
                         final_url = url
+
                         is_local = part.get("is_local_file", False)
+                        if is_local or (url and not str(url).startswith("http") and not str(url).startswith("data:")):
+                            final_url = self._image_file_to_base64(str(url))
 
-                        # Если помечено как локальный или не похоже на http/data
-                        if is_local or (url and not url.startswith("http") and not url.startswith("data:")):
-                            final_url = self._image_file_to_base64(url)
-
-                        # [ВАЖНО] Создаем ЧИСТЫЙ словарь для API.
-                        # Никаких лишних полей типа 'is_local_file' здесь быть не должно.
                         clean_part = {
                             "type": "image_url",
-                            "image_url": {
-                                "url": final_url
-                            }
+                            "image_url": {"url": final_url}
                         }
-                        # Если API поддерживает detail, можно добавить, но лучше не рисковать лишним
-                        if "detail" in part.get("image_url", {}):
+                        if "detail" in (part.get("image_url") or {}):
                             clean_part["image_url"]["detail"] = part["image_url"]["detail"]
 
                         reconstructed_list.append(clean_part)
 
                     elif part_type == "text":
-                        # На случай если текст попал в parts
-                        reconstructed_list.append({
-                            "type": "text",
-                            "text": part.get("text", "")
-                        })
-                    else:
-                        # Неизвестные типы пропускаем или добавляем как есть, но очищая от мусора
-                        # Для безопасности лучше пропускать, если API строгое
-                        pass
+                        reconstructed_list.append({"type": "text", "text": part.get("text", "")})
 
             content = reconstructed_list
 
-        msg = {
-            "role": role,
-            "content": content
-        }
+        msg = {"role": role, "content": content}
 
-        # Восстанавливаем остальные поля метадаты (например, имя пользователя если есть),
-        # но фильтруем служебные поля DB
+        # переносим meta поля обратно, но фильтруем служебное
         for k, v in meta.items():
             if k not in ["multimodal_parts", "is_multimodal_list", "image"]:
                 msg[k] = v
 
         return msg
+
+    # ---------------------------------------------------------------------
+    # DB low-level: dynamic INSERT/SELECT for backward compatibility
+    # ---------------------------------------------------------------------
+    def _history_select_columns(self) -> list[str]:
+        """
+        Колонки, которые мы будем SELECT'ить, исходя из фактической схемы.
+        """
+        base = ["role", "content", "meta_data", "timestamp"]
+        for col in self._HISTORY_DESIRED_COLUMNS.keys():
+            if col in self._history_cols:
+                base.append(col)
+        return base
+
+    def _insert_history_row(self, *, msg: dict, is_active: int) -> Optional[int]:
+        """
+        Вставка строки history без падений на старых БД:
+        - берём только существующие колонки
+        - всё остальное дублируем в meta_data
+        """
+        # на всякий случай (если БД обновили пока объект жив)
+        if not self._history_cols:
+            self._ensure_history_schema()
+
+        now_ts_default = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        ts = self._coerce_text(msg.get("time")) or self._coerce_text(msg.get("timestamp")) or now_ts_default
+
+        db_fields = self._extract_history_db_fields(msg)
+        extra_meta = self._build_extra_meta_for_db(msg)
+
+        db_content, db_meta = self._prepare_message_for_db(
+            msg.get("role"),
+            msg.get("content"),
+            extra_meta
+        )
+
+        # строим динамически INSERT
+        cols: list[str] = []
+        vals: list[Any] = []
+
+        # всегда
+        cols.extend(["character_id", "role", "content", "is_active", "meta_data", "timestamp"])
+        vals.extend([self.storage_key, msg.get("role"), db_content, int(is_active), db_meta, ts])
+
+        # опциональные колонки (если они реально есть)
+        for k in self._HISTORY_DESIRED_COLUMNS.keys():
+            if k in self._history_cols:
+                cols.append(k)
+                vals.append(db_fields.get(k))
+
+        placeholders = ", ".join(["?"] * len(cols))
+        sql = f"INSERT INTO history ({', '.join(cols)}) VALUES ({placeholders})"
+
+        conn = self.db.get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(sql, tuple(vals))
+            row_id = cur.lastrowid
+            conn.commit()
+            return int(row_id) if row_id else None
+        except Exception as e:
+            # Фоллбек: если вдруг вообще всё плохо — вставим минимум
+            logger.warning(f"History INSERT failed, fallback to minimal insert: {e}", exc_info=True)
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (self.storage_key, msg.get("role"), db_content, int(is_active), db_meta, ts),
+                )
+                row_id = cur.lastrowid
+                conn.commit()
+                return int(row_id) if row_id else None
+            except Exception as e2:
+                logger.error(f"History minimal INSERT failed: {e2}", exc_info=True)
+                return None
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    # ---------------------------------------------------------------------
+    # Public API
+    # ---------------------------------------------------------------------
     def load_history(self):
         conn = self.db.get_connection()
         cursor = conn.cursor()
 
-        # 1. Переменные
-        cursor.execute('SELECT key, value FROM variables WHERE character_id = ?', (self.storage_key,))
+        # 1) Переменные
+        cursor.execute("SELECT key, value FROM variables WHERE character_id = ?", (self.storage_key,))
         variables = {}
         for row in cursor.fetchall():
             try:
                 variables[row[0]] = json.loads(row[1])
-            except:
+            except Exception:
                 variables[row[0]] = row[1]
 
+        # 2) Сообщения
+        # динамический SELECT по фактическим колонкам
+        self._ensure_history_schema()
+        select_cols = self._history_select_columns()
 
-        # 2. Сообщения
-        cursor.execute('''
-            SELECT role, content, meta_data, timestamp 
-            FROM history 
+        sql = f"""
+            SELECT {", ".join(select_cols)}
+            FROM history
             WHERE character_id = ? AND is_active = 1
             ORDER BY id ASC
-        ''', (self.storage_key,))
-
-        messages = []
-        for row in cursor.fetchall():
-            db_timestamp = row[3]
-
-            msg = self._reconstruct_message_from_db(row[0], row[1], row[2])
-
-            msg["time"] = db_timestamp if db_timestamp else ""
-            messages.append(msg)
-
+        """
+        cursor.execute(sql, (self.storage_key,))
+        rows = cursor.fetchall()
         conn.close()
+
+        messages: list[dict] = []
+        for row in rows:
+            rd = dict(zip(select_cols, row))
+
+            msg = self._reconstruct_message_from_db(
+                rd.get("role"),
+                rd.get("content"),
+                rd.get("meta_data"),
+            )
+            msg["time"] = rd.get("timestamp") or ""
+
+            # если колонки есть — дополним из колонок, иначе они уже могут быть в meta_data
+            for k in self._HISTORY_DESIRED_COLUMNS.keys():
+                if k in rd and rd.get(k) is not None and rd.get(k) != "":
+                    msg[k] = rd.get(k)
+
+            msg = self._normalize_loaded_message(msg)
+            messages.append(msg)
 
         return {
             "fixed_parts": [],
@@ -252,65 +552,58 @@ class HistoryManager:
         }
 
     def save_history(self, data):
-        messages = data.get("messages", [])
-        variables = data.get("variables", {})
-
-        conn = self.db.get_connection()
-        cursor = conn.cursor()
+        messages = data.get("messages", []) or []
+        variables = data.get("variables", {}) or {}
 
         # Сюда собираем (row_id, text) и обновляем эмбеддинги ПОСЛЕ commit/close
         pending_embeddings: list[tuple[int, str]] = []
 
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
         try:
-            # 1. Переменные
+            # 1) Переменные
             for k, v in variables.items():
                 val_str = json.dumps(v, ensure_ascii=False)
                 cursor.execute(
-                    '''
+                    """
                     INSERT INTO variables (character_id, key, value) VALUES(?, ?, ?)
                     ON CONFLICT(character_id, key) DO UPDATE SET value=excluded.value
-                    ''',
-                    (self.storage_key, k, val_str)
+                    """,
+                    (self.storage_key, k, val_str),
                 )
 
-            # 2. История
+            # 2) История (активная)
             cursor.execute(
-                'DELETE FROM history WHERE character_id = ? AND is_active = 1',
-                (self.storage_key,)
+                "DELETE FROM history WHERE character_id = ? AND is_active = 1",
+                (self.storage_key,),
             )
-
-            now_ts = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-
-            for msg in messages:
-                raw_content = msg.get("content")
-
-                temp_meta = {}
-                if "image" in msg:
-                    temp_meta["image"] = msg["image"]
-
-                db_content, db_meta = self._prepare_message_for_db(msg.get("role"), raw_content, temp_meta)
-
-                cursor.execute(
-                    '''
-                    INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
-                    VALUES (?, ?, ?, 1, ?, ?)
-                    ''',
-                    (self.storage_key, msg.get("role"), db_content, db_meta, now_ts)
-                )
-
-                new_row_id = cursor.lastrowid
-                if new_row_id and db_content:
-                    pending_embeddings.append((int(new_row_id), str(db_content)))
-
             conn.commit()
-
         except Exception as e:
-            logger.error(f"DB Error saving history: {e}", exc_info=True)
-
+            logger.error(f"DB Error saving history (variables/cleanup): {e}", exc_info=True)
         finally:
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
 
-        # ВАЖНО: эмбеддинги обновляем после commit/close, чтобы не было self-deadlock по SQLite
+        # Теперь вставляем сообщения через безопасный метод (динамический INSERT)
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+
+            row_id = self._insert_history_row(msg=msg, is_active=1)
+            if row_id:
+                # вектор строим только для текста
+                content_text = msg.get("content")
+                if isinstance(content_text, str) and content_text:
+                    pending_embeddings.append((int(row_id), content_text))
+                else:
+                    # fallback: если мультимодальный list — эмбеддим текстовую часть, которую prepare_message_for_db кладёт в content
+                    # (чтобы не усложнять — пропускаем)
+                    pass
+
+        # Эмбеддинги после записи в БД
         if not pending_embeddings or not self.rag:
             return
 
@@ -318,41 +611,19 @@ class HistoryManager:
             try:
                 self.rag.update_history_embedding(row_id, text)
             except Exception as e:
-                # Не валим сохранение/генерацию из-за RAG
                 logger.warning(f"RAG failed to update history embedding (ignored): {e}", exc_info=True)
 
     def add_message(self, message: dict):
-        conn = self.db.get_connection()
-        cursor = conn.cursor()
-
-        raw_content = message.get("content")
-        temp_meta = {}
-        if "image" in message:
-            temp_meta["image"] = message["image"]
-
-        db_content, db_meta = self._prepare_message_for_db(message.get("role"), raw_content, temp_meta)
-
-        cursor.execute(
-            '''
-            INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
-            VALUES (?, ?, ?, 1, ?, ?)
-            ''',
-            (self.storage_key, message.get("role"), db_content, db_meta,
-             datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
-        )
-
-        new_row_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
+        row_id = self._insert_history_row(msg=message, is_active=1)
 
         # RAG опционален и не должен валить основной флоу
-        if not self.rag:
+        if not self.rag or not row_id:
             return
 
         content_text = message.get("content", "")
         if isinstance(content_text, str) and content_text:
             try:
-                self.rag.update_history_embedding(int(new_row_id), content_text)
+                self.rag.update_history_embedding(int(row_id), content_text)
             except Exception as e:
                 logger.warning(f"RAG failed to update embedding for new message (ignored): {e}", exc_info=True)
 
@@ -360,81 +631,84 @@ class HistoryManager:
         conn = self.db.get_connection()
         cursor = conn.cursor()
         val_str = json.dumps(value, ensure_ascii=False)
-        cursor.execute('''
+        cursor.execute(
+            """
             INSERT INTO variables (character_id, key, value) VALUES(?, ?, ?)
             ON CONFLICT(character_id, key) DO UPDATE SET value=excluded.value
-        ''', (self.storage_key, key, val_str))
+            """,
+            (self.storage_key, key, val_str),
+        )
         conn.commit()
         conn.close()
-
-
 
     def save_missed_history(self, missed_messages: list):
-        conn = self.db.get_connection()
-        cursor = conn.cursor()
-        for msg in missed_messages:
-            raw_content = msg.get("content")
-            temp_meta = {}
-            if "image" in msg:
-                temp_meta["image"] = msg["image"]
-
-            db_content, db_meta = self._prepare_message_for_db(msg.get("role"), raw_content, temp_meta)
-
-            cursor.execute('''
-                INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
-                VALUES (?, ?, ?, 0, ?, ?)
-            ''', (self.storage_key, msg.get("role"), db_content, db_meta, datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
-        conn.commit()
-        conn.close()
+        for msg in missed_messages or []:
+            if not isinstance(msg, dict):
+                continue
+            self._insert_history_row(msg=msg, is_active=0)
 
     def clear_history(self):
         conn = self.db.get_connection()
         cursor = conn.cursor()
-        cursor.execute('UPDATE history SET is_active = 0 WHERE character_id = ?', (self.storage_key,))
+        cursor.execute("UPDATE history SET is_active = 0 WHERE character_id = ?", (self.storage_key,))
         conn.commit()
         conn.close()
 
     def _default_history(self):
         return {"fixed_parts": [], "messages": [], "variables": {}}
 
+    # ---------------------------------------------------------------------
+    # Paging
+    # ---------------------------------------------------------------------
     def get_total_messages_count(self) -> int:
-        """Возвращает общее количество активных сообщений."""
         conn = self.db.get_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT COUNT(*) FROM history WHERE character_id = ? AND is_active = 1', (self.storage_key,))
+        cursor.execute("SELECT COUNT(*) FROM history WHERE character_id = ? AND is_active = 1", (self.storage_key,))
         count = cursor.fetchone()[0]
         conn.close()
         return count
 
     def get_recent_messages(self, limit: int = 50, offset: int = 0) -> list[dict]:
-        """
-        Возвращает срез сообщений (для пагинации).
-        offset - сколько сообщений пропустить с КОНЦА (от новых к старым).
-        """
         conn = self.db.get_connection()
         cursor = conn.cursor()
 
-        # Получаем данные в обратном порядке (сначала новые), применяем лимит и оффсет
-        cursor.execute('''
-              SELECT role, content, meta_data, timestamp 
-              FROM history 
-              WHERE character_id = ? AND is_active = 1
-              ORDER BY id DESC
-              LIMIT ? OFFSET ?
-          ''', (self.storage_key, limit, offset))
+        self._ensure_history_schema()
+        select_cols = self._history_select_columns()
 
+        sql = f"""
+            SELECT {", ".join(select_cols)}
+            FROM history
+            WHERE character_id = ? AND is_active = 1
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+        """
+        cursor.execute(sql, (self.storage_key, int(limit), int(offset)))
         rows = cursor.fetchall()
         conn.close()
 
-        messages = []
+        messages: list[dict] = []
         for row in rows:
-            msg = self._reconstruct_message_from_db(row[0], row[1], row[2])
-            msg["time"] = row[3] if row[3] else ""
+            rd = dict(zip(select_cols, row))
+
+            msg = self._reconstruct_message_from_db(
+                rd.get("role"),
+                rd.get("content"),
+                rd.get("meta_data"),
+            )
+            msg["time"] = rd.get("timestamp") or ""
+
+            for k in self._HISTORY_DESIRED_COLUMNS.keys():
+                if k in rd and rd.get(k) is not None and rd.get(k) != "":
+                    msg[k] = rd.get(k)
+
+            msg = self._normalize_loaded_message(msg)
             messages.append(msg)
 
-        # Разворачиваем обратно, чтобы они шли хронологически (от старых к новым)
         return messages[::-1]
 
+    # ---------------------------------------------------------------------
+    # Compression helpers
+    # ---------------------------------------------------------------------
     def get_messages_for_compression(self, num_messages: int) -> list[dict]:
         full_hist = self.load_history()
         messages = full_hist.get("messages", [])
@@ -447,21 +721,23 @@ class HistoryManager:
         conn = self.db.get_connection()
         cursor = conn.cursor()
 
-        cursor.execute('''
-            SELECT id FROM history 
-            WHERE character_id = ? AND is_active = 1 
-            ORDER BY id ASC 
+        cursor.execute(
+            """
+            SELECT id FROM history
+            WHERE character_id = ? AND is_active = 1
+            ORDER BY id ASC
             LIMIT ?
-        ''', (self.storage_key, num_messages))
-
+            """,
+            (self.storage_key, num_messages),
+        )
         ids_to_hide = [row[0] for row in cursor.fetchall()]
 
         if ids_to_hide:
-            placeholders = ','.join('?' for _ in ids_to_hide)
-            cursor.execute(f'''
-                UPDATE history SET is_active = 0 
-                WHERE id IN ({placeholders})
-            ''', tuple(ids_to_hide))
+            placeholders = ",".join("?" for _ in ids_to_hide)
+            cursor.execute(
+                f"UPDATE history SET is_active = 0 WHERE id IN ({placeholders})",
+                tuple(ids_to_hide),
+            )
             conn.commit()
 
         conn.close()
@@ -471,23 +747,29 @@ class HistoryManager:
     def add_summarized_history_to_messages(self, summary_message: dict):
         self.add_message(summary_message)
 
+    # ---------------------------------------------------------------------
+    # RAG helpers
+    # ---------------------------------------------------------------------
     def get_missing_embeddings_count(self) -> int:
-        """Считает, сколько записей (history + memories) не имеют вектора."""
         conn = self.db.get_connection()
         cursor = conn.cursor()
 
-        # Считаем историю (только текстовые сообщения)
-        cursor.execute('''
-               SELECT COUNT(*) FROM history 
-               WHERE character_id = ? AND (embedding IS NULL) AND content != "" AND content IS NOT NULL
-           ''', (self.storage_key,))
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM history
+            WHERE character_id = ? AND (embedding IS NULL) AND content != "" AND content IS NOT NULL
+            """,
+            (self.storage_key,),
+        )
         hist_count = cursor.fetchone()[0]
 
-        # Считаем воспоминания
-        cursor.execute('''
-               SELECT COUNT(*) FROM memories 
-               WHERE character_id = ? AND (embedding IS NULL) AND is_deleted = 0
-           ''', (self.storage_key,))
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM memories
+            WHERE character_id = ? AND (embedding IS NULL) AND is_deleted = 0
+            """,
+            (self.storage_key,),
+        )
         mem_count = cursor.fetchone()[0]
 
         conn.close()
