@@ -232,6 +232,85 @@ def setup_model_interaction_controls(self, parent):
         react_settings_config
     )
 
+    # ------------------------------------------------------------------
+    # RAG & Memory settings (NEW)
+    # ------------------------------------------------------------------
+    rag_memory_config = [
+        {'label': _('RAG и память', 'RAG & Memory'), 'type': 'subsection'},
+
+        {'label': _('Лимит активной памяти (MEMORY_CAPACITY)', 'Active memory limit (MEMORY_CAPACITY)'),
+         'key': 'MEMORY_CAPACITY', 'type': 'entry', 'default': 50,
+         'validation': self.validate_positive_integer,
+         'tooltip': _('Максимум активных воспоминаний (не удалённых и не забытых). При превышении система помечает одно как is_forgotten=1.',
+                      'Maximum number of active memories (not deleted and not forgotten). When exceeded, the system marks one as is_forgotten=1.')},
+
+        {'label': _('Макс. результатов RAG', 'RAG max results'),
+         'key': 'RAG_MAX_RESULTS', 'type': 'entry', 'default': 8,
+         'validation': self.validate_positive_integer,
+         'tooltip': _('Сколько фрагментов RAG добавлять в system prompt.',
+                      'How many RAG chunks to inject into the system prompt.')},
+
+        {'label': _('Порог схожести (Sim threshold)', 'Similarity threshold (Sim threshold)'),
+         'key': 'RAG_SIM_THRESHOLD', 'type': 'entry', 'default': 0.40,
+         'validation': self.validate_float_0_to_1,
+         'tooltip': _('Минимальная косинусная схожесть для кандидата (0..1).',
+                      'Minimum cosine similarity for a candidate (0..1).')},
+
+        {'label': _('Хвост сообщений для query (1-3)', 'Query tail messages (1-3)'),
+         'key': 'RAG_QUERY_TAIL_MESSAGES', 'type': 'entry', 'default': 2,
+         'validation': self.validate_positive_integer,
+         'tooltip': _('Сколько последних активных сообщений (user/assistant) использовать для построения query-строки.',
+                      'How many last active messages (user/assistant) to use when building the query string.')},
+
+        {'label': _('Включать забытые воспоминания (is_forgotten=1)', 'Include forgotten memories (is_forgotten=1)'),
+         'key': 'RAG_INCLUDE_FORGOTTEN', 'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _('Если включено, RAG может доставать забытые воспоминания, но они получают штраф к скору.',
+                      'If enabled, RAG may retrieve forgotten memories, but they get a score penalty.')},
+
+        {'label': _('Штраф забытых (отриц.)', 'Forgotten penalty (negative)'),
+         'key': 'RAG_FORGOTTEN_PENALTY', 'type': 'entry', 'default': -0.15,
+         'depends_on': 'RAG_INCLUDE_FORGOTTEN',
+         'validation': self.validate_float_minus2_to_2,
+         'tooltip': _('Добавляется к финальному скору для is_forgotten=1. Например -0.15 делает их реже.',
+                      'Added to final score for is_forgotten=1. For example -0.15 makes them less likely.')},
+
+        {'type': 'end'},
+
+        {'label': _('Веса и затухание', 'Weights & decay'), 'type': 'subsection'},
+
+        {'label': _('Вес схожести K1', 'Similarity weight K1'),
+         'key': 'RAG_WEIGHT_SIMILARITY', 'type': 'entry', 'default': 1.0,
+         'validation': self.validate_float_positive_or_zero},
+
+        {'label': _('Вес времени K2 (history)', 'Time weight K2 (history)'),
+         'key': 'RAG_WEIGHT_TIME', 'type': 'entry', 'default': 1.0,
+         'validation': self.validate_float_positive_or_zero},
+
+        {'label': _('Вес приоритета K3 (memories)', 'Priority weight K3 (memories)'),
+         'key': 'RAG_WEIGHT_PRIORITY', 'type': 'entry', 'default': 1.0,
+         'validation': self.validate_float_positive_or_zero},
+
+        {'label': _('Вес сущностей K4', 'Entity weight K4'),
+         'key': 'RAG_WEIGHT_ENTITY', 'type': 'entry', 'default': 0.5,
+         'validation': self.validate_float_positive_or_zero},
+
+        {'label': _('Скорость затухания (decay_rate)', 'Decay rate (decay_rate)'),
+         'key': 'RAG_TIME_DECAY_RATE', 'type': 'entry', 'default': 0.15,
+         'validation': self.validate_float_positive_or_zero,
+         'tooltip': _('TimeFactor = 1/(1+decay_rate*days). Чем больше decay_rate, тем сильнее штраф старым сообщениям.',
+                      'TimeFactor = 1/(1+decay_rate*days). Higher decay_rate penalizes older messages more.')},
+
+        {'label': _('Шум (serendipity) максимум', 'Noise (serendipity) max'),
+         'key': 'RAG_NOISE_MAX', 'type': 'entry', 'default': 0.05,
+         'validation': self.validate_float_0_to_1,
+         'tooltip': _('Случайная добавка 0..NoiseMax для редких неожиданных совпадений.',
+                      'Random bonus 0..NoiseMax for occasional unexpected matches.')},
+    ]
+    create_settings_section(self, parent,
+                           _("Настройки RAG", "RAG Settings"),
+                           rag_memory_config)
+
+
     token_settings_config = [
         {'label': _('Показывать информацию о токенах', 'Show Token Info'), 'key': 'SHOW_TOKEN_INFO',
          'type': 'checkbutton', 'default_checkbutton': True,

@@ -37,6 +37,15 @@ class RAGManager:
         self._history_cols = self._read_table_cols("history")
         self._mem_cols = self._read_table_cols("memories")
 
+    def _get_bool_setting(self, key: str, default: bool) -> bool:
+        try:
+            v = SettingsManager.get(key, default)
+            if isinstance(v, str):
+                return v.strip().lower() in ("1", "true", "yes", "on")
+            return bool(v)
+        except Exception:
+            return bool(default)
+
     def _read_table_cols(self, table: str) -> set[str]:
         conn = self.db.get_connection()
         try:
@@ -263,6 +272,10 @@ class RAGManager:
         K3 = self._get_float_setting("RAG_WEIGHT_PRIORITY", 1.0)
         K4 = self._get_float_setting("RAG_WEIGHT_ENTITY", 0.5)
         decay_rate = self._get_float_setting("RAG_TIME_DECAY_RATE", 0.15)
+        detailed_logs = self._get_bool_setting("RAG_DETAILED_LOGS", True)
+
+        include_forgotten = self._get_bool_setting("RAG_INCLUDE_FORGOTTEN", False)
+        forgotten_penalty = self._get_float_setting("RAG_FORGOTTEN_PENALTY", -0.15)  # отрицательный = реже всплывает
 
         noise_max = self._get_float_setting("RAG_NOISE_MAX", 0.05)
         noise_max = max(0.0, min(0.2, noise_max))
@@ -337,16 +350,23 @@ class RAGManager:
             return min(0.2, b)  # небольшой потолок
 
         # 1) Memories (is_deleted=0 AND is_forgotten=0)
-        mem_cols = ["eternal_id", "content", "embedding", "type", "priority", "date_created", "participants"]
-        mem_cols = [c for c in mem_cols if c in self._mem_cols] + ["embedding"]
-        # "embedding" гарантируем, даже если в mem_cols его нет (на старых схемах) — тогда запрос упадёт и мы отлогируем.
+        # По умолчанию забытые НЕ участвуют.
+        # Если include_forgotten=True — участвуют, но получат штраф forgotten_penalty в финальном скоре.
         try:
+            mem_where = "character_id=? AND is_deleted=0 AND embedding IS NOT NULL"
+            if "is_forgotten" in self._mem_cols and not include_forgotten:
+                mem_where += " AND is_forgotten=0"
+
+            # если колонка is_forgotten есть — выберем её, чтобы применить штраф
+            select_cols = [
+                "eternal_id", "content", "embedding", "type",
+                "priority", "date_created", "participants",
+            ]
+            if "is_forgotten" in self._mem_cols:
+                select_cols.append("is_forgotten")
+
             cursor.execute(
-                """
-                SELECT eternal_id, content, embedding, type, priority, date_created, participants
-                FROM memories
-                WHERE character_id=? AND is_deleted=0 AND is_forgotten=0 AND embedding IS NOT NULL
-                """,
+                f"SELECT {', '.join(select_cols)} FROM memories WHERE {mem_where}",
                 (self.character_id,),
             )
             mem_rows = cursor.fetchall() or []
@@ -354,7 +374,15 @@ class RAGManager:
             logger.warning(f"RAGManager: failed to read memories for search: {e}", exc_info=True)
             mem_rows = []
 
-        for eternal_id, content, blob, mtype, priority, date_created, participants in mem_rows:
+        for row in mem_rows:
+            # распакуем безопасно (под разные схемы)
+            if "is_forgotten" in self._mem_cols:
+                eternal_id, content, blob, mtype, priority, date_created, participants, is_forgotten = row
+                is_forgotten = int(is_forgotten or 0)
+            else:
+                eternal_id, content, blob, mtype, priority, date_created, participants = row
+                is_forgotten = 0
+
             vec = self._blob_to_array(blob)
             if vec is None:
                 continue
@@ -365,7 +393,8 @@ class RAGManager:
             pb = prio_bonus(priority)
             eb = entity_bonus_from_participants(self._json_loads_list(participants))
             noise = random.uniform(0.0, noise_max)
-            final = (sim * K1) + (pb * K3) + (eb * K4) + noise  # timefactor для memories не применяем
+            fp = forgotten_penalty if (include_forgotten and is_forgotten == 1) else 0.0
+            final = (sim * K1) + (pb * K3) + (eb * K4) + fp + noise  # timefactor для memories не применяем
 
             scored.append({
                 "source": "memory",
@@ -450,7 +479,7 @@ class RAGManager:
 
         # --- Detailed logging: Top 5 и Bottom 5
         try:
-            if scored:
+            if scored and detailed_logs:
                 def _clip(s: Any, n: int = 90) -> str:
                     t = str(s or "").replace("\n", " ").strip()
                     return (t[:n] + "…") if len(t) > n else t
