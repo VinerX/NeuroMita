@@ -13,6 +13,7 @@ from managers.prompt_catalogue_manager import copy_prompt_set, get_prompt_catalo
 from utils.migrate_json_to_sqlite import migrate as run_json_migration
 from ui.dialogs.db_viewer import DbViewerDialog
 from PyQt6.QtWidgets import QProgressDialog
+from PyQt6.QtCore import QThread, pyqtSignal
 
 def _prompt_set_key(character_id: str) -> str:
     return f"PROMPT_SET_{character_id}"
@@ -476,98 +477,113 @@ def _execute_migration(gui):
 
 
 def open_db_viewer(gui):
-    # Получаем ID текущего персонажа для фильтрации
     event_bus = get_event_bus()
-    current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-    profile = current_profile_res[0] if current_profile_res else {}
-    char_id = profile.get("character_id")
+    res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+    char_id = res[0].get("character_id") if res else None
 
-    # Открываем диалог. Используем WindowManager если он есть, или напрямую
-    # Для простоты можно модально, так как это инструмент отладки
     dialog = DbViewerDialog(gui, character_id=char_id)
     dialog.exec()
 
 
 def run_reindexing(gui):
+    # Получаем ID персонажа через EventBus, а не через контроллер
     event_bus = get_event_bus()
+    res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
 
-    # Сначала проверим, есть ли что индексировать
-    # Получаем доступ к текущему персонажу
-    # (Это немного хак, лучше через событие, но допустим у нас есть доступ к controller.character_manager через gui.main_controller)
-    # Используем EventBus для вызова логики, если возможно, или прямой вызов если мы внутри GUI логики.
-
-    # Но проще всего - запросить это действие у системы.
-    # Так как логика в logic.py, а RAG внутри Character, нам нужно добраться до инстанса.
-
-    # Вариант: отправить событие
-    # gui.event_bus.emit(Events.RAG.REINDEX, ...)
-    # Но давай сделаем проще, через CharacterRef, так как мы в UI Logic
-
-    char_ref = gui.main_controller.character_controller.get_current_ref()
-    if not char_ref:
+    if not res or not res[0]:
+        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Персонаж не найден.", "Character not found."))
         return
 
-    rag = char_ref.rag_manager if hasattr(char_ref, "rag_manager") else None
-
-    # Если rag не инициализирован в Character (а он сейчас в MemoryManager), надо достать его.
-    # В Character.py: self.memory_system = MemoryManager(...) -> self.rag = RAGManager(...)
-    if hasattr(char_ref, "memory_system") and hasattr(char_ref.memory_system, "rag"):
-        rag = char_ref.memory_system.rag
-    else:
-        # Fallback если rag_manager прямо в character (как в твоем snippet в Character.get_relevant_context)
-        rag = getattr(char_ref, "rag_manager", None)
-
-    if not rag:
-        QMessageBox.warning(gui, "Error", "RAG Manager not found for this character.")
+    character_id = res[0].get("character_id")
+    if not character_id:
+        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Некорректный ID персонажа.", "Invalid character ID."))
         return
 
-    # Считаем сколько пропущено
-    # (Мы добавили get_missing_embeddings_count в HistoryManager, но логичнее было в RAGManager)
-    # Давай используем метод из history_manager, так как он там уже есть в моем примере выше?
-    # Нет, в RAGManager логичнее.
-    # Предположим мы добавили count метод в RAGManager тоже (аналогично коду выше).
-
-    # Запускаем прогресс бар
-    count_missing = 0
-    # SQL count (можно вынести в метод RAGManager.count_missing())
+    # Предварительная проверка (создаем временный RAGManager для чтения)
     try:
+        from managers.rag_manager import RAGManager
+        # Создаем легковесный инстанс, это безопасно
+        rag = RAGManager(character_id)
+
+        # Ручной SQL запрос через connection
         conn = rag.db.get_connection()
         c = conn.cursor()
-        c.execute(
-            f"SELECT COUNT(*) FROM history WHERE character_id='{char_ref.char_id}' AND embedding IS NULL AND content != ''")
+        c.execute(f"SELECT COUNT(*) FROM history WHERE character_id=? AND embedding IS NULL AND content != ''",
+                  (character_id,))
         h_c = c.fetchone()[0]
-        c.execute(f"SELECT COUNT(*) FROM memories WHERE character_id='{char_ref.char_id}' AND embedding IS NULL")
+        c.execute(f"SELECT COUNT(*) FROM memories WHERE character_id=? AND embedding IS NULL", (character_id,))
         m_c = c.fetchone()[0]
         conn.close()
-        count_missing = h_c + m_c
-    except:
-        pass
 
-    if count_missing == 0:
-        QMessageBox.information(gui, _("Инфо", "Info"),
-                                _("Все записи уже проиндексированы.", "All records are already indexed."))
-        return
-
-    progress = QProgressDialog(_("Генерация векторов...", "Generating embeddings..."), _("Отмена", "Cancel"), 0,
-                               count_missing, gui)
-    progress.setWindowModality(Qt.WindowModality.WindowModal)
-    progress.show()
-
-    def update_progress(current, total):
-        progress.setValue(current)
-        if progress.wasCanceled():
+        if (h_c + m_c) == 0:
+            QMessageBox.information(gui, _("Инфо", "Info"),
+                                    _("Все записи уже проиндексированы.", "All records are already indexed."))
             return
 
-    # Запускаем в потоке UI (синхронно) или через worker.
-    # Так как embedding на CPU может фризить, лучше бы асинхронно,
-    # но пока сделаем просто processEvents внутри колбэка
+    except Exception as e:
+        logger.warning(f"Skipping pre-check due to error: {e}")
 
-    from PyQt6.QtWidgets import QApplication
-    def safe_callback(curr, tot):
+    # Запуск воркера
+    gui._reindex_worker = ReindexWorker(character_id)
+
+    progress = QProgressDialog(_("Генерация векторов...", "Generating embeddings..."), _("Отмена", "Cancel"), 0, 100,
+                               gui)
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setValue(0)
+    progress.setAutoClose(False)
+    progress.setAutoReset(False)
+
+    def on_progress(curr, total):
+        progress.setMaximum(total)
         progress.setValue(curr)
-        QApplication.processEvents()
 
-    updated = rag.index_all_missing(progress_callback=safe_callback)
+    def on_finished(count):
+        progress.close()
+        QMessageBox.information(gui, _("Готово", "Done"), f"Векторов создано: {count}")
+        gui._reindex_worker = None
 
-    progress.close()
-    QMessageBox.information(gui, "Done", f"Re-indexed {updated} records.")
+    def on_error(msg):
+        progress.close()
+        QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
+        gui._reindex_worker = None
+
+    def on_cancel():
+        # В идеале нужно слать сигнал отмены в worker, но пока просто закроем UI
+        gui._reindex_worker = None
+
+    gui._reindex_worker.progress_signal.connect(on_progress)
+    gui._reindex_worker.finished_signal.connect(on_finished)
+    gui._reindex_worker.error_signal.connect(on_error)
+    progress.canceled.connect(on_cancel)
+
+    progress.show()
+    gui._reindex_worker.start()
+
+class ReindexWorker(QThread):
+    progress_signal = pyqtSignal(int, int)  # current, total
+    finished_signal = pyqtSignal(int)  # count processed
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, character_id):
+        super().__init__()
+        self.character_id = character_id
+
+    def run(self):
+        try:
+            # Импортируем внутри потока
+            from managers.rag_manager import RAGManager
+
+            # Создаем экземпляр RAGManager в этом потоке
+            # Это создаст новое подключение к SQLite (thread-safe)
+            rag = RAGManager(self.character_id)
+
+            def callback(curr, tot):
+                self.progress_signal.emit(curr, tot)
+
+            updated_count = rag.index_all_missing(progress_callback=callback)
+            self.finished_signal.emit(updated_count)
+
+        except Exception as e:
+            logger.error(f"Reindexing thread error: {e}", exc_info=True)
+            self.error_signal.emit(str(e))

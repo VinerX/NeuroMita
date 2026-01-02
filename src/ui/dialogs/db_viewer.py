@@ -9,6 +9,11 @@ import os
 from main_logger import logger
 from managers.database_manager import DatabaseManager
 
+try:
+    from styles.main_styles import get_stylesheet
+except ImportError:
+    get_stylesheet = None
+
 
 class DbViewerDialog(QDialog):
     def __init__(self, parent=None, character_id=None):
@@ -16,6 +21,19 @@ class DbViewerDialog(QDialog):
         self.setWindowTitle("Database Viewer (World.db)")
         self.resize(900, 600)
         self.character_id = character_id
+
+        # [FIX] Применяем тему
+        if parent:
+            self.setStyleSheet(parent.styleSheet())
+        elif get_stylesheet:
+            self.setStyleSheet(get_stylesheet())
+        else:
+            # Fallback на темную тему, если ничего нет
+            self.setStyleSheet("""
+                    QDialog, QWidget { background-color: #2b2b2b; color: #ffffff; }
+                    QTableView { gridline-color: #555; background-color: #1e1e1e; }
+                    QHeaderView::section { background-color: #333; color: white; padding: 4px; }
+                """)
 
         # Инициализируем соединение с БД для QtSql (оно глобальное для приложения)
         self._init_sql_connection()

@@ -1,0 +1,167 @@
+Это чисто мне винеру, я сам хз насколько правда, но вроде после такого что-то у меня заработало))
+
+
+
+Сохрани её себе в `DEV_NOTES.md`.
+
+---
+
+# 🛠 Шпаргалка: UI, События и Потоки в NeuroMita
+
+## 1. Добавление UI (Правила выживания виджетов)
+
+Главная причина ошибки `wrapped C/C++ object has been deleted` — это сборщик мусора Python (GC).
+
+### ❌ Как НЕЛЬЗЯ делать:
+```python
+def build_ui(self, parent_layout):
+    # Локальная переменная.
+    # Как только функция завершится, Python удалит container,
+    # а следом C++ удалит и кнопку, даже если parent_layout вроде как добавлен.
+    container = QWidget()
+
+    self.btn = QPushButton("Click me")
+    container.layout().addWidget(self.btn)
+
+    # Опасно, если parent_layout не захватывает владение мгновенно
+    parent_layout.addWidget(container)
+```
+
+### ✅ Как НУЖНО делать:
+1. **Сохраняй ссылки в `self`**: Если виджет содержит интерактивные элементы (кнопки, поля), сохрани его в классе.
+2. **Явно указывай родителя** (если возможно).
+
+```python
+def build_ui(self, parent_layout):
+    # 1. Сохраняем ссылку, чтобы GC не убил объект
+    self.my_container = QWidget()
+
+    layout = QHBoxLayout(self.my_container)
+
+    # 2. Кнопки тоже лучше хранить в self, чтобы потом подключать сигналы
+    self.btn_action = QPushButton("Do Work")
+    layout.addWidget(self.btn_action)
+
+    parent_layout.addWidget(self.my_container)
+```
+
+---
+
+## 2. EventBus (Нервная система)
+
+Мы **никогда** не обращаемся к контроллерам напрямую из UI (`gui.main_controller.do_something()`). Это вызывает циклические зависимости и спагетти-код.
+
+### 📢 Отправка (View -> Logic)
+Если кнопка нажата, мы "кричим" в шину событий.
+
+```python
+from core.events import get_event_bus, Events
+
+# Вариант 1: Просто пнуть и забыть (Асинхронно)
+get_event_bus().emit(Events.Chat.SEND_MESSAGE, {'text': 'Привет'})
+
+# Вариант 2: Спросить и ждать ответа (Синхронно, блокирует UI ненадолго)
+# Используй timeout!
+result = get_event_bus().emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+if result:
+    profile = result[0]
+```
+
+### 👂 Подписка (Logic -> View)
+Если UI должен реагировать на изменения в недрах системы.
+
+```python
+# В controller или view
+def _subscribe(self):
+    # weak=False используется, если метод подписки может быть удален GC (редко, но бывает)
+    self.event_bus.subscribe(Events.Task.UPDATE_TASK_STATUS, self._on_task_update)
+
+def _on_task_update(self, event):
+    data = event.data
+    self.status_label.setText(data['status'])
+```
+
+---
+
+## 3. Тяжелые задачи и Потоки (QThread)
+
+Главная причина крашей с кодом `0xC0000409` или зависаний UI.
+**Никогда** не запускай тяжелые вычисления (AI, долгие SQL запросы, Network IO) в основном потоке `logic.py`.
+
+### 🧵 Шаблон Worker-а
+Создавай отдельный класс наследуемый от `QThread`.
+
+```python
+from PyQt6.QtCore import QThread, pyqtSignal
+from main_logger import logger
+
+class HeavyTaskWorker(QThread):
+    # Сигналы для общения с UI (ТОЛЬКО через сигналы!)
+    finished_signal = pyqtSignal(dict)
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, param1):
+        super().__init__()
+        self.param1 = param1
+
+    def run(self):
+        """Этот код выполняется в ОТДЕЛЬНОМ потоке"""
+        try:
+            # 🛑 ВАЖНО: Импорты менеджеров делаем ВНУТРИ run()
+            # Это гарантирует, что SQLite connection создастся в этом потоке.
+            from managers.database_manager import DatabaseManager
+
+            # Создаем новый инстанс менеджера.
+            # Он создаст свой connection. SQLite запрещает шарить connection между потоками.
+            db = DatabaseManager()
+
+            # ... тяжелая работа ...
+            result = {"status": "ok"}
+
+            self.finished_signal.emit(result)
+
+        except Exception as e:
+            logger.error(f"Worker failed: {e}")
+            self.error_signal.emit(str(e))
+```
+
+### 🚀 Запуск Worker-а (в logic.py)
+
+```python
+def start_heavy_task(gui):
+    # 1. Сохраняем worker в gui (self), иначе GC убьет поток сразу после start()!
+    gui._current_worker = HeavyTaskWorker("param")
+
+    # 2. Подключаем сигналы
+    gui._current_worker.finished_signal.connect(lambda res: print("Done", res))
+
+    # 3. Чистим ссылку после завершения (опционально, но полезно)
+    def cleanup():
+        gui._current_worker = None
+    gui._current_worker.finished.connect(cleanup)
+
+    # 4. Поехали
+    gui._current_worker.start()
+```
+
+---
+
+## 4. Чек-лист "Почему оно упало?"
+
+Если приложение закрылось без ошибки или с `Process finished with exit code ...`:
+
+1.  **SQLite Thread Error?**
+    *   *Симптом:* `sqlite3.ProgrammingError: SQLite objects created in a thread can only be used in that same thread`.
+    *   *Лечение:* Ты передал `self.db` или `rag_manager` из UI-потока в `QThread`. Создавай `DatabaseManager` **внутри** метода `run()`.
+
+2.  **PyQt GC Error?**
+    *   *Симптом:* `RuntimeError: wrapped C/C++ object ... has been deleted`.
+    *   *Лечение:* Ты создал виджет/воркер как локальную переменную в функции. Присвой его в `self.something`.
+
+3.  **UI Freeze / Stack Overflow?**
+    *   *Симптом:* Окно белеет, приложение вылетает с кодом `0xC0000409`.
+    *   *Лечение:* Ты использовал `QApplication.processEvents()` в тяжелом цикле вместо использования нормального `QThread`. Или ты пытаешься обновить GUI из потока `run()` напрямую (нужно только через `signal.emit`).
+
+4.  **Circular Import?**
+    *   *Симптом:* `ImportError: cannot import name ... partially initialized`.
+    *   *Лечение:* Делай импорты внутри методов/функций (локальные импорты), а не в начале файла, если модули ссылаются друг на друга.
