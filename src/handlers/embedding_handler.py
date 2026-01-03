@@ -77,7 +77,7 @@ from main_logger import logger
 import numpy as np
 import time
 import os
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 
 # --- Константы модели ---
 MODEL_NAME = 'Snowflake/snowflake-arctic-embed-m-v2.0'
@@ -180,6 +180,70 @@ class EmbeddingModelHandler:
         except Exception as e:
             logger.error(f"Ошибка при вычислении эмбеддинга для текста '{text}': {e}")
             return None
+
+    def get_embeddings(
+        self,
+        texts: List[str],
+        prefix: str = QUERY_PREFIX,
+        batch_size: int = 32,
+    ) -> List[Optional[np.ndarray]]:
+        """
+        Batch-версия эмбеддингов:
+        - один tokenizer + один forward на батч
+        - сохраняет порядок
+        - пустые/None -> None
+        """
+        if not texts:
+            return []
+
+        # Нормализуем вход и сохраняем индексы непустых
+        norm_texts: List[str] = []
+        valid_idx: List[int] = []
+        valid_inputs: List[str] = []
+
+        for i, t in enumerate(texts):
+            s = "" if t is None else str(t)
+            norm_texts.append(s)
+            if s.strip():
+                valid_idx.append(i)
+                valid_inputs.append(prefix + s)
+
+        # Если все пустые
+        if not valid_inputs:
+            return [None] * len(texts)
+
+        if batch_size <= 0:
+            batch_size = len(valid_inputs)
+
+        results: List[Optional[np.ndarray]] = [None] * len(texts)
+
+        try:
+            with torch.no_grad():
+                for start in range(0, len(valid_inputs), batch_size):
+                    chunk_inputs = valid_inputs[start:start + batch_size]
+                    chunk_indices = valid_idx[start:start + batch_size]
+
+                    tokens = self.tokenizer(
+                        chunk_inputs,
+                        padding=True,
+                        truncation=True,
+                        return_tensors='pt',
+                        max_length=512
+                    ).to(self.device)
+
+                    outputs = self.model(**tokens)
+                    embedding = outputs.last_hidden_state[:, 0]
+                    normalized = torch.nn.functional.normalize(embedding, p=2, dim=1)
+                    arr = normalized.cpu().numpy()  # shape: (batch, hidden)
+
+                    for j, orig_i in enumerate(chunk_indices):
+                        results[orig_i] = arr[j]
+
+            return results
+        except Exception as e:
+            logger.error(f"Ошибка при batch-вычислении эмбеддингов: {e}", exc_info=True)
+            # В случае ошибки вернём список правильной длины
+            return [None] * len(texts)
 
 
 if __name__ == '__main__':

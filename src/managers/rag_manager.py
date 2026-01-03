@@ -1,6 +1,7 @@
 import re
 import sqlite3
 import numpy as np
+from threading import Lock
 import json
 import struct
 import random
@@ -25,9 +26,25 @@ def _resolve_event_name(fallback: str, *path: str) -> str:
 
 
 EMBED_EVENT_NAME = _resolve_event_name("rag.get_embedding", "RAG", "GET_EMBEDDING")
+EMBEDS_EVENT_NAME = _resolve_event_name("rag.get_embeddings", "RAG", "GET_EMBEDDINGS")
 
 
 class RAGManager:
+    _fallback_handler: Optional[EmbeddingModelHandler] = None
+    _fallback_lock: Lock = Lock()
+
+    @classmethod
+    def _get_fallback_handler(cls) -> EmbeddingModelHandler:
+        """
+        Fallback handler создаём лениво и один раз на процесс.
+        EmbeddingModelHandler тяжёлый (грузит модель), нельзя инстанцировать на каждый вызов.
+        """
+        if cls._fallback_handler is None:
+            with cls._fallback_lock:
+                if cls._fallback_handler is None:
+                    cls._fallback_handler = EmbeddingModelHandler()
+        return cls._fallback_handler
+
     def __init__(self, character_id: str):
         self.character_id = character_id
         self.db = DatabaseManager()
@@ -193,10 +210,70 @@ class RAGManager:
                 logger.warning(f"RAGManager: EventBus embedding не сработал, fallback на singleton. Причина: {e}")
 
         try:
-            return EmbeddingModelHandler().get_embedding(text, prefix=prefix)
+            return self._get_fallback_handler().get_embedding(text, prefix=prefix)
         except Exception as e:
             logger.error(f"RAGManager: ошибка singleton эмбеддинга: {e}", exc_info=True)
             return None
+
+    def _get_embeddings(
+        self,
+        texts: List[str],
+        prefix: str = QUERY_PREFIX,
+        use_event_bus: bool = True,
+        batch_size: Optional[int] = None,
+    ) -> List[Optional[np.ndarray]]:
+        """
+        Массовое получение эмбеддингов:
+        1) EventBus batch (rag.get_embeddings) — меньше overhead и lock'ов.
+        2) Fallback на ленивый singleton EmbeddingModelHandler, если EventBus недоступен.
+        """
+        if not texts:
+            return []
+
+        cleaned: List[str] = []
+        for t in texts:
+            if not t:
+                cleaned.append("")
+            else:
+                cleaned.append(self.rag_clean_text(str(t)))
+
+        bs = int(batch_size or self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16))
+        if bs <= 0:
+            bs = len(cleaned)
+
+        out: List[Optional[np.ndarray]] = []
+
+        if use_event_bus:
+            try:
+                for i in range(0, len(cleaned), bs):
+                    chunk = cleaned[i:i + bs]
+                    results = self.event_bus.emit_and_wait(
+                        EMBEDS_EVENT_NAME,
+                        {"texts": chunk, "prefix": prefix},
+                    )
+                    vecs = results[0] if results else []
+                    if not isinstance(vecs, list):
+                        vecs = []
+                    # выравниваем длину под входной chunk
+                    if len(vecs) != len(chunk):
+                        vecs = (vecs + [None] * len(chunk))[:len(chunk)]
+                    out.extend(vecs)
+                return out
+            except Exception as e:
+                logger.warning(
+                    f"RAGManager: EventBus batch embedding не сработал, fallback на singleton. Причина: {e}"
+                )
+                out.clear()
+
+        # Fallback: последовательно (но без повторной загрузки модели)
+        try:
+            handler = self._get_fallback_handler()
+            for t in cleaned:
+                out.append(handler.get_embedding(t, prefix=prefix) if t else None)
+            return out
+        except Exception as e:
+            logger.error(f"RAGManager: ошибка fallback batch эмбеддингов: {e}", exc_info=True)
+            return [None] * len(cleaned)
 
     def update_memory_embedding(self, eternal_id: int, text: str):
         """Создает и сохраняет эмбеддинг для воспоминания (без падений, RAG опционален)."""
@@ -548,10 +625,9 @@ class RAGManager:
         """
         Проходит по всем записям без вектора и генерирует его.
         progress_callback(current, total) - для обновления UI
-        Возвращает количество обновленных записей.
+        Возвращает количество ОБНОВЛЁННЫХ записей (где реально записали embedding).
 
-        Для эффективности здесь используем прямой доступ к Singleton handler (без EventBus на каждую запись),
-        но Singleton уже будет прогрет EmbeddingController'ом при наличии.
+        Для эффективности используем batch эмбеддинги через EventBus (rag.get_embeddings).
         """
         conn = self.db.get_connection()
         cursor = conn.cursor()
@@ -582,53 +658,64 @@ class RAGManager:
             return 0
 
         processed = 0
+        updated_count = 0
 
         try:
-            # Обработка истории
-            for row_id, content in hist_rows:
-                if content and isinstance(content, str):
-                    # Простая эвристика: если это JSON мультимодальности, берем как есть (или можно извлекать текст отдельно)
-                    # content может быть JSON-string — оставляем текущую логику без усложнений
-                    vec = self._get_embedding(content)
+            batch_size = self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16)
+            if batch_size <= 0:
+                batch_size = 16
+
+            # --- History ---
+            for i in range(0, len(hist_rows), batch_size):
+                chunk = hist_rows[i:i + batch_size]
+                texts = [(c if isinstance(c, str) else "") for _, c in chunk]
+                vecs = self._get_embeddings(texts, batch_size=batch_size)
+
+                for (row_id, _), vec in zip(chunk, vecs):
                     if vec is not None:
                         blob = self._array_to_blob(vec)
                         cursor.execute("UPDATE history SET embedding = ? WHERE id = ?", (blob, row_id))
+                        updated_count += 1
 
-                processed += 1
-                if progress_callback:
-                    progress_callback(processed, total)
+                    processed += 1
+                    if progress_callback:
+                        progress_callback(processed, total)
 
-            conn.commit()  # Промежуточный коммит
+                conn.commit()
 
-            # Обработка воспоминаний
-            for eternal_id, content in mem_rows:
-                if content:
-                    vec = self._get_embedding(content)
+            # --- Memories ---
+            for i in range(0, len(mem_rows), batch_size):
+                chunk = mem_rows[i:i + batch_size]
+                texts = [str(c or "") for _, c in chunk]
+                vecs = self._get_embeddings(texts, batch_size=batch_size)
+
+                for (eternal_id, _), vec in zip(chunk, vecs):
                     if vec is not None:
                         blob = self._array_to_blob(vec)
                         cursor.execute(
                             "UPDATE memories SET embedding = ? WHERE character_id = ? AND eternal_id = ?",
-                            (blob, self.character_id, eternal_id)
+                            (blob, self.character_id, eternal_id),
                         )
+                        updated_count += 1
 
-                processed += 1
-                if progress_callback:
-                    progress_callback(processed, total)
+                    processed += 1
+                    if progress_callback:
+                        progress_callback(processed, total)
 
-            conn.commit()
+                conn.commit()
 
         except Exception as e:
             logger.error(f"Error during re-indexing: {e}", exc_info=True)
         finally:
             conn.close()
 
-        return processed
+        return updated_count
 
     def index_all(self, progress_callback=None) -> int:
         """
         Проходит по ВСЕМ записям и пересоздаёт вектора (даже если уже есть).
         progress_callback(current, total) - для обновления UI
-        Возвращает количество обновленных записей.
+        Возвращает количество ОБНОВЛЁННЫХ записей (где реально записали embedding).
         """
         conn = self.db.get_connection()
         cursor = conn.cursor()
@@ -657,43 +744,58 @@ class RAGManager:
             return 0
 
         processed = 0
+        updated_count = 0
 
         try:
-            for row_id, content in hist_rows:
-                if content and isinstance(content, str):
-                    vec = self._get_embedding(content)
+            batch_size = self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16)
+            if batch_size <= 0:
+                batch_size = 16
+
+            # --- History (пересоздаём всегда) ---
+            for i in range(0, len(hist_rows), batch_size):
+                chunk = hist_rows[i:i + batch_size]
+                texts = [(c if isinstance(c, str) else "") for _, c in chunk]
+                vecs = self._get_embeddings(texts, batch_size=batch_size)
+
+                for (row_id, _), vec in zip(chunk, vecs):
                     if vec is not None:
                         blob = self._array_to_blob(vec)
                         cursor.execute("UPDATE history SET embedding = ? WHERE id = ?", (blob, row_id))
+                        updated_count += 1
 
-                processed += 1
-                if progress_callback:
-                    progress_callback(processed, total)
+                    processed += 1
+                    if progress_callback:
+                        progress_callback(processed, total)
 
-            conn.commit()
+                conn.commit()
 
-            for eternal_id, content in mem_rows:
-                if content:
-                    vec = self._get_embedding(content)
+            # --- Memories (пересоздаём всегда) ---
+            for i in range(0, len(mem_rows), batch_size):
+                chunk = mem_rows[i:i + batch_size]
+                texts = [str(c or "") for _, c in chunk]
+                vecs = self._get_embeddings(texts, batch_size=batch_size)
+
+                for (eternal_id, _), vec in zip(chunk, vecs):
                     if vec is not None:
                         blob = self._array_to_blob(vec)
                         cursor.execute(
                             "UPDATE memories SET embedding = ? WHERE character_id = ? AND eternal_id = ?",
-                            (blob, self.character_id, eternal_id)
+                            (blob, self.character_id, eternal_id),
                         )
+                        updated_count += 1
 
-                processed += 1
-                if progress_callback:
-                    progress_callback(processed, total)
+                    processed += 1
+                    if progress_callback:
+                        progress_callback(processed, total)
 
-            conn.commit()
+                conn.commit()
 
         except Exception as e:
             logger.error(f"Error during full re-indexing: {e}", exc_info=True)
         finally:
             conn.close()
 
-        return processed
+        return updated_count
 
     def rag_clean_text(self, text: str) -> str:
         if not isinstance(text, str) or not text.strip():
