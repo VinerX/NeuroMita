@@ -75,11 +75,116 @@ class EditorMixin:
                 QPushButton:disabled { background-color: #7f8c8d; color: #bdc3c7; }
             """)
 
-    def _on_field_changed(self, *_: Any) -> None:
+    def _on_field_changed(self, *_args) -> None:
         if self._is_loading_ui:
             return
+
+        v = self.view
+
+        # NEW: if template is selected and it has url_tpl with {model}, update API URL display
+        try:
+            base = self._parse_base(v.template_combo.currentData())
+        except Exception:
+            base = None
+
+        if base is not None:
+            url_tpl = ""
+            # prefer last loaded template snapshot if present
+            tpl = getattr(self, "_active_template", None)
+            if isinstance(tpl, dict):
+                url_tpl = str(tpl.get("url_tpl") or "")
+                if not url_tpl:
+                    url_tpl = str(tpl.get("url") or "")
+            else:
+                # fallback: effective preset dict may include url_tpl
+                url_tpl = str((self.current_preset_data or {}).get("url_tpl") or "")
+
+            if url_tpl:
+                model = str(v.api_model_row.text() or "")
+                try:
+                    new_url = url_tpl.format(model=model) if "{model}" in url_tpl else url_tpl
+                except Exception:
+                    new_url = url_tpl
+
+                # avoid recursion storms
+                if v.api_url_row.text() != new_url:
+                    self._is_loading_ui = True
+                    v.api_url_row.set_text(new_url)
+                    self._is_loading_ui = False
+
+        # normal dirty + debounce state
         self._set_dirty(self._snapshot is not None and (self._get_snapshot() != self._snapshot))
         self._state_save_timer.start(350)
+
+
+    def _on_template_changed_async(self, *_args) -> None:
+        if self._is_loading_ui or not self.current_preset_id:
+            return
+
+        v = self.view
+        template_id = self._parse_base(v.template_combo.currentData())
+
+        if template_id is None:
+            v.api_url_row.set_enabled(True)
+            v.protocol_row.set_enabled(True)
+            self._set_protocol_config_visible(True)
+
+            # clear active template snapshot
+            self._active_template = None
+
+            pid = self._current_protocol_id_ui() or self._protocol_default_id
+            v.protocol_row.set_current_by_data(pid)
+            self._apply_protocol_details(pid)
+
+            self._on_field_changed()
+            return
+
+        # template selected -> hide config
+        self._set_protocol_config_visible(False)
+
+        def _call():
+            res = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_FULL, {"id": int(template_id)}, timeout=1.0)
+            return res[0] if res and res[0] else None
+
+        def _apply(tpl: dict | None):
+            if not tpl:
+                return
+            self._is_loading_ui = True
+
+            # store active template snapshot for URL recompute
+            self._active_template = dict(tpl)
+
+            pid = str(tpl.get("protocol_id") or "").strip() or self._protocol_default_id
+            v.protocol_row.set_current_by_data(pid)
+            v.protocol_row.set_enabled(False)
+            self._apply_protocol_details(pid)
+
+            default_model = str(tpl.get("default_model") or "")
+            if not v.api_model_row.text().strip():
+                v.api_model_row.set_text(default_model)
+
+            url_tpl = str(tpl.get("url_tpl") or "")
+            if url_tpl:
+                try:
+                    url = url_tpl.format(model=v.api_model_row.text().strip() or default_model) if "{model}" in url_tpl else url_tpl
+                except Exception:
+                    url = url_tpl
+            else:
+                url = str(tpl.get("url") or "")
+
+            v.api_url_row.set_text(url)
+            v.api_url_row.set_enabled(False)
+
+            known_models = tpl.get("known_models", []) or []
+            if isinstance(known_models, list) and known_models:
+                v.api_model_list_model.setStringList([str(x) for x in known_models if str(x).strip()])
+
+            self._apply_help_links(tpl)
+
+            self._is_loading_ui = False
+            self._on_field_changed()
+
+        self._bus_call_async(_call, _apply, name="load_template")
 
     def _emit_save_state(self) -> None:
         if self._is_loading_ui:
@@ -132,70 +237,6 @@ class EditorMixin:
         if sec is not None:
             sec.setVisible(bool(visible))
 
-
-    def _on_template_changed_async(self, *_args) -> None:
-        if self._is_loading_ui or not self.current_preset_id:
-            return
-
-        v = self.view
-        template_id = self._parse_base(v.template_combo.currentData())
-
-        if template_id is None:
-            v.api_url_row.set_enabled(True)
-            v.protocol_row.set_enabled(True)
-            self._set_protocol_config_visible(True)
-
-            pid = self._current_protocol_id_ui() or self._protocol_default_id
-            v.protocol_row.set_current_by_data(pid)
-            self._apply_protocol_details(pid)
-
-            self._on_field_changed()
-            return
-
-        # template selected -> hide configuration entirely
-        self._set_protocol_config_visible(False)
-
-        def _call():
-            res = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_FULL, {"id": int(template_id)}, timeout=1.0)
-            return res[0] if res and res[0] else None
-
-        def _apply(tpl: dict | None):
-            if not tpl:
-                return
-            self._is_loading_ui = True
-
-            # protocol is dictated by template, but section is hidden anyway
-            pid = str(tpl.get("protocol_id") or "").strip() or self._protocol_default_id
-            v.protocol_row.set_current_by_data(pid)
-            v.protocol_row.set_enabled(False)
-            self._apply_protocol_details(pid)
-
-            default_model = str(tpl.get("default_model") or "")
-            if not v.api_model_row.text().strip():
-                v.api_model_row.set_text(default_model)
-
-            url_tpl = str(tpl.get("url_tpl") or "")
-            if url_tpl:
-                try:
-                    url = url_tpl.format(model=v.api_model_row.text().strip() or default_model) if "{model}" in url_tpl else url_tpl
-                except Exception:
-                    url = url_tpl
-            else:
-                url = str(tpl.get("url") or "")
-
-            v.api_url_row.set_text(url)
-            v.api_url_row.set_enabled(False)
-
-            known_models = tpl.get("known_models", []) or []
-            if isinstance(known_models, list) and known_models:
-                v.api_model_list_model.setStringList([str(x) for x in known_models if str(x).strip()])
-
-            self._apply_help_links(tpl)
-
-            self._is_loading_ui = False
-            self._on_field_changed()
-
-        self._bus_call_async(_call, _apply, name="load_template")
 
     def _cancel_changes(self) -> None:
         if not self._snapshot:

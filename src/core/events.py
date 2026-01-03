@@ -586,3 +586,4 @@ class Events:
         GET_PROTOCOL_LIST = "get_protocol_list"
         GET_PROTOCOL_FULL = "get_protocol_full"
         GET_TRANSFORM_LIST = "get_transform_list"
+        BUILD_HTTP_REQUEST = "build_protocol_http_request"

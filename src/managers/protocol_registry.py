@@ -13,6 +13,7 @@ class ApiProtocol:
     name: str
     dialect: str
     provider: str
+    auth: Dict[str, Any] = field(default_factory=dict)
     headers: Dict[str, str] = field(default_factory=dict)
     capabilities: Dict[str, Any] = field(default_factory=dict)
     transforms: List[Dict[str, Any]] = field(default_factory=list)
@@ -28,6 +29,7 @@ class ProtocolRegistry:
                     name=str(raw.get("name", raw["id"])),
                     dialect=str(raw.get("dialect", "")),
                     provider=str(raw.get("provider", "")),
+                    auth=dict(raw.get("auth", {}) or {}),
                     headers=dict(raw.get("headers", {}) or {}),
                     capabilities=dict(raw.get("capabilities", {}) or {}),
                     transforms=list(raw.get("transforms", []) or []),

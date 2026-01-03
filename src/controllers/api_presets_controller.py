@@ -896,34 +896,41 @@ class ApiPresetsController:
         ).start()
 
     def _sync_test_connection(self, preset_id: int, tpl: ApiTemplate, key: str):
-        from managers.protocol_registry import get_protocol_registry
-        from presets.api_protocols import Dialects
 
-        reg = get_protocol_registry()
-        proto = reg.get(str(tpl.protocol_id or "")) if tpl.protocol_id else None
-
-        dialect_id = str(getattr(proto, "dialect", "") or "")
-        proto_headers = dict(getattr(proto, "headers", {}) or {})
-
+        protocol_id = str(getattr(tpl, "protocol_id", "") or "").strip()
         url = str(tpl.test_url or "")
-        if "{key}" in url:
-            url = url.replace("{key}", key or "")
-        elif dialect_id == Dialects.GEMINI_GENERATE_CONTENT and key and "key=" not in url:
-            sep = "&" if "?" in url else "?"
-            url = f"{url}{sep}key={key}"
 
-        headers: Dict[str, str] = {}
-        headers.update(proto_headers)
+        # через протокол-фабрику собираем url+headers
+        res = self.event_bus.emit_and_wait(
+            Events.Protocols.BUILD_HTTP_REQUEST,
+            {
+                "protocol_id": protocol_id,
+                "url": url,
+                "api_key": str(key or ""),
+                "headers": {},  # можно потом доп.заголовки
+            },
+            timeout=1.0
+        )
 
-        if key and dialect_id != Dialects.G4F:
-            headers["Authorization"] = f"Bearer {key}"
+        built = res[0] if res else None
+        if not isinstance(built, dict):
+            self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
+                "id": preset_id,
+                "success": False,
+                "message": "Protocol HTTP builder not available",
+            })
+            return
 
-        logger.info(f"Testing connection to {url} with headers: {list(headers.keys())}")
+        final_url = str(built.get("url") or "")
+        headers = built.get("headers") if isinstance(built.get("headers"), dict) else {}
+        safe_url = str(built.get("safe_url") or final_url)
 
-        timeout = 30 if "openrouter.ai" in url.lower() else 15
+        logger.info(f"Testing connection to {safe_url} with headers: {list(headers.keys())}")
+
+        timeout = 30 if "openrouter.ai" in final_url.lower() else 15
 
         try:
-            resp = requests.get(url, headers=headers, timeout=timeout)
+            resp = requests.get(final_url, headers=headers, timeout=timeout)
             status = resp.status_code
             text = resp.text
 

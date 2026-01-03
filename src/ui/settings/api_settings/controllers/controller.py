@@ -3,6 +3,7 @@
 from typing import Any, Optional
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot, Qt
+from PyQt6.QtWidgets import QMessageBox
 
 from core.events import get_event_bus, Events
 from main_logger import logger
@@ -18,7 +19,6 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
     test_result_received = pyqtSignal(dict)
     test_result_failed = pyqtSignal(dict)
 
-    # Thread-safe dispatcher: emit(callable) from any thread => executed in GUI thread
     dispatch_to_gui = pyqtSignal(object)
 
     def __init__(self, view: Any):
@@ -37,17 +37,23 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
         self._protocols = self._load_protocol_catalog()
         self._protocol_default_id = self._pick_default_protocol_id()
 
+        # cache for pipeline dialog
+        self._transform_catalog: list[dict] = []
+        self._protocol_overrides: dict = {}
+
         self._state_save_timer = QTimer(self)
         self._state_save_timer.setSingleShot(True)
         self._state_save_timer.timeout.connect(self._emit_save_state)
 
         logger.info("[API UI] ApiSettingsController init")
 
-        # connect dispatcher
         self.dispatch_to_gui.connect(self._run_on_gui, type=Qt.ConnectionType.QueuedConnection)
 
         self._wire_ui()
         self._subscribe_bus()
+
+        # load transforms catalog (once)
+        QTimer.singleShot(0, self._safe(self._load_transform_catalog_async, "load_transform_catalog_async"))
 
         self._populate_protocol_combo()
 
@@ -80,9 +86,36 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
         )
 
     def _safe(self, fn, name: str):
+        """
+        Qt-сигналы часто передают лишние аргументы (clicked(bool), currentIndexChanged(int)).
+        Здесь:
+        1) пробуем вызвать fn(*args, **kwargs)
+        2) если это TypeError из-за аргументов — пробуем fn()
+        """
         def wrapper(*args, **kwargs):
             try:
                 return fn(*args, **kwargs)
+            except TypeError as e:
+                # retry without args ONLY if args were provided
+                if args or kwargs:
+                    try:
+                        return fn()
+                    except Exception as e2:
+                        logger.error(f"[API UI] handler crashed: {name}: {e2}", exc_info=True)
+                        try:
+                            if hasattr(self.view, "provider_label"):
+                                self.view.provider_label.setText(f"API UI error: {name} (see logs)")
+                        except Exception:
+                            pass
+                        return None
+
+                logger.error(f"[API UI] handler crashed: {name}: {e}", exc_info=True)
+                try:
+                    if hasattr(self.view, "provider_label"):
+                        self.view.provider_label.setText(f"API UI error: {name} (see logs)")
+                except Exception:
+                    pass
+                return None
             except Exception as e:
                 logger.error(f"[API UI] handler crashed: {name}: {e}", exc_info=True)
                 try:
@@ -91,6 +124,7 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
                 except Exception:
                     pass
                 return None
+
         return wrapper
 
     def _wire_ui(self) -> None:
@@ -118,6 +152,10 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
         v.api_key_row.edit.textChanged.connect(self._safe(self._on_field_changed, "key_changed"))
         v.reserve_keys_row.edit.textChanged.connect(self._safe(self._on_field_changed, "reserve_keys_changed"))
 
+        # IMPORTANT: pipeline button
+        if hasattr(v, "configure_pipeline_btn"):
+            v.configure_pipeline_btn.clicked.connect(self._safe(self._on_configure_pipeline_clicked, "configure_pipeline_clicked"))
+
         self.test_result_received.connect(self._safe(self._process_test_result, "process_test_result"))
         self.test_result_failed.connect(self._safe(self._process_test_failed, "process_test_failed"))
 
@@ -127,3 +165,77 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
 
         self.event_bus.subscribe(Events.ApiPresets.PRESET_SAVED, lambda _e: self.reload_presets_async(), weak=False)
         self.event_bus.subscribe(Events.ApiPresets.PRESET_DELETED, lambda _e: self.reload_presets_async(), weak=False)
+
+    def _load_transform_catalog_async(self) -> None:
+        def _call():
+            res = self.event_bus.emit_and_wait(Events.Protocols.GET_TRANSFORM_LIST, timeout=1.0)
+            return res[0] if res else []
+
+        def _apply(lst):
+            if isinstance(lst, list):
+                self._transform_catalog = [x for x in lst if isinstance(x, dict) and x.get("id")]
+                logger.info(f"[API UI] Transform catalog loaded: {len(self._transform_catalog)} items")
+
+        self._bus_call_async(_call, _apply, name="load_transform_catalog")
+
+    def _on_configure_pipeline_clicked(self) -> None:
+        """
+        Открываем окно через WindowManager (GUI controller).
+        """
+        v = self.view
+        base = self._parse_base(v.template_combo.currentData())
+
+        # 3) если выбран шаблон — НЕ показывать конфигурацию
+        if base is not None:
+            QMessageBox.information(
+                v,
+                _("Недоступно", "Not available"),
+                _("Pipeline можно настраивать только для пресетов без шаблона.",
+                  "Pipeline can be configured only for presets without a template."),
+            )
+            return
+
+        pid = self._current_protocol_id_ui() or self._protocol_default_id
+        proto = self._protocols.get(pid) or {}
+        base_transforms = proto.get("transforms") or []
+        if not isinstance(base_transforms, list):
+            base_transforms = []
+
+        current_transforms = self._effective_transforms_for_current()
+
+        available_ids = [str(t.get("id")) for t in (self._transform_catalog or []) if t.get("id")]
+
+        def on_apply(new_transforms: list[dict]):
+            self._protocol_overrides = dict(self._protocol_overrides or {})
+            self._protocol_overrides["transforms"] = [t for t in (new_transforms or []) if isinstance(t, dict) and t.get("id")]
+
+            # refresh view
+            lines = []
+            for t in self._protocol_overrides["transforms"]:
+                tid = str(t.get("id") or "")
+                params = t.get("params")
+                lines.append(f"- {tid}" + (f"  params={params}" if params else ""))
+
+            v.protocol_transforms_view.setPlainText("\n".join(lines))
+            self._on_field_changed()
+
+        # show via window manager
+        self.event_bus.emit(Events.GUI.SHOW_WINDOW, {
+            "window_id": "protocol_pipeline",
+            "payload": {
+                "available_ids": available_ids,
+                "base_transforms": base_transforms,
+                "current_transforms": current_transforms,
+                "on_apply": on_apply,
+                "modal": True,
+            }
+        })
+
+    def _effective_transforms_for_current(self) -> list[dict]:
+        pid = self._current_protocol_id_ui() or self._protocol_default_id
+        base = (self._protocols.get(pid) or {}).get("transforms") or []
+        if isinstance(self._protocol_overrides, dict):
+            ot = self._protocol_overrides.get("transforms")
+            if isinstance(ot, list):
+                return [t for t in ot if isinstance(t, dict) and t.get("id")]
+        return [t for t in base if isinstance(t, dict) and t.get("id")]
