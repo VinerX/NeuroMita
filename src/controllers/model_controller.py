@@ -6,6 +6,7 @@ import datetime
 import re
 import copy
 from typing import Optional, Any
+import base64
 
 from handlers.chat_handler import ChatModel
 from utils import _
@@ -32,7 +33,7 @@ class ModelController:
     - берутся через Events.Character.* (единый источник истины)
     """
 
-    def __init__(self, settings, pip_installer, character_controller=None):
+    def __init__(self, settings):
         self.settings = settings
         self.event_bus = get_event_bus()
 
@@ -43,7 +44,7 @@ class ModelController:
         self.loading_more_history = False
 
         self.preset_resolver = ApiPresetResolver(settings=self.settings, event_bus=self.event_bus)
-        self.model = ChatModel(settings, pip_installer)
+        self.model = ChatModel(settings)
 
         self.context_counter = ContextCounter(encoding_model="gpt-4o-mini")
         self._base_prompt_cache: dict[tuple[str, str], list[dict]] = {}
@@ -115,7 +116,6 @@ class ModelController:
     # ---------------------------------------------------------------------
 
     def _subscribe_to_events(self):
-        self.event_bus.subscribe("model_settings_loaded", self._on_model_settings_loaded, weak=False)
         self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
 
         self.event_bus.subscribe(Events.Character.CURRENT_CHANGED, self._on_character_current_changed, weak=False)
@@ -139,17 +139,6 @@ class ModelController:
     # ---------------------------------------------------------------------
     # Model settings
     # ---------------------------------------------------------------------
-
-    def _on_model_settings_loaded(self, event: Event):
-        data = event.data or {}
-        if data.get("api_key"):
-            self.model.api_key = data["api_key"]
-        if data.get("api_url"):
-            self.model.api_url = data["api_url"]
-        if data.get("api_model"):
-            self.model.api_model = data["api_model"]
-        if "makeRequest" in data:
-            self.model.makeRequest = data["makeRequest"]
 
     def _on_setting_changed(self, event: Event):
         key = (event.data or {}).get("key")

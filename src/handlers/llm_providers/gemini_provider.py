@@ -18,7 +18,7 @@ class GeminiProvider(BaseProvider):
     tools_dialect_id: str = "gemini"
 
     def is_applicable(self, req: LLMRequest) -> bool:
-        return bool(req.make_request and req.gemini_case)
+        return bool(req.provider_name == self.name)
 
     def generate(self, req: LLMRequest) -> str:
         return self.generate_request_gemini(req)
@@ -190,9 +190,15 @@ class GeminiProvider(BaseProvider):
 
         need_stream = req.stream and "tools" not in data
 
+        headers = {"Content-Type": "application/json"}
+        if isinstance(req.headers, dict):
+            for k, v in req.headers.items():
+                if k and v is not None:
+                    headers[str(k)] = str(v)
+
         response = requests.post(
             req.api_url,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             json=data,
             stream=need_stream
         )

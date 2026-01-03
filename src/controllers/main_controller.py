@@ -20,6 +20,7 @@ from controllers.prompt_controller import PromptController
 from controllers.history_controller import HistoryController
 from controllers.voice_model_controller import VoiceModelController
 from controllers.install_controller import InstallController
+from controllers.protocols_controller import ProtocolsController
 
 from main_logger import logger
 from utils.ffmpeg_installer import install_ffmpeg
@@ -86,6 +87,9 @@ class MainController:
 
         self.prompt_controller = PromptController()
         logger.notify("PromptController успешно инициализирован.")
+        
+        self.protocols_controller = ProtocolsController()
+        logger.notify("ProtocolsController успешно инициализирован.")
 
         self.api_presets_controller = ApiPresetsController()
         logger.notify("ApiPresetsController успешно инициализирован.")
@@ -99,7 +103,7 @@ class MainController:
         self.character_controller = CharacterController(self.settings)
         logger.notify("CharacterController успешно инициализирован.")
         
-        self.model_controller = ModelController(self.settings, self.pip_installer)
+        self.model_controller = ModelController(self.settings)
         logger.notify("ModelController успешно инициализирован.")
 
         self.capture_controller = CaptureController(self.settings)

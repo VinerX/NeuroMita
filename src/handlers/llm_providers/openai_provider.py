@@ -13,12 +13,7 @@ class OpenAIProvider(OpenAICompatibleProvider):
     priority = 10
 
     def is_applicable(self, req: LLMRequest) -> bool:
-        if req.make_request:
-            return False
-        if req.g4f_flag:
-            return False
-        model_lower = (req.model or "").lower()
-        return any(prefix in model_lower for prefix in ["gpt-", "deepseek-", "o1-", "chatgpt"])
+        return bool(req.provider_name == self.name)
 
     def _get_client(self, req: LLMRequest):
         if not req.api_key:

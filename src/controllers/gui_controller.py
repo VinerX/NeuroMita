@@ -16,6 +16,8 @@ from .gui.window_manager_controller import WindowManagerController
 from .gui.asr_events_controller import AsrEventsController
 from .gui.asr_glossary_controller import AsrGlossaryGuiController
 from .gui.install_gui_controller import InstallGuiController
+from .gui.protocol_pipeline_gui_controller import ProtocolPipelineGuiController
+
 
 class GuiController:
     def __init__(self, main_controller, view):
@@ -52,7 +54,8 @@ class GuiController:
         self.install_gui_controller = InstallGuiController(main_controller, view)
 
         self.window_manager_controller = WindowManagerController(main_controller, view)
-        
+
+        self.protocol_pipeline_gui_controller = ProtocolPipelineGuiController(main_controller, view)
 
         self._connect_view_signals()
         logger.info("GuiController подписался на события")
