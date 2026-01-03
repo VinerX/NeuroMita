@@ -44,6 +44,7 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QScrollArea,
     QSizePolicy,
+    QFrame
 )
 
 from styles.main_styles import get_stylesheet
@@ -82,6 +83,7 @@ class SettingsOverride:
     Временный override SettingsManager.get(key, default),
     чтобы тестировать RAG с разными весами без правок RAGManager.
     """
+
     def __init__(self, overrides: dict[str, Any]):
         self.overrides = dict(overrides or {})
         self._orig_get = None
@@ -116,9 +118,9 @@ class SettingsOverride:
 @dataclass
 class Scenario:
     character_id: str
-    context: list[dict]    # history.is_active=1
-    history: list[dict]    # history.is_active=0
-    memories: list[dict]   # memories
+    context: list[dict]  # history.is_active=1
+    history: list[dict]  # history.is_active=0
+    memories: list[dict]  # memories
 
     @staticmethod
     def template(character_id: str = "RAG_TEST") -> "Scenario":
@@ -295,6 +297,7 @@ class RagTesterWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
+        root.setContentsMargins(8, 8, 8, 8)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         root.addWidget(splitter, 1)
@@ -305,14 +308,15 @@ class RagTesterWindow(QMainWindow):
         left_tabs = QTabWidget()
         splitter.addWidget(left_tabs)
 
-        # Scenario tab
+        # --- Scenario tab ---
         tab_scn = QWidget()
         tab_scn_l = QVBoxLayout(tab_scn)
+        tab_scn_l.setContentsMargins(6, 6, 6, 6)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("character_id:"))
         self.character_id_edit = QLineEdit("RAG_TEST")
-        self.character_id_edit.setMaximumWidth(260)
+        self.character_id_edit.setMaximumWidth(220)
         row.addWidget(self.character_id_edit)
         row.addStretch(1)
 
@@ -331,12 +335,25 @@ class RagTesterWindow(QMainWindow):
 
         left_tabs.addTab(tab_scn, "Scenario")
 
-        # Data tab
+        # --- Data tab ---
         tab_data = QWidget()
         tab_data_l = QVBoxLayout(tab_data)
+        tab_data_l.setContentsMargins(0, 0, 0, 0)
 
-        gb_db = QGroupBox("Database")
+        # Wrap Data tab content in ScrollArea to avoid layout squishing on small screens
+        data_scroll = QScrollArea()
+        data_scroll.setWidgetResizable(True)
+        data_scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        data_content = QWidget()
+        data_content_l = QVBoxLayout(data_content)
+        data_content_l.setContentsMargins(6, 6, 6, 6)
+        data_content_l.setSpacing(10)
+
+        # 1. Database Group
+        gb_db = QGroupBox("Database Operations")
         gb_db_l = QGridLayout(gb_db)
+        gb_db_l.setSpacing(8)
 
         self.chk_clear_before = QCheckBox("Очистить перед заливкой (опасно)")
         self.chk_clear_before.setChecked(False)
@@ -345,45 +362,63 @@ class RagTesterWindow(QMainWindow):
 
         self.btn_apply = QPushButton("Залить scenario в БД")
         self.btn_load_from_db = QPushButton("Загрузить scenario из БД")
+        self.btn_apply.setMinimumHeight(30)
+        self.btn_load_from_db.setMinimumHeight(30)
 
         self.db_hist_limit = QSpinBox()
         self.db_hist_limit.setRange(0, 200000)
         self.db_hist_limit.setValue(3000)
-        self.db_hist_limit.setFixedWidth(120)
+        self.db_hist_limit.setFixedWidth(100)
 
         self.db_mem_limit = QSpinBox()
         self.db_mem_limit.setRange(0, 200000)
         self.db_mem_limit.setValue(5000)
-        self.db_mem_limit.setFixedWidth(120)
+        self.db_mem_limit.setFixedWidth(100)
 
+        # Layout for DB
         gb_db_l.addWidget(self.btn_apply, 0, 0)
         gb_db_l.addWidget(self.btn_load_from_db, 0, 1)
+
         gb_db_l.addWidget(self.chk_clear_before, 1, 0, 1, 2)
         gb_db_l.addWidget(self.chk_embed_now, 2, 0, 1, 2)
-        gb_db_l.addWidget(QLabel("history limit:"), 3, 0)
-        gb_db_l.addWidget(self.db_hist_limit, 3, 1)
-        gb_db_l.addWidget(QLabel("memories limit:"), 4, 0)
-        gb_db_l.addWidget(self.db_mem_limit, 4, 1)
 
-        tab_data_l.addWidget(gb_db)
+        # Sub-layout for limits to align nicely
+        lim_layout = QGridLayout()
+        lim_layout.addWidget(QLabel("history limit:"), 0, 0)
+        lim_layout.addWidget(self.db_hist_limit, 0, 1)
+        lim_layout.addWidget(QLabel("memories limit:"), 1, 0)
+        lim_layout.addWidget(self.db_mem_limit, 1, 1)
+        lim_layout.setColumnStretch(2, 1)  # push left
 
-        gb_import = QGroupBox("Import legacy JSON")
+        gb_db_l.addLayout(lim_layout, 3, 0, 1, 2)
+
+        data_content_l.addWidget(gb_db)
+
+        # 2. Import Group
+        gb_import = QGroupBox("Import Legacy JSON")
         gb_import_l = QGridLayout(gb_import)
+        gb_import_l.setSpacing(8)
 
         self.btn_import_old_history = QPushButton("Импорт history JSON…")
         self.btn_import_old_memories = QPushButton("Импорт memories JSON…")
         self.import_context_tail = QSpinBox()
         self.import_context_tail.setRange(0, 50)
         self.import_context_tail.setValue(2)
-        self.import_context_tail.setFixedWidth(120)
+        self.import_context_tail.setFixedWidth(100)
 
         gb_import_l.addWidget(self.btn_import_old_history, 0, 0)
         gb_import_l.addWidget(self.btn_import_old_memories, 0, 1)
-        gb_import_l.addWidget(QLabel("Tail->context:"), 1, 0)
-        gb_import_l.addWidget(self.import_context_tail, 1, 1)
 
-        tab_data_l.addWidget(gb_import)
+        tail_layout = QHBoxLayout()
+        tail_layout.addWidget(QLabel("Tail -> context:"))
+        tail_layout.addWidget(self.import_context_tail)
+        tail_layout.addStretch(1)
 
+        gb_import_l.addLayout(tail_layout, 1, 0, 1, 2)
+
+        data_content_l.addWidget(gb_import)
+
+        # 3. Indexing Group
         gb_index = QGroupBox("Indexing")
         gb_index_l = QHBoxLayout(gb_index)
         self.btn_index_missing = QPushButton("Index missing")
@@ -392,51 +427,75 @@ class RagTesterWindow(QMainWindow):
         gb_index_l.addWidget(self.btn_missing_count)
         gb_index_l.addStretch(1)
 
-        tab_data_l.addWidget(gb_index)
-        tab_data_l.addStretch(1)
+        data_content_l.addWidget(gb_index)
 
+        # Spacer at the bottom of data tab
+        data_content_l.addStretch(1)
+
+        data_scroll.setWidget(data_content)
+        tab_data_l.addWidget(data_scroll)
         left_tabs.addTab(tab_data, "Data")
 
         # ---------------------------
-        # Right: Query + tabs (Results / Debug)
+        # Right: Query Area + tabs (Results / Debug)
         # ---------------------------
         right = QWidget()
         right_l = QVBoxLayout(right)
+        right_l.setContentsMargins(6, 6, 6, 6)
 
-        qrow = QHBoxLayout()
-        qrow.addWidget(QLabel("Query:"))
-        self.query_edit = QLineEdit()
-        qrow.addWidget(self.query_edit, 1)
+        # --- Query Area (Fixed height ~ 3 lines) ---
+        query_group = QGroupBox("Query Input")
+        query_group_l = QVBoxLayout(query_group)
+        query_group_l.setContentsMargins(8, 8, 8, 8)
+        query_group_l.setSpacing(6)
+
+        self.query_edit = QPlainTextEdit()
+        self.query_edit.setPlaceholderText("Введите запрос для поиска...")
+        self.query_edit.setFixedHeight(70)  # Approx 3 lines
+        query_group_l.addWidget(self.query_edit)
+
+        # Controls row
+        ctrl_row = QHBoxLayout()
 
         self.limit_spin = QSpinBox()
         self.limit_spin.setRange(1, 200)
         self.limit_spin.setValue(10)
-        self.limit_spin.setFixedWidth(80)
+        self.limit_spin.setFixedWidth(60)
 
         self.threshold_spin = QDoubleSpinBox()
         self.threshold_spin.setRange(-1.0, 1.0)
         self.threshold_spin.setSingleStep(0.05)
         self.threshold_spin.setValue(0.40)
-        self.threshold_spin.setFixedWidth(90)
+        self.threshold_spin.setFixedWidth(70)
 
-        qrow.addWidget(QLabel("limit"))
-        qrow.addWidget(self.limit_spin)
-        qrow.addWidget(QLabel("thr"))
-        qrow.addWidget(self.threshold_spin)
+        ctrl_row.addWidget(QLabel("Limit:"))
+        ctrl_row.addWidget(self.limit_spin)
+        ctrl_row.addSpacing(15)
+        ctrl_row.addWidget(QLabel("Thr:"))
+        ctrl_row.addWidget(self.threshold_spin)
+
+        ctrl_row.addStretch(1)
 
         self.btn_search = QPushButton("Search")
         self.btn_preview_inject = QPushButton("Preview inject")
-        qrow.addWidget(self.btn_search)
-        qrow.addWidget(self.btn_preview_inject)
+        # Make buttons a bit prominent
+        self.btn_search.setMinimumWidth(80)
 
-        right_l.addLayout(qrow)
+        ctrl_row.addWidget(self.btn_search)
+        ctrl_row.addWidget(self.btn_preview_inject)
 
+        query_group_l.addLayout(ctrl_row)
+
+        right_l.addWidget(query_group)
+
+        # --- Results Tabs ---
         self.right_tabs = QTabWidget()
         right_l.addWidget(self.right_tabs, 1)
 
         # Results tab: table + details in vertical splitter
         tab_res = QWidget()
         tab_res_l = QVBoxLayout(tab_res)
+        tab_res_l.setContentsMargins(0, 6, 0, 0)
 
         res_split = QSplitter(Qt.Orientation.Vertical)
 
@@ -450,31 +509,30 @@ class RagTesterWindow(QMainWindow):
         res_split.addWidget(self.table)
 
         self.details = QPlainTextEdit()
+        self.details.setPlaceholderText("Select a row to see details...")
         self.details.setReadOnly(True)
         res_split.addWidget(self.details)
 
         res_split.setStretchFactor(0, 3)
-        res_split.setStretchFactor(1, 2)
+        res_split.setStretchFactor(1, 1)
 
         tab_res_l.addWidget(res_split, 1)
         self.right_tabs.addTab(tab_res, "Results")
 
-        # Debug tab: effective query + injection preview
+        # Debug tab
         tab_dbg = QWidget()
         tab_dbg_l = QVBoxLayout(tab_dbg)
+        tab_dbg_l.setContentsMargins(6, 6, 6, 6)
 
         tab_dbg_l.addWidget(QLabel("Effective query (RAG build_query_from_recent):"))
         self.effective_query_view = QPlainTextEdit()
         self.effective_query_view.setReadOnly(True)
-        self.effective_query_view.setMaximumBlockCount(2000)
-        self.effective_query_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        tab_dbg_l.addWidget(self.effective_query_view, 1)
+        self.effective_query_view.setMaximumHeight(80)
+        tab_dbg_l.addWidget(self.effective_query_view)
 
         tab_dbg_l.addWidget(QLabel("Injection preview (<relevant_memories>/<past_context>):"))
         self.injection_preview = QPlainTextEdit()
         self.injection_preview.setReadOnly(True)
-        self.injection_preview.setMaximumBlockCount(4000)
-        self.injection_preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         tab_dbg_l.addWidget(self.injection_preview, 1)
 
         self.right_tabs.addTab(tab_dbg, "Debug")
@@ -482,7 +540,7 @@ class RagTesterWindow(QMainWindow):
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
-        splitter.setSizes([520, 880])
+        splitter.setSizes([500, 780])
 
     def _build_rag_settings_dock(self) -> None:
         """
@@ -498,6 +556,7 @@ class RagTesterWindow(QMainWindow):
 
         wrap = QWidget()
         v = QVBoxLayout(wrap)
+        v.setContentsMargins(8, 8, 8, 8)
 
         self.chk_use_overrides = QCheckBox("Use overrides")
         self.chk_use_overrides.setChecked(True)
@@ -505,14 +564,33 @@ class RagTesterWindow(QMainWindow):
 
         form_box = QWidget()
         form = QFormLayout(form_box)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
-        self.k1 = QDoubleSpinBox(); self.k1.setRange(-10.0, 10.0); self.k1.setValue(1.0); self.k1.setSingleStep(0.1)
-        self.k2 = QDoubleSpinBox(); self.k2.setRange(-10.0, 10.0); self.k2.setValue(1.0); self.k2.setSingleStep(0.1)
-        self.k3 = QDoubleSpinBox(); self.k3.setRange(-10.0, 10.0); self.k3.setValue(1.0); self.k3.setSingleStep(0.1)
-        self.k4 = QDoubleSpinBox(); self.k4.setRange(-10.0, 10.0); self.k4.setValue(0.5); self.k4.setSingleStep(0.1)
+        self.k1 = QDoubleSpinBox();
+        self.k1.setRange(-10.0, 10.0);
+        self.k1.setValue(1.0);
+        self.k1.setSingleStep(0.1)
+        self.k2 = QDoubleSpinBox();
+        self.k2.setRange(-10.0, 10.0);
+        self.k2.setValue(1.0);
+        self.k2.setSingleStep(0.1)
+        self.k3 = QDoubleSpinBox();
+        self.k3.setRange(-10.0, 10.0);
+        self.k3.setValue(1.0);
+        self.k3.setSingleStep(0.1)
+        self.k4 = QDoubleSpinBox();
+        self.k4.setRange(-10.0, 10.0);
+        self.k4.setValue(0.5);
+        self.k4.setSingleStep(0.1)
 
-        self.decay = QDoubleSpinBox(); self.decay.setRange(0.0, 10.0); self.decay.setValue(0.15); self.decay.setSingleStep(0.05)
-        self.noise = QDoubleSpinBox(); self.noise.setRange(0.0, 1.0); self.noise.setValue(0.05); self.noise.setSingleStep(0.01)
+        self.decay = QDoubleSpinBox();
+        self.decay.setRange(0.0, 10.0);
+        self.decay.setValue(0.15);
+        self.decay.setSingleStep(0.05)
+        self.noise = QDoubleSpinBox();
+        self.noise.setRange(0.0, 1.0);
+        self.noise.setValue(0.05);
+        self.noise.setSingleStep(0.01)
 
         self.memory_mode = QComboBox()
         self.memory_mode.addItems(["forgotten", "active", "all"])
@@ -521,7 +599,7 @@ class RagTesterWindow(QMainWindow):
         self.detailed_logs = QCheckBox("RAG_DETAILED_LOGS")
         self.detailed_logs.setChecked(True)
 
-        self.include_forgotten = QCheckBox("RAG_INCLUDE_FORGOTTEN (не влияет в текущем коде)")
+        self.include_forgotten = QCheckBox("RAG_INCLUDE_FORGOTTEN")
         self.include_forgotten.setChecked(False)
         self.forgotten_penalty = QDoubleSpinBox()
         self.forgotten_penalty.setRange(-5.0, 5.0)
@@ -542,14 +620,15 @@ class RagTesterWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(form_box)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         v.addWidget(scroll, 1)
         dock.setWidget(wrap)
 
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         dock.setVisible(False)
-        dock.setMinimumWidth(320)
-        dock.setMaximumWidth(420)
+        dock.setMinimumWidth(300)
+        dock.setMaximumWidth(400)
 
         self.settings_dock = dock
 
@@ -722,7 +801,8 @@ class RagTesterWindow(QMainWindow):
 
                 if "participants" in cols:
                     insert_cols.append("participants")
-                    vals.append(json.dumps(participants, ensure_ascii=False) if isinstance(participants, list) else participants)
+                    vals.append(json.dumps(participants, ensure_ascii=False) if isinstance(participants,
+                                                                                           list) else participants)
 
                 if has_is_deleted:
                     insert_cols.append("is_deleted")
@@ -866,10 +946,14 @@ class RagTesterWindow(QMainWindow):
 
         for r in mem_rows:
             i = 0
-            content = r[i]; i += 1
-            priority = r[i] if i < len(r) else "Normal"; i += 1
-            mtype = r[i] if i < len(r) else "fact"; i += 1
-            date_created = r[i] if i < len(r) else ""; i += 1
+            content = r[i];
+            i += 1
+            priority = r[i] if i < len(r) else "Normal";
+            i += 1
+            mtype = r[i] if i < len(r) else "fact";
+            i += 1
+            date_created = r[i] if i < len(r) else "";
+            i += 1
 
             participants = None
             if "participants" in mcols:
@@ -1116,7 +1200,8 @@ class RagTesterWindow(QMainWindow):
 
     def on_search(self) -> None:
         cid = self.character_id_edit.text().strip() or "RAG_TEST"
-        query = self.query_edit.text()
+        # Changed from .text() to .toPlainText() because query_edit is now QPlainTextEdit
+        query = self.query_edit.toPlainText().strip()
         limit = int(self.limit_spin.value())
         threshold = float(self.threshold_spin.value())
 
@@ -1181,7 +1266,8 @@ class RagTesterWindow(QMainWindow):
 
     def on_preview_inject(self) -> None:
         cid = self.character_id_edit.text().strip() or "RAG_TEST"
-        query = self.query_edit.text().strip()
+        # Changed from .text() to .toPlainText()
+        query = self.query_edit.toPlainText().strip()
         if not query:
             self.injection_preview.setPlainText("")
             return
