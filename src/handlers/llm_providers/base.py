@@ -3,16 +3,24 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Callable, Optional, Any
 from abc import ABC, abstractmethod
 
+
 @dataclass
 class LLMRequest:
     model: str
     messages: List[Dict]
+
     api_key: Optional[str] = None
     api_url: Optional[str] = None
-    make_request: bool = False
-    gemini_case: bool = False
-    g4f_flag: bool = False
-    g4f_model: Optional[str] = None
+
+    # protocol-driven routing
+    protocol_id: Optional[str] = None
+    dialect_id: Optional[str] = None
+    provider_name: Optional[str] = None
+
+    headers: Dict[str, str] = field(default_factory=dict)
+    transforms: List[Dict[str, Any]] = field(default_factory=list)
+    capabilities: Dict[str, Any] = field(default_factory=dict)
+
     stream: bool = False
     stream_cb: Optional[Callable[[str], None]] = None
 
@@ -24,9 +32,9 @@ class LLMRequest:
 
     extra: Dict[str, Any] = field(default_factory=dict)
     settings: Optional[Any] = None
-    pip_installer: Optional[Any] = None
     depth: int = 0
     tool_manager: Optional[Any] = None
+
 
 class BaseProvider(ABC):
     name: str

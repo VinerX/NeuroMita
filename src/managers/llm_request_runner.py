@@ -19,7 +19,8 @@ class LLMRequestRunner:
     - timeout выполнения provider_manager.generate
     - задержку между попытками
     - ротацию ключей через ApiPresetResolver
-    - переключение на g4f на последней попытке (если включено)
+
+    NOTE: GPT4FREE_LAST_ATTEMPT removed from logic.
     """
 
     def __init__(
@@ -38,16 +39,11 @@ class LLMRequestRunner:
         messages: list,
         preset_id: Optional[int],
         stream_callback: Optional[Callable[[str], None]],
-        build_request: Callable[[PresetSettings, str, bool], Any],
+        build_request: Callable[[PresetSettings, str], Any],
         max_attempts: int,
         retry_delay: float,
         request_timeout: float,
-        g4f_fallback_model: str,
     ) -> Optional[str]:
-        """
-        build_request(preset_attempt, effective_model, use_g4f) -> LLMRequest
-        Возвращает response_text или None.
-        """
         if messages is None:
             messages = []
 
@@ -64,30 +60,19 @@ class LLMRequestRunner:
             logger.error(f"[LLMRequestRunner] Failed to init ProviderManager: {e}", exc_info=True)
             return None
 
-        use_gpt4free_last_attempt = bool(self.settings.get("GPT4FREE_LAST_ATTEMPT", False))
-
         for attempt in range(1, int(max_attempts) + 1):
             logger.info(f"Generation attempt {attempt}/{max_attempts}")
 
-            # лог последней попытки (как раньше)
             try:
                 save_combined_messages(messages, "SavedMessages/last_attempt_log")
             except Exception:
                 pass
 
             preset_attempt = self.preset_resolver.apply_key_rotation(base_preset, attempt)
-
-            use_g4f_for_this_attempt = bool(base_preset.is_g4f) or (
-                use_gpt4free_last_attempt and attempt >= int(max_attempts)
-            )
-
-            if use_g4f_for_this_attempt:
-                effective_model = (base_preset.g4f_model or g4f_fallback_model or "").strip()
-            else:
-                effective_model = (base_preset.api_model or "").strip()
+            effective_model = (preset_attempt.api_model or "").strip()
 
             try:
-                req = build_request(preset_attempt, effective_model, use_g4f_for_this_attempt)
+                req = build_request(preset_attempt, effective_model)
             except Exception as e:
                 logger.error(f"[LLMRequestRunner] Failed to build request: {e}", exc_info=True)
                 req = None
@@ -112,7 +97,6 @@ class LLMRequestRunner:
                 logger.error(f"Error during generation attempt {attempt}: {e}", exc_info=True)
 
             if attempt < max_attempts:
-                logger.info(f"Waiting {retry_delay}s before next attempt...")
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE_ATTEMPT)
                 time.sleep(float(retry_delay))
 

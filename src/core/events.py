@@ -135,6 +135,7 @@ class EventBus:
             subscribers = self._get_active_subscribers(event_name)
 
         if not subscribers:
+            logger.warning(f"emit_and_wait: No subscribers for event '{event_name}'")
             return results
 
         for subscriber in subscribers:
@@ -565,6 +566,7 @@ class Events:
         TASK_LOG = "install_task_log"
         TASK_FINISHED = "install_task_finished"
         TASK_FAILED = "install_task_failed"
+        RUN_BLOCKING = "run_install_blocking"
 
     class Character:
         GET_ALL = "character_get_all"
@@ -579,3 +581,8 @@ class Events:
         CLEAR_ALL_HISTORIES = "character_clear_all_histories"
 
         CURRENT_CHANGED = "character_current_changed"
+
+    class Protocols:
+        GET_PROTOCOL_LIST = "get_protocol_list"
+        GET_PROTOCOL_FULL = "get_protocol_full"
+        GET_TRANSFORM_LIST = "get_transform_list"

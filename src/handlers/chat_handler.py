@@ -6,7 +6,6 @@ from typing import List, Dict, Any, Optional
 from main_logger import logger
 
 from characters.character import Character
-from utils.pip_installer import PipInstaller
 
 from managers.api_preset_resolver import ApiPresetResolver
 from managers.llm_request_runner import LLMRequestRunner
@@ -14,12 +13,14 @@ from managers.model_config_loader import ModelConfigLoader
 from managers.tools.legacy_executor import LegacyToolExecutor
 from managers.tools.tool_manager import ToolManager
 
-from core.events import get_event_bus, Events
+from handlers.llm_providers.base import LLMRequest
+from handlers.llm_providers.param_mapper import build_unified_generation_params
+
+from core.events import get_event_bus
 
 class ChatModel:
-    def __init__(self, settings, pip_installer: PipInstaller):
+    def __init__(self, settings):
         self.last_key = 0
-        self.pip_installer = pip_installer
         self.settings = settings
         self.event_bus = get_event_bus()
 
@@ -30,10 +31,7 @@ class ChatModel:
         logger.info(f"Initializing ChatModel with preset: {preset_settings.preset_name}")
 
         self.api_model = preset_settings.api_model
-        self.gpt4free_model = (
-            preset_settings.g4f_model if preset_settings.is_g4f
-            else self.settings.get("gpt4free_model", "")
-        )
+        self.gpt4free_model = str(self.settings.get("gpt4free_model", "") or "")
 
         # Runtime config
         self.cfg_loader = ModelConfigLoader(self.settings)
@@ -115,11 +113,8 @@ class ChatModel:
             if not already:
                 combined_messages.insert(0, {"role": "system", "content": legacy_prompt})
 
-        from handlers.llm_providers.base import LLMRequest
-        from handlers.llm_providers.param_mapper import build_unified_generation_params
 
-        def build_request(preset_settings, effective_model: str, use_g4f_for_this_attempt: bool) -> LLMRequest:
-            # FUTURE HOOK: здесь можно будет применить overrides из пресета
+        def build_request(preset_settings, effective_model: str) -> LLMRequest:
             cfg = self.cfg_loader.effective_for_preset(self.cfg, preset_settings, effective_model)
 
             params = build_unified_generation_params(
@@ -134,33 +129,33 @@ class ChatModel:
                 thinking_budget=cfg.thinking_budget,
             )
 
-            dialect = "gemini" if (preset_settings.make_request and preset_settings.gemini_case) else "openai"
-            tools_payload = self.tool_manager.get_tools_payload(dialect)
+            dialect = "gemini" if preset_settings.dialect_id == "gemini_generate_content" else "openai"
 
             req = LLMRequest(
                 model=effective_model,
                 messages=combined_messages,
                 api_key=preset_settings.api_key,
                 api_url=preset_settings.api_url,
-                make_request=preset_settings.make_request,
-                gemini_case=preset_settings.gemini_case,
-                g4f_flag=use_g4f_for_this_attempt,
-                g4f_model=preset_settings.g4f_model,
+
+                protocol_id=preset_settings.protocol_id,
+                dialect_id=preset_settings.dialect_id,
+                provider_name=preset_settings.provider_name,
+                headers=dict(preset_settings.headers or {}),
+                transforms=list(preset_settings.transforms or []),
+                capabilities=dict(preset_settings.capabilities or {}),
+
                 stream=bool(self.settings.get("ENABLE_STREAMING", False)) and stream_callback is not None,
                 stream_cb=stream_callback,
                 tools_on=tools_on,
                 tools_mode=tools_mode,
                 tools_payload=None,
-                tools_dialect=None,
+                tools_dialect=dialect,
                 extra=params,
                 tool_manager=self.tool_manager,
                 settings=self.settings,
-                pip_installer=self.pip_installer,
             )
 
-            # backward compat (часть провайдеров читает tool_manager из extra)
             req.extra["tool_manager"] = self.tool_manager
-
             return req
 
         try:
@@ -172,7 +167,6 @@ class ChatModel:
                 max_attempts=max_attempts,
                 retry_delay=retry_delay,
                 request_timeout=request_timeout,
-                g4f_fallback_model=str(self.gpt4free_model or self.settings.get("gpt4free_model", "") or ""),
             )
         except Exception as e:
             logger.error(f"Runner failed unexpectedly: {e}", exc_info=True)
@@ -202,15 +196,13 @@ class ChatModel:
         preset_settings = self.preset_resolver.resolve(preset_id)
 
         logger.info(f"Using preset: {preset_settings.preset_name}")
+        logger.info(f"Protocol: {preset_settings.protocol_id} | Dialect: {preset_settings.dialect_id} | Provider: {preset_settings.provider_name}")
+        logger.info(f"Capabilities: {preset_settings.capabilities}")
         logger.info(f"Max Response Tokens: {self.cfg.max_response_tokens}, Temperature: {self.cfg.temperature}")
         logger.info(
             f"Presence Penalty: {self.cfg.presence_penalty} (Used: {bool(self.settings.get('USE_MODEL_PRESENCE_PENALTY'))})"
         )
         logger.info(f"API URL: {preset_settings.api_url}, API Model: {preset_settings.api_model}")
-        logger.info(f"g4f Enabled: {preset_settings.is_g4f}, g4f Model: {preset_settings.g4f_model or 'N/A'}")
-        logger.info(f"Custom Request: {preset_settings.make_request}")
-        if preset_settings.make_request:
-            logger.info(f"  Gemini Case: {preset_settings.gemini_case}")
 
     def try_print_error(self, completion_or_error):
         logger.warning("Attempting to print error details from API response/error object.")

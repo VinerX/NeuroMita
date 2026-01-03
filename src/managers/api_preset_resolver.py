@@ -7,29 +7,34 @@ import re
 
 from core.events import Events
 from main_logger import logger
+from managers.protocol_registry import get_protocol_registry
+from presets.api_protocols import Dialects
 
 
 @dataclass(frozen=True)
 class PresetSettings:
+    protocol_id: str
+    dialect_id: str
+    provider_name: str
+    headers: Dict[str, str]
+    transforms: List[Dict[str, Any]]
+    capabilities: Dict[str, Any]
+
     api_key: str
     api_url: str
     api_model: str
-    make_request: bool
-    gemini_case: bool
-    is_g4f: bool
-    g4f_model: str
+
     preset_name: str
     reserve_keys: List[str]
 
     def to_safe_dict(self) -> Dict[str, Any]:
         return {
             "preset_name": self.preset_name,
+            "protocol_id": self.protocol_id,
+            "dialect_id": self.dialect_id,
+            "provider_name": self.provider_name,
             "api_url": self.api_url,
             "api_model": self.api_model,
-            "make_request": self.make_request,
-            "gemini_case": self.gemini_case,
-            "is_g4f": self.is_g4f,
-            "g4f_model": self.g4f_model,
             "reserve_keys_count": len(self.reserve_keys or []),
             "has_api_key": bool(self.api_key),
         }
@@ -49,59 +54,84 @@ class ApiPresetResolver:
             preset_id = self._pick_fallback_preset_id()
             preset = self._load_preset_full(preset_id)
 
+        registry = get_protocol_registry()
+        proto = None
+        protocol_id = ""
+
         if preset:
-            url = preset.get("url", "") or ""
-            if preset.get("url_tpl"):
-                model = preset.get("default_model", "") or ""
-                tpl = preset.get("url_tpl") or ""
-                url = tpl.format(model=model) if "{model}" in tpl else tpl
+            protocol_id = str(preset.get("protocol_id", "") or "").strip()
+            proto = registry.get(protocol_id) if protocol_id else None
 
-                if preset.get("add_key") and preset.get("key"):
-                    sep = "&" if "?" in url else "?"
-                    url = f"{url}{sep}key={preset['key']}"
+        if not proto:
+            proto = registry.pick_default()
+            protocol_id = proto.id if proto else ""
 
-            effective_gemini = bool(preset.get("gemini_case", False))
-            if preset.get("gemini_case") is None:
-                if preset.get("gemini_case_override") is not None:
-                    effective_gemini = bool(preset.get("gemini_case_override"))
-                else:
-                    try:
-                        state = self.event_bus.emit_and_wait(
-                            Events.ApiPresets.LOAD_PRESET_STATE,
-                            {"id": preset.get("id")},
-                            timeout=1.0
-                        )
-                        if state and state[0]:
-                            effective_gemini = bool(state[0].get("gemini_case", False))
-                    except Exception as e:
-                        logger.warning(f"[ApiPresetResolver] Failed to load preset state: {e}")
+        url = ""
+        api_model = ""
+        api_key = ""
+        preset_name = "Fallback"
+        reserve_keys: List[str] = []
 
-            reserve_keys = preset.get("reserve_keys", []) or []
-            if not isinstance(reserve_keys, list):
-                reserve_keys = []
+        if preset:
+            preset_name = str(preset.get("name", "Unknown") or "Unknown")
+            api_model = str(preset.get("default_model", "") or "")
+            api_key = str(preset.get("key", "") or "")
 
-            return PresetSettings(
-                api_key=str(preset.get("key", "") or ""),
-                api_url=str(url or ""),
-                api_model=str(preset.get("default_model", "") or ""),
-                make_request=bool(preset.get("use_request", False)),
-                gemini_case=bool(effective_gemini),
-                is_g4f=bool(preset.get("is_g4f", False)),
-                g4f_model=str(preset.get("default_model", "") or "") if preset.get("is_g4f", False) else "",
-                preset_name=str(preset.get("name", "Unknown") or "Unknown"),
-                reserve_keys=[str(k) for k in reserve_keys if str(k).strip()],
-            )
+            url = str(preset.get("url", "") or "")
+            url_tpl = str(preset.get("url_tpl", "") or "")
+            if url_tpl:
+                try:
+                    url = url_tpl.format(model=api_model) if "{model}" in url_tpl else url_tpl
+                except Exception:
+                    url = url_tpl
+
+            rk = preset.get("reserve_keys", []) or []
+            if isinstance(rk, list):
+                reserve_keys = [str(k) for k in rk if str(k).strip()]
+
+        dialect_id = str(getattr(proto, "dialect", "") or "")
+        provider_name = str(getattr(proto, "provider", "") or "")
+
+        headers = dict(getattr(proto, "headers", {}) or {})
+        transforms = list(getattr(proto, "transforms", []) or [])
+        capabilities = dict(getattr(proto, "capabilities", {}) or {})
+
+        # Apply per-preset protocol_overrides ONLY when base is None (custom manual preset)
+        base = preset.get("base") if isinstance(preset, dict) else None
+        base_is_none = (base is None)
+
+        po = preset.get("protocol_overrides") if isinstance(preset, dict) else None
+        if base_is_none and isinstance(po, dict) and po:
+            oh = po.get("headers")
+            if isinstance(oh, dict) and oh:
+                headers.update({str(k): str(v) for k, v in oh.items() if k and v is not None})
+
+            oc = po.get("capabilities")
+            if isinstance(oc, dict) and oc:
+                for k, v in oc.items():
+                    capabilities[str(k)] = v
+
+            ot = po.get("transforms")
+            if isinstance(ot, list):
+                # replace transforms if provided
+                transforms = [t for t in ot if isinstance(t, dict) and t.get("id")]
+
+        if dialect_id == Dialects.GEMINI_GENERATE_CONTENT and url and api_key and "key=" not in url:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}key={api_key}"
 
         return PresetSettings(
-            api_key="",
-            api_url="",
-            api_model="",
-            make_request=False,
-            gemini_case=False,
-            is_g4f=False,
-            g4f_model="",
-            preset_name="Fallback",
-            reserve_keys=[],
+            protocol_id=protocol_id,
+            dialect_id=dialect_id,
+            provider_name=provider_name,
+            headers=headers,
+            transforms=transforms,
+            capabilities=capabilities,
+            api_key=api_key,
+            api_url=str(url or ""),
+            api_model=api_model,
+            preset_name=preset_name,
+            reserve_keys=reserve_keys,
         )
 
     def _load_preset_full(self, preset_id: Optional[int]) -> Optional[Dict[str, Any]]:
@@ -111,7 +141,7 @@ class ApiPresetResolver:
             preset_data = self.event_bus.emit_and_wait(
                 Events.ApiPresets.GET_PRESET_FULL,
                 {"id": int(preset_id)},
-                timeout=1.0
+                timeout=1.0,
             )
             if preset_data and preset_data[0]:
                 return preset_data[0]
@@ -186,13 +216,13 @@ class ApiPresetResolver:
         new_key = self.select_key_for_attempt(
             current_key=preset.api_key,
             reserve_keys=preset.reserve_keys,
-            attempt_index=attempt - 1
+            attempt_index=attempt - 1,
         )
         if not new_key or new_key == preset.api_key:
             return preset
 
         new_url = preset.api_url
-        if preset.make_request and "key=" in (new_url or ""):
+        if "key=" in (new_url or ""):
             new_url = re.sub(r"key=[^&]*", f"key={new_key}", new_url)
 
         return replace(preset, api_key=new_key, api_url=new_url)

@@ -1,21 +1,30 @@
+from __future__ import annotations
+
 from PyQt6.QtCore import Qt, QSize, QStringListModel
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton,
-    QToolButton, QComboBox, QSpacerItem, QSizePolicy, QCompleter, QLineEdit
+    QToolButton, QComboBox, QSizePolicy, QCompleter, QTextEdit
 )
 import qtawesome as qta
 
 from utils import _
-from .widgets import ProviderDelegate
+from .widgets import (
+    ProviderDelegate,
+    LabeledLineEditRow,
+    LabeledTextEditRow,
+    LabeledComboRow,
+)
 from ui.gui_templates import create_section_header
+from managers.settings_manager import CollapsibleSection
+
 
 def build_api_settings_ui(self, parent_layout):
     main_container = QWidget()
     main_layout = QVBoxLayout(main_container)
     main_layout.setContentsMargins(0, 0, 0, 0)
-    main_layout.setSpacing(5)
+    main_layout.setSpacing(8)
 
-    create_section_header(main_layout, _("Каталог промптов", "Prompt Catalogue"))
+    create_section_header(main_layout, _("API пресеты", "API presets"))
 
     separator = QFrame()
     separator.setFrameShape(QFrame.Shape.HLine)
@@ -23,9 +32,10 @@ def build_api_settings_ui(self, parent_layout):
     separator.setObjectName("SeparatorH")
     main_layout.addWidget(separator)
 
+    # --- presets panel ---
     custom_presets_frame = QFrame()
     custom_presets_frame.setObjectName("PresetsPanel")
-    custom_presets_frame.setFixedHeight(150)
+    custom_presets_frame.setFixedHeight(160)
 
     presets_layout = QHBoxLayout(custom_presets_frame)
     presets_layout.setContentsMargins(8, 8, 8, 8)
@@ -33,11 +43,12 @@ def build_api_settings_ui(self, parent_layout):
 
     self.custom_presets_list = QListWidget()
     self.custom_presets_list.setObjectName("PresetsList")
+    self.custom_presets_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
     presets_layout.addWidget(self.custom_presets_list, 1)
 
     buttons_layout = QVBoxLayout()
     buttons_layout.setContentsMargins(0, 0, 0, 0)
-    buttons_layout.setSpacing(0)
+    buttons_layout.setSpacing(6)
 
     self.add_preset_btn = QPushButton()
     self.add_preset_btn.setObjectName("AddPresetButton")
@@ -77,131 +88,105 @@ def build_api_settings_ui(self, parent_layout):
     buttons_layout.addWidget(self.move_down_btn)
     buttons_layout.addStretch()
     presets_layout.addLayout(buttons_layout)
+
     main_layout.addWidget(custom_presets_frame)
 
+    # --- editor container ---
     self.api_settings_container = QWidget()
     api_container_layout = QVBoxLayout(self.api_settings_container)
     api_container_layout.setContentsMargins(0, 10, 0, 0)
-    api_container_layout.setSpacing(5)
+    api_container_layout.setSpacing(8)
 
     provider_info_layout = QHBoxLayout()
     self.provider_label = QLabel("")
     self.provider_label.setStyleSheet("font-weight: bold; font-size: 12px;")
     provider_info_layout.addWidget(self.provider_label)
     provider_info_layout.addStretch()
-
-    self.export_button = QPushButton(_("Экспорт", "Export"))
-    self.export_button.setIcon(qta.icon('fa5s.file-export', color='#3498db'))
-    self.export_button.setMaximumWidth(100)
-    provider_info_layout.addWidget(self.export_button)
-
     api_container_layout.addLayout(provider_info_layout)
 
+    # Template row
     template_layout = QHBoxLayout()
     template_label = QLabel(_("Шаблон:", "Template:"))
     self.template_combo = QComboBox()
-    self.template_combo.setMinimumWidth(200)
+    self.template_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    self.template_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    self.template_combo.setMinimumContentsLength(10)
+    try:
+        self.template_combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
+    except Exception:
+        pass
+
     template_layout.addWidget(template_label)
-    template_layout.addWidget(self.template_combo)
-    template_layout.addStretch()
+    template_layout.addWidget(self.template_combo, 1)
     api_container_layout.addLayout(template_layout)
-    api_container_layout.addSpacing(10)
 
-    from ui.gui_templates import create_settings_direct
-    config = [
-        {'label': _('Ссылка API', 'API URL'),
-         'key': 'NM_API_URL', 'type': 'entry',
-         'widget_name': 'api_url_entry'},
-
-        {'label': _('Модель', 'Model'),
-         'key': 'NM_API_MODEL', 'type': 'entry',
-         'widget_name': 'api_model_entry'},
-
-        {'label': _('API Ключ', 'API Key'),
-         'key': 'NM_API_KEY', 'type': 'entry',
-         'widget_name': 'api_key_entry',
-         'hide': True},
-
-        {'label': _('Модель Gemini', 'Gemini Model'),
-         'key': 'GEMINI_CASE_UI', 'type': 'checkbutton',
-         'widget_name': 'gemini_case_checkbox',
-         'tooltip': _("Формат сообщений gemini отличается от других",
-                      "Gemini message format differs from others")},
-
-        {'label': _('Резервные ключи', 'Reserve keys'),
-         'key': 'NM_API_KEY_RES', 'type': 'textarea',
-         'hide': bool(self.settings.get("HIDE_PRIVATE")),
-         'widget_name': 'nm_api_key_res_label'},
-
-        {'label': _('Версия g4f', 'g4f version'),
-         'key': 'G4F_VERSION', 'type': 'entry',
-         'default': '0.4.7.7',
-         'widget_name': 'g4f_version_entry',
-         'tooltip': _('Версия g4f для установки', 'g4f version to install')},
-
-        {'label': _('Обновить g4f', 'Update g4f'),
-         'type': 'button',
-         'command': self.trigger_g4f_reinstall_schedule,
-         'widget_name': 'g4f_update_button',
-         'icon': qta.icon('fa5s.download', color='#3498db')},
-    ]
-    create_settings_direct(self, api_container_layout, config)
-
-    self.api_url_entry = getattr(self, 'api_url_entry')
-    self.api_model_entry = getattr(self, 'api_model_entry')
-    self.api_key_entry = getattr(self, 'api_key_entry')
-    self.gemini_case_checkbox = getattr(self, 'gemini_case_checkbox', None)
-    self.g4f_version_entry = getattr(self, 'g4f_version_entry', None)
-
+    # Help links (under fields)
     self.url_help_label = QLabel()
     self.url_help_label.setOpenExternalLinks(True)
     self.url_help_label.setObjectName("LinkLabel")
+    self.url_help_label.setVisible(False)
 
     self.model_help_label = QLabel()
     self.model_help_label.setOpenExternalLinks(True)
     self.model_help_label.setObjectName("LinkLabel")
+    self.model_help_label.setVisible(False)
 
     self.key_help_label = QLabel()
     self.key_help_label.setOpenExternalLinks(True)
     self.key_help_label.setObjectName("LinkLabel")
+    self.key_help_label.setVisible(False)
 
-    def _reorganize_frame_layout(frame, help_label):
-        if not hasattr(frame, 'layout') or not frame.layout():
-            return
-        old_layout = frame.layout()
-        items = []
-        while old_layout.count():
-            item = old_layout.takeAt(0)
-            if item.widget():
-                items.append(item.widget())
-        new_layout = QVBoxLayout()
-        new_layout.setContentsMargins(0, 0, 0, 0)
-        new_layout.setSpacing(2)
-        new_layout.addWidget(help_label)
-        horizontal_layout = QHBoxLayout()
-        horizontal_layout.setContentsMargins(0, 0, 0, 0)
-        for widget in items:
-            horizontal_layout.addWidget(widget)
-        new_layout.addLayout(horizontal_layout)
-        QWidget().setLayout(old_layout)
-        frame.setLayout(new_layout)
+    api_container_layout.addWidget(self.url_help_label)
+    self.api_url_row = LabeledLineEditRow(_('Ссылка API', 'API URL'))
+    api_container_layout.addWidget(self.api_url_row)
 
-    if hasattr(self, 'api_url_entry_frame'):
-        _reorganize_frame_layout(self.api_url_entry_frame, self.url_help_label)
-    if hasattr(self, 'api_model_entry_frame'):
-        _reorganize_frame_layout(self.api_model_entry_frame, self.model_help_label)
-    if hasattr(self, 'api_key_entry_frame'):
-        _reorganize_frame_layout(self.api_key_entry_frame, self.key_help_label)
+    api_container_layout.addWidget(self.model_help_label)
+    self.api_model_row = LabeledLineEditRow(_('Модель', 'Model'))
+    api_container_layout.addWidget(self.api_model_row)
 
-    self.api_key_entry.setEchoMode(QLineEdit.EchoMode.Password)
+    api_container_layout.addWidget(self.key_help_label)
+    self.api_key_row = LabeledLineEditRow(_('API Ключ', 'API Key'), password=True)
+    api_container_layout.addWidget(self.api_key_row)
+
     self.key_visibility_button = QToolButton()
     self.key_visibility_button.setIcon(qta.icon('fa5s.eye'))
-    if hasattr(self, 'api_key_entry_frame'):
-        key_layout = self.api_key_entry_frame.layout()
-        if key_layout and key_layout.count() > 1:
-            horizontal_layout = key_layout.itemAt(1).layout()
-            if horizontal_layout:
-                horizontal_layout.addWidget(self.key_visibility_button)
+    self.key_visibility_button.setToolTip(_("Показать/скрыть ключ", "Show/hide key"))
+    self.key_visibility_button.setFixedSize(28, 28)
+    self.api_key_row.layout().addWidget(self.key_visibility_button, 0, Qt.AlignmentFlag.AlignRight)
+
+    self.reserve_keys_row = LabeledTextEditRow(_('Резервные ключи', 'Reserve keys'))
+    api_container_layout.addWidget(self.reserve_keys_row)
+
+    # --- Collapsible protocol configuration section (UNDER inputs) ---
+    self.protocol_section = CollapsibleSection(_("Конфигурация протокола", "Protocol configuration"), self, icon_name="fa5s.sliders-h")
+    api_container_layout.addWidget(self.protocol_section)
+
+    self.protocol_row = LabeledComboRow(_("Протокол", "Protocol"))
+    self.protocol_section.add_widget(self.protocol_row)
+
+    self.protocol_info_label = QLabel("")
+    self.protocol_info_label.setWordWrap(True)
+    self.protocol_info_label.setObjectName("ProtocolInfoLabel")
+    self.protocol_info_label.setStyleSheet("color: #bfbfbf; font-size: 11px;")
+    self.protocol_section.add_widget(self.protocol_info_label)
+
+    self.protocol_transforms_view = QTextEdit()
+    self.protocol_transforms_view.setReadOnly(True)
+    self.protocol_transforms_view.setMinimumHeight(70)
+    self.protocol_transforms_view.setMaximumHeight(110)
+    self.protocol_section.add_widget(self.protocol_transforms_view)
+
+    self.configure_pipeline_btn = QPushButton(_("Настроить pipeline", "Configure pipeline"))
+    self.configure_pipeline_btn.setIcon(qta.icon('fa5s.sliders-h', color='#3498db'))
+    self.protocol_section.add_widget(self.configure_pipeline_btn)
+
+    # buttons
+    self.test_button = QPushButton(_("Тест подключения", "Test connection"))
+    self.test_button.setIcon(qta.icon('fa5s.satellite', color='#3498db'))
+    api_container_layout.addWidget(self.test_button)
+
+    btns = QHBoxLayout()
+    btns.setSpacing(10)
 
     self.cancel_button = QPushButton(_("Отменить", "Cancel"))
     self.cancel_button.setObjectName("CancelButton")
@@ -211,44 +196,40 @@ def build_api_settings_ui(self, parent_layout):
     self.save_preset_button = QPushButton(_("Сохранить", "Save"))
     self.save_preset_button.setObjectName("SecondaryButton")
     self.save_preset_button.setIcon(qta.icon('fa5s.save', color='#ffffff'))
+    self.save_preset_button.setEnabled(False)
     self.save_preset_button.setVisible(False)
 
-    self.test_button = QPushButton(_("Тест подключения", "Test connection"))
-    self.test_button.setIcon(qta.icon('fa5s.satellite', color='#3498db'))
+    btns.addWidget(self.cancel_button, 1)
+    btns.addWidget(self.save_preset_button, 1)
+    api_container_layout.addLayout(btns)
 
-    buttons_layout = QHBoxLayout()
-    buttons_layout.setSpacing(10)
-    buttons_layout.addWidget(self.cancel_button, 1)
-    buttons_layout.addWidget(self.save_preset_button, 1)
-
-    api_container_layout.addWidget(self.test_button)
-    api_container_layout.addLayout(buttons_layout)
-    api_container_layout.addStretch()
+    api_container_layout.addStretch(1)
 
     main_layout.addWidget(self.api_settings_container)
     self.api_settings_container.setVisible(False)
-    main_layout.addStretch()
 
     parent_layout.addWidget(main_container)
 
+    # --- model completer ---
     self.api_model_completer = QCompleter()
     self.api_model_list_model = QStringListModel()
     self.api_model_completer.setModel(self.api_model_list_model)
     self.api_model_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
     self.api_model_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
     self.api_model_completer.setFilterMode(Qt.MatchFlag.MatchContains)
-    self.api_model_entry.setCompleter(self.api_model_completer)
+    self.api_model_row.edit.setCompleter(self.api_model_completer)
 
     completer = self.api_model_completer
 
     def show_completer_on_click(event):
         from PyQt6.QtWidgets import QLineEdit
-        QLineEdit.mousePressEvent(self.api_model_entry, event)
-        if self.api_model_entry.text() == "":
+        QLineEdit.mousePressEvent(self.api_model_row.edit, event)
+        if self.api_model_row.edit.text() == "":
             completer.setCompletionPrefix("")
             completer.complete()
 
-    self.api_model_entry.mousePressEvent = show_completer_on_click
+    self.api_model_row.edit.mousePressEvent = show_completer_on_click
 
+    # Delegate for pricing badges
     self.provider_delegate = ProviderDelegate(self.template_combo)
     self.template_combo.view().setItemDelegate(self.provider_delegate)
