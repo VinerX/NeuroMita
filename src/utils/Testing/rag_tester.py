@@ -15,6 +15,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -39,6 +40,10 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QGroupBox,
     QFormLayout,
+    QDockWidget,
+    QTabWidget,
+    QScrollArea,
+    QSizePolicy,
 )
 
 from styles.main_styles import get_stylesheet
@@ -74,8 +79,8 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
 
 class SettingsOverride:
     """
-    Временный override SettingsManager.get(key, default), чтобы тестировать RAG
-    с разными весами "как в проде", не меняя код RAGManager.
+    Временный override SettingsManager.get(key, default),
+    чтобы тестировать RAG с разными весами без правок RAGManager.
     """
     def __init__(self, overrides: dict[str, Any]):
         self.overrides = dict(overrides or {})
@@ -86,21 +91,16 @@ class SettingsOverride:
         orig = self._orig_get
 
         def wrapped_get(key: str, default=None):
-            try:
-                k = str(key)
-            except Exception:
-                k = key
+            k = str(key) if key is not None else ""
             if k in self.overrides:
                 return self.overrides[k]
             if callable(orig):
                 return orig(key, default)
             return default
 
-        # делаем статикметод, чтобы не было привязки self/cls в неожиданных реализациях
         try:
             setattr(SettingsManager, "get", staticmethod(wrapped_get))
         except Exception:
-            # если не вышло — просто оставим как есть
             pass
         return self
 
@@ -117,7 +117,7 @@ class SettingsOverride:
 class Scenario:
     character_id: str
     context: list[dict]    # history.is_active=1
-    history: list[dict]    # history.is_active=0 (корпус)
+    history: list[dict]    # history.is_active=0
     memories: list[dict]   # memories
 
     @staticmethod
@@ -180,7 +180,7 @@ class Scenario:
                     "priority": "High",
                     "type": "fact",
                     "date_created": "01.12.2025 12:05:00",
-                    "is_forgotten": 1,  # чтобы участвовало при default RAG_MEMORY_MODE='forgotten'
+                    "is_forgotten": 1,
                 }
             ],
         )
@@ -206,10 +206,8 @@ class Scenario:
                 it2 = dict(it)
                 if "timestamp" not in it2 and "time" not in it2:
                     it2["time"] = _now_ts()
-                if "role" not in it2:
-                    it2["role"] = "user"
-                if "content" not in it2:
-                    it2["content"] = ""
+                it2.setdefault("role", "user")
+                it2.setdefault("content", "")
                 out.append(it2)
             return out
 
@@ -269,203 +267,297 @@ class Scenario:
 class RagTesterWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("RAG Tester (PyQt6)")
+        self.setWindowTitle("RAG Tester")
 
         self.db = DatabaseManager()
 
-        root = QWidget()
-        self.setCentralWidget(root)
-        main_layout = QVBoxLayout(root)
+        self._build_actions()
+        self._build_menu()
+        self._build_central_ui()
+        self._build_rag_settings_dock()
+        self._wire_events()
 
-        # ------------------------------------------------------------------
-        # Top controls
-        # ------------------------------------------------------------------
-        top = QWidget()
-        top_layout = QGridLayout(top)
+        self.on_template()
 
+    # ------------------------------------------------------------------
+    # UI building
+    # ------------------------------------------------------------------
+    def _build_actions(self) -> None:
+        self.act_toggle_settings = QAction("RAG Settings", self)
+        self.act_toggle_settings.setCheckable(True)
+        self.act_toggle_settings.setChecked(False)
+
+    def _build_menu(self) -> None:
+        view = self.menuBar().addMenu("View")
+        view.addAction(self.act_toggle_settings)
+
+    def _build_central_ui(self) -> None:
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        root.addWidget(splitter, 1)
+
+        # ---------------------------
+        # Left: tabs (Scenario / Data)
+        # ---------------------------
+        left_tabs = QTabWidget()
+        splitter.addWidget(left_tabs)
+
+        # Scenario tab
+        tab_scn = QWidget()
+        tab_scn_l = QVBoxLayout(tab_scn)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("character_id:"))
         self.character_id_edit = QLineEdit("RAG_TEST")
-        top_layout.addWidget(QLabel("character_id:"), 0, 0)
-        top_layout.addWidget(self.character_id_edit, 0, 1)
+        self.character_id_edit.setMaximumWidth(260)
+        row.addWidget(self.character_id_edit)
+        row.addStretch(1)
 
         self.btn_template = QPushButton("Шаблон")
-        self.btn_load_file = QPushButton("Загрузить scenario JSON…")
-        self.btn_save_file = QPushButton("Сохранить scenario JSON…")
-        top_layout.addWidget(self.btn_template, 0, 2)
-        top_layout.addWidget(self.btn_load_file, 0, 3)
-        top_layout.addWidget(self.btn_save_file, 0, 4)
+        self.btn_load_file = QPushButton("Load…")
+        self.btn_save_file = QPushButton("Save…")
+        row.addWidget(self.btn_template)
+        row.addWidget(self.btn_load_file)
+        row.addWidget(self.btn_save_file)
 
-        self.chk_clear_before = QCheckBox("Очистить данные character_id перед заливкой (ОПАСНО)")
+        tab_scn_l.addLayout(row)
+
+        self.scenario_edit = QTextEdit()
+        self.scenario_edit.setAcceptRichText(False)
+        tab_scn_l.addWidget(self.scenario_edit, 1)
+
+        left_tabs.addTab(tab_scn, "Scenario")
+
+        # Data tab
+        tab_data = QWidget()
+        tab_data_l = QVBoxLayout(tab_data)
+
+        gb_db = QGroupBox("Database")
+        gb_db_l = QGridLayout(gb_db)
+
+        self.chk_clear_before = QCheckBox("Очистить перед заливкой (опасно)")
         self.chk_clear_before.setChecked(False)
-        top_layout.addWidget(self.chk_clear_before, 1, 0, 1, 3)
-
-        self.chk_embed_now = QCheckBox("Сразу построить эмбеддинги при заливке/импорте")
+        self.chk_embed_now = QCheckBox("Embed при заливке/импорте")
         self.chk_embed_now.setChecked(True)
-        top_layout.addWidget(self.chk_embed_now, 1, 3, 1, 2)
 
         self.btn_apply = QPushButton("Залить scenario в БД")
         self.btn_load_from_db = QPushButton("Загрузить scenario из БД")
-        top_layout.addWidget(self.btn_apply, 2, 0, 1, 2)
-        top_layout.addWidget(self.btn_load_from_db, 2, 2, 1, 1)
 
         self.db_hist_limit = QSpinBox()
         self.db_hist_limit.setRange(0, 200000)
-        self.db_hist_limit.setValue(3000)  # 0 = без лимита
+        self.db_hist_limit.setValue(3000)
+        self.db_hist_limit.setFixedWidth(120)
+
         self.db_mem_limit = QSpinBox()
         self.db_mem_limit.setRange(0, 200000)
-        self.db_mem_limit.setValue(5000)   # 0 = без лимита
+        self.db_mem_limit.setValue(5000)
+        self.db_mem_limit.setFixedWidth(120)
 
-        top_layout.addWidget(QLabel("DB history limit (0=all):"), 2, 3)
-        top_layout.addWidget(self.db_hist_limit, 2, 4)
+        gb_db_l.addWidget(self.btn_apply, 0, 0)
+        gb_db_l.addWidget(self.btn_load_from_db, 0, 1)
+        gb_db_l.addWidget(self.chk_clear_before, 1, 0, 1, 2)
+        gb_db_l.addWidget(self.chk_embed_now, 2, 0, 1, 2)
+        gb_db_l.addWidget(QLabel("history limit:"), 3, 0)
+        gb_db_l.addWidget(self.db_hist_limit, 3, 1)
+        gb_db_l.addWidget(QLabel("memories limit:"), 4, 0)
+        gb_db_l.addWidget(self.db_mem_limit, 4, 1)
 
-        top_layout.addWidget(QLabel("DB memories limit (0=all):"), 3, 3)
-        top_layout.addWidget(self.db_mem_limit, 3, 4)
+        tab_data_l.addWidget(gb_db)
 
-        self.btn_import_old_history = QPushButton("Импорт старого history JSON…")
-        self.btn_import_old_memories = QPushButton("Импорт старого memories JSON…")
-        top_layout.addWidget(self.btn_import_old_history, 3, 0, 1, 2)
-        top_layout.addWidget(self.btn_import_old_memories, 3, 2, 1, 1)
+        gb_import = QGroupBox("Import legacy JSON")
+        gb_import_l = QGridLayout(gb_import)
 
+        self.btn_import_old_history = QPushButton("Импорт history JSON…")
+        self.btn_import_old_memories = QPushButton("Импорт memories JSON…")
         self.import_context_tail = QSpinBox()
         self.import_context_tail.setRange(0, 50)
         self.import_context_tail.setValue(2)
-        top_layout.addWidget(QLabel("Tail->context при импорте history:"), 4, 0)
-        top_layout.addWidget(self.import_context_tail, 4, 1)
+        self.import_context_tail.setFixedWidth(120)
 
-        self.btn_index_missing = QPushButton("Индексировать missing embeddings")
-        self.btn_missing_count = QPushButton("Показать missing count")
-        top_layout.addWidget(self.btn_index_missing, 4, 2, 1, 1)
-        top_layout.addWidget(self.btn_missing_count, 4, 3, 1, 1)
+        gb_import_l.addWidget(self.btn_import_old_history, 0, 0)
+        gb_import_l.addWidget(self.btn_import_old_memories, 0, 1)
+        gb_import_l.addWidget(QLabel("Tail->context:"), 1, 0)
+        gb_import_l.addWidget(self.import_context_tail, 1, 1)
 
-        main_layout.addWidget(top)
+        tab_data_l.addWidget(gb_import)
 
-        # ------------------------------------------------------------------
-        # RAG overrides group
-        # ------------------------------------------------------------------
-        overrides_group = QGroupBox("RAG overrides (опционально, 'как в проде', через SettingsManager.get override)")
-        og = QFormLayout(overrides_group)
+        gb_index = QGroupBox("Indexing")
+        gb_index_l = QHBoxLayout(gb_index)
+        self.btn_index_missing = QPushButton("Index missing")
+        self.btn_missing_count = QPushButton("Missing count")
+        gb_index_l.addWidget(self.btn_index_missing)
+        gb_index_l.addWidget(self.btn_missing_count)
+        gb_index_l.addStretch(1)
 
-        self.chk_use_overrides = QCheckBox("Использовать overrides при поиске/превью инжекта")
+        tab_data_l.addWidget(gb_index)
+        tab_data_l.addStretch(1)
+
+        left_tabs.addTab(tab_data, "Data")
+
+        # ---------------------------
+        # Right: Query + tabs (Results / Debug)
+        # ---------------------------
+        right = QWidget()
+        right_l = QVBoxLayout(right)
+
+        qrow = QHBoxLayout()
+        qrow.addWidget(QLabel("Query:"))
+        self.query_edit = QLineEdit()
+        qrow.addWidget(self.query_edit, 1)
+
+        self.limit_spin = QSpinBox()
+        self.limit_spin.setRange(1, 200)
+        self.limit_spin.setValue(10)
+        self.limit_spin.setFixedWidth(80)
+
+        self.threshold_spin = QDoubleSpinBox()
+        self.threshold_spin.setRange(-1.0, 1.0)
+        self.threshold_spin.setSingleStep(0.05)
+        self.threshold_spin.setValue(0.40)
+        self.threshold_spin.setFixedWidth(90)
+
+        qrow.addWidget(QLabel("limit"))
+        qrow.addWidget(self.limit_spin)
+        qrow.addWidget(QLabel("thr"))
+        qrow.addWidget(self.threshold_spin)
+
+        self.btn_search = QPushButton("Search")
+        self.btn_preview_inject = QPushButton("Preview inject")
+        qrow.addWidget(self.btn_search)
+        qrow.addWidget(self.btn_preview_inject)
+
+        right_l.addLayout(qrow)
+
+        self.right_tabs = QTabWidget()
+        right_l.addWidget(self.right_tabs, 1)
+
+        # Results tab: table + details in vertical splitter
+        tab_res = QWidget()
+        tab_res_l = QVBoxLayout(tab_res)
+
+        res_split = QSplitter(Qt.Orientation.Vertical)
+
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(
+            ["source", "id", "score", "type/role", "priority", "date", "speaker→target", "content"]
+        )
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        res_split.addWidget(self.table)
+
+        self.details = QPlainTextEdit()
+        self.details.setReadOnly(True)
+        res_split.addWidget(self.details)
+
+        res_split.setStretchFactor(0, 3)
+        res_split.setStretchFactor(1, 2)
+
+        tab_res_l.addWidget(res_split, 1)
+        self.right_tabs.addTab(tab_res, "Results")
+
+        # Debug tab: effective query + injection preview
+        tab_dbg = QWidget()
+        tab_dbg_l = QVBoxLayout(tab_dbg)
+
+        tab_dbg_l.addWidget(QLabel("Effective query (RAG build_query_from_recent):"))
+        self.effective_query_view = QPlainTextEdit()
+        self.effective_query_view.setReadOnly(True)
+        self.effective_query_view.setMaximumBlockCount(2000)
+        self.effective_query_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        tab_dbg_l.addWidget(self.effective_query_view, 1)
+
+        tab_dbg_l.addWidget(QLabel("Injection preview (<relevant_memories>/<past_context>):"))
+        self.injection_preview = QPlainTextEdit()
+        self.injection_preview.setReadOnly(True)
+        self.injection_preview.setMaximumBlockCount(4000)
+        self.injection_preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        tab_dbg_l.addWidget(self.injection_preview, 1)
+
+        self.right_tabs.addTab(tab_dbg, "Debug")
+
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([520, 880])
+
+    def _build_rag_settings_dock(self) -> None:
+        """
+        Узкая скрываемая панель для overrides.
+        """
+        dock = QDockWidget("RAG Settings", self)
+        dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetClosable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
+
+        wrap = QWidget()
+        v = QVBoxLayout(wrap)
+
+        self.chk_use_overrides = QCheckBox("Use overrides")
         self.chk_use_overrides.setChecked(True)
-        og.addRow(self.chk_use_overrides)
+        v.addWidget(self.chk_use_overrides)
+
+        form_box = QWidget()
+        form = QFormLayout(form_box)
 
         self.k1 = QDoubleSpinBox(); self.k1.setRange(-10.0, 10.0); self.k1.setValue(1.0); self.k1.setSingleStep(0.1)
         self.k2 = QDoubleSpinBox(); self.k2.setRange(-10.0, 10.0); self.k2.setValue(1.0); self.k2.setSingleStep(0.1)
         self.k3 = QDoubleSpinBox(); self.k3.setRange(-10.0, 10.0); self.k3.setValue(1.0); self.k3.setSingleStep(0.1)
         self.k4 = QDoubleSpinBox(); self.k4.setRange(-10.0, 10.0); self.k4.setValue(0.5); self.k4.setSingleStep(0.1)
 
-        og.addRow("RAG_WEIGHT_SIMILARITY (K1):", self.k1)
-        og.addRow("RAG_WEIGHT_TIME (K2):", self.k2)
-        og.addRow("RAG_WEIGHT_PRIORITY (K3):", self.k3)
-        og.addRow("RAG_WEIGHT_ENTITY (K4):", self.k4)
-
         self.decay = QDoubleSpinBox(); self.decay.setRange(0.0, 10.0); self.decay.setValue(0.15); self.decay.setSingleStep(0.05)
         self.noise = QDoubleSpinBox(); self.noise.setRange(0.0, 1.0); self.noise.setValue(0.05); self.noise.setSingleStep(0.01)
-        og.addRow("RAG_TIME_DECAY_RATE:", self.decay)
-        og.addRow("RAG_NOISE_MAX:", self.noise)
 
         self.memory_mode = QComboBox()
         self.memory_mode.addItems(["forgotten", "active", "all"])
         self.memory_mode.setCurrentText("forgotten")
-        og.addRow("RAG_MEMORY_MODE:", self.memory_mode)
 
         self.detailed_logs = QCheckBox("RAG_DETAILED_LOGS")
         self.detailed_logs.setChecked(True)
-        og.addRow(self.detailed_logs)
 
-        # NOTE: В текущем RAGManager эти два читаются, но штраф не применяется в формуле.
-        self.include_forgotten = QCheckBox("RAG_INCLUDE_FORGOTTEN (сейчас не влияет в коде search_relevant)")
+        self.include_forgotten = QCheckBox("RAG_INCLUDE_FORGOTTEN (не влияет в текущем коде)")
         self.include_forgotten.setChecked(False)
-        og.addRow(self.include_forgotten)
-
         self.forgotten_penalty = QDoubleSpinBox()
         self.forgotten_penalty.setRange(-5.0, 5.0)
         self.forgotten_penalty.setValue(-0.15)
         self.forgotten_penalty.setSingleStep(0.05)
-        og.addRow("RAG_FORGOTTEN_PENALTY (сейчас не влияет):", self.forgotten_penalty)
 
-        main_layout.addWidget(overrides_group)
+        form.addRow("K1 similarity:", self.k1)
+        form.addRow("K2 time:", self.k2)
+        form.addRow("K3 priority:", self.k3)
+        form.addRow("K4 entity:", self.k4)
+        form.addRow("time decay:", self.decay)
+        form.addRow("noise max:", self.noise)
+        form.addRow("memory mode:", self.memory_mode)
+        form.addRow(self.detailed_logs)
+        form.addRow(self.include_forgotten)
+        form.addRow("forgotten penalty:", self.forgotten_penalty)
 
-        # ------------------------------------------------------------------
-        # Split: scenario editor / results
-        # ------------------------------------------------------------------
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(form_box)
 
-        # left: scenario editor
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
+        v.addWidget(scroll, 1)
+        dock.setWidget(wrap)
 
-        left_layout.addWidget(QLabel("Scenario JSON:"))
-        self.scenario_edit = QTextEdit()
-        self.scenario_edit.setAcceptRichText(False)
-        left_layout.addWidget(self.scenario_edit, 1)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        dock.setVisible(False)
+        dock.setMinimumWidth(320)
+        dock.setMaximumWidth(420)
 
-        left_layout.addWidget(QLabel("Effective query (RAG build_query_from_recent + текущий запрос):"))
-        self.effective_query_view = QPlainTextEdit()
-        self.effective_query_view.setReadOnly(True)
-        self.effective_query_view.setMaximumHeight(120)
-        left_layout.addWidget(self.effective_query_view)
+        self.settings_dock = dock
 
-        left_layout.addWidget(QLabel("RAG injection preview (как process_rag: <relevant_memories>/<past_context>):"))
-        self.injection_preview = QPlainTextEdit()
-        self.injection_preview.setReadOnly(True)
-        self.injection_preview.setMaximumHeight(160)
-        left_layout.addWidget(self.injection_preview)
+        # sync menu action
+        self.act_toggle_settings.toggled.connect(self.settings_dock.setVisible)
+        self.settings_dock.visibilityChanged.connect(self.act_toggle_settings.setChecked)
 
-        splitter.addWidget(left)
-
-        # right: query controls + table + details
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-
-        query_box = QWidget()
-        ql = QGridLayout(query_box)
-
-        self.query_edit = QLineEdit()
-        ql.addWidget(QLabel("Query:"), 0, 0)
-        ql.addWidget(self.query_edit, 0, 1, 1, 5)
-
-        self.limit_spin = QSpinBox()
-        self.limit_spin.setRange(1, 200)
-        self.limit_spin.setValue(10)
-
-        self.threshold_spin = QDoubleSpinBox()
-        self.threshold_spin.setRange(-1.0, 1.0)
-        self.threshold_spin.setSingleStep(0.05)
-        self.threshold_spin.setValue(0.40)
-
-        self.btn_search = QPushButton("Search RAG")
-        self.btn_preview_inject = QPushButton("Preview inject blocks")
-        ql.addWidget(QLabel("limit:"), 1, 0)
-        ql.addWidget(self.limit_spin, 1, 1)
-        ql.addWidget(QLabel("threshold:"), 1, 2)
-        ql.addWidget(self.threshold_spin, 1, 3)
-        ql.addWidget(self.btn_search, 1, 4)
-        ql.addWidget(self.btn_preview_inject, 1, 5)
-
-        right_layout.addWidget(query_box)
-
-        self.table = QTableWidget(0, 8)
-        self.table.setHorizontalHeaderLabels(["source", "id", "score", "type/role", "priority", "date", "speaker→target", "content"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        right_layout.addWidget(self.table, 1)
-
-        right_layout.addWidget(QLabel("Selected item full JSON:"))
-        self.details = QPlainTextEdit()
-        self.details.setReadOnly(True)
-        self.details.setMaximumHeight(220)
-        right_layout.addWidget(self.details)
-
-        splitter.addWidget(right)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
-
-        main_layout.addWidget(splitter, 1)
-
-        # ------------------------------------------------------------------
-        # wire events
-        # ------------------------------------------------------------------
+    def _wire_events(self) -> None:
         self.btn_template.clicked.connect(self.on_template)
         self.btn_load_file.clicked.connect(self.on_load_file)
         self.btn_save_file.clicked.connect(self.on_save_file)
@@ -484,9 +576,6 @@ class RagTesterWindow(QMainWindow):
 
         self.table.itemSelectionChanged.connect(self.on_table_selection)
 
-        # init template
-        self.on_template()
-
     # ------------------------------------------------------------------
     # Scenario I/O
     # ------------------------------------------------------------------
@@ -503,8 +592,7 @@ class RagTesterWindow(QMainWindow):
 
     def on_template(self) -> None:
         cid = self.character_id_edit.text().strip() or "RAG_TEST"
-        sc = Scenario.template(character_id=cid)
-        self._set_editor_scenario(sc)
+        self._set_editor_scenario(Scenario.template(character_id=cid))
 
     def on_load_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Load scenario JSON", "", "JSON (*.json);;All (*.*)")
@@ -530,7 +618,7 @@ class RagTesterWindow(QMainWindow):
             QMessageBox.critical(self, "Save failed", str(e))
 
     # ------------------------------------------------------------------
-    # Settings overrides
+    # Overrides
     # ------------------------------------------------------------------
     def _collect_overrides(self) -> dict[str, Any]:
         return {
@@ -573,19 +661,16 @@ class RagTesterWindow(QMainWindow):
         try:
             cur = conn.cursor()
 
-            # history
             if "is_deleted" in hcols:
                 cur.execute("UPDATE history SET is_deleted=1 WHERE character_id=?", (cid,))
             else:
                 cur.execute("DELETE FROM history WHERE character_id=?", (cid,))
 
-            # variables
             try:
                 cur.execute("DELETE FROM variables WHERE character_id=?", (cid,))
             except Exception:
                 pass
 
-            # memories
             if "is_deleted" in mcols:
                 cur.execute("UPDATE memories SET is_deleted=1 WHERE character_id=?", (cid,))
             else:
@@ -602,8 +687,7 @@ class RagTesterWindow(QMainWindow):
         if not memories:
             return 0
 
-        # best-effort schema upgrade for is_forgotten
-        _ = MemoryManager(cid)
+        _ = MemoryManager(cid)  # schema best-effort
         rag = RAGManager(cid)
 
         cols = self._table_cols("memories")
@@ -638,15 +722,11 @@ class RagTesterWindow(QMainWindow):
 
                 if "participants" in cols:
                     insert_cols.append("participants")
-                    # participants может быть list/str — как в HistoryManager, RAGManager умеет оба
                     vals.append(json.dumps(participants, ensure_ascii=False) if isinstance(participants, list) else participants)
 
                 if has_is_deleted:
                     insert_cols.append("is_deleted")
                     vals.append(is_deleted)
-                else:
-                    # если нет колонки — нельзя корректно, но пропустим флаг
-                    pass
 
                 if has_is_forgotten:
                     insert_cols.append("is_forgotten")
@@ -685,13 +765,10 @@ class RagTesterWindow(QMainWindow):
                 continue
 
             m2 = dict(msg)
-            # нормализуем время (HistoryManager понимает time/timestamp)
             if "timestamp" not in m2 and "time" not in m2:
                 m2["time"] = _now_ts()
-            if "role" not in m2:
-                m2["role"] = "user"
-            if "content" not in m2:
-                m2["content"] = ""
+            m2.setdefault("role", "user")
+            m2.setdefault("content", "")
 
             row_id = hm._insert_history_row(msg=m2, is_active=int(is_active))
             if row_id:
@@ -715,12 +792,9 @@ class RagTesterWindow(QMainWindow):
         hm = HistoryManager(character_name=cid, character_id=cid)
         hm._ensure_history_schema()
 
-        # 1) context (active)
         active = hm.load_history().get("messages", []) or []
 
-        # 2) archived history corpus (is_active=0)
-        select_cols = hm._history_select_columns()  # includes role, content, meta_data, timestamp + desired cols if exist
-        # ensure includes desired cols (hm._history_select_columns already does)
+        select_cols = hm._history_select_columns()
         cols_set = set(select_cols)
 
         hcols = hm._history_cols or set()
@@ -748,14 +822,9 @@ class RagTesterWindow(QMainWindow):
 
         for row in rows:
             rd = dict(zip(select_cols, row))
-            msg = hm._reconstruct_message_from_db(
-                rd.get("role"),
-                rd.get("content"),
-                rd.get("meta_data"),
-            )
+            msg = hm._reconstruct_message_from_db(rd.get("role"), rd.get("content"), rd.get("meta_data"))
             msg["time"] = rd.get("timestamp") or ""
 
-            # дополним из колонок, если они были в SELECT
             for k in hm._HISTORY_DESIRED_COLUMNS.keys():
                 if k in cols_set and rd.get(k) not in (None, ""):
                     msg[k] = rd.get(k)
@@ -763,7 +832,6 @@ class RagTesterWindow(QMainWindow):
             msg = hm._normalize_loaded_message(msg)
             corpus.append(msg)
 
-        # 3) memories
         mcols = self._table_cols("memories")
         has_is_deleted = "is_deleted" in mcols
         has_is_forgotten = "is_forgotten" in mcols
@@ -825,46 +893,12 @@ class RagTesterWindow(QMainWindow):
 
         return Scenario(character_id=cid, context=active, history=corpus, memories=mems)
 
-    def on_load_from_db(self) -> None:
-        cid = self.character_id_edit.text().strip() or "RAG_TEST"
-        try:
-            sc = self._load_from_db(cid, hist_limit=int(self.db_hist_limit.value()), mem_limit=int(self.db_mem_limit.value()))
-            self._set_editor_scenario(sc)
-            QMessageBox.information(
-                self,
-                "Loaded from DB",
-                f"Загружено для {cid}:\n"
-                f"- context(active): {len(sc.context)}\n"
-                f"- history(archived corpus): {len(sc.history)}\n"
-                f"- memories: {len(sc.memories)}"
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "Load from DB failed", str(e))
-
     # ------------------------------------------------------------------
-    # Import old JSON
+    # Import legacy JSON
     # ------------------------------------------------------------------
     def _read_json_file(self, path: str) -> Any:
         with open(path, "r", encoding="utf-8") as f:
             return json.loads(f.read())
-
-    def _merge_scenario(self, base: Scenario, add: Scenario, *, replace: bool) -> Scenario:
-        if replace:
-            return Scenario(
-                character_id=add.character_id or base.character_id,
-                context=list(add.context),
-                history=list(add.history),
-                memories=list(add.memories),
-            )
-
-        # merge (append)
-        cid = add.character_id or base.character_id
-        return Scenario(
-            character_id=cid,
-            context=list(base.context) + list(add.context),
-            history=list(base.history) + list(add.history),
-            memories=list(base.memories) + list(add.memories),
-        )
 
     def _ask_replace_or_merge(self) -> bool:
         """
@@ -882,6 +916,81 @@ class RagTesterWindow(QMainWindow):
             raise RuntimeError("cancelled")
         return clicked == replace_btn
 
+    def _merge_scenario(self, base: Scenario, add: Scenario, *, replace: bool) -> Scenario:
+        if replace:
+            return Scenario(
+                character_id=add.character_id or base.character_id,
+                context=list(add.context),
+                history=list(add.history),
+                memories=list(add.memories),
+            )
+
+        cid = add.character_id or base.character_id
+        return Scenario(
+            character_id=cid,
+            context=list(base.context) + list(add.context),
+            history=list(base.history) + list(add.history),
+            memories=list(base.memories) + list(add.memories),
+        )
+
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
+    def on_apply(self) -> None:
+        try:
+            sc = self._parse_editor_scenario()
+            cid = sc.character_id
+            self.character_id_edit.setText(cid)
+
+            if self.chk_clear_before.isChecked():
+                ok = QMessageBox.question(
+                    self,
+                    "Подтверждение",
+                    f"Очистить данные для character_id='{cid}'?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if ok != QMessageBox.StandardButton.Yes:
+                    return
+                self._clear_character_data(cid)
+
+            embed_now = self.chk_embed_now.isChecked()
+
+            n_ctx = self._insert_history_messages(cid, sc.context, is_active=1, embed_now=embed_now)
+            n_hist = self._insert_history_messages(cid, sc.history, is_active=0, embed_now=embed_now)
+            n_mem = self._insert_memories(cid, sc.memories, embed_now=embed_now)
+
+            QMessageBox.information(
+                self,
+                "Готово",
+                f"Заливка завершена для {cid}:\n"
+                f"- context(active): {n_ctx}\n"
+                f"- history(archived): {n_hist}\n"
+                f"- memories: {n_mem}",
+            )
+
+        except Exception as e:
+            QMessageBox.critical(self, "Apply failed", str(e))
+
+    def on_load_from_db(self) -> None:
+        cid = self.character_id_edit.text().strip() or "RAG_TEST"
+        try:
+            sc = self._load_from_db(
+                cid,
+                hist_limit=int(self.db_hist_limit.value()),
+                mem_limit=int(self.db_mem_limit.value()),
+            )
+            self._set_editor_scenario(sc)
+            QMessageBox.information(
+                self,
+                "Loaded from DB",
+                f"{cid}:\n"
+                f"- context(active): {len(sc.context)}\n"
+                f"- history(archived): {len(sc.history)}\n"
+                f"- memories: {len(sc.memories)}",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Load from DB failed", str(e))
+
     def on_import_old_history(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import old history JSON", "", "JSON (*.json);;All (*.*)")
         if not path:
@@ -890,20 +999,15 @@ class RagTesterWindow(QMainWindow):
             replace = self._ask_replace_or_merge()
             obj = self._read_json_file(path)
 
-            # old history formats:
-            # - {"messages":[...], ...}
-            # - [...]
             messages = None
             if isinstance(obj, dict) and isinstance(obj.get("messages"), list):
                 messages = obj.get("messages")
             elif isinstance(obj, list):
                 messages = obj
             else:
-                raise ValueError("Не похоже на history JSON: ожидаю list или dict с ключом 'messages'.")
+                raise ValueError("Ожидаю list или dict с ключом 'messages'.")
 
-            # разложим: tail N -> context, остальное -> history corpus
-            tail_n = int(self.import_context_tail.value())
-            tail_n = max(0, tail_n)
+            tail_n = max(0, int(self.import_context_tail.value()))
 
             msgs_norm: list[dict] = []
             for m in messages:
@@ -912,25 +1016,21 @@ class RagTesterWindow(QMainWindow):
                 m2 = dict(m)
                 if "timestamp" not in m2 and "time" not in m2:
                     m2["time"] = _now_ts()
-                if "role" not in m2:
-                    m2["role"] = "user"
-                if "content" not in m2:
-                    m2["content"] = ""
+                m2.setdefault("role", "user")
+                m2.setdefault("content", "")
                 msgs_norm.append(m2)
 
             if tail_n > 0:
                 ctx = msgs_norm[-tail_n:] if len(msgs_norm) >= tail_n else list(msgs_norm)
                 hist = msgs_norm[:-tail_n] if len(msgs_norm) > tail_n else []
             else:
-                ctx = []
-                hist = msgs_norm
+                ctx, hist = [], msgs_norm
 
             cid = self.character_id_edit.text().strip() or "RAG_TEST"
             add = Scenario(character_id=cid, context=ctx, history=hist, memories=[])
 
             base = self._parse_editor_scenario()
-            merged = self._merge_scenario(base, add, replace=replace)
-            self._set_editor_scenario(merged)
+            self._set_editor_scenario(self._merge_scenario(base, add, replace=replace))
 
         except RuntimeError:
             return
@@ -951,7 +1051,7 @@ class RagTesterWindow(QMainWindow):
             elif isinstance(obj, list):
                 mem_list = obj
             else:
-                raise ValueError("Не похоже на memories JSON: ожидаю list или dict с ключом 'memories'.")
+                raise ValueError("Ожидаю list или dict с ключом 'memories'.")
 
             mems: list[dict] = []
             for it in mem_list:
@@ -982,53 +1082,12 @@ class RagTesterWindow(QMainWindow):
             add = Scenario(character_id=cid, context=[], history=[], memories=mems)
 
             base = self._parse_editor_scenario()
-            merged = self._merge_scenario(base, add, replace=replace)
-            self._set_editor_scenario(merged)
+            self._set_editor_scenario(self._merge_scenario(base, add, replace=replace))
 
         except RuntimeError:
             return
         except Exception as e:
             QMessageBox.critical(self, "Import memories failed", str(e))
-
-    # ------------------------------------------------------------------
-    # Actions
-    # ------------------------------------------------------------------
-    def on_apply(self) -> None:
-        try:
-            sc = self._parse_editor_scenario()
-            cid = sc.character_id
-            self.character_id_edit.setText(cid)
-
-            if self.chk_clear_before.isChecked():
-                ok = QMessageBox.question(
-                    self,
-                    "Подтверждение",
-                    f"Очистить данные для character_id='{cid}'?\n"
-                    f"Это повлияет на history/memories/variables этого персонажа.",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                )
-                if ok != QMessageBox.StandardButton.Yes:
-                    return
-                self._clear_character_data(cid)
-
-            embed_now = self.chk_embed_now.isChecked()
-
-            n_ctx = self._insert_history_messages(cid, sc.context, is_active=1, embed_now=embed_now)
-            n_hist = self._insert_history_messages(cid, sc.history, is_active=0, embed_now=embed_now)
-            n_mem = self._insert_memories(cid, sc.memories, embed_now=embed_now)
-
-            QMessageBox.information(
-                self,
-                "Готово",
-                f"Заливка завершена для {cid}:\n"
-                f"- context(active): {n_ctx}\n"
-                f"- history(archived): {n_hist}\n"
-                f"- memories: {n_mem}\n\n"
-                f"Если embed_now выключен — нажми 'Индексировать missing embeddings'.",
-            )
-
-        except Exception as e:
-            QMessageBox.critical(self, "Apply failed", str(e))
 
     def on_index_missing(self) -> None:
         cid = self.character_id_edit.text().strip() or "RAG_TEST"
@@ -1063,8 +1122,6 @@ class RagTesterWindow(QMainWindow):
 
         try:
             rag = RAGManager(cid)
-
-            # effective query (контекст + текущий запрос)
             try:
                 eq = rag._build_query_from_recent(query, tail=2)
             except Exception:
@@ -1089,29 +1146,22 @@ class RagTesterWindow(QMainWindow):
 
                 sp = _as_stripped(item.get("speaker") or "")
                 tg = _as_stripped(item.get("target") or "")
-                st = ""
-                if sp and tg:
-                    st = f"{sp}→{tg}"
-                elif sp:
-                    st = sp
-                elif tg:
-                    st = f"→{tg}"
+                st = f"{sp}→{tg}" if (sp and tg) else (sp or (f"→{tg}" if tg else ""))
 
-                content = item.get("content", "")
-                content_str = str(content or "")
+                content_str = str(item.get("content") or "")
                 clip = content_str.replace("\n", " ").strip()
                 if len(clip) > 220:
                     clip = clip[:220] + "…"
 
-                def _set(col: int, text: str, align_right: bool = False):
+                def _set(col: int, text: str, right: bool = False):
                     it = QTableWidgetItem(text)
-                    if align_right:
+                    if right:
                         it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                     self.table.setItem(row, col, it)
 
                 _set(0, source)
-                _set(1, rid, align_right=True)
-                _set(2, score_str, align_right=True)
+                _set(1, rid, right=True)
+                _set(2, score_str, right=True)
                 _set(3, type_or_role)
                 _set(4, priority)
                 _set(5, date)
@@ -1122,32 +1172,14 @@ class RagTesterWindow(QMainWindow):
 
             if res:
                 self.table.selectRow(0)
+                self.right_tabs.setCurrentIndex(0)  # Results
             else:
                 self.details.setPlainText("")
 
         except Exception as e:
             QMessageBox.critical(self, "Search failed", str(e))
 
-    def on_table_selection(self) -> None:
-        rows = self.table.selectionModel().selectedRows()
-        if not rows:
-            return
-        r = rows[0].row()
-        item0 = self.table.item(r, 0)
-        if not item0:
-            return
-        payload = item0.data(Qt.ItemDataRole.UserRole) or {}
-        try:
-            self.details.setPlainText(json.dumps(payload, ensure_ascii=False, indent=2))
-        except Exception:
-            self.details.setPlainText(str(payload))
-
     def on_preview_inject(self) -> None:
-        """
-        Превью блоков как в твоём process_rag():
-        <relevant_memories>...</relevant_memories>
-        <past_context>...</past_context>
-        """
         cid = self.character_id_edit.text().strip() or "RAG_TEST"
         query = self.query_edit.text().strip()
         if not query:
@@ -1181,13 +1213,7 @@ class RagTesterWindow(QMainWindow):
                     dt = r.get("date")
                     sp = r.get("speaker") or ""
                     tg = r.get("target") or ""
-                    meta = ""
-                    if sp and tg:
-                        meta = f"{sp}→{tg}"
-                    elif sp:
-                        meta = sp
-                    elif tg:
-                        meta = f"→{tg}"
+                    meta = f"{sp}→{tg}" if (sp and tg) else (sp or (f"→{tg}" if tg else ""))
                     meta_s = f" ({meta})" if meta else ""
                     hist_lines.append(
                         f"- [{_safe_float(r.get('score'), 0.0):.3f}] ({dt}){meta_s} {_clip(r.get('content'))}"
@@ -1200,9 +1226,24 @@ class RagTesterWindow(QMainWindow):
                 blocks.append("<past_context>\n" + "\n".join(hist_lines) + "\n</past_context>")
 
             self.injection_preview.setPlainText("\n\n".join(blocks))
+            self.right_tabs.setCurrentIndex(1)  # Debug
 
         except Exception as e:
             QMessageBox.critical(self, "Preview failed", str(e))
+
+    def on_table_selection(self) -> None:
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return
+        r = rows[0].row()
+        item0 = self.table.item(r, 0)
+        if not item0:
+            return
+        payload = item0.data(Qt.ItemDataRole.UserRole) or {}
+        try:
+            self.details.setPlainText(json.dumps(payload, ensure_ascii=False, indent=2))
+        except Exception:
+            self.details.setPlainText(str(payload))
 
 
 def main() -> int:
@@ -1213,7 +1254,7 @@ def main() -> int:
         pass
 
     w = RagTesterWindow()
-    w.resize(1400, 860)
+    w.resize(1280, 820)
     w.show()
     return app.exec()
 
