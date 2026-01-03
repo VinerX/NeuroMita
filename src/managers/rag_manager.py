@@ -13,6 +13,7 @@ from handlers.embedding_handler import EmbeddingModelHandler, QUERY_PREFIX
 from core.events import get_event_bus, Events
 from main_logger import logger
 from managers.settings_manager import SettingsManager
+from utils.throttled_progress_logger import ThrottledProgressLogger
 
 
 def _resolve_event_name(fallback: str, *path: str) -> str:
@@ -621,49 +622,51 @@ class RAGManager:
             it2.pop("_dbg", None)
             out.append(it2)
         return out
+
     def index_all_missing(self, progress_callback=None) -> int:
         """
-        Проходит по всем записям без вектора и генерирует его.
-        progress_callback(current, total) - для обновления UI
-        Возвращает количество ОБНОВЛЁННЫХ записей (где реально записали embedding).
-
-        Для эффективности используем batch эмбеддинги через EventBus (rag.get_embeddings).
+        Генерит embedding только для записей без embedding.
+        Возвращает количество записей, где embedding реально записали (updated_count).
         """
         conn = self.db.get_connection()
         cursor = conn.cursor()
 
-        # 1. Собираем ID для обновления
-        # История
-        hist_where = "character_id=? AND embedding IS NULL AND content != '' AND content IS NOT NULL"
-        if "is_deleted" in self._history_cols:
-            hist_where += " AND is_deleted=0"
-        cursor.execute(
-            f"SELECT id, content FROM history WHERE {hist_where}",
-            (self.character_id,),
-        )
-        hist_rows = cursor.fetchall()
-
-        # Воспоминания
-        mem_where = "character_id=? AND embedding IS NULL AND is_deleted=0"
-        # НЕ фильтруем is_forgotten: забытые тоже должны иметь embedding, раз мы их ищем RAG-ом
-        cursor.execute(
-            f"SELECT eternal_id, content FROM memories WHERE {mem_where}",
-            (self.character_id,),
-        )
-        mem_rows = cursor.fetchall()
-
-        total = len(hist_rows) + len(mem_rows)
-        if total == 0:
-            conn.close()
-            return 0
-
-        processed = 0
-        updated_count = 0
-
         try:
+            # History: только пустые embedding
+            hist_where = "character_id=? AND embedding IS NULL AND content != '' AND content IS NOT NULL"
+            if "is_deleted" in self._history_cols:
+                hist_where += " AND is_deleted=0"
+            cursor.execute(
+                f"SELECT id, content FROM history WHERE {hist_where}",
+                (self.character_id,),
+            )
+            hist_rows = cursor.fetchall() or []
+
+            # Memories: только пустые embedding
+            mem_where = "character_id=? AND embedding IS NULL AND is_deleted=0"
+            cursor.execute(
+                f"SELECT eternal_id, content FROM memories WHERE {mem_where}",
+                (self.character_id,),
+            )
+            mem_rows = cursor.fetchall() or []
+
+            total = len(hist_rows) + len(mem_rows)
+            if total == 0:
+                return 0
+
             batch_size = self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16)
             if batch_size <= 0:
                 batch_size = 16
+
+            processed = 0
+            updated_count = 0
+
+            prog = self._make_reindex_progress_logger(
+                "index_all_missing",
+                total,
+                extra_meta=f"batch_size={batch_size} | hist={len(hist_rows)} | mem={len(mem_rows)}",
+            )
+            prog.start()
 
             # --- History ---
             for i in range(0, len(hist_rows), batch_size):
@@ -679,7 +682,11 @@ class RAGManager:
 
                     processed += 1
                     if progress_callback:
-                        progress_callback(processed, total)
+                        try:
+                            progress_callback(processed, total)
+                        except Exception:
+                            pass
+                    prog.tick(processed=processed, updated=updated_count, stage="history")
 
                 conn.commit()
 
@@ -700,58 +707,72 @@ class RAGManager:
 
                     processed += 1
                     if progress_callback:
-                        progress_callback(processed, total)
+                        try:
+                            progress_callback(processed, total)
+                        except Exception:
+                            pass
+                    prog.tick(processed=processed, updated=updated_count, stage="memories")
 
                 conn.commit()
 
+            prog.done(processed=processed, updated=updated_count)
+            return updated_count
+
         except Exception as e:
             logger.error(f"Error during re-indexing: {e}", exc_info=True)
+            return 0
         finally:
-            conn.close()
-
-        return updated_count
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def index_all(self, progress_callback=None) -> int:
         """
-        Проходит по ВСЕМ записям и пересоздаёт вектора (даже если уже есть).
-        progress_callback(current, total) - для обновления UI
-        Возвращает количество ОБНОВЛЁННЫХ записей (где реально записали embedding).
+        Полная переиндексация: пересоздаёт embedding для ВСЕХ записей.
+        Возвращает количество записей, где embedding реально записали (updated_count).
         """
         conn = self.db.get_connection()
         cursor = conn.cursor()
 
-        # История - ВСЕ записи с контентом
-        hist_where = "character_id=? AND content != '' AND content IS NOT NULL"
-        if "is_deleted" in self._history_cols:
-            hist_where += " AND is_deleted=0"
-        cursor.execute(
-            f"SELECT id, content FROM history WHERE {hist_where}",
-            (self.character_id,),
-        )
-        hist_rows = cursor.fetchall()
-
-        # Воспоминания - ВСЕ
-        mem_where = "character_id=? AND is_deleted=0 AND content IS NOT NULL"
-        cursor.execute(
-            f"SELECT eternal_id, content FROM memories WHERE {mem_where}",
-            (self.character_id,),
-        )
-        mem_rows = cursor.fetchall()
-
-        total = len(hist_rows) + len(mem_rows)
-        if total == 0:
-            conn.close()
-            return 0
-
-        processed = 0
-        updated_count = 0
-
         try:
+            # History: все записи с контентом
+            hist_where = "character_id=? AND content != '' AND content IS NOT NULL"
+            if "is_deleted" in self._history_cols:
+                hist_where += " AND is_deleted=0"
+            cursor.execute(
+                f"SELECT id, content FROM history WHERE {hist_where}",
+                (self.character_id,),
+            )
+            hist_rows = cursor.fetchall() or []
+
+            # Memories: все не удалённые с контентом
+            mem_where = "character_id=? AND is_deleted=0 AND content IS NOT NULL"
+            cursor.execute(
+                f"SELECT eternal_id, content FROM memories WHERE {mem_where}",
+                (self.character_id,),
+            )
+            mem_rows = cursor.fetchall() or []
+
+            total = len(hist_rows) + len(mem_rows)
+            if total == 0:
+                return 0
+
             batch_size = self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16)
             if batch_size <= 0:
                 batch_size = 16
 
-            # --- History (пересоздаём всегда) ---
+            processed = 0
+            updated_count = 0
+
+            prog = self._make_reindex_progress_logger(
+                "index_all",
+                total,
+                extra_meta=f"batch_size={batch_size} | hist={len(hist_rows)} | mem={len(mem_rows)}",
+            )
+            prog.start()
+
+            # --- History ---
             for i in range(0, len(hist_rows), batch_size):
                 chunk = hist_rows[i:i + batch_size]
                 texts = [(c if isinstance(c, str) else "") for _, c in chunk]
@@ -765,11 +786,15 @@ class RAGManager:
 
                     processed += 1
                     if progress_callback:
-                        progress_callback(processed, total)
+                        try:
+                            progress_callback(processed, total)
+                        except Exception:
+                            pass
+                    prog.tick(processed=processed, updated=updated_count, stage="history")
 
                 conn.commit()
 
-            # --- Memories (пересоздаём всегда) ---
+            # --- Memories ---
             for i in range(0, len(mem_rows), batch_size):
                 chunk = mem_rows[i:i + batch_size]
                 texts = [str(c or "") for _, c in chunk]
@@ -786,17 +811,25 @@ class RAGManager:
 
                     processed += 1
                     if progress_callback:
-                        progress_callback(processed, total)
+                        try:
+                            progress_callback(processed, total)
+                        except Exception:
+                            pass
+                    prog.tick(processed=processed, updated=updated_count, stage="memories")
 
                 conn.commit()
 
+            prog.done(processed=processed, updated=updated_count)
+            return updated_count
+
         except Exception as e:
             logger.error(f"Error during full re-indexing: {e}", exc_info=True)
+            return 0
         finally:
-            conn.close()
-
-        return updated_count
-
+            try:
+                conn.close()
+            except Exception:
+                pass
     def rag_clean_text(self, text: str) -> str:
         if not isinstance(text, str) or not text.strip():
             return ""
@@ -815,3 +848,24 @@ class RAGManager:
         # 4) схлопнуть пробелы
         t = re.sub(r"\s+", " ", t).strip()
         return t
+
+    def _make_reindex_progress_logger(self, op: str, total: int, extra_meta: str = "") -> ThrottledProgressLogger:
+        log_every = self._get_int_setting("RAG_REINDEX_LOG_EVERY", 50)
+        log_interval = self._get_float_setting("RAG_REINDEX_LOG_INTERVAL_SEC", 5.0)
+        if log_every <= 0:
+            log_every = 50
+        if log_interval <= 0:
+            log_interval = 5.0
+
+        meta = f"character_id={self.character_id}"
+        if extra_meta:
+            meta = f"{meta} | {extra_meta}"
+
+        return ThrottledProgressLogger(
+            info=logger.info,
+            op=f"[RAG] {op}",
+            total=int(total),
+            meta=meta,
+            log_every=int(log_every),
+            log_interval_sec=float(log_interval),
+        )
