@@ -201,7 +201,7 @@ class RAGManager:
     def update_memory_embedding(self, eternal_id: int, text: str):
         """Создает и сохраняет эмбеддинг для воспоминания (без падений, RAG опционален)."""
         try:
-            vector = self._get_embedding(text, use_event_bus=True)
+            vector = self._get_embedding(text)
         except Exception as e:
             logger.warning(f"RAGManager: embedding generation failed (memory) - ignored: {e}", exc_info=True)
             return
@@ -232,7 +232,7 @@ class RAGManager:
     def update_history_embedding(self, msg_id: int, text: str):
         """Создает и сохраняет эмбеддинг для сообщения истории (без падений, RAG опционален)."""
         try:
-            vector = self._get_embedding(text, use_event_bus=True)
+            vector = self._get_embedding(text)
         except Exception as e:
             logger.warning(f"RAGManager: embedding generation failed (history) - ignored: {e}", exc_info=True)
             return
@@ -291,7 +291,7 @@ class RAGManager:
 
         query_text = self._build_query_from_recent(query, tail=2)
         query_text = self.rag_clean_text(query_text)
-        query_vec = self._get_embedding(query_text, use_event_bus=True)
+        query_vec = self._get_embedding(query_text)
         if query_vec is None:
             return []
 
@@ -589,7 +589,7 @@ class RAGManager:
                 if content and isinstance(content, str):
                     # Простая эвристика: если это JSON мультимодальности, берем как есть (или можно извлекать текст отдельно)
                     # content может быть JSON-string — оставляем текущую логику без усложнений
-                    vec = self._get_embedding(content, use_event_bus=False)
+                    vec = self._get_embedding(content)
                     if vec is not None:
                         blob = self._array_to_blob(vec)
                         cursor.execute("UPDATE history SET embedding = ? WHERE id = ?", (blob, row_id))
@@ -603,7 +603,7 @@ class RAGManager:
             # Обработка воспоминаний
             for eternal_id, content in mem_rows:
                 if content:
-                    vec = self._get_embedding(content, use_event_bus=False)
+                    vec = self._get_embedding(content)
                     if vec is not None:
                         blob = self._array_to_blob(vec)
                         cursor.execute(
@@ -661,7 +661,7 @@ class RAGManager:
         try:
             for row_id, content in hist_rows:
                 if content and isinstance(content, str):
-                    vec = self._get_embedding(content, use_event_bus=False)
+                    vec = self._get_embedding(content)
                     if vec is not None:
                         blob = self._array_to_blob(vec)
                         cursor.execute("UPDATE history SET embedding = ? WHERE id = ?", (blob, row_id))
@@ -674,7 +674,7 @@ class RAGManager:
 
             for eternal_id, content in mem_rows:
                 if content:
-                    vec = self._get_embedding(content, use_event_bus=False)
+                    vec = self._get_embedding(content)
                     if vec is not None:
                         blob = self._array_to_blob(vec)
                         cursor.execute(
