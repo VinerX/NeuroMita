@@ -86,6 +86,7 @@ class EmbeddingController:
         data = event.data or {}
         texts = data.get("texts") or []
         prefix = data.get("prefix") or QUERY_PREFIX
+        batch_size = data.get("batch_size")  # optional
         future = data.get("future")
 
         results: List[Optional[np.ndarray]] = []

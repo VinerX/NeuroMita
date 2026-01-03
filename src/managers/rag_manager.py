@@ -249,7 +249,7 @@ class RAGManager:
                     chunk = cleaned[i:i + bs]
                     results = self.event_bus.emit_and_wait(
                         EMBEDS_EVENT_NAME,
-                        {"texts": chunk, "prefix": prefix},
+                        {"texts": chunk, "prefix": prefix, "batch_size": bs},
                     )
                     vecs = results[0] if results else []
                     if not isinstance(vecs, list):
