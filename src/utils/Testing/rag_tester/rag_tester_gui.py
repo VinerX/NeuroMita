@@ -80,22 +80,26 @@ class RagTesterWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(15)  # Общее расстояние между крупными блоками
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         root.addWidget(splitter, 1)
 
-        # LEFT tabs
+        # === ЛЕВАЯ ЧАСТЬ (TABS) ===
         left_tabs = QTabWidget()
         splitter.addWidget(left_tabs)
 
-        # Scenario tab
+        # --- Scenario Tab ---
         tab_scn = QWidget()
         tab_scn_l = QVBoxLayout(tab_scn)
+        tab_scn_l.setContentsMargins(15, 15, 15, 15)
+        tab_scn_l.setSpacing(12)
 
         top_row = QHBoxLayout()
         top_row.addWidget(QLabel("character_id:"))
         self.character_id_edit = QLineEdit("RAG_TEST")
-        self.character_id_edit.setMaximumWidth(260)
+        self.character_id_edit.setFixedWidth(200)
         top_row.addWidget(self.character_id_edit)
         top_row.addStretch(1)
 
@@ -107,95 +111,113 @@ class RagTesterWindow(QMainWindow):
         top_row.addWidget(self.btn_save_file)
 
         tab_scn_l.addLayout(top_row)
-
         self.scenario_edit = QTextEdit()
         self.scenario_edit.setAcceptRichText(False)
         tab_scn_l.addWidget(self.scenario_edit, 1)
         left_tabs.addTab(tab_scn, "Scenario")
 
-        # Data tab
+        # --- Data Tab ---
         tab_data = QWidget()
         tab_data_l = QVBoxLayout(tab_data)
+        tab_data_l.setContentsMargins(15, 20, 15, 15)
+        tab_data_l.setSpacing(25)  # Большое расстояние между группами (Database, Import, Indexing)
 
+        # 1. Database Group
         gb_db = QGroupBox("Database")
-        gb_db_l = QGridLayout(gb_db)
+        gb_db_l = QVBoxLayout(gb_db)
+        gb_db_l.setSpacing(15)  # Расстояние внутри группы
+        gb_db_l.setContentsMargins(12, 20, 12, 12)
 
+        # Ряд кнопок
+        db_btns = QHBoxLayout()
         self.btn_apply = QPushButton("Залить scenario в БД")
         self.btn_load_from_db = QPushButton("Загрузить scenario из БД")
+        db_btns.addWidget(self.btn_apply)
+        db_btns.addWidget(self.btn_load_from_db)
+        gb_db_l.addLayout(db_btns)
+
+        # Чекбоксы
+        chk_l = QVBoxLayout()
+        chk_l.setSpacing(8)
         self.chk_clear_before = QCheckBox("Очистить перед заливкой (опасно)")
-        self.chk_clear_before.setChecked(False)
         self.chk_embed_now = QCheckBox("Embed при заливке/импорте")
         self.chk_embed_now.setChecked(True)
+        chk_l.addWidget(self.chk_clear_before)
+        chk_l.addWidget(self.chk_embed_now)
+        gb_db_l.addLayout(chk_l)
 
-        self.db_hist_limit = QSpinBox()
-        self.db_hist_limit.setRange(0, 200000)
+        # Параметры (выравнивание через FormLayout)
+        db_form = QFormLayout()
+        db_form.setVerticalSpacing(12)  # Вертикальный зазор между строками
+        self.db_hist_limit = QSpinBox();
+        self.db_hist_limit.setRange(0, 200000);
         self.db_hist_limit.setValue(3000)
+        self.db_mem_limit = QSpinBox();
+        self.db_mem_limit.setRange(0, 200000);
+        self.db_mem_limit.setValue(4997)
         self.db_hist_limit.setFixedWidth(120)
-
-        self.db_mem_limit = QSpinBox()
-        self.db_mem_limit.setRange(0, 200000)
-        self.db_mem_limit.setValue(5000)
         self.db_mem_limit.setFixedWidth(120)
-
-        gb_db_l.addWidget(self.btn_apply, 0, 0)
-        gb_db_l.addWidget(self.btn_load_from_db, 0, 1)
-        gb_db_l.addWidget(self.chk_clear_before, 1, 0, 1, 2)
-        gb_db_l.addWidget(self.chk_embed_now, 2, 0, 1, 2)
-        gb_db_l.addWidget(QLabel("history limit:"), 3, 0)
-        gb_db_l.addWidget(self.db_hist_limit, 3, 1)
-        gb_db_l.addWidget(QLabel("memories limit:"), 4, 0)
-        gb_db_l.addWidget(self.db_mem_limit, 4, 1)
-
+        db_form.addRow("history limit:", self.db_hist_limit)
+        db_form.addRow("memories limit:", self.db_mem_limit)
+        gb_db_l.addLayout(db_form)
         tab_data_l.addWidget(gb_db)
 
+        # 2. Import Group
         gb_import = QGroupBox("Import legacy JSON")
-        gb_import_l = QGridLayout(gb_import)
+        gb_import_l = QVBoxLayout(gb_import)
+        gb_import_l.setSpacing(15)
+        gb_import_l.setContentsMargins(12, 20, 12, 12)
 
+        imp_btns = QHBoxLayout()
         self.btn_import_old_history = QPushButton("Импорт history JSON…")
         self.btn_import_old_memories = QPushButton("Импорт memories JSON…")
+        imp_btns.addWidget(self.btn_import_old_history)
+        imp_btns.addWidget(self.btn_import_old_memories)
+        gb_import_l.addLayout(imp_btns)
+
+        imp_form = QFormLayout()
         self.import_context_tail = QSpinBox()
-        self.import_context_tail.setRange(0, 50)
+        self.import_context_tail.setRange(0, 50);
         self.import_context_tail.setValue(2)
         self.import_context_tail.setFixedWidth(120)
-
-        gb_import_l.addWidget(self.btn_import_old_history, 0, 0)
-        gb_import_l.addWidget(self.btn_import_old_memories, 0, 1)
-        gb_import_l.addWidget(QLabel("Tail->context:"), 1, 0)
-        gb_import_l.addWidget(self.import_context_tail, 1, 1)
-
+        imp_form.addRow("Tail -> context:", self.import_context_tail)
+        gb_import_l.addLayout(imp_form)
         tab_data_l.addWidget(gb_import)
 
+        # 3. Indexing Group
         gb_index = QGroupBox("Indexing")
         gb_index_l = QHBoxLayout(gb_index)
+        gb_index_l.setContentsMargins(12, 20, 12, 12)
+        gb_index_l.setSpacing(10)
         self.btn_index_missing = QPushButton("Index missing")
         self.btn_missing_count = QPushButton("Missing count")
         gb_index_l.addWidget(self.btn_index_missing)
         gb_index_l.addWidget(self.btn_missing_count)
         gb_index_l.addStretch(1)
-
         tab_data_l.addWidget(gb_index)
+
         tab_data_l.addStretch(1)
         left_tabs.addTab(tab_data, "Data")
 
-        # RIGHT side
+        # === ПРАВАЯ ЧАСТЬ (SEARCH) ===
         right = QWidget()
         right_l = QVBoxLayout(right)
+        right_l.setContentsMargins(0, 0, 0, 0)
+        right_l.setSpacing(12)
 
         qrow = QHBoxLayout()
         qrow.addWidget(QLabel("Query:"))
         self.query_edit = QLineEdit()
         qrow.addWidget(self.query_edit, 1)
 
-        self.limit_spin = QSpinBox()
-        self.limit_spin.setRange(1, 200)
-        self.limit_spin.setValue(10)
-        self.limit_spin.setFixedWidth(80)
-
-        self.threshold_spin = QDoubleSpinBox()
-        self.threshold_spin.setRange(-1.0, 1.0)
-        self.threshold_spin.setSingleStep(0.05)
-        self.threshold_spin.setValue(0.40)
-        self.threshold_spin.setFixedWidth(90)
+        self.limit_spin = QSpinBox();
+        self.limit_spin.setRange(1, 200);
+        self.limit_spin.setValue(10);
+        self.limit_spin.setFixedWidth(60)
+        self.threshold_spin = QDoubleSpinBox();
+        self.threshold_spin.setRange(-1.0, 1.0);
+        self.threshold_spin.setValue(0.40);
+        self.threshold_spin.setFixedWidth(70)
 
         qrow.addWidget(QLabel("limit"))
         qrow.addWidget(self.limit_spin)
@@ -203,10 +225,9 @@ class RagTesterWindow(QMainWindow):
         qrow.addWidget(self.threshold_spin)
 
         self.btn_search = QPushButton("Search")
-        self.btn_preview_inject = QPushButton("Preview inject")
+        self.btn_preview_inject = QPushButton("Preview")
         qrow.addWidget(self.btn_search)
         qrow.addWidget(self.btn_preview_inject)
-
         right_l.addLayout(qrow)
 
         self.right_tabs = QTabWidget()
@@ -215,50 +236,43 @@ class RagTesterWindow(QMainWindow):
         # Results tab
         tab_res = QWidget()
         tab_res_l = QVBoxLayout(tab_res)
-
+        tab_res_l.setContentsMargins(0, 0, 0, 0)
         res_split = QSplitter(Qt.Orientation.Vertical)
 
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
-            ["source", "id", "score", "type/role", "priority", "date", "speaker→target", "content"]
-        )
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            ["source", "id", "score", "type/role", "priority", "date", "speaker→target", "content"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setStretchLastSection(True)
         res_split.addWidget(self.table)
 
         self.details = QPlainTextEdit()
         self.details.setReadOnly(True)
         res_split.addWidget(self.details)
-
         res_split.setStretchFactor(0, 3)
-        res_split.setStretchFactor(1, 2)
-
-        tab_res_l.addWidget(res_split, 1)
+        res_split.setStretchFactor(1, 1)
+        tab_res_l.addWidget(res_split)
         self.right_tabs.addTab(tab_res, "Results")
 
         # Debug tab
         tab_dbg = QWidget()
         tab_dbg_l = QVBoxLayout(tab_dbg)
-
+        tab_dbg_l.setSpacing(10)
         tab_dbg_l.addWidget(QLabel("Effective query:"))
         self.effective_query_view = QPlainTextEdit()
         self.effective_query_view.setReadOnly(True)
-        self.effective_query_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         tab_dbg_l.addWidget(self.effective_query_view, 1)
-
         tab_dbg_l.addWidget(QLabel("Injection preview:"))
         self.injection_preview = QPlainTextEdit()
         self.injection_preview.setReadOnly(True)
-        self.injection_preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        tab_dbg_l.addWidget(self.injection_preview, 1)
-
+        tab_dbg_l.addWidget(self.injection_preview, 2)
         self.right_tabs.addTab(tab_dbg, "Debug")
 
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
         splitter.setSizes([520, 880])
+
 
     def _build_settings_dock(self) -> None:
         dock = QDockWidget("RAG Settings", self)
