@@ -518,8 +518,20 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
     app_instance_ref = {"instance": None} 
     logged_command_q_none_warning_for_this_run = False
 
-    # Create a queue for GUI events from other threads
     gui_event_queue = queue.Queue()
+    close_event_sent = {"sent": False}
+
+    def _send_gui_closed(reason: str):
+        if close_event_sent["sent"]:
+            return
+        if not state_q:
+            close_event_sent["sent"] = True
+            return
+        try:
+            state_q.put({"event": "gui_closed", "reason": str(reason or "")})
+        except Exception:
+            pass
+        close_event_sent["sent"] = True
 
     def _proxy_update_status(message):
         if app_instance_ref["instance"] and not app_instance_ref["instance"].is_closing and message is not None:
@@ -549,15 +561,16 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
             initial_elo=initial_elo,
             player_is_white_gui=player_is_white_gui,
             state_q=state_q,
-            status_update_cb_gui=_proxy_update_status, # Proxies now use gui_event_queue
-            board_update_cb_gui=_proxy_update_board,   # Proxies now use gui_event_queue
-            game_over_cb_gui=_proxy_game_over          # Proxies now use gui_event_queue
+            status_update_cb_gui=_proxy_update_status,
+            board_update_cb_gui=_proxy_update_board,
+            game_over_cb_gui=_proxy_game_over
         )
         print(f"CONSOLE (chess_board_process): [STAGE 1] ChessGameController создан.")
 
         print(f"CONSOLE (chess_board_process): [STAGE 2] Вызов game_controller.initialize_dependencies_and_engine()...")
         if not game_controller.initialize_dependencies_and_engine():
             print(f"CONSOLE (chess_board_process): [STAGE 2] ОШИБКА: initialize_dependencies_and_engine() ВЕРНУЛ FALSE. Процесс GUI завершается.")
+            _send_gui_closed("init_failed")
             return 
 
         print(f"CONSOLE (chess_board_process): [STAGE 2] initialize_dependencies_and_engine() УСПЕШНО ВЫПОЛНЕН.")
@@ -572,16 +585,15 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
         game_controller.new_game() 
         print(f"CONSOLE (chess_board_process): [STAGE 4] game_controller.new_game() ВЫПОЛНЕН.")
 
-        # Создаем таймер для обработки очередей
         timer = QTimer()
         
         def process_queues():
             if app_instance_ref["instance"] and app_instance_ref["instance"].is_closing:
+                _send_gui_closed("user_closed")
                 timer.stop()
                 qt_app.quit()
                 return
                 
-            # Process commands from the main application (if command_q is provided)
             try:
                 if command_q: 
                     command = command_q.get_nowait()
@@ -589,18 +601,22 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
                         print(f"CONSOLE (chess_board_process): [LOOP] Получена команда: {command}")
                         if command.get("action") == "stop_gui_process": 
                             print(f"CONSOLE (chess_board_process): [LOOP] Команда stop_gui_process, выход из цикла.")
+                            _send_gui_closed("stop_gui_process")
                             app_instance_ref["instance"].is_closing = True
                             timer.stop()
                             qt_app.quit()
                             return
                         if command.get("action") == "resign" or command.get("action") == "stop": 
                              print(f"CONSOLE (chess_board_process): [LOOP] Команда resign/stop, обработка и выход.")
-                             if game_controller: game_controller.process_command(command) 
+                             if game_controller:
+                                 game_controller.process_command(command) 
+                             _send_gui_closed(command.get("action"))
                              app_instance_ref["instance"].is_closing = True 
                              timer.stop()
                              qt_app.quit()
                              return
-                        if game_controller: game_controller.process_command(command)
+                        if game_controller:
+                            game_controller.process_command(command)
                 else: 
                     if not logged_command_q_none_warning_for_this_run:
                         print("CONSOLE (chess_board_process): [LOOP] WARNING: command_q is None. External command processing via queue will be skipped.")
@@ -612,7 +628,6 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
                 print(f"CONSOLE (chess_board_process): [LOOP] Ошибка в цикле обработки команд: {e_loop_command}")
                 traceback.print_exc() 
 
-            # Process GUI events from the gui_event_queue
             try:
                 while not gui_event_queue.empty():
                     event_type, data = gui_event_queue.get_nowait()
@@ -625,13 +640,13 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
                         elif event_type == "game_over":
                             current_app_gui.game_over_signal.emit(data)
             except queue.Empty:
-                pass # No GUI events to process
+                pass
             except Exception as e_gui_event_loop:
                 print(f"CONSOLE (chess_board_process): [LOOP] Ошибка в цикле обработки GUI событий: {e_gui_event_loop}")
                 traceback.print_exc()
 
         timer.timeout.connect(process_queues)
-        timer.start(50)  # 50ms интервал
+        timer.start(50)
         
         print(f"CONSOLE (chess_board_process): [STAGE 5] >>> ВХОД В ГЛАВНЫЙ ЦИКЛ ОБНОВЛЕНИЯ GUI...")
         qt_app.exec()
@@ -645,8 +660,11 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
                 state_q.put({"error": f"Critical unhandled error in GUI process: {str(e_main_run_try)}", "critical_process_failure": True})
             except Exception as e_queue_put:
                 print(f"CONSOLE (chess_board_process): Не удалось отправить критическую ошибку (основной try) в state_q: {e_queue_put}")
+        _send_gui_closed("crash")
     finally:
         print(f"CONSOLE (chess_board_process): [FINALLY] Блок finally процесса GUI.")
+        _send_gui_closed("process_exit")
+
         if game_controller:
             print(f"CONSOLE (chess_board_process): [FINALLY] Вызов game_controller.shutdown_engine_process().")
             game_controller.shutdown_engine_process()

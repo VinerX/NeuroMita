@@ -33,13 +33,24 @@ class GameManager:
         except Exception:
             pass
 
+        if key == "GAME_CONNECTED":
+            try:
+                bus = getattr(self.character, "event_bus", None)
+                if bus:
+                    res = bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
+                    if res:
+                        return bool(res[0])
+            except Exception:
+                pass
+            return bool(default)
+
         try:
             bus = getattr(self.character, "event_bus", None)
             if bus:
                 res = bus.emit_and_wait(
                     Events.Settings.GET_SETTING,
                     {"key": key, "default": default},
-                    timeout=0.3,
+                    timeout=0.5,
                 )
                 if res:
                     return bool(res[0])
@@ -93,7 +104,9 @@ class GameManager:
             return
 
         if self.active_game.game_id != game_name:
-            logger.warning(f"[{self.character.char_id}] Получена команда остановки для '{game_name}', но активна игра '{self.active_game.game_id}'. Все равно останавливаем.")
+            logger.warning(
+                f"[{self.character.char_id}] Получена команда остановки для '{game_name}', но активна игра '{self.active_game.game_id}'. Все равно останавливаем."
+            )
 
         logger.info(f"[{self.character.char_id}] Остановка игры '{self.active_game.game_id}' с параметрами: {params}")
         self.active_game.stop(params)

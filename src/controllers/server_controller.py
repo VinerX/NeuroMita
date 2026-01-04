@@ -181,6 +181,13 @@ class ServerController:
         except Exception as e:
             logger.error(f"Ошибка при остановке сервера: {e}", exc_info=True)
 
+        try:
+            self.ConnectedToGame = False
+            if self.event_bus:
+                self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+        except Exception:
+            pass
+
         logger.info("Сервер остановлен")
 
     def destroy(self):
@@ -206,24 +213,26 @@ class ServerController:
     def update_game_connection(self, is_connected):
         if self._destroyed or not self.event_bus:
             return
-        self.ConnectedToGame = is_connected
+        self.ConnectedToGame = bool(is_connected)
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
-
-        self.event_bus.emit(Events.Settings.SAVE_SETTING, {
-            'key': 'GAME_CONNECTED',
-            'value': is_connected
-        })
 
     def _on_update_game_connection(self, event: Event):
         if self._destroyed:
             return
         is_connected = event.data.get('is_connected', False)
         self.update_game_connection(is_connected)
-
+    
     def _on_get_connection_status(self, event: Event):
         if self._destroyed:
             return None
-        return self.ConnectedToGame
+        try:
+            srv = self.server
+            conns = getattr(srv, "active_connections", None) if srv else None
+            if isinstance(conns, dict):
+                return bool(conns)
+        except Exception:
+            pass
+        return bool(self.ConnectedToGame)
 
     def _on_stop_server(self, event: Event):
         if self._destroyed:

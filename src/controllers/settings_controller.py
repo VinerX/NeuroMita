@@ -17,11 +17,6 @@ class SettingsController:
         self.event_bus = get_event_bus()
         self.settings = SettingsManager(self.config_path)
 
-        if self.settings.get("GAME_CONNECTED") is None:
-            self.settings.set("GAME_CONNECTED", False)
-            self.settings.save_settings()
-            logger.info("Инициализирован флаг GAME_CONNECTED = False")
-
         self._subscribe_to_events()
 
     def _subscribe_to_events(self):
@@ -99,7 +94,6 @@ class SettingsController:
             "ENABLE_CAMERA_CAPTURE",
             "ENABLE_SCREEN_ANALYSIS",
             "MIC_ACTIVE",
-            "GAME_CONNECTED",
 
             "ENABLE_GAMES",
             "ALLOW_GAMES_WHEN_CONNECTED",
@@ -111,9 +105,19 @@ class SettingsController:
             "app_version": "1.0.0",
         }
 
+        game_connected = False
+        try:
+            res = self.event_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
+            if res:
+                game_connected = bool(res[0])
+        except Exception:
+            game_connected = False
+
         flag_vars: Dict[str, Any] = {
             key: bool(self.settings.get(key, False))
             for key in bool_keys
         }
+
+        flag_vars["GAME_CONNECTED"] = bool(game_connected)
 
         return {**flag_vars, **custom_vars}

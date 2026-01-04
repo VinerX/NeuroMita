@@ -123,6 +123,19 @@ class SeaBattleWindow(QWidget):
         self.command_timer.timeout.connect(self.process_commands)
         self.command_timer.start(100)
 
+    def closeEvent(self, event):
+        try:
+            if self.state_queue:
+                self.state_queue.put({"event": "gui_closed", "reason": "user_closed"})
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "command_timer") and self.command_timer:
+                self.command_timer.stop()
+        except Exception:
+            pass
+        event.accept()
+
     def init_ui(self):
         self.setWindowTitle("Морской Бой")
         self.setGeometry(100, 100, 620, 500)
