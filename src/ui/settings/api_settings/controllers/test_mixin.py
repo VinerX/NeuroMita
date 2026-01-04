@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import QMessageBox
 
 from utils import _
 from core.events import Events
-
+from ui.settings.api_settings.dialogs.models_loaded_dialog import ModelsLoadedDialog
 
 class TestMixin:
     def _test_connection(self) -> None:
@@ -49,11 +49,45 @@ class TestMixin:
         v.test_button.setEnabled(True)
         v.test_button.setText(_("Тест подключения", "Test connection"))
 
-        if data.get("success"):
-            msg = str(data.get("message") or _("Успешно", "Success"))
+        success = bool(data.get("success"))
+        msg = str(data.get("message") or (_("Успешно", "Success") if success else _("Неизвестная ошибка", "Unknown error")))
+        models = data.get("models") or []
+        if not isinstance(models, list):
+            models = []
+
+        # нормализуем список
+        cleaned: list[str] = []
+        seen = set()
+        for m in models:
+            s = str(m or "").strip()
+            if s and s not in seen:
+                seen.add(s)
+                cleaned.append(s)
+
+        if success and cleaned:
+            try:
+                v.api_model_list_model.setStringList(cleaned)
+            except Exception:
+                pass
+
+            try:
+                dlg = ModelsLoadedDialog(v, models=cleaned, message=msg)
+                if dlg.exec() == dlg.DialogCode.Accepted:
+                    chosen = dlg.selected_model()
+                    if chosen:
+                        v.api_model_row.set_text(chosen)
+                        try:
+                            self._on_field_changed()
+                        except Exception:
+                            pass
+                return
+            except Exception:
+                QMessageBox.information(v, _("Результат тестирования", "Test Result"), msg + "\n\n" + "\n".join(cleaned))
+                return
+
+        if success:
             QMessageBox.information(v, _("Результат тестирования", "Test Result"), msg)
         else:
-            msg = str(data.get("message") or _("Неизвестная ошибка", "Unknown error"))
             QMessageBox.warning(v, _("Ошибка подключения", "Connection Error"), msg)
 
     def _process_test_failed(self, data: dict):

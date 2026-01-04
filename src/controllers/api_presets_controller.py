@@ -907,7 +907,7 @@ class ApiPresetsController:
                 "protocol_id": protocol_id,
                 "url": url,
                 "api_key": str(key or ""),
-                "headers": {},  # можно потом доп.заголовки
+                "headers": {},
             },
             timeout=1.0
         )
