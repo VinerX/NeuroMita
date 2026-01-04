@@ -53,7 +53,6 @@ class SettingsController:
                 "dialect_id": ps.dialect_id,
                 "provider_name": ps.provider_name,
             }
-            # оставляем событие, но payload теперь без legacy-полей
             self.event_bus.emit("model_settings_loaded", model_settings)
 
         telegram_settings = {
@@ -101,6 +100,11 @@ class SettingsController:
             "ENABLE_SCREEN_ANALYSIS",
             "MIC_ACTIVE",
             "GAME_CONNECTED",
+
+            "ENABLE_GAMES",
+            "ALLOW_GAMES_WHEN_CONNECTED",
+            "ENABLE_GAME_CHESS",
+            "ENABLE_GAME_SEABATTLE",
         ]
 
         custom_vars: Dict[str, Any] = {

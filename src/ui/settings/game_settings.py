@@ -19,7 +19,6 @@ def setup_game_controls(self, parent):
         api_config
     )
     
-    # Настройки диалогов и GameMaster
     dialogue_config = [
         {'label': _('Лимит речей нпс %', 'Limit NPC conversation'), 'key': 'CC_Limit_mod', 'type': 'entry',
          'default': 100, 'tooltip': _('Сколько от кол-ва персонажей может отклоняться повтор речей нпс',
@@ -43,7 +42,6 @@ def setup_game_controls(self, parent):
         dialogue_config
     )
     
-    # Настройки мода игры
     mod_config = [
         {'label': _('Меню действий', 'Action menu'), 'key': 'ACTION_MENU', 'type': 'checkbutton', 
         'default_checkbutton': True,
@@ -68,4 +66,47 @@ def setup_game_controls(self, parent):
         parent,
         _("Настройки мода", "Mod Settings"),
         mod_config
+    )
+
+    games_config = [
+        {
+            'label': _('Включить игры', 'Enable games'),
+            'key': 'ENABLE_GAMES',
+            'type': 'checkbutton',
+            'default_checkbutton': False,
+            'tooltip': _('Глобально разрешает запуск встроенных игр (шахматы, морской бой).',
+                         'Globally allows launching built-in games (Chess, Sea Battle).')
+        },
+        {
+            'label': _('Разрешить запуск игр при подключенном Unity', 'Allow games when Unity is connected'),
+            'key': 'ALLOW_GAMES_WHEN_CONNECTED',
+            'type': 'checkbutton',
+            'default_checkbutton': False,
+            'depends_on': 'ENABLE_GAMES',
+            'tooltip': _('Если ВЫКЛ и Unity подключен к серверу, игры не будут запускаться.',
+                         'If OFF and Unity client is connected, games will not be launched.')
+        },
+        {
+            'label': _('Шахматы', 'Chess'),
+            'key': 'ENABLE_GAME_CHESS',
+            'type': 'checkbutton',
+            'default_checkbutton': False,
+            'depends_on': 'ENABLE_GAMES',
+            'tooltip': _('Разрешить игру "Шахматы".', 'Allow "Chess" game.')
+        },
+        {
+            'label': _('Морской бой', 'Sea Battle'),
+            'key': 'ENABLE_GAME_SEABATTLE',
+            'type': 'checkbutton',
+            'default_checkbutton': False,
+            'depends_on': 'ENABLE_GAMES',
+            'tooltip': _('Разрешить игру "Морской бой".', 'Allow "Sea Battle" game.')
+        },
+    ]
+
+    create_settings_section(
+        self,
+        parent,
+        _("Игры", "Games"),
+        games_config
     )

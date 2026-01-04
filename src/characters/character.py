@@ -502,9 +502,12 @@ class Character:
         )
         if start_match:
             full_id_str = start_match.group(1).strip()
-            self.game_manager.start_game(full_id_str)
+            started = self.game_manager.start_game(full_id_str)
             response = response.replace(start_match.group(0), "", 1).strip()
-            logger.info(f"[{self.char_id}] Запрошен запуск игры с ID: '{full_id_str}'.")
+            if started:
+                logger.info(f"[{self.char_id}] Запрошен запуск игры с ID: '{full_id_str}'.")
+            else:
+                logger.info(f"[{self.char_id}] Запуск игры с ID '{full_id_str}' отклонён (заблокировано настройками).")
 
         end_match = re.search(
             r'<EndGame id="([^"]*)"/>', response, re.DOTALL | re.IGNORECASE
