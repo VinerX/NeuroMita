@@ -129,7 +129,6 @@ class EditorMixin:
             v.protocol_row.set_enabled(True)
             self._set_protocol_config_visible(True)
 
-            # clear active template snapshot
             self._active_template = None
 
             pid = self._current_protocol_id_ui() or self._protocol_default_id
@@ -139,19 +138,22 @@ class EditorMixin:
             self._on_field_changed()
             return
 
-        # template selected -> hide config
         self._set_protocol_config_visible(False)
 
         def _call():
-            res = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_FULL, {"id": int(template_id)}, timeout=1.0)
+            res = self.event_bus.emit_and_wait(
+                Events.ApiPresets.GET_PRESET_FULL,
+                {"id": int(template_id)},
+                timeout=1.0
+            )
             return res[0] if res and res[0] else None
 
         def _apply(tpl: dict | None):
             if not tpl:
                 return
+
             self._is_loading_ui = True
 
-            # store active template snapshot for URL recompute
             self._active_template = dict(tpl)
 
             pid = str(tpl.get("protocol_id") or "").strip() or self._protocol_default_id
@@ -159,8 +161,10 @@ class EditorMixin:
             v.protocol_row.set_enabled(False)
             self._apply_protocol_details(pid)
 
-            default_model = str(tpl.get("default_model") or "")
-            if not v.api_model_row.text().strip():
+            default_model = str(tpl.get("default_model") or "").strip()
+
+            saved_model = str((self.current_preset_data or {}).get("default_model") or "").strip()
+            if not saved_model and default_model:
                 v.api_model_row.set_text(default_model)
 
             url_tpl = str(tpl.get("url_tpl") or "")
