@@ -25,8 +25,8 @@ from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor, QFont, QImage, QIc
 
 from ui.settings import (
     api_settings, character_settings, game_settings, 
-    microphone_settings, screen_analysis_settings, voiceover_settings,
-    prompt_catalogue_settings, model_interaction_settings, general_settings
+    microphone_settings, screen_analysis_settings, voiceover_settings, 
+    model_interaction_settings, general_settings
 )
 
 from ui.widgets import (status_indicators_widget)
@@ -369,7 +369,6 @@ class ChatGUI(QMainWindow):
             "voice":       voiceover_settings.setup_voiceover_controls,
             "microphone":  microphone_settings.setup_microphone_controls,
             "characters":  character_settings.setup_mita_controls,
-            "prompts":     prompt_catalogue_settings.setup_prompt_catalogue_controls,
             "screen":      screen_analysis_settings.setup_screen_analysis_controls,
             "game":        game_settings.setup_game_controls,
             "debug":       self._debug_wrapper,

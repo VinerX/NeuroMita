@@ -1,4 +1,4 @@
-# src/ui/settings/character_settings/ui.py
+# File: src/ui/settings/character_settings/ui.py
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -25,6 +25,17 @@ def _make_row(label_text: str, field_widget: QWidget, label_w: int) -> QWidget:
 
     hl.addWidget(field_widget, 1)
     return row
+
+
+def _make_info_value_label(self, key: str) -> QLabel:
+    lab = QLabel("")
+    lab.setWordWrap(True)
+    lab.setTextFormat(Qt.TextFormat.PlainText)
+    lab.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    lab.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    lab.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    self.prompt_info_labels[key] = lab
+    return lab
 
 
 def build_character_settings_ui(self, parent_layout):
@@ -60,7 +71,6 @@ def build_character_settings_ui(self, parent_layout):
     self.character_combobox = QComboBox()
     self.character_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     ch_h.addWidget(self.character_combobox, 1)
-
     lay.addWidget(_make_row(_("Персонажи", "Characters"), character_field, label_w))
 
     prompt_field = QWidget()
@@ -71,7 +81,6 @@ def build_character_settings_ui(self, parent_layout):
     self.prompt_pack_combobox = QComboBox()
     self.prompt_pack_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     pr_h.addWidget(self.prompt_pack_combobox, 1)
-
     lay.addWidget(_make_row(_("Набор промптов", "Prompt set"), prompt_field, label_w))
 
     provider_field = QWidget()
@@ -82,7 +91,6 @@ def build_character_settings_ui(self, parent_layout):
     self.char_provider_combobox = QComboBox()
     self.char_provider_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     pv_h.addWidget(self.char_provider_combobox, 1)
-
     lay.addWidget(_make_row(_("Провайдер для персонажа", "Provider for character"), provider_field, label_w))
 
     sub_title1 = QLabel(_("Управление персонажем", "Character management"))
@@ -111,6 +119,39 @@ def build_character_settings_ui(self, parent_layout):
     mg_h.addWidget(self.btn_open_history_folder, 1)
 
     lay.addWidget(mgmt_row)
+
+    lay.addSpacing(6)
+    
+    self.prompt_info_section = InnerCollapsibleSection(_("Информация о наборе", "Set information"), parent=self)
+    lay.addWidget(self.prompt_info_section)
+
+    try:
+        if getattr(self.prompt_info_section, "is_collapsed", False):
+            self.prompt_info_section.toggle()
+    except Exception:
+        pass
+
+    try:
+        self.prompt_info_section.content_layout.setContentsMargins(16, 8, 12, 8)
+        self.prompt_info_section.content_layout.setSpacing(8)
+    except Exception:
+        pass
+
+    self.prompt_info_labels = {}
+
+    self.prompt_info_section.add_widget(
+        _make_row(_("Автор:", "Author:"), _make_info_value_label(self, "author"), label_w)
+    )
+    self.prompt_info_section.add_widget(
+        _make_row(_("Версия:", "Version:"), _make_info_value_label(self, "version"), label_w)
+    )
+
+    desc_title = QLabel(_("Описание:", "Description:"))
+    desc_title.setStyleSheet("font-weight: 600;")
+    self.prompt_info_section.add_widget(desc_title)
+
+    self.prompt_info_section.add_widget(_make_info_value_label(self, "description"))
+
 
     lay.addSpacing(6)
 

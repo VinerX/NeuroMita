@@ -328,7 +328,7 @@ def create_setting_widget(
         def _save_combo(text):
             gui._save_setting(setting_key, text)
             if command:
-                command()
+                command(text)
 
         widget.currentTextChanged.connect(_save_combo)
 
