@@ -27,7 +27,6 @@ from utils.ffmpeg_installer import install_ffmpeg
 from utils.pip_installer import PipInstaller
 from core.events import get_event_bus, Events, Event, shutdown_event_bus
 
-
 from controllers.server_controller import ServerController
 from controllers.server_controller_old import ServerControllerOld
 
@@ -39,7 +38,6 @@ class MainController:
 
         self.dialog_active = False
 
-
         self.loop_controller = LoopController()
         logger.notify("LoopController успешно инициализирован.")
 
@@ -47,7 +45,6 @@ class MainController:
 
         self.telegram_controller = TelegramController()
         logger.notify("TelegramController успешно инициализирован.")
-        
 
         try:
             target_folder = "Settings"
@@ -75,10 +72,10 @@ class MainController:
 
         self.install_controller = InstallController(script_path=r"libs\python\python.exe", libs_path="Lib")
         logger.notify("InstallController успешно инициализирован.")
-        
+
         self.local_voice_controller = LocalVoiceController(self)
         logger.notify("LocalVoiceController успешно инициализирован.")
-        
+
         self.task_controller = TaskController()
         logger.notify("TaskController успешно инициализирован.")
 
@@ -87,7 +84,7 @@ class MainController:
 
         self.prompt_controller = PromptController()
         logger.notify("PromptController успешно инициализирован.")
-        
+
         self.protocols_controller = ProtocolsController()
         logger.notify("ProtocolsController успешно инициализирован.")
 
@@ -102,7 +99,7 @@ class MainController:
 
         self.character_controller = CharacterController(self.settings)
         logger.notify("CharacterController успешно инициализирован.")
-        
+
         self.model_controller = ModelController(self.settings)
         logger.notify("ModelController успешно инициализирован.")
 
@@ -113,44 +110,31 @@ class MainController:
         logger.notify("SpeechController успешно инициализирован.")
 
         self._init_server_controller()
-        
+
         self.chat_controller = ChatController(self.settings)
         logger.notify("ChatController успешно инициализирован.")
 
-        
-
         self.audio_controller.delete_all_sound_files()
 
-        
         self._subscribe_to_events()
         logger.notify("MainController подписался на события")
 
     def _init_server_controller(self):
-        """Инициализация правильного ServerController на основе настроек"""
         use_new_api = self.settings.get('USE_NEW_API', False)
-        
-        # Проверяем, нужно ли переключение
+
         if hasattr(self, 'server_controller') and self.server_controller:
-            # Определяем текущий тип контроллера
-            
             current_is_new = isinstance(self.server_controller, ServerController)
-            
-            # Если тип соответствует настройке, ничего не делаем
             if (use_new_api and current_is_new) or (not use_new_api and not current_is_new):
                 return
-                
-            # Иначе уничтожаем старый контроллер
             self.server_controller.destroy()
             self.server_controller = None
-            
-        # Создаем новый контроллер
+
         if use_new_api:
             self.server_controller = ServerController()
             logger.notify("ServerController (новый API) успешно инициализирован.")
         else:
             self.server_controller = ServerControllerOld()
             logger.notify("ServerController (старый API) успешно инициализирован.")
-        
 
     def update_view(self, view):
         if not self.gui_controller:
@@ -158,17 +142,21 @@ class MainController:
             self.gui_controller = GuiController(self, view)
             logger.notify("GuiController успешно инициализирован.")
             self.settings_controller.load_api_settings(False)
-            
-            # в этой логике надо добавить автоподключение.
-            if self.settings.get('VOICEOVER_METHOD') == 'TG' and self.settings.get('USE_VOICEOVER', False):
-                self.telegram_controller.start_silero_async()
-    
+
+            # важный "пинок" для UI-логики озвучки (в т.ч. TG autoconnect из VoiceoverGuiController)
+            self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
+
+            # Никаких прямых start_silero_async тут больше нет.
+            # TelegramController сам решит запускаться по:
+            # - Events.Telegram.START_SILERO (кнопка/автоконнект из GUI)
+            # - Events.Core.SETTING_CHANGED (если TG_AUTOCONNECT включен)
+
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.Model.SCHEDULE_G4F_UPDATE, self._on_schedule_g4f_update, weak=False)
-        
+
         self.event_bus.subscribe(Events.Telegram.REQUEST_TG_CODE, self._on_request_tg_code, weak=False)
         self.event_bus.subscribe(Events.Telegram.REQUEST_TG_PASSWORD, self._on_request_tg_password, weak=False)
-        
+
         self.event_bus.subscribe(Events.GUI.SHOW_LOADING_POPUP, self._on_show_loading_popup, weak=False)
         self.event_bus.subscribe(Events.GUI.CLOSE_LOADING_POPUP, self._on_close_loading_popup, weak=False)
 
@@ -177,7 +165,7 @@ class MainController:
 
     def _on_setting_changed(self, event: Event):
         key = event.data.get('key')
-        
+
         if key == 'USE_NEW_API':
             logger.info("Обнаружено изменение настройки API, переинициализация ServerController...")
             self._init_server_controller()
@@ -185,7 +173,6 @@ class MainController:
     def close_app(self):
         logger.info("Начинаем закрытие приложения...")
 
-        # 1) Остановить ASR и дождаться
         self.event_bus.emit(Events.Speech.STOP_SPEECH_RECOGNITION)
         start = time.time()
         try:
@@ -194,35 +181,28 @@ class MainController:
                 active = bool(mic_status and mic_status[0])
                 if not active:
                     break
-                if time.time() - start > 1.5:  # до ~1.5 сек
+                if time.time() - start > 1.5:
                     break
                 time.sleep(0.1)
         except Exception:
             pass
 
-        # 2) Остановить сервер
         try:
             self.event_bus.emit(Events.Server.STOP_SERVER)
         except Exception as e:
             logger.error(f"Ошибка при остановке сервера: {e}", exc_info=True)
 
-        # 3) Остановить захваты
         self.capture_controller.stop_screen_capture_thread()
         self.capture_controller.stop_camera_capture_thread()
 
-        # 4) Удалить аудиофайлы
         self.audio_controller.delete_all_sound_files()
 
-        # 5) Остановить общий event loop
         self.loop_controller.stop_loop()
 
-        # 6) Остановить EventBus (ThreadPoolExecutor и обработчик очереди)
         try:
             shutdown_event_bus()
         except Exception as e:
             logger.error(f"Ошибка при остановке EventBus: {e}", exc_info=True)
-
-        logger.info("Закрываемся")
 
         logger.info("Закрываемся")
 
@@ -267,12 +247,10 @@ class MainController:
                 self.settings.save_settings()
         else:
             logger.info("Нет запланированных обновлений g4f.")
-    
-    
-    
+
     def _on_schedule_g4f_update(self, event: Event):
         version = event.data.get('version', 'latest')
-        
+
         try:
             self.settings.set("G4F_TARGET_VERSION", version)
             self.settings.set("G4F_UPDATE_PENDING", True)
@@ -283,24 +261,23 @@ class MainController:
         except Exception as e:
             logger.error(f"Ошибка при сохранении настроек для запланированного обновления: {e}", exc_info=True)
             return False
-    
+
     def _on_request_tg_code(self, event: Event):
         code_future = event.data.get('future')
         if code_future:
             self.event_bus.emit("show_tg_code_dialog", {'future': code_future})
-    
+
     def _on_request_tg_password(self, event: Event):
         password_future = event.data.get('future')
         if password_future:
             self.event_bus.emit("show_tg_password_dialog", {'future': password_future})
-    
+
     def _on_show_loading_popup(self, event: Event):
         message = event.data.get('message', 'Loading...')
         self.event_bus.emit("display_loading_popup", {"message": message})
-    
+
     def _on_close_loading_popup(self, event: Event):
         self.event_bus.emit("hide_loading_popup")
 
     def _on_set_dialog_active(self, event: Event):
         self.dialog_active = event.data.get('active', False)
-    
