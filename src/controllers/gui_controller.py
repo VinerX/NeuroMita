@@ -49,10 +49,10 @@ class GuiController:
         self.model_event_controller = ModelEventController(main_controller, view)
         self.view_event_controller = ViewEventController(main_controller, view)
         self.voice_model_gui_controller = VoiceModelGuiController(main_controller, view)
+
         self.asr_events_controller = AsrEventsController(main_controller, view)
         self.asr_glossary_controller = AsrGlossaryGuiController(main_controller, view)
         self.install_gui_controller = InstallGuiController(main_controller, view)
-
         self.window_manager_controller = WindowManagerController(main_controller, view)
 
         self.protocol_pipeline_gui_controller = ProtocolPipelineGuiController(main_controller, view)

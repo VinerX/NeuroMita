@@ -135,7 +135,7 @@ class EventBus:
             subscribers = self._get_active_subscribers(event_name)
 
         if not subscribers:
-            logger.warning(f"emit_and_wait: No subscribers for event '{event_name}'")
+            logger.debug(f"emit_and_wait: No subscribers for event '{event_name}'")
             return results
 
         for subscriber in subscribers:

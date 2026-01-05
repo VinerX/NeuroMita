@@ -22,13 +22,17 @@ class VoiceModelGuiController(BaseController):
         self.view.window_manager.set_dialog_on_ready("voice_models", self._on_voice_models_dialog_ready)
 
     def subscribe_to_events(self):
-        # legacy compatibility: старые места могут продолжать эмитить этот event
         self.event_bus.subscribe(Events.Audio.OPEN_VOICE_MODEL_SETTINGS_DIALOG, self._on_legacy_open_voice_models, weak=False)
 
         self.event_bus.subscribe(Events.VoiceModel.INSTALL_MODEL, self._on_install_model, weak=False)
         self.event_bus.subscribe(Events.VoiceModel.UNINSTALL_MODEL, self._on_uninstall_model, weak=False)
         self.event_bus.subscribe(Events.VoiceModel.SAVE_SETTINGS, self._on_save_settings, weak=False)
         self.event_bus.subscribe(Events.VoiceModel.CLOSE_DIALOG, self._on_close_dialog, weak=False)
+
+        self.event_bus.subscribe(Events.VoiceModel.MODEL_INSTALL_STARTED, self._on_install_started, weak=False)
+        self.event_bus.subscribe(Events.VoiceModel.MODEL_INSTALL_FINISHED, self._on_install_finished, weak=False)
+        self.event_bus.subscribe(Events.VoiceModel.MODEL_UNINSTALL_STARTED, self._on_uninstall_started, weak=False)
+        self.event_bus.subscribe(Events.VoiceModel.MODEL_UNINSTALL_FINISHED, self._on_uninstall_finished, weak=False)
 
         self.event_bus.subscribe(Events.VoiceModel.UPDATE_DESCRIPTION, self._on_update_description, weak=False)
         self.event_bus.subscribe(Events.VoiceModel.CLEAR_DESCRIPTION, self._on_clear_description, weak=False)
@@ -63,7 +67,6 @@ class VoiceModelGuiController(BaseController):
     def _on_voice_models_dialog_ready(self, dialog, payload: dict):
         self._dialog = dialog
         self._attach_view_to_dialog(dialog)
-
         if self._vm_view:
             QTimer.singleShot(0, self._vm_view.refresh_all)
 
@@ -79,15 +82,6 @@ class VoiceModelGuiController(BaseController):
         loop.exec()
         return bool(holder.get("answer"))
 
-    def _create_action_window(self, title: str, status: str):
-        if not self._vm_view:
-            return None
-        win_holder = {}
-        win_loop = QEventLoop()
-        self._vm_view.create_voice_action_window_signal.emit(title, status, win_holder, win_loop)
-        win_loop.exec()
-        return win_holder.get("window")
-
     def _on_install_model(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
         model_id = data.get("model_id")
@@ -98,9 +92,6 @@ class VoiceModelGuiController(BaseController):
         if backend is None:
             logger.error("VoiceModelGuiController: backend VoiceModelController не инициализирован.")
             return
-
-        if self._vm_view:
-            self._vm_view.install_started_signal.emit(model_id)
 
         try:
             models = self.event_bus.emit_and_wait(Events.VoiceModel.GET_MODEL_DATA, timeout=1.0)
@@ -126,37 +117,13 @@ class VoiceModelGuiController(BaseController):
 
             proceed = self._ask_question_in_vm_view(_("Предупреждение", "Warning"), message)
             if not proceed:
-                if self._vm_view:
-                    self._vm_view.install_finished_signal.emit({"model_id": model_id, "success": False})
                 return
 
-        progress_cb = data.get("progress_callback")
-        status_cb = data.get("status_callback")
-        log_cb = data.get("log_callback")
-
-        success = False
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Audio.LOCAL_INSTALL_MODEL,
-                {"model_id": model_id, "progress_callback": progress_cb, "status_callback": status_cb, "log_callback": log_cb},
-                timeout=7200000.0
-            )
-            success = bool(res and res[0])
-        except Exception as e:
-            logger.error(f"INSTALL exception for {model_id}: {e}", exc_info=True)
-            success = False
-
-        try:
-            backend.reload()
-            backend.save_installed_models_list()
-        except Exception:
-            pass
-
-        if self._vm_view:
-            self._vm_view.install_finished_signal.emit({"model_id": model_id, "success": success})
-
-        if success:
-            self._after_models_changed()
+        backend.start_install(
+            str(model_id),
+            with_ui=bool(data.get("with_ui", True)),
+            timeout_sec=float(data.get("timeout_sec", 3600.0) or 3600.0),
+        )
 
     def _on_uninstall_model(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
@@ -202,10 +169,8 @@ class VoiceModelGuiController(BaseController):
 
         message = _(
             f"Вы уверены, что хотите удалить модель '{model_name}'?\n\n"
-            "Будут удалены основной пакет модели и зависимости, не используемые другими моделями (кроме g4f).\n\n"
             "Это действие необратимо!",
             f"Are you sure you want to uninstall the model '{model_name}'?\n\n"
-            "The main model package and dependencies not used by other models (except g4f) will be removed.\n\n"
             "This action is irreversible!"
         )
 
@@ -213,43 +178,40 @@ class VoiceModelGuiController(BaseController):
         if not confirmed:
             return
 
-        window = self._create_action_window(
-            _(f"Удаление {model_name}", f"Uninstalling {model_name}"),
-            _(f"Удаление {model_name}...", f"Uninstalling {model_name}...")
+        backend.start_uninstall(
+            str(model_id),
+            with_ui=bool(data.get("with_ui", True)),
+            timeout_sec=float(data.get("timeout_sec", 3600.0) or 3600.0),
         )
 
-        __, status_cb, log_cb = window.get_threadsafe_callbacks() if window else (None, None, None)
+    def _on_install_started(self, event: Event):
+        if not self._vm_view:
+            return
+        model_id = (event.data or {}).get("model_id")
+        if model_id:
+            self._vm_view.install_started_signal.emit(str(model_id))
 
-        if self._vm_view:
-            self._vm_view.uninstall_started_signal.emit(model_id)
+    def _on_install_finished(self, event: Event):
+        if not self._vm_view:
+            return
+        payload = event.data or {}
+        self._vm_view.install_finished_signal.emit(payload)
+        if bool(payload.get("success")):
+            self._after_models_changed()
 
-        success = False
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Audio.LOCAL_UNINSTALL_MODEL,
-                {"model_id": model_id, "status_callback": status_cb, "log_callback": log_cb},
-                timeout=600.0
-            )
-            success = bool(res and res[0])
-        except Exception as e:
-            logger.error(f"UNINSTALL exception for {model_id}: {e}", exc_info=True)
-            success = False
+    def _on_uninstall_started(self, event: Event):
+        if not self._vm_view:
+            return
+        model_id = (event.data or {}).get("model_id")
+        if model_id:
+            self._vm_view.uninstall_started_signal.emit(str(model_id))
 
-        try:
-            backend.reload()
-            backend.save_installed_models_list()
-        except Exception:
-            pass
-
-        if self._vm_view:
-            self._vm_view.uninstall_finished_signal.emit({"model_id": model_id, "success": success})
-
-        if window:
-            if status_cb:
-                status_cb(_("Удаление завершено!", "Uninstallation complete!") if success else _("Удаление завершено с ОШИБКОЙ!", "Uninstallation failed!"))
-            QTimer.singleShot(3000 if success else 5000, window.close)
-
-        if success:
+    def _on_uninstall_finished(self, event: Event):
+        if not self._vm_view:
+            return
+        payload = event.data or {}
+        self._vm_view.uninstall_finished_signal.emit(payload)
+        if bool(payload.get("success")):
             self._after_models_changed()
 
     def _on_save_settings(self, event: Event):
@@ -264,6 +226,7 @@ class VoiceModelGuiController(BaseController):
             logger.error(f"Ошибка сохранения настроек локальных моделей: {e}", exc_info=True)
 
         self._after_models_changed()
+        QTimer.singleShot(0, self._vm_view.refresh_all)
 
     def _on_close_dialog(self, event: Event):
         self._on_save_settings(event)
@@ -271,7 +234,6 @@ class VoiceModelGuiController(BaseController):
 
     def _after_models_changed(self):
         self.event_bus.emit(Events.Audio.REFRESH_VOICE_MODULES)
-
         if self.view and hasattr(self.view, "update_local_voice_combobox"):
             QTimer.singleShot(0, self.view.update_local_voice_combobox)
 
@@ -338,6 +300,11 @@ class VoiceModelGuiController(BaseController):
         return self._vm_view.get_section_values(model_id)
 
     def _on_show_vc_redist_dialog(self, event: Event):
+        wm = getattr(self.view, "window_manager", None) if self.view else None
+        if wm is not None:
+            res = wm.show_dialog_blocking("vc_redist_dialog", {})
+            return res.get("choice", "close")
+        # fallback
         if not self._vm_view:
             return "close"
         holder = {}
@@ -345,9 +312,14 @@ class VoiceModelGuiController(BaseController):
         return holder.get("choice", "close")
 
     def _on_show_triton_dialog(self, event: Event):
+        deps = event.data or {}
+        wm = getattr(self.view, "window_manager", None) if self.view else None
+        if wm is not None:
+            res = wm.show_dialog_blocking("triton_deps_dialog", {"dependencies_status": deps})
+            return res.get("choice", "skip")
+        # fallback
         if not self._vm_view:
             return "skip"
-        deps = event.data or {}
         holder = {}
         self._vm_view.open_triton_dialog.emit(deps, holder)
         return holder.get("choice", "skip")

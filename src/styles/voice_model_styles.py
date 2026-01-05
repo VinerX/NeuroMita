@@ -65,6 +65,16 @@ QFrame#SettingWidget QComboBox::drop-down {
     margin: 0px;
 }
 
+QFrame#SettingWidget QLineEdit[dirty="true"],
+QFrame#SettingWidget QComboBox[dirty="true"] {
+    border: 1px solid rgba(230, 200, 80, 0.85);
+    background-color: rgba(230, 200, 80, 0.08);
+}
+
+QFrame#ModelPanel QPushButton#PrimaryButton[dirty="true"] {
+    border: 1px solid rgba(230, 200, 80, 0.85);
+}
+
 /* Чекбоксы */
 QFrame#SettingWidget QCheckBox { 
     min-height: 28px;
