@@ -201,6 +201,20 @@ class ChatGUI(QMainWindow):
                 "hide_on_close": True,
                 "modal": False,
             },
+
+            # Blocking dialogs (used by VoiceModelGuiController via show_dialog_blocking)
+            "vc_redist_dialog": {
+                "factory": self._factory_vc_redist_dialog,
+                "singleton": False,
+                "hide_on_close": False,
+                "modal": True,
+            },
+            "triton_deps_dialog": {
+                "factory": self._factory_triton_deps_dialog,
+                "singleton": False,
+                "hide_on_close": False,
+                "modal": True,
+            },
         }
 
     def _connect_signals(self):
@@ -287,6 +301,15 @@ class ChatGUI(QMainWindow):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         return dialog
+    
+    def _factory_vc_redist_dialog(self, parent, payload: dict):
+        from ui.windows.voice_action_windows import VCRedistWarningDialog
+        return VCRedistWarningDialog(parent=parent)
+
+    def _factory_triton_deps_dialog(self, parent, payload: dict):
+        from ui.windows.voice_action_windows import TritonDependenciesDialog
+        deps = payload.get("dependencies_status") or payload.get("deps") or {}
+        return TritonDependenciesDialog(parent=parent, dependencies_status=deps)
 
     def _create_dialog_for_voice_model(self, data):
         if not hasattr(self, "window_manager") or self.window_manager is None:

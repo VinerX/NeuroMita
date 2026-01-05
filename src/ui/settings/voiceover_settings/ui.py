@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from ui.gui_templates import create_setting_widget, create_section_header
 from utils import getTranslationVariant as _
+from core.events import get_event_bus, Events
 
 
 def build_voiceover_settings_ui(self, parent_layout):
@@ -131,18 +132,19 @@ def build_voiceover_settings_ui(self, parent_layout):
     # Остальные локальные настройки
     local_config = [
         {'label': _("Язык локальной озвучки", "Local Voice Language"),
-         'key': "VOICE_LANGUAGE", 'type': 'combobox',
-         'options': ["ru", "en"], 'default': "ru",
-         'command': getattr(self, 'on_voice_language_selected', None),
-         'widget_name': 'voice_language_var_combobox'},
+        'key': "VOICE_LANGUAGE", 'type': 'combobox',
+        'options': ["ru", "en"], 'default': "ru",
+        'command': getattr(self, 'on_voice_language_selected', None),
+        'widget_name': 'voice_language_var_combobox'},
         {'label': _('Автозагрузка модели', 'Autoload model'),
-         'key': 'LOCAL_VOICE_LOAD_LAST', 'type': 'checkbutton',
-         'default_checkbutton': False},
+        'key': 'LOCAL_VOICE_LOAD_LAST', 'type': 'checkbutton',
+        'default_checkbutton': False},
         {'label': _('Озвучивать в чате', 'Voiceover in chat'),
-         'key': 'VOICEOVER_LOCAL_CHAT', 'type': 'checkbutton',
-         'default_checkbutton': True},
+        'key': 'VOICEOVER_LOCAL_CHAT', 'type': 'checkbutton',
+        'default_checkbutton': True},
         {'label': _('Управление моделями', 'Manage Models'),
-         'type': 'button', 'command': getattr(self, 'open_local_model_installation_window', None)}
+        'type': 'button',
+        'command': (lambda: get_event_bus().emit(Events.GUI.SHOW_WINDOW, {"window_id": "voice_models", "payload": {}}))}
     ]
 
     if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1":

@@ -13,7 +13,6 @@ from PyQt6.QtGui import QCursor
 from styles.voice_model_styles import get_stylesheet
 from utils import getTranslationVariant as _
 from core.events import get_event_bus, Events
-from ui.windows.voice_action_windows import VoiceInstallationWindow
 from ui.windows.voice_action_windows import VCRedistWarningDialog, TritonDependenciesDialog  # NEW
 
 from main_logger import logger
@@ -40,9 +39,9 @@ class ModelDetailView(QWidget):
         self.gpu_vendor = None
         self.gpu_name = None
         self.cuda_devices = []
-        self.rtx_check_func = None  # функция, возвращающая bool
+        self.rtx_check_func = None
 
-        # Хранилище виджетов настроек (key -> {widget, type})
+        self._settings_changed_cb = None
         self.setting_widgets = {}
 
         main = QVBoxLayout(self)
@@ -235,41 +234,49 @@ class ModelDetailView(QWidget):
             except Exception:
                 pass
 
+    def set_settings_changed_callback(self, cb):
+        self._settings_changed_cb = cb
+
     def _add_setting_row(self, key: str, label_text: str, widget_type: str, options: dict, locked: bool = False):
-        # строка-обертка, чтобы проще управлять отступами
         row_frame = QFrame()
         row_frame.setObjectName("SettingRow")
         row = QHBoxLayout(row_frame)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
 
-        # Левая «пилюля» с названием
         label_frame = QFrame()
         label_frame.setObjectName("SettingLabel")
-        label_frame.setFixedHeight(28)  # Фиксированная высота
+        label_frame.setFixedHeight(28)
         label_layout = QHBoxLayout(label_frame)
-        label_layout.setContentsMargins(10, 0, 10, 0)  # без вертикального padding
+        label_layout.setContentsMargins(10, 0, 10, 0)
         lab = QLabel(label_text)
         if locked:
             lab.setStyleSheet("color: #888888;")
         label_layout.addWidget(lab, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        # Правая часть с контролом
         widget_frame = QFrame()
         widget_frame.setObjectName("SettingWidget")
-        widget_frame.setFixedHeight(28)  # Фиксированная высота, такая же как у лейбла
+        widget_frame.setFixedHeight(28)
         widget_layout = QHBoxLayout(widget_frame)
-        widget_layout.setContentsMargins(0, 0, 0, 0)  # минимальные отступы для центрирования
+        widget_layout.setContentsMargins(0, 0, 0, 0)
         widget_layout.setSpacing(0)
 
         w = None
         current = options.get("default")
+
+        def notify_changed():
+            if callable(self._settings_changed_cb):
+                try:
+                    self._settings_changed_cb(str(key))
+                except Exception:
+                    pass
 
         if widget_type == "entry":
             w = QLineEdit()
             w.setEnabled(not locked)
             if current is not None:
                 w.setText(str(current))
+            w.textChanged.connect(lambda *_: notify_changed())
             widget_layout.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)
 
         elif widget_type == "combobox":
@@ -285,6 +292,7 @@ class ModelDetailView(QWidget):
                     w.setCurrentIndex(idx)
                 except ValueError:
                     w.setCurrentIndex(0 if values else -1)
+            w.currentTextChanged.connect(lambda *_: notify_changed())
             widget_layout.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)
 
         elif widget_type == "checkbutton":
@@ -296,10 +304,10 @@ class ModelDetailView(QWidget):
             elif current is not None:
                 val = bool(current)
             w.setChecked(val)
+            w.toggled.connect(lambda *_: notify_changed())
             widget_layout.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)
             widget_layout.addStretch()
 
-        # Hover-описания
         self._attach_hover_handlers(
             [label_frame, lab, widget_frame] + ([w] if w is not None else []),
             key
@@ -672,6 +680,10 @@ class VoiceModelSettingsView(QWidget):
         self.detail = None
 
         self._initialized = False
+        self.btn_save = None
+        self._baseline_values: dict[str, object] = {}
+        self._dirty_keys: set[str] = set()
+
 
         self._build_ui()
 
@@ -787,6 +799,7 @@ class VoiceModelSettingsView(QWidget):
         right_l.setContentsMargins(0, 0, 0, 0)
 
         self.detail = ModelDetailView()
+        self.detail.set_settings_changed_callback(self._on_current_setting_changed)
         # description hover callbacks
         self.detail.set_description_callbacks(
             lambda key: self.event_bus.emit(Events.VoiceModel.UPDATE_DESCRIPTION, key),
@@ -827,11 +840,11 @@ class VoiceModelSettingsView(QWidget):
         bottom.addStretch()
         btn_close = QPushButton(_("Закрыть", "Close"))
         btn_close.clicked.connect(self._on_close_clicked)
-        btn_save = QPushButton(_("Сохранить", "Save"))
-        btn_save.setObjectName("PrimaryButton")
-        btn_save.clicked.connect(self._on_save_clicked)
+        self.btn_save = QPushButton(_("Сохранить", "Save"))
+        self.btn_save.setObjectName("PrimaryButton")
+        self.btn_save.clicked.connect(self._on_save_clicked)
         bottom.addWidget(btn_close)
-        bottom.addWidget(btn_save)
+        bottom.addWidget(self.btn_save)
         root.addLayout(bottom)
 
     # ---------- Data init ----------
@@ -1013,11 +1026,10 @@ class VoiceModelSettingsView(QWidget):
         if not item:
             return
         model_id = item.data(Qt.ItemDataRole.UserRole)
-        # верхний блок оставляем как “подсказку по ховеру”
         self._on_clear_description()
-        # детальная панель справа показывает текст описания модели (абзац)
         self.detail.set_installed_set(self.installed_models)
         self.detail.update_for_model(model_id, self.models_data, self._get_model_description(model_id))
+        self._capture_baseline()
 
     def _on_item_hovered(self, item: QListWidgetItem):
         model_id = item.data(Qt.ItemDataRole.UserRole)
@@ -1030,27 +1042,23 @@ class VoiceModelSettingsView(QWidget):
         if not model_data:
             return
 
-        model_name = model_data.get("name", model_id)
-        window = VoiceInstallationWindow(
-            self.window() if self.window() else self,
-            _(f"Скачивание {model_name}", f"Downloading {model_name}"),
-            _("Подготовка...", "Preparing...")
-        )
-        window.show()
-
         self.event_bus.emit(Events.VoiceModel.INSTALL_MODEL, {
             'model_id': model_id,
-            'progress_callback': window.update_progress,
-            'status_callback': window.update_status,
-            'log_callback': window.update_log,
-            'window': window
+            'with_ui': True
         })
 
     def _on_uninstall_clicked(self, model_id: str):
-        self.event_bus.emit(Events.VoiceModel.UNINSTALL_MODEL, {'model_id': model_id})
+        self.event_bus.emit(Events.VoiceModel.UNINSTALL_MODEL, {
+            'model_id': model_id,
+            'with_ui': True
+        })
 
     def _on_save_clicked(self):
+        if not self._dirty_keys:
+            return
+        logger.info(f"Voice settings changed: {len(self._dirty_keys)} keys: {sorted(self._dirty_keys)}")
         self.event_bus.emit(Events.VoiceModel.SAVE_SETTINGS)
+        QTimer.singleShot(0, self._capture_baseline)
 
     def _on_close_clicked(self):
         self.event_bus.emit(Events.VoiceModel.CLOSE_DIALOG)
@@ -1176,3 +1184,66 @@ class VoiceModelSettingsView(QWidget):
         dlg.exec()
         result_holder["choice"] = dlg.get_choice()  # 'continue' | 'skip'
         
+    # ---- extra ---
+    def _current_model_id(self) -> str | None:
+        cur = self.list.currentItem() if self.list else None
+        if not cur:
+            return None
+        mid = cur.data(Qt.ItemDataRole.UserRole)
+        return str(mid) if mid else None
+
+    def _capture_baseline(self):
+        mid = self._current_model_id()
+        if not mid:
+            self._baseline_values = {}
+            self._dirty_keys = set()
+            self._update_save_state()
+            return
+
+        self._baseline_values = self.detail.get_current_settings_values() if self.detail else {}
+        self._dirty_keys = set()
+        self._apply_dirty_to_widgets()
+        self._update_save_state()
+
+    def _recompute_dirty(self):
+        cur = self.detail.get_current_settings_values() if self.detail else {}
+        dirty = set()
+        for k, v in cur.items():
+            if str(self._baseline_values.get(k, "")) != str(v):
+                dirty.add(str(k))
+        self._dirty_keys = dirty
+        self._apply_dirty_to_widgets()
+        self._update_save_state()
+
+    def _apply_dirty_to_widgets(self):
+        if not self.detail:
+            return
+        for key, d in (self.detail.setting_widgets or {}).items():
+            w = d.get("widget")
+            if not w:
+                continue
+            is_dirty = str(key) in self._dirty_keys
+            w.setProperty("dirty", "true" if is_dirty else "false")
+            try:
+                w.style().unpolish(w)
+                w.style().polish(w)
+            except Exception:
+                pass
+
+        if self.btn_save:
+            self.btn_save.setProperty("dirty", "true" if self._dirty_keys else "false")
+            try:
+                self.btn_save.style().unpolish(self.btn_save)
+                self.btn_save.style().polish(self.btn_save)
+            except Exception:
+                pass
+
+    def _update_save_state(self):
+        if not self.btn_save:
+            return
+        n = len(self._dirty_keys)
+        self.btn_save.setEnabled(n > 0)
+        self.btn_save.setText(_("Сохранить", "Save") + (f" ({n})" if n > 0 else ""))
+
+    def _on_current_setting_changed(self, key: str):
+        self._recompute_dirty()
