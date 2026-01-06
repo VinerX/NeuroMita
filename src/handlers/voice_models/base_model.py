@@ -8,7 +8,7 @@ class IVoiceModel(abc.ABC):
     Определяет контракт, которому должны следовать все классы моделей.
     """
 
-    def __init__(self, parent: 'LocalVoice', model_id: str):
+    def __init__(self, parent: "LocalVoice", model_id: str):
         self.parent = parent
         self.model_id = model_id
         self.initialized = False
@@ -17,12 +17,7 @@ class IVoiceModel(abc.ABC):
     @abc.abstractmethod
     def get_display_name(self) -> str:
         """Возвращает имя модели для отображения пользователю."""
-        pass
-
-    @abc.abstractmethod
-    def is_installed(self, model_id) -> bool:
-        """Проверяет, установлены ли необходимые пакеты для модели."""
-        pass
+        raise NotImplementedError
 
     @abc.abstractmethod
     def initialize(self, init: bool = False) -> bool:
@@ -30,7 +25,7 @@ class IVoiceModel(abc.ABC):
         Инициализирует модель, загружая ее в память и подготавливая к работе.
         :param init: Выполнить ли тестовый "прогревочный" прогон.
         """
-        pass
+        raise NotImplementedError
 
     @abc.abstractmethod
     async def voiceover(self, text: str, character: Optional[Any] = None, **kwargs) -> Optional[str]:
@@ -41,14 +36,14 @@ class IVoiceModel(abc.ABC):
         :param kwargs: Дополнительные параметры.
         :return: Путь к сгенерированному аудиофайлу или None в случае ошибки.
         """
-        pass
+        raise NotImplementedError
 
     @abc.abstractmethod
     def get_model_configs(self) -> List[Dict[str, Any]]:
         """Возвращает конфигурации моделей, которые обрабатывает данный класс."""
-        pass
+        raise NotImplementedError
 
-    def cleanup_state(self):
+    def cleanup_state(self) -> None:
         """Сбрасывает состояние инциализации модели."""
         self.initialized = False
         self.initialized_for = None

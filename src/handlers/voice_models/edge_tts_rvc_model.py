@@ -205,8 +205,6 @@ class EdgeTTS_RVC_Model(IVoiceModel):
         self._silero_available = False
         self.events = get_event_bus()
 
-        self._load_module()
-
     MODEL_CONFIGS = [
         {
             "id": "low",
@@ -386,14 +384,6 @@ class EdgeTTS_RVC_Model(IVoiceModel):
 
     def get_display_name(self) -> str:
         return "EdgeTTS+RVC / Silero+RVC"
-
-    def is_installed(self, model_id) -> bool:
-        if self.tts_rvc_module is None:
-            self._load_module()
-        mid = str(model_id)
-        if mid == "low+":
-            return bool(self.tts_rvc_module is not None and self._silero_available)
-        return bool(self.tts_rvc_module is not None)
 
     def cleanup_state(self):
         super().cleanup_state()

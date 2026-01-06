@@ -85,21 +85,46 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
     def apply_settings(self, settings: dict):
         dev = settings.get("device")
         mdl = settings.get("model")
-        if dev or mdl:
-            self.set_options(device=dev or self.gigaam_device, model=mdl or self.gigaam_model)
+        if dev is not None or mdl is not None:
+            self.set_options(device=dev, model=mdl)
 
     def set_options(self, device: str, model: str = None, model_path: str = None):
-        self.gigaam_device = (device or self.gigaam_device).strip().lower()
-        if model:
-            self.gigaam_model = str(model).strip()
-        if model_path:
-            self.gigaam_model_path = str(model_path)
+        """
+        Идемпотентная установка опций.
 
-        # если модель уже загружена — сбрасываем, чтобы переинициализировать на другом устройстве
-        if self._model is not None:
-            self.logger.info("Настройки изменены — модель будет перезагружена при следующем init()")
-            self._model = None
-            self._is_initialized = False
+        Важно: НЕ сбрасываем уже загруженную модель, если эффективные значения не изменились.
+        Это защищает от повторных apply_settings() (например, из UI/индикаторов),
+        которые раньше обнуляли self._model и self._is_initialized.
+        """
+        old_device = (self.gigaam_device or "auto").strip().lower()
+        old_model = str(self.gigaam_model or "v3_rnnt").strip()
+        old_path = str(self.gigaam_model_path or "").strip()
+
+        new_device = old_device
+        if device is not None:
+            new_device = str(device or old_device).strip().lower()
+
+        new_model = old_model
+        if model is not None:
+            new_model = str(model or old_model).strip()
+
+        new_path = old_path
+        if model_path is not None:
+            new_path = str(model_path or old_path).strip()
+
+        changed = (new_device != old_device) or (new_model != old_model) or (new_path != old_path)
+
+        # Обновляем поля только если реально изменились
+        if changed:
+            self.gigaam_device = new_device
+            self.gigaam_model = new_model
+            self.gigaam_model_path = new_path
+
+            # Сбрасываем только если модель уже загружена или инициализация была отмечена
+            if self._model is not None or self._is_initialized:
+                self.logger.info("Настройки изменены — модель будет перезагружена при следующем init()")
+                self._model = None
+                self._is_initialized = False
 
     # ---------- naming / paths ----------
     def _normalized_ckpt_name(self) -> str:

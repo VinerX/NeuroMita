@@ -586,24 +586,6 @@ class FishSpeechModel(IVoiceModel):
             return "Fish Speech+ + RVC"
         return "Fish Speech"
 
-    def is_installed(self, model_id) -> bool:
-        self._load_module()
-        mode = str(model_id)
-
-        if self.fish_speech_module is None:
-            return False
-
-        if mode in ("medium+", "medium+low"):
-            try:
-                import triton  # noqa: F401
-            except Exception:
-                return False
-
-        if mode == "medium+low":
-            if self.rvc_handler is None or not self.rvc_handler.is_installed("low"):
-                return False
-
-        return True
     
     def cleanup_state(self):
         super().cleanup_state()

@@ -73,7 +73,7 @@ class MainController:
         self.install_controller = InstallController(script_path=r"libs\python\python.exe", libs_path="Lib")
         logger.notify("InstallController успешно инициализирован.")
 
-        self.local_voice_controller = LocalVoiceController(self)
+        self.local_voice_controller = LocalVoiceController()
         logger.notify("LocalVoiceController успешно инициализирован.")
 
         self.task_controller = TaskController()
@@ -143,13 +143,8 @@ class MainController:
             logger.notify("GuiController успешно инициализирован.")
             self.settings_controller.load_api_settings(False)
 
-            # важный "пинок" для UI-логики озвучки (в т.ч. TG autoconnect из VoiceoverGuiController)
             self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
 
-            # Никаких прямых start_silero_async тут больше нет.
-            # TelegramController сам решит запускаться по:
-            # - Events.Telegram.START_SILERO (кнопка/автоконнект из GUI)
-            # - Events.Core.SETTING_CHANGED (если TG_AUTOCONNECT включен)
 
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.Model.SCHEDULE_G4F_UPDATE, self._on_schedule_g4f_update, weak=False)
