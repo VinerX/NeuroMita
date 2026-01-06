@@ -3,7 +3,7 @@
 import os
 
 from PyQt6.QtWidgets import QMessageBox
-from PyQt6.QtCore import QUrl, Qt
+from PyQt6.QtCore import QUrl, Qt, QTimer
 from PyQt6.QtGui import QDesktopServices
 
 from utils import getTranslationVariant as _
