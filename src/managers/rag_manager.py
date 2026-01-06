@@ -354,13 +354,7 @@ class RAGManager:
         decay_rate = self._get_float_setting("RAG_TIME_DECAY_RATE", 0.15)
         detailed_logs = self._get_bool_setting("RAG_DETAILED_LOGS", True)
 
-        include_forgotten = self._get_bool_setting("RAG_INCLUDE_FORGOTTEN", False)
-        forgotten_penalty = self._get_float_setting("RAG_FORGOTTEN_PENALTY", -0.15)  # отрицательный = реже всплывает
 
-        # Как искать воспоминания:
-        # - "forgotten" (по умолчанию): только is_forgotten=1 (чтобы не дублировать активную память в промпте)
-        # - "active": только is_forgotten=0
-        # - "all": и те, и те (может давать дубли)
         memory_mode = str(SettingsManager.get("RAG_MEMORY_MODE", "forgotten") or "forgotten").strip().lower()
 
         noise_max = self._get_float_setting("RAG_NOISE_MAX", 0.05)

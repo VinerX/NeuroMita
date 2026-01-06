@@ -881,7 +881,6 @@ class ModelController:
             try:
                 rag = RAGManager(char_id)
                 rag_limit = int(self.settings.get("RAG_MAX_RESULTS", 8))
-                rag_limit = max(1, min(30, rag_limit))
                 rag_thr = float(self.settings.get("RAG_SIM_THRESHOLD", 0.4))
                 results = rag.search_relevant(str(final_input), limit=rag_limit, threshold=rag_thr)
 
