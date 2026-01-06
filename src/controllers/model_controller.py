@@ -668,7 +668,7 @@ class ModelController:
 
 
         # [RAG INTEGRATION] Внедрение контекста из памяти
-        if self.settings.get("RAG_ENABLED", False):
+        if bool(self.settings.get("RAG_ENABLED", False)) and event_type!="compress":
             system_input = self.process_rag(char_id, system_input, user_input)
 
         if event_type == "compress":

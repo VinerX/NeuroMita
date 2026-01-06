@@ -353,13 +353,13 @@ class RAGManager:
         K4 = self._get_float_setting("RAG_WEIGHT_ENTITY", 0.5)
         decay_rate = self._get_float_setting("RAG_TIME_DECAY_RATE", 0.15)
         detailed_logs = self._get_bool_setting("RAG_DETAILED_LOGS", True)
-
+        tail = int(SettingsManager.get("RAG_QUERY_TAIL_MESSAGES",2))
 
         memory_mode = str(SettingsManager.get("RAG_MEMORY_MODE", "forgotten") or "forgotten").strip().lower()
 
         noise_max = self._get_float_setting("RAG_NOISE_MAX", 0.05)
 
-        query_text = self._build_query_from_recent(query, tail=2)
+        query_text = self._build_query_from_recent(query, tail=tail)
         query_text = self.rag_clean_text(query_text)
         query_vec = self._get_embedding(query_text)
         if query_vec is None:
@@ -434,12 +434,12 @@ class RAGManager:
             return min(0.2, b)  # небольшой потолок
 
         # 1) Memories
-        if SettingsManager.get("RAG_SEARCH_MEMORY",False):
+        if bool(SettingsManager.get("RAG_SEARCH_MEMORY",False)):
             self.find_forgotten_memories(K1, K2, K3, K4, cursor, decay_rate, entity_bonus_from_participants, memory_mode,
                                          noise_max, now, prio_bonus, query_vec, scored, threshold)
 
         # 2) History
-        if SettingsManager.get("RAG_SEARCH_HISTORY",False):
+        if bool(SettingsManager.get("RAG_SEARCH_HISTORY",False)):
             self.find_forgotten_histories(K1, K2, K4, cursor, decay_rate, entity_bonus_history, noise_max, now, query_vec,
                                           scored, threshold)
 
