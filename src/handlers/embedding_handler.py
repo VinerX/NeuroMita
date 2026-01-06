@@ -1,8 +1,10 @@
 # Файл с моделью для эмбеддингов
+from __future__ import annotations
 
 from utils.gpu_utils import check_gpu_provider
 from utils.pip_installer import PipInstaller
 import sys, os
+import importlib.util
 
 current_gpu = check_gpu_provider()
 
@@ -24,6 +26,10 @@ _ = getTranslationVariant
 
 from main_logger import logger
 
+def _module_available(name: str) -> bool:
+    """Проверка наличия модуля без тяжёлого импорта."""
+    return importlib.util.find_spec(name) is not None
+
 try:
     pip_installer = PipInstaller(
         script_path=r"libs\python\python.exe",
@@ -35,9 +41,7 @@ except Exception as e:
     logger.error(f"Не удалось инициализировать PipInstaller: {e}", exc_info=True)
     pip_installer = None
 
-try:
-    import torch
-except ImportError:
+if not _module_available("torch"):
     if pip_installer == None:
         raise Exception("PipInstaller не инициализирован - установку нельзя осуществить")
     if current_gpu in ["NVIDIA"]:
@@ -55,23 +59,12 @@ except ImportError:
     if not success:
         raise Exception("Не удалось установить torch+cuda12.8")
 
-    try:
-        import torch
-    except ImportError:
-        raise ImportError("Даже после установки TORCH - не получилось импортировать.")
-
-try:
-    from transformers import AutoModel, AutoTokenizer
-except ImportError:
+if not _module_available("transformers"):
     if pip_installer == None:
         raise Exception("PipInstaller не инициализирован - установку нельзя осуществить")
     success = pip_installer.install_package("transformers>=4.45.2", "Установка transformers>=4.45.2")
     if not success:
         raise Exception("Не удалось установить transformers>=4.45.2")
-    try:
-        from transformers import AutoModel, AutoTokenizer
-    except ImportError:
-        raise ImportError("Даже после установки TRANSFORMERS - не получилось импортировать.")
 
 from main_logger import logger
 import numpy as np
@@ -88,13 +81,15 @@ class EmbeddingModelHandler:
     """Управляет загрузкой модели Snowflake и получением эмбеддингов."""
 
     def __init__(self, model_name: str = MODEL_NAME):
+        import torch  # локальный импорт (ускоряет import модуля)
         self.model_name = model_name
         self.device = self._get_device()
         self.tokenizer, self.model = self._load_model()
         self.hidden_size = self.model.config.hidden_size  # Сохраняем размерность
 
-    def _get_device(self) -> torch.device:
+    def _get_device(self) -> "torch.device":
         """Определяет устройство для вычислений (CPU/GPU)."""
+        import torch  # локальный импорт
         logger.info("Проверка доступности CUDA (GPU):")
         if torch.cuda.is_available():
             cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
@@ -109,8 +104,11 @@ class EmbeddingModelHandler:
             logger.info("CUDA недоступна. Используется CPU.")
             return torch.device('cpu')
 
-    def _load_model(self) -> Tuple[AutoTokenizer, AutoModel]:
+    def _load_model(self) -> Tuple["AutoTokenizer", "AutoModel"]:
         """Загружает модель и токенизатор с указанными параметрами."""
+        import torch  # локальный импорт
+        from transformers import AutoModel, AutoTokenizer  # локальные импорты
+
         logger.info(f"Загрузка токенизатора и модели '{self.model_name}' на {self.device.type.upper()}...")
         logger.info(f"Модель будет сохранена в {checkpoints_dir}")
         start_time = time.time()
@@ -165,6 +163,7 @@ class EmbeddingModelHandler:
 
     def get_embedding(self, text: str, prefix: str = QUERY_PREFIX) -> Optional[np.ndarray]:
         """Получает нормализованный эмбеддинг для одного текста."""
+        import torch  # локальный импорт
         if not text:
             return None
         try:
@@ -193,6 +192,7 @@ class EmbeddingModelHandler:
         - сохраняет порядок
         - пустые/None -> None
         """
+        import torch  # локальный импорт
         if not texts:
             return []
 

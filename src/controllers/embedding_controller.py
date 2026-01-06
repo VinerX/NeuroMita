@@ -8,6 +8,7 @@ import numpy as np
 from core.events import get_event_bus, Events, Event
 from handlers.embedding_handler import EmbeddingModelHandler, QUERY_PREFIX
 from main_logger import logger
+from managers.settings_manager import SettingsManager
 
 
 def _resolve_event_name(fallback: str, *path: str) -> str:
@@ -38,8 +39,14 @@ class EmbeddingController:
     def __init__(self) -> None:
         self.event_bus = get_event_bus()
 
-        # Единый экземпляр handler создаётся здесь (а не в менеджерах)
-        self.handler = EmbeddingModelHandler()
+        # Проверяем, включен ли RAG глобально
+        self.handler: Optional[EmbeddingModelHandler]
+        if SettingsManager.get("RAG_ENABLED", True):
+            # Единый экземпляр handler создаётся здесь (а не в менеджерах)
+            self.handler = EmbeddingModelHandler()
+        else:
+            self.handler = None
+            logger.info("RAG is disabled in settings. EmbeddingModelHandler not loaded.")
 
         # Чтобы не дергать модель параллельно из разных потоков EventBus
         self._lock = Lock()
@@ -59,9 +66,18 @@ class EmbeddingController:
         prefix = data.get("prefix") or QUERY_PREFIX
         future = data.get("future")
 
+        handler = self.handler
+        if handler is None:
+            if future is not None:
+                try:
+                    future.set_result(None)
+                except Exception:
+                    pass
+            return None
+
         try:
             with self._lock:
-                vec = self.handler.get_embedding(text, prefix=prefix)
+                vec = handler.get_embedding(text, prefix=prefix)
 
             if future is not None:
                 try:
@@ -89,11 +105,20 @@ class EmbeddingController:
         batch_size = data.get("batch_size")  # optional
         future = data.get("future")
 
+        handler = self.handler
+        if handler is None:
+            if future is not None:
+                try:
+                    future.set_result([])
+                except Exception:
+                    pass
+            return []
+
         results: List[Optional[np.ndarray]] = []
         try:
             with self._lock:
                 for t in texts:
-                    results.append(self.handler.get_embedding(t or "", prefix=prefix))
+                    results.append(handler.get_embedding(t or "", prefix=prefix))
 
             if future is not None:
                 try:

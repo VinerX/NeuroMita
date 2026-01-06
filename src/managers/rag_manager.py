@@ -50,8 +50,6 @@ class RAGManager:
         self.character_id = character_id
         self.db = DatabaseManager()
 
-        # Важно: больше НЕ создаём EmbeddingModelHandler в __init__.
-        # Доступ к эмбеддингам — через EventBus (предпочтительно) с fallback на Singleton.
         self.event_bus = get_event_bus()
         self._history_cols = self._read_table_cols("history")
         self._mem_cols = self._read_table_cols("memories")
@@ -193,7 +191,7 @@ class RAGManager:
         1) Пытаемся получить эмбеддинг через EventBus (EmbeddingController).
         2) Если не вышло — fallback на Singleton EmbeddingModelHandler().
         """
-        if not text:
+        if not text or not SettingsManager.get("RAG_ENABLED", False):
             return None
 
         # Очистка от тегов
@@ -228,7 +226,7 @@ class RAGManager:
         1) EventBus batch (rag.get_embeddings) — меньше overhead и lock'ов.
         2) Fallback на ленивый singleton EmbeddingModelHandler, если EventBus недоступен.
         """
-        if not texts:
+        if not texts or not SettingsManager.get("RAG_ENABLED", False):
             return []
 
         cleaned: List[str] = []
@@ -442,7 +440,120 @@ class RAGManager:
             return min(0.2, b)  # небольшой потолок
 
         # 1) Memories
-        # ТВОЯ ЗАДУМКА: активные memories уже в промпте, поэтому RAG по умолчанию ищет только забытые.
+        if SettingsManager.get("RAG_SEARCH_MEMORY",False):
+            self.find_forgotten_memories(K1, K2, K3, K4, cursor, decay_rate, entity_bonus_from_participants, memory_mode,
+                                         noise_max, now, prio_bonus, query_vec, scored, threshold)
+
+        # 2) History
+        if SettingsManager.get("RAG_SEARCH_HISTORY",False):
+            self.find_forgotten_histories(K1, K2, K4, cursor, decay_rate, entity_bonus_history, noise_max, now, query_vec,
+                                          scored, threshold)
+
+        conn.close()
+
+        scored.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
+
+        # --- Detailed logging: Top 5 и Bottom 5
+        try:
+            if scored and detailed_logs:
+                def _clip(s: Any, n: int = 200) -> str:
+                    t = str(s or "").replace("\n", " ").strip()
+                    return (t[:n] + "…") if len(t) > n else t
+
+                sample_top = scored[:5]
+                sample_bottom = scored[-5:] if len(scored) > 5 else []
+
+                def _log_one(item: dict):
+                    dbg = item.get("_dbg") or {}
+                    src = item.get("source")
+                    rid = item.get("id")
+                    logger.info(
+                        f"[RAG] {src}:{rid} | Base:{dbg.get('sim'):.3f} | Time:{dbg.get('time'):.3f} "
+                        f"| Prio:{dbg.get('prio'):.3f} | Ent:{dbg.get('entity'):.3f} | Final:{dbg.get('final'):.3f} "
+                        f"| Content:\"{self.rag_clean_text(_clip(item.get('content')))}\""
+                    )
+
+                logger.info("[RAG] ---- TOP 5 ----")
+                for it in sample_top:
+                    _log_one(it)
+                if sample_bottom:
+                    logger.info("[RAG] ---- BOTTOM 5 ----")
+                    for it in sample_bottom:
+                        _log_one(it)
+        except Exception:
+            pass
+
+        # уберём dbg из результата наружу, чтобы не мусорить
+        out = []
+        for it in scored[: int(limit)]:
+            it2 = dict(it)
+            it2.pop("_dbg", None)
+            out.append(it2)
+        return out
+
+    def find_forgotten_histories(self, K1, K2, K4, cursor, decay_rate, entity_bonus_history, noise_max, now, query_vec,
+                                 scored, threshold):
+        try:
+            base_cols = ["id", "role", "content", "embedding", "timestamp"]
+            opt_cols = ["speaker", "target", "participants"]
+            cols = base_cols + [c for c in opt_cols if c in self._history_cols]
+
+            where = "character_id=? AND embedding IS NOT NULL AND is_active=0"
+            if "is_deleted" in self._history_cols:
+                where += " AND is_deleted=0"
+
+            cursor.execute(
+                f"SELECT {', '.join(cols)} FROM history WHERE {where}",
+                (self.character_id,),
+            )
+            hist_rows = cursor.fetchall() or []
+        except Exception as e:
+            logger.warning(f"RAGManager: failed to read history for search: {e}", exc_info=True)
+            hist_rows = []
+        for row in hist_rows:
+            rd = dict(zip(cols, row))
+            blob = rd.get("embedding")
+            vec = self._blob_to_array(blob)
+            if vec is None:
+                continue
+            sim = float(np.dot(query_vec, vec))
+            if sim < float(threshold):
+                continue
+
+            ts = rd.get("timestamp")
+            dt = self._parse_dt(ts)
+            if dt:
+                days = max(0.0, (now - dt).total_seconds() / 86400.0)
+                tf = 1.0 / (1.0 + (decay_rate * days))
+            else:
+                tf = 0.0
+
+            sp = str(rd.get("speaker") or "").strip()
+            tg = str(rd.get("target") or "").strip()
+            parts = self._json_loads_list(rd.get("participants"))
+            eb = entity_bonus_history(sp, tg, parts)
+
+            noise = random.uniform(0.0, noise_max)
+            final = (sim * K1) + (tf * K2) + (eb * K4) + noise
+
+            scored.append({
+                "source": "history",
+                "id": int(rd.get("id") or 0),
+                "role": rd.get("role"),
+                "content": rd.get("content"),
+                "date": ts,
+                "speaker": sp or None,
+                "target": tg or None,
+                "participants": parts,
+                "score": float(final),
+                "_dbg": {
+                    "sim": sim, "time": tf, "prio": 0.0, "entity": eb, "noise": noise,
+                    "final": final
+                }
+            })
+
+    def find_forgotten_memories(self, K1, K2, K3, K4, cursor, decay_rate, entity_bonus_from_participants, memory_mode,
+                                noise_max, now, prio_bonus, query_vec, scored, threshold):
         try:
             mem_where = "character_id=? AND is_deleted=0 AND embedding IS NOT NULL"
 
@@ -471,7 +582,6 @@ class RAGManager:
         except Exception as e:
             logger.warning(f"RAGManager: failed to read memories for search: {e}", exc_info=True)
             mem_rows = []
-
         for row in mem_rows:
             # распакуем безопасно (под разные схемы)
             if "is_forgotten" in self._mem_cols:
@@ -518,110 +628,6 @@ class RAGManager:
                     "final": final
                 }
             })
-
-        # 2) History (is_active=0 AND is_deleted=0)
-        try:
-            base_cols = ["id", "role", "content", "embedding", "timestamp"]
-            opt_cols = ["speaker", "target", "participants"]
-            cols = base_cols + [c for c in opt_cols if c in self._history_cols]
-
-            where = "character_id=? AND embedding IS NOT NULL AND is_active=0"
-            if "is_deleted" in self._history_cols:
-                where += " AND is_deleted=0"
-
-            cursor.execute(
-                f"SELECT {', '.join(cols)} FROM history WHERE {where}",
-                (self.character_id,),
-            )
-            hist_rows = cursor.fetchall() or []
-        except Exception as e:
-            logger.warning(f"RAGManager: failed to read history for search: {e}", exc_info=True)
-            hist_rows = []
-
-
-        for row in hist_rows:
-            rd = dict(zip(cols, row))
-            blob = rd.get("embedding")
-            vec = self._blob_to_array(blob)
-            if vec is None:
-                continue
-            sim = float(np.dot(query_vec, vec))
-            if sim < float(threshold):
-                continue
-
-            ts = rd.get("timestamp")
-            dt = self._parse_dt(ts)
-            if dt:
-                days = max(0.0, (now - dt).total_seconds() / 86400.0)
-                tf = 1.0 / (1.0 + (decay_rate * days))
-            else:
-                tf = 0.0
-
-            sp = str(rd.get("speaker") or "").strip()
-            tg = str(rd.get("target") or "").strip()
-            parts = self._json_loads_list(rd.get("participants"))
-            eb = entity_bonus_history(sp, tg, parts)
-
-            noise = random.uniform(0.0, noise_max)
-            final = (sim * K1) + (tf * K2) + (eb * K4) + noise
-
-            scored.append({
-                "source": "history",
-                "id": int(rd.get("id") or 0),
-                "role": rd.get("role"),
-                "content": rd.get("content"),
-                "date": ts,
-                "speaker": sp or None,
-                "target": tg or None,
-                "participants": parts,
-                "score": float(final),
-                "_dbg": {
-                    "sim": sim, "time": tf, "prio": 0.0, "entity": eb, "noise": noise,
-                    "final": final
-                }
-            })
-
-        conn.close()
-
-        scored.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
-
-        # --- Detailed logging: Top 5 и Bottom 5
-        try:
-            if scored and detailed_logs:
-                def _clip(s: Any, n: int = 200) -> str:
-                    t = str(s or "").replace("\n", " ").strip()
-                    return (t[:n] + "…") if len(t) > n else t
-
-                sample_top = scored[:5]
-                sample_bottom = scored[-5:] if len(scored) > 5 else []
-
-                def _log_one(item: dict):
-                    dbg = item.get("_dbg") or {}
-                    src = item.get("source")
-                    rid = item.get("id")
-                    logger.info(
-                        f"[RAG] {src}:{rid} | Base:{dbg.get('sim'):.3f} | Time:{dbg.get('time'):.3f} "
-                        f"| Prio:{dbg.get('prio'):.3f} | Ent:{dbg.get('entity'):.3f} | Final:{dbg.get('final'):.3f} "
-                        f"| Content:\"{self.rag_clean_text(_clip(item.get('content')))}\""
-                    )
-
-                logger.info("[RAG] ---- TOP 5 ----")
-                for it in sample_top:
-                    _log_one(it)
-                if sample_bottom:
-                    logger.info("[RAG] ---- BOTTOM 5 ----")
-                    for it in sample_bottom:
-                        _log_one(it)
-        except Exception:
-            pass
-
-        # уберём dbg из результата наружу, чтобы не мусорить
-        out = []
-        for it in scored[: int(limit)]:
-            it2 = dict(it)
-            it2.pop("_dbg", None)
-            out.append(it2)
-        return out
 
     def index_all_missing(self, progress_callback=None) -> int:
         """

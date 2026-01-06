@@ -668,10 +668,8 @@ class ModelController:
 
 
         # [RAG INTEGRATION] Внедрение контекста из памяти
-        system_input = self.process_rag(char_id, system_input, user_input)
-        # ---------------------------------------------------------------------
-
-
+        if self.settings.get("RAG_ENABLED", False):
+            system_input = self.process_rag(char_id, system_input, user_input)
 
         if event_type == "compress":
             messages = []
