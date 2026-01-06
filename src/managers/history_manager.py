@@ -6,6 +6,7 @@ import base64
 import re
 import uuid
 import hashlib
+import time
 from threading import Lock
 from typing import Any, Optional
 
@@ -57,6 +58,10 @@ class HistoryManager:
         self._history_cols: set[str] = set()
         # сериализация write-операций для дедуп/check-then-insert
         self._write_lock = Lock()
+
+        # небольшой кеш для картинок: filename -> file_path
+        self._img_cache_lock = Lock()
+        self._img_path_cache: dict[str, str] = {}
 
         # Гарантируем схему (и наполняем кеш)
         self._ensure_history_schema()
@@ -189,26 +194,52 @@ class HistoryManager:
             if not match:
                 return base64_string
 
-            ext = match.group(1)
-            img_data_str = match.group(2)
+            ext = (match.group(1) or "").lower()
+            img_data_str = match.group(2) or ""
             if ext == "jpeg":
                 ext = "jpg"
 
             save_dir = os.path.join("Histories", self.character_name, "Images")
             os.makedirs(save_dir, exist_ok=True)
 
-            # Детерминированное имя файла: одинаковая картинка => один и тот же файл
-            img_bytes = base64.b64decode(img_data_str)
-            sha = hashlib.sha256(img_bytes).hexdigest()
-            filename = f"{sha}.{ext}"
+            # ВАЖНО: убираем пробелы/переводы строк (иногда встречаются)
+            clean_b64 = re.sub(r"\s+", "", img_data_str)
+
+            # Детерминированное имя файла:
+            # вместо sha по декодированным байтам (дорого) берём sha по ASCII-строке base64.
+            # Это позволяет НЕ декодировать заново, если файл уже есть.
+            sha = hashlib.sha256(clean_b64.encode("ascii", errors="ignore")).hexdigest()
+            filename = f"{sha}.{ext or 'bin'}"
             file_path = os.path.join(save_dir, filename)
 
-            if not os.path.exists(file_path):
-                with open(file_path, "wb") as f:
-                    f.write(img_bytes)
-                logger.info(f"Image saved: {file_path}")
-            else:
-                logger.info(f"Image reused (hash match): {file_path}")
+            # Быстрый путь: кеш / существующий файл (без base64 decode)
+            with self._img_cache_lock:
+                cached = self._img_path_cache.get(filename)
+                if cached:
+                    return cached
+
+            if os.path.exists(file_path):
+                # reuse лучше на DEBUG, иначе логи сами начинают тормозить
+                logger.debug(f"Image reused (hash match): {file_path}")
+                with self._img_cache_lock:
+                    self._img_path_cache[filename] = file_path
+                return file_path
+
+            # Декодируем ТОЛЬКО когда файла ещё нет
+            t0 = time.perf_counter()
+            img_bytes = base64.b64decode(clean_b64)
+            dt = time.perf_counter() - t0
+            if dt > 0.25:
+                logger.warning(
+                    f"Slow base64 decode: {dt:.3f}s, file={filename}, b64_chars={len(clean_b64)}"
+                )
+
+            with open(file_path, "wb") as f:
+                f.write(img_bytes)
+            logger.info(f"Image saved: {file_path}")
+
+            with self._img_cache_lock:
+                self._img_path_cache[filename] = file_path
             return file_path
 
         except Exception as e:
