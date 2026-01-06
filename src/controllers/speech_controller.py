@@ -284,6 +284,20 @@ class SpeechController:
         if not bool(self.settings.get("MIC_ACTIVE")):
             return
 
+        # ---- NEW: send recognized text to Unity ----
+        try:
+            con = self.events_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.3)
+            connected = bool(con and con[0])
+            if connected:
+                engine = str(self._asr_settings.get("engine", "") or "")
+                self.events_bus.emit(getattr(Events.Server, "BROADCAST_ASR_TEXT", "broadcast_asr_text"), {
+                    "text": text,
+                    "engine": engine,
+                    "ts": time.time(),
+                })
+        except Exception:
+            pass
+
         if bool(self.settings.get("MIC_INSTANT_SENT")):
             waiting = self.events_bus.emit_and_wait(Events.Audio.GET_WAITING_ANSWER, timeout=0.5)
             waiting_answer = waiting[0] if waiting else False
@@ -295,6 +309,7 @@ class SpeechController:
                 pass
             logger.info(f"Распознано: {text}")
             self.events_bus.emit(Events.GUI.INSERT_TEXT_TO_INPUT, {"text": text})
+
 
     def _send_instant(self, text):
         self.events_bus.emit(Events.GUI.UPDATE_CHAT_UI, {'role': 'user', 'response': text, 'is_initial': False, 'emotion': ''})

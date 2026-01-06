@@ -5,24 +5,403 @@ import traceback
 import hashlib
 from datetime import datetime
 import asyncio
+import subprocess
+from typing import Optional, Any, List, Dict
 
 from .base_model import IVoiceModel
-from typing import Optional, Any, List, Dict
 from main_logger import logger
-
-from .edge_tts_rvc_model import EdgeTTS_RVC_Model
-import importlib.util
-
-import subprocess
-from PyQt6.QtCore import QTimer, Qt
-
-from utils.pip_installer import PipInstaller
-
-from managers.settings_manager import SettingsManager
 
 from utils import getTranslationVariant as _, get_character_voice_paths
 
-from core.events import get_event_bus, Events
+from core.events import Events, get_event_bus
+from core.install_types import InstallPlan, InstallAction
+from core.install_requirements import InstallRequirement, check_requirements
+
+from handlers.voice_models.install_plan_helpers import torch_install_action, pip_uninstall_action
+
+
+class FishSpeechInstallSpec:
+    @classmethod
+    def supported_model_ids(cls) -> list[str]:
+        return ["medium", "medium+", "medium+low"]
+
+    @classmethod
+    def title(cls, model_id: str) -> str:
+        return _("Установка локальной модели: ", "Installing local model: ") + str(model_id)
+
+    @classmethod
+    def requirements(cls, model_id: str, ctx: dict) -> list[InstallRequirement]:
+        mid = str(model_id)
+        req: list[InstallRequirement] = [
+            InstallRequirement(id="fish_speech_lib", kind="python_dist", spec="fish-speech-lib", required=True),
+            InstallRequirement(id="fish_speech_module", kind="python_module", module="fish_speech_lib.inference", required=True),
+        ]
+        if mid in ("medium+", "medium+low"):
+            req.append(InstallRequirement(id="triton", kind="python_dist", spec="triton-windows<3.4", required=True))
+            req.append(InstallRequirement(id="triton_module", kind="python_module", module="triton", required=True))
+        if mid == "medium+low":
+            req.append(InstallRequirement(id="tts_with_rvc", kind="python_dist", spec="tts-with-rvc", required=True))
+        return req
+
+    @classmethod
+    def is_installed(cls, model_id: str, ctx: dict) -> bool:
+        st = check_requirements(cls.requirements(model_id, ctx), ctx=ctx)
+        return bool(st.get("ok"))
+
+    @classmethod
+    def _libs_path_abs(cls, pip_installer) -> str:
+        lp = getattr(pip_installer, "libs_path_abs", None)
+        if lp:
+            return str(lp)
+        libs_path = getattr(pip_installer, "libs_path", None) or "Lib"
+        return os.path.abspath(str(libs_path))
+
+    @classmethod
+    def _script_path(cls, pip_installer) -> str:
+        sp = getattr(pip_installer, "script_path", None)
+        if sp:
+            return str(sp)
+        return sys.executable
+
+    @classmethod
+    def _ensure_sys_path(cls, libs_path_abs: str) -> None:
+        if libs_path_abs and libs_path_abs not in sys.path:
+            sys.path.insert(0, libs_path_abs)
+
+    @classmethod
+    def _apply_triton_patches(cls, libs_path_abs: str, log_cb) -> None:
+        def _safe_write(path: str, new_text: str) -> None:
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(new_text)
+            except Exception as e:
+                log_cb(_(f"Ошибка записи {path}: {e}", f"Write error {path}: {e}"))
+
+        build_py_path = os.path.join(libs_path_abs, "triton", "runtime", "build.py")
+        if os.path.exists(build_py_path):
+            try:
+                with open(build_py_path, "r", encoding="utf-8") as f:
+                    source = f.read()
+
+                new_line_tcc = 'cc = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tcc", "tcc.exe")'
+                source2 = source
+
+                # patch tcc path (a bit tolerant)
+                if "tcc.exe" in source2 and "sysconfig.get_paths()" in source2 and "platlib" in source2:
+                    import re as _re
+                    source2 = _re.sub(
+                        r'cc\s*=\s*os\.path\.join\(\s*sysconfig\.get_paths\(\)\s*\[\s*"platlib"\s*\]\s*,\s*"triton"\s*,\s*"runtime"\s*,\s*"tcc"\s*,\s*"tcc\.exe"\s*\)',
+                        new_line_tcc,
+                        source2
+                    )
+
+                # remove -fPIC
+                source2 = source2.replace(
+                    'cc_cmd = [cc, src, "-O3", "-shared", "-fPIC", "-Wno-psabi", "-o", out]',
+                    'cc_cmd = [cc, src, "-O3", "-shared", "-Wno-psabi", "-o", out]'
+                )
+
+                if source2 != source:
+                    _safe_write(build_py_path, source2)
+                    log_cb(_("Патчи применены к triton/runtime/build.py", "Patched triton/runtime/build.py"))
+            except Exception as e:
+                log_cb(_(f"Ошибка патча build.py: {e}", f"Error patching build.py: {e}"))
+                log_cb(traceback.format_exc())
+        else:
+            log_cb(_("build.py не найден, патч пропущен", "build.py not found, patch skipped"))
+
+        windows_utils_path = os.path.join(libs_path_abs, "triton", "windows_utils.py")
+        if os.path.exists(windows_utils_path):
+            try:
+                with open(windows_utils_path, "r", encoding="utf-8") as f:
+                    source = f.read()
+                old_code = "output = subprocess.check_output(command, text=True).strip()"
+                new_code = (
+                    "output = subprocess.check_output(\n"
+                    "            command, text=True, creationflags=subprocess.CREATE_NO_WINDOW, close_fds=True, "
+                    "stdin=subprocess.DEVNULL, stderr=subprocess.PIPE\n"
+                    "        ).strip()"
+                )
+                if old_code in source:
+                    _safe_write(windows_utils_path, source.replace(old_code, new_code))
+                    log_cb(_("Патч применён к triton/windows_utils.py", "Patched triton/windows_utils.py"))
+            except Exception as e:
+                log_cb(_(f"Ошибка патча windows_utils.py: {e}", f"Error patching windows_utils.py: {e}"))
+                log_cb(traceback.format_exc())
+
+        compiler_path = os.path.join(libs_path_abs, "triton", "backends", "nvidia", "compiler.py")
+        if os.path.exists(compiler_path):
+            try:
+                with open(compiler_path, "r", encoding="utf-8") as f:
+                    source = f.read()
+                old_line = 'version = subprocess.check_output([_path_to_binary("ptxas")[0], "--version"]).decode("utf-8")'
+                new_line = 'version = subprocess.check_output([_path_to_binary("ptxas")[0], "--version"], creationflags=subprocess.CREATE_NO_WINDOW, stderr=subprocess.PIPE, close_fds=True, stdin=subprocess.DEVNULL).decode("utf-8")'
+                if old_line in source:
+                    _safe_write(compiler_path, source.replace(old_line, new_line))
+                    log_cb(_("Патч применён к triton/backends/nvidia/compiler.py", "Patched triton/backends/nvidia/compiler.py"))
+            except Exception as e:
+                log_cb(_(f"Ошибка патча compiler.py: {e}", f"Error patching compiler.py: {e}"))
+                log_cb(traceback.format_exc())
+
+        cache_py_path = os.path.join(libs_path_abs, "triton", "runtime", "cache.py")
+        if os.path.exists(cache_py_path):
+            try:
+                with open(cache_py_path, "r", encoding="utf-8") as f:
+                    source = f.read()
+                old_line = 'temp_dir = os.path.join(self.cache_dir, f"tmp.pid_{pid}_{rnd_id}")'
+                new_line = 'temp_dir = os.path.join(self.cache_dir, f"tmp.pid_{str(pid)[:5]}_{str(rnd_id)[:5]}")'
+                if old_line in source:
+                    _safe_write(cache_py_path, source.replace(old_line, new_line))
+                    log_cb(_("Патч применён к triton/runtime/cache.py", "Patched triton/runtime/cache.py"))
+            except Exception as e:
+                log_cb(_(f"Ошибка патча cache.py: {e}", f"Error patching cache.py: {e}"))
+                log_cb(traceback.format_exc())
+
+    @classmethod
+    def _probe_triton_deps(cls, libs_path_abs: str) -> dict:
+        deps = {"cuda_found": False, "winsdk_found": False, "msvc_found": False}
+        if os.name != "nt":
+            return deps
+
+        cls._ensure_sys_path(libs_path_abs)
+        import importlib as _importlib
+        _importlib.invalidate_caches()
+
+        import triton  # noqa: F401
+        from triton.windows_utils import find_cuda, find_winsdk, find_msvc
+
+        try:
+            cuda_result = find_cuda()
+            if isinstance(cuda_result, (tuple, list)) and len(cuda_result) >= 1:
+                cuda_path = cuda_result[0]
+                deps["cuda_found"] = bool(cuda_path and os.path.exists(str(cuda_path)))
+        except Exception:
+            deps["cuda_found"] = False
+
+        try:
+            winsdk_result = find_winsdk(False)
+            if isinstance(winsdk_result, (tuple, list)) and len(winsdk_result) >= 1:
+                winsdk_paths = winsdk_result[0]
+                deps["winsdk_found"] = isinstance(winsdk_paths, list) and bool(winsdk_paths)
+        except Exception:
+            deps["winsdk_found"] = False
+
+        try:
+            msvc_result = find_msvc(False)
+            cl_path = None
+            inc_paths, lib_paths = [], []
+            if isinstance(msvc_result, (tuple, list)):
+                if len(msvc_result) >= 1:
+                    cl_path = msvc_result[0]
+                if len(msvc_result) >= 2:
+                    inc_paths = msvc_result[1] or []
+                if len(msvc_result) >= 3:
+                    lib_paths = msvc_result[2] or []
+            deps["msvc_found"] = bool((cl_path and os.path.exists(str(cl_path))) or inc_paths or lib_paths)
+        except Exception:
+            deps["msvc_found"] = False
+
+        return deps
+
+    @classmethod
+    def _ensure_triton_ready_call(cls, mode: str):
+        def _fn(*, pip_installer=None, callbacks=None, ctx=None, **_kwargs) -> bool:
+            cb = callbacks
+            ctx = ctx or {}
+            eb = ctx.get("event_bus")
+
+            def log(m: str):
+                try:
+                    if cb:
+                        cb.log(str(m))
+                except Exception:
+                    pass
+
+            def status(s: str):
+                try:
+                    if cb:
+                        cb.status(str(s))
+                except Exception:
+                    pass
+
+            if pip_installer is None:
+                return False
+
+            libs_path_abs = cls._libs_path_abs(pip_installer)
+            cls._ensure_sys_path(libs_path_abs)
+
+            status(_("Применение патчей Triton...", "Applying Triton patches..."))
+            cls._apply_triton_patches(libs_path_abs, log)
+
+            # Import check with VC redist retry dialog
+            import importlib as _importlib
+            for attempt in range(2):
+                try:
+                    _importlib.invalidate_caches()
+                    if "triton" in sys.modules:
+                        try:
+                            del sys.modules["triton"]
+                        except Exception:
+                            pass
+                    import triton  # noqa: F401
+                    break
+                except ImportError as e:
+                    msg = str(e)
+                    log(f"Triton import error: {msg}")
+                    if "DLL load failed while importing libtriton" in msg:
+                        status(_("Ошибка загрузки Triton! Проверьте VC++ Redistributable.", "Triton load error! Check VC++ Redistributable."))
+                        if callable(getattr(eb, "emit_and_wait", None)):
+                            res = eb.emit_and_wait(Events.Audio.SHOW_VC_REDIST_DIALOG, timeout=6000.0)
+                            choice = res[0] if res else "close"
+                            if choice == "retry" and attempt == 0:
+                                continue
+                        return False
+                    return False
+                except Exception as e:
+                    log(traceback.format_exc())
+                    return False
+
+            # Dependencies dialog + optional init.py
+            if os.name == "nt" and callable(getattr(eb, "emit_and_wait", None)):
+                status(_("Проверка зависимостей Triton...", "Checking Triton dependencies..."))
+                deps = cls._probe_triton_deps(libs_path_abs)
+                res = eb.emit_and_wait(Events.Audio.SHOW_TRITON_DIALOG, deps, timeout=6000.0)
+                choice = res[0] if res else "continue"
+                if choice == "skip":
+                    status(_("Инициализация ядра пропущена", "Kernel initialization skipped"))
+                    return True
+
+            status(_("Инициализация ядра Triton...", "Initializing Triton kernel..."))
+            script_path = cls._script_path(pip_installer)
+
+            try:
+                temp_dir = "temp"
+                os.makedirs(temp_dir, exist_ok=True)
+
+                init_cmd = [script_path, "init.py"]
+                creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                result = subprocess.run(
+                    init_cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="ignore",
+                    check=False,
+                    creationflags=creationflags,
+                )
+
+                if result.stdout:
+                    for line in result.stdout.splitlines():
+                        log(line)
+                if result.stderr:
+                    for line in result.stderr.splitlines():
+                        log(f"STDERR: {line}")
+
+                ok = (result.returncode == 0 and os.path.exists(os.path.join(temp_dir, "inited.wav")))
+                if ok:
+                    status(_("Инициализация ядра успешно завершена!", "Kernel initialization completed successfully!"))
+                    return True
+
+                status(_("Ошибка при инициализации ядра", "Error during kernel initialization"))
+                return False
+
+            except Exception as e:
+                log(_(f"Непредвиденная ошибка init.py: {e}", f"Unexpected init.py error: {e}"))
+                log(traceback.format_exc())
+                status(_("Ошибка инициализации ядра", "Kernel initialization error"))
+                return False
+
+        return _fn
+
+    @classmethod
+    def build_install_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
+        mid = str(model_id)
+        if cls.is_installed(mid, ctx):
+            return InstallPlan(actions=[], already_installed=True, already_installed_status=_("Уже установлено", "Already installed"))
+
+        allow_unsupported = os.environ.get("ALLOW_UNSUPPORTED_GPU", "0") == "1"
+        gpu = str((ctx or {}).get("gpu_vendor") or "")
+
+        if gpu != "NVIDIA" and not allow_unsupported:
+            return InstallPlan(
+                actions=[InstallAction(type="call", description=_("Требуется NVIDIA GPU", "NVIDIA GPU required"), progress=5, fn=lambda **_k: False)],
+                already_installed=False,
+            )
+
+        actions: list[InstallAction] = []
+
+        actions.append(torch_install_action(ctx, progress=10))
+
+        actions.append(
+            InstallAction(
+                type="pip",
+                description=_("Установка Fish Speech...", "Installing Fish Speech..."),
+                progress=30,
+                packages=["fish-speech-lib", "librosa==0.9.1"],
+            )
+        )
+
+        if mid in ("medium+", "medium+low"):
+            actions.append(
+                InstallAction(
+                    type="pip",
+                    description=_("Установка Triton...", "Installing Triton..."),
+                    progress=55,
+                    packages=["triton-windows<3.4"],
+                    extra_args=["--upgrade"],
+                )
+            )
+            actions.append(
+                InstallAction(
+                    type="call",
+                    description=_("Патчи/инициализация Triton...", "Patching/initializing Triton..."),
+                    progress=75,
+                    fn=cls._ensure_triton_ready_call(mid),
+                )
+            )
+
+        if mid == "medium+low":
+            actions.append(
+                InstallAction(
+                    type="pip",
+                    description=_("Установка Edge/RVC компонента...", "Installing Edge/RVC component..."),
+                    progress=90,
+                    packages=["tts-with-rvc"],
+                )
+            )
+
+        actions.append(
+            InstallAction(
+                type="call",
+                description=_("Проверка установки...", "Final check..."),
+                progress=99,
+                fn=lambda **_k: cls.is_installed(mid, ctx),
+            )
+        )
+
+        return InstallPlan(actions=actions, ok_status=_("Готово", "Done"))
+
+    @classmethod
+    def build_uninstall_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
+        mid = str(model_id)
+
+        if mid == "medium":
+            return InstallPlan(
+                actions=[
+                    pip_uninstall_action(["fish-speech-lib"], description=_("Удаление fish-speech-lib...", "Uninstalling fish-speech-lib..."), progress=20)
+                ],
+                ok_status=_("Удалено", "Uninstalled"),
+            )
+
+        if mid in ("medium+", "medium+low"):
+            return InstallPlan(
+                actions=[
+                    pip_uninstall_action(["triton-windows"], description=_("Удаление Triton...", "Uninstalling Triton..."), progress=20)
+                ],
+                ok_status=_("Удалено", "Uninstalled"),
+            )
+
+        return InstallPlan(actions=[InstallAction(type="call", description="Failed", progress=1, fn=lambda **_k: False)])
 
 
 class FishSpeechModel(IVoiceModel):
@@ -30,7 +409,9 @@ class FishSpeechModel(IVoiceModel):
         super().__init__(parent, model_id)
         self.fish_speech_module = None
         self.current_fish_speech = None
+
         self.events = get_event_bus()
+
         self.rvc_handler = rvc_handler
 
     MODEL_CONFIGS = [
@@ -199,400 +580,18 @@ class FishSpeechModel(IVoiceModel):
         mode = self._mode()
         if mode == "medium":
             return "Fish Speech"
-        elif mode == "medium+":
+        if mode == "medium+":
             return "Fish Speech+"
-        elif mode == "medium+low":
+        if mode == "medium+low":
             return "Fish Speech+ + RVC"
-        return None
+        return "Fish Speech"
 
-    def is_installed(self, model_id) -> bool:
-        self._load_module()
-        mode = model_id
-        if self.fish_speech_module is None:
-            return False
-        if mode in ("medium+", "medium+low"):
-            if not self.parent.is_triton_installed():
-                return False
-        if mode == "medium+low":
-            if self.rvc_handler is None or not self.rvc_handler.is_installed("low"):
-                return False
-        return True
-
-    def install(self, model_id) -> bool:
-        self._load_module()
-        if self.fish_speech_module is None:
-            if not self._install_fish_speech():
-                return False
-
-        mode = model_id
-        if mode in ("medium+", "medium+low"):
-            if not self.parent.is_triton_installed():
-                logger.info("Компонент Fish Speech установлен, приступаем к установке Triton...")
-                if not self._install_triton():
-                    return False
-
-        if mode == "medium+low":
-            if self.rvc_handler and not self.rvc_handler.is_installed("low"):
-                logger.info("Компоненты Fish Speech и Triton установлены, приступаем к установке RVC...")
-                return self.rvc_handler.install("low")
-
-        return True
-
-    def _install_fish_speech(self):
-        try:
-            progress_cb = getattr(self.parent, '_external_progress', lambda *_: None)
-            status_cb = getattr(self.parent, '_external_status', lambda *_: None)
-            log_cb = getattr(self.parent, '_external_log', lambda *_: None)
-
-            installer = PipInstaller(
-                script_path=r"libs\python\python.exe",
-                libs_path="Lib",
-                update_status=status_cb,
-                update_log=log_cb,
-                progress_window=None
-            )
-
-            progress_cb(10)
-            log_cb(_("Начало установки Fish Speech...", "Starting Fish Speech installation..."))
-
-            if self.parent.provider in ["NVIDIA"] and not self.parent.is_cuda_available():
-                status_cb(_("Установка PyTorch с поддержкой CUDA 12.8...", "Installing PyTorch with CUDA 12.8 support..."))
-                progress_cb(20)
-                success = installer.install_package(
-                    ["torch==2.7.1", "torchaudio==2.7.1"],
-                    description=_("Установка PyTorch с поддержкой CUDA 12.8...", "Installing PyTorch with CUDA 12.8 support..."),
-                    extra_args=["--index-url", "https://download.pytorch.org/whl/cu128"],
-                )
-                if not success:
-                    status_cb(_("Ошибка при установке PyTorch", "Error installing PyTorch"))
-                    return False
-                progress_cb(40)
-            else:
-                progress_cb(40)
-
-            status_cb(_("Установка библиотеки Fish Speech...", "Installing Fish Speech library..."))
-            force_install_unsupported = os.environ.get("ALLOW_UNSUPPORTED_GPU", "0") == "1"
-            if self.parent.provider in ["NVIDIA"] or force_install_unsupported:
-                success = installer.install_package(
-                    "fish_speech_lib",
-                    description=_("Установка библиотеки Fish Speech...", "Installing Fish Speech library...")
-                )
-                if not success:
-                    status_cb(_("Ошибка при установке Fish Speech", "Error installing Fish Speech"))
-                    return False
-                progress_cb(80)
-
-                success = installer.install_package(
-                    "librosa==0.9.1",
-                    description=_("Установка дополнительной библиотеки librosa...", "Installing additional library librosa...")
-                )
-                if not success:
-                    log_cb(_("Предупреждение: Fish Speech может работать некорректно без librosa", "Warning: Fish Speech may not work correctly without librosa"))
-            else:
-                log_cb(_(f"Ошибка: не найдена подходящая видеокарта: {self.parent.provider}", f"Error: suitable graphics card not found: {self.parent.provider}"))
-                status_cb(_("Требуется NVIDIA GPU", "NVIDIA GPU required"))
-                return False
-
-            progress_cb(100)
-            status_cb(_("Установка успешно завершена!", "Installation successful!"))
-
-            setattr(self, "_import_attempted", False)
-            self._load_module()
-
-            return True
-        except Exception as e:
-            logger.error(f"Ошибка при установке Fish Speech: {e}", exc_info=True)
-            return False
-
-    def _apply_triton_patches(self, libs_path_abs: str, progress_cb, status_cb, log_cb) -> None:
-        progress_cb(50)
-        status_cb(_("Применение патчей...", "Applying patches..."))
-        log_cb(_("Применение необходимых патчей для Triton...", "Applying necessary patches for Triton..."))
-
-        build_py_path = os.path.join(libs_path_abs, "triton", "runtime", "build.py")
-        if os.path.exists(build_py_path):
-            try:
-                import sysconfig
-                with open(build_py_path, "r", encoding="utf-8") as f:
-                    source = f.read()
-
-                try:
-                    old_line_tcc = 'cc = os.path.join(sysconfig.get_paths()["platlib"], "triton", "runtime", "tcc", "tcc.exe")'
-                except Exception:
-                    old_line_tcc = 'os.path.join(sysconfig.get_paths()["platlib"], "triton", "runtime", "tcc", "tcc.exe")'
-                    log_cb(_("Предупреждение: не удалось определить точную старую строку tcc в build.py, используется запасной вариант.", "Warning: failed to detect exact old tcc line in build.py, using fallback."))
-
-                new_line_tcc = 'cc = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tcc", "tcc.exe")'
-                old_line_fpic = 'cc_cmd = [cc, src, "-O3", "-shared", "-fPIC", "-Wno-psabi", "-o", out]'
-                new_line_fpic = 'cc_cmd = [cc, src, "-O3", "-shared", "-Wno-psabi", "-o", out]'
-
-                patched_source = source
-                applied_patch_tcc = False
-                applied_patch_fpic = False
-
-                if old_line_tcc in patched_source:
-                    patched_source = patched_source.replace(old_line_tcc, new_line_tcc)
-                    applied_patch_tcc = True
-                else:
-                    log_cb(_("Патч (путь tcc.exe) для build.py уже применен или строка не найдена.", "Patch (tcc.exe path) for build.py already applied or line not found."))
-
-                if old_line_fpic in patched_source:
-                    patched_source = patched_source.replace(old_line_fpic, new_line_fpic)
-                    applied_patch_fpic = True
-                else:
-                    log_cb(_("Патч (удаление -fPIC) для build.py уже применен или строка не найдена.", "Patch (removing -fPIC) for build.py already applied or line not found."))
-
-                if applied_patch_tcc or applied_patch_fpic:
-                    with open(build_py_path, "w", encoding="utf-8") as f:
-                        f.write(patched_source)
-                    if applied_patch_tcc:
-                        log_cb(_("Патч (путь tcc.exe) успешно применен к build.py", "Patch (tcc.exe path) successfully applied to build.py"))
-                    if applied_patch_fpic:
-                        log_cb(_("Патч (удаление -fPIC) успешно применен к build.py", "Patch (removing -fPIC) successfully applied to build.py"))
-            except Exception as e:
-                log_cb(_(f"Ошибка при патче build.py: {e}", f"Error patching build.py: {e}"))
-                log_cb(traceback.format_exc())
-        else:
-            log_cb(_("Предупреждение: файл build.py не найден, пропускаем патч", "Warning: build.py file not found, skipping patch"))
-
-        progress_cb(60)
-        windows_utils_path = os.path.join(libs_path_abs, "triton", "windows_utils.py")
-        log_cb(_("Применение патча к windows_utils.py...", "Applying patch to windows_utils.py..."))
-        if os.path.exists(windows_utils_path):
-            try:
-                with open(windows_utils_path, "r", encoding="utf-8") as f:
-                    source = f.read()
-                old_code_win = "output = subprocess.check_output(command, text=True).strip()"
-                new_code_win = "output = subprocess.check_output(\n            command, text=True, creationflags=subprocess.CREATE_NO_WINDOW, close_fds=True, stdin=subprocess.DEVNULL, stderr=subprocess.PIPE\n        ).strip()"
-                if old_code_win in source:
-                    patched_source = source.replace(old_code_win, new_code_win)
-                    with open(windows_utils_path, "w", encoding="utf-8") as f:
-                        f.write(patched_source)
-                    log_cb(_("Патч успешно применен к windows_utils.py", "Patch successfully applied to windows_utils.py"))
-                else:
-                    log_cb(_("Патч для windows_utils.py уже применен или строка не найдена.", "Patch for windows_utils.py already applied or line not found."))
-            except Exception as e:
-                log_cb(_(f"Ошибка при патче windows_utils.py: {e}", f"Error patching windows_utils.py: {e}"))
-                log_cb(traceback.format_exc())
-        else:
-            log_cb(_("Предупреждение: файл windows_utils.py не найден, пропускаем патч", "Warning: windows_utils.py file not found, skipping patch"))
-
-        progress_cb(70)
-        compiler_path = os.path.join(libs_path_abs, "triton", "backends", "nvidia", "compiler.py")
-        log_cb(_("Применение патча к compiler.py...", "Applying patch to compiler.py..."))
-        if os.path.exists(compiler_path):
-            try:
-                with open(compiler_path, "r", encoding="utf-8") as f:
-                    source = f.read()
-                old_code_comp_line = 'version = subprocess.check_output([_path_to_binary("ptxas")[0], "--version"]).decode("utf-8")'
-                new_code_comp_line = 'version = subprocess.check_output([_path_to_binary("ptxas")[0], "--version"], creationflags=subprocess.CREATE_NO_WINDOW, stderr=subprocess.PIPE, close_fds=True, stdin=subprocess.DEVNULL).decode("utf-8")'
-                if old_code_comp_line in source:
-                    patched_source = source.replace(old_code_comp_line, new_code_comp_line)
-                    with open(compiler_path, "w", encoding="utf-8") as f:
-                        f.write(patched_source)
-                    log_cb(_("Патч успешно применен к compiler.py", "Patch successfully applied to compiler.py"))
-                else:
-                    log_cb(_("Патч для compiler.py уже применен или строка не найдена.", "Patch for compiler.py already applied or line not found."))
-            except Exception as e:
-                log_cb(_(f"Ошибка при патче compiler.py: {e}", f"Error patching compiler.py: {e}"))
-                log_cb(traceback.format_exc())
-        else:
-            log_cb(_("Предупреждение: файл compiler.py не найден, пропускаем патч", "Warning: compiler.py file not found, skipping patch"))
-
-        cache_py_path = os.path.join(libs_path_abs, "triton", "runtime", "cache.py")
-        log_cb(_("Применение патча к cache.py...", "Applying patch to cache.py..."))
-        if os.path.exists(cache_py_path):
-            try:
-                with open(cache_py_path, "r", encoding="utf-8") as f:
-                    source = f.read()
-                old_line = 'temp_dir = os.path.join(self.cache_dir, f"tmp.pid_{pid}_{rnd_id}")'
-                new_line = 'temp_dir = os.path.join(self.cache_dir, f"tmp.pid_{str(pid)[:5]}_{str(rnd_id)[:5]}")'
-                if old_line in source:
-                    patched_source = source.replace(old_line, new_line)
-                    with open(cache_py_path, "w", encoding="utf-8") as f:
-                        f.write(patched_source)
-                    log_cb(_("Патч успешно применен к cache.py", "Patch successfully applied to cache.py"))
-                else:
-                    log_cb(_("Патч для cache.py уже применен или строка не найдена.", "Patch for cache.py already applied or line not found."))
-            except Exception as e:
-                log_cb(_(f"Ошибка при патче cache.py: {e}", f"Error patching cache.py: {e}"))
-                log_cb(traceback.format_exc())
-        else:
-            log_cb(_("Предупреждение: файл cache.py не найден, пропускаем патч", "Warning: cache.py file not found, skipping patch"))
-
-    def _install_triton(self):
-        """
-        - Если Triton не установлен: ставим его (pip).
-        - Всегда: патчи, проверка зависимостей, показ диалога зависимостей.
-        - Если пользователь не нажал Skip: запускаем init.py (компиляция/инициализация).
-        """
-        self.parent.triton_module = False
-        try:
-            progress_cb = getattr(self.parent, '_external_progress', lambda *_: None)
-            status_cb = getattr(self.parent, '_external_status', lambda *_: None)
-            log_cb = getattr(self.parent, '_external_log', lambda *_: None)
-
-            script_path = r"libs\python\python.exe"
-            libs_path = "Lib"
-            libs_path_abs = os.path.abspath(libs_path)
-            os.makedirs(libs_path, exist_ok=True)
-            if libs_path_abs not in sys.path:
-                sys.path.insert(0, libs_path_abs)
-
-            progress_cb(10)
-            log_cb(_("Подготовка Triton...", "Preparing Triton..."))
-
-            needs_install = not self.parent.is_triton_installed()
-            if needs_install:
-                status_cb(_("Установка библиотеки Triton...", "Installing Triton library..."))
-                log_cb(_("Установка пакета triton-windows...", "Installing triton-windows package..."))
-                installer = PipInstaller(
-                    script_path=script_path,
-                    libs_path=libs_path,
-                    update_status=status_cb,
-                    update_log=log_cb,
-                    progress_window=None,
-                    update_progress=progress_cb
-                )
-                ok = installer.install_package(
-                    "triton-windows<3.4",
-                    description=_("Установка библиотеки Triton...", "Installing Triton library..."),
-                    extra_args=["--upgrade"]
-                )
-                if not ok:
-                    status_cb(_("Ошибка при установке Triton", "Error installing Triton"))
-                    log_cb(_("Не удалось установить пакет Triton. Проверьте лог выше.", "Failed to install Triton package. Check the log above."))
-                    return False
-            else:
-                progress_cb(30)
-                status_cb(_("Triton найден, пропускаем установку. Патчи/инициализация...", "Triton found, skipping install. Patching/initializing..."))
-                log_cb(_("Triton уже установлен — пропускаем pip, продолжаем.", "Triton already installed — skipping pip step, continuing."))
-
-            self._apply_triton_patches(libs_path_abs, progress_cb, status_cb, log_cb)
-
-            progress_cb(80)
-            status_cb(_("Проверка системных зависимостей...", "Checking system dependencies..."))
-            log_cb(_("Проверка наличия Triton, CUDA, Windows SDK, MSVC...", "Checking for Triton, CUDA, Windows SDK, MSVC..."))
-
-            dll_error = False
-            try:
-                importlib.invalidate_caches()
-                if "triton" in sys.modules:
-                    try:
-                        del sys.modules["triton"]
-                        log_cb(_("Удален модуль 'triton' из sys.modules перед проверкой.", "Removed 'triton' module from sys.modules before check."))
-                    except KeyError:
-                        pass
-
-                self.parent._check_system_dependencies()
-                log_cb(_("_check_system_dependencies выполнена успешно.", "_check_system_dependencies executed successfully."))
-            except ImportError as e:
-                msg = str(e)
-                if msg.startswith("DLL load failed while importing libtriton"):
-                    dll_error = True
-                    log_cb(_(f"ОШИБКА: Импорт Triton не удался (DLL load failed): {msg}", f"ERROR: Triton import failed (DLL load failed): {msg}"))
-                else:
-                    log_cb(_(f"ОШИБКА: Неожиданная ошибка импорта: {msg}", f"ERROR: Unexpected import error: {msg}"))
-                    log_cb(traceback.format_exc())
-            except Exception as e:
-                log_cb(_(f"ОШИБКА: Общая ошибка во время _check_system_dependencies: {e}", f"ERROR: General error during _check_system_dependencies: {e}"))
-                log_cb(traceback.format_exc())
-
-            if dll_error:
-                status_cb(_("Ошибка загрузки Triton! Проверьте VC Redist.", "Triton load error! Check VC Redist."))
-                res = self.events.emit_and_wait(Events.Audio.SHOW_VC_REDIST_DIALOG, timeout=6000.0)
-                choice = res[0] if res else "close"
-                if choice == "retry":
-                    return self._install_triton()
-                else:
-                    status_cb(_("Инициализация ядра пропущена", "Kernel initialization skipped"))
-                    progress_cb(95)
-                    return False
-
-            deps = {
-                "cuda_found": bool(getattr(self.parent, "cuda_found", False)),
-                "winsdk_found": bool(getattr(self.parent, "winsdk_found", False)),
-                "msvc_found": bool(getattr(self.parent, "msvc_found", False)),
-            }
-            res_deps = self.events.emit_and_wait(Events.Audio.SHOW_TRITON_DIALOG, deps, timeout=6000.0)
-            user_action = res_deps[0] if res_deps else "continue"
-            skip_init = (user_action == "skip")
-
-            if not skip_init:
-                progress_cb(90)
-                status_cb(_("Инициализация ядра Triton...", "Initializing Triton kernel..."))
-                log_cb(_("Начало инициализации ядра (запуск init.py)... Это может занять до 5-10 минут", "Starting kernel initialization (running init.py)... It can take up to 5-10 minutes."))
-                try:
-                    temp_dir = "temp"
-                    os.makedirs(temp_dir, exist_ok=True)
-
-                    init_cmd = [script_path, "init.py"]
-                    result = subprocess.run(
-                        init_cmd,
-                        capture_output=True,
-                        text=True,
-                        encoding='utf-8',
-                        errors='ignore',
-                        check=False,
-                        creationflags=subprocess.CREATE_NO_WINDOW
-                    )
-                    if result.stdout:
-                        for line in result.stdout.splitlines():
-                            log_cb(line)
-                    if result.stderr:
-                        for line in result.stderr.splitlines():
-                            log_cb(f"STDERR: {line}")
-
-                    if result.returncode == 0 and os.path.exists(os.path.join(temp_dir, "inited.wav")):
-                        progress_cb(95)
-                        status_cb(_("Инициализация ядра успешно завершена!", "Kernel initialization completed successfully!"))
-                    else:
-                        status_cb(_("Ошибка при инициализации ядра", "Error during kernel initialization"))
-                        log_cb(_("Ошибка при запуске init.py. Проверьте лог выше.", "Error running init.py. Check the log above."))
-                except Exception as e:
-                    log_cb(_(f"Непредвиденная ошибка при инициализации ядра: {str(e)}", f"Unexpected error during kernel initialization: {str(e)}"))
-                    log_cb(traceback.format_exc())
-                    status_cb(_("Ошибка инициализации ядра", "Kernel initialization error"))
-                    progress_cb(85)
-            else:
-                status_cb(_("Инициализация ядра пропущена", "Kernel initialization skipped"))
-                progress_cb(95)
-
-            progress_cb(100)
-            status_cb(_("Установка Triton завершена.", "Triton installation complete."))
-            self.parent.triton_installed = True
-            return True
-
-        except Exception as e:
-            logger.error(_(f"Критическая ошибка при установке Triton: {e}", f"Critical error during Triton installation: {e}"))
-            logger.error(traceback.format_exc())
-            try:
-                if hasattr(self.parent, '_external_log'):
-                    self.parent._external_log(f"{_('КРИТИЧЕСКАЯ ОШИБКА:', 'CRITICAL ERROR:')} {e}\n{traceback.format_exc()}")
-                if hasattr(self.parent, '_external_status'):
-                    self.parent._external_status(_("Критическая ошибка установки!", "Critical installation error!"))
-            except Exception:
-                pass
-            self.parent.triton_module = False
-            return False
-
-    def uninstall(self, model_id) -> bool:
-        mode = model_id
-        if mode == "medium":
-            return self.parent._uninstall_component("Fish Speech", "fish-speech-lib")
-        elif mode in ("medium+", "medium+low"):
-            return self.parent._uninstall_component("Triton", "triton-windows")
-        else:
-            logger.error(_('Неизвестная модель для удаления.', 'Unknown model for uninstall'))
-            return False
-
+    
     def cleanup_state(self):
         super().cleanup_state()
         self.current_fish_speech = None
         self.fish_speech_module = None
-        if self.parent.first_compiled is not None:
-            logger.info("Сброс состояния компиляции Fish Speech из-за удаления.")
-            self.parent.first_compiled = None
+        self._import_attempted = False
 
         if self.rvc_handler and self.rvc_handler.initialized:
             self.rvc_handler.cleanup_state()
@@ -600,53 +599,55 @@ class FishSpeechModel(IVoiceModel):
         logger.info(f"Состояние для модели {self.model_id} сброшено.")
 
     def initialize(self, init: bool = False) -> bool:
-        if self.initialized:
+        mode = self._mode()
+        if self.initialized and self.initialized_for == mode:
             return True
 
         self._load_module()
         if self.fish_speech_module is None:
             logger.error("fish_speech_lib не установлен")
+            self.initialized = False
+            self.initialized_for = None
             return False
 
-        mode = self._mode()
         compile_model = mode in ("medium+", "medium+low")
 
-        if (self.parent.first_compiled is not None
-                and self.parent.first_compiled != compile_model):
+        prev = getattr(self.parent, "first_compiled", None)
+        if prev is not None and prev != compile_model:
             logger.error("КОНФЛИКТ: нельзя переключиться между compile=True/False без перезапуска")
+            self.initialized = False
+            self.initialized_for = None
             return False
 
         if self.current_fish_speech is None:
             settings = self.parent.load_model_settings(mode)
-            device = settings.get(
-                "fsprvc_fsp_device" if mode == "medium+low" else "device",
-                "cuda")
-            half = settings.get(
-                "fsprvc_fsp_half" if mode == "medium+low" else "half",
-                "True" if compile_model else "False").lower() == "true"
+            device = settings.get("fsprvc_fsp_device" if mode == "medium+low" else "device", "cuda")
+            half = settings.get("fsprvc_fsp_half" if mode == "medium+low" else "half", "True" if compile_model else "False").lower() == "true"
 
-            self.current_fish_speech = self.fish_speech_module(
-                device=device, half=half, compile_model=compile_model)
+            self.current_fish_speech = self.fish_speech_module(device=device, half=half, compile_model=compile_model)
 
+            # фиксируем режим (False/True) для всей сессии
             self.parent.first_compiled = compile_model
+
             logger.info(f"FishSpeech инициализирован (compile={compile_model})")
 
         if mode == "medium+low":
             if self.rvc_handler and not self.rvc_handler.initialized:
-                logger.info("Инициализация RVC компонента для 'medium+low'...")
                 rvc_success = self.rvc_handler.initialize(init=False)
                 if not rvc_success:
                     logger.error("Не удалось инициализировать RVC компонент для 'medium+low'.")
+                    self.initialized = False
+                    self.initialized_for = None
                     return False
 
         self.initialized = True
+        self.initialized_for = mode
 
         if init:
             init_text = f"Инициализация модели {self.model_id}" if self.parent.voice_language == "ru" else f"{self.model_id} Model Initialization"
-            logger.info(f"Выполнение тестового прогона для {self.model_id}...")
             try:
-                results = self.events.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
-                main_loop = results[0] if results else None
+                res = self.events.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0) if self.events else []
+                main_loop = res[0] if res else None
                 if not main_loop or not main_loop.is_running():
                     raise RuntimeError("Главный цикл событий asyncio недоступен.")
 
@@ -654,26 +655,25 @@ class FishSpeechModel(IVoiceModel):
                 result_path = future.result(timeout=3600)
 
                 if not result_path or not os.path.exists(result_path) or os.path.getsize(result_path) == 0:
-                    logger.error("Тестовый прогон не создал аудиофайл — инициализация неуспешна.")
                     self.initialized = False
+                    self.initialized_for = None
                     return False
-
-                logger.info(f"Тестовый прогон для {self.model_id} успешно завершен.")
             except Exception as e:
-                logger.error(f"Ошибка во время тестового прогона модели {self.model_id}: {e}", exc_info=True)
+                logger.error(f"Warmup failed: {e}", exc_info=True)
                 self.initialized = False
+                self.initialized_for = None
                 return False
 
         return True
 
     async def voiceover(self, text: str, character: Optional[Any] = None, **kwargs) -> Optional[str]:
-        if not self.initialized:
+        mode = self._mode()
+        if not self.initialized or self.initialized_for != mode:
             raise Exception(f"Модель {self.model_id} не инициализирована.")
         if self.fish_speech_module is None:
             raise ImportError("Модуль fish_speech_lib не установлен.")
 
         try:
-            mode = self._mode()
             settings = self.parent.load_model_settings(mode)
             is_combined_model = mode == "medium+low"
 
@@ -687,10 +687,10 @@ class FishSpeechModel(IVoiceModel):
             voice_paths = get_character_voice_paths(character, self.parent.provider)
             reference_audio_path = None
             reference_text = ""
-            if os.path.exists(voice_paths['clone_voice_filename']):
-                reference_audio_path = voice_paths['clone_voice_filename']
-                if os.path.exists(voice_paths['clone_voice_text']):
-                    with open(voice_paths['clone_voice_text'], "r", encoding="utf-8") as file:
+            if os.path.exists(voice_paths["clone_voice_filename"]):
+                reference_audio_path = voice_paths["clone_voice_filename"]
+                if os.path.exists(voice_paths["clone_voice_text"]):
+                    with open(voice_paths["clone_voice_text"], "r", encoding="utf-8") as file:
                         reference_text = file.read().strip()
 
             seed_processed = int(settings.get(seed_key, 0))
@@ -698,6 +698,10 @@ class FishSpeechModel(IVoiceModel):
                 seed_processed = 42
 
             vol = str(settings.get("volume", "1.0"))
+            output_file = kwargs.get("output_file")
+            output_file_abs = os.path.abspath(str(output_file)) if output_file else None
+            if output_file_abs:
+                os.makedirs(os.path.dirname(output_file_abs) or ".", exist_ok=True)
 
             sample_rate, audio_data = self.current_fish_speech(
                 text=text,
@@ -736,7 +740,6 @@ class FishSpeechModel(IVoiceModel):
             final_output_path = processed_output_path
 
             if mode == "medium+low" and self.rvc_handler:
-                logger.info(f"Применяем RVC с параметрами FSP+RVC к файлу: {final_output_path}")
                 rvc_output_path = await self.rvc_handler.apply_rvc_to_file(
                     filepath=final_output_path,
                     character=character,
@@ -748,7 +751,7 @@ class FishSpeechModel(IVoiceModel):
                     is_half=settings.get("fsprvc_is_half", "True").lower() == "true",
                     f0method=settings.get("fsprvc_f0method", None),
                     use_index_file=settings.get("fsprvc_use_index_file", True),
-                    volume=vol
+                    volume=vol,
                 )
                 if rvc_output_path and os.path.exists(rvc_output_path):
                     if final_output_path != rvc_output_path:
@@ -757,17 +760,28 @@ class FishSpeechModel(IVoiceModel):
                         except OSError:
                             pass
                     final_output_path = rvc_output_path
-                else:
-                    logger.warning("Ошибка во время обработки RVC. Возвращается результат до RVC.")
-            elif mode == "medium+low" and not self.rvc_handler:
-                logger.warning("Модель 'medium+low' требует RVC, но обработчик не был предоставлен.")
 
-            res_conn = self.events.emit_and_wait(Events.Server.GET_GAME_CONNECTION)
-            connected_to_game = res_conn[0] if res_conn else False
-            if connected_to_game:
-                self.events.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, final_output_path)
+            if output_file_abs and final_output_path and os.path.exists(final_output_path):
+                try:
+                    if os.path.abspath(final_output_path) != output_file_abs:
+                        if os.path.exists(output_file_abs):
+                            try:
+                                os.remove(output_file_abs)
+                            except Exception:
+                                pass
+                        os.replace(final_output_path, output_file_abs)
+                        final_output_path = output_file_abs
+                except Exception:
+                    pass
+
+            if self.events:
+                res_conn = self.events.emit_and_wait(Events.Server.GET_GAME_CONNECTION)
+                connected_to_game = res_conn[0] if res_conn else False
+                if connected_to_game and final_output_path:
+                    self.events.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, final_output_path)
 
             return final_output_path
+
         except Exception as error:
             traceback.print_exc()
             logger.info(f"Ошибка при создании озвучки с Fish Speech ({self.model_id}): {error}")

@@ -70,9 +70,18 @@ class SeaBattleGame(GameInterface):
         logger.debug(f"[{self.character.char_id}] Очистка ресурсов 'Морского боя'.")
         self.character.set_variable("playingGame", False)
         self.character.set_variable("game_id", None)
-        
-        if self.command_queue: self.command_queue.close()
-        if self.state_queue: self.state_queue.close()
+
+        try:
+            gm = getattr(self.character, "game_manager", None)
+            if gm and getattr(gm, "active_game", None) is self:
+                gm.active_game = None
+        except Exception:
+            pass
+
+        if self.command_queue:
+            self.command_queue.close()
+        if self.state_queue:
+            self.state_queue.close()
 
         self.gui_process = None
         self.command_queue = None
@@ -102,6 +111,10 @@ class SeaBattleGame(GameInterface):
         return response
 
     def get_state_prompt(self) -> Optional[str]:
+        if self.gui_process and not self.gui_process.is_alive():
+            self.cleanup()
+            return "Игра 'Морской бой' была закрыта (окно закрыто). Считай игру завершённой."
+
         if not self.state_queue:
             return None
 
@@ -111,6 +124,16 @@ class SeaBattleGame(GameInterface):
                 latest_state = self.state_queue.get_nowait()
             except Exception:
                 break
+
+        if latest_state and isinstance(latest_state, dict):
+            ev = str(latest_state.get("event") or "").strip().lower()
+            if ev == "gui_closed" or latest_state.get("gui_closed") is True:
+                self.cleanup()
+                return "Игра 'Морской бой' была закрыта (окно закрыто). Считай игру завершённой."
+
+            if latest_state.get("critical_process_failure") is True:
+                self.cleanup()
+                return "Игра 'Морской бой' завершилась из-за ошибки процесса. Считай игру завершённой."
 
         if not latest_state:
             self._send_command({"action": "get_state"})
@@ -153,7 +176,6 @@ class SeaBattleGame(GameInterface):
 
         template_filename = f"{self.game_id}.system"
         try:
-            # Используем process_file вместо execute_dsl_script, как и в Chess
             content, _ = self.character.dsl_interpreter.process_file(template_filename)
             return content
         except FileNotFoundError:

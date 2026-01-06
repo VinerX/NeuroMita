@@ -17,11 +17,6 @@ class SettingsController:
         self.event_bus = get_event_bus()
         self.settings = SettingsManager(self.config_path)
 
-        if self.settings.get("GAME_CONNECTED") is None:
-            self.settings.set("GAME_CONNECTED", False)
-            self.settings.save_settings()
-            logger.info("Инициализирован флаг GAME_CONNECTED = False")
-
         self._subscribe_to_events()
 
     def _subscribe_to_events(self):
@@ -35,61 +30,23 @@ class SettingsController:
 
         preset_id = self.settings.get("LAST_API_PRESET_ID", 0)
 
-        preset = None
-        if preset_id:
-            preset_res = self.event_bus.emit_and_wait(
-                Events.ApiPresets.GET_PRESET_FULL,
-                {'id': preset_id},
-                timeout=1.0
-            )
-            preset = preset_res[0] if preset_res and preset_res[0] else None
+        try:
+            from managers.api_preset_resolver import ApiPresetResolver
+            resolver = ApiPresetResolver(settings=self.settings, event_bus=self.event_bus)
+            ps = resolver.resolve(int(preset_id) if preset_id else None)
+        except Exception as e:
+            logger.error(f"Не удалось резолвнуть пресет API: {e}", exc_info=True)
+            ps = None
 
-        state = {}
-        if preset_id:
-            state_res = self.event_bus.emit_and_wait(
-                Events.ApiPresets.LOAD_PRESET_STATE,
-                {'id': preset_id},
-                timeout=1.0
-            )
-            state = state_res[0] if state_res and state_res[0] else {}
-
-        def _compute_effective_url(p: dict, model: str, key: str) -> str:
-            url_tpl = p.get('url_tpl') or ''
-            add_key = bool(p.get('add_key', False))
-            url = ""
-
-            if url_tpl:
-                if '{model}' in url_tpl:
-                    url = url_tpl.format(model=model)
-                else:
-                    url = url_tpl
-            else:
-                url = p.get('url', '') or ''
-
-            if add_key and key:
-                if "key=" not in url:
-                    sep = "&" if "?" in url else "?"
-                    url = f"{url}{sep}key={key}"
-                else:
-                    url = re.sub(r"key=[^&]*", f"key={key}", url)
-
-            return url
-
-        if preset and update_model:
-            api_key = str(state.get("key") or preset.get("key") or "")
-            api_model = str(state.get("model") or preset.get("default_model") or "")
-            reserve_keys = state.get("reserve_keys", preset.get("reserve_keys", []))
-            if not isinstance(reserve_keys, list):
-                reserve_keys = []
-
-            api_url = _compute_effective_url(preset, api_model, api_key)
-
+        if ps and update_model:
             model_settings = {
-                'api_key': api_key,
-                'api_key_res': "\n".join([str(k).strip() for k in reserve_keys if str(k).strip()]),
-                'api_url': api_url,
-                'api_model': api_model,
-                'makeRequest': bool(preset.get('use_request', False)),
+                "api_key": ps.api_key,
+                "api_key_res": "\n".join([str(k).strip() for k in (ps.reserve_keys or []) if str(k).strip()]),
+                "api_url": ps.api_url,
+                "api_model": ps.api_model,
+                "protocol_id": ps.protocol_id,
+                "dialect_id": ps.dialect_id,
+                "provider_name": ps.provider_name,
             }
             self.event_bus.emit("model_settings_loaded", model_settings)
 
@@ -137,16 +94,30 @@ class SettingsController:
             "ENABLE_CAMERA_CAPTURE",
             "ENABLE_SCREEN_ANALYSIS",
             "MIC_ACTIVE",
-            "GAME_CONNECTED",
+
+            "ENABLE_GAMES",
+            "ALLOW_GAMES_WHEN_CONNECTED",
+            "ENABLE_GAME_CHESS",
+            "ENABLE_GAME_SEABATTLE",
         ]
 
         custom_vars: Dict[str, Any] = {
             "app_version": "1.0.0",
         }
 
+        game_connected = False
+        try:
+            res = self.event_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
+            if res:
+                game_connected = bool(res[0])
+        except Exception:
+            game_connected = False
+
         flag_vars: Dict[str, Any] = {
             key: bool(self.settings.get(key, False))
             for key in bool_keys
         }
+
+        flag_vars["GAME_CONNECTED"] = bool(game_connected)
 
         return {**flag_vars, **custom_vars}

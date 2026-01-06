@@ -13,6 +13,11 @@ class AudioModelController(BaseController):
         self.event_bus.subscribe(Events.Audio.FINISH_MODEL_LOADING, self._on_finish_model_loading, weak=False)
         self.event_bus.subscribe(Events.Audio.CANCEL_MODEL_LOADING, self._on_cancel_model_loading, weak=False)
 
+        self.event_bus.subscribe(Events.Audio.OPEN_VOICE_MODEL_SETTINGS_DIALOG, self._on_open_voice_model_settings_dialog, weak=False)
+
+    def _on_open_voice_model_settings_dialog(self, event: Event):
+        self.event_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "voice_models", "payload": {}})
+
     def _on_check_triton_dependencies(self, event: Event):
         if self.view and hasattr(self.view, "check_triton_dependencies_signal") and self.view.check_triton_dependencies_signal:
             self.view.check_triton_dependencies_signal.emit()

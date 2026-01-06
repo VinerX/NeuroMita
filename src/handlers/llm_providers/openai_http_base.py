@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -23,34 +23,34 @@ class OpenAIHTTPProviderBase(BaseProvider):
     supports_streaming = True
     supports_streaming_with_tools = False
 
-    # tools dialect for ToolManager (usually "openai")
     tools_dialect_id: str = "openai"
 
-    # providers can override this
     def _supports_tools_for_req(self, req: LLMRequest) -> bool:
+        caps = req.capabilities or {}
+        if "tools_native" in caps:
+            return bool(caps.get("tools_native"))
         return bool(self.supports_tools_native)
 
     def _headers(self, req: LLMRequest) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
+
+        extra = req.headers or {}
+        if isinstance(extra, dict):
+            for k, v in extra.items():
+                if k and v is not None:
+                    headers[str(k)] = str(v)
+
         if req.api_key:
             headers["Authorization"] = f"Bearer {req.api_key}"
         return headers
 
     def _preprocess_messages(self, req: LLMRequest) -> List[Dict[str, Any]]:
-        """
-        Sanitize messages for OpenAI-compatible HTTP endpoints.
-        Keep only fields that are typically accepted by chat/completions APIs.
-        This prevents 4xx errors on strict providers (e.g., Mistral) when
-        history/UI metadata is present in stored messages.
-        """
         allowed_keys = {
             "role",
             "content",
             "name",
-            # tools recursion support
             "tool_calls",
             "tool_call_id",
-            # legacy function calling
             "function_call",
         }
 
@@ -63,14 +63,9 @@ class OpenAIHTTPProviderBase(BaseProvider):
         return cleaned
 
     def _normalize_messages(self, req: LLMRequest, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        # default: no changes
         return messages
 
     def _map_unified_params(self, unified: Dict[str, Any], model_to_use: str) -> Dict[str, Any]:
-        """
-        Canonical -> openai-compatible kwargs.
-        Keep it conservative: don't send unknown fields.
-        """
         u = unified or {}
         m = (model_to_use or "").lower()
         out: Dict[str, Any] = {}
@@ -79,16 +74,13 @@ class OpenAIHTTPProviderBase(BaseProvider):
             if k in u:
                 out[k] = u[k]
 
-        # top_k: only for deepseek-openai proxies
         if "top_k" in u and "deepseek" in m:
             out["top_k"] = u["top_k"]
 
-        # logprobs: most openai-compatible endpoints expect bool
         if "logprobs" in u:
             lp = u["logprobs"]
             out["logprobs"] = lp if isinstance(lp, bool) else bool(lp)
 
-        # thinking_budget is not sent
         return out
 
     def _build_payload(self, req: LLMRequest, model_to_use: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -98,13 +90,11 @@ class OpenAIHTTPProviderBase(BaseProvider):
         }
         payload.update(self._map_unified_params(req.extra or {}, model_to_use))
 
-        # tools: provider decides; tools payload comes from ToolManager dialect
         if req.tools_on and req.tools_mode == "native" and req.tool_manager and self._supports_tools_for_req(req):
             dialect = req.tools_dialect or self.tools_dialect_id
             tools_payload = req.tools_payload or req.tool_manager.get_tools_payload(dialect)
             if tools_payload:
                 payload["tools"] = tools_payload
-                # streaming with tools often breaks
                 payload["stream"] = False
 
         return payload
@@ -138,11 +128,9 @@ class OpenAIHTTPProviderBase(BaseProvider):
             logger.error(f"[{self.name}] HTTP {resp.status_code}: {err}")
             return None
 
-        # streaming
         if req.stream:
             return self._handle_stream(resp, req.stream_cb)
 
-        # non-stream parsing
         try:
             data = resp.json()
         except Exception as e:
@@ -152,7 +140,6 @@ class OpenAIHTTPProviderBase(BaseProvider):
         message = (data.get("choices", [{}])[0].get("message") or {}) if isinstance(data, dict) else {}
         tool_calls = message.get("tool_calls") or []
 
-        # tool recursion
         if tool_calls and req.tool_manager and self._supports_tools_for_req(req):
             tm = req.tool_manager
             dialect = req.tools_dialect or self.tools_dialect_id

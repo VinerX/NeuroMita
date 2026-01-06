@@ -25,8 +25,8 @@ from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor, QFont, QImage, QIc
 
 from ui.settings import (
     api_settings, character_settings, game_settings, 
-    microphone_settings, screen_analysis_settings, voiceover_settings,
-    prompt_catalogue_settings, model_interaction_settings, general_settings
+    microphone_settings, screen_analysis_settings, voiceover_settings, 
+    model_interaction_settings, general_settings
 )
 
 from ui.widgets import (status_indicators_widget)
@@ -100,6 +100,8 @@ class ChatGUI(QMainWindow):
     asr_install_finished_signal = pyqtSignal(dict)
     asr_install_failed_signal = pyqtSignal(dict)
 
+    run_ui_task_signal = pyqtSignal(object)
+
     # api_settings.py
     test_result_received = pyqtSignal(dict)
     test_result_failed = pyqtSignal(dict)
@@ -140,6 +142,7 @@ class ChatGUI(QMainWindow):
 
         self._voice_model_dialog = None
         self._voice_model_controller_callback = None
+        self._voice_model_init_in_progress_model_id = None
 
         self.update_chat_signal.connect(lambda role, content, insert_at_start, message_time:
                                         message_renderer.insert_message(self, role, content, insert_at_start, message_time))
@@ -175,7 +178,6 @@ class ChatGUI(QMainWindow):
         except Exception as e:
             logger.info(f"Не удалось удачно получить настройки микрофона: {e}")
 
-        QTimer.singleShot(500, self.initialize_last_local_model_on_startup)
 
         self.prepare_stream_signal.connect(self._on_stream_start)
         self.finish_stream_signal.connect(self._on_stream_finish)
@@ -201,14 +203,25 @@ class ChatGUI(QMainWindow):
                 "hide_on_close": True,
                 "modal": False,
             },
+
+            # Blocking dialogs (used by VoiceModelGuiController via show_dialog_blocking)
+            "vc_redist_dialog": {
+                "factory": self._factory_vc_redist_dialog,
+                "singleton": False,
+                "hide_on_close": False,
+                "modal": True,
+            },
+            "triton_deps_dialog": {
+                "factory": self._factory_triton_deps_dialog,
+                "singleton": False,
+                "hide_on_close": False,
+                "modal": True,
+            },
         }
 
     def _connect_signals(self):
         self.history_loaded_signal.connect(self._on_history_loaded)
         self.more_history_loaded_signal.connect(self._on_more_history_loaded)
-        self.model_initialized_signal.connect(self._on_model_initialized)
-        self.model_init_cancelled_signal.connect(self._on_model_init_cancelled)
-        self.model_init_failed_signal.connect(self._on_model_init_failed)
         self.show_tg_code_dialog_signal.connect(self._on_show_tg_code_dialog)
         self.show_tg_password_dialog_signal.connect(self._on_show_tg_password_dialog)
         self.reload_prompts_success_signal.connect(self._on_reload_prompts_success)
@@ -216,18 +229,19 @@ class ChatGUI(QMainWindow):
         self.display_loading_popup_signal.connect(self._on_display_loading_popup)
         self.hide_loading_popup_signal.connect(self._on_hide_loading_popup)
         self.update_chat_font_size_signal.connect(self.update_chat_font_size)
-        self.switch_voiceover_settings_signal.connect(self.switch_voiceover_settings)
         self.load_chat_history_signal.connect(self.load_chat_history)
-        self.check_triton_dependencies_signal.connect(self.check_triton_dependencies)
         self.clear_user_input_signal.connect(self._on_clear_user_input)
         self.insert_user_input_signal.connect(self._on_insert_user_input)
         self.show_info_message_signal.connect(self._on_show_info_message)
         self.show_error_message_signal.connect(self._on_show_error_message)
         self.update_model_loading_status_signal.connect(self._on_update_model_loading_status)
-        self.finish_model_loading_signal.connect(self._on_finish_model_loading)
-        self.cancel_model_loading_signal.connect(self._on_cancel_model_loading)
 
         self.create_dialog_signal.connect(self._create_dialog_for_voice_model)
+
+        self.run_ui_task_signal.connect(
+            self._run_ui_task_slot,
+            type=Qt.ConnectionType.QueuedConnection
+        )
 
         # Окно установки.
         self.create_installation_window_signal.connect(
@@ -252,6 +266,13 @@ class ChatGUI(QMainWindow):
             self._on_asr_install_failed,
             type=Qt.ConnectionType.QueuedConnection
         )
+
+    def _run_ui_task_slot(self, fn):
+        try:
+            if callable(fn):
+                fn()
+        except Exception as e:
+            logger.error(f"_run_ui_task_slot error: {e}", exc_info=True)
 
     def _init_window_manager(self):
         self.window_manager = WindowManager(parent=self)
@@ -287,6 +308,15 @@ class ChatGUI(QMainWindow):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         return dialog
+    
+    def _factory_vc_redist_dialog(self, parent, payload: dict):
+        from ui.windows.voice_action_windows import VCRedistWarningDialog
+        return VCRedistWarningDialog(parent=parent)
+
+    def _factory_triton_deps_dialog(self, parent, payload: dict):
+        from ui.windows.voice_action_windows import TritonDependenciesDialog
+        deps = payload.get("dependencies_status") or payload.get("deps") or {}
+        return TritonDependenciesDialog(parent=parent, dependencies_status=deps)
 
     def _create_dialog_for_voice_model(self, data):
         if not hasattr(self, "window_manager") or self.window_manager is None:
@@ -346,7 +376,6 @@ class ChatGUI(QMainWindow):
             "voice":       voiceover_settings.setup_voiceover_controls,
             "microphone":  microphone_settings.setup_microphone_controls,
             "characters":  character_settings.setup_mita_controls,
-            "prompts":     prompt_catalogue_settings.setup_prompt_catalogue_controls,
             "screen":      screen_analysis_settings.setup_screen_analysis_controls,
             "game":        game_settings.setup_game_controls,
             "debug":       self._debug_wrapper,
@@ -723,323 +752,7 @@ class ChatGUI(QMainWindow):
         logger.info("Завершение программы...")
         self.close()
 
-    def on_local_voice_selected(self, event=None):
-        if not hasattr(self, 'local_voice_combobox'):
-            return
-
-        selected_model_name = self.local_voice_combobox.currentText()
-        if not selected_model_name:
-            self.update_local_model_status_indicator()
-            return
-
-        selected_model_id = None
-        selected_model = None
-        for model in LOCAL_VOICE_MODELS:
-            if model["name"] == selected_model_name:
-                selected_model = model
-                selected_model_id = model["id"]
-                break
-
-        if not selected_model_id:
-            QMessageBox.critical(self, _("Ошибка", "Error"), 
-                _("Не удалось определить ID выбранной модели", "Could not determine ID of selected model"))
-            self.update_local_model_status_indicator()
-            return
-
-        if selected_model_id in ["medium+", "medium+low"]:
-            pass
-
-        self._save_setting("NM_CURRENT_VOICEOVER", selected_model_id)
-        self.current_local_voice_id = selected_model_id
-        self.update_local_model_status_indicator()
-        
-        is_initialized = self.event_bus.emit_and_wait(Events.Audio.CHECK_MODEL_INITIALIZED, {'model_id': selected_model_id}, timeout=0.5)
-        
-        if not (is_initialized and is_initialized[0]):
-            self.show_model_loading_window(selected_model)
-        else:
-            success = self.event_bus.emit_and_wait(Events.Audio.SELECT_VOICE_MODEL, {'model_id': selected_model_id}, timeout=1.0)
-            if success and success[0]:
-                self.last_voice_model_selected = selected_model
-                self.update_local_voice_combobox()
-                logger.info(f"Переключился на уже инициализированную модель «{selected_model_id}»")
-            else:
-                QMessageBox.critical(self, 'Ошибка', 'Не удалось активировать модель')
-
-    def show_model_loading_window(self, model):
-        model_id = model["id"]
-        model_name = model["name"]
-
-        if not os.path.exists('models'):
-            logger.warning(f"Файлы моделей для '{model_name}' не готовы (загрузка не удалась или отменена).")
-            QMessageBox.critical(self, _("Ошибка", "Error"),
-               _("Не найдена папка Models. Инициализация отменена.",
-               "Failed to find Models folder. Initialization cancelled."))
-            return
-
-        logger.info(f"Модели для '{model_name}' готовы. Запуск инициализации...")
-
-        self.loading_dialog, self.loading_progress, self.loading_status_label = create_model_loading_dialog(
-            self, model_name, lambda: self.cancel_model_loading(self.loading_dialog)
-        )
-        self.model_loading_cancelled = False
-        
-        def progress_callback(status_type, message):
-            if status_type == "status":
-                QTimer.singleShot(0, lambda: self.loading_status_label.setText(message))
-        
-        self.event_bus.emit(Events.Audio.INIT_VOICE_MODEL, {
-            'model_id': model_id,
-            'progress_callback': progress_callback
-        })
-        self.loading_dialog.show()
-
-    def _on_model_initialized(self, data: dict):
-        model_id = data.get('model_id')
-        if hasattr(self, 'loading_dialog') and self.loading_dialog:
-            self.loading_dialog.close()
-        success = self.event_bus.emit_and_wait(Events.Audio.SELECT_VOICE_MODEL, {'model_id': model_id}, timeout=1.0)
-        if success and success[0]:
-            for model in LOCAL_VOICE_MODELS:
-                if model["id"] == model_id:
-                    self.last_voice_model_selected = model
-                    break
-            QMessageBox.information(self, _("Успешно", "Success"),
-                _("Модель {} успешно инициализирована!", "Model {} initialized successfully!").format(model_id))
-            self.update_local_voice_combobox()
-        else:
-            QMessageBox.critical(self, "Ошибка", "Не удалось активировать модель после инициализации")
-
-    def _on_model_init_cancelled(self, data: dict):
-        if hasattr(self, 'loading_dialog') and self.loading_dialog:
-            self.loading_dialog.close()
-
-    def _on_model_init_failed(self, data: dict):
-        model_id = data.get('model_id')
-        error = data.get('error', 'Unknown error')
-        if hasattr(self, 'loading_dialog') and self.loading_dialog:
-            self.loading_dialog.close()
-        QMessageBox.critical(self, "Ошибка", f"Не удалось инициализировать модель {model_id}.\n{error}")
-
-    def cancel_model_loading(self, loading_window):
-        logger.info("Загрузка модели отменена пользователем.")
-        self.model_loading_cancelled = True
-        if loading_window:
-            loading_window.close()
-
-        restored_model_id = None
-        if self.last_voice_model_selected:
-            if hasattr(self, 'local_voice_combobox'):
-                self.local_voice_combobox.setCurrentText(self.last_voice_model_selected["name"])
-            restored_model_id = self.last_voice_model_selected["id"]
-            self._save_setting("NM_CURRENT_VOICEOVER", restored_model_id)
-            self.current_local_voice_id = restored_model_id
-        else:
-            if hasattr(self, 'local_voice_combobox'):
-                self.local_voice_combobox.setCurrentText('')
-            self._save_setting("NM_CURRENT_VOICEOVER", None)
-            self.current_local_voice_id = None
-
-        self.update_local_model_status_indicator()
-
-    def initialize_last_local_model_on_startup(self):
-        if self._get_setting("LOCAL_VOICE_LOAD_LAST", False):
-            logger.info("Проверка автозагрузки последней локальной модели...")
-            last_model_id = self._get_setting("NM_CURRENT_VOICEOVER", None)
-            if last_model_id:
-                logger.info(f"Найдена последняя модель для автозагрузки: {last_model_id}")
-                model_to_load = None
-                for model in LOCAL_VOICE_MODELS:
-                    if model["id"] == last_model_id:
-                        model_to_load = model
-                        break
-                if model_to_load:
-                    is_installed = self.event_bus.emit_and_wait(Events.Audio.CHECK_MODEL_INSTALLED, {'model_id': last_model_id}, timeout=0.5)
-                    if is_installed and is_installed[0]:
-                        is_initialized = self.event_bus.emit_and_wait(Events.Audio.CHECK_MODEL_INITIALIZED, {'model_id': last_model_id}, timeout=0.5)
-                        if not (is_initialized and is_initialized[0]):
-                            logger.info(f"Модель {last_model_id} установлена, но не инициализирована. Запуск инициализации...")
-                            self.show_model_loading_window(model_to_load)
-                        else:
-                            logger.info(f"Модель {last_model_id} уже инициализирована.")
-                            self.last_voice_model_selected = model_to_load
-                            self.update_local_voice_combobox()
-                    else:
-                        logger.warning(f"Модель {last_model_id} выбрана для автозагрузки, но не установлена.")
-                else:
-                    logger.warning(f"Не найдена информация для модели с ID: {last_model_id}")
-            else:
-                logger.info("Нет сохраненной последней локальной модели для автозагрузки.")
-        else:
-            logger.info("Автозагрузка локальной модели отключена.")
-
-    def update_local_model_status_indicator(self):
-        if hasattr(self, 'local_model_status_label') and self.local_model_status_label:
-            show_combobox_indicator = False
-            current_model_id_combo = self._get_setting("NM_CURRENT_VOICEOVER", None)
-            if current_model_id_combo:
-                is_installed = self.event_bus.emit_and_wait(Events.Audio.CHECK_MODEL_INSTALLED, {'model_id': current_model_id_combo}, timeout=0.5)
-                if is_installed and is_installed[0]:
-                    is_initialized = self.event_bus.emit_and_wait(Events.Audio.CHECK_MODEL_INITIALIZED, {'model_id': current_model_id_combo}, timeout=0.5)
-                    if not (is_initialized and is_initialized[0]):
-                        show_combobox_indicator = True
-                else:
-                    show_combobox_indicator = True
-            self.local_model_status_label.setVisible(show_combobox_indicator)
-
-        show_section_warning = False
-        if (hasattr(self, 'voiceover_section_warning_label') and 
-                self.voiceover_section_warning_label and
-                hasattr(self, 'voiceover_section') and 
-                self.voiceover_section):
-            voiceover_method = self._get_setting("VOICEOVER_METHOD", "TG")
-            current_model_id_section = self._get_setting("NM_CURRENT_VOICEOVER", None)
-            if voiceover_method == "Local" and current_model_id_section:
-                is_installed = self.event_bus.emit_and_wait(Events.Audio.CHECK_MODEL_INSTALLED, {'model_id': current_model_id_section}, timeout=0.5)
-                if is_installed and is_installed[0]:
-                    is_initialized = self.event_bus.emit_and_wait(Events.Audio.CHECK_MODEL_INITIALIZED, {'model_id': current_model_id_section}, timeout=0.5)
-                    if not (is_initialized and is_initialized[0]):
-                        show_section_warning = True
-                else:
-                    show_section_warning = True
-            if hasattr(self.voiceover_section, 'warning_label'):
-                self.voiceover_section.warning_label.setVisible(show_section_warning)
-
-    def switch_voiceover_settings(self, selected_method: str | None = None) -> None:
-        if selected_method is not None:
-            self._save_setting("VOICEOVER_METHOD", selected_method)
-
-        use_voice = bool(self._get_setting("USE_VOICEOVER", False))
-
-        if hasattr(self, 'use_voice_checkbox') and self.use_voice_checkbox:
-            self.use_voice_checkbox.setVisible(True)
-
-        if not hasattr(self, "voiceover_section"):
-            logger.error("Отсутствует voiceover_section – переключать нечего.")
-            return
-
-        method_row_widget  = getattr(self, "method_frame", None)
-        tg_group_widget    = getattr(self, "tg_settings_frame", None)
-        local_group_widget = getattr(self, "local_settings_frame", None)
-
-        def set_row_visible(widget: QWidget | None, visible: bool):
-            if widget is None:
-                return
-            widget.setVisible(visible)
-            parent = widget.parentWidget()
-            if parent is not None and parent != self.voiceover_section.content_frame:
-                parent.setVisible(visible)
-
-        current_method = self._get_setting("VOICEOVER_METHOD", "TG")
-
-        set_row_visible(method_row_widget, True)
-
-        if tg_group_widget:
-            tg_group_widget.setVisible(current_method == "TG")
-        if local_group_widget:
-            local_group_widget.setVisible(current_method == "Local")
-            self.update_local_voice_combobox()
-            self.update_local_model_status_indicator()
-
-        if hasattr(self, 'method_combobox'):
-            self.method_combobox.setEnabled(use_voice)
-
-        self.check_triton_dependencies()
-        
-    def update_local_voice_combobox(self):
-        if not hasattr(self, 'local_voice_combobox') or self.local_voice_combobox is None:
-            logger.warning("update_local_voice_combobox: виджет local_voice_combobox не найден.")
-            return
-
-        self.local_voice_combobox.blockSignals(True)
-        
-        try:
-            # 1) Берём установленные модели напрямую из контроллера через событие
-            installed_ids = set()
-            try:
-                result = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.5)
-                if result and result[0]:
-                    if isinstance(result[0], (set, list, tuple)):
-                        installed_ids = set(result[0])
-            except Exception as e:
-                logger.info(f"GET_INSTALLED_MODELS недоступен: {e}")
-
-            # 2) Фолбэк: читаем Settings/installed_models.txt (на случай, если контроллер ещё не инициализирован)
-            # if not installed_ids:
-            #     try:
-            #         installed_file = os.path.join("Settings", "installed_models.txt")
-            #         if os.path.exists(installed_file):
-            #             with open(installed_file, "r", encoding="utf-8") as f:
-            #                 for line in f:
-            #                     mid = line.strip()
-            #                     if mid:
-            #                         installed_ids.add(mid)
-            #     except Exception as e:
-            #         logger.info(f"Ошибка чтения installed_models.txt: {e}")
-
-            id_to_name = {m["id"]: m["name"] for m in LOCAL_VOICE_MODELS}
-            ordered_ids = [m["id"] for m in LOCAL_VOICE_MODELS]
-            installed_names_ordered = [id_to_name[mid] for mid in ordered_ids if mid in installed_ids]
-
-            current_items = [self.local_voice_combobox.itemText(i) for i in range(self.local_voice_combobox.count())]
-            if installed_names_ordered != current_items:
-                self.local_voice_combobox.clear()
-                if installed_names_ordered:
-                    self.local_voice_combobox.addItems(installed_names_ordered)
-                logger.info(f"Обновлен список локальных моделей: {installed_names_ordered}")
-
-            current_model_id = self._get_setting("NM_CURRENT_VOICEOVER", None)
-            current_model_name = id_to_name.get(current_model_id, "")
-
-            if current_model_name and current_model_name in installed_names_ordered:
-                if self.local_voice_combobox.currentText() != current_model_name:
-                    self.local_voice_combobox.setCurrentText(current_model_name)
-            elif installed_names_ordered:
-                first_name = installed_names_ordered[0]
-                if self.local_voice_combobox.currentText() != first_name:
-                    self.local_voice_combobox.setCurrentText(first_name)
-                for m in LOCAL_VOICE_MODELS:
-                    if m["name"] == first_name:
-                        if self._get_setting("NM_CURRENT_VOICEOVER") != m["id"]:
-                            self._save_setting("NM_CURRENT_VOICEOVER", m["id"])
-                            self.current_local_voice_id = m["id"]
-                        break
-            else:
-                if self.local_voice_combobox.currentText() != '':
-                    self.local_voice_combobox.setCurrentText('')
-                if self._get_setting("NM_CURRENT_VOICEOVER") is not None:
-                    self._save_setting("NM_CURRENT_VOICEOVER", None)
-                    self.current_local_voice_id = None
-        finally:
-            self.local_voice_combobox.blockSignals(False)
-
-        self.update_local_model_status_indicator()
-        self.check_triton_dependencies()
-
-    def check_triton_dependencies(self):
-        if hasattr(self, 'triton_warning_label') and self.triton_warning_label:
-            self.triton_warning_label.deleteLater()
-            delattr(self, 'triton_warning_label')
-        if self._get_setting("VOICEOVER_METHOD") != "Local":
-            return
-        if not hasattr(self, 'local_settings_frame') or not self.local_settings_frame:
-            return
-        try:
-            import triton  # noqa
-            logger.debug("Зависимости Triton найдены (через import triton).")
-        except ImportError as e:
-            logger.info(f"Зависимости Triton не найдены! Игнорируйте это предупреждение, если не используете \"Fish Speech+ / + RVC\" озвучку. Exception импорта: {e}")
-        except Exception as e:
-            logger.error(f"Неожиданная ошибка при проверке Triton. Игнорируйте это предупреждение, если не используете \"Fish Speech+ / + RVC\" озвучку. Exception: {e}", exc_info=True)
-
-    def open_local_model_installation_window(self):
-        try:
-            self.event_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "voice_models"})
-        except Exception as e:
-            logger.error(f"Ошибка при вызове окна установки моделей: {e}", exc_info=True)
-            QMessageBox.critical(self, _("Ошибка", "Error"),
-                _("Не удалось открыть окно установки моделей.", "Failed to open model installation window."))
-
+ 
     def _show_ffmpeg_installing_popup(self):
         if hasattr(self, 'ffmpeg_install_popup') and self.ffmpeg_install_popup:
             return
@@ -1053,20 +766,6 @@ class ChatGUI(QMainWindow):
 
     def _show_ffmpeg_error_popup(self):
         show_ffmpeg_error_popup(self)
-
-    def on_voice_language_selected(self, event=None):
-        if not hasattr(self, 'voice_language_var'):
-            logger.warning("Переменная voice_language_var не найдена.")
-            return
-        selected_language = self.voice_language_var.currentText() if hasattr(self.voice_language_var, 'currentText') else self.voice_language_var
-        logger.info(f"Выбран язык озвучки: {selected_language}")
-        self._save_setting("VOICE_LANGUAGE", selected_language)
-        success = self.event_bus.emit_and_wait(Events.Audio.CHANGE_VOICE_LANGUAGE, {'language': selected_language}, timeout=1.0)
-        if success and success[0]:
-            logger.info(f"Язык успешно изменен на {selected_language}.")
-            self.update_local_model_status_indicator()
-        else:
-            logger.warning("Не удалось изменить язык озвучки")
 
     def paste_from_clipboard(self, event=None):
         try:
@@ -1176,14 +875,6 @@ class ChatGUI(QMainWindow):
     def _on_update_model_loading_status(self, status: str):
         if hasattr(self, 'loading_status_label'):
             self.loading_status_label.setText(status)
-
-    def _on_finish_model_loading(self, data: dict):
-        model_id = data.get('model_id')
-        self._on_model_initialized({'model_id': model_id})
-
-    def _on_cancel_model_loading(self):
-        if hasattr(self, 'cancel_model_loading') and hasattr(self, 'loading_dialog'):
-            self.cancel_model_loading(self.loading_dialog)
 
     def _debug_wrapper(self, parent_layout):
         debug_label = QLabel(_('Отладочная информация', 'Debug Information'))
@@ -1464,3 +1155,75 @@ class ChatGUI(QMainWindow):
         if response != "":
             self._insert_formatted_text(cursor, f"{MitaName}: ", QColor("hot pink"), bold=True)
             cursor.insertText(f"{response}\n\n")
+
+    def set_settings_icon_indicator(self, category: str, state: str | None, tooltip: str | None = None) -> None:
+        btn = getattr(self, "settings_buttons", {}).get(category)
+        if not btn:
+            return
+        if hasattr(btn, "set_indicator_state"):
+            btn.set_indicator_state(state, tooltip_text=tooltip)
+
+
+    def _set_voice_icon_loading(self, model_id: str | None) -> None:
+        mid = str(model_id) if model_id else None
+        self._voice_model_init_in_progress_model_id = mid
+
+
+    def _update_voice_settings_icon_indicator(self) -> None:
+        use_voice = bool(self._get_setting("USE_VOICEOVER", False))
+        method = self._get_setting("VOICEOVER_METHOD", "TG")
+
+        if not use_voice or method != "Local":
+            self.set_settings_icon_indicator("voice", None, None)
+            return
+
+        model_id = self._get_setting("NM_CURRENT_VOICEOVER", None)
+        model_id = str(model_id) if model_id else ""
+
+        if not model_id:
+            self.set_settings_icon_indicator(
+                "voice",
+                "red",
+                "Local voiceover enabled: model not selected"
+            )
+            return
+
+        if self._voice_model_init_in_progress_model_id == model_id:
+            self.set_settings_icon_indicator(
+                "voice",
+                "loading",
+                f"Initializing local voice model: {model_id}"
+            )
+            return
+
+        is_installed = self.event_bus.emit_and_wait(
+            Events.Audio.CHECK_MODEL_INSTALLED,
+            {'model_id': model_id},
+            timeout=0.5
+        )
+        if not (is_installed and is_installed[0]):
+            self.set_settings_icon_indicator(
+                "voice",
+                "red",
+                f"Local voice model not installed: {model_id}"
+            )
+            return
+
+        is_initialized = self.event_bus.emit_and_wait(
+            Events.Audio.CHECK_MODEL_INITIALIZED,
+            {'model_id': model_id},
+            timeout=0.5
+        )
+        if not (is_initialized and is_initialized[0]):
+            self.set_settings_icon_indicator(
+                "voice",
+                "red",
+                f"Local voice model requires initialization: {model_id}"
+            )
+            return
+
+        self.set_settings_icon_indicator(
+            "voice",
+            "green",
+            f"Local voice model ready: {model_id}"
+        )

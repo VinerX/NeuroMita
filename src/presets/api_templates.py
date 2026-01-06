@@ -1,5 +1,6 @@
+# src/presets/api_templates.py
+
 API_TEMPLATES_DATA = [
-    # 1. MISTRAL AI - новый, самый приоритетный
     {
         "id": 1,
         "name": "Mistral AI",
@@ -8,20 +9,15 @@ API_TEMPLATES_DATA = [
         "default_model": "mistral-large-2512",
         "known_models": [
             "mistral-large-2407",
-            "mistral-medium-2312"
+            "mistral-medium-2312",
         ],
-        "gemini_case": False,
-        "use_request": True,
-        "is_g4f": False,
+        "protocol_id": "mistral_default",
         "test_url": "https://api.mistral.ai/v1/models",
         "filter_fn": "mistral_filter",
-        "add_key": True,
         "documentation_url": "https://docs.mistral.ai/",
         "models_url": "https://docs.mistral.ai/getting-started/models/",
-        "key_url": "https://console.mistral.ai/api-keys/"
+        "key_url": "https://console.mistral.ai/api-keys/",
     },
-    
-    # 2. OPENROUTER - второй по приоритету
     {
         "id": 2,
         "name": "OpenRouter",
@@ -31,19 +27,15 @@ API_TEMPLATES_DATA = [
         "known_models": [
             "mistralai/devstral-2512:free",
             "arcee-ai/trinity-mini:free",
-            "nex-agi/deepseek-v3.1-nex-n1:free"
+            "nex-agi/deepseek-v3.1-nex-n1:free",
         ],
-        "gemini_case": None,
-        "use_request": True,
-        "add_key": False,
+        "protocol_id": "openrouter_default",
         "test_url": "https://openrouter.ai/api/v1/models",
         "filter_fn": "openrouter_filter",
         "documentation_url": "https://openrouter.ai/docs/quickstart",
         "models_url": "https://openrouter.ai/models",
-        "key_url": "https://openrouter.ai/keys"
+        "key_url": "https://openrouter.ai/keys",
     },
-    
-    # 3. GOOGLE AI STUDIO проблем.
     {
         "id": 3,
         "name": "Google AI Studio",
@@ -55,19 +47,15 @@ API_TEMPLATES_DATA = [
             "gemini-2.5-pro",
             "gemini-2.5-flash-lite",
             "gemini-2.0-flash",
-            "gemini-flash-latest"
+            "gemini-flash-latest",
         ],
-        "gemini_case": True,
-        "use_request": True,
-        "add_key": True,
+        "protocol_id": "google_gemini_default",
         "test_url": "https://generativelanguage.googleapis.com/v1beta/models?key={key}",
         "filter_fn": "filter_generate_content",
         "documentation_url": "https://ai.google.dev/gemini-api/docs",
         "models_url": "https://ai.google.dev/gemini-api/docs/models/gemini",
-        "key_url": "https://aistudio.google.com/apikey"
+        "key_url": "https://aistudio.google.com/apikey",
     },
-    
-    # 4. AI.IO проблем.
     {
         "id": 4,
         "name": "Ai.iO",
@@ -75,13 +63,11 @@ API_TEMPLATES_DATA = [
         "url": "https://api.intelligence.io.solutions/api/v1/chat/completions",
         "default_model": "deepseek-ai/DeepSeek-V3.2",
         "known_models": [],
-        "use_request": True,
-        "add_key": False,
+        "protocol_id": "aiio_default",
         "test_url": "https://api.intelligence.io.solutions/api/v1/models",
         "filter_fn": "aiio_filter",
         "documentation_url": "https://io.net/docs/guides/inception",
         "models_url": "https://io.net/docs/guides/intelligence/exploring-ai-models",
-        "key_url": "https://ai.io.net/ai/api-keys"
-    }
-    
+        "key_url": "https://ai.io.net/ai/api-keys",
+    },
 ]

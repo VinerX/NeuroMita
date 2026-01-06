@@ -135,6 +135,7 @@ class EventBus:
             subscribers = self._get_active_subscribers(event_name)
 
         if not subscribers:
+            logger.debug(f"emit_and_wait: No subscribers for event '{event_name}'")
             return results
 
         for subscriber in subscribers:
@@ -349,6 +350,11 @@ class Events:
         SHOW_WINDOW = "show_window"
         CLOSE_WINDOW = "close_window"
         CLOSE_ALL_WINDOWS = "close_all_windows"
+        SET_SETTINGS_ICON_INDICATOR = "set_settings_icon_indicator"
+
+        VOICEOVER_UI_READY = "voiceover_ui_ready"
+        VOICEOVER_REFRESH = "voiceover_refresh"
+        VOICEOVER_MODEL_SELECTED = "voiceover_model_selected"
 
     class Model:
         """События для управления LLM, персонажами и историей"""
@@ -471,6 +477,7 @@ class Events:
         SEND_TASK_UPDATE = "send_task_update"
         LOAD_SERVER_SETTINGS = "load_server_settings"
         ECHO_CHAT_MESSAGE_REQUESTED = "echo_chat_message_requested"
+        BROADCAST_ASR_TEXT = "broadcast_asr_text"
 
     class Telegram:
         """События для взаимодействия с Telegram"""
@@ -482,6 +489,8 @@ class Events:
         PROMPT_FOR_TG_CODE = "prompt_for_tg_code"
         PROMPT_FOR_TG_PASSWORD = "prompt_for_tg_password"
         TELEGRAM_SEND_VOICE_REQUEST = "telegram_send_voice_request"
+        START_SILERO = "telegram_start_silero"
+        STOP_SILERO = "telegram_stop_silero"
 
     class Settings:
         """События для управления настройками"""
@@ -565,6 +574,7 @@ class Events:
         TASK_LOG = "install_task_log"
         TASK_FINISHED = "install_task_finished"
         TASK_FAILED = "install_task_failed"
+        RUN_BLOCKING = "run_install_blocking"
 
     class Character:
         GET_ALL = "character_get_all"
@@ -579,3 +589,9 @@ class Events:
         CLEAR_ALL_HISTORIES = "character_clear_all_histories"
 
         CURRENT_CHANGED = "character_current_changed"
+
+    class Protocols:
+        GET_PROTOCOL_LIST = "get_protocol_list"
+        GET_PROTOCOL_FULL = "get_protocol_full"
+        GET_TRANSFORM_LIST = "get_transform_list"
+        BUILD_HTTP_REQUEST = "build_protocol_http_request"

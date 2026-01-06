@@ -46,7 +46,7 @@ class Character:
         silero_turn_off_video: bool = False,
         initial_vars_override: Dict[str, Any] | None = None,
         is_cartridge=False,
-    ):
+        ):
         self.event_bus = get_event_bus()
 
         self.char_id = char_id
@@ -56,18 +56,34 @@ class Character:
         self.silero_turn_off_video = silero_turn_off_video
         self.miku_tts_name = miku_tts_name
         self.short_name = short_name
+
         self.prompts_root = (
             os.path.abspath("Prompts")
             if not is_cartridge
             else os.path.abspath("Prompts/Cartridges")
         )
-        self.base_data_path = os.path.join(self.prompts_root, self.char_id)
+
         self.main_template_path_relative = "main_template.txt"
 
         self.variables: Dict[str, Any] = {}
         self.is_cartridge = is_cartridge
-
         self.app_vars: Dict[str, Any] = {}
+
+        self.prompt_set_name: str | None = None
+        self.base_data_path = self._character_prompts_root()
+
+        try:
+            resolved = self._resolve_prompt_set_name()
+            self._apply_prompt_set(resolved)
+        except Exception as e:
+            msg = f"[{self.char_id}] Failed to resolve/apply prompt set: {e}"
+            try:
+                logger.notify(msg)
+            except Exception:
+                logger.error(msg)
+            self._apply_prompt_set("Default")
+
+        self._log_prompt_set_problems_if_any()
 
         composed_initials = Character.BASE_DEFAULTS.copy()
         if hasattr(self, "DEFAULT_OVERRIDES"):
@@ -81,9 +97,11 @@ class Character:
         self.load_config()
 
         logger.info(
-            "\n\nCharacter '%s' (%s) initialized. Initial effective vars: %s\n\n",
+            "\n\nCharacter '%s' (%s) initialized. Prompt set: %s. Base path: %s. Initial effective vars: %s\n\n",
             self.char_id,
             self.name,
+            self.prompt_set_name,
+            self.base_data_path,
             ", ".join(
                 f"\n • {k} = {v}"
                 for k, v in self.variables.items()
@@ -99,7 +117,6 @@ class Character:
         self.load_history()
 
         from managers.dsl_manager import create_dsl_interpreter
-
         self.dsl_interpreter = create_dsl_interpreter(self)
 
         self.post_dsl_interpreter = PostDslInterpreter(
@@ -109,6 +126,7 @@ class Character:
                 character_base_data_path=self.base_data_path,
             ),
         )
+
         self.set_variable(
             "SYSTEM_DATETIME", datetime.datetime.now().isoformat(" ", "minutes")
         )
@@ -116,6 +134,7 @@ class Character:
         self.set_variable("playingGame", False)
         self.set_variable("game_id", None)
         self.game_manager = GameManager(self)
+
 
     def load_config(self):
         """
@@ -287,6 +306,124 @@ class Character:
 
         return response, target
 
+    def _get_prompt_set_setting_key(self) -> str:
+        return f"PROMPT_SET_{self.char_id}"
+    
+    def _character_prompts_root(self) -> str:
+        return os.path.join(self.prompts_root, self.char_id)
+
+    def _discover_prompt_set_names(self) -> List[str]:
+        root = self._character_prompts_root()
+        try:
+            if not os.path.isdir(root):
+                return []
+            names = [
+                d
+                for d in os.listdir(root)
+                if os.path.isdir(os.path.join(root, d))
+            ]
+            names = [d for d in names if d and not d.startswith(".") and d not in {"System", "__pycache__", "SystemPrompts"}]
+            return sorted(names)
+        except Exception:
+            return []
+
+    def _resolve_prompt_set_name(self) -> str:
+        key = self._get_prompt_set_setting_key()
+        selected = ""
+
+        try:
+            res = self.event_bus.emit_and_wait(
+                Events.Settings.GET_SETTING,
+                {"key": key, "default": ""},
+                timeout=0.5,
+            )
+            if res:
+                selected = str(res[0] or "").strip()
+        except Exception:
+            selected = ""
+
+        char_root = self._character_prompts_root()
+        discovered = self._discover_prompt_set_names()
+
+        def _norm(s: str) -> str:
+            return (s or "").strip().casefold()
+
+        if selected:
+            selected_path = os.path.join(char_root, selected)
+            if os.path.isdir(selected_path):
+                return selected
+
+            variants = {
+                _norm(selected),
+                _norm(selected.rstrip("_")),
+                _norm(selected.rstrip("/\\")),
+                _norm(selected.rstrip("/\\").rstrip("_")),
+            }
+
+            for s in discovered:
+                if _norm(s) in variants:
+                    return s
+
+            msg = f"[{self.char_id}] Selected prompt set '{selected}' not found at: {selected_path}"
+            try:
+                logger.notify(msg)
+            except Exception:
+                logger.error(msg)
+
+        for s in discovered:
+            if _norm(s) == "default":
+                return s
+
+        default_path = os.path.join(char_root, "Default")
+        if os.path.isdir(default_path):
+            return "Default"
+
+        if discovered:
+            return discovered[0]
+
+        msg = (
+            f"[{self.char_id}] No prompt sets found in: {char_root}. "
+            f"Expected structure: Prompts/{self.char_id}/<SetName>/..."
+        )
+        try:
+            logger.notify(msg)
+        except Exception:
+            logger.error(msg)
+
+        return "Default"
+
+    def _apply_prompt_set(self, set_name: str):
+        self.prompt_set_name = str(set_name or "").strip() or "Default"
+        self.base_data_path = os.path.join(self._character_prompts_root(), self.prompt_set_name)
+        self.set_variable("PROMPT_SET_NAME", self.prompt_set_name)
+        self.set_variable("PROMPT_SET_PATH", self.base_data_path)
+
+    def _log_prompt_set_problems_if_any(self):
+        base = str(getattr(self, "base_data_path", "") or "")
+        if not base:
+            msg = f"[{self.char_id}] base_data_path is empty (prompt set path not resolved)."
+            try:
+                logger.notify(msg)
+            except Exception:
+                logger.error(msg)
+            return
+
+        if not os.path.isdir(base):
+            msg = f"[{self.char_id}] Prompt set folder does not exist: {base}"
+            try:
+                logger.notify(msg)
+            except Exception:
+                logger.error(msg)
+            return
+
+        main_tpl = os.path.join(base, self.main_template_path_relative)
+        if not os.path.exists(main_tpl):
+            msg = f"[{self.char_id}] main_template not found: {main_tpl}"
+            try:
+                logger.notify(msg)
+            except Exception:
+                logger.error(msg)
+
     def process_response_nlp_commands(self, response: str, save_as_missed=False) -> str:
         original_response_for_log = (
             response[:200] + "..." if len(response) > 200 else response
@@ -366,9 +503,12 @@ class Character:
         )
         if start_match:
             full_id_str = start_match.group(1).strip()
-            self.game_manager.start_game(full_id_str)
+            started = self.game_manager.start_game(full_id_str)
             response = response.replace(start_match.group(0), "", 1).strip()
-            logger.info(f"[{self.char_id}] Запрошен запуск игры с ID: '{full_id_str}'.")
+            if started:
+                logger.info(f"[{self.char_id}] Запрошен запуск игры с ID: '{full_id_str}'.")
+            else:
+                logger.info(f"[{self.char_id}] Запуск игры с ID '{full_id_str}' отклонён (заблокировано настройками).")
 
         end_match = re.search(
             r'<EndGame id="([^"]*)"/>', response, re.DOTALL | re.IGNORECASE
@@ -541,6 +681,19 @@ class Character:
             f"[{self.char_id}] Reloading character data from disk (config + history)."
         )
 
+        try:
+            resolved = self._resolve_prompt_set_name()
+            self._apply_prompt_set(resolved)
+        except Exception as e:
+            msg = f"[{self.char_id}] Failed to resolve/apply prompt set during reload: {e}"
+            try:
+                logger.notify(msg)
+            except Exception:
+                logger.error(msg)
+            self._apply_prompt_set("Default")
+
+        self._log_prompt_set_problems_if_any()
+
         self.load_config()
         self.load_history()
         self.memory_system.load_memories()
@@ -548,18 +701,21 @@ class Character:
             "SYSTEM_DATETIME", datetime.datetime.now().isoformat(" ", "minutes")
         )
 
-        if hasattr(self, "post_dsl_interpreter") and self.post_dsl_interpreter:
-            self.post_dsl_interpreter._load_rules_and_configs()
-            logger.info(f"[{self.char_id}] Post-DSL rules reloaded.")
-        else:
+        try:
+            from managers.dsl_manager import create_dsl_interpreter
+            self.dsl_interpreter = create_dsl_interpreter(self)
+        except Exception as e:
+            logger.warning(f"[{self.char_id}] Failed to recreate DSL interpreter during reload: {e}", exc_info=True)
+
+        try:
             path_resolver_instance = LocalPathResolver(
                 global_prompts_root=self.prompts_root,
                 character_base_data_path=self.base_data_path,
             )
             self.post_dsl_interpreter = PostDslInterpreter(self, path_resolver_instance)
-            logger.info(
-                f"[{self.char_id}] Post-DSL interpreter initialized and rules loaded during reload."
-            )
+            logger.info(f"[{self.char_id}] Post-DSL interpreter re-initialized and rules loaded during reload.")
+        except Exception as e:
+            logger.warning(f"[{self.char_id}] Failed to recreate Post-DSL interpreter during reload: {e}", exc_info=True)
 
         logger.info(f"[{self.char_id}] Character data reloaded.")
 

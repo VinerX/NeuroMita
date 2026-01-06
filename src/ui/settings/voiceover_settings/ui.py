@@ -2,29 +2,26 @@ import os
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QComboBox,
-    QPushButton, QSizePolicy
+    QSizePolicy
 )
 from ui.gui_templates import create_setting_widget, create_section_header
 from utils import getTranslationVariant as _
+from core.events import get_event_bus, Events
 
 
 def build_voiceover_settings_ui(self, parent_layout):
-    # Небольшой «safe margin» справа, чтобы ничего не уезжало под сайдбар
     sidebar_w = getattr(self, "SETTINGS_SIDEBAR_WIDTH", 50)
-    right_pad = max(8, min(14, int(sidebar_w * 0.22)))  # ~11px при 50px сайдбаре
+    right_pad = max(8, min(14, int(sidebar_w * 0.22)))
 
     container = QWidget()
     container_lay = QVBoxLayout(container)
     container_lay.setContentsMargins(0, 0, right_pad, 0)
     container_lay.setSpacing(6)
 
-    # Заголовок секции
     create_section_header(container_lay, _("Настройки озвучки", "Voiceover Settings"))
 
-    # Совместимость: voiceover_section.content_frame
     self.voiceover_section = type('obj', (object,), {'content_frame': parent_layout.parent()})()
 
-    # --- Главный чекбокс и метод озвучки
     main_config = [
         {'label': _('Использовать озвучку', 'Use speech'),
          'key': 'USE_VOICEOVER', 'type': 'checkbutton',
@@ -36,11 +33,10 @@ def build_voiceover_settings_ui(self, parent_layout):
     ]
 
     for cfg in main_config:
-        label_text = cfg.get('label')
         widget = create_setting_widget(
             gui=self,
             parent=container,
-            label=label_text,
+            label=cfg.get('label'),
             setting_key=cfg.get('key', ''),
             widget_type=cfg.get('type', 'entry'),
             options=cfg.get('options'),
@@ -51,23 +47,33 @@ def build_voiceover_settings_ui(self, parent_layout):
         if widget:
             container_lay.addWidget(widget)
             if cfg.get('widget_name') == 'method_combobox':
-                # Совместимость, если где-то обращаются к обёртке ряда
                 self.method_frame = widget
 
-    # --- Контейнер для настроек TG ---
     self.tg_settings_frame = QWidget()
     tg_layout = QVBoxLayout(self.tg_settings_frame)
     tg_layout.setContentsMargins(0, 0, 0, 0)
     tg_layout.setSpacing(4)
 
     tg_config = [
+        {'label': _('Автоподключение Telegram', 'Telegram auto-connect'),
+         'key': 'TG_AUTOCONNECT', 'type': 'checkbutton',
+         'default_checkbutton': False},
+
+        {'label': _('Подключиться к Telegram', 'Connect Telegram'),
+         'type': 'button',
+         'command': (lambda: get_event_bus().emit(Events.Telegram.START_SILERO, {"source": "ui", "force": True})),
+         'widget_name': 'tg_connect_button'},
+
         {'label': _('Канал/Сервис', "Channel/Service"), 'key': 'AUDIO_BOT',
          'type': 'combobox', 'options': ["@silero_voice_bot", "@CrazyMitaAIbot"],
          'default': "@silero_voice_bot"},
+
         {'label': _('Макс. ожидание (сек)', 'Max wait (sec)'), 'key': 'SILERO_TIME',
          'type': 'entry', 'default': '12', 'validation': getattr(self, 'validate_number_0_60', None)},
+
         {'label': _('Настройки Telegram API', 'Telegram API Settings'), 'type': 'text'},
         {'label': _('Будет скрыто после перезапуска', 'Will be hidden after restart'), 'type': 'text'},
+
         {'label': _('Telegram ID'), 'key': 'NM_TELEGRAM_API_ID', 'type': 'entry',
          'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},
         {'label': _('Telegram Hash'), 'key': 'NM_TELEGRAM_API_HASH', 'type': 'entry',
@@ -87,19 +93,20 @@ def build_voiceover_settings_ui(self, parent_layout):
             default=cfg.get('default', ''),
             validation=cfg.get('validation'),
             hide=cfg.get('hide', False),
+            default_checkbutton=cfg.get('default_checkbutton', False),
+            command=cfg.get('command'),
+            widget_name=cfg.get('widget_name'),
         )
         if widget:
             tg_layout.addWidget(widget)
 
     container_lay.addWidget(self.tg_settings_frame)
 
-    # --- Контейнер для локальных настроек ---
     self.local_settings_frame = QWidget()
     local_layout = QVBoxLayout(self.local_settings_frame)
     local_layout.setContentsMargins(0, 0, 0, 0)
     local_layout.setSpacing(4)
 
-    # Ряд "Локальная модель" (ручной, для иконки состояния)
     local_model_row = QWidget()
     local_model_layout = QHBoxLayout(local_model_row)
     local_model_layout.setContentsMargins(0, 2, 0, 2)
@@ -107,13 +114,17 @@ def build_voiceover_settings_ui(self, parent_layout):
 
     label_part = QHBoxLayout()
     label_part.setContentsMargins(0, 0, 0, 0)
-    label_part.setSpacing(5)
+    label_part.setSpacing(2)
 
     local_model_label = QLabel(_("Локальная модель", "Local Model"))
+
     self.local_model_status_label = QLabel("⚠️")
     self.local_model_status_label.setObjectName("WarningIcon")
     self.local_model_status_label.setToolTip(_("Модель не инициализирована или не установлена.",
                                                "Model not initialized or not installed."))
+    self.local_model_status_label.setFixedWidth(16)
+    self.local_model_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
     label_part.addWidget(self.local_model_status_label)
     label_part.addWidget(local_model_label)
 
@@ -128,21 +139,23 @@ def build_voiceover_settings_ui(self, parent_layout):
     local_model_layout.addWidget(self.local_voice_combobox, 1)
     local_layout.addWidget(local_model_row)
 
-    # Остальные локальные настройки
     local_config = [
         {'label': _("Язык локальной озвучки", "Local Voice Language"),
          'key': "VOICE_LANGUAGE", 'type': 'combobox',
          'options': ["ru", "en"], 'default': "ru",
-         'command': getattr(self, 'on_voice_language_selected', None),
-         'widget_name': 'voice_language_var_combobox'},
+         'widget_name': 'voice_language_var'},
+
         {'label': _('Автозагрузка модели', 'Autoload model'),
          'key': 'LOCAL_VOICE_LOAD_LAST', 'type': 'checkbutton',
          'default_checkbutton': False},
+
         {'label': _('Озвучивать в чате', 'Voiceover in chat'),
          'key': 'VOICEOVER_LOCAL_CHAT', 'type': 'checkbutton',
          'default_checkbutton': True},
+
         {'label': _('Управление моделями', 'Manage Models'),
-         'type': 'button', 'command': getattr(self, 'open_local_model_installation_window', None)}
+         'type': 'button',
+         'command': (lambda: get_event_bus().emit(Events.GUI.SHOW_WINDOW, {"window_id": "voice_models", "payload": {}}))}
     ]
 
     if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1":
@@ -170,5 +183,4 @@ def build_voiceover_settings_ui(self, parent_layout):
 
     container_lay.addWidget(self.local_settings_frame)
 
-    # Вставляем корневой контейнер в родительский layout
     parent_layout.addWidget(container)

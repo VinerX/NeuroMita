@@ -79,11 +79,19 @@ class ChessGame(GameInterface):
         logger.debug(f"[{self.character.char_id}] Очистка ресурсов шахмат.")
         self.character.set_variable("playingGame", False)
         self.character.set_variable("game_id", None)
-        
+
+        try:
+            gm = getattr(self.character, "game_manager", None)
+            if gm and getattr(gm, "active_game", None) is self:
+                gm.active_game = None
+        except Exception:
+            pass
+
         self.gui_thread = None
         self.command_queue = None
         self.state_queue = None
         self.current_elo = None
+
 
     def process_llm_tags(self, response: str) -> str:
         # Обработка старых тегов для обратной совместимости, пока игра активна
@@ -111,12 +119,12 @@ class ChessGame(GameInterface):
             response = response.replace(llm_move_match.group(0), "", 1).strip()
             
         return response
-
+    
     def get_state_prompt(self) -> Optional[str]:
-        """
-        Читает состояние из очереди, устанавливает переменные для DSL
-        и обрабатывает файл chess.system.
-        """
+        if self.gui_thread and not self.gui_thread.is_alive():
+            self.cleanup()
+            return "Шахматная игра была закрыта (окно закрыто). Считай игру завершённой."
+
         if not self.state_queue:
             return None
 
@@ -126,6 +134,20 @@ class ChessGame(GameInterface):
                 latest_state_data = self.state_queue.get_nowait()
             except Exception:
                 break
+
+        if latest_state_data and isinstance(latest_state_data, dict):
+            ev = str(latest_state_data.get("event") or "").strip().lower()
+            if ev == "gui_closed" or latest_state_data.get("gui_closed") is True:
+                self.cleanup()
+                return "Шахматная игра была закрыта (окно закрыто). Считай игру завершённой."
+
+            if latest_state_data.get("critical_process_failure") is True:
+                self.cleanup()
+                return "Шахматная игра завершилась из-за ошибки процесса. Считай игру завершённой."
+
+            if latest_state_data.get("game_resigned_by_llm") or latest_state_data.get("game_stopped_by_llm"):
+                self.cleanup()
+                return "Шахматная игра завершена. Считай игру завершённой."
 
         if not latest_state_data:
             self._send_command({"action": "get_state"})
@@ -147,12 +169,12 @@ class ChessGame(GameInterface):
         self.character.set_variable("GAME_STATE_IS_OVER", latest_state_data.get('is_game_over', False))
         self.character.set_variable("GAME_STATE_OUTCOME", latest_state_data.get('outcome_message', 'Игра продолжается'))
         self.character.set_variable("GAME_STATE_IS_LLM_TURN", is_llm_turn_now)
-        
+
         legal_moves = latest_state_data.get('legal_moves_uci', [])
         self.character.set_variable("GAME_STATE_HAS_LEGAL_MOVES", bool(legal_moves))
         self.character.set_variable("GAME_STATE_LEGAL_MOVES_STRING", ", ".join(legal_moves))
         self.character.set_variable("GAME_STATE_HAS_PROMOTION_MOVE", any(len(m) == 5 and m[4] in 'qrbn' for m in legal_moves))
-        
+
         self.character.set_variable("GAME_STATE_ERROR_MSG", latest_state_data.get("error", None))
         self.character.set_variable("GAME_STATE_INVALID_MOVE_TEXT", latest_state_data.get("error_move", None))
         self.character.set_variable("GAME_STATE_INVALID_MOVE_REASON", latest_state_data.get("error_message_for_move", None))
