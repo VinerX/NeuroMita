@@ -350,6 +350,11 @@ class Events:
         SHOW_WINDOW = "show_window"
         CLOSE_WINDOW = "close_window"
         CLOSE_ALL_WINDOWS = "close_all_windows"
+        SET_SETTINGS_ICON_INDICATOR = "set_settings_icon_indicator"
+
+        VOICEOVER_UI_READY = "voiceover_ui_ready"
+        VOICEOVER_REFRESH = "voiceover_refresh"
+        VOICEOVER_MODEL_SELECTED = "voiceover_model_selected"
 
     class Model:
         """События для управления LLM, персонажами и историей"""
@@ -472,6 +477,7 @@ class Events:
         SEND_TASK_UPDATE = "send_task_update"
         LOAD_SERVER_SETTINGS = "load_server_settings"
         ECHO_CHAT_MESSAGE_REQUESTED = "echo_chat_message_requested"
+        BROADCAST_ASR_TEXT = "broadcast_asr_text"
 
     class Telegram:
         """События для взаимодействия с Telegram"""
@@ -483,6 +489,8 @@ class Events:
         PROMPT_FOR_TG_CODE = "prompt_for_tg_code"
         PROMPT_FOR_TG_PASSWORD = "prompt_for_tg_password"
         TELEGRAM_SEND_VOICE_REQUEST = "telegram_send_voice_request"
+        START_SILERO = "telegram_start_silero"
+        STOP_SILERO = "telegram_stop_silero"
 
     class Settings:
         """События для управления настройками"""

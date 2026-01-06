@@ -257,23 +257,6 @@ class F5TTSModel(IVoiceModel):
             logger.info(f"F5_TTS import failed: {ex}")
             self.f5_pipeline_module = None
 
-    def is_installed(self, model_id) -> bool:
-        self._load_module()
-        model_dir = os.path.join("checkpoints", "F5-TTS")
-        ckpt_path = os.path.join(model_dir, "model.safetensors")
-        vocab_path = os.path.join(model_dir, "vocab.txt")
-
-        if self.f5_pipeline_module is None:
-            return False
-        if not (os.path.exists(ckpt_path) and os.path.exists(vocab_path)):
-            return False
-
-        if str(model_id) == "high+low":
-            if self.rvc_handler is None or not self.rvc_handler.is_installed("low"):
-                return False
-
-        return True
-
     def initialize(self, init: bool = False) -> bool:
         mode = self._mode()
         if self.initialized and self.initialized_for == mode:

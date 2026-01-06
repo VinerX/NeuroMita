@@ -8,19 +8,19 @@ from typing import Any, Dict, Optional
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
 from utils import getTranslationVariant as _
+from utils.gpu_utils import check_gpu_provider
 
 
 class LocalVoiceController:
     """
     Runtime controller for local voiceover.
-    - owns LocalVoice runtime handler
-    - handles Audio.LOCAL_SEND_VOICE_REQUEST, select/init/change language
-    - provides GET_TRITON_STATUS / GET_ALL_LOCAL_MODEL_CONFIGS for UI/backends
+
+    - Settings берём через Events.Settings.GET_SETTING / GET_SETTINGS.
+    - В LocalVoice передаём только нужные параметры (например voice_language).
+    - Сохраняем настройки через Events.Settings.SAVE_SETTING.
     """
 
-    def __init__(self, main_controller):
-        self.main_controller = main_controller
-        self.settings = main_controller.settings
+    def __init__(self):
         self.event_bus = get_event_bus()
 
         self._local_voice = None
@@ -28,13 +28,47 @@ class LocalVoiceController:
         self._triton_status_cache: Optional[Dict[str, Any]] = None
         self._triton_check_error_logged: bool = False
 
+        self._init_local_voice()
         self._subscribe_to_events()
+
         logger.notify("LocalVoiceController успешно инициализирован.")
+
+    def _get_setting(self, key: str, default=None):
+        try:
+            res = self.event_bus.emit_and_wait(
+                Events.Settings.GET_SETTING,
+                {"key": key, "default": default},
+                timeout=0.8
+            )
+            return res[0] if res else default
+        except Exception:
+            return default
+
+    def _get_settings_obj(self):
+        try:
+            res = self.event_bus.emit_and_wait(Events.Settings.GET_SETTINGS, timeout=0.8)
+            return res[0] if res else None
+        except Exception:
+            return None
+
+    def _save_setting(self, key: str, value: Any) -> None:
+        try:
+            self.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": key, "value": value})
+        except Exception:
+            pass
+
+    def _init_local_voice(self) -> None:
+        try:
+            from handlers.local_voice_handler import LocalVoice
+            lang = str(self._get_setting("VOICE_LANGUAGE", "ru") or "ru").strip().lower()
+            self._local_voice = LocalVoice(voice_language=lang)
+        except Exception as e:
+            self._local_voice = None
+            logger.error(f"LocalVoice init failed: {e}", exc_info=True)
 
     def _get_local_voice(self):
         if self._local_voice is None:
-            from handlers.local_voice_handler import LocalVoice
-            self._local_voice = LocalVoice(self.main_controller)
+            self._init_local_voice()
         return self._local_voice
 
     def _subscribe_to_events(self):
@@ -53,12 +87,11 @@ class LocalVoiceController:
 
         eb.subscribe(Events.Audio.LOCAL_SEND_VOICE_REQUEST, self._on_local_send_voice_request, weak=False)
 
-    def _on_open_voice_model_settings(self, event: Event):
-        try:
-            return {'config_dir': "Settings", 'settings': self.settings}
-        except Exception as e:
-            logger.error(f"_on_open_voice_model_settings: {e}", exc_info=True)
+    def _on_open_voice_model_settings(self, _event: Event):
+        st = self._get_settings_obj()
+        if st is None:
             return None
+        return {"config_dir": "Settings", "settings": st}
 
     def _ensure_libs_on_path(self):
         lib_path = os.path.abspath("Lib")
@@ -69,7 +102,6 @@ class LocalVoiceController:
         self._ensure_libs_on_path()
         self._triton_status_cache = None
 
-        # Runtime-only probe: don't do UI here, just detect import and basic flags if available
         status = {
             "cuda_found": False,
             "winsdk_found": False,
@@ -88,14 +120,17 @@ class LocalVoiceController:
             if os.name == "nt":
                 try:
                     from triton.windows_utils import find_cuda, find_winsdk, find_msvc
+
                     cuda_result = find_cuda()
                     if isinstance(cuda_result, (tuple, list)) and len(cuda_result) >= 1:
                         cuda_path = cuda_result[0]
                         status["cuda_found"] = bool(cuda_path and os.path.exists(str(cuda_path)))
+
                     winsdk_result = find_winsdk(False)
                     if isinstance(winsdk_result, (tuple, list)) and len(winsdk_result) >= 1:
                         winsdk_paths = winsdk_result[0]
                         status["winsdk_found"] = isinstance(winsdk_paths, list) and bool(winsdk_paths)
+
                     msvc_result = find_msvc(False)
                     cl_path = None
                     inc_paths, lib_paths = [], []
@@ -107,6 +142,7 @@ class LocalVoiceController:
                         if len(msvc_result) >= 3:
                             lib_paths = msvc_result[2] or []
                     status["msvc_found"] = bool((cl_path and os.path.exists(str(cl_path))) or inc_paths or lib_paths)
+
                     status["triton_checks_performed"] = True
                 except Exception as e:
                     if not self._triton_check_error_logged:
@@ -118,64 +154,80 @@ class LocalVoiceController:
         self._triton_status_cache = status
         return status
 
-    def _on_get_triton_status(self, event: Event):
+    def _on_get_triton_status(self, _event: Event):
         if self._triton_status_cache is not None:
             return self._triton_status_cache
         return self._compute_triton_status()
 
-    def _on_refresh_triton_status(self, event: Event):
+    def _on_refresh_triton_status(self, _event: Event):
         return self._compute_triton_status()
 
-    def _on_get_all_local_model_configs(self, event: Event):
-        try:
-            cfgs = self._get_local_voice().get_all_model_configs()
-            if isinstance(cfgs, list) and cfgs:
-                return cfgs
-        except Exception as e:
-            logger.warning(f"get_all_model_configs runtime error: {e}")
-
-        # fallback: static configs (no runtime init required)
-        
-        logger.warning(f"ФОЛБЕК НА СТАТИКУ.")
-        cfgs2 = self._get_static_model_configs()
-        return cfgs2 if isinstance(cfgs2, list) else []
+    def _on_get_all_local_model_configs(self, _event: Event):
+        lv = self._get_local_voice()
+        if lv is None:
+            return []
+        return lv.get_all_model_configs() or []
 
     def _on_check_model_installed(self, event: Event):
-        model_id = (event.data or {}).get('model_id')
+        model_id = str((event.data or {}).get("model_id") or "").strip()
+        if not model_id:
+            return False
+
         try:
-            return bool(self._get_local_voice().is_model_installed(model_id))
+            from handlers.voice_models.catalog import get_voice_spec
+            spec = get_voice_spec(model_id)
+            if not spec:
+                return False
+
+            try:
+                gpu_vendor = check_gpu_provider() or "CPU"
+            except Exception:
+                gpu_vendor = "CPU"
+
+            ctx = {"gpu_vendor": gpu_vendor}
+            return bool(spec.is_installed(model_id, ctx))
         except Exception:
             return False
 
     def _on_check_model_initialized(self, event: Event):
-        model_id = (event.data or {}).get('model_id')
+        model_id = str((event.data or {}).get("model_id") or "").strip()
+        if not model_id:
+            return False
+
+        lv = self._get_local_voice()
+        if lv is None:
+            return False
+
         try:
-            return bool(self._get_local_voice().is_model_initialized(model_id))
+            return bool(lv.is_model_initialized(model_id))
         except Exception:
             return False
 
     def _on_select_voice_model(self, event: Event):
-        model_id = (event.data or {}).get('model_id')
+        model_id = str((event.data or {}).get("model_id") or "").strip()
         if not model_id:
             return False
+
+        lv = self._get_local_voice()
+        if lv is None:
+            return False
+
         try:
-            lv = self._get_local_voice()
             lv.select_model(model_id)
-            self.settings.set("NM_CURRENT_VOICEOVER", model_id)
-            self.settings.save_settings()
+            self._save_setting("NM_CURRENT_VOICEOVER", model_id)
             return True
         except Exception as e:
-            logger.error(f'Не удалось активировать модель {model_id}: {e}', exc_info=True)
+            logger.error(f"Не удалось активировать модель {model_id}: {e}", exc_info=True)
             return False
 
     def _on_init_voice_model(self, event: Event):
-        model_id = (event.data or {}).get('model_id')
-        progress_callback = (event.data or {}).get('progress_callback')
+        model_id = str((event.data or {}).get("model_id") or "").strip()
+        progress_callback = (event.data or {}).get("progress_callback")
         if not model_id:
             return
 
         self.event_bus.emit(Events.Core.RUN_IN_LOOP, {
-            'coroutine': self._async_init_model(str(model_id), progress_callback)
+            "coroutine": self._async_init_model(model_id, progress_callback)
         })
 
     async def _async_init_model(self, model_id: str, progress_callback=None):
@@ -183,43 +235,53 @@ class LocalVoiceController:
             if progress_callback:
                 progress_callback("status", _("Инициализация модели...", "Initializing model..."))
 
-            loop = asyncio.get_running_loop()
             lv = self._get_local_voice()
+            if lv is None:
+                raise RuntimeError("LocalVoice runtime not available")
 
+            loop = asyncio.get_running_loop()
             ok = await loop.run_in_executor(None, lambda: lv.initialize_model(model_id, init=True))
 
             if ok:
-                self.event_bus.emit(Events.Audio.FINISH_MODEL_LOADING, {'model_id': model_id})
+                self.event_bus.emit(Events.Audio.FINISH_MODEL_LOADING, {"model_id": model_id})
             else:
-                self.event_bus.emit(Events.Audio.UPDATE_MODEL_LOADING_STATUS, {'status': _("Ошибка инициализации!", "Initialization error!")})
+                self.event_bus.emit(Events.Audio.UPDATE_MODEL_LOADING_STATUS, {
+                    "status": _("Ошибка инициализации!", "Initialization error!")
+                })
                 self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
-                    'title': _("Ошибка инициализации", "Initialization error"),
-                    'message': _("Не удалось инициализировать модель. Проверьте логи.", "Failed to initialize model. Check logs.")
+                    "title": _("Ошибка инициализации", "Initialization error"),
+                    "message": _("Не удалось инициализировать модель. Проверьте логи.", "Failed to initialize model. Check logs.")
                 })
                 self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
         except Exception as e:
             logger.error(f"init model failed: {e}", exc_info=True)
-            self.event_bus.emit(Events.Audio.UPDATE_MODEL_LOADING_STATUS, {'status': _("Ошибка!", "Error!")})
+            self.event_bus.emit(Events.Audio.UPDATE_MODEL_LOADING_STATUS, {"status": _("Ошибка!", "Error!")})
             self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
-                'title': _("Ошибка", "Error"),
-                'message': f"{_('Критическая ошибка при инициализации модели:', 'Critical init error:')} {e}"
+                "title": _("Ошибка", "Error"),
+                "message": f"{_('Критическая ошибка при инициализации модели:', 'Critical init error:')} {e}"
             })
             self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
 
     def _on_change_voice_language(self, event: Event):
-        language = (event.data or {}).get('language')
+        language = str((event.data or {}).get("language") or "").strip().lower()
         if not language:
             return False
+
+        lv = self._get_local_voice()
+        if lv is None:
+            return False
+
         try:
-            self._get_local_voice().change_voice_language(language)
+            lv.change_voice_language(language)
+            self._save_setting("VOICE_LANGUAGE", language)
             return True
         except Exception as e:
-            logger.error(f"change language failed: {e}")
+            logger.error(f"change language failed: {e}", exc_info=True)
             return False
 
     def _on_local_send_voice_request(self, event: Event):
         data = event.data or {}
-        text = data.get("text", "")
+        text = str(data.get("text") or "")
         future = data.get("future")
 
         character_id = data.get("character_id")
@@ -229,16 +291,25 @@ class LocalVoiceController:
             return
 
         coro = self._async_local_voiceover(
-            text=str(text),
+            text=text,
             future=future,
             character_id=character_id,
             voice_profile=voice_profile,
         )
-
         self.event_bus.emit(Events.Core.RUN_IN_LOOP, {"coroutine": coro})
 
-    async def _async_local_voiceover(self, text: str, future, character_id: Optional[str] = None, voice_profile: Optional[dict] = None):
+    async def _async_local_voiceover(
+        self,
+        text: str,
+        future,
+        character_id: Optional[str] = None,
+        voice_profile: Optional[dict] = None,
+    ):
         try:
+            lv = self._get_local_voice()
+            if lv is None:
+                raise RuntimeError("LocalVoice runtime not available")
+
             resolved_profile = voice_profile if isinstance(voice_profile, dict) else None
 
             if not resolved_profile and isinstance(character_id, str) and character_id:
@@ -264,7 +335,7 @@ class LocalVoiceController:
             absolute_audio_path = os.path.abspath(output_file)
             os.makedirs(os.path.dirname(absolute_audio_path), exist_ok=True)
 
-            result_path = await self._get_local_voice().voiceover(
+            result_path = await lv.voiceover(
                 text=text,
                 output_file=absolute_audio_path,
                 character=resolved_profile
@@ -281,45 +352,3 @@ class LocalVoiceController:
                     future.set_exception(e)
                 except Exception:
                     pass
-
-    def _get_static_model_configs(self) -> list[dict]:
-        cfgs: list[dict] = []
-
-        def add_from(cls):
-            try:
-                items = getattr(cls, "MODEL_CONFIGS", None) or []
-                if isinstance(items, list):
-                    for it in items:
-                        if isinstance(it, dict) and it.get("id"):
-                            cfgs.append(it)
-            except Exception:
-                pass
-
-        try:
-            from handlers.voice_models.edge_tts_rvc_model import EdgeTTS_RVC_Model
-            add_from(EdgeTTS_RVC_Model)
-        except Exception:
-            pass
-
-        try:
-            from handlers.voice_models.fish_speech_model import FishSpeechModel
-            add_from(FishSpeechModel)
-        except Exception:
-            pass
-
-        try:
-            from handlers.voice_models.f5_tts_model import F5TTSModel
-            add_from(F5TTSModel)
-        except Exception:
-            pass
-
-        # unique by id
-        out: list[dict] = []
-        seen = set()
-        for it in cfgs:
-            mid = str(it.get("id") or "").strip()
-            if not mid or mid in seen:
-                continue
-            out.append(it)
-            seen.add(mid)
-        return out

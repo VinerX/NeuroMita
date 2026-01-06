@@ -6,7 +6,6 @@ from typing import Dict, Optional, Any, List
 
 import ffmpeg
 from main_logger import logger
-from managers.settings_manager import SettingsManager
 from utils import getTranslationVariant as _, get_character_voice_paths
 from utils.gpu_utils import check_gpu_provider
 
@@ -19,18 +18,20 @@ from handlers.voice_models.f5_tts_model import F5TTSModel
 class LocalVoice:
     """
     Runtime registry/router for local voice models.
+
+    Важно: НЕ читает SettingsManager напрямую.
+    Все нужные параметры (например voice_language) должны быть переданы извне
+    (контроллером) и/или обновляться через методы change_voice_language(...).
     """
 
-    def __init__(self, main_controller: Optional[object] = None):
-        self.settings = getattr(main_controller, "settings", None) or SettingsManager()
-
+    def __init__(self, *, voice_language: str = "ru"):
         self.provider = None
         try:
             self.provider = check_gpu_provider()
         except Exception:
             self.provider = None
 
-        self.voice_language = self.settings.get("VOICE_LANGUAGE", "ru")
+        self.voice_language = str(voice_language or "ru")
 
         # важно для FishSpeech: запрещаем переключение compile False/True без рестарта
         self.first_compiled: Optional[bool] = None
@@ -103,11 +104,19 @@ class LocalVoice:
         return configs
 
     def is_model_installed(self, model_id: str) -> bool:
-        model = self._registry.get(model_id)
-        if not model:
+        model_id = str(model_id or "").strip()
+        if not model_id:
             return False
+
         try:
-            return bool(model.is_installed(model_id))
+            from handlers.voice_models.catalog import get_voice_spec
+
+            spec = get_voice_spec(model_id)
+            if not spec:
+                return False
+
+            ctx = {"gpu_vendor": self.provider or "CPU"}
+            return bool(spec.is_installed(model_id, ctx))
         except Exception:
             return False
 
@@ -239,4 +248,3 @@ class LocalVoice:
             return await self.active_model_instance.voiceover(text, character, output_file=output_file)
         except TypeError:
             return await self.active_model_instance.voiceover(text, character)
-        
