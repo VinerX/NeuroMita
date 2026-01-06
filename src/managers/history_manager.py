@@ -464,8 +464,27 @@ class HistoryManager:
                 meta_dict["multimodal_parts"] = other_parts
             meta_dict["is_multimodal_list"] = True
 
+        # === НАЧАЛО ИЗМЕНЕНИЙ ===
         elif isinstance(raw_content, dict):
-            db_content = json.dumps(raw_content, ensure_ascii=False)
+
+            # Пытаемся достать текст, чтобы не писать JSON в content
+            # Сначала ищем стандартные ключи
+
+            extracted_text = raw_content.get("text") or raw_content.get("content") or raw_content.get("value")
+
+            # Если это результат сжатия (summary)
+            if not extracted_text:
+                extracted_text = raw_content.get("summary")
+
+            if extracted_text and isinstance(extracted_text, str):
+                db_content = extracted_text.strip()
+                # Сохраняем исходный json в мета-данные на всякий случай
+                meta_dict["original_json"] = raw_content
+
+            else:
+                # Если текст не нашли, тогда уже дампим весь JSON
+                db_content = json.dumps(raw_content, ensure_ascii=False)
+
 
         else:
             db_content = str(raw_content) if raw_content is not None else ""
@@ -556,8 +575,12 @@ class HistoryManager:
         if not self._history_cols:
             self._ensure_history_schema()
 
-        now_ts_default = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-        ts = self._coerce_text(msg.get("time")) or self._coerce_text(msg.get("timestamp")) or now_ts_default
+        target_fmt = "%d.%m.%Y %H:%M:%S"
+
+        raw_ts = self._coerce_text(msg.get("time")) or self._coerce_text(msg.get("timestamp"))
+        final_ts = None
+        ts = self.data_mormalization(final_ts, raw_ts, target_fmt)
+
 
         # Дедуп по твоему правилу: character_id + timestamp + message_id
         # (ничего другого не трогаем)
@@ -651,6 +674,29 @@ class HistoryManager:
                 conn.close()
             except Exception:
                 pass
+
+    def data_mormalization(self, final_ts, raw_ts, target_fmt):
+        if raw_ts:
+            # 1. Если уже в нужном формате - оставляем
+            if re.match(r"^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2}$", raw_ts):
+                final_ts = raw_ts
+            else:
+                # 2. Пытаемся распарсить популярные форматы и привести к единому
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+                    try:
+                        dt = datetime.datetime.strptime(raw_ts.split(".")[0], fmt)  # отсекаем мс если есть
+                        final_ts = dt.strftime(target_fmt)
+                        break
+                    except ValueError:
+                        continue
+
+                # Если не вышло распарсить, но строка есть — сохраняем как есть (лучше, чем ничего)
+                if not final_ts:
+                    final_ts = raw_ts
+        # Если даты вообще нет — ставим текущую
+        if not final_ts:
+            final_ts = datetime.datetime.now().strftime(target_fmt)
+        return final_ts
 
     # ---------------------------------------------------------------------
     # Public API
