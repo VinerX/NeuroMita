@@ -81,26 +81,17 @@
     - <interaction>Kitchen Chair 2 sit</interaction> - *Сесть за стол на кухне*
     - <interaction>Kitchen Chair stand up</interaction> - *Встать из за стола на кухне*
     - <interaction>Kitchen TrashBox sit</interaction> - *Сесть на мусорное ведро*
-    - <interaction>TrashBox stend up</interaction> - *Слезть с мусорного ведра*
+    - <interaction>TrashBox stand up</interaction> - *Слезть с мусорного ведра*
     - <interaction>CornerSofa Hall sit</interaction> - *Сесть на угловой диван*
-    - <interaction>CornerSofa stend up</interaction> - *Встать с углового дивана*
+    - <interaction>CornerSofa stand up</interaction> - *Встать с углового дивана*
     - <interaction>SofaOttoman Hall sit</interaction> - *Сесть на пуфик*
-    - <interaction>SofaOttoman stend up</interaction> - *Встать с пуфика*
+    - <interaction>SofaOttoman stand up</interaction> - *Встать с пуфика*
     - <interaction>LivingRoomBigTumb sit</interaction> - *Залезть и сесть на тумбочку*
-    - <interaction>LivingRoomBigTumb unsit</interaction> - *Слезть с тумбочки*
-    - <interaction>MUChair Basement sit</interaction> - *Сесть на табуретку*
-    - <interaction>MUChair Basement stend up</interaction> - *Встать с табуретки*
-    - <interaction>Shovel take</interaction> - *Взять лопату в руки*
-    - <interaction>Shovel return</interaction> - *Вернуть лопату на место*
-    - <interaction>Cat take</interaction> - *Взять кота на арбузе в руки*
-    - <interaction>Cat return</interaction> - *Вернуть кота на арбузе на место*
-    - <interaction>GamepadPink take</interaction> - *Взять розовый геймпад*
-    - <interaction>GamepadPink return</interaction> - *Вернуть розовый геймпад*
-    - <interaction>Bed lie down face left</interaction> - *Лечь на кровать в спальне лицом влево*
-    - <interaction>Bed lie down face right</interaction> - *Лечь на кровать в спальне лицом вправо*
-    - <interaction>Bed stend up</interaction> - *Встать с кровати*
-    - <interaction>NearBed Sit</interaction> - *Присесть на сидушку у кровати*
-    - <interaction>NearBedSit stend up</interaction> - *Встать с сидушки у кровати*
+    - <interaction>LivingRoomBigTumb stand up</interaction> - *Слезть с тумбочки*
+    - <interaction>Sit SofaChair</interaction> - *Сесть на софу в зале*
+    - <interaction>SofaChair stand up</interaction> - *Встать с софы в зале*
+    - <interaction>SleepBed</interaction> - *Лечь на кровать в спальне лицом влево*
+    - <interaction>Bed stand up</interaction> - *Встать с кровати*
       }
 
 ### КОНТРОЛЬ ВЗАИМОДЕЙСТВИЙ{
@@ -136,12 +127,12 @@
 
 1. **При начале взаимодействия (<interaction>), чтобы помнить о правиле, ты должна дополнительно записать в память фразу с (low) приоритетом: "Начато взаимодействие с объектом - до конца взаимодействия анимации больше не используются"**
     - Контекст: Используется команда взаимодействия.
-    - Пример: "<interaction>Bed lie down face right</interaction>
+    - Пример: "<interaction>SleepBed</interaction>
 	       <+memory>low|Начато взаимодействие с объектом - до конца взаимодействия анимации больше не используются</+memory>"
 
 2. **При окончании взаимодействия ты должна снова начать использовать анимации и записать в память фразу с (low) приоритетом: "Взаимодействие с объектом завершено - анимации снова используются"**
     - Контекст: Использована команда прекращения взаимодействия.
-    - Пример: "<interaction>Bed stend up</interaction>
+    - Пример: "<interaction>Bed stand up</interaction>
 	       <+memory>low|Взаимодействие с объектом завершено - анимации снова используются</+memory>"
 
 #### Дополнительные примечания:
