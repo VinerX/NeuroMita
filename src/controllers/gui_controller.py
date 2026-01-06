@@ -18,6 +18,9 @@ from .gui.asr_glossary_controller import AsrGlossaryGuiController
 from .gui.install_gui_controller import InstallGuiController
 from .gui.protocol_pipeline_gui_controller import ProtocolPipelineGuiController
 
+from .gui.settings_sidebar_controller import SettingsSidebarController
+from .gui.voiceover_controller import VoiceoverGuiController
+
 
 class GuiController:
     def __init__(self, main_controller, view):
@@ -43,6 +46,10 @@ class GuiController:
         self.status_controller = StatusController(main_controller, view)
         self.chat_controller = ChatController(main_controller, view)
         self.system_controller = SystemController(main_controller, view)
+
+        self.settings_sidebar_controller = SettingsSidebarController(main_controller, view)
+        self.voiceover_controller = VoiceoverGuiController(main_controller, view)
+
         self.audio_model_controller = AudioModelController(main_controller, view)
         self.dialog_controller = DialogController(main_controller, view)
         self.settings_controller = SettingsController(main_controller, view)
@@ -61,6 +68,8 @@ class GuiController:
         logger.info("GuiController подписался на события")
 
         QTimer.singleShot(100, self.system_controller.check_and_install_ffmpeg)
+
+        QTimer.singleShot(500, self.voiceover_controller.autoload_last_model_on_startup)
 
     def _connect_view_signals(self):
         if self.view:

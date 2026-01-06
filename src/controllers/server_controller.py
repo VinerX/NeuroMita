@@ -8,15 +8,6 @@ from managers.task_manager import TaskStatus
 
 
 class ServerEchoSuppressor:
-    """
-    Подавляет "эхо" при NPC->NPC цепочке:
-    Unity пересылает предыдущий ответ как user_input следующей задаче.
-    Мы не хотим показывать это как отдельное сообщение в Python GUI.
-
-    Надежно работает по origin_message_id (message_id предыдущего ответа).
-    Если origin_message_id не приходит, использует fallback по last_text.
-    """
-
     def __init__(self, max_out_ids_per_speaker: int = 200, max_seen_in_ids: int = 500):
         self._out_ids: dict[Tuple[str, str], deque[str]] = {}
         self._out_text: dict[Tuple[str, str], str] = {}
@@ -67,25 +58,21 @@ class ServerEchoSuppressor:
         if not client_id:
             return True
 
-        # дедуп входящих по message_id (req_id)
         if incoming_message_id:
             seen = self._seen_in(client_id)
             if incoming_message_id in seen:
                 return False
             seen.append(incoming_message_id)
 
-        # Player всегда показываем
         if sender == "Player":
             return True
 
-        # 1) строгий путь: origin_message_id совпал с уже показанным outgoing id этого sender
         if origin_message_id:
             key = (client_id, sender)
             dq = self._out_ids.get(key)
             if dq and origin_message_id in dq:
                 return False
 
-        # 2) fallback: текст равен последнему outgoing тексту этого sender
         key = (client_id, sender)
         last = self._out_text.get(key, "")
         if last and last == text.strip():
@@ -110,35 +97,58 @@ class ServerController:
         self._init_server()
 
     def _subscribe_to_events(self):
-        self.event_bus.subscribe(Events.Server.STOP_SERVER, self._on_stop_server, weak=False)
-        self.event_bus.subscribe(Events.Server.GET_CHAT_SERVER, self._on_get_chat_server, weak=False)
-        self.event_bus.subscribe(Events.Server.SET_GAME_CONNECTION, self._on_update_game_connection, weak=False)
-        self.event_bus.subscribe(Events.Server.GET_GAME_CONNECTION, self._on_get_connection_status, weak=False)
-        self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
-        self.event_bus.subscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings, weak=False)
+        eb = self.event_bus
 
-        # Новый поток: сервер просит "показать входящее сообщение" -> решаем тут
-        self.event_bus.subscribe(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, self._on_echo_chat_message_requested, weak=False)
+        eb.subscribe(Events.Server.STOP_SERVER, self._on_stop_server, weak=False)
+        eb.subscribe(Events.Server.GET_CHAT_SERVER, self._on_get_chat_server, weak=False)
+        eb.subscribe(Events.Server.SET_GAME_CONNECTION, self._on_update_game_connection, weak=False)
+        eb.subscribe(Events.Server.GET_GAME_CONNECTION, self._on_get_connection_status, weak=False)
+        eb.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
+        eb.subscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings, weak=False)
 
-        # Регистрируем outgoing ответы для подавления эха по origin_message_id
-        self.event_bus.subscribe(Events.Task.TASK_STATUS_CHANGED, self._on_task_status_changed, weak=False)
+        eb.subscribe(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, self._on_echo_chat_message_requested, weak=False)
+
+        # --- moved from server.py subscriptions ---
+        eb.subscribe(Events.Task.TASK_STATUS_CHANGED, self._on_task_status_changed, weak=False)
+        eb.subscribe(Events.Server.SEND_TASK_UPDATE, self._on_send_task_update, weak=False)
+
+        eb.subscribe(Events.Server.BROADCAST_ASR_TEXT, self._on_broadcast_asr_text, weak=False)
 
     def _unsubscribe_from_events(self):
         if self.event_bus and not self._destroyed:
-            self.event_bus.unsubscribe(Events.Server.STOP_SERVER, self._on_stop_server)
-            self.event_bus.unsubscribe(Events.Server.GET_CHAT_SERVER, self._on_get_chat_server)
-            self.event_bus.unsubscribe(Events.Server.SET_GAME_CONNECTION, self._on_update_game_connection)
-            self.event_bus.unsubscribe(Events.Server.GET_GAME_CONNECTION, self._on_get_connection_status)
-            self.event_bus.unsubscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed)
-            self.event_bus.unsubscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings)
+            eb = self.event_bus
+            eb.unsubscribe(Events.Server.STOP_SERVER, self._on_stop_server)
+            eb.unsubscribe(Events.Server.GET_CHAT_SERVER, self._on_get_chat_server)
+            eb.unsubscribe(Events.Server.SET_GAME_CONNECTION, self._on_update_game_connection)
+            eb.unsubscribe(Events.Server.GET_GAME_CONNECTION, self._on_get_connection_status)
+            eb.unsubscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed)
+            eb.unsubscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings)
 
-            self.event_bus.unsubscribe(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, self._on_echo_chat_message_requested)
-            self.event_bus.unsubscribe(Events.Task.TASK_STATUS_CHANGED, self._on_task_status_changed)
+            eb.unsubscribe(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, self._on_echo_chat_message_requested)
+
+            eb.unsubscribe(Events.Task.TASK_STATUS_CHANGED, self._on_task_status_changed)
+            eb.unsubscribe(Events.Server.SEND_TASK_UPDATE, self._on_send_task_update)
+
+            asr_evt = getattr(Events.Server, "BROADCAST_ASR_TEXT", "broadcast_asr_text")
+            eb.unsubscribe(asr_evt, self._on_broadcast_asr_text)
 
     def _init_server(self):
         from game_connections.server import ChatServerNew
         self.server = ChatServerNew()
         logger.info("Используется новый API сервер")
+
+        # controller owns connection state propagation
+        def _conn_cb(is_connected: bool, _client_id: str | None):
+            try:
+                self.event_bus.emit(Events.Server.SET_GAME_CONNECTION, {"is_connected": bool(is_connected)})
+            except Exception:
+                pass
+
+        try:
+            self.server.set_connection_callback(_conn_cb)
+        except Exception:
+            pass
+
         self._apply_initial_settings()
         self.start_server()
 
@@ -219,9 +229,9 @@ class ServerController:
     def _on_update_game_connection(self, event: Event):
         if self._destroyed:
             return
-        is_connected = event.data.get('is_connected', False)
+        is_connected = (event.data or {}).get('is_connected', False)
         self.update_game_connection(is_connected)
-    
+
     def _on_get_connection_status(self, event: Event):
         if self._destroyed:
             return None
@@ -248,8 +258,8 @@ class ServerController:
         if self._destroyed or not self.server:
             return
 
-        key = event.data.get('key')
-        value = event.data.get('value')
+        key = (event.data or {}).get('key')
+        value = (event.data or {}).get('value')
 
         if key == 'IGNORE_GAME_REQUESTS':
             self.server.set_ignore_game_requests(bool(value))
@@ -261,7 +271,8 @@ class ServerController:
         if key in self.settings_to_send:
             try:
                 body = self._prepare_loaded_settings_body()
-                self.server.broadcast_loaded_settings(body)
+                # server transport method, thread-safe
+                self.server.schedule_broadcast_loaded_settings(body)
             except Exception as e:
                 logger.warning(f"Не удалось отправить обновлённые настройки клиентам ({key}): {e}")
 
@@ -270,7 +281,7 @@ class ServerController:
             return
         try:
             body = self._prepare_loaded_settings_body()
-            self.server.broadcast_loaded_settings(body)
+            self.server.schedule_broadcast_loaded_settings(body)
         except Exception as e:
             logger.warning(f"LOAD_SERVER_SETTINGS broadcast failed: {e}")
 
@@ -278,7 +289,6 @@ class ServerController:
         settings = {}
         for setting in self.settings_to_send:
             settings[str(setting)] = self._get_setting(setting)
-
         return {"settings": settings}
 
     def _get_setting(self, key: str, default=None):
@@ -292,30 +302,64 @@ class ServerController:
         except Exception:
             return default
 
+    # ---------------- moved subscriptions logic ----------------
     def _on_task_status_changed(self, event: Event):
         data = event.data or {}
         task = data.get("task")
         if not task or not getattr(task, "data", None):
             return
 
-        # регистрируем outgoing по (client_id, speaker=character) -> task.uid
+        # 1) internal server bookkeeping (idle tracking, last text)
+        try:
+            if self.server:
+                self.server.on_task_status_changed(task)
+        except Exception:
+            pass
+
+        # 2) echo suppression bookkeeping
         try:
             client_id = str(task.data.get("client_id") or "")
             speaker = str(task.data.get("character") or "")
-            if not client_id or not speaker:
-                return
-            if task.status != TaskStatus.SUCCESS:
-                return
-
-            result = getattr(task, "result", None) or {}
-            text = result.get("response") if isinstance(result, dict) else ""
-            message_id = str(getattr(task, "uid", "") or "")
-
-            if message_id:
-                self.echo_suppressor.register_outgoing(client_id, speaker, message_id, str(text or ""))
+            if client_id and speaker and task.status == TaskStatus.SUCCESS:
+                result = getattr(task, "result", None) or {}
+                text = result.get("response") if isinstance(result, dict) else ""
+                message_id = str(getattr(task, "uid", "") or "")
+                if message_id:
+                    self.echo_suppressor.register_outgoing(client_id, speaker, message_id, str(text or ""))
         except Exception:
-            return
+            pass
 
+        # 3) send update to Unity client
+        try:
+            client_id = str(task.data.get("client_id") or "")
+            if client_id and self.server:
+                self.server.schedule_send_task_update(client_id, task)
+        except Exception:
+            pass
+
+    def _on_send_task_update(self, event: Event):
+        task = (event.data or {}).get('task')
+        if not task or not getattr(task, "data", None):
+            return
+        client_id = str(task.data.get("client_id") or "")
+        if client_id and self.server:
+            self.server.schedule_send_task_update(client_id, task)
+
+    def _on_broadcast_asr_text(self, event: Event):
+        if not self.server:
+            return
+        data = event.data or {}
+        text = str(data.get("text") or "").strip()
+        if not text:
+            return
+        engine = str(data.get("engine") or "")
+        ts = data.get("ts", None)
+        try:
+            self.server.schedule_broadcast_asr_text(text=text, engine=engine, ts=ts)
+        except Exception:
+            pass
+
+    # ---------------- GUI echo (unchanged) ----------------
     def _on_echo_chat_message_requested(self, event: Event):
         if self._destroyed:
             return

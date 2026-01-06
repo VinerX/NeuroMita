@@ -31,17 +31,17 @@ class SettingsController(BaseController):
     def _on_setting_changed(self, event: Event):
         key = event.data.get('key')
         value = event.data.get('value')
-        
-        if key in ["USE_VOICEOVER", "VOICEOVER_METHOD", "AUDIO_BOT"]:
-            self.event_bus.emit(Events.GUI.SWITCH_VOICEOVER_SETTINGS)
-            
+
+        if key in ["USE_VOICEOVER", "VOICEOVER_METHOD", "AUDIO_BOT", "NM_CURRENT_VOICEOVER", "VOICE_LANGUAGE", "LOCAL_VOICE_LOAD_LAST"]:
+            self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
+
         if key == "AUDIO_BOT":
-            if value.startswith("@CrazyMitaAIbot"):
+            if isinstance(value, str) and value.startswith("@CrazyMitaAIbot"):
                 self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
                     "title": "Информация",
                     "message": "VinerX: наши товарищи из CrazyMitaAIbot предоставляет озвучку бесплатно буквально со своих пк, будет время - загляните к ним в тг, скажите спасибо)"
                 })
-                
+
         elif key == "CHAT_FONT_SIZE":
             try:
                 font_size = int(value)
@@ -52,10 +52,10 @@ class SettingsController(BaseController):
                 logger.warning(f"Неверное значение для размера шрифта: {value}")
             except Exception as e:
                 logger.error(f"Ошибка при изменении размера шрифта: {e}")
-                
+
         elif key in ["SHOW_CHAT_TIMESTAMPS", "MAX_CHAT_HISTORY_DISPLAY", "HIDE_CHAT_TAGS"]:
             self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
             logger.info(f"Настройка '{key}' изменена на: {value}. История чата перезагружена.")
-            
+
         elif key == "SHOW_TOKEN_INFO":
             self.event_bus.emit(Events.GUI.UPDATE_TOKEN_COUNT)
