@@ -315,6 +315,55 @@ def setup_model_interaction_controls(self, parent):
                       'Random bonus 0..NoiseMax for occasional unexpected matches.'),
          'depends_on': 'RAG_ENABLED'},
 
+        {'type': 'end'},
+
+
+
+        {'label': _("Поиск по ключевым словам", "Keyword Search"), 'type': 'subsection',
+         'depends_on': 'RAG_ENABLED'},
+
+        {'label': _('Включить поиск по ключевым словам', 'Enable keyword search'),
+         'key': 'RAG_KEYWORD_SEARCH', 'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _('Включает дополнительный поиск по ключевым словам в истории/памяти.',
+                      'Enables additional keyword search in history/memory.')},
+
+        {'label': _('Вес ключевых слов K5', 'Keyword weight K5'),
+         'key': 'RAG_WEIGHT_KEYWORDS', 'type': 'entry', 'default': 0.6,
+         'validation': self.validate_float_positive_or_zero,
+         'depends_on': 'RAG_KEYWORD_SEARCH',
+         'tooltip': _('Вес, с которым результат поиска по ключевым словам K5 будет влиять на финальный скоринг.',
+                      'The weight (K5) with which the keyword search result will influence the final scoring.')},
+
+        {'label': _('Макс. ключевых слов', 'Max keywords'),
+         'key': 'RAG_KEYWORDS_MAX_TERMS', 'type': 'entry', 'default': 8,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'RAG_KEYWORD_SEARCH',
+         'tooltip': _('Максимальное количество ключевых слов, извлекаемых из запроса для поиска.',
+                      'Maximum number of keywords extracted from the query for search.')},
+
+        {'label': _('Мин. длина ключевого слова', 'Min keyword length'),
+         'key': 'RAG_KEYWORDS_MIN_LEN', 'type': 'entry', 'default': 3,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'RAG_KEYWORD_SEARCH',
+         'tooltip': _('Минимальная длина ключевого слова для его включения в поиск.',
+                      'Minimum length for a keyword to be included in the search.')},
+
+        {'label': _('Мин. оценка совпадения', 'Min match score'),
+         'key': 'RAG_KEYWORD_MIN_SCORE', 'type': 'entry', 'default': 0.34,
+         'validation': self.validate_float_0_to_1,
+         'depends_on': 'RAG_KEYWORD_SEARCH',
+         'tooltip': _('Минимальная оценка (доля совпадений), необходимая для включения результата.',
+                      'Minimum score (fraction of matches) required to include a result.')},
+
+        {'label': _('SQL лимит поиска', 'SQL search limit'),
+         'key': 'RAG_KEYWORD_SQL_LIMIT', 'type': 'entry', 'default': 250,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'RAG_KEYWORD_SEARCH',
+         'tooltip': _('Максимальное количество записей, которое запрашивается из базы данных по ключевым словам.',
+                      'Maximum number of records requested from the database by keywords.')},
+
+
+
 
 
     ]

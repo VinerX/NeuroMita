@@ -1,3 +1,4 @@
+import logging
 import re
 import sqlite3
 import numpy as np
@@ -14,6 +15,7 @@ from core.events import get_event_bus, Events
 from main_logger import logger
 from managers.settings_manager import SettingsManager
 from utils.throttled_progress_logger import ThrottledProgressLogger
+from managers.rag_keyword_search import extract_keywords, keyword_score
 
 
 def _resolve_event_name(fallback: str, *path: str) -> str:
@@ -341,7 +343,7 @@ class RAGManager:
         Advanced RAG:
         - query embedding строим из хвоста активного контекста + текущего запроса
         - считаем финальный скор по формуле:
-          Score = (Sim*K1) + (TimeFactor*K2) + (PriorityBonus*K3) + (EntityBonus*K4) + Noise
+          Score = (Sim*K1) + (TimeFactor*K2) + (PriorityBonus*K3) + (EntityBonus*K4) + (KeywordScore*K5) + Noise
         - RAG правила:
           memories: is_deleted=0 AND is_forgotten=1
           history: s_deleted=0 AND is_active=0
@@ -355,11 +357,27 @@ class RAGManager:
         detailed_logs = self._get_bool_setting("RAG_DETAILED_LOGS", True)
         tail = int(SettingsManager.get("RAG_QUERY_TAIL_MESSAGES",2))
 
+        # Keyword search (SettingsManager)
+        KW_ENABLED = bool(SettingsManager.get("RAG_KEYWORD_SEARCH", False))
+        K5 = self._get_float_setting("RAG_WEIGHT_KEYWORDS", 0.6)
+        kw_max_terms = self._get_int_setting("RAG_KEYWORDS_MAX_TERMS", 8)
+        kw_min_score = self._get_float_setting("RAG_KEYWORD_MIN_SCORE", 0.34)  # ~1/3 совпадений
+        kw_sql_limit = self._get_int_setting("RAG_KEYWORD_SQL_LIMIT", 250)
+        kw_min_len = self._get_int_setting("RAG_KEYWORDS_MIN_LEN", 3)
+
         memory_mode = str(SettingsManager.get("RAG_MEMORY_MODE", "forgotten") or "forgotten").strip().lower()
 
         noise_max = self._get_float_setting("RAG_NOISE_MAX", 0.05)
 
         query_text = self._build_query_from_recent(query, tail=tail)
+
+        keywords: list[str] = []
+        if KW_ENABLED:
+            try:
+                keywords = extract_keywords(query_text, max_terms=kw_max_terms, min_len=kw_min_len)
+            except Exception:
+                keywords = []
+
         query_text = self.rag_clean_text(query_text)
         query_vec = self._get_embedding(query_text)
         if query_vec is None:
@@ -435,15 +453,68 @@ class RAGManager:
 
         # 1) Memories
         if bool(SettingsManager.get("RAG_SEARCH_MEMORY",False)):
-            self.find_forgotten_memories(K1, K2, K3, K4, cursor, decay_rate, entity_bonus_from_participants, memory_mode,
-                                         noise_max, now, prio_bonus, query_vec, scored, threshold)
+            self.find_forgotten_memories(
+                K1, K2, K3, K4, cursor, decay_rate, entity_bonus_from_participants, memory_mode,
+                noise_max, now, prio_bonus, query_vec, scored, threshold,
+                keywords=keywords, KW_ENABLED=KW_ENABLED, kw_min_score=kw_min_score, K5=K5,
+            )
+
+        # 1b) Memories keyword-only (embedding IS NULL)
+        if KW_ENABLED and bool(SettingsManager.get("RAG_SEARCH_MEMORY", False)):
+            self.find_keyword_memories_without_embedding(
+                cursor=cursor,
+                scored=scored,
+                keywords=keywords,
+                kw_min_score=kw_min_score,
+                K2=K2, K3=K3, K4=K4, K5=K5,
+                decay_rate=decay_rate,
+                noise_max=noise_max,
+                now=now,
+                prio_bonus=prio_bonus,
+                entity_bonus_from_participants=entity_bonus_from_participants,
+                memory_mode=memory_mode,
+                sql_limit=kw_sql_limit,
+            )
 
         # 2) History
         if bool(SettingsManager.get("RAG_SEARCH_HISTORY",False)):
-            self.find_forgotten_histories(K1, K2, K4, cursor, decay_rate, entity_bonus_history, noise_max, now, query_vec,
-                                          scored, threshold)
+            self.find_forgotten_histories(
+                K1, K2, K4, cursor, decay_rate, entity_bonus_history, noise_max, now, query_vec,
+                scored, threshold,
+                keywords=keywords, KW_ENABLED=KW_ENABLED, kw_min_score=kw_min_score, K5=K5,
+            )
+
+        # 2b) History keyword-only (embedding IS NULL)
+        if KW_ENABLED and bool(SettingsManager.get("RAG_SEARCH_HISTORY", False)):
+            self.find_keyword_histories_without_embedding(
+                cursor=cursor,
+                scored=scored,
+                keywords=keywords,
+                kw_min_score=kw_min_score,
+                K2=K2, K4=K4, K5=K5,
+                decay_rate=decay_rate,
+                noise_max=noise_max,
+                now=now,
+                entity_bonus_history=entity_bonus_history,
+                sql_limit=kw_sql_limit,
+            )
 
         conn.close()
+
+        # dedup: если запись попала и через embedding, и через keyword-only
+        try:
+            dedup: dict[tuple[str, int], dict] = {}
+            for it in scored:
+                try:
+                    key = (str(it.get("source")), int(it.get("id") or 0))
+                except Exception:
+                    continue
+                prev = dedup.get(key)
+                if prev is None or float(it.get("score") or 0.0) > float(prev.get("score") or 0.0):
+                    dedup[key] = it
+            scored = list(dedup.values())
+        except Exception as e:
+            logging.warning(e)
 
         scored.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
 
@@ -463,7 +534,8 @@ class RAGManager:
                     rid = item.get("id")
                     logger.info(
                         f"[RAG] {src}:{rid} | Base:{dbg.get('sim'):.3f} | Time:{dbg.get('time'):.3f} "
-                        f"| Prio:{dbg.get('prio'):.3f} | Ent:{dbg.get('entity'):.3f} | Final:{dbg.get('final'):.3f} "
+                        f"| Prio:{dbg.get('prio'):.3f} | Ent:{dbg.get('entity'):.3f} | KW:{float(dbg.get('kw') or 0.0):.3f} "
+                        f"| Final:{dbg.get('final'):.3f} "
                         f"| Content:\"{self.rag_clean_text(_clip(item.get('content')))}\""
                     )
 
@@ -485,8 +557,209 @@ class RAGManager:
             out.append(it2)
         return out
 
+    def _sql_keyword_where(self, keywords: list[str], column: str = "content") -> tuple[str, list[str]]:
+        kws = [k for k in (keywords or []) if isinstance(k, str) and k.strip()]
+        if not kws:
+            return "", []
+        clauses = []
+        params: list[str] = []
+        for k in kws:
+            clauses.append(f"{column} LIKE ?")
+            params.append(f"%{k}%")
+        return "(" + " OR ".join(clauses) + ")", params
+
+    def find_keyword_histories_without_embedding(
+        self,
+        *,
+        cursor,
+        scored: list[dict],
+        keywords: list[str],
+        kw_min_score: float,
+        K2: float,
+        K4: float,
+        K5: float,
+        decay_rate: float,
+        noise_max: float,
+        now: datetime.datetime,
+        entity_bonus_history,
+        sql_limit: int,
+    ) -> None:
+        if not keywords:
+            return
+
+        where = "character_id=? AND is_active=0 AND (embedding IS NULL) AND content IS NOT NULL AND TRIM(content) != ''"
+        params: list[Any] = [self.character_id]
+        if "is_deleted" in self._history_cols:
+            where += " AND is_deleted=0"
+
+        kw_where, kw_params = self._sql_keyword_where(keywords, column="content")
+        if not kw_where:
+            return
+        where = f"{where} AND {kw_where}"
+        params.extend(kw_params)
+
+        cols = ["id", "role", "content", "timestamp"]
+        opt_cols = ["speaker", "target", "participants"]
+        cols += [c for c in opt_cols if c in self._history_cols]
+
+        try:
+            cursor.execute(
+                f"""
+                SELECT {', '.join(cols)}
+                FROM history
+                WHERE {where}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                tuple(params + [int(sql_limit)]),
+            )
+            rows = cursor.fetchall() or []
+        except Exception as e:
+            logger.warning(f"RAGManager: keyword-only history read failed: {e}", exc_info=True)
+            return
+
+        for row in rows:
+            rd = dict(zip(cols, row))
+            content_raw = rd.get("content")
+            content = self.rag_clean_text(str(content_raw or ""))
+
+            try:
+                kw, _hits = keyword_score(keywords, content)
+            except Exception:
+                kw = 0.0
+
+            if kw < float(kw_min_score):
+                continue
+
+            ts = rd.get("timestamp")
+            dt = self._parse_dt(ts)
+            if dt:
+                days = max(0.0, (now - dt).total_seconds() / 86400.0)
+                tf = 1.0 / (1.0 + (decay_rate * days))
+            else:
+                tf = 0.0
+
+            sp = str(rd.get("speaker") or "").strip()
+            tg = str(rd.get("target") or "").strip()
+            parts = self._json_loads_list(rd.get("participants"))
+            eb = entity_bonus_history(sp, tg, parts)
+
+            noise = random.uniform(0.0, noise_max)
+            final = (tf * K2) + (eb * K4) + (kw * K5) + noise
+
+            scored.append({
+                "source": "history",
+                "id": int(rd.get("id") or 0),
+                "role": rd.get("role"),
+                "content": content_raw,
+                "date": ts,
+                "speaker": sp or None,
+                "target": tg or None,
+                "participants": parts,
+                "score": float(final),
+                "_dbg": {"sim": 0.0, "time": tf, "prio": 0.0, "entity": eb, "kw": kw, "noise": noise, "final": final}
+            })
+
+    def find_keyword_memories_without_embedding(
+        self,
+        *,
+        cursor,
+        scored: list[dict],
+        keywords: list[str],
+        kw_min_score: float,
+        K2: float,
+        K3: float,
+        K4: float,
+        K5: float,
+        decay_rate: float,
+        noise_max: float,
+        now: datetime.datetime,
+        prio_bonus,
+        entity_bonus_from_participants,
+        memory_mode: str,
+        sql_limit: int,
+    ) -> None:
+        if not keywords:
+            return
+
+        mem_where = "character_id=? AND is_deleted=0 AND (embedding IS NULL) AND content IS NOT NULL AND TRIM(content) != ''"
+        params: list[Any] = [self.character_id]
+
+        has_forgotten_col = ("is_forgotten" in self._mem_cols)
+        if has_forgotten_col:
+            if memory_mode == "forgotten":
+                mem_where += " AND is_forgotten=1"
+            elif memory_mode == "active":
+                mem_where += " AND is_forgotten=0"
+
+        kw_where, kw_params = self._sql_keyword_where(keywords, column="content")
+        if not kw_where:
+            return
+        mem_where = f"{mem_where} AND {kw_where}"
+        params.extend(kw_params)
+
+        cols = ["eternal_id", "content", "type", "priority", "date_created", "participants"]
+        if has_forgotten_col:
+            cols.append("is_forgotten")
+
+        try:
+            cursor.execute(
+                f"""
+                SELECT {', '.join(cols)}
+                FROM memories
+                WHERE {mem_where}
+                ORDER BY eternal_id DESC
+                LIMIT ?
+                """,
+                tuple(params + [int(sql_limit)]),
+            )
+            rows = cursor.fetchall() or []
+        except Exception as e:
+            logger.warning(f"RAGManager: keyword-only memories read failed: {e}", exc_info=True)
+            return
+
+        for row in rows:
+            rd = dict(zip(cols, row))
+            content_raw = rd.get("content")
+            content = self.rag_clean_text(str(content_raw or ""))
+
+            try:
+                kw, _hits = keyword_score(keywords, content)
+            except Exception:
+                kw = 0.0
+
+            if kw < float(kw_min_score):
+                continue
+
+            ts = rd.get("date_created")
+            dt = self._parse_dt(ts)
+            if dt:
+                days = max(0.0, (now - dt).total_seconds() / 86400.0)
+                tf = 1.0 / (1.0 + (decay_rate * days))
+            else:
+                tf = 0.0
+
+            pb = prio_bonus(rd.get("priority"))
+            eb = entity_bonus_from_participants(self._json_loads_list(rd.get("participants")))
+            noise = random.uniform(0.0, noise_max)
+
+            final = (tf * K2) + (pb * K3) + (eb * K4) + (kw * K5) + noise
+
+            scored.append({
+                "source": "memory",
+                "id": int(rd.get("eternal_id") or 0),
+                "content": content_raw,
+                "type": rd.get("type"),
+                "priority": rd.get("priority"),
+                "date_created": rd.get("date_created"),
+                "score": float(final),
+                "_dbg": {"sim": 0.0, "time": tf, "prio": pb, "entity": eb, "kw": kw, "noise": noise, "final": final}
+            })
+
     def find_forgotten_histories(self, K1, K2, K4, cursor, decay_rate, entity_bonus_history, noise_max, now, query_vec,
-                                 scored, threshold):
+                                 scored, threshold, *, keywords: list[str], KW_ENABLED: bool, kw_min_score: float, K5: float):
+        if query_vec is None:
+            return
         try:
             base_cols = ["id", "role", "content", "embedding", "timestamp"]
             opt_cols = ["speaker", "target", "participants"]
@@ -511,7 +784,16 @@ class RAGManager:
             if vec is None:
                 continue
             sim = float(np.dot(query_vec, vec))
-            if sim < float(threshold):
+
+            # keyword score (может протащить запись даже если sim < threshold)
+            kw = 0.0
+            if KW_ENABLED and keywords:
+                try:
+                    kw, _hits = keyword_score(keywords, self.rag_clean_text(str(rd.get("content") or "")))
+                except Exception:
+                    kw = 0.0
+
+            if sim < float(threshold) and (not KW_ENABLED or kw < float(kw_min_score)):
                 continue
 
             ts = rd.get("timestamp")
@@ -528,7 +810,7 @@ class RAGManager:
             eb = entity_bonus_history(sp, tg, parts)
 
             noise = random.uniform(0.0, noise_max)
-            final = (sim * K1) + (tf * K2) + (eb * K4) + noise
+            final = (sim * K1) + (tf * K2) + (eb * K4) + (kw * K5) + noise
 
             scored.append({
                 "source": "history",
@@ -541,13 +823,16 @@ class RAGManager:
                 "participants": parts,
                 "score": float(final),
                 "_dbg": {
-                    "sim": sim, "time": tf, "prio": 0.0, "entity": eb, "noise": noise,
+                    "sim": sim, "time": tf, "prio": 0.0, "entity": eb, "kw": kw, "noise": noise,
                     "final": final
                 }
             })
 
     def find_forgotten_memories(self, K1, K2, K3, K4, cursor, decay_rate, entity_bonus_from_participants, memory_mode,
-                                noise_max, now, prio_bonus, query_vec, scored, threshold):
+                                noise_max, now, prio_bonus, query_vec, scored, threshold,
+                                *, keywords: list[str], KW_ENABLED: bool, kw_min_score: float, K5: float):
+        if query_vec is None:
+            return
         try:
             mem_where = "character_id=? AND is_deleted=0 AND embedding IS NOT NULL"
 
@@ -593,7 +878,15 @@ class RAGManager:
             if vec is None:
                 continue
             sim = float(np.dot(query_vec, vec))
-            if sim < float(threshold):
+
+            kw = 0.0
+            if KW_ENABLED and keywords:
+                try:
+                    kw, _hits = keyword_score(keywords, self.rag_clean_text(str(content or "")))
+                except Exception:
+                    kw = 0.0
+
+            if sim < float(threshold) and (not KW_ENABLED or kw < float(kw_min_score)):
                 continue
 
             ts = date_created
@@ -607,7 +900,7 @@ class RAGManager:
             pb = prio_bonus(priority)
             eb = entity_bonus_from_participants(self._json_loads_list(participants))
             noise = random.uniform(0.0, noise_max)
-            final = (sim * K1) + (tf * K2) + (pb * K3) + (eb * K4) + noise
+            final = (sim * K1) + (tf * K2) + (pb * K3) + (eb * K4) + (kw * K5) + noise
 
             scored.append({
                 "source": "memory",
@@ -618,7 +911,7 @@ class RAGManager:
                 "date_created": date_created,
                 "score": float(final),
                 "_dbg": {
-                    "sim": sim, "time": tf, "prio": pb, "entity": eb, "noise": noise,
+                    "sim": sim, "time": tf, "prio": pb, "entity": eb, "kw": kw, "noise": noise,
                     "final": final
                 }
             })
