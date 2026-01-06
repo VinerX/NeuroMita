@@ -29,8 +29,7 @@ _STOPWORDS = {
 
 _TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9_]+")
 
-
-def extract_keywords(text: str, *, max_terms: int = 8, min_len: int = 3) -> List[str]:
+def extract_keywords(text: str, *, max_terms: int = 8, min_len: int = 3, from_end: bool = False) -> List[str]:
     """
     Достаёт ключевые слова из строки:
     - lower
@@ -45,6 +44,9 @@ def extract_keywords(text: str, *, max_terms: int = 8, min_len: int = 3) -> List
         return []
 
     tokens = _TOKEN_RE.findall(raw)
+    if from_end:
+        tokens = list(reversed(tokens))
+
     out: List[str] = []
     seen = set()
 
@@ -65,6 +67,9 @@ def extract_keywords(text: str, *, max_terms: int = 8, min_len: int = 3) -> List
         seen.add(tt)
         if len(out) >= int(max_terms):
             break
+
+    if from_end:
+        out = list(reversed(out))
 
     return out
 

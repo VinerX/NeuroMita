@@ -374,7 +374,26 @@ class RAGManager:
         keywords: list[str] = []
         if KW_ENABLED:
             try:
-                keywords = extract_keywords(query_text, max_terms=kw_max_terms, min_len=kw_min_len)
+                # ВАЖНО: приоритизируем keywords из текущего query (user input),
+                # иначе их может "вытеснить" длинный контекст/summary в начале query_text.
+                primary = self.rag_clean_text(str(query or ""))
+                kw_primary = extract_keywords(primary, max_terms=kw_max_terms, min_len=kw_min_len)
+
+                # добираем из контекста, но с конца (ближе к последним репликам)
+                kw_ctx = extract_keywords(query_text, max_terms=kw_max_terms, min_len=kw_min_len, from_end=True)
+
+                merged: list[str] = []
+                seen = set()
+                for k in (kw_primary + kw_ctx):
+                    ks = str(k or "").strip().lower()
+                    if not ks or ks in seen:
+                        continue
+                    merged.append(ks)
+                    seen.add(ks)
+                    if len(merged) >= int(kw_max_terms):
+                        break
+
+                keywords = merged
             except Exception:
                 keywords = []
 
