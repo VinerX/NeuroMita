@@ -9,6 +9,7 @@ from .gui.system_controller import SystemController
 from .gui.audio_model_controller import AudioModelController
 from .gui.dialog_controller import DialogController
 from .gui.settings_controller import SettingsController
+from .gui.microphone_settings_controller import MicrophoneSettingsController
 from .gui.model_event_controller import ModelEventController
 from .gui.view_event_controller import ViewEventController
 from .gui.voice_model_controller import VoiceModelGuiController
@@ -53,6 +54,7 @@ class GuiController:
         self.audio_model_controller = AudioModelController(main_controller, view)
         self.dialog_controller = DialogController(main_controller, view)
         self.settings_controller = SettingsController(main_controller, view)
+        self.microphone_settings_controller = MicrophoneSettingsController(main_controller, view)
         self.model_event_controller = ModelEventController(main_controller, view)
         self.view_event_controller = ViewEventController(main_controller, view)
         self.voice_model_gui_controller = VoiceModelGuiController(main_controller, view)

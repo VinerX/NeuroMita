@@ -253,8 +253,30 @@ class SpeechController:
 
     # —— install/check
     def _on_check_asr_model_installed(self, event: Event):
-        model_type = (event.data or {}).get('model', self._asr_settings.get("engine", "google"))
-        return self._check_model_installed(model_type)
+        data = event.data or {}
+        cb = data.get("callback")
+
+        model_type = (data or {}).get('model', self._asr_settings.get("engine", "google"))
+
+        if not cb:
+            return self._check_model_installed(model_type)
+
+        def worker():
+            try:
+                res = bool(self._check_model_installed(model_type))
+                try:
+                    cb(res, None)
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    cb(False, e)
+                except Exception:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
+        return None
+
 
     def _check_model_installed(self, model_type: str) -> bool:
         engine_settings = {}
@@ -315,8 +337,20 @@ class SpeechController:
         self.events_bus.emit(Events.GUI.UPDATE_CHAT_UI, {'role': 'user', 'response': text, 'is_initial': False, 'emotion': ''})
         self.events_bus.emit(Events.Chat.SEND_MESSAGE, {'user_input': text, 'system_input': '', 'image_data': []})
 
-    def _on_get_mic_status(self, _event: Event):
-        return self.mic_recognition_active and self.asr_is_ready
+    def _on_get_mic_status(self, event: Event):
+        data = event.data or {}
+        cb = data.get("callback")
+
+        res = bool(self.mic_recognition_active and self.asr_is_ready)
+
+        if cb:
+            try:
+                cb(res, None)
+            except Exception:
+                pass
+            return None
+
+        return res
 
     def _on_set_microphone(self, event: Event):
         name = event.data.get('name')
@@ -364,94 +398,140 @@ class SpeechController:
     def _on_get_user_input(self, _event: Event):
         return ""
 
-    def _on_get_microphone_list(self, _event: Event):
-        try:
-            devices = sd.query_devices()
-            result = []
-            for i, d in enumerate(devices):
-                if d.get('max_input_channels', 0) > 0:
-                    name = d.get('name', f"Device {i}")
-                    result.append(f"{name} ({i})")
-            return result or ["Микрофоны не найдены"]
-        except Exception as e:
-            logger.error(f"Ошибка получения списка микрофонов: {e}")
-            return ["Ошибка загрузки"]
+    def _on_get_microphone_list(self, event: Event):
+        data = event.data or {}
+        cb = data.get("callback")
+
+        def compute():
+            try:
+                devices = sd.query_devices()
+                result = []
+                for i, d in enumerate(devices):
+                    if d.get('max_input_channels', 0) > 0:
+                        name = d.get('name', f"Device {i}")
+                        result.append(f"{name} ({i})")
+                return result or ["Микрофоны не найдены"]
+            except Exception as e:
+                logger.error(f"Ошибка получения списка микрофонов: {e}")
+                return ["Ошибка загрузки"]
+
+        if not cb:
+            return compute()
+
+        def worker():
+            try:
+                lst = compute()
+                try:
+                    cb(lst, None)
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    cb(["Ошибка загрузки"], e)
+                except Exception:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
+        return None
 
     def _on_refresh_microphone_list(self, event: Event):
         return self._on_get_microphone_list(event)
 
-    def _on_get_asr_models_glossary(self, _event: Event):
-        try:
-            from core.install_requirements import check_requirements
-            from utils.gpu_utils import check_gpu_provider
+    def _on_get_asr_models_glossary(self, event: Event):
+        data = event.data or {}
+        cb = data.get("callback")
 
+        def compute():
             try:
-                gpu_vendor = check_gpu_provider() or "CPU"
-            except Exception:
-                gpu_vendor = "CPU"
+                from core.install_requirements import check_requirements
+                from utils.gpu_utils import check_gpu_provider
 
-            if not self._asr_settings or not self._asr_settings.get("models"):
-                self._load_asr_settings()
-
-            models_map = self._asr_settings.get("models", {}) or {}
-            registry = getattr(SpeechRecognition, "_registry", {}) or {}
-            engines = list(registry.keys())
-
-            result = []
-            for engine in engines:
-                engine_settings = models_map.get(engine, {}) or {}
-
-                inst = None
                 try:
-                    inst = SpeechRecognition._new_instance(engine)
-                    if inst and hasattr(inst, "apply_settings"):
-                        inst.apply_settings(engine_settings)
+                    gpu_vendor = check_gpu_provider() or "CPU"
                 except Exception:
+                    gpu_vendor = "CPU"
+
+                if not self._asr_settings or not self._asr_settings.get("models"):
+                    self._load_asr_settings()
+
+                models_map = self._asr_settings.get("models", {}) or {}
+                registry = getattr(SpeechRecognition, "_registry", {}) or {}
+                engines = list(registry.keys())
+
+                result = []
+                for engine in engines:
+                    engine_settings = models_map.get(engine, {}) or {}
+
                     inst = None
+                    try:
+                        inst = SpeechRecognition._new_instance(engine)
+                        if inst and hasattr(inst, "apply_settings"):
+                            inst.apply_settings(engine_settings)
+                    except Exception:
+                        inst = None
 
-                meta = {}
-                try:
-                    cfgs = inst.get_model_configs() if inst else (getattr(registry.get(engine), "MODEL_CONFIGS", []) or [])
-                    if isinstance(cfgs, list):
-                        for c in cfgs:
-                            if isinstance(c, dict) and str(c.get("id") or "") == str(engine):
-                                meta = c
-                                break
-                except Exception:
                     meta = {}
+                    try:
+                        cfgs = inst.get_model_configs() if inst else (getattr(registry.get(engine), "MODEL_CONFIGS", []) or [])
+                        if isinstance(cfgs, list):
+                            for c in cfgs:
+                                if isinstance(c, dict) and str(c.get("id") or "") == str(engine):
+                                    meta = c
+                                    break
+                    except Exception:
+                        meta = {}
 
-                reqs = []
-                try:
-                    if inst and hasattr(inst, "requirements"):
-                        reqs = inst.requirements() or []
-                except Exception:
                     reqs = []
+                    try:
+                        if inst and hasattr(inst, "requirements"):
+                            reqs = inst.requirements() or []
+                    except Exception:
+                        reqs = []
 
-                ctx = {
-                    "device": engine_settings.get("device"),
-                    "gpu_vendor": gpu_vendor,
-                }
+                    ctx = {
+                        "device": engine_settings.get("device"),
+                        "gpu_vendor": gpu_vendor,
+                    }
 
-                status = check_requirements(reqs, ctx=ctx) if reqs else {
-                    "ok": True, "missing_required": [], "missing_optional": [], "details": []
-                }
+                    status = check_requirements(reqs, ctx=ctx) if reqs else {
+                        "ok": True, "missing_required": [], "missing_optional": [], "details": []
+                    }
 
-                result.append({
-                    "id": engine,
-                    "name": meta.get("name") or engine,
-                    "description": meta.get("description") or "",
-                    "languages": meta.get("languages", []) if isinstance(meta.get("languages"), list) else [],
-                    "gpu_vendor": meta.get("gpu_vendor", []) if isinstance(meta.get("gpu_vendor"), list) else [],
-                    "tags": meta.get("tags", []) if isinstance(meta.get("tags"), list) else [],
-                    "links": meta.get("links", []) if isinstance(meta.get("links"), list) else [],
-                    "installed": bool(status.get("ok")),
-                    "missing_required": status.get("missing_required", []),
-                    "missing_optional": status.get("missing_optional", []),
-                    "details": status.get("details", []),
-                })
+                    result.append({
+                        "id": engine,
+                        "name": meta.get("name") or engine,
+                        "description": meta.get("description") or "",
+                        "languages": meta.get("languages", []) if isinstance(meta.get("languages"), list) else [],
+                        "gpu_vendor": meta.get("gpu_vendor", []) if isinstance(meta.get("gpu_vendor"), list) else [],
+                        "tags": meta.get("tags", []) if isinstance(meta.get("tags"), list) else [],
+                        "links": meta.get("links", []) if isinstance(meta.get("links"), list) else [],
+                        "installed": bool(status.get("ok")),
+                        "missing_required": status.get("missing_required", []),
+                        "missing_optional": status.get("missing_optional", []),
+                        "details": status.get("details", []),
+                    })
 
-            return result
+                return result
 
-        except Exception as e:
-            logger.error(f"GET_ASR_MODELS_GLOSSARY error: {e}", exc_info=True)
-            return []
+            except Exception as e:
+                logger.error(f"GET_ASR_MODELS_GLOSSARY error: {e}", exc_info=True)
+                return []
+
+        if not cb:
+            return compute()
+
+        def worker():
+            try:
+                res = compute()
+                try:
+                    cb(res, None)
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    cb([], e)
+                except Exception:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
+        return None
