@@ -423,7 +423,7 @@ def setup_model_interaction_controls(self, parent):
              'Enables lexical search via SQLite FTS5 for memory and/or history (depending on enabled options).')},
 
         {'label': _('Вес лексического фактора (K6)', 'Lexical factor weight (K6)'),
-         'key': 'RAG_WEIGHT_LEXICAL', 'type': 'entry', 'default': 0.6,
+         'key': 'RAG_WEIGHT_LEXICAL', 'type': 'entry', 'default': 0.3,
          'validation': self.validate_float_0_to_1,
          'tooltip': _(
              'Вес лексического фактора (K6) в общей формуле ранжирования результатов (если используется смешанный поиск).',

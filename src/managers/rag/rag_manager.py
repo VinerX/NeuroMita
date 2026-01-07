@@ -22,7 +22,7 @@ from managers.settings_manager import SettingsManager
 
 
 from managers.rag.rag_keyword_search import extract_keywords, keyword_score
-
+from .stopwords.stopwords import STOPWORDS
 
 def _resolve_event_name(fallback: str, *path: str) -> str:
     try:
@@ -258,6 +258,8 @@ class RAGManager:
         for t in tokens:
             t = t.strip().strip('"').strip("'")
             if len(t) < int(min_len):
+                continue
+            if t in STOPWORDS:
                 continue
             if t in seen:
                 continue
