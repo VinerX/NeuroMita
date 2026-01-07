@@ -1,7 +1,7 @@
 # src/controllers/model_controller.py
 from __future__ import annotations
 
-from managers.rag_manager import RAGManager
+from managers.rag.rag_manager import RAGManager
 import base64
 import json
 import datetime

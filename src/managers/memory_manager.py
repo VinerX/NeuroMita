@@ -3,7 +3,7 @@ import datetime
 from typing import Optional, Tuple, List, Set
 
 from managers.database_manager import DatabaseManager
-from managers.rag_manager import RAGManager
+from managers.rag.rag_manager import RAGManager
 from managers.settings_manager import SettingsManager
 
 

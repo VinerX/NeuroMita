@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 from main_logger import logger
 from managers.database_manager import DatabaseManager
-from managers.rag_manager import RAGManager
+from managers.rag.rag_manager import RAGManager
 
 
 class HistoryManager:
