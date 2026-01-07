@@ -1737,7 +1737,7 @@ class RAGManager:
             processed = 0
             updated_count = 0
 
-            prog = make_reindex_progress_logger(
+            prog = make_reindex_progress_logger(self,
                 "index_all_missing",
                 total,
                 extra_meta=f"batch_size={batch_size} | hist={len(hist_rows)} | mem={len(mem_rows)}",
@@ -1842,6 +1842,7 @@ class RAGManager:
             updated_count = 0
 
             prog = make_reindex_progress_logger(
+                self,
                 "index_all",
                 total,
                 extra_meta=f"batch_size={batch_size} | hist={len(hist_rows)} | mem={len(mem_rows)}",
