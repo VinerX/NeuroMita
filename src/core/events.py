@@ -103,13 +103,71 @@ class EventBus:
         else:
             self._event_queue.put(event)
     
+    # def emit_and_wait(self, event_name: str, data: Any = None, timeout: float = 5.0) -> List[Any]:
+    #     """
+    #     Отправить событие и дождаться результатов от всех подписчиков
+
+    #     Returns:
+    #         Список результатов от подписчиков
+    #     """
+    #     results: List[Any] = []
+    #     result_queue: Queue = Queue()
+
+    #     if threading.current_thread() is threading.main_thread():
+    #         logger.warning(f"Blocking 'emit_and_wait' called from MainThread for event '{event_name}'. This may freeze GUI.")
+    #         pass
+
+    #     def result_wrapper(callback):
+    #         def wrapper(*args, **kwargs):
+    #             try:
+    #                 result = callback(*args, **kwargs)
+    #                 result_queue.put(result)
+    #             except Exception as e:
+    #                 logger.error("Произошла ошибка в событии, коллектим:")
+    #                 callback_name = getattr(callback, "__qualname__", getattr(callback, "__name__", "unknown"))
+    #                 event_name_for_log = "неизвестного события"
+    #                 if args and isinstance(args[0], Event):
+    #                     event_name_for_log = f"события '{args[0].name}'"
+    #                 logger.error(
+    #                     f"Ошибка в обработчике '{callback_name}' для {event_name_for_log}: {e}",
+    #                     exc_info=True
+    #                 )
+    #                 result_queue.put(None)
+    #         return wrapper
+
+    #     with self._lock:
+    #         subscribers = self._get_active_subscribers(event_name)
+
+    #     if not subscribers:
+    #         logger.debug(f"emit_and_wait: No subscribers for event '{event_name}'")
+    #         return results
+
+    #     for subscriber in subscribers:
+    #         wrapped = result_wrapper(subscriber)
+    #         self._wait_executor.submit(wrapped, Event(name=event_name, data=data))
+
+    #     start_time = time.time()
+    #     collected = 0
+    #     target = len(subscribers)
+
+    #     while collected < target and (time.time() - start_time) < float(timeout):
+    #         try:
+    #             result = result_queue.get(timeout=0.1)
+    #             if result is not None:
+    #                 results.append(result)
+    #             collected += 1
+    #         except Empty:
+    #             continue
+
+    #     return results
+
     def emit_and_wait(self, event_name: str, data: Any = None, timeout: float = 5.0) -> List[Any]:
         """
         Отправить событие и дождаться результатов от всех подписчиков
-
-        Returns:
-            Список результатов от подписчиков
         """
+        start_time = time.perf_counter() # <--- СТАРТ ТАЙМЕРА
+        is_main_thread = (threading.current_thread() is threading.main_thread())
+        
         results: List[Any] = []
         result_queue: Queue = Queue()
 
@@ -119,15 +177,8 @@ class EventBus:
                     result = callback(*args, **kwargs)
                     result_queue.put(result)
                 except Exception as e:
-                    logger.error("Произошла ошибка в событии, коллектим:")
-                    callback_name = getattr(callback, "__qualname__", getattr(callback, "__name__", "unknown"))
-                    event_name_for_log = "неизвестного события"
-                    if args and isinstance(args[0], Event):
-                        event_name_for_log = f"события '{args[0].name}'"
-                    logger.error(
-                        f"Ошибка в обработчике '{callback_name}' для {event_name_for_log}: {e}",
-                        exc_info=True
-                    )
+                    # ... (ваш код обработки ошибок) ...
+                    logger.error(f"Error in handler for '{event_name}': {e}", exc_info=True)
                     result_queue.put(None)
             return wrapper
 
@@ -135,29 +186,44 @@ class EventBus:
             subscribers = self._get_active_subscribers(event_name)
 
         if not subscribers:
-            logger.debug(f"emit_and_wait: No subscribers for event '{event_name}'")
             return results
 
+        # Запуск задач
         for subscriber in subscribers:
             wrapped = result_wrapper(subscriber)
             self._wait_executor.submit(wrapped, Event(name=event_name, data=data))
 
-        start_time = time.time()
+        # Сбор результатов
         collected = 0
         target = len(subscribers)
+        wait_start = time.time()
 
-        while collected < target and (time.time() - start_time) < float(timeout):
+        while collected < target and (time.time() - wait_start) < float(timeout):
             try:
-                result = result_queue.get(timeout=0.1)
+                result = result_queue.get(timeout=0.05) # Чуть уменьшил шаг для отзывчивости
                 if result is not None:
                     results.append(result)
                 collected += 1
             except Empty:
                 continue
+        
+        # --- ФИНАЛИЗАЦИЯ И ЛОГИРОВАНИЕ ВРЕМЕНИ ---
+        duration = time.perf_counter() - start_time
+        
+        # Логируем, только если это заняло ощутимое время (например, > 100мс)
+        if duration > 0.03:
+            msg = f"⏱️ SLOW EVENT: '{event_name}' took {duration:.4f}s"
+            
+            if is_main_thread:
+                # Если это MainThread - это 100% фриз интерфейса
+                logger.warning(f"[GUI FREEZE] {msg} (Called from MainThread!)")
+            else:
+                # Если фоновый поток - просто инфо о медленной операции
+                logger.info(f"[BG SLOW] {msg}")
+        # -----------------------------------------
 
         return results
 
-    
     def shutdown(self) -> None:
         """Остановить систему событий"""
         self._running = False

@@ -21,6 +21,16 @@ class AsrEventsController(BaseController):
         self._last_tooltip: str | None = None
 
         self._init_token: int = 0
+
+        self._settings_cache: dict[str, object] = {}
+        self._installed_cache: dict[str, tuple[bool | None, float]] = {}
+        self._installed_inflight: dict[str, int] = {}
+        self._installed_ttl_sec: float = 10.0
+
+        self._ready_cache: tuple[bool | None, float] = (None, 0.0)
+        self._ready_inflight_token: int = 0
+        self._ready_ttl_sec: float = 0.8
+
         super().__init__(main_controller, view)
 
     def subscribe_to_events(self):
@@ -36,17 +46,19 @@ class AsrEventsController(BaseController):
 
         eb.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
 
-        # первичное состояние без блокирующих запросов
         try:
-            mic_active = False
             if self.view and getattr(self.view, "settings", None):
-                mic_active = bool(self.view.settings.get("MIC_ACTIVE", False))
-            if mic_active:
-                self._asr_initializing = True
-                self._emit_indicator("loading", _("Инициализация ASR...", "Initializing ASR..."))
-            else:
-                self._emit_indicator(None, None)
+                self._settings_cache["MIC_ACTIVE"] = bool(self.view.settings.get("MIC_ACTIVE", False))
+                self._settings_cache["RECOGNIZER_TYPE"] = str(self.view.settings.get("RECOGNIZER_TYPE", "google") or "google")
         except Exception:
+            pass
+
+        mic_active = bool(self._settings_cache.get("MIC_ACTIVE", False))
+        if mic_active:
+            self._asr_initializing = True
+            self._emit_indicator("loading", _("Инициализация ASR...", "Initializing ASR..."))
+            self._sync_indicator(force=True)
+        else:
             self._emit_indicator(None, None)
 
     # ---------------- UI pills from old logic ----------------
@@ -67,7 +79,6 @@ class AsrEventsController(BaseController):
 
         self._sync_indicator()
 
-        # anti-stuck: если init завис/упал без finalized event
         def _timeout_guard():
             time.sleep(35.0)
             if self._init_token != tok:
@@ -187,6 +198,8 @@ class AsrEventsController(BaseController):
         self._install_status = None
         self._install_engine = None
 
+        self._installed_cache.pop(str(model), None)
+
         self._sync_indicator(force=True)
 
     def _on_install_failed(self, event: Event):
@@ -214,42 +227,22 @@ class AsrEventsController(BaseController):
         data = event.data or {}
         key = str(data.get("key") or "").strip()
         if key in ("MIC_ACTIVE", "RECOGNIZER_TYPE"):
-            # при выключении микрофона — сбрасываем "инициализация"
+            self._settings_cache[key] = data.get("value")
+
             if key == "MIC_ACTIVE":
                 try:
                     if not bool(data.get("value", False)):
                         self._asr_initializing = False
+                        self._ready_cache = (None, 0.0)
                 except Exception:
                     pass
+
+            if key == "RECOGNIZER_TYPE":
+                self._ready_cache = (None, 0.0)
+
             self._sync_indicator(force=True)
 
     # ---------------- indicator logic ----------------
-    def _get_setting(self, key: str, default=None):
-        try:
-            res = self.event_bus.emit_and_wait(Events.Settings.GET_SETTING, {"key": key, "default": default}, timeout=0.5)
-            return res[0] if res else default
-        except Exception:
-            try:
-                if self.view and getattr(self.view, "settings", None):
-                    return self.view.settings.get(key, default)
-            except Exception:
-                pass
-        return default
-
-    def _check_installed(self, engine: str) -> bool:
-        try:
-            res = self.event_bus.emit_and_wait(Events.Speech.CHECK_ASR_MODEL_INSTALLED, {"model": engine}, timeout=0.7)
-            return bool(res and res[0])
-        except Exception:
-            return False
-
-    def _get_mic_ready(self) -> bool:
-        try:
-            res = self.event_bus.emit_and_wait(Events.Speech.GET_MIC_STATUS, timeout=0.6)
-            return bool(res and res[0])
-        except Exception:
-            return False
-
     def _emit_indicator(self, state: str | None, tooltip: str | None):
         st = state if state in (None, "red", "green", "loading") else None
         tt = str(tooltip) if tooltip else None
@@ -266,11 +259,100 @@ class AsrEventsController(BaseController):
             "tooltip": tt
         })
 
-    def _sync_indicator(self, force: bool = False):
-        mic_active = bool(self._get_setting("MIC_ACTIVE", False))
-        engine = str(self._get_setting("RECOGNIZER_TYPE", "google") or "google").strip()
+    def _ui_safe(self, fn):
+        try:
+            self._ui(fn)
+        except Exception:
+            try:
+                fn()
+            except Exception:
+                pass
 
-        # 1) установка модели ASR
+    def _get_cached_setting(self, key: str, default=None):
+        if key in self._settings_cache:
+            return self._settings_cache.get(key, default)
+        try:
+            if self.view and getattr(self.view, "settings", None):
+                v = self.view.settings.get(key, default)
+                self._settings_cache[key] = v
+                return v
+        except Exception:
+            pass
+        return default
+
+    def _request_installed_check(self, engine: str):
+        eng = str(engine or "").strip()
+        if not eng:
+            return
+
+        tok = int(self._installed_inflight.get(eng, 0)) + 1
+        self._installed_inflight[eng] = tok
+
+        def cb(result, error=None):
+            def apply():
+                if int(self._installed_inflight.get(eng, 0)) != tok:
+                    return
+                ok = False
+                if error is None:
+                    ok = bool(result)
+                self._installed_cache[eng] = (ok, time.time())
+                self._sync_indicator(force=True)
+
+            self._ui_safe(apply)
+
+        try:
+            self.event_bus.emit(Events.Speech.CHECK_ASR_MODEL_INSTALLED, {
+                "model": eng,
+                "callback": cb
+            })
+        except Exception:
+            pass
+
+    def _get_installed_cached(self, engine: str) -> bool | None:
+        eng = str(engine or "").strip()
+        if not eng:
+            return None
+        v = self._installed_cache.get(eng)
+        if not v:
+            return None
+        ok, ts = v
+        if (time.time() - float(ts or 0.0)) > self._installed_ttl_sec:
+            return None
+        return ok
+
+    def _request_ready_check(self):
+        self._ready_inflight_token += 1
+        tok = self._ready_inflight_token
+
+        def cb(result, error=None):
+            def apply():
+                if self._ready_inflight_token != tok:
+                    return
+                ok = False
+                if error is None:
+                    ok = bool(result)
+                self._ready_cache = (ok, time.time())
+                self._sync_indicator(force=True)
+
+            self._ui_safe(apply)
+
+        try:
+            self.event_bus.emit(Events.Speech.GET_MIC_STATUS, {"callback": cb})
+        except Exception:
+            pass
+
+    def _get_ready_cached(self) -> bool | None:
+        ok, ts = self._ready_cache
+        if ok is None:
+            return None
+        if (time.time() - float(ts or 0.0)) > self._ready_ttl_sec:
+            return None
+        return ok
+
+    def _sync_indicator(self, force: bool = False):
+        mic_active = bool(self._get_cached_setting("MIC_ACTIVE", False))
+        engine = str(self._get_cached_setting("RECOGNIZER_TYPE", "google") or "google").strip()
+
         if self._asr_installing:
             p = self._install_progress
             st = self._install_status or ""
@@ -283,25 +365,31 @@ class AsrEventsController(BaseController):
             self._emit_indicator("loading", msg)
             return
 
-        # 2) микрофон выключен — индикатор убираем
         if not mic_active:
             self._emit_indicator(None, None)
             return
 
-        # 3) микрофон включен, но модель не установлена
-        if engine and not self._check_installed(engine):
+        installed = self._get_installed_cached(engine)
+        if installed is None:
+            self._emit_indicator("loading", _("Проверка ASR модели...", "Checking ASR model...") + f" {engine}")
+            self._request_installed_check(engine)
+            return
+
+        if engine and not installed:
             self._emit_indicator("red", _("ASR модель не установлена: ", "ASR model not installed: ") + engine)
             return
 
-        # 4) инициализация
         if self._asr_initializing:
             self._emit_indicator("loading", _("Инициализация ASR...", "Initializing ASR..."))
             return
 
-        # 5) готовность
-        ready = self._get_mic_ready()
+        ready = self._get_ready_cached()
+        if ready is None:
+            self._emit_indicator("loading", _("Проверка статуса ASR...", "Checking ASR status..."))
+            self._request_ready_check()
+            return
+
         if ready:
             self._emit_indicator("green", _("ASR готов", "ASR ready"))
         else:
-            # либо ещё не поднялось, либо упало/остановилось
             self._emit_indicator("red", _("ASR не готов", "ASR not ready"))
