@@ -129,6 +129,11 @@ def setup_model_interaction_controls(self, parent):
          'tooltip': _('Native - использует вшитые возможности модели, legacy - добавляет промпт и ловит вызов вручную',
                     'Native - using buit-in tools, legacy - using own prompts and handler')},
 
+        {'label': _('GOOGLE API KEY'), 'key': 'GOOGLE_API_KEY', 'type': 'entry',
+         'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},
+        {'label': _('GOOGLE CSE ID'), 'key': 'GOOGLE_CSE_ID', 'type': 'entry',
+         'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},
+
         {'type': 'end'},
     ]
 

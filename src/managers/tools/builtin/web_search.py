@@ -6,7 +6,7 @@ from managers.tools.base import Tool
 
 class WebSearchTool(Tool):
     name = "web_search"
-    description = "Выполняет поиск в интернете через DuckDuckGo и возвращает результаты в формате JSON."
+    description = "Выполняет поиск в интернете через DuckDuckGo и возвращает результаты в формате JSON. Крайне посредственный."
 
     parameters = {
         "type": "object",
