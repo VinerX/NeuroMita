@@ -6,7 +6,7 @@ from managers.tools.base import Tool
 
 class WebSearchTool(Tool):
     name = "web_search"
-    description = "Выполняет поиск в интернете через DuckDuckGo и возвращает результаты в формате JSON"
+    description = "Выполняет поиск в интернете через DuckDuckGo и возвращает результаты в формате JSON."
 
     parameters = {
         "type": "object",
@@ -15,7 +15,7 @@ class WebSearchTool(Tool):
             "max_results": {
                 "type": "integer",
                 "description": "Максимальное количество результатов",
-                "minimum": 1,
+                "minimum": 3,
                 "maximum": 20,
                 "default": 5
             }
@@ -46,3 +46,16 @@ class WebSearchTool(Tool):
 
         except Exception as e:
             return f"[web_search] Ошибка: {e}"
+
+
+def find_sites_test():
+
+    text= "Чай Виды"
+
+    ddgs = DDGS()
+    results = ddgs.text(text,region="ru-ru", max_results=7)
+
+    for res in results:
+        print(res['title'])
+        print(res['href'])
+        print("-" * 20)
