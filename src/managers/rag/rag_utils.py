@@ -1,7 +1,7 @@
 import re
 
 from utils.throttled_progress_logger import ThrottledProgressLogger
-
+from main_logger import logger
 
 def rag_clean_text(text: str) -> str:
     if not isinstance(text, str) or not text.strip():
