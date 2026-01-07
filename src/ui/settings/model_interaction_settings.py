@@ -455,6 +455,34 @@ def setup_model_interaction_controls(self, parent):
 
         {'type': 'end'},
 
+        {'label': _("Логирование RAG", "RAG Logging"), 'type': 'subsection',
+         'depends_on': 'RAG_ENABLED'},
+
+        {'label': _('Подробные логи поиска', 'Detailed search logs'),
+         'key': 'RAG_DETAILED_LOGS', 'type': 'checkbutton', 'default_checkbutton': True,
+         'tooltip': _(
+             'Если включено, в консоль/лог будет выводиться полная конфигурация поиска и список найденных кандидатов со скорами.',
+             'If enabled, the full search configuration and list of found candidates with scores will be output to the console/log.')},
+
+        {'label': _('Показывать весь список кандидатов', 'Show all candidates'),
+         'key': 'RAG_LOG_LIST_SHOW_ALL', 'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _(
+             'Игнорировать лимиты Top N / Bottom N и выводить в лог абсолютно все найденные совпадения.',
+             'Ignore Top N / Bottom N limits and output absolutely all found matches to the log.')},
+
+        {'label': _('Кол-во лучших в логе (Top N)', 'Log Top N candidates'),
+         'key': 'RAG_LOG_LIST_TOP_N', 'type': 'entry', 'default': 10,
+         'validation': self.validate_positive_integer,
+         'tooltip': _('Сколько первых (самых релевантных) результатов выводить в отладочный лог.',
+                      'How many top (most relevant) results to display in the debug log.')},
+
+        {'label': _('Кол-во худших в логе (Bottom N)', 'Log Bottom N candidates'),
+         'key': 'RAG_LOG_LIST_BOTTOM_N', 'type': 'entry', 'default': 5,
+         'validation': self.validate_positive_integer,
+         'tooltip': _('Сколько последних результатов из списка кандидатов выводить в лог (для отладки "мусора").',
+                      'How many last results from the candidate list to display in the log (for debugging "noise").')},
+
+        {'type': 'end'},
 
     ]
 

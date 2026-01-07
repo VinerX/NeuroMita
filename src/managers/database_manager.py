@@ -118,16 +118,43 @@ class DatabaseManager:
 
     def _ensure_fts5_schema(self, conn: sqlite3.Connection) -> None:
         """
-        Create FTS5 virtual tables + sync triggers for:
-          - history_fts (rowid == history.id)
-          - memories_fts (rowid == memories.id)  [NOTE: eternal_id is not globally unique across characters]
+        Create/maintain FTS5 tables + sync triggers safely.
 
-        Safe fallback:
-          - if FTS5 module is missing -> do nothing
-          - any SQL errors are logged and ignored
+        Safety rules:
+        - If FTS5 is NOT available: drop FTS triggers and return (so UPDATE/INSERT on base tables work).
+        - If FTS tables already exist with older/different columns: build triggers using ACTUAL FTS columns.
         """
+
+        def q(ident: str) -> str:
+            return '"' + str(ident).replace('"', '""') + '"'
+
+        def table_exists(name: str) -> bool:
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (name,),
+                )
+                return bool(cur.fetchone())
+            except Exception:
+                return False
+
+        def table_cols(name: str) -> list[str]:
+            try:
+                cur = conn.cursor()
+                cur.execute(f"PRAGMA table_info({q(name)})")
+                return [r[1] for r in (cur.fetchall() or []) if r and len(r) > 1 and r[1]]
+            except Exception:
+                return []
+
         try:
+            # If current SQLite build can't do FTS5, triggers must NOT exist (they break base writes).
             if not self.sqlite_supports_fts5():
+                try:
+                    self._drop_fts_triggers(conn)
+                    conn.commit()
+                except Exception:
+                    pass
                 return
 
             cur = conn.cursor()
@@ -137,100 +164,102 @@ class DatabaseManager:
             if not hist_cols or not mem_cols:
                 return
 
-            # Optional indexed fields (only if реально есть в таблицах)
-            history_fts_cols: List[str] = ["content"]
+            # Desired columns (based on base table availability)
+            history_desired = ["content"]
             for c in ("speaker", "target", "tags", "participants", "event_type"):
                 if c in hist_cols:
-                    history_fts_cols.append(c)
+                    history_desired.append(c)
 
-            memories_fts_cols: List[str] = ["content"]
+            memories_desired = ["content"]
             for c in ("type", "priority", "tags", "participants"):
                 if c in mem_cols:
-                    memories_fts_cols.append(c)
+                    memories_desired.append(c)
 
-            # --- Create virtual tables (IF NOT EXISTS) ---
+            # Ensure FTS tables exist (but don't assume their schema matches "desired")
             try:
                 cur.execute(
-                    f"CREATE VIRTUAL TABLE IF NOT EXISTS history_fts USING fts5({', '.join(history_fts_cols)})"
+                    f"CREATE VIRTUAL TABLE IF NOT EXISTS {q('history_fts')} USING fts5({', '.join(map(q, history_desired))})"
                 )
                 cur.execute(
-                    f"CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5({', '.join(memories_fts_cols)})"
+                    f"CREATE VIRTUAL TABLE IF NOT EXISTS {q('memories_fts')} USING fts5({', '.join(map(q, memories_desired))})"
                 )
             except Exception as e:
-                logging.warning(f"DB upgrade: failed to create FTS5 tables (ignored): {e}")
+                # If we can't create FTS tables, DO NOT leave triggers around.
+                logging.warning(f"DB upgrade: failed to create FTS5 tables (disabling FTS triggers): {e}")
+                try:
+                    self._drop_fts_triggers(conn)
+                    conn.commit()
+                except Exception:
+                    pass
                 return
 
-            # --- Triggers: keep FTS in sync with base tables ---
-            # history_fts: rowid == history.id
-            def _coalesce_new(col: str) -> str:
-                return f"COALESCE(new.{col}, '')"
+            # Use ACTUAL FTS columns (important for old DBs where FTS table was created with fewer cols)
+            history_fts_cols = table_cols("history_fts") or ["content"]
+            memories_fts_cols = table_cols("memories_fts") or ["content"]
 
-            def _coalesce_old(col: str) -> str:
-                return f"COALESCE(old.{col}, '')"
+            # Also make sure we don't reference a base column that doesn't exist (extra safety)
+            history_fts_cols = [c for c in history_fts_cols if c in hist_cols] or ["content"]
+            memories_fts_cols = [c for c in memories_fts_cols if c in mem_cols] or ["content"]
 
-            h_cols_sql = ", ".join(history_fts_cols)
-            h_new_vals_sql = ", ".join([_coalesce_new(c) for c in history_fts_cols])
-            h_old_vals_sql = ", ".join([_coalesce_old(c) for c in history_fts_cols])
+            h_cols_sql = ", ".join(map(q, history_fts_cols))
+            m_cols_sql = ", ".join(map(q, memories_fts_cols))
 
-            m_cols_sql = ", ".join(memories_fts_cols)
-            m_new_vals_sql = ", ".join([_coalesce_new(c) for c in memories_fts_cols])
-            m_old_vals_sql = ", ".join([_coalesce_old(c) for c in memories_fts_cols])
+            def coalesce_new(c: str) -> str:
+                return f"COALESCE(new.{q(c)}, '')"
 
+            def coalesce_old(c: str) -> str:
+                return f"COALESCE(old.{q(c)}, '')"
+
+            h_new_vals = ", ".join(coalesce_new(c) for c in history_fts_cols)
+            m_new_vals = ", ".join(coalesce_new(c) for c in memories_fts_cols)
+
+            # Recreate triggers (drop first so they can't get stuck with outdated column lists)
+            self._drop_fts_triggers(conn)
+
+            cur.executescript(
+                f"""
+                CREATE TRIGGER history_fts_ai AFTER INSERT ON {q('history')} BEGIN
+                    INSERT INTO {q('history_fts')}(rowid, {h_cols_sql}) VALUES (new.id, {h_new_vals});
+                END;
+                CREATE TRIGGER history_fts_ad AFTER DELETE ON {q('history')} BEGIN
+                    DELETE FROM {q('history_fts')} WHERE rowid = old.id;
+                END;
+                CREATE TRIGGER history_fts_au AFTER UPDATE ON {q('history')} BEGIN
+                    DELETE FROM {q('history_fts')} WHERE rowid = old.id;
+                    INSERT INTO {q('history_fts')}(rowid, {h_cols_sql}) VALUES (new.id, {h_new_vals});
+                END;
+
+                CREATE TRIGGER memories_fts_ai AFTER INSERT ON {q('memories')} BEGIN
+                    INSERT INTO {q('memories_fts')}(rowid, {m_cols_sql}) VALUES (new.id, {m_new_vals});
+                END;
+                CREATE TRIGGER memories_fts_ad AFTER DELETE ON {q('memories')} BEGIN
+                    DELETE FROM {q('memories_fts')} WHERE rowid = old.id;
+                END;
+                CREATE TRIGGER memories_fts_au AFTER UPDATE ON {q('memories')} BEGIN
+                    DELETE FROM {q('memories_fts')} WHERE rowid = old.id;
+                    INSERT INTO {q('memories_fts')}(rowid, {m_cols_sql}) VALUES (new.id, {m_new_vals});
+                END;
+                """
+            )
+
+            # Backfill only if empty (best-effort)
             try:
-                cur.executescript(
-                    f"""
-                    CREATE TRIGGER IF NOT EXISTS history_fts_ai AFTER INSERT ON history BEGIN
-                        INSERT INTO history_fts(rowid, {h_cols_sql}) VALUES (new.id, {h_new_vals_sql});
-                    END;
-                    CREATE TRIGGER IF NOT EXISTS history_fts_ad AFTER DELETE ON history BEGIN
-                        INSERT INTO history_fts(history_fts, rowid, {h_cols_sql}) VALUES ('delete', old.id, {h_old_vals_sql});
-                    END;
-                    CREATE TRIGGER IF NOT EXISTS history_fts_au AFTER UPDATE ON history BEGIN
-                        INSERT INTO history_fts(history_fts, rowid, {h_cols_sql}) VALUES ('delete', old.id, {h_old_vals_sql});
-                        INSERT INTO history_fts(rowid, {h_cols_sql}) VALUES (new.id, {h_new_vals_sql});
-                    END;
-                    """
-                )
-            except Exception as e:
-                logging.warning(f"DB upgrade: failed to create history FTS triggers (ignored): {e}")
-
-            # memories_fts: rowid == memories.id (PK). We DO NOT use eternal_id here because it is per-character.
-            try:
-                cur.executescript(
-                    f"""
-                    CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
-                        INSERT INTO memories_fts(rowid, {m_cols_sql}) VALUES (new.id, {m_new_vals_sql});
-                    END;
-                    CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
-                        INSERT INTO memories_fts(memories_fts, rowid, {m_cols_sql}) VALUES ('delete', old.id, {m_old_vals_sql});
-                    END;
-                    CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
-                        INSERT INTO memories_fts(memories_fts, rowid, {m_cols_sql}) VALUES ('delete', old.id, {m_old_vals_sql});
-                        INSERT INTO memories_fts(rowid, {m_cols_sql}) VALUES (new.id, {m_new_vals_sql});
-                    END;
-                    """
-                )
-            except Exception as e:
-                logging.warning(f"DB upgrade: failed to create memories FTS triggers (ignored): {e}")
-
-            # --- Backfill (only if index is empty) ---
-            # This keeps upgrades safe for old DBs without forcing a heavy rebuild every startup.
-            try:
-                cur.execute("SELECT COUNT(*) FROM history_fts")
+                cur.execute(f"SELECT COUNT(*) FROM {q('history_fts')}")
                 h_cnt = int(cur.fetchone()[0] or 0)
             except Exception:
                 h_cnt = -1
             try:
-                cur.execute("SELECT COUNT(*) FROM memories_fts")
+                cur.execute(f"SELECT COUNT(*) FROM {q('memories_fts')}")
                 m_cnt = int(cur.fetchone()[0] or 0)
             except Exception:
                 m_cnt = -1
 
             if h_cnt == 0:
                 try:
-                    sel_cols = ", ".join([f"COALESCE({c}, '')" for c in history_fts_cols])
+                    h_sel = ", ".join([f"COALESCE({q(c)}, '')" for c in history_fts_cols])
                     cur.execute(
-                        f"INSERT INTO history_fts(rowid, {h_cols_sql}) SELECT id, {sel_cols} FROM history"
+                        f"INSERT INTO {q('history_fts')}(rowid, {h_cols_sql}) "
+                        f"SELECT id, {h_sel} FROM {q('history')}"
                     )
                     logging.info("DB upgrade: history_fts backfill done")
                 except Exception as e:
@@ -238,9 +267,10 @@ class DatabaseManager:
 
             if m_cnt == 0:
                 try:
-                    sel_cols = ", ".join([f"COALESCE({c}, '')" for c in memories_fts_cols])
+                    m_sel = ", ".join([f"COALESCE({q(c)}, '')" for c in memories_fts_cols])
                     cur.execute(
-                        f"INSERT INTO memories_fts(rowid, {m_cols_sql}) SELECT id, {sel_cols} FROM memories"
+                        f"INSERT INTO {q('memories_fts')}(rowid, {m_cols_sql}) "
+                        f"SELECT id, {m_sel} FROM {q('memories')}"
                     )
                     logging.info("DB upgrade: memories_fts backfill done")
                 except Exception as e:
@@ -467,3 +497,22 @@ class DatabaseManager:
                 conn.close()
             except Exception:
                 pass
+
+    def _drop_fts_triggers(self, conn: sqlite3.Connection) -> None:
+        """Drop FTS sync triggers so base table writes never fail (safe no-op)."""
+        try:
+            cur = conn.cursor()
+            cur.executescript(
+                """
+                DROP TRIGGER IF EXISTS history_fts_ai;
+                DROP TRIGGER IF EXISTS history_fts_ad;
+                DROP TRIGGER IF EXISTS history_fts_au;
+
+                DROP TRIGGER IF EXISTS memories_fts_ai;
+                DROP TRIGGER IF EXISTS memories_fts_ad;
+                DROP TRIGGER IF EXISTS memories_fts_au;
+                """
+            )
+        except Exception as e:
+            logging.warning(f"DB: failed to drop FTS triggers (ignored): {e}")
+

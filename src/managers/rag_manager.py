@@ -32,6 +32,8 @@ def _resolve_event_name(fallback: str, *path: str) -> str:
 EMBED_EVENT_NAME = _resolve_event_name("rag.get_embedding", "RAG", "GET_EMBEDDING")
 EMBEDS_EVENT_NAME = _resolve_event_name("rag.get_embeddings", "RAG", "GET_EMBEDDINGS")
 
+# Extra RAG settings keys introduced/used here (optional):
+#   - RAG_LOG_LIST_TOP_N (int, default=10)         сколько строк печатать вверху списка кандидатов
 
 class RAGManager:
     _fallback_handler: Optional[EmbeddingModelHandler] = None
@@ -201,6 +203,7 @@ class RAGManager:
                 conn.close()
             except Exception:
                 pass
+        return out
 
     # ---------------------------------------------------------------------
     # FTS5 lexical search helpers (optional, safe fallback)
@@ -396,8 +399,6 @@ class RAGManager:
             logger.debug(f"[RAG][FTS] memories query failed (ignored): {e}")
             return []
 
-        return out
-
     def _build_query_embedding(self, user_query: str, tail: int) -> Optional[np.ndarray]:
         """
         Два режима:
@@ -527,7 +528,7 @@ class RAGManager:
             out = out[-4000:]
         return out or uq
 
-    def _blob_to_array(self, blob) -> np.ndarray:
+    def _blob_to_array(self, blob) -> Optional[np.ndarray]:
         """Конвертирует BLOB из SQLite обратно в numpy array"""
         if not blob:
             return None
@@ -712,6 +713,8 @@ class RAGManager:
         K6 = self._get_float_setting("RAG_WEIGHT_LEXICAL", 0.6)
         fts_top_k_hist = self._get_int_setting("RAG_FTS_TOP_K_HISTORY", 50)
         fts_top_k_mem = self._get_int_setting("RAG_FTS_TOP_K_MEMORIES", 50)
+        fts_max_terms = self._get_int_setting("RAG_FTS_MAX_TERMS", 10)
+        fts_min_len = self._get_int_setting("RAG_FTS_MIN_LEN", 3)
         # Keyword search (SettingsManager)
         KW_ENABLED = bool(SettingsManager.get("RAG_KEYWORD_SEARCH", False))
         K5 = self._get_float_setting("RAG_WEIGHT_KEYWORDS", 0.6)
@@ -723,6 +726,13 @@ class RAGManager:
         memory_mode = str(SettingsManager.get("RAG_MEMORY_MODE", "forgotten") or "forgotten").strip().lower()
 
         noise_max = self._get_float_setting("RAG_NOISE_MAX", 0.05)
+
+        # Pretty log controls (SettingsManager)
+        # Две настройки (top/bottom) управляют кол-вом строк в списке,
+        # третья — игнорирует лимит и печатает весь список кандидатов.
+        log_top_n = self._get_int_setting("RAG_LOG_LIST_TOP_N", 10)
+        log_bottom_n = self._get_int_setting("RAG_LOG_LIST_BOTTOM_N", 5)
+        log_show_all = self._get_bool_setting("RAG_LOG_LIST_SHOW_ALL", False)
 
         query_text = self._build_query_from_recent(query, tail=tail)
 
@@ -799,6 +809,89 @@ class RAGManager:
         cursor = conn.cursor()
         scored: list[dict] = []
 
+        # Initialize counters for logging
+        mem_vec_added = 0
+        mem_kw_added = 0
+        hist_vec_added = 0
+        hist_kw_added = 0
+        fts_added = 0
+
+        def _sf(x: Any) -> float:
+            try:
+                return float(x)
+            except Exception:
+                return 0.0
+
+        # --- Config logging (визуально, сначала параметры, потом список)
+        try:
+            if detailed_logs:
+                cfg_items: list[tuple[str, Any]] = [
+                    ("character_id", self.character_id),
+                    ("query.clean", self.rag_clean_text(str(query or "")).strip()),
+                    ("query.tail_messages", int(tail or 0)),
+                    ("query.embed_mode", str(SettingsManager.get("RAG_QUERY_EMBED_MODE", "concat") or "concat")),
+                    ("query.tail_role_filter", str(SettingsManager.get("RAG_QUERY_TAIL_ROLE_FILTER", "user_only") or "user_only")),
+                    ("query.tail_max_chars", int(SettingsManager.get("RAG_QUERY_TAIL_MAX_CHARS", 1200) or 1200)),
+                    ("query.vec_ready", bool(query_vec is not None)),
+                    ("return.limit", int(limit or 0)),
+                    ("filter.threshold", float(threshold)),
+                    ("time.decay_rate", float(decay_rate)),
+                    ("noise.max", float(noise_max)),
+                    ("memory.mode", memory_mode),
+                    ("flags.search_memory", bool(SettingsManager.get("RAG_SEARCH_MEMORY", False))),
+                    ("flags.search_history", bool(SettingsManager.get("RAG_SEARCH_HISTORY", False))),
+                    ("flags.keyword_search", bool(KW_ENABLED)),
+                    ("flags.fts", bool(USE_FTS)),
+                    ("w.similarity(K1)", float(K1)),
+                    ("w.time(K2)", float(K2)),
+                    ("w.priority(K3)", float(K3)),
+                    ("w.entity(K4)", float(K4)),
+                    ("w.keywords(K5)", float(K5)),
+                    ("w.lexical(K6)", float(K6)),
+                    ("kw.max_terms", int(kw_max_terms)),
+                    ("kw.min_len", int(kw_min_len)),
+                    ("kw.min_score", float(kw_min_score)),
+                    ("kw.sql_limit", int(kw_sql_limit)),
+                    ("kw.keywords", keywords),
+                    ("fts.top_k.history", int(fts_top_k_hist)),
+                    ("fts.top_k.memories", int(fts_top_k_mem)),
+                    ("fts.max_terms", int(fts_max_terms)),
+                    ("fts.min_len", int(fts_min_len)),
+                    ("ctx.speaker", ctx_speaker),
+                    ("ctx.target", ctx_target),
+                    ("ctx.participants", ctx_participants),
+                    ("log.list.top_n", int(log_top_n)),
+                    ("log.list.bottom_n", int(log_bottom_n)),
+                    ("log.list.show_all", bool(log_show_all)),
+                ]
+
+                # Clip expanded query_text (чтобы не раздувать лог)
+                qt_clean = self.rag_clean_text(str(query_text or ""))
+                if qt_clean:
+                    cfg_items.insert(2, ("query.expanded.clip", (qt_clean[:240] + "…") if len(qt_clean) > 240 else qt_clean))
+
+                max_k = max((len(k) for k, _ in cfg_items), default=0)
+                logger.info("[RAG] ==================== SEARCH CONFIG ====================")
+                for k, v in cfg_items:
+                    vv = v
+                    try:
+                        if isinstance(v, float):
+                            vv = f"{v:.6f}"
+                        elif isinstance(v, list):
+                            vv = json.dumps(v, ensure_ascii=False)
+                    except Exception:
+                        vv = v
+                    logger.info(f"[RAG][CFG] {k:<{max_k}} : {vv}")
+                logger.info("[RAG] =======================================================")
+        except Exception:
+            pass
+
+        def _sf(x: Any) -> float:
+            try:
+                return float(x)
+            except Exception:
+                return 0.0
+
         # Перенос инициализации now для использования в memories
         now = datetime.datetime.now()
 
@@ -830,14 +923,19 @@ class RAGManager:
 
         # 1) Memories
         if bool(SettingsManager.get("RAG_SEARCH_MEMORY",False)):
+            _before = len(scored)
             self.find_forgotten_memories(
                 K1, K2, K3, K4, cursor, decay_rate, entity_bonus_from_participants, memory_mode,
                 noise_max, now, prio_bonus, query_vec, scored, threshold,
                 keywords=keywords, KW_ENABLED=KW_ENABLED, kw_min_score=kw_min_score, K5=K5,
             )
+            mem_vec_added = len(scored) - _before
+        else:
+            mem_vec_added = 0
 
         # 1b) Memories keyword-only (embedding IS NULL)
         if KW_ENABLED and bool(SettingsManager.get("RAG_SEARCH_MEMORY", False)):
+            _before = len(scored)
             self.find_keyword_memories_without_embedding(
                 cursor=cursor,
                 scored=scored,
@@ -852,12 +950,14 @@ class RAGManager:
                 memory_mode=memory_mode,
                 sql_limit=kw_sql_limit,
             )
+            mem_kw_added = len(scored) - _before
 
         # 3) FTS5 lexical candidates (bm25) -> merged later with vector candidates
         # Safe fallback: if no FTS5/tables -> ignored.
         fts_hist_debug: List[Tuple[int, float, float]] = []
         fts_mem_debug: List[Tuple[int, float, float]] = []
         if USE_FTS and self._fts5_ready(cursor):
+            _before_fts = len(scored)
             try:
                 # Prefer current user query for lexical; fallback to expanded query_text if too short.
                 match_primary = self._fts_build_match_query(str(query or ""), max_terms=fts_max_terms, min_len=fts_min_len)
@@ -1010,19 +1110,23 @@ class RAGManager:
                                 }
                             })
                             fts_hist_debug.append((hid, bm25_rank, float(lex_score)))
+                fts_added = len(scored) - _before_fts
             except Exception as e:
                 logger.debug(f"[RAG][FTS] lexical stage failed (ignored): {e}", exc_info=True)
 
         # 2) History
         if bool(SettingsManager.get("RAG_SEARCH_HISTORY",False)):
+            _before = len(scored)
             self.find_forgotten_histories(
                 K1, K2, K4, cursor, decay_rate, entity_bonus_history, noise_max, now, query_vec,
                 scored, threshold,
                 keywords=keywords, KW_ENABLED=KW_ENABLED, kw_min_score=kw_min_score, K5=K5,
             )
+            hist_vec_added = len(scored) - _before
 
         # 2b) History keyword-only (embedding IS NULL)
         if KW_ENABLED and bool(SettingsManager.get("RAG_SEARCH_HISTORY", False)):
+            _before = len(scored)
             self.find_keyword_histories_without_embedding(
                 cursor=cursor,
                 scored=scored,
@@ -1035,6 +1139,7 @@ class RAGManager:
                 entity_bonus_history=entity_bonus_history,
                 sql_limit=kw_sql_limit,
             )
+            hist_kw_added = len(scored) - _before
 
         # Log lexical top-k in detailed mode
         try:
@@ -1132,35 +1237,95 @@ class RAGManager:
 
         scored.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
 
-        # --- Detailed logging: Top 5 и Bottom 5
+        # --- Detailed logging: summary + удобный список кандидатов
         try:
-            if scored and detailed_logs:
-                def _clip(s: Any, n: int = 200) -> str:
-                    t = str(s or "").replace("\n", " ").strip()
+            if detailed_logs:
+                total = len(scored)
+                logger.info("[RAG] ==================== SEARCH RESULT ====================")
+                logger.info(
+                    f"[RAG][STAT] candidates: raw={mem_vec_added + mem_kw_added + hist_vec_added + hist_kw_added + fts_added} "
+                    f"(mem_vec={mem_vec_added}, mem_kw={mem_kw_added}, hist_vec={hist_vec_added}, hist_kw={hist_kw_added}, fts={fts_added}) "
+                    f"| merged={total} | return_limit={int(limit)}"
+                )
+
+                def _clip_one_line(s: Any, n: int = 220) -> str:
+                    t = str(s or "").replace("\n", " ").replace("\r", " ").strip()
+                    if not t:
+                        return ""
+                    t = self.rag_clean_text(t)
                     return (t[:n] + "…") if len(t) > n else t
 
-                sample_top = scored[:5]
-                sample_bottom = scored[-5:] if len(scored) > 5 else []
+                if total <= 0:
+                    logger.info("[RAG] (no candidates)")
+                    logger.info("[RAG] =======================================================")
+                else:
+                    # какие строки печатаем
+                    idxs: list[int] = []
+                    if log_show_all:
+                        idxs = list(range(total))
+                    else:
+                        top_n = max(0, int(log_top_n))
+                        bottom_n = max(0, int(log_bottom_n))
+                        top_n = min(top_n, total)
+                        bottom_n = min(bottom_n, max(0, total - top_n))
+                        idxs = list(range(top_n))
+                        if bottom_n > 0:
+                            idxs.extend(list(range(total - bottom_n, total)))
 
-                def _log_one(item: dict):
-                    dbg = item.get("_dbg") or {}
-                    src = item.get("source")
-                    rid = item.get("id")
-                    logger.info(
-                        f"[RAG] {src}:{rid} | Base:{dbg.get('sim'):.3f} | Time:{dbg.get('time'):.3f} "
-                        f"| Prio:{dbg.get('prio'):.3f} | Ent:{dbg.get('entity'):.3f} | KW:{float(dbg.get('kw') or 0.0):.3f} "
-                        f"| Lex:{float(dbg.get('lex') or 0.0):.3f} "
-                        f"| Final:{dbg.get('final'):.3f} "
-                        f"| Content:\"{self.rag_clean_text(_clip(item.get('content')))}\""
-                    )
+                    logger.info("[RAG] -------------------- CANDIDATES -----------------------")
+                    if not idxs:
+                        logger.info("[RAG] (list is empty due to log limits)")
+                    else:
+                        last = -999999
+                        for i in idxs:
+                            if (not log_show_all) and last >= 0 and i - last > 1:
+                                hidden = (i - last - 1)
+                                logger.info(f"[RAG] ... ({hidden} hidden) ...")
+                            last = i
 
-                logger.info("[RAG] ---- TOP 5 ----")
-                for it in sample_top:
-                    _log_one(it)
-                if sample_bottom:
-                    logger.info("[RAG] ---- BOTTOM 5 ----")
-                    for it in sample_bottom:
-                        _log_one(it)
+                            item = scored[i]
+                            dbg = item.get("_dbg") or {}
+                            src = str(item.get("source") or "?")
+                            rid = item.get("id")
+                            score = _sf(item.get("score"))
+
+                            sim = _sf(dbg.get("sim"))
+                            tf = _sf(dbg.get("time"))
+                            pb = _sf(dbg.get("prio"))
+                            eb = _sf(dbg.get("entity"))
+                            kw = _sf(dbg.get("kw"))
+                            lex = _sf(dbg.get("lex"))
+                            noise = _sf(dbg.get("noise"))
+                            bm25 = dbg.get("bm25", None)
+
+                            # meta (чтобы глазами быстро читать)
+                            if src == "memory":
+                                meta = f"type={item.get('type')} prio={item.get('priority')} date={item.get('date_created')}"
+                            else:
+                                parts = item.get("participants") or []
+                                try:
+                                    pcount = len(parts)
+                                except Exception:
+                                    pcount = 0
+                                meta = (
+                                    f"role={item.get('role')} date={item.get('date')} "
+                                    f"sp={item.get('speaker')} tg={item.get('target')} parts={pcount}"
+                                )
+
+                            bm25_txt = ""
+                            try:
+                                if bm25 is not None:
+                                    bm25_txt = f" bm25={_sf(bm25):.6f}"
+                            except Exception:
+                                bm25_txt = ""
+
+                            content = _clip_one_line(item.get("content"))
+                            logger.info(
+                                f"[RAG][{i+1:03d}/{total:03d}] {src}:{rid} score={score:.4f} "
+                                f"(sim={sim:.3f} time={tf:.3f} prio={pb:.3f} ent={eb:.3f} kw={kw:.3f} lex={lex:.3f}{bm25_txt} noise={noise:.3f}) "
+                                f"| {meta} | \"{content}\""
+                            )
+                    logger.info("[RAG] =======================================================")
         except Exception:
             pass
 
