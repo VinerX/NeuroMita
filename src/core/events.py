@@ -177,8 +177,19 @@ class EventBus:
                     result = callback(*args, **kwargs)
                     result_queue.put(result)
                 except Exception as e:
-                    # ... (ваш код обработки ошибок) ...
-                    logger.error(f"Error in handler for '{event_name}': {e}", exc_info=True)
+                    logger.error("Произошла ошибка в событии, коллектим:")
+
+                    callback_name = getattr(callback, "__qualname__", getattr(callback, "__name__", "unknown"))
+
+                    event_name_for_log = "неизвестного события"
+
+                    if args and isinstance(args[0], Event):
+                        event_name_for_log = f"события '{args[0].name}'"
+                        
+                    logger.error(
+                        f"Ошибка в обработчике '{callback_name}' для {event_name_for_log}: {e}",
+                        exc_info=True
+                    )
                     result_queue.put(None)
             return wrapper
 
