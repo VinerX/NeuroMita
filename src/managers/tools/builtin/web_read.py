@@ -15,45 +15,32 @@ class WebPageReaderTool(Tool):
             "max_chars": {
                 "type": "integer",
                 "description": "Максимальное число символов (по умолчанию 1500)",
-                "default": 1500,
+                "default": 10000,
                 "minimum": 100,
-                "maximum": 8000
+                "maximum": 20000
             }
         },
         "required": ["url"]
     }
 
-    def run(self, url: str, max_chars: int = 1500, **_):
+    def run(self, url: str, max_chars: int = 10000, **_):
         url = self._convert_github_raw(url)
+        # Jina AI Reader: возвращает уже готовый Markdown/текст даже для SPA/JS-сайтов.
+        reader_url = f"https://r.jina.ai/{url}"
 
         try:
-            resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+            resp = requests.get(reader_url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
             resp.raise_for_status()
             if not resp.encoding or resp.encoding.lower() == 'iso-8859-1':
                 resp.encoding = resp.apparent_encoding
         except Exception as e:
             return f"[web_reader] Ошибка при загрузке: {e}"
 
-        content_type = resp.headers.get("Content-Type", "")
-        if "text" not in content_type and "json" not in content_type:
-            return "[web_reader] Неформатируемый бинарный контент."
-
-        text = resp.text
-
-        if "markdown" in content_type or url.endswith((".md", ".markdown")):
-            cleaned = self._clean_whitespaces(text)
-            return self._truncate(cleaned, max_chars)
-
-        soup = bs4.BeautifulSoup(text, "html.parser")
-        for tg in _CLEAN_TAGS:
-            for tag in soup.find_all(tg):
-                tag.decompose()
-        pure_text = self._clean_whitespaces(soup.get_text(" ", strip=True))
-
-        if not pure_text:
+        text = (resp.text or "").strip()
+        if not text:
             return "[web_reader] Ничего не удалось извлечь."
 
-        return self._truncate(pure_text, max_chars)
+        return self._truncate(text, max_chars)
 
     def _truncate(self, txt: str, max_len: int) -> str:
         return txt if len(txt) <= max_len else txt[:max_len] + " …"
@@ -68,3 +55,21 @@ class WebPageReaderTool(Tool):
                 owner, repo, path = m.groups()
                 return f"https://raw.githubusercontent.com/{owner}/{repo}/{path}"
         return url
+
+
+def single_test_run():
+    """Выполняет один тестовый прогон инструмента с имитацией успешного ответа."""
+
+    test_url = "https://github.com/VinerX/NeuroMita"
+    # 2. Создаем экземпляр и запускаем метод
+    tool_instance = WebPageReaderTool()
+    print(f"Вызов инструмента для URL: {test_url}")
+    result = tool_instance.run(test_url)
+
+    # 3. Проверяем результат
+    print(result)
+
+
+# Запуск единичного теста
+if __name__ == '__main__':
+    single_test_run()
