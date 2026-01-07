@@ -14,8 +14,11 @@ from managers.database_manager import DatabaseManager
 from handlers.embedding_handler import EmbeddingModelHandler, QUERY_PREFIX
 from core.events import get_event_bus, Events
 from main_logger import logger
+
+
+from managers.rag.rag_utils import rag_clean_text, make_reindex_progress_logger
 from managers.settings_manager import SettingsManager
-from utils.throttled_progress_logger import ThrottledProgressLogger
+
 
 
 from managers.rag.rag_keyword_search import extract_keywords, keyword_score
@@ -195,7 +198,7 @@ class RAGManager:
                     continue
                 if rf == "assistant_only" and r != "assistant":
                     continue
-                c = self.rag_clean_text(self._clip_text(content, max_chars))
+                c = rag_clean_text(self._clip_text(content, max_chars))
                 if c:
                     out.append(c)
         except Exception:
@@ -249,7 +252,7 @@ class RAGManager:
           token1 OR token2 OR ...
         Tokens are double-quoted to avoid syntax errors on weird characters.
         """
-        cleaned = self.rag_clean_text(str(text or ""))
+        cleaned = rag_clean_text(str(text or ""))
         if not cleaned:
             return ""
 
@@ -413,7 +416,7 @@ class RAGManager:
 
         if mode == "concat":
             qt = self._build_query_from_recent(user_query, tail=int(tail or 0))
-            qt = self.rag_clean_text(qt)
+            qt = rag_clean_text(qt)
             return self._l2_normalize(self._get_embedding(qt))
 
         # weighted
@@ -432,7 +435,7 @@ class RAGManager:
         w_tail /= s
 
         # 1) embedding текущего user_query
-        uq = self.rag_clean_text(str(user_query or "").strip())
+        uq = rag_clean_text(str(user_query or "").strip())
         e_user = self._get_embedding(uq) if uq else None
         if e_user is not None:
             e_user = self._l2_normalize(e_user)
@@ -550,7 +553,7 @@ class RAGManager:
             return None
 
         # Очистка от тегов
-        text = self.rag_clean_text(text)
+        text = rag_clean_text(text)
 
         if use_event_bus:
             try:
@@ -589,7 +592,7 @@ class RAGManager:
             if not t:
                 cleaned.append("")
             else:
-                cleaned.append(self.rag_clean_text(str(t)))
+                cleaned.append(rag_clean_text(str(t)))
 
         bs = int(batch_size or self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16))
         if bs <= 0:
@@ -746,7 +749,7 @@ class RAGManager:
             try:
                 # ВАЖНО: приоритизируем keywords из текущего query (user input),
                 # иначе их может "вытеснить" длинный контекст/summary в начале query_text.
-                primary = self.rag_clean_text(str(query or ""))
+                primary = rag_clean_text(str(query or ""))
                 kw_primary = extract_keywords(primary, max_terms=kw_max_terms, min_len=kw_min_len)
 
                 # добираем из контекста, но с конца (ближе к последним репликам)
@@ -832,7 +835,7 @@ class RAGManager:
             if detailed_logs:
                 cfg_items: list[tuple[str, Any]] = [
                     ("character_id", self.character_id),
-                    ("query.clean", self.rag_clean_text(str(query or "")).strip()),
+                    ("query.clean", rag_clean_text(str(query or "")).strip()),
                     ("query.tail_messages", int(tail or 0)),
                     ("query.embed_mode", str(SettingsManager.get("RAG_QUERY_EMBED_MODE", "concat") or "concat")),
                     ("query.tail_role_filter", str(SettingsManager.get("RAG_QUERY_TAIL_ROLE_FILTER", "user_only") or "user_only")),
@@ -871,7 +874,7 @@ class RAGManager:
                 ]
 
                 # Clip expanded query_text (чтобы не раздувать лог)
-                qt_clean = self.rag_clean_text(str(query_text or ""))
+                qt_clean = rag_clean_text(str(query_text or ""))
                 if qt_clean:
                     cfg_items.insert(2, ("query.expanded.clip", (qt_clean[:240] + "…") if len(qt_clean) > 240 else qt_clean))
 
@@ -991,7 +994,7 @@ class RAGManager:
                                 continue
 
                             content_raw = rd.get("content")
-                            content_clean = self.rag_clean_text(str(content_raw or ""))
+                            content_clean = rag_clean_text(str(content_raw or ""))
                             if not content_clean:
                                 continue
 
@@ -1062,7 +1065,7 @@ class RAGManager:
                                 continue
 
                             content_raw = rd.get("content")
-                            content_clean = self.rag_clean_text(str(content_raw or ""))
+                            content_clean = rag_clean_text(str(content_raw or ""))
                             if not content_clean:
                                 continue
 
@@ -1257,7 +1260,7 @@ class RAGManager:
                     t = str(s or "").replace("\n", " ").replace("\r", " ").strip()
                     if not t:
                         return ""
-                    t = self.rag_clean_text(t)
+                    t = rag_clean_text(t)
                     return (t[:n] + "…") if len(t) > n else t
 
                 if total <= 0:
@@ -1406,7 +1409,7 @@ class RAGManager:
         for row in rows:
             rd = dict(zip(cols, row))
             content_raw = rd.get("content")
-            content = self.rag_clean_text(str(content_raw or ""))
+            content = rag_clean_text(str(content_raw or ""))
 
             try:
                 kw, _hits = keyword_score(keywords, content)
@@ -1506,7 +1509,7 @@ class RAGManager:
         for row in rows:
             rd = dict(zip(cols, row))
             content_raw = rd.get("content")
-            content = self.rag_clean_text(str(content_raw or ""))
+            content = rag_clean_text(str(content_raw or ""))
 
             try:
                 kw, _hits = keyword_score(keywords, content)
@@ -1574,7 +1577,7 @@ class RAGManager:
             kw = 0.0
             if KW_ENABLED and keywords:
                 try:
-                    kw, _hits = keyword_score(keywords, self.rag_clean_text(str(rd.get("content") or "")))
+                    kw, _hits = keyword_score(keywords, rag_clean_text(str(rd.get("content") or "")))
                 except Exception:
                     kw = 0.0
 
@@ -1667,7 +1670,7 @@ class RAGManager:
             kw = 0.0
             if KW_ENABLED and keywords:
                 try:
-                    kw, _hits = keyword_score(keywords, self.rag_clean_text(str(content or "")))
+                    kw, _hits = keyword_score(keywords, rag_clean_text(str(content or "")))
                 except Exception:
                     kw = 0.0
 
@@ -1739,7 +1742,7 @@ class RAGManager:
             processed = 0
             updated_count = 0
 
-            prog = self._make_reindex_progress_logger(
+            prog = make_reindex_progress_logger(
                 "index_all_missing",
                 total,
                 extra_meta=f"batch_size={batch_size} | hist={len(hist_rows)} | mem={len(mem_rows)}",
@@ -1843,7 +1846,7 @@ class RAGManager:
             processed = 0
             updated_count = 0
 
-            prog = self._make_reindex_progress_logger(
+            prog = make_reindex_progress_logger(
                 "index_all",
                 total,
                 extra_meta=f"batch_size={batch_size} | hist={len(hist_rows)} | mem={len(mem_rows)}",
@@ -1908,42 +1911,4 @@ class RAGManager:
                 conn.close()
             except Exception:
                 pass
-    def rag_clean_text(self, text: str) -> str:
-        if not isinstance(text, str) or not text.strip():
-            return ""
-
-        t = text
-
-        # 1) убрать memory-команды целиком (обычно с закрывающим </memory>)
-        t = re.sub(r"<[+\-#]memory>.*?</memory>", " ", t, flags=re.S | re.I)
-
-        # 2) убрать pose/числовые векторы (часто повторяющиеся)
-        t = re.sub(r"<p>\s*[-0-9\.,\s]+\s*</p>", " ", t, flags=re.I)
-
-        # 3) убрать сами теги, но оставить внутренний текст
-        t = re.sub(r"</?[^>]+>", " ", t)
-
-        # 4) схлопнуть пробелы
-        t = re.sub(r"\s+", " ", t).strip()
-        return t
-
-    def _make_reindex_progress_logger(self, op: str, total: int, extra_meta: str = "") -> ThrottledProgressLogger:
-        log_every = self._get_int_setting("RAG_REINDEX_LOG_EVERY", 50)
-        log_interval = self._get_float_setting("RAG_REINDEX_LOG_INTERVAL_SEC", 5.0)
-        if log_every <= 0:
-            log_every = 50
-        if log_interval <= 0:
-            log_interval = 5.0
-
-        meta = f"character_id={self.character_id}"
-        if extra_meta:
-            meta = f"{meta} | {extra_meta}"
-
-        return ThrottledProgressLogger(
-            info=logger.info,
-            op=f"[RAG] {op}",
-            total=int(total),
-            meta=meta,
-            log_every=int(log_every),
-            log_interval_sec=float(log_interval),
-        )
+    
