@@ -269,12 +269,63 @@ def setup_model_interaction_controls(self, parent):
                       'Minimum cosine similarity for a candidate (0..1).'),
          'depends_on': 'RAG_ENABLED'},
 
+        {'type': 'end'},
+
+        {'label': _('Хвост сообщений', 'Query tail'), 'type': 'subsection'},
+
         {'label': _('Хвост сообщений для query (1-3)', 'Query tail messages (1-3)'),
          'key': 'RAG_QUERY_TAIL_MESSAGES', 'type': 'entry', 'default': 2,
          'validation': self.validate_positive_integer,
          'tooltip': _('Сколько последних активных сообщений (user/assistant) использовать для построения query-строки.',
                       'How many last active messages (user/assistant) to use when building the query string.'),
          'depends_on': 'RAG_ENABLED'},
+
+        {'label': _('Режим эмбеддинга запроса', 'Query embedding mode'),
+         'key': 'RAG_QUERY_EMBED_MODE', 'type': 'combobox', 'default': 'weighted',
+         'options': ['concat', 'weighted'],
+         'tooltip': _(
+             'Режим объединения сообщений для построения запроса к памяти: "concat" (конкатенация) или "weighted" (взвешенный).',
+             'Mode for combining messages to build the memory query: "concat" (concatenation) or "weighted".')},
+
+        {'label': _('Вес последнего сообщения пользователя (Weighted)', 'Last user message weight (Weighted)'),
+         'key': 'RAG_QUERY_WEIGHT_LAST_USER', 'type': 'entry', 'default': 0.7,
+         'validation': self.validate_float_0_to_1,
+         'tooltip': _('Вес последнего сообщения пользователя в режиме "weighted".',
+                      'Weight of the last user message in "weighted" mode.')},
+
+        {'label': _('Вес предыдущего контекста (Weighted)', 'Previous context weight (Weighted)'),
+         'key': 'RAG_QUERY_WEIGHT_PREV_CONTEXT', 'type': 'entry', 'default': 0.3,
+         'validation': self.validate_float_0_to_1,
+         'tooltip': _('Вес предыдущего контекста (остальных сообщений) в режиме "weighted".',
+                      'Weight of the previous context (remaining messages) in "weighted" mode.')},
+
+        {'label': _('Фильтр ролей для хвоста (Weighted)', 'Tail role filter (Weighted)'),
+         'key': 'RAG_QUERY_TAIL_ROLE_FILTER', 'type': 'listbox', 'default': 'user_only',
+         'values': [['all', _('All', 'All')], ['user_only', _('User only', 'User only')],
+                    ['assistant_only', _('Assistant only', 'Assistant only')]],
+         'tooltip': _(
+             'Какие роли сообщений включать в хвост для построения запроса в режиме "weighted" (чтобы длинные ответы ассистента не забивали).',
+             'Which message roles to include in the tail for query building in "weighted" mode (so long assistant replies don\'t overload it).')},
+
+        {'label': _('Экспоненциальное затухание веса хвоста (Weighted)', 'Tail weight exponential decay (Weighted)'),
+         'key': 'RAG_QUERY_TAIL_EXP_DECAY', 'type': 'entry', 'default': 0.6,
+         'validation': self.validate_float_0_to_1,
+         'tooltip': _(
+             'Коэффициент экспоненциального затухания веса: чем ближе сообщение к последнему, тем больше его вес. Используется в режиме "weighted".',
+             'Exponential decay factor for weight: the closer a message is to the last one, the higher its weight. Used in "weighted" mode.')},
+
+        {'label': _('Макс. символов в хвосте сообщений (Weighted)', 'Max chars in tail messages (Weighted)'),
+         'key': 'RAG_QUERY_TAIL_MAX_CHARS', 'type': 'entry', 'default': 1200,
+         'validation': self.validate_positive_integer,
+         'tooltip': _(
+             'Максимальное количество символов, которое будет использовано из хвостовых сообщений в режиме "weighted".',
+             'Maximum number of characters to use from the tail messages in "weighted" mode.')},
+
+        {'label': _('Fallback на Keywords при ошибке эмбеддинга', 'Keyword fallback on embedding error'),
+         'key': 'RAG_FALLBACK_KEYWORD', 'type': 'checkbutton', 'default_checkbutton': True,
+         'tooltip': _(
+             'Если не удалось получить эмбеддинг запроса, но включен поиск по ключевым словам и ключевые слова есть, использовать только поиск по ключевым словам.',
+             'If query embedding fails, but keyword search is enabled and keywords exist, use keyword-only search.')},
 
         {'type': 'end'},
 

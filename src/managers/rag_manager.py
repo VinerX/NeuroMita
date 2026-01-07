@@ -1,4 +1,5 @@
 import logging
+import math
 import re
 import sqlite3
 import numpy as np
@@ -122,6 +123,161 @@ class RAGManager:
             except Exception:
                 continue
         return None
+
+    def _clip_text(self, s: Any, n: int) -> str:
+        try:
+            t = str(s or "")
+        except Exception:
+            return ""
+        t = t.strip()
+        if not t:
+            return ""
+        if n and len(t) > int(n):
+            return t[: int(n)]
+        return t
+
+    def _l2_normalize(self, v: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if v is None:
+            return None
+        try:
+            n = float(np.linalg.norm(v))
+            if not (n > 0.0):
+                return v
+            return (v / n).astype(np.float32, copy=False)
+        except Exception:
+            return v
+
+    def _get_recent_active_contents(self, tail: int, role_filter: str = "user_only") -> list[str]:
+        """
+        Возвращает список контекстных текстов из активной history (самые последние -> более старые).
+        role_filter:
+          - "user_only"
+          - "user_and_assistant"
+          - "assistant_only"
+        """
+        out: list[str] = []
+        tail_n = int(tail or 0)
+        if tail_n <= 0:
+            return out
+
+        rf = str(role_filter or "user_only").strip().lower()
+        if rf not in ("user_only", "user_and_assistant", "assistant_only"):
+            rf = "user_only"
+
+        conn = self.db.get_connection()
+        try:
+            cur = conn.cursor()
+            where = "character_id=? AND is_active=1"
+            params: list[Any] = [self.character_id]
+            if "is_deleted" in self._history_cols:
+                where += " AND is_deleted=0"
+
+            cur.execute(
+                f"""
+                SELECT role, content
+                FROM history
+                WHERE {where}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                tuple(params + [tail_n]),
+            )
+            rows = cur.fetchall() or []
+
+            max_chars = int(SettingsManager.get("RAG_QUERY_TAIL_MAX_CHARS", 1200) or 1200)
+            for role, content in rows:
+                r = str(role or "").strip().lower()
+                if rf == "user_only" and r != "user":
+                    continue
+                if rf == "assistant_only" and r != "assistant":
+                    continue
+                c = self.rag_clean_text(self._clip_text(content, max_chars))
+                if c:
+                    out.append(c)
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        return out
+
+    def _build_query_embedding(self, user_query: str, tail: int) -> Optional[np.ndarray]:
+        """
+        Два режима:
+        - concat: как раньше (склейка хвоста + user_query -> один embedding)
+        - weighted: отдельные embeddings + взвешенная сумма (лучше для коротких фраз игрока)
+        """
+        mode = str(SettingsManager.get("RAG_QUERY_EMBED_MODE", "concat") or "concat").strip().lower()
+        if mode not in ("concat", "weighted"):
+            mode = "concat"
+
+        if mode == "concat":
+            qt = self._build_query_from_recent(user_query, tail=int(tail or 0))
+            qt = self.rag_clean_text(qt)
+            return self._l2_normalize(self._get_embedding(qt))
+
+        # weighted
+        w_user = float(SettingsManager.get("RAG_QUERY_WEIGHT_LAST_USER", 0.7) or 0.7)
+        w_tail = float(SettingsManager.get("RAG_QUERY_WEIGHT_PREV_CONTEXT", 0.3) or 0.3)
+        if w_user < 0.0:
+            w_user = 0.0
+        if w_tail < 0.0:
+            w_tail = 0.0
+        s = w_user + w_tail
+        if s <= 0.0:
+            w_user, w_tail = 0.7, 0.3
+            s = 1.0
+        # нормализуем веса (чтобы было стабильно)
+        w_user /= s
+        w_tail /= s
+
+        # 1) embedding текущего user_query
+        uq = self.rag_clean_text(str(user_query or "").strip())
+        e_user = self._get_embedding(uq) if uq else None
+        if e_user is not None:
+            e_user = self._l2_normalize(e_user)
+
+        # 2) embeddings хвоста (по умолчанию user_only, чтобы длинный ассистент не забивал)
+        role_filter = str(SettingsManager.get("RAG_QUERY_TAIL_ROLE_FILTER", "user_only") or "user_only")
+        tail_texts = self._get_recent_active_contents(int(tail or 0), role_filter=role_filter)
+
+        e_tail: list[np.ndarray] = []
+        if tail_texts and w_tail > 0.0:
+            vecs = self._get_embeddings(tail_texts)
+            for v in vecs or []:
+                if v is None:
+                    continue
+                vv = self._l2_normalize(v)
+                if vv is not None:
+                    e_tail.append(vv)
+
+        if e_user is None and not e_tail:
+            return None
+
+        # распределение веса хвоста: экспоненциальный спад от самого свежего к старым
+        decay = float(SettingsManager.get("RAG_QUERY_TAIL_EXP_DECAY", 0.6) or 0.6)
+        if not (0.0 < decay < 1.0):
+            decay = 0.6
+
+        tail_weights: list[float] = []
+        if e_tail:
+            raw = [(decay ** i) for i in range(len(e_tail))]  # i=0 самый свежий
+            denom = float(sum(raw)) if raw else 1.0
+            tail_weights = [(w_tail * (r / denom)) for r in raw]
+
+        # суммируем
+        base_vec = e_user if e_user is not None else e_tail[0]
+        q = np.zeros_like(base_vec, dtype=np.float32)
+        if e_user is not None and w_user > 0.0:
+            q += (w_user * e_user).astype(np.float32, copy=False)
+        for v, w in zip(e_tail, tail_weights):
+            if w > 0.0:
+                q += (w * v).astype(np.float32, copy=False)
+
+        return self._l2_normalize(q)
 
     def _build_query_from_recent(self, user_query: str, tail: int = 2) -> str:
         """
@@ -397,9 +553,12 @@ class RAGManager:
             except Exception:
                 keywords = []
 
-        query_text = self.rag_clean_text(query_text)
-        query_vec = self._get_embedding(query_text)
-        if query_vec is None:
+        # Векторный запрос: либо concat, либо weighted (см. настройки)
+        query_vec = self._build_query_embedding(query, tail=tail)
+
+        # ВАЖНО: если эмбеддинг не получен, но keyword-поиск включён и есть keywords —
+        # не выходим: keyword-only кандидаты всё равно могут сработать.
+        if query_vec is None and not (KW_ENABLED and keywords):
             return []
 
         # Контекстные сущности (speaker/target/participants) берём из последнего активного сообщения
