@@ -315,9 +315,11 @@ class VoiceModelController:
         return {"changed": changed_total, "changed_by_model": changed_by_model}
 
     def refresh_installed_models(self):
-        ctx = self._ctx()
-        installed = set()
+        ctx_base = self._ctx()
 
+        vendors = [self.detected_gpu_vendor] if self.detected_gpu_vendor else ["NVIDIA", "AMD", "CPU"]
+
+        installed = set()
         for m in self.get_default_model_structure():
             mid = m.get("id")
             if not mid:
@@ -325,11 +327,20 @@ class VoiceModelController:
             spec = get_voice_spec(mid)
             if not spec:
                 continue
-            try:
-                if spec.is_installed(mid, ctx):
-                    installed.add(mid)
-            except Exception:
-                continue
+
+            ok = False
+            for v in vendors:
+                ctx = dict(ctx_base)
+                ctx["gpu_vendor"] = v
+                try:
+                    if spec.is_installed(mid, ctx):
+                        ok = True
+                        break
+                except Exception:
+                    continue
+
+            if ok:
+                installed.add(mid)
 
         with self._lock:
             self.installed_models = installed
