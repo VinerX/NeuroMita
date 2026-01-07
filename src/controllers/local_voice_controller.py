@@ -180,12 +180,20 @@ class LocalVoiceController:
                 return False
 
             try:
-                gpu_vendor = check_gpu_provider() or "CPU"
+                detected = check_gpu_provider()
             except Exception:
-                gpu_vendor = "CPU"
+                detected = None
 
-            ctx = {"gpu_vendor": gpu_vendor}
-            return bool(spec.is_installed(model_id, ctx))
+            vendors = [detected] if detected else ["NVIDIA", "AMD", "CPU"]
+
+            for v in vendors:
+                try:
+                    if spec.is_installed(model_id, {"gpu_vendor": v}):
+                        return True
+                except Exception:
+                    continue
+
+            return False
         except Exception:
             return False
 
