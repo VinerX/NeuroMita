@@ -435,6 +435,12 @@ class VoiceoverGuiController(BaseController):
 
     # ---------- local combobox ----------
     def _ensure_voice_model_name_map(self):
+        now = time.time()
+        ts = float(getattr(self, "_model_id_to_name_ts", 0.0) or 0.0)
+
+        if self._model_id_to_name and (now - ts) < 30.0:
+            return
+
         try:
             res = self.event_bus.emit_and_wait(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS, timeout=1.5)
             cfgs = res[0] if res and isinstance(res[0], list) else []
@@ -462,6 +468,7 @@ class VoiceoverGuiController(BaseController):
                 pass
 
         self._model_id_to_name = mp
+        self._model_id_to_name_ts = now
 
     def _update_local_models_combobox(self):
         cb = getattr(self.view, "local_voice_combobox", None)
@@ -470,7 +477,7 @@ class VoiceoverGuiController(BaseController):
 
         installed_ids = set()
         try:
-            res = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.5)
+            res = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.7)
             got = res[0] if res else None
             if isinstance(got, (set, list, tuple)):
                 installed_ids = set(str(x) for x in got)
@@ -490,14 +497,18 @@ class VoiceoverGuiController(BaseController):
             cb.blockSignals(False)
 
         current = self._current_model_id_from_settings()
+
         if current and current in installed_ids:
             self._set_combobox_by_model_id(current)
-        elif items:
+            return
+
+        if items:
             first_id = items[0][1]
             self._save_setting("NM_CURRENT_VOICEOVER", first_id)
             self._set_combobox_by_model_id(first_id)
-        else:
-            self._save_setting("NM_CURRENT_VOICEOVER", None)
+            return
+
+        self._save_setting("NM_CURRENT_VOICEOVER", None)
 
     def _set_combobox_by_model_id(self, model_id: str):
         cb = getattr(self.view, "local_voice_combobox", None)
@@ -609,6 +620,17 @@ class VoiceoverGuiController(BaseController):
 
     # ---------- settings ----------
     def _save_setting(self, key: str, value: Any):
+        try:
+            cur = self._get_setting(key, None)
+            if cur is None and (value is None or value == ""):
+                return
+            if value is None and (cur is None or cur == ""):
+                return
+            if str(cur) == str(value):
+                return
+        except Exception:
+            pass
+
         self.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": key, "value": value})
 
     def _get_setting(self, key: str, default=None):
