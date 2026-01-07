@@ -759,7 +759,7 @@ def run_reindexing(gui):
 
     # Предварительная проверка (создаем временный RAGManager для чтения)
     try:
-        from managers.rag_manager import RAGManager
+        from managers.rag.rag_manager import RAGManager
         # Создаем легковесный инстанс, это безопасно
         rag = RAGManager(character_id)
 
@@ -830,7 +830,7 @@ class ReindexWorker(QThread):
     def run(self):
         try:
             # Импортируем внутри потока
-            from managers.rag_manager import RAGManager
+            from managers.rag.rag_manager import RAGManager
 
             # Создаем экземпляр RAGManager в этом потоке
             # Это создаст новое подключение к SQLite (thread-safe)
@@ -858,7 +858,7 @@ class FullReindexWorker(QThread):
 
     def run(self):
         try:
-            from managers.rag_manager import RAGManager
+            from managers.rag.rag_manager import RAGManager
 
             rag = RAGManager(self.character_id)
 
@@ -905,7 +905,7 @@ def run_full_reindexing(gui):
 
     # Подсчёт общего количества
     try:
-        from managers.rag_manager import RAGManager
+        from managers.rag.rag_manager import RAGManager
         rag = RAGManager(character_id)
         conn = rag.db.get_connection()
         c = conn.cursor()
