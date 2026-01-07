@@ -722,7 +722,7 @@ class RAGManager:
 
         # FTS5 Lexical search (optional)
         USE_FTS = self._get_bool_setting("RAG_USE_FTS", False)
-        K6 = self._get_float_setting("RAG_WEIGHT_LEXICAL", 0.6)
+        K6 = self._get_float_setting("RAG_WEIGHT_LEXICAL", 0.3)
         fts_top_k_hist = self._get_int_setting("RAG_FTS_TOP_K_HISTORY", 50)
         fts_top_k_mem = self._get_int_setting("RAG_FTS_TOP_K_MEMORIES", 50)
         fts_max_terms = self._get_int_setting("RAG_FTS_MAX_TERMS", 10)
