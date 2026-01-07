@@ -37,9 +37,6 @@ def _resolve_event_name(fallback: str, *path: str) -> str:
 EMBED_EVENT_NAME = _resolve_event_name("rag.get_embedding", "RAG", "GET_EMBEDDING")
 EMBEDS_EVENT_NAME = _resolve_event_name("rag.get_embeddings", "RAG", "GET_EMBEDDINGS")
 
-# Extra RAG settings keys introduced/used here (optional):
-#   - RAG_LOG_LIST_TOP_N (int, default=10)         сколько строк печатать вверху списка кандидатов
-
 class RAGManager:
     _fallback_handler: Optional[EmbeddingModelHandler] = None
     _fallback_lock: Lock = Lock()
@@ -210,9 +207,7 @@ class RAGManager:
                 pass
         return out
 
-    # ---------------------------------------------------------------------
     # FTS5 lexical search helpers (optional, safe fallback)
-    # ---------------------------------------------------------------------
     def _fts_table_exists(self, cursor, name: str) -> bool:
         try:
             cursor.execute(
