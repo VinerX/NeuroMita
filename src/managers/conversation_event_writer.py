@@ -62,8 +62,9 @@ class ConversationEventWriter:
             if mid and self._has_message_id_recent(messages, mid):
                 return False
 
-            messages.append(msg)
-            ch_ref.save_character_state_to_history(messages)
+            #messages.append(msg)
+            #ch_ref.save_character_state_to_history(messages)
+            ch_ref.add_message_to_history(msg)
             return True
         except Exception as e:
             logger.warning(

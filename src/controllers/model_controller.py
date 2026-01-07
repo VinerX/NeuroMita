@@ -251,16 +251,9 @@ class ModelController:
             return False
 
         try:
-            if hasattr(ch_ref, "add_message_to_history"):
-                ch_ref.add_message_to_history(msg)
-            else:
-                # Fallback для старых версий (если вдруг character не обновлен)
-                history_data = ch_ref.load_history()
-                messages = history_data.get("messages", []) or []
-                messages.append(msg)
-                ch_ref.save_character_state_to_history(messages)
-
+            ch_ref.add_message_to_history(msg)
             return True
+
         except Exception as e:
             logger.warning(
                 f"[ModelController] append_history_message failed for {getattr(ch_ref, 'char_id', '?')}: {e}",
