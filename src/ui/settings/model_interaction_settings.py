@@ -300,9 +300,8 @@ def setup_model_interaction_controls(self, parent):
                       'Weight of the previous context (remaining messages) in "weighted" mode.')},
 
         {'label': _('Фильтр ролей для хвоста (Weighted)', 'Tail role filter (Weighted)'),
-         'key': 'RAG_QUERY_TAIL_ROLE_FILTER', 'type': 'listbox', 'default': 'user_only',
-         'values': [['all', _('All', 'All')], ['user_only', _('User only', 'User only')],
-                    ['assistant_only', _('Assistant only', 'Assistant only')]],
+         'key': 'RAG_QUERY_TAIL_ROLE_FILTER', 'type': 'combobox', 'default': 'all',
+         'options': ['all','user_only'],
          'tooltip': _(
              'Какие роли сообщений включать в хвост для построения запроса в режиме "weighted" (чтобы длинные ответы ассистента не забивали).',
              'Which message roles to include in the tail for query building in "weighted" mode (so long assistant replies don\'t overload it).')},
