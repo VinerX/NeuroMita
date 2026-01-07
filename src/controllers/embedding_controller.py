@@ -41,7 +41,7 @@ class EmbeddingController:
 
         # Проверяем, включен ли RAG глобально
         self.handler: Optional[EmbeddingModelHandler]
-        if SettingsManager.get("RAG_ENABLED", True):
+        if SettingsManager.get("RAG_ENABLED", False):
             # Единый экземпляр handler создаётся здесь (а не в менеджерах)
             self.handler = EmbeddingModelHandler()
         else:
