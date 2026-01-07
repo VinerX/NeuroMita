@@ -16,7 +16,9 @@ from core.events import get_event_bus, Events
 from main_logger import logger
 from managers.settings_manager import SettingsManager
 from utils.throttled_progress_logger import ThrottledProgressLogger
-from managers.rag_keyword_search import extract_keywords, keyword_score
+
+
+from managers.rag.rag_keyword_search import extract_keywords, keyword_score
 
 
 def _resolve_event_name(fallback: str, *path: str) -> str:
@@ -708,13 +710,7 @@ class RAGManager:
         detailed_logs = self._get_bool_setting("RAG_DETAILED_LOGS", True)
         tail = int(SettingsManager.get("RAG_QUERY_TAIL_MESSAGES",2))
 
-        # FTS5 Lexical search (optional)
-        USE_FTS = self._get_bool_setting("RAG_USE_FTS", False)
-        K6 = self._get_float_setting("RAG_WEIGHT_LEXICAL", 0.6)
-        fts_top_k_hist = self._get_int_setting("RAG_FTS_TOP_K_HISTORY", 50)
-        fts_top_k_mem = self._get_int_setting("RAG_FTS_TOP_K_MEMORIES", 50)
-        fts_max_terms = self._get_int_setting("RAG_FTS_MAX_TERMS", 10)
-        fts_min_len = self._get_int_setting("RAG_FTS_MIN_LEN", 3)
+
         # Keyword search (SettingsManager)
         KW_ENABLED = bool(SettingsManager.get("RAG_KEYWORD_SEARCH", False))
         K5 = self._get_float_setting("RAG_WEIGHT_KEYWORDS", 0.6)
@@ -722,6 +718,15 @@ class RAGManager:
         kw_min_score = self._get_float_setting("RAG_KEYWORD_MIN_SCORE", 0.34)  # ~1/3 совпадений
         kw_sql_limit = self._get_int_setting("RAG_KEYWORD_SQL_LIMIT", 250)
         kw_min_len = self._get_int_setting("RAG_KEYWORDS_MIN_LEN", 3)
+
+
+        # FTS5 Lexical search (optional)
+        USE_FTS = self._get_bool_setting("RAG_USE_FTS", False)
+        K6 = self._get_float_setting("RAG_WEIGHT_LEXICAL", 0.6)
+        fts_top_k_hist = self._get_int_setting("RAG_FTS_TOP_K_HISTORY", 50)
+        fts_top_k_mem = self._get_int_setting("RAG_FTS_TOP_K_MEMORIES", 50)
+        fts_max_terms = self._get_int_setting("RAG_FTS_MAX_TERMS", 10)
+        fts_min_len = self._get_int_setting("RAG_FTS_MIN_LEN", 3)
 
         memory_mode = str(SettingsManager.get("RAG_MEMORY_MODE", "forgotten") or "forgotten").strip().lower()
 
