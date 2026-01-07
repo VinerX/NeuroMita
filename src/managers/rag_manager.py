@@ -8,7 +8,7 @@ import json
 import struct
 import random
 import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from managers.database_manager import DatabaseManager
 from handlers.embedding_handler import EmbeddingModelHandler, QUERY_PREFIX
@@ -201,6 +201,200 @@ class RAGManager:
                 conn.close()
             except Exception:
                 pass
+
+    # ---------------------------------------------------------------------
+    # FTS5 lexical search helpers (optional, safe fallback)
+    # ---------------------------------------------------------------------
+    def _fts_table_exists(self, cursor, name: str) -> bool:
+        try:
+            cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (str(name),),
+            )
+            return bool(cursor.fetchone())
+        except Exception:
+            return False
+
+    def _fts5_ready(self, cursor) -> bool:
+        """
+        Checks that:
+          - setting allows FTS
+          - tables exist
+          - simple query doesn't crash (covers "no such module: fts5")
+        """
+        if not self._get_bool_setting("RAG_USE_FTS", False):
+            return False
+        try:
+            if not (self._fts_table_exists(cursor, "history_fts") or self._fts_table_exists(cursor, "memories_fts")):
+                return False
+            # sanity query (if module missing -> OperationalError)
+            if self._fts_table_exists(cursor, "history_fts"):
+                cursor.execute("SELECT rowid FROM history_fts LIMIT 1")
+                cursor.fetchone()
+            if self._fts_table_exists(cursor, "memories_fts"):
+                cursor.execute("SELECT rowid FROM memories_fts LIMIT 1")
+                cursor.fetchone()
+            return True
+        except Exception:
+            return False
+
+    def _fts_build_match_query(self, text: str, *, max_terms: int, min_len: int) -> str:
+        """
+        Build a safe-ish FTS5 MATCH query:
+          token1 OR token2 OR ...
+        Tokens are double-quoted to avoid syntax errors on weird characters.
+        """
+        cleaned = self.rag_clean_text(str(text or ""))
+        if not cleaned:
+            return ""
+
+        # Unicode-ish tokenization (ru/en/digits/_). Keep it simple and robust.
+        tokens = re.findall(r"[0-9A-Za-zА-Яа-я_]+", cleaned.lower())
+        out: List[str] = []
+        seen = set()
+        for t in tokens:
+            t = t.strip().strip('"').strip("'")
+            if len(t) < int(min_len):
+                continue
+            if t in seen:
+                continue
+            seen.add(t)
+            out.append(f"\"{t}\"")
+            if len(out) >= int(max_terms):
+                break
+        return " OR ".join(out)
+
+    def _normalize_bm25_to_01(self, ranks: List[float]) -> List[float]:
+        """
+        bm25() direction differs by build; we normalize *relative* within returned top-K:
+          best rank (min) -> 1.0
+          worst rank (max) -> 0.0
+        """
+        rr: List[float] = []
+        for x in ranks or []:
+            try:
+                v = float(x)
+                if np.isnan(v) or np.isinf(v):
+                    v = 0.0
+                rr.append(v)
+            except Exception:
+                rr.append(0.0)
+        if not rr:
+            return []
+        mn = min(rr)
+        mx = max(rr)
+        if abs(mx - mn) < 1e-12:
+            return [1.0 for _ in rr]
+        out: List[float] = []
+        for v in rr:
+            s = 1.0 - ((v - mn) / (mx - mn))  # min -> 1, max -> 0
+            if s < 0.0:
+                s = 0.0
+            if s > 1.0:
+                s = 1.0
+            out.append(float(s))
+        return out
+
+    def _fts_history_rows(
+        self,
+        cursor,
+        *,
+        match_q: str,
+        top_k: int,
+    ) -> List[Dict[str, Any]]:
+        if not match_q:
+            return []
+        if not self._fts_table_exists(cursor, "history_fts"):
+            return []
+
+        cols = ["h.id", "bm25(history_fts) AS rank", "h.role", "h.content", "h.timestamp"]
+        if "embedding" in self._history_cols:
+            cols.append("h.embedding")
+        opt = []
+        for c in ("speaker", "target", "participants"):
+            if c in self._history_cols:
+                opt.append(f"h.{c}")
+        cols += opt
+
+        where = "h.character_id=? AND h.is_active=0"
+        params: List[Any] = [self.character_id]
+        if "is_deleted" in self._history_cols:
+            where += " AND h.is_deleted=0"
+
+        try:
+            cursor.execute(
+                f"""
+                SELECT {', '.join(cols)}
+                FROM history_fts
+                JOIN history h ON h.id = history_fts.rowid
+                WHERE history_fts MATCH ? AND {where}
+                ORDER BY rank
+                LIMIT ?
+                """,
+                tuple([match_q] + params + [int(top_k)]),
+            )
+            rows = cursor.fetchall() or []
+            keys = [c.split(" AS ")[-1].split(".")[-1] for c in cols]  # crude but stable here
+            out = []
+            for r in rows:
+                rd = dict(zip(keys, r))
+                out.append(rd)
+            return out
+        except Exception as e:
+            logger.debug(f"[RAG][FTS] history query failed (ignored): {e}")
+            return []
+
+    def _fts_memory_rows(
+        self,
+        cursor,
+        *,
+        match_q: str,
+        top_k: int,
+        memory_mode: str,
+    ) -> List[Dict[str, Any]]:
+        if not match_q:
+            return []
+        if not self._fts_table_exists(cursor, "memories_fts"):
+            return []
+
+        cols = ["m.eternal_id", "bm25(memories_fts) AS rank", "m.content", "m.type", "m.priority", "m.date_created", "m.participants"]
+        if "embedding" in self._mem_cols:
+            cols.append("m.embedding")
+        if "is_forgotten" in self._mem_cols:
+            cols.append("m.is_forgotten")
+
+        where = "m.character_id=? AND m.is_deleted=0"
+        params: List[Any] = [self.character_id]
+        if "is_forgotten" in self._mem_cols:
+            if memory_mode == "forgotten":
+                where += " AND m.is_forgotten=1"
+            elif memory_mode == "active":
+                where += " AND m.is_forgotten=0"
+            elif memory_mode == "all":
+                pass
+
+        try:
+            cursor.execute(
+                f"""
+                SELECT {', '.join(cols)}
+                FROM memories_fts
+                JOIN memories m ON m.id = memories_fts.rowid
+                WHERE memories_fts MATCH ? AND {where}
+                ORDER BY rank
+                LIMIT ?
+                """,
+                tuple([match_q] + params + [int(top_k)]),
+            )
+            rows = cursor.fetchall() or []
+            keys = [c.split(" AS ")[-1].split(".")[-1] for c in cols]
+            out = []
+            for r in rows:
+                rd = dict(zip(keys, r))
+                out.append(rd)
+            return out
+        except Exception as e:
+            logger.debug(f"[RAG][FTS] memories query failed (ignored): {e}")
+            return []
 
         return out
 
@@ -499,7 +693,7 @@ class RAGManager:
         Advanced RAG:
         - query embedding строим из хвоста активного контекста + текущего запроса
         - считаем финальный скор по формуле:
-          Score = (Sim*K1) + (TimeFactor*K2) + (PriorityBonus*K3) + (EntityBonus*K4) + (KeywordScore*K5) + Noise
+          Score = (Sim*K1) + (TimeFactor*K2) + (PriorityBonus*K3) + (EntityBonus*K4) + (KeywordScore*K5) + (LexScore*K6) + Noise
         - RAG правила:
           memories: is_deleted=0 AND is_forgotten=1
           history: s_deleted=0 AND is_active=0
@@ -513,6 +707,11 @@ class RAGManager:
         detailed_logs = self._get_bool_setting("RAG_DETAILED_LOGS", True)
         tail = int(SettingsManager.get("RAG_QUERY_TAIL_MESSAGES",2))
 
+        # FTS5 Lexical search (optional)
+        USE_FTS = self._get_bool_setting("RAG_USE_FTS", False)
+        K6 = self._get_float_setting("RAG_WEIGHT_LEXICAL", 0.6)
+        fts_top_k_hist = self._get_int_setting("RAG_FTS_TOP_K_HISTORY", 50)
+        fts_top_k_mem = self._get_int_setting("RAG_FTS_TOP_K_MEMORIES", 50)
         # Keyword search (SettingsManager)
         KW_ENABLED = bool(SettingsManager.get("RAG_KEYWORD_SEARCH", False))
         K5 = self._get_float_setting("RAG_WEIGHT_KEYWORDS", 0.6)
@@ -654,6 +853,166 @@ class RAGManager:
                 sql_limit=kw_sql_limit,
             )
 
+        # 3) FTS5 lexical candidates (bm25) -> merged later with vector candidates
+        # Safe fallback: if no FTS5/tables -> ignored.
+        fts_hist_debug: List[Tuple[int, float, float]] = []
+        fts_mem_debug: List[Tuple[int, float, float]] = []
+        if USE_FTS and self._fts5_ready(cursor):
+            try:
+                # Prefer current user query for lexical; fallback to expanded query_text if too short.
+                match_primary = self._fts_build_match_query(str(query or ""), max_terms=fts_max_terms, min_len=fts_min_len)
+                match_q = match_primary
+                if not match_q:
+                    match_q = self._fts_build_match_query(query_text, max_terms=fts_max_terms, min_len=fts_min_len)
+
+                if match_q:
+                    # --- Memories FTS ---
+                    if bool(SettingsManager.get("RAG_SEARCH_MEMORY", False)):
+                        mem_rows = self._fts_memory_rows(
+                            cursor,
+                            match_q=match_q,
+                            top_k=max(1, int(fts_top_k_mem)),
+                            memory_mode=memory_mode,
+                        )
+                        mem_ranks = [float(r.get("rank") or 0.0) for r in mem_rows]
+                        mem_lex = self._normalize_bm25_to_01(mem_ranks)
+
+                        for rd, lex_score in zip(mem_rows, mem_lex):
+                            try:
+                                eternal_id = int(rd.get("eternal_id") or 0)
+                            except Exception:
+                                continue
+                            if eternal_id <= 0:
+                                continue
+
+                            content_raw = rd.get("content")
+                            content_clean = self.rag_clean_text(str(content_raw or ""))
+                            if not content_clean:
+                                continue
+
+                            # sim (if embedding exists)
+                            sim = 0.0
+                            try:
+                                blob = rd.get("embedding") if "embedding" in rd else None
+                                vec = self._blob_to_array(blob) if blob is not None else None
+                                if vec is not None:
+                                    sim = float(np.dot(query_vec, vec))
+                            except Exception:
+                                sim = 0.0
+
+                            # keyword score (existing feature)
+                            kw = 0.0
+                            if KW_ENABLED and keywords:
+                                try:
+                                    kw, _hits = keyword_score(keywords, content_clean)
+                                except Exception:
+                                    kw = 0.0
+
+                            dt = self._parse_dt(rd.get("date_created"))
+                            if dt:
+                                days = max(0.0, (now - dt).total_seconds() / 86400.0)
+                                tf = 1.0 / (1.0 + (decay_rate * days))
+                            else:
+                                tf = 0.0
+
+                            pb = prio_bonus(rd.get("priority"))
+                            eb = entity_bonus_from_participants(self._json_loads_list(rd.get("participants")))
+                            noise = random.uniform(0.0, noise_max)
+
+                            bm25_rank = float(rd.get("rank") or 0.0)
+                            final = (sim * K1) + (tf * K2) + (pb * K3) + (eb * K4) + (kw * K5) + (float(lex_score) * K6) + noise
+
+                            scored.append({
+                                "source": "memory",
+                                "id": eternal_id,
+                                "content": content_raw,
+                                "type": rd.get("type"),
+                                "priority": rd.get("priority"),
+                                "date_created": rd.get("date_created"),
+                                "score": float(final),
+                                "_dbg": {
+                                    "sim": sim, "time": tf, "prio": pb, "entity": eb, "kw": kw,
+                                    "lex": float(lex_score), "bm25": bm25_rank,
+                                    "noise": noise, "final": final,
+                                }
+                            })
+                            fts_mem_debug.append((eternal_id, bm25_rank, float(lex_score)))
+
+                    # --- History FTS ---
+                    if bool(SettingsManager.get("RAG_SEARCH_HISTORY", False)):
+                        hist_rows = self._fts_history_rows(
+                            cursor,
+                            match_q=match_q,
+                            top_k=max(1, int(fts_top_k_hist)),
+                        )
+                        hist_ranks = [float(r.get("rank") or 0.0) for r in hist_rows]
+                        hist_lex = self._normalize_bm25_to_01(hist_ranks)
+
+                        for rd, lex_score in zip(hist_rows, hist_lex):
+                            try:
+                                hid = int(rd.get("id") or 0)
+                            except Exception:
+                                continue
+                            if hid <= 0:
+                                continue
+
+                            content_raw = rd.get("content")
+                            content_clean = self.rag_clean_text(str(content_raw or ""))
+                            if not content_clean:
+                                continue
+
+                            sim = 0.0
+                            try:
+                                blob = rd.get("embedding") if "embedding" in rd else None
+                                vec = self._blob_to_array(blob) if blob is not None else None
+                                if vec is not None:
+                                    sim = float(np.dot(query_vec, vec))
+                            except Exception:
+                                sim = 0.0
+
+                            kw = 0.0
+                            if KW_ENABLED and keywords:
+                                try:
+                                    kw, _hits = keyword_score(keywords, content_clean)
+                                except Exception:
+                                    kw = 0.0
+
+                            dt = self._parse_dt(rd.get("timestamp"))
+                            if dt:
+                                days = max(0.0, (now - dt).total_seconds() / 86400.0)
+                                tf = 1.0 / (1.0 + (decay_rate * days))
+                            else:
+                                tf = 0.0
+
+                            sp = str(rd.get("speaker") or "").strip()
+                            tg = str(rd.get("target") or "").strip()
+                            parts = self._json_loads_list(rd.get("participants"))
+                            eb = entity_bonus_history(sp, tg, parts)
+                            noise = random.uniform(0.0, noise_max)
+                            bm25_rank = float(rd.get("rank") or 0.0)
+
+                            final = (sim * K1) + (tf * K2) + (eb * K4) + (kw * K5) + (float(lex_score) * K6) + noise
+
+                            scored.append({
+                                "source": "history",
+                                "id": hid,
+                                "role": rd.get("role"),
+                                "content": content_raw,
+                                "date": rd.get("timestamp"),
+                                "speaker": sp or None,
+                                "target": tg or None,
+                                "participants": parts,
+                                "score": float(final),
+                                "_dbg": {
+                                    "sim": sim, "time": tf, "prio": 0.0, "entity": eb, "kw": kw,
+                                    "lex": float(lex_score), "bm25": bm25_rank,
+                                    "noise": noise, "final": final,
+                                }
+                            })
+                            fts_hist_debug.append((hid, bm25_rank, float(lex_score)))
+            except Exception as e:
+                logger.debug(f"[RAG][FTS] lexical stage failed (ignored): {e}", exc_info=True)
+
         # 2) History
         if bool(SettingsManager.get("RAG_SEARCH_HISTORY",False)):
             self.find_forgotten_histories(
@@ -677,22 +1036,99 @@ class RAGManager:
                 sql_limit=kw_sql_limit,
             )
 
-        conn.close()
-
-        # dedup: если запись попала и через embedding, и через keyword-only
+        # Log lexical top-k in detailed mode
         try:
-            dedup: dict[tuple[str, int], dict] = {}
-            for it in scored:
-                try:
-                    key = (str(it.get("source")), int(it.get("id") or 0))
-                except Exception:
+            if detailed_logs and (fts_hist_debug or fts_mem_debug):
+                if fts_mem_debug:
+                    logger.info("[RAG][FTS] memories top-k (eternal_id, bm25, lex_score):")
+                    for mid, bm, lx in fts_mem_debug[: min(len(fts_mem_debug), 10)]:
+                        logger.info(f"[RAG][FTS] memory:{mid} | bm25={bm:.6f} | lex={lx:.3f}")
+                if fts_hist_debug:
+                    logger.info("[RAG][FTS] history top-k (id, bm25, lex_score):")
+                    for hid, bm, lx in fts_hist_debug[: min(len(fts_hist_debug), 10)]:
+                        logger.info(f"[RAG][FTS] history:{hid} | bm25={bm:.6f} | lex={lx:.3f}")
+        except Exception:
+            pass
+
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+        # Merge/dedup candidates from vector/keyword/FTS, then unified rerank
+        merged: Dict[Tuple[str, int], Dict[str, Any]] = {}
+
+        def _f(x: Any) -> float:
+            try:
+                return float(x)
+            except Exception:
+                return 0.0
+
+        for it in scored:
+            try:
+                key = (str(it.get("source")), int(it.get("id") or 0))
+            except Exception:
+                continue
+            if key[1] <= 0:
+                continue
+
+            dbg = it.get("_dbg") or {}
+            # Ensure missing fields exist (backward-safe for older candidates)
+            if "lex" not in dbg:
+                dbg["lex"] = 0.0
+            it["_dbg"] = dbg
+
+            prev = merged.get(key)
+            if prev is None:
+                merged[key] = it
+                continue
+
+            # Merge: keep best components; keep richer metadata if present
+            pdbg = prev.get("_dbg") or {}
+            if "lex" not in pdbg:
+                pdbg["lex"] = 0.0
+
+            for comp in ("sim", "time", "prio", "entity", "kw", "lex"):
+                pdbg[comp] = max(_f(pdbg.get(comp)), _f(dbg.get(comp)))
+
+            # bm25: smaller is better; keep smallest if present
+            if "bm25" in dbg:
+                if "bm25" not in pdbg:
+                    pdbg["bm25"] = _f(dbg.get("bm25"))
+                else:
+                    try:
+                        pdbg["bm25"] = min(_f(pdbg.get("bm25")), _f(dbg.get("bm25")))
+                    except Exception:
+                        pass
+
+            # Keep noise from the higher-scoring item (stability within this merge)
+            if _f(it.get("score")) > _f(prev.get("score")):
+                pdbg["noise"] = _f(dbg.get("noise"))
+
+            prev["_dbg"] = pdbg
+
+            # Fill missing metadata (content/type/role/etc)
+            for k, v in it.items():
+                if k in ("score", "_dbg"):
                     continue
-                prev = dedup.get(key)
-                if prev is None or float(it.get("score") or 0.0) > float(prev.get("score") or 0.0):
-                    dedup[key] = it
-            scored = list(dedup.values())
-        except Exception as e:
-            logging.warning(e)
+                if prev.get(k) in (None, "", [], {}):
+                    prev[k] = v
+
+        # Unified rerank with lexical factor included
+        scored = list(merged.values())
+        for it in scored:
+            dbg = it.get("_dbg") or {}
+            sim = _f(dbg.get("sim"))
+            tf = _f(dbg.get("time"))
+            pb = _f(dbg.get("prio"))
+            eb = _f(dbg.get("entity"))
+            kw = _f(dbg.get("kw"))
+            lex = _f(dbg.get("lex"))
+            noise = _f(dbg.get("noise"))
+            final = (sim * K1) + (tf * K2) + (pb * K3) + (eb * K4) + (kw * K5) + (lex * K6) + noise
+            dbg["final"] = float(final)
+            it["_dbg"] = dbg
+            it["score"] = float(final)
 
         scored.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
 
@@ -713,6 +1149,7 @@ class RAGManager:
                     logger.info(
                         f"[RAG] {src}:{rid} | Base:{dbg.get('sim'):.3f} | Time:{dbg.get('time'):.3f} "
                         f"| Prio:{dbg.get('prio'):.3f} | Ent:{dbg.get('entity'):.3f} | KW:{float(dbg.get('kw') or 0.0):.3f} "
+                        f"| Lex:{float(dbg.get('lex') or 0.0):.3f} "
                         f"| Final:{dbg.get('final'):.3f} "
                         f"| Content:\"{self.rag_clean_text(_clip(item.get('content')))}\""
                     )
@@ -931,7 +1368,7 @@ class RAGManager:
                 "priority": rd.get("priority"),
                 "date_created": rd.get("date_created"),
                 "score": float(final),
-                "_dbg": {"sim": 0.0, "time": tf, "prio": pb, "entity": eb, "kw": kw, "noise": noise, "final": final}
+                "_dbg": {"sim": 0.0, "time": tf, "prio": pb, "entity": eb, "kw": kw, "lex": 0.0, "noise": noise, "final": final}
             })
 
     def find_forgotten_histories(self, K1, K2, K4, cursor, decay_rate, entity_bonus_history, noise_max, now, query_vec,
@@ -1001,7 +1438,7 @@ class RAGManager:
                 "participants": parts,
                 "score": float(final),
                 "_dbg": {
-                    "sim": sim, "time": tf, "prio": 0.0, "entity": eb, "kw": kw, "noise": noise,
+                    "sim": sim, "time": tf, "prio": 0.0, "entity": eb, "kw": kw, "lex": 0.0, "noise": noise,
                     "final": final
                 }
             })
@@ -1089,7 +1526,7 @@ class RAGManager:
                 "date_created": date_created,
                 "score": float(final),
                 "_dbg": {
-                    "sim": sim, "time": tf, "prio": pb, "entity": eb, "kw": kw, "noise": noise,
+                    "sim": sim, "time": tf, "prio": pb, "entity": eb, "kw": kw, "lex": 0.0, "noise": noise,
                     "final": final
                 }
             })

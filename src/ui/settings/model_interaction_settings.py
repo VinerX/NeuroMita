@@ -411,9 +411,49 @@ def setup_model_interaction_controls(self, parent):
          'depends_on': 'RAG_KEYWORD_SEARCH',
          'tooltip': _('Максимальное количество записей, которое запрашивается из базы данных по ключевым словам.',
                       'Maximum number of records requested from the database by keywords.')},
+        {'type': 'end'},
 
+        {'label': _("Поиск FTS5", "FTS5 Search"), 'type': 'subsection',
+         'depends_on': 'RAG_ENABLED'},
 
+        {'label': _('Использовать FTS5 для поиска', 'Use FTS5 for search'),
+         'key': 'RAG_USE_FTS', 'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _(
+             'Включает лексический поиск через SQLite FTS5 для памяти и/или истории (в зависимости от включенных опций).',
+             'Enables lexical search via SQLite FTS5 for memory and/or history (depending on enabled options).')},
 
+        {'label': _('Вес лексического фактора (K6)', 'Lexical factor weight (K6)'),
+         'key': 'RAG_WEIGHT_LEXICAL', 'type': 'entry', 'default': 0.6,
+         'validation': self.validate_float_0_to_1,
+         'tooltip': _(
+             'Вес лексического фактора (K6) в общей формуле ранжирования результатов (если используется смешанный поиск).',
+             'Weight of the lexical factor (K6) in the overall results ranking formula (if mixed search is used).')},
+
+        {'label': _('FTS Top K История', 'FTS Top K History'),
+         'key': 'RAG_FTS_TOP_K_HISTORY', 'type': 'entry', 'default': 50,
+         'validation': self.validate_positive_integer,
+         'tooltip': _('Максимальное количество результатов, возвращаемых FTS5 из истории чата.',
+                      'Maximum number of results returned by FTS5 from chat history.')},
+
+        {'label': _('FTS Top K Память', 'FTS Top K Memories'),
+         'key': 'RAG_FTS_TOP_K_MEMORIES', 'type': 'entry', 'default': 50,
+         'validation': self.validate_positive_integer,
+         'tooltip': _('Максимальное количество результатов, возвращаемых FTS5 из базы знаний (памяти).',
+                      'Maximum number of results returned by FTS5 from the knowledge base (memory).')},
+
+        {'label': _('FTS Макс. терминов в запросе', 'FTS Max terms in query'),
+         'key': 'RAG_FTS_MAX_TERMS', 'type': 'entry', 'default': 8,
+         'validation': self.validate_positive_integer,
+         'tooltip': _('Максимальное количество терминов, которое будет использоваться в запросе FTS5 (по умолчанию 8).',
+                      'Maximum number of terms that will be used in the FTS5 query (default 8).')},
+
+        {'label': _('FTS Мин. длина термина', 'FTS Min term length'),
+         'key': 'RAG_FTS_MIN_LEN', 'type': 'entry', 'default': 3,
+         'validation': self.validate_positive_integer,
+         'tooltip': _('Минимальная длина слова для включения в токенизацию и поиск FTS5 (по умолчанию 3).',
+                      'Minimum word length to include in FTS5 tokenization and search (default 3).')},
+
+        {'type': 'end'},
 
 
     ]
