@@ -27,20 +27,43 @@ class LegacyToolExecutor:
 
     def _extract_legacy_tool_calls(self, text: str) -> List[Tuple[str, dict]]:
         """
-        Устойчивое извлечение legacy tool-вызовов из произвольного текста.
-
-        Ищет JSON-объекты вида:
-          { "tool": "...", "args": { ... } }
-
-        В отличие от regex, корректно переживает вложенные {} внутри args,
-        потому что использует JSONDecoder.raw_decode и сканирует текст по '{'.
+        Извлекает вызовы инструментов.
+        Поддерживает два формата:
+        1. JSON-объект: { "tool": "name", "args": {...} }
+        2. XML-style: <name>{...}</name> (то, что делает ваша модель)
         """
         if not isinstance(text, str) or not text:
             return []
 
-        decoder = json.JSONDecoder()
         calls: List[Tuple[str, dict]] = []
 
+        # --- 1. Попытка найти XML-style вызовы: <tool_name>{json_args}</tool_name> ---
+        # Ищем теги, имя которых совпадает с именем известного инструмента (или просто любое слово),
+        # а внутри лежит JSON.
+        xml_pattern = re.compile(r"<([a-zA-Z0-9_]+)>\s*({.*?})\s*</\1>", re.DOTALL)
+
+        # Находим все совпадения
+        for match in xml_pattern.finditer(text):
+            tool_name = match.group(1)
+            raw_args = match.group(2)
+
+            # Проверяем, существует ли такой инструмент (опционально, но полезно)
+            # if tool_name not in self.tool_manager._tools: continue
+
+            try:
+                args = json.loads(raw_args)
+                if isinstance(args, dict):
+                    calls.append((tool_name, args))
+                    continue  # Успешно нашли, идем к следующему
+            except json.JSONDecodeError:
+                pass  # Если внутри не JSON, игнорируем
+
+        # Если нашли XML-вызовы, возвращаем их. Обычно модели не смешивают форматы.
+        if calls:
+            return calls
+
+        # --- 2. (Старая логика) Попытка найти явный JSON { "tool": ... } ---
+        decoder = json.JSONDecoder()
         i = 0
         n = len(text)
 
@@ -48,41 +71,29 @@ class LegacyToolExecutor:
             if text[i] != "{":
                 i += 1
                 continue
-
             try:
                 obj, end_rel = decoder.raw_decode(text[i:])
-            except json.JSONDecodeError:
-                # Не начало корректного JSON
+                end_abs = i + end_rel
+
+                if isinstance(obj, dict) and "tool" in obj and "args" in obj:
+                    tool_name = obj.get("tool")
+                    args = obj.get("args")
+                    if isinstance(tool_name, str) and tool_name.strip():
+                        # Нормализация args
+                        if args is None:
+                            args = {}
+                        elif isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except:
+                                args = {"_raw_args": args}
+
+                        calls.append((tool_name, args))
+
+                i = max(end_abs, i + 1)
+            except (json.JSONDecodeError, Exception):
                 i += 1
                 continue
-            except Exception:
-                i += 1
-                continue
-
-            end_abs = i + end_rel
-
-            if isinstance(obj, dict) and "tool" in obj and "args" in obj:
-                tool_name = obj.get("tool")
-                args = obj.get("args")
-
-                if isinstance(tool_name, str) and tool_name.strip():
-                    # Нормализуем args к dict
-                    if args is None:
-                        args = {}
-                    elif isinstance(args, str):
-                        # Иногда модель кладет args как JSON-строку
-                        try:
-                            parsed = json.loads(args)
-                            args = parsed if isinstance(parsed, dict) else {}
-                        except Exception:
-                            args = {"_raw_args": args}
-                    elif not isinstance(args, dict):
-                        args = {}
-
-                    calls.append((tool_name, args))
-
-            # Перепрыгиваем распарсенный JSON-объект целиком
-            i = max(end_abs, i + 1)
 
         return calls
 
