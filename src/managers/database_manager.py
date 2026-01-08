@@ -1,3 +1,4 @@
+
 import sqlite3
 import logging
 import os
@@ -84,6 +85,57 @@ class DatabaseManager:
             return set(r[1] for r in cur.fetchall() if r and len(r) > 1)
         except Exception:
             return set()
+
+    @staticmethod
+    def _q_ident(ident: str) -> str:
+        """Safely quote SQLite identifiers (table/column names)."""
+        return '"' + str(ident).replace('"', '""') + '"'
+
+    @staticmethod
+    def table_exists(cursor: sqlite3.Cursor, name: str) -> bool:
+        """
+        Check table existence via sqlite_master (safe no-throw).
+        Designed to be used with an existing connection/cursor (no extra connections).
+        """
+        try:
+            cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (str(name),),
+            )
+            return bool(cursor.fetchone())
+        except Exception:
+            return False
+
+    def fts5_ready(self, cursor: sqlite3.Cursor, *, tables: Optional[List[str]] = None) -> bool:
+        """
+        Runtime check that FTS5 can be queried on the *current* connection:
+          - SQLite build supports FTS5 (feature-detect, cached)
+          - at least one requested FTS table exists
+          - simple SELECT from existing FTS tables doesn't crash
+
+        Safe fallback: returns False on any error.
+        """
+        try:
+            if not self.sqlite_supports_fts5():
+                return False
+
+            tnames = tables or ["history_fts", "memories_fts"]
+            existing: List[str] = []
+            for t in tnames:
+                if self.table_exists(cursor, t):
+                    existing.append(t)
+            if not existing:
+                return False
+
+            # Sanity query (covers cases like "no such module: fts5" / broken virtual table)
+            for t in existing:
+                cursor.execute(f"SELECT rowid FROM {self._q_ident(t)} LIMIT 1")
+                cursor.fetchone()
+
+            return True
+        except Exception as e:
+            logging.debug(f"DB: fts5_ready() failed (ignored): {e}")
+            return False
 
     def sqlite_supports_fts5(self) -> bool:
         """

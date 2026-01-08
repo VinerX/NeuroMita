@@ -58,8 +58,8 @@ class RAGManager:
         self.db = DatabaseManager()
 
         self.event_bus = get_event_bus()
-        self._history_cols = self._read_table_cols("history")
-        self._mem_cols = self._read_table_cols("memories")
+        self._history_cols = self.db.get_table_columns("history")
+        self._mem_cols = self.db.get_table_columns("memories")
 
     def _get_bool_setting(self, key: str, default: bool) -> bool:
         try:
@@ -69,20 +69,6 @@ class RAGManager:
             return bool(v)
         except Exception:
             return bool(default)
-
-    def _read_table_cols(self, table: str) -> set[str]:
-        conn = self.db.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(f"PRAGMA table_info({table})")
-            return set(r[1] for r in cur.fetchall() if r and len(r) > 1)
-        except Exception:
-            return set()
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
     def _get_float_setting(self, key: str, default: float) -> float:
         try:
@@ -207,40 +193,6 @@ class RAGManager:
                 pass
         return out
 
-    # FTS5 lexical search helpers (optional, safe fallback)
-    def _fts_table_exists(self, cursor, name: str) -> bool:
-        try:
-            cursor.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-                (str(name),),
-            )
-            return bool(cursor.fetchone())
-        except Exception:
-            return False
-
-    def _fts5_ready(self, cursor) -> bool:
-        """
-        Checks that:
-          - setting allows FTS
-          - tables exist
-          - simple query doesn't crash (covers "no such module: fts5")
-        """
-        if not self._get_bool_setting("RAG_USE_FTS", False):
-            return False
-        try:
-            if not (self._fts_table_exists(cursor, "history_fts") or self._fts_table_exists(cursor, "memories_fts")):
-                return False
-            # sanity query (if module missing -> OperationalError)
-            if self._fts_table_exists(cursor, "history_fts"):
-                cursor.execute("SELECT rowid FROM history_fts LIMIT 1")
-                cursor.fetchone()
-            if self._fts_table_exists(cursor, "memories_fts"):
-                cursor.execute("SELECT rowid FROM memories_fts LIMIT 1")
-                cursor.fetchone()
-            return True
-        except Exception:
-            return False
-
     def _fts_build_match_query(self, text: str, *, max_terms: int, min_len: int) -> str:
         """
         Build a safe-ish FTS5 MATCH query:
@@ -309,7 +261,7 @@ class RAGManager:
     ) -> List[Dict[str, Any]]:
         if not match_q:
             return []
-        if not self._fts_table_exists(cursor, "history_fts"):
+        if not self.db.table_exists(cursor, "history_fts"):
             return []
 
         cols = ["h.id", "bm25(history_fts) AS rank", "h.role", "h.content", "h.timestamp"]
@@ -359,7 +311,7 @@ class RAGManager:
     ) -> List[Dict[str, Any]]:
         if not match_q:
             return []
-        if not self._fts_table_exists(cursor, "memories_fts"):
+        if not self.db.table_exists(cursor, "memories_fts"):
             return []
 
         cols = ["m.eternal_id", "bm25(memories_fts) AS rank", "m.content", "m.type", "m.priority", "m.date_created", "m.participants"]
@@ -961,7 +913,7 @@ class RAGManager:
         # Safe fallback: if no FTS5/tables -> ignored.
         fts_hist_debug: List[Tuple[int, float, float]] = []
         fts_mem_debug: List[Tuple[int, float, float]] = []
-        if USE_FTS and self._fts5_ready(cursor):
+        if USE_FTS and self.db.fts5_ready(cursor):
             _before_fts = len(scored)
             try:
                 # Prefer current user query for lexical; fallback to expanded query_text if too short.
