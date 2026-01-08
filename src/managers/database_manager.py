@@ -1,13 +1,20 @@
-
 import sqlite3
 import logging
 import os
 from threading import Lock
 from typing import Iterable, Tuple, Set, Optional, List
 
+
 class DatabaseManager:
     _instance = None
     _lock = Lock()
+
+    # FTS5 capability cache (per-process)
+    _fts5_checked: bool = False
+    _fts5_supported: bool = False
+
+    # Required for concurrent QtSql reads while sqlite3 writes
+    _BUSY_TIMEOUT_MS: int = 5000
 
     def __new__(cls):
         with cls._lock:
@@ -16,18 +23,46 @@ class DatabaseManager:
                 cls._instance._initialized = False
             return cls._instance
 
-    # FTS5 capability cache (per-process)
-    _fts5_checked: bool = False
-    _fts5_supported: bool = False
-
     def __init__(self):
         if self._initialized:
             return
 
         os.makedirs("Histories", exist_ok=True)
         self.db_path = os.path.join("Histories", "world.db")
+
+        # Ensure WAL + timeout are applied early
         self._init_db()
         self._initialized = True
+
+    def _apply_sqlite_pragmas(self, conn: sqlite3.Connection) -> None:
+        """
+        Enforce WAL mode + busy timeout for better concurrent read/write behavior.
+        - journal_mode=WAL is persisted in the database, but applying per-connection is safe.
+        - busy_timeout is per-connection, must be applied for every connection.
+        """
+        try:
+            # WAL is the key to allowing readers while another connection writes.
+            cur = conn.execute("PRAGMA journal_mode=WAL;")
+            row = cur.fetchone()
+            if row and str(row[0]).lower() != "wal":
+                logging.warning(f"SQLite PRAGMA journal_mode returned '{row[0]}' (expected 'wal').")
+        except Exception as e:
+            logging.warning(f"Failed to set PRAGMA journal_mode=WAL: {e}")
+
+        try:
+            conn.execute(f"PRAGMA busy_timeout = {int(self._BUSY_TIMEOUT_MS)};")
+        except Exception as e:
+            logging.warning(f"Failed to set PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}: {e}")
+
+    def get_connection(self):
+        # timeout (seconds) is sqlite3's busy timeout; we also set PRAGMA busy_timeout explicitly.
+        conn = sqlite3.connect(
+            self.db_path,
+            check_same_thread=False,
+            timeout=self._BUSY_TIMEOUT_MS / 1000.0,
+        )
+        self._apply_sqlite_pragmas(conn)
+        return conn
 
     def get_table_columns(self, table: str) -> Set[str]:
         """Возвращает set фактических колонок таблицы (не падает)."""
@@ -180,17 +215,6 @@ class DatabaseManager:
         def q(ident: str) -> str:
             return '"' + str(ident).replace('"', '""') + '"'
 
-        def table_exists(name: str) -> bool:
-            try:
-                cur = conn.cursor()
-                cur.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-                    (name,),
-                )
-                return bool(cur.fetchone())
-            except Exception:
-                return False
-
         def table_cols(name: str) -> list[str]:
             try:
                 cur = conn.cursor()
@@ -245,7 +269,7 @@ class DatabaseManager:
                     pass
                 return
 
-            # Use ACTUAL FTS columns (important for old DBs where FTS table was created with fewer cols)
+            # Use ACTUAL FTS columns
             history_fts_cols = table_cols("history_fts") or ["content"]
             memories_fts_cols = table_cols("memories_fts") or ["content"]
 
@@ -259,13 +283,10 @@ class DatabaseManager:
             def coalesce_new(c: str) -> str:
                 return f"COALESCE(new.{q(c)}, '')"
 
-            def coalesce_old(c: str) -> str:
-                return f"COALESCE(old.{q(c)}, '')"
-
             h_new_vals = ", ".join(coalesce_new(c) for c in history_fts_cols)
-            m_new_vals = ", ".join(coalesce_new(c) for c in memories_fts_cols)
+            m_new_vals = ", ".join(f"COALESCE(new.{q(c)}, '')" for c in memories_fts_cols)
 
-            # Recreate triggers (drop first so they can't get stuck with outdated column lists)
+            # Recreate triggers
             self._drop_fts_triggers(conn)
 
             cur.executescript(
@@ -358,11 +379,10 @@ class DatabaseManager:
             if not cur.fetchone():
                 return False
 
-            # Clear + backfill (best-effort; columns may differ by DB history)
+            # Clear + backfill
             cur.execute("DELETE FROM history_fts")
             cur.execute("DELETE FROM memories_fts")
 
-            # Re-run ensure to know actual column sets (by introspecting base tables)
             hist_cols = self._get_table_columns_conn(conn, "history")
             mem_cols = self._get_table_columns_conn(conn, "memories")
             history_fts_cols: List[str] = ["content"]
@@ -398,20 +418,12 @@ class DatabaseManager:
             except Exception:
                 pass
 
-    def get_connection(self):
-        # timeout + busy_timeout: чтобы не падать сразу при конкурирующих записях
-        conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30)
-        try:
-            conn.execute("PRAGMA busy_timeout = 30000")
-        except Exception:
-            pass
-        return conn
-
     def _init_db(self):
         conn = self.get_connection()
         cursor = conn.cursor()
 
-        cursor.execute('''
+        cursor.execute(
+            '''
                CREATE TABLE IF NOT EXISTS memories (
                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                    character_id TEXT NOT NULL,
@@ -426,9 +438,11 @@ class DatabaseManager:
                    participants TEXT,
                    embedding BLOB
                )
-           ''')
+           '''
+        )
 
-        cursor.execute('''
+        cursor.execute(
+            '''
                CREATE TABLE IF NOT EXISTS history (
                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                    character_id TEXT NOT NULL,
@@ -450,16 +464,19 @@ class DatabaseManager:
                    meta_data TEXT
                    ,embedding BLOB
                )
-           ''')
+           '''
+        )
 
-        cursor.execute('''
+        cursor.execute(
+            '''
                CREATE TABLE IF NOT EXISTS variables (
                    character_id TEXT NOT NULL,
                    key TEXT NOT NULL,
                    value TEXT,
                    PRIMARY KEY (character_id, key)
                )
-           ''')
+           '''
+        )
 
         conn.commit()
         conn.close()
@@ -473,8 +490,6 @@ class DatabaseManager:
         conn = self.get_connection()
         cursor = conn.cursor()
 
-        # Полный список "желаемых" колонок по таблицам.
-        # ВАЖНО: SQLite позволяет ADD COLUMN, но не позволяет легко добавлять constraints/primary keys задним числом.
         desired = {
             "memories": [
                 ("character_id", "TEXT"),
@@ -537,7 +552,6 @@ class DatabaseManager:
                     )
                     logging.info("DB upgrade: ensured UNIQUE index idx_history_unique_msg")
                 except Exception as e:
-                    # Если в БД уже есть дубли — индекс не создастся, это ок.
                     logging.warning(f"DB upgrade: failed to create UNIQUE index idx_history_unique_msg (ignored): {e}")
 
             # --- FTS5 lexical indexes (safe, optional) ---
@@ -567,4 +581,3 @@ class DatabaseManager:
             )
         except Exception as e:
             logging.warning(f"DB: failed to drop FTS triggers (ignored): {e}")
-
