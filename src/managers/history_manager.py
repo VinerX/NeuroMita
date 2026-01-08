@@ -632,36 +632,89 @@ class HistoryManager:
         final_ts = None
         ts = self.data_mormalization(final_ts, raw_ts, target_fmt)
 
+        # Дедуп по правилу: character_id + content + timestamp
+        # ВАЖНО: делаем лёгкое извлечение текста для сравнения (без сохранения картинок на диск),
+        # чтобы при найденном дубле вообще не трогать _prepare_message_for_db().
+        def _content_for_dedupe(raw_content) -> str:
+            try:
+                if raw_content is None:
+                    return ""
+                if isinstance(raw_content, str):
+                    return raw_content
+                if isinstance(raw_content, list):
+                    parts: list[str] = []
+                    for it in raw_content:
+                        if not isinstance(it, dict):
+                            continue
+                        if it.get("type") == "text":
+                            txt = it.get("text")
+                            if txt is None:
+                                txt = it.get("content", "")
+                            parts.append(str(txt or ""))
+                    return "\n".join(parts)
+                if isinstance(raw_content, dict):
+                    extracted_text = raw_content.get("text") or raw_content.get("content") or raw_content.get("value") or raw_content.get("summary")
+                    if isinstance(extracted_text, str) and extracted_text:
+                        return extracted_text.strip()
+                    return json.dumps(raw_content, ensure_ascii=False)
+                return str(raw_content)
+            except Exception:
+                return str(raw_content) if raw_content is not None else ""
 
-        # Дедуп по твоему правилу: character_id + timestamp + message_id
-        # (ничего другого не трогаем)
+        dedupe_content = _content_for_dedupe(msg.get("content"))
+        dedupe_content_ok = bool(str(dedupe_content or "").strip())
+
+        # check-then-insert защищаем локом (хотя стопроцентно от гонок защитит только UNIQUE индекс)
         with self._write_lock:
             try:
-                if "message_id" in self._history_cols and "timestamp" in self._history_cols:
-                    mid = self._coerce_text(msg.get("message_id"))
-                    if mid and ts:
-                        conn0 = self.db.get_connection()
+                if ts and dedupe_content_ok:
+                    conn0 = self.db.get_connection()
+                    try:
+                        cur0 = conn0.cursor()
+                        not_deleted_clause = " AND is_deleted = 0 " if "is_deleted" in self._history_cols else ""
+
+                        cur0.execute(
+                            f"""
+                            SELECT id, is_active
+                            FROM history
+                            WHERE character_id = ?
+                              AND content   = ?
+                              AND timestamp = ?
+                              AND content   IS NOT NULL AND TRIM(content)   != ''
+                              AND timestamp IS NOT NULL AND TRIM(timestamp) != ''
+                              {not_deleted_clause}
+                            ORDER BY id DESC
+                            LIMIT 1
+                            """,
+                            (self.storage_key, dedupe_content, ts),
+                        )
+                        row0 = cur0.fetchone()
+                        if row0 and row0[0]:
+                            existing_id = int(row0[0])
+                            existing_active = int(row0[1] or 0)
+                            desired_active = int(is_active)
+
+                            # Если нашли дубль, но статус активности отличается — синхронизируем.
+                            # Это важно для сценария: строка есть, но мы "пересобираем" активную историю.
+                            if existing_active != desired_active:
+                                try:
+                                    cur0.execute(
+                                        "UPDATE history SET is_active = ? WHERE id = ?",
+                                        (desired_active, existing_id),
+                                    )
+                                    conn0.commit()
+                                except Exception:
+                                    try:
+                                        conn0.rollback()
+                                    except Exception:
+                                        pass
+
+                            return existing_id
+                    finally:
                         try:
-                            cur0 = conn0.cursor()
-                            cur0.execute(
-                                """
-                                SELECT id FROM history
-                                WHERE character_id = ?
-                                  AND message_id = ?
-                                  AND timestamp = ?
-                                ORDER BY id DESC
-                                LIMIT 1
-                                """,
-                                (self.storage_key, mid, ts),
-                            )
-                            row0 = cur0.fetchone()
-                            if row0 and row0[0]:
-                                return int(row0[0])
-                        finally:
-                            try:
-                                conn0.close()
-                            except Exception:
-                                pass
+                            conn0.close()
+                        except Exception:
+                            pass
             except Exception:
                 # если дедуп-чек не удался — просто продолжаем вставку
                 pass
