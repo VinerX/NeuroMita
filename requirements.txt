@@ -66,7 +66,7 @@ emoji
 nodriver
 platformdirs
 dotenv
-
+pymorphy2
 # tools reqs
 ddgs
 bs4

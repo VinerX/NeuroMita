@@ -382,6 +382,12 @@ def setup_model_interaction_controls(self, parent):
          'tooltip': _('Включает дополнительный поиск по ключевым словам в истории/памяти.',
                       'Enables additional keyword search in history/memory.')},
 
+        {'label': _('Включить Лемматизацию', 'Enable lemmatization'),
+         'key': 'RAG_LEMMATIZATION', 'type': 'checkbutton', 'default_checkbutton': True,
+         'tooltip': _('Включает лемматизацию при поиске на русском.',
+                      'Enables lemmatization while using search in russian'),
+         'depends_on': 'RAG_KEYWORD_SEARCH'},
+
         {'label': _('Вес ключевых слов K5', 'Keyword weight K5'),
          'key': 'RAG_WEIGHT_KEYWORDS', 'type': 'entry', 'default': 0.6,
          'validation': self.validate_float_positive_or_zero,

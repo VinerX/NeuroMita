@@ -671,6 +671,7 @@ class RAGManager:
         kw_sql_limit = self._get_int_setting("RAG_KEYWORD_SQL_LIMIT", 250)
         kw_min_len = self._get_int_setting("RAG_KEYWORDS_MIN_LEN", 3)
 
+        lemmatization = self._get_bool_setting("RAG_LEMMATIZATION", True)
 
         # FTS5 Lexical search (optional)
         USE_FTS = self._get_bool_setting("RAG_USE_FTS", False)
@@ -699,10 +700,10 @@ class RAGManager:
                 # ВАЖНО: приоритизируем keywords из текущего query (user input),
                 # иначе их может "вытеснить" длинный контекст/summary в начале query_text.
                 primary = rag_clean_text(str(query or ""))
-                kw_primary = extract_keywords(primary, max_terms=kw_max_terms, min_len=kw_min_len)
+                kw_primary = extract_keywords(primary, max_terms=kw_max_terms, min_len=kw_min_len,lemmatize=lemmatization)
 
                 # добираем из контекста, но с конца (ближе к последним репликам)
-                kw_ctx = extract_keywords(query_text, max_terms=kw_max_terms, min_len=kw_min_len, from_end=True)
+                kw_ctx = extract_keywords(query_text, max_terms=kw_max_terms, min_len=kw_min_len, from_end=True,lemmatize=lemmatization)
 
                 merged: list[str] = []
                 seen = set()
@@ -806,6 +807,7 @@ class RAGManager:
                     ("w.keywords(K5)", float(K5)),
                     ("w.lexical(K6)", float(K6)),
                     ("kw.max_terms", int(kw_max_terms)),
+                    ("kw.lemmatization ", bool(lemmatization)),
                     ("kw.min_len", int(kw_min_len)),
                     ("kw.min_score", float(kw_min_score)),
                     ("kw.sql_limit", int(kw_sql_limit)),
