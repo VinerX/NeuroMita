@@ -261,7 +261,7 @@ def setup_model_interaction_controls(self, parent):
 
 
         {'label': _('Макс. результатов RAG', 'RAG max results'),
-         'key': 'RAG_MAX_RESULTS', 'type': 'entry', 'default': 8,
+         'key': 'RAG_MAX_RESULTS', 'type': 'entry', 'default': 10,
          'validation': self.validate_positive_integer,
          'tooltip': _('Сколько фрагментов RAG добавлять в system prompt.',
                       'How many RAG chunks to inject into the system prompt.'),
@@ -279,7 +279,7 @@ def setup_model_interaction_controls(self, parent):
         {'label': _('Хвост сообщений', 'Query tail'), 'type': 'subsection'},
 
         {'label': _('Хвост сообщений для query (1-3)', 'Query tail messages (1-3)'),
-         'key': 'RAG_QUERY_TAIL_MESSAGES', 'type': 'entry', 'default': 2,
+         'key': 'RAG_QUERY_TAIL_MESSAGES', 'type': 'entry', 'default': 1,
          'validation': self.validate_positive_integer,
          'tooltip': _('Сколько последних активных сообщений (user/assistant) использовать для построения query-строки.',
                       'How many last active messages (user/assistant) to use when building the query string.'),
@@ -293,13 +293,13 @@ def setup_model_interaction_controls(self, parent):
              'Mode for combining messages to build the memory query: "concat" (concatenation) or "weighted".')},
 
         {'label': _('Вес последнего сообщения пользователя (Weighted)', 'Last user message weight (Weighted)'),
-         'key': 'RAG_QUERY_WEIGHT_LAST_USER', 'type': 'entry', 'default': 0.7,
+         'key': 'RAG_QUERY_WEIGHT_LAST_USER', 'type': 'entry', 'default': 0.85,
          'validation': self.validate_float_0_to_1,
          'tooltip': _('Вес последнего сообщения пользователя в режиме "weighted".',
                       'Weight of the last user message in "weighted" mode.')},
 
         {'label': _('Вес предыдущего контекста (Weighted)', 'Previous context weight (Weighted)'),
-         'key': 'RAG_QUERY_WEIGHT_PREV_CONTEXT', 'type': 'entry', 'default': 0.3,
+         'key': 'RAG_QUERY_WEIGHT_PREV_CONTEXT', 'type': 'entry', 'default': 0.15,
          'validation': self.validate_float_0_to_1,
          'tooltip': _('Вес предыдущего контекста (остальных сообщений) в режиме "weighted".',
                       'Weight of the previous context (remaining messages) in "weighted" mode.')},
@@ -357,7 +357,7 @@ def setup_model_interaction_controls(self, parent):
          'depends_on': 'RAG_ENABLED'},
 
         {'label': _('Скорость затухания (decay_rate)', 'Decay rate (decay_rate)'),
-         'key': 'RAG_TIME_DECAY_RATE', 'type': 'entry', 'default': 0.15,
+         'key': 'RAG_TIME_DECAY_RATE', 'type': 'entry', 'default': 0.05,
          'validation': self.validate_float_positive_or_zero,
          'tooltip': _('TimeFactor = 1/(1+decay_rate*days). Чем больше decay_rate, тем сильнее штраф старым сообщениям.',
                       'TimeFactor = 1/(1+decay_rate*days). Higher decay_rate penalizes older messages more.'),
