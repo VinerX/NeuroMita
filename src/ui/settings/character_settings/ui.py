@@ -188,64 +188,131 @@ def build_character_settings_ui(self, parent_layout):
         btn.style().polish(btn)
         btn.update()
 
+    # -------- Подсекция: для выбранного персонажа --------
+    char_tools_title = QLabel(_("Для выбранного персонажа", "For selected character"))
+    char_tools_title.setStyleSheet("font-weight: 600;")
+    self.history_section.add_widget(char_tools_title)
+
+    # Кнопки (персонаж)
     self.btn_clear_history = QPushButton(_("Очистить историю", "Clear history"))
     self.btn_clear_history.setIcon(qta.icon('fa5s.trash', color='#ffffff'))
     _mark_danger_hover(self.btn_clear_history)
-    hr_h.addWidget(self.btn_clear_history, 1)
-
-    self.btn_clear_all_histories = QPushButton(_("Очистить все истории", "Clear all histories"))
-    self.btn_clear_all_histories.setIcon(qta.icon('fa5s.trash-alt', color='#ffffff'))
-    _mark_danger_hover(self.btn_clear_all_histories)
-    hr_h.addWidget(self.btn_clear_all_histories, 1)
-
-    self.history_section.add_widget(history_row)
-
 
     self.btn_migrate_db = QPushButton(_("Миграция JSON -> SQLite", "Migrate JSON -> SQLite"))
     self.btn_migrate_db.setToolTip(
-        _("Перенести старую файловую историю в базу данных", "Migrate old file history to database"))
+        _("Перенести старую файловую историю в базу данных",
+          "Migrate old file history to database")
+    )
     self.btn_migrate_db.setIcon(qta.icon('fa5s.database', color='#ffffff'))
-    self.btn_migrate_db.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     self.btn_migrate_db.setObjectName("SecondaryButton")
-    self.history_section.add_widget(self.btn_migrate_db)
 
-    self.db_tools_row = QWidget()
-    dbt_h = QHBoxLayout(self.db_tools_row)
-    dbt_h.setContentsMargins(0, 0, 0, 0)
-    dbt_h.setSpacing(6)
-
-    self.btn_db_viewer = QPushButton(_("Просмотр БД", "DB Viewer"))
-    self.btn_db_viewer.setIcon(qta.icon('fa5s.table', color='#ffffff'))
-    self.btn_db_viewer.setObjectName("SecondaryButton")
-    dbt_h.addWidget(self.btn_db_viewer, 1)
-
-    self.btn_dedupe_history = QPushButton(_("Очистить дубли", "Remove duplicates"))
-    self.btn_dedupe_history.setToolTip(_("Удалить дубли истории по ключу (message_id + timestamp) для выбранного персонажа",
-                                         "Remove history duplicates by (message_id + timestamp) for selected character"))
-    self.btn_dedupe_history.setIcon(qta.icon('fa5s.broom', color='#ffffff'))
-    self.btn_dedupe_history.setObjectName("SecondaryButton")
-    dbt_h.addWidget(self.btn_dedupe_history, 1)
+    row_char_1 = QWidget()
+    row_char_1_l = QHBoxLayout(row_char_1)
+    row_char_1_l.setContentsMargins(0, 0, 0, 0)
+    row_char_1_l.setSpacing(6)
+    row_char_1_l.addWidget(self.btn_clear_history, 1)
+    row_char_1_l.addWidget(self.btn_migrate_db, 1)
+    self.history_section.add_widget(row_char_1)
 
     self.btn_reindex = QPushButton(_("Переиндексация", "Re-index Knowledge"))
     self.btn_reindex.setToolTip(_("Заполнить пустые вектора для RAG", "Fill missing vectors for RAG"))
     self.btn_reindex.setIcon(qta.icon('fa5s.brain', color='#ffffff'))
     self.btn_reindex.setObjectName("SecondaryButton")
-    dbt_h.addWidget(self.btn_reindex, 1)
 
+    self.btn_db_viewer = QPushButton(_("Просмотр БД", "DB Viewer"))
+    self.btn_db_viewer.setIcon(qta.icon('fa5s.table', color='#ffffff'))
+    self.btn_db_viewer.setObjectName("SecondaryButton")
 
-    # Отдельная кнопка: переиндексировать ВСЁ (все строки)
+    row_char_2 = QWidget()
+    row_char_2_l = QHBoxLayout(row_char_2)
+    row_char_2_l.setContentsMargins(0, 0, 0, 0)
+    row_char_2_l.setSpacing(6)
+    row_char_2_l.addWidget(self.btn_reindex, 1)
+    row_char_2_l.addWidget(self.btn_db_viewer, 1)
+    self.history_section.add_widget(row_char_2)
+
+    self.btn_dedupe_history = QPushButton(_("Очистить дубли", "Remove duplicates"))
+    self.btn_dedupe_history.setToolTip(_(
+        "Удалить дубли истории по ключу (message_id + timestamp) для выбранного персонажа",
+        "Remove history duplicates by (message_id + timestamp) for selected character"
+    ))
+    self.btn_dedupe_history.setIcon(qta.icon('fa5s.broom', color='#ffffff'))
+    self.btn_dedupe_history.setObjectName("SecondaryButton")
+
+    # Отдельная кнопка: переиндексировать ВСЁ (все строки выбранного персонажа)
     self.btn_reindex_all = QPushButton(_("Переиндексировать всё", "Re-index ALL"))
     self.btn_reindex_all.setToolTip(_(
-            "Пересоздать вектора для всех строк выбранного персонажа (history + memories).",
-            "Regenerate embeddings for all rows of selected character (history + memories)."
+        "Пересоздать вектора для всех строк выбранного персонажа (history + memories).",
+        "Regenerate embeddings for all rows of selected character (history + memories)."
     ))
     self.btn_reindex_all.setIcon(qta.icon('fa5s.sync-alt', color='#ffffff'))
     self.btn_reindex_all.setObjectName("SecondaryButton")
-    self.history_section.add_widget(self.btn_reindex_all)
 
+    row_char_3 = QWidget()
+    row_char_3_l = QHBoxLayout(row_char_3)
+    row_char_3_l.setContentsMargins(0, 0, 0, 0)
+    row_char_3_l.setSpacing(6)
+    row_char_3_l.addWidget(self.btn_dedupe_history, 1)
+    row_char_3_l.addWidget(self.btn_reindex_all, 1)
+    self.history_section.add_widget(row_char_3)
 
-    # Добавляем сохраненный виджет
-    self.history_section.add_widget(self.db_tools_row)
+    # -------- Разделитель --------
+    sep = QWidget()
+    sep.setFixedHeight(1)
+    sep.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    sep.setStyleSheet("background-color: rgba(255, 255, 255, 0.12);")
+    self.history_section.add_widget(sep)
+
+    # -------- Подсекция: для всех персонажей --------
+    global_tools_title = QLabel(_("Для всех персонажей", "For all characters"))
+    global_tools_title.setStyleSheet("font-weight: 600;")
+    self.history_section.add_widget(global_tools_title)
+
+    # Кнопки (все персонажи)
+    self.btn_clear_all_histories = QPushButton(_("Очистить все истории", "Clear all histories"))
+    self.btn_clear_all_histories.setIcon(qta.icon('fa5s.trash-alt', color='#ffffff'))
+    _mark_danger_hover(self.btn_clear_all_histories)
+
+    # Новые “глобальные” кнопки (UI). Логику/сигналы подключишь там же, где подключаешь остальные.
+    self.btn_migrate_db_all = QPushButton(_("Миграция JSON -> SQLite (все)", "Migrate JSON -> SQLite (ALL)"))
+    self.btn_migrate_db_all.setToolTip(_(
+        "Миграция истории всех персонажей из файлов в БД",
+        "Migrate file histories of all characters into DB"
+    ))
+    self.btn_migrate_db_all.setIcon(qta.icon('fa5s.database', color='#ffffff'))
+    self.btn_migrate_db_all.setObjectName("SecondaryButton")
+
+    row_all_1 = QWidget()
+    row_all_1_l = QHBoxLayout(row_all_1)
+    row_all_1_l.setContentsMargins(0, 0, 0, 0)
+    row_all_1_l.setSpacing(6)
+    row_all_1_l.addWidget(self.btn_clear_all_histories, 1)
+    row_all_1_l.addWidget(self.btn_migrate_db_all, 1)
+    self.history_section.add_widget(row_all_1)
+
+    self.btn_reindex_global = QPushButton(_("Переиндексация (все)", "Re-index (ALL)"))
+    self.btn_reindex_global.setToolTip(_(
+        "Заполнить пустые вектора для RAG по всем персонажам",
+        "Fill missing vectors for RAG for all characters"
+    ))
+    self.btn_reindex_global.setIcon(qta.icon('fa5s.brain', color='#ffffff'))
+    self.btn_reindex_global.setObjectName("SecondaryButton")
+
+    self.btn_db_viewer_global = QPushButton(_("Просмотр БД (общий)", "DB Viewer (Global)"))
+    self.btn_db_viewer_global.setToolTip(_(
+        "Открыть просмотр базы данных (общий режим)",
+        "Open database viewer (global mode)"
+    ))
+    self.btn_db_viewer_global.setIcon(qta.icon('fa5s.table', color='#ffffff'))
+    self.btn_db_viewer_global.setObjectName("SecondaryButton")
+
+    row_all_2 = QWidget()
+    row_all_2_l = QHBoxLayout(row_all_2)
+    row_all_2_l.setContentsMargins(0, 0, 0, 0)
+    row_all_2_l.setSpacing(6)
+    row_all_2_l.addWidget(self.btn_reindex_global, 1)
+    row_all_2_l.addWidget(self.btn_db_viewer_global, 1)
+    self.history_section.add_widget(row_all_2)
 
     container_lay.addWidget(root)
     parent_layout.addWidget(container)

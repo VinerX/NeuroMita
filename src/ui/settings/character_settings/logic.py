@@ -106,7 +106,6 @@ def wire_character_settings_logic(self):
         self.character_combobox.currentTextChanged.connect(lambda _text: change_character_actions(self))
     if hasattr(self, 'char_provider_combobox'):
         self.char_provider_combobox.currentTextChanged.connect(lambda text: save_character_provider(self, text))
-
     if hasattr(self, 'btn_open_character_folder'):
         self.btn_open_character_folder.clicked.connect(lambda: open_character_folder(self))
     if hasattr(self, 'btn_reload_character_data'):
@@ -118,7 +117,7 @@ def wire_character_settings_logic(self):
     if hasattr(self, 'btn_clear_all_histories'):
         self.btn_clear_all_histories.clicked.connect(lambda: clear_history_all(self))
     if hasattr(self, 'btn_migrate_db'):
-            self.btn_migrate_db.clicked.connect(lambda: migrate_to_db(self))
+        self.btn_migrate_db.clicked.connect(lambda: migrate_to_db(self))
     if hasattr(self, 'btn_db_viewer'):
         self.btn_db_viewer.clicked.connect(lambda: open_db_viewer(self))
     if hasattr(self, 'btn_dedupe_history'):
