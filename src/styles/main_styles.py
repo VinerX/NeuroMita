@@ -136,6 +136,12 @@ QPushButton#SecondaryButton {
     color: {text};
     border: 1px solid {outline};
 }
+/* Compact buttons (for tight rows like History & cleanup) */
+QPushButton[compact="true"] {
+    padding: 4px 8px;
+    font-size: 8.5pt;
+    font-weight: 600;
+}
 QPushButton#SecondaryButton:hover { background-color: {chip_hover}; }
 QPushButton#SecondaryButton:pressed { background-color: {chip_pressed}; }
 
