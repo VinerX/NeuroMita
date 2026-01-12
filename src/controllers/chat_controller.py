@@ -8,7 +8,7 @@ from typing import Any
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
 from managers.task_manager import TaskStatus
-
+from core.request_policy import RequestPolicy, resolve_policy
 
 class ChatController:
     def __init__(self, settings):
