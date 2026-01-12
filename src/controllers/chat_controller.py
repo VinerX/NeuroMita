@@ -10,6 +10,7 @@ from core.events import get_event_bus, Events, Event
 from managers.task_manager import TaskStatus
 from core.request_policy import RequestPolicy, resolve_policy
 
+
 class ChatController:
     def __init__(self, settings):
         self.settings = settings
@@ -91,10 +92,14 @@ class ChatController:
         participants: list[str] | None = None,
         req_id: str | None = None,
         origin_message_id: str | None = None,
+        policy: dict | None = None,
     ):
+        eff_policy = None
         try:
             self.llm_processing = True
-            is_react = (event_type == "react")
+
+            effective_event_type = str(event_type or "chat")
+            eff_policy = RequestPolicy.from_dict(policy) if isinstance(policy, dict) else resolve_policy(model_event_type=effective_event_type)
 
             if task_uid:
                 self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
@@ -102,10 +107,11 @@ class ChatController:
                     "status": TaskStatus.PENDING
                 })
 
-            is_streaming = bool(self.settings.get("ENABLE_STREAMING", False))
+            is_streaming = bool(self.settings.get("ENABLE_STREAMING", False)) and eff_policy.allow_streaming and eff_policy.echo_to_ui
 
             def stream_callback_handler(chunk: str):
-                self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": chunk})
+                if eff_policy.echo_to_ui:
+                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": chunk})
 
             if image_data:
                 prepared: list[bytes] = []
@@ -126,14 +132,15 @@ class ChatController:
                     "user_input": user_input,
                     "system_input": system_input,
                     "image_data": image_data,
-                    "stream_callback": stream_callback_handler if is_streaming and not is_react else None,
+                    "stream_callback": stream_callback_handler if is_streaming else None,
                     "message_id": task_uid,
-                    "event_type": event_type,
+                    "event_type": effective_event_type,
                     "character_id": character_id,
                     "sender": sender,
                     "participants": participants or [],
                     "req_id": req_id,
                     "origin_message_id": origin_message_id,
+                    "policy": eff_policy.to_dict(),
                 },
                 timeout=600.0
             )
@@ -147,7 +154,7 @@ class ChatController:
                         "error": "Failed to generate response"
                     })
                 self.llm_processing = False
-                if not is_react:
+                if eff_policy.echo_to_ui:
                     self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": "Превышено время ожидания ответа"})
                 return None
 
@@ -170,20 +177,20 @@ class ChatController:
                         "error": "Empty response"
                     })
                 self.llm_processing = False
-                if not is_react:
+                if eff_policy.echo_to_ui:
                     self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": "Пустой ответ модели"})
                 return None
 
             effective_character_name = self._resolve_character_name(effective_character_id)
 
-            if is_streaming and not is_react:
+            if is_streaming and eff_policy.echo_to_ui:
                 self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
                     "character_id": effective_character_id or "",
                     "character_name": effective_character_name or "",
                     "speaker_name": effective_character_name or "",
                 })
 
-            if response_text and self.settings.get("USE_VOICEOVER") and not is_react:
+            if response_text and self.settings.get("USE_VOICEOVER") and eff_policy.allow_voiceover:
                 if isinstance(voice_profile, dict):
                     is_game_master = (voice_profile.get("character_id") == "GameMaster")
                     if (not is_game_master) or bool(self.settings.get("GM_VOICE", False)):
@@ -228,9 +235,9 @@ class ChatController:
                         "result": {"response": response_text, "target": target}
                     })
 
-            if is_streaming and not is_react:
+            if is_streaming and eff_policy.echo_to_ui:
                 self.event_bus.emit(Events.GUI.FINISH_STREAM_UI)
-            elif not is_streaming and not is_react:
+            elif (not is_streaming) and eff_policy.echo_to_ui:
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                     "role": "assistant",
                     "response": response_text if response_text is not None else "...",
@@ -258,7 +265,7 @@ class ChatController:
                     "status": TaskStatus.FAILED_ON_GENERATION,
                     "error": "Timeout"
                 })
-            if not is_react:
+            if eff_policy and eff_policy.echo_to_ui:
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": "Превышено время ожидания ответа"})
             return "Произошла ошибка при обработке вашего сообщения."
         except Exception as e:
@@ -270,7 +277,7 @@ class ChatController:
                     "status": TaskStatus.FAILED_ON_GENERATION,
                     "error": str(e)
                 })
-            if not is_react:
+            if eff_policy and eff_policy.echo_to_ui:
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": f"Ошибка: {str(e)[:50]}..."})
             return "Произошла ошибка при обработке вашего сообщения."
 
@@ -280,12 +287,13 @@ class ChatController:
         system_input = data.get("system_input", "")
         image_data = data.get("image_data", [])
         task_uid = data.get("task_uid")
-        event_type = data.get("event_type")
+        event_type = str(data.get("event_type") or "chat")
         character_id = self._normalize_character_id(data)
         sender = self._normalize_sender(data)
         participants = self._normalize_participants(data.get("participants"))
         req_id = data.get("req_id")
         origin_message_id = data.get("origin_message_id")
+        policy = data.get("policy")
 
         if image_data:
             self.event_bus.emit(Events.Capture.UPDATE_LAST_IMAGE_REQUEST_TIME)
@@ -306,6 +314,7 @@ class ChatController:
                     participants=participants,
                     req_id=req_id,
                     origin_message_id=origin_message_id,
+                    policy=policy,
                 ),
                 loop
             )
@@ -327,6 +336,7 @@ class ChatController:
                     participants=participants,
                     req_id=req_id,
                     origin_message_id=origin_message_id,
+                    policy=policy,
                 )
             )
 
@@ -352,6 +362,7 @@ class ChatController:
             character_id=character_id,
             sender=sender,
             participants=participants,
+            policy=data.get("policy"),
         )
 
         self.event_bus.emit(Events.Core.RUN_IN_LOOP, {

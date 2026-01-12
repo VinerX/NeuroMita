@@ -726,10 +726,18 @@ class ModelController:
             return str(v if v is not None else "Current")
 
         if event_type == "react":
-            react_provider_label = str(self.settings.get("REACT_PROVIDER", _("Текущий", "Current")))
-            preset_id = _resolve_label_to_preset_id(react_provider_label)
+            lvl = int(getattr(policy, "react_level", None) or 1)
+
+            if lvl == 2:
+                label = str(self.settings.get("REACT_PROVIDER_L2", self.settings.get("REACT_PROVIDER", _("Текущий", "Current"))))
+            else:
+                label = str(self.settings.get("REACT_PROVIDER_L1", self.settings.get("REACT_PROVIDER", _("Текущий", "Current"))))
+
+            preset_id = _resolve_label_to_preset_id(label)
             if preset_id is None:
                 preset_id = _resolve_label_to_preset_id(_get_char_provider_label(char_id, char_name))
+
+            logger.info(f"[ModelController] react policy: level={lvl}, provider_label='{label}', preset_id={preset_id}")
         else:
             preset_id = _resolve_label_to_preset_id(_get_char_provider_label(char_id, char_name))
 
