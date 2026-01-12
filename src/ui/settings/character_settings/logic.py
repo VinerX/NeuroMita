@@ -15,6 +15,93 @@ from ui.dialogs.db_viewer import DbViewerDialog
 from PyQt6.QtWidgets import QProgressDialog
 from PyQt6.QtCore import QThread, pyqtSignal
 
+
+class TaskWorker(QThread):
+    """
+    Универсальный воркер для фоновых задач.
+    Чтобы не плодить отдельный QThread-класс под каждую кнопку.
+    """
+    progress_signal = pyqtSignal(int, int)   # current, total (optional)
+    finished_signal = pyqtSignal(object)     # result
+    error_signal = pyqtSignal(str)
+    cancelled_signal = pyqtSignal()
+
+    def __init__(self, func, *, args=None, kwargs=None, use_progress: bool = False):
+        super().__init__()
+        self._func = func
+        self._args = tuple(args or ())
+        self._kwargs = dict(kwargs or {})
+        self._use_progress = bool(use_progress)
+
+    class CancelledError(Exception):
+        pass
+
+    def _emit_progress(self, curr: int, total: int):
+        # Cooperative cancellation: tasks that call progress_callback can be interrupted safely.
+        if self.isInterruptionRequested():
+            raise TaskWorker.CancelledError()
+        try:
+            self.progress_signal.emit(int(curr), int(total))
+        except Exception:
+            pass
+
+    def run(self):
+        try:
+            if self.isInterruptionRequested():
+                self.cancelled_signal.emit()
+                return
+            if self._use_progress and "progress_callback" not in self._kwargs:
+                self._kwargs["progress_callback"] = self._emit_progress
+            result = self._func(*self._args, **self._kwargs)
+            if self.isInterruptionRequested():
+                self.cancelled_signal.emit()
+                return
+            self.finished_signal.emit(result)
+        except TaskWorker.CancelledError:
+            # No UI error popup on cancel
+            try:
+                self.cancelled_signal.emit()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"TaskWorker error: {e}", exc_info=True)
+            self.error_signal.emit(str(e))
+
+
+
+# Backward-compatible wrappers (in case other parts of UI import these classes).
+# They keep the old names but reuse the universal TaskWorker implementation.
+class ReindexWorker(TaskWorker):
+    def __init__(self, character_id: str):
+        character_id = str(character_id or "").strip()
+
+        def _do_reindex(*, progress_callback=None):
+            from managers.rag.rag_manager import RAGManager
+            rag = RAGManager(character_id)
+            return rag.index_all_missing(progress_callback=progress_callback)
+
+        super().__init__(_do_reindex, use_progress=True)
+
+
+class FullReindexWorker(TaskWorker):
+    def __init__(self, character_id: str):
+        character_id = str(character_id or "").strip()
+
+        def _do_full_reindex(*, progress_callback=None):
+            from managers.rag.rag_manager import RAGManager
+            rag = RAGManager(character_id)
+            return rag.index_all(progress_callback=progress_callback)
+
+        super().__init__(_do_full_reindex, use_progress=True)
+
+
+class DedupeHistoryWorker(TaskWorker):
+    def __init__(self, character_id: str):
+        from managers.database_manager import DatabaseManager
+        db = DatabaseManager()
+        super().__init__(db.dedupe_history, kwargs={"character_id": str(character_id or "").strip()})
+
+
 def _prompt_set_key(character_id: str) -> str:
     return f"PROMPT_SET_{character_id}"
 
@@ -126,7 +213,8 @@ def wire_character_settings_logic(self):
         self.btn_reindex.clicked.connect(lambda: run_reindexing(self))
     if hasattr(self, 'btn_reindex_all'):
         self.btn_reindex_all.clicked.connect(lambda: run_full_reindexing(self))
-
+    if hasattr(self, 'btn_dedupe_all'):
+        self.btn_dedupe_all.clicked.connect(lambda: run_history_dedup_all(self))
 
     update_prompt_set_info(self)
 
@@ -482,7 +570,11 @@ def run_history_dedup(gui):
     if reply != QMessageBox.StandardButton.Yes:
         return
 
-    gui._dedupe_worker = DedupeHistoryWorker(str(character_id))
+    gui._dedupe_cancelled = False
+    from managers.database_manager import DatabaseManager
+    db = DatabaseManager()
+
+    gui._dedupe_worker = TaskWorker(db.dedupe_history, kwargs={"character_id": str(character_id)})
 
     progress = QProgressDialog(_("Очистка дублей...", "Removing duplicates..."),
                                _("Отмена", "Cancel"),
@@ -492,14 +584,20 @@ def run_history_dedup(gui):
     progress.setAutoClose(False)
     progress.setAutoReset(False)
 
-    def on_finished(deleted_count: int):
+    def on_finished(result):
+        # If user already closed the dialog, don't show popups.
+        if getattr(gui, "_dedupe_cancelled", False):
+            gui._dedupe_worker = None
+            gui._dedupe_cancelled = False
+            return
         progress.close()
         QMessageBox.information(
             gui,
             _("Готово", "Done"),
-            _("Удалено дублей: {n}", "Duplicates removed: {n}").format(n=int(deleted_count))
+            _("Удалено дублей: {n}", "Duplicates removed: {n}").format(n=int(result or 0))
         )
         gui._dedupe_worker = None
+        gui._dedupe_cancelled = False
         # по желанию можно обновить UI/данные
         try:
             event_bus.emit(Events.Character.RELOAD_DATA)
@@ -509,42 +607,117 @@ def run_history_dedup(gui):
             gui.update_debug_info()
 
     def on_error(msg: str):
+        if getattr(gui, "_dedupe_cancelled", False):
+            gui._dedupe_worker = None
+            gui._dedupe_cancelled = False
+            return
         progress.close()
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
         gui._dedupe_worker = None
+        gui._dedupe_cancelled = False
 
     def on_cancel():
-        # Отмену потока без cooperative cancel не делаем (как и в reindex), просто закрываем UI
-        gui._dedupe_worker = None
+        # Важно: НЕ роняем ссылку на поток пока он работает (это может крашить процесс в PyQt).
+        gui._dedupe_cancelled = True
+        try:
+            gui._dedupe_worker.requestInterruption()
+        except Exception:
+            pass
         progress.close()
+
+    def on_cancelled():
+        # Поток завершился по cooperative cancel (если операция поддерживает cancel)
+        gui._dedupe_worker = None
+        gui._dedupe_cancelled = False
 
     gui._dedupe_worker.finished_signal.connect(on_finished)
     gui._dedupe_worker.error_signal.connect(on_error)
+    gui._dedupe_worker.cancelled_signal.connect(on_cancelled)
     progress.canceled.connect(on_cancel)
 
     progress.show()
     gui._dedupe_worker.start()
 
+def run_history_dedup_all(gui):
+    title = _("Подтверждение", "Confirmation")
+    text = _(
+        "Удалить дубли в истории ДЛЯ ВСЕХ персонажей?\n\n"
+        "Критерий: совпадают content + timestamp (и character_id).\n"
+        "Будет оставлена запись с минимальным id.\n\n"
+        "Операция может занять время.",
+        "Remove duplicate history rows FOR ALL characters?\n\n"
+        "Criteria: same content + timestamp (and character_id).\n"
+        "Row with minimal id will be kept.\n\n"
+        "This operation may take some time."
+    )
+    reply = QMessageBox.question(gui, title, text,
+                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+    if reply != QMessageBox.StandardButton.Yes:
+        return
 
-class DedupeHistoryWorker(QThread):
-    finished_signal = pyqtSignal(int)  # deleted count
-    error_signal = pyqtSignal(str)
+    gui._dedupe_all_cancelled = False
+    from managers.database_manager import DatabaseManager
+    db = DatabaseManager()
 
-    def __init__(self, character_id: str):
-        super().__init__()
-        self.character_id = str(character_id or "").strip()
+    gui._dedupe_all_worker = TaskWorker(db.dedupe_history, kwargs={"character_id": None})
 
-    def run(self):
+    progress = QProgressDialog(_("Очистка дублей (все персонажи)...", "Removing duplicates (all characters)..."),
+                               _("Отмена", "Cancel"),
+                               0, 0, gui)
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setAutoClose(False)
+    progress.setAutoReset(False)
+
+    def on_finished(result):
+        if getattr(gui, "_dedupe_all_cancelled", False):
+            gui._dedupe_all_worker = None
+            gui._dedupe_all_cancelled = False
+            return
+        progress.close()
+        QMessageBox.information(
+            gui,
+            _("Готово", "Done"),
+            _("Удалено дублей: {n}", "Duplicates removed: {n}").format(n=int(result or 0))
+        )
+        gui._dedupe_all_worker = None
+        gui._dedupe_all_cancelled = False
         try:
-            # ВАЖНО: DB-логика живёт в менеджерах, UI-поток не трогаем.
-            from managers.history_manager import HistoryManager
+            get_event_bus().emit(Events.Character.RELOAD_DATA)
+        except Exception:
+            pass
+        if hasattr(gui, 'update_debug_info'):
+            gui.update_debug_info()
 
-            hm = HistoryManager(character_id=self.character_id)
-            deleted = hm.dedupe_history()
-            self.finished_signal.emit(int(deleted))
-        except Exception as e:
-            logger.error(f"Dedupe thread error: {e}", exc_info=True)
-            self.error_signal.emit(str(e))
+    def on_error(msg: str):
+        if getattr(gui, "_dedupe_all_cancelled", False):
+            gui._dedupe_all_worker = None
+            gui._dedupe_all_cancelled = False
+            return
+        progress.close()
+        QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
+        gui._dedupe_all_worker = None
+        gui._dedupe_all_cancelled = False
+
+    def on_cancel():
+        gui._dedupe_all_cancelled = True
+        try:
+            gui._dedupe_all_worker.requestInterruption()
+        except Exception:
+            pass
+        progress.close()
+
+    def on_cancelled():
+        gui._dedupe_all_worker = None
+        gui._dedupe_all_cancelled = False
+
+    gui._dedupe_all_worker.finished_signal.connect(on_finished)
+    gui._dedupe_all_worker.error_signal.connect(on_error)
+    gui._dedupe_all_worker.cancelled_signal.connect(on_cancelled)
+    progress.canceled.connect(on_cancel)
+
+    progress.show()
+    gui._dedupe_all_worker.start()
 
 def run_reindexing(gui):
     # Получаем ID персонажа через EventBus, а не через контроллер
@@ -562,19 +735,9 @@ def run_reindexing(gui):
 
     # Предварительная проверка (создаем временный RAGManager для чтения)
     try:
-        from managers.rag.rag_manager import RAGManager
-        # Создаем легковесный инстанс, это безопасно
-        rag = RAGManager(character_id)
-
-        # Ручной SQL запрос через connection
-        conn = rag.db.get_connection()
-        c = conn.cursor()
-        c.execute(f"SELECT COUNT(*) FROM history WHERE character_id=? AND embedding IS NULL AND content != ''",
-                  (character_id,))
-        h_c = c.fetchone()[0]
-        c.execute(f"SELECT COUNT(*) FROM memories WHERE character_id=? AND embedding IS NULL", (character_id,))
-        m_c = c.fetchone()[0]
-        conn.close()
+        from managers.database_manager import DatabaseManager
+        db = DatabaseManager()
+        h_c, m_c = db.count_missing_embeddings(character_id)
 
         if (h_c + m_c) == 0:
             QMessageBox.information(gui, _("Инфо", "Info"),
@@ -586,6 +749,7 @@ def run_reindexing(gui):
 
     # Запуск воркера
     gui._reindex_worker = ReindexWorker(character_id)
+    gui._reindex_cancelled = False
 
     progress = QProgressDialog(_("Генерация векторов...", "Generating embeddings..."), _("Отмена", "Cancel"), 0, 100,
                                gui)
@@ -600,81 +764,44 @@ def run_reindexing(gui):
         progress.setValue(curr)
 
     def on_finished(count):
+        if getattr(gui, "_reindex_cancelled", False):
+            gui._reindex_worker = None
+            gui._reindex_cancelled = False
+            return
         progress.close()
         QMessageBox.information(gui, _("Готово", "Done"), f"Векторов создано: {count}")
         gui._reindex_worker = None
 
     def on_error(msg):
+        if getattr(gui, "_reindex_cancelled", False):
+            gui._reindex_worker = None
+            gui._reindex_cancelled = False
+            return
         progress.close()
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
         gui._reindex_worker = None
 
     def on_cancel():
-        # В идеале нужно слать сигнал отмены в worker, но пока просто закроем UI
+        # Важно: НЕ обнуляем ссылку на поток пока он работает (может крашить процесс).
+        gui._reindex_cancelled = True
+        try:
+            gui._reindex_worker.requestInterruption()
+        except Exception:
+            pass
+        progress.close()
+
+    def on_cancelled():
         gui._reindex_worker = None
+        gui._reindex_cancelled = False
 
     gui._reindex_worker.progress_signal.connect(on_progress)
     gui._reindex_worker.finished_signal.connect(on_finished)
     gui._reindex_worker.error_signal.connect(on_error)
+    gui._reindex_worker.cancelled_signal.connect(on_cancelled)
     progress.canceled.connect(on_cancel)
 
     progress.show()
     gui._reindex_worker.start()
-
-class ReindexWorker(QThread):
-    progress_signal = pyqtSignal(int, int)  # current, total
-    finished_signal = pyqtSignal(int)  # count processed
-    error_signal = pyqtSignal(str)
-
-    def __init__(self, character_id):
-        super().__init__()
-        self.character_id = character_id
-
-    def run(self):
-        try:
-            # Импортируем внутри потока
-            from managers.rag.rag_manager import RAGManager
-
-            # Создаем экземпляр RAGManager в этом потоке
-            # Это создаст новое подключение к SQLite (thread-safe)
-            rag = RAGManager(self.character_id)
-
-            def callback(curr, tot):
-                self.progress_signal.emit(curr, tot)
-
-            updated_count = rag.index_all_missing(progress_callback=callback)
-            self.finished_signal.emit(updated_count)
-
-        except Exception as e:
-            logger.error(f"Reindexing thread error: {e}", exc_info=True)
-            self.error_signal.emit(str(e))
-
-class FullReindexWorker(QThread):
-    """Воркер для полной переиндексации (пересоздаёт ВСЕ вектора)"""
-    progress_signal = pyqtSignal(int, int)  # current, total
-    finished_signal = pyqtSignal(int)       # count processed
-    error_signal = pyqtSignal(str)
-
-    def __init__(self, character_id: str):
-        super().__init__()
-        self.character_id = character_id
-
-    def run(self):
-        try:
-            from managers.rag.rag_manager import RAGManager
-
-            rag = RAGManager(self.character_id)
-
-            def callback(curr, tot):
-                self.progress_signal.emit(curr, tot)
-
-            updated_count = rag.index_all(progress_callback=callback)
-            self.finished_signal.emit(updated_count)
-
-        except Exception as e:
-            logger.error(f"Full reindexing thread error: {e}", exc_info=True)
-            self.error_signal.emit(str(e))
-
 
 def run_full_reindexing(gui):
     """Полная переиндексация - пересоздаёт вектора для ВСЕХ записей"""
@@ -708,18 +835,9 @@ def run_full_reindexing(gui):
 
     # Подсчёт общего количества
     try:
-        from managers.rag.rag_manager import RAGManager
-        rag = RAGManager(character_id)
-        conn = rag.db.get_connection()
-        c = conn.cursor()
-
-        hist_where = "character_id=? AND content != '' AND content IS NOT NULL"
-        c.execute(f"SELECT COUNT(*) FROM history WHERE {hist_where}", (character_id,))
-        h_c = c.fetchone()[0]
-
-        c.execute("SELECT COUNT(*) FROM memories WHERE character_id=? AND is_deleted=0", (character_id,))
-        m_c = c.fetchone()[0]
-        conn.close()
+        from managers.database_manager import DatabaseManager
+        db = DatabaseManager()
+        h_c, m_c = db.count_records_for_full_reindex(character_id)
 
         total_count = h_c + m_c
         if total_count == 0:
@@ -753,6 +871,10 @@ def run_full_reindexing(gui):
         )
 
     def on_finished(count):
+        if getattr(gui, "_full_reindex_cancelled", False):
+            gui._full_reindex_worker = None
+            gui._full_reindex_cancelled = False
+            return
         progress.close()
         QMessageBox.information(
             gui,
@@ -760,18 +882,33 @@ def run_full_reindexing(gui):
             _("Переиндексировано записей: {n}", "Records re-indexed: {n}").format(n=count)
         )
         gui._full_reindex_worker = None
+        gui._full_reindex_cancelled = False
 
     def on_error(msg):
+        if getattr(gui, "_full_reindex_cancelled", False):
+            gui._full_reindex_worker = None
+            gui._full_reindex_cancelled = False
+            return
         progress.close()
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
         gui._full_reindex_worker = None
 
     def on_cancel():
+        gui._full_reindex_cancelled = True
+        try:
+            gui._full_reindex_worker.requestInterruption()
+        except Exception:
+            pass
+        progress.close()
+
+    def on_cancelled():
         gui._full_reindex_worker = None
+        gui._full_reindex_cancelled = False
 
     gui._full_reindex_worker.progress_signal.connect(on_progress)
     gui._full_reindex_worker.finished_signal.connect(on_finished)
     gui._full_reindex_worker.error_signal.connect(on_error)
+    gui._full_reindex_worker.cancelled_signal.connect(on_cancelled)
     progress.canceled.connect(on_cancel)
 
     progress.show()

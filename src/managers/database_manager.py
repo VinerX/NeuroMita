@@ -581,3 +581,175 @@ class DatabaseManager:
             )
         except Exception as e:
             logging.warning(f"DB: failed to drop FTS triggers (ignored): {e}")
+
+    # ---------------------------
+    # UI-facing DB helpers
+    # ---------------------------
+    def dedupe_history(self, character_id: Optional[str] = None) -> int:
+        """
+        Remove duplicate rows in `history` using criteria:
+          - same (character_id, content, timestamp)
+          - keep row with minimal id
+
+        If `character_id` is None/empty -> dedupe for ALL characters.
+        Returns number of deleted rows (best-effort; 0 on error).
+        """
+        cid = (str(character_id).strip() if character_id is not None else "")
+        conn = None
+        try:
+            conn = self.get_connection()
+            cur = conn.cursor()
+
+            # Be conservative: only dedupe meaningful rows (avoid deleting "empty" placeholders)
+            base_filter = """
+                content   IS NOT NULL AND TRIM(content)   != ''
+                AND timestamp IS NOT NULL AND TRIM(timestamp) != ''
+            """.strip()
+
+            params: list = []
+            if cid:
+                base_filter = f"({base_filter}) AND character_id=?"
+                params.append(cid)
+
+            # base_filter is duplicated in CTE + DELETE -> params must be duplicated as well
+            all_params = params + params
+
+            sql = f"""
+            WITH keep AS (
+                SELECT MIN(id) AS id
+                FROM history
+                WHERE {base_filter}
+                GROUP BY character_id, content, timestamp
+            )
+            DELETE FROM history
+            WHERE {base_filter}
+              AND id NOT IN (SELECT id FROM keep)
+            """
+
+            cur.execute(sql, all_params)
+            cur.execute("SELECT changes()")
+            deleted = int((cur.fetchone() or [0])[0] or 0)
+
+            try:
+                conn.commit()
+            except Exception:
+                pass
+
+            return deleted
+        except Exception as e:
+            logging.warning(f"DB: dedupe_history failed (ignored): {e}", exc_info=True)
+            try:
+                if conn:
+                    conn.rollback()
+            except Exception:
+                pass
+            return 0
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+
+    def count_missing_embeddings(self, character_id: str) -> Tuple[int, int]:
+        """
+        Counts rows that likely require embedding generation:
+          - history: embedding IS NULL and content is not empty
+          - memories: embedding IS NULL
+        Returns (history_missing, memories_missing). Safe fallback: (0, 0).
+        """
+        cid = str(character_id or "").strip()
+        if not cid:
+            return (0, 0)
+
+        conn = None
+        try:
+            conn = self.get_connection()
+            cur = conn.cursor()
+
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM history
+                WHERE character_id=?
+                  AND embedding IS NULL
+                  AND content IS NOT NULL
+                  AND TRIM(content) != ''
+                """,
+                (cid,),
+            )
+            h = int((cur.fetchone() or [0])[0] or 0)
+
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM memories
+                WHERE character_id=?
+                  AND embedding IS NULL
+                """,
+                (cid,),
+            )
+            m = int((cur.fetchone() or [0])[0] or 0)
+
+            return (h, m)
+        except Exception as e:
+            logging.debug(f"DB: count_missing_embeddings failed (ignored): {e}")
+            return (0, 0)
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+
+    def count_records_for_full_reindex(self, character_id: str) -> Tuple[int, int]:
+        """
+        Counts rows that will be processed by a *full* reindex (re-embed everything):
+          - history: content not empty
+          - memories: is_deleted=0
+        Returns (history_total, memories_total). Safe fallback: (0, 0).
+        """
+        cid = str(character_id or "").strip()
+        if not cid:
+            cid = str(character_id or "").strip()
+            if not cid:
+                return (0, 0)
+
+            conn = None
+            try:
+                conn = self.get_connection()
+                cur = conn.cursor()
+
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM history
+                    WHERE character_id=?
+                      AND content IS NOT NULL
+                      AND TRIM(content) != ''
+                    """,
+                    (cid,),
+                )
+                h = int((cur.fetchone() or [0])[0] or 0)
+
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM memories
+                    WHERE character_id=?
+                      AND is_deleted=0
+                    """,
+                    (cid,),
+                )
+                m = int((cur.fetchone() or [0])[0] or 0)
+
+                return (h, m)
+            except Exception as e:
+                logging.debug(f"DB: count_records_for_full_reindex failed (ignored): {e}")
+                return (0, 0)
+            finally:
+                try:
+                    if conn:
+                        conn.close()
+                except Exception:
+                    pass
