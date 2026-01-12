@@ -49,7 +49,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
 
         self._current_gpu = None
 
-        self.gigaam_model = "v2_rnnt"
+        self.gigaam_model = "v3_rnnt"
         self.gigaam_device = "auto"  # auto/cuda/cpu
         self.gigaam_model_path = "SpeechRecognitionModels/GigaAM"
 
@@ -128,7 +128,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
 
     # ---------- naming / paths ----------
     def _normalized_ckpt_name(self) -> str:
-        name = (self.gigaam_model or "v2_rnnt").strip()
+        name = (self.gigaam_model or "v3_rnnt").strip()
         if name in ("ctc", "rnnt", "ssl"):
             name = f"v2_{name}"
         if name == "emo":

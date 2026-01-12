@@ -20,6 +20,7 @@ from managers.game_state_manager import GameState
 from managers.context_counter import ContextCounter
 from managers.conversation_event_writer import ConversationEventWriter
 from managers.history_ui_projector import HistoryUiProjector
+from core.request_policy import RequestPolicy, resolve_policy
 
 
 class ModelController:
@@ -635,7 +636,10 @@ class ModelController:
         character_id_override = self._normalize_character_id_from_data(data)
 
         req_id = str(data.get("req_id") or "") or None
-        task_uid = str(data.get("message_id") or "") or None  # у тебя сюда прилетает task_uid
+        task_uid = str(data.get("message_id") or "") or None
+
+        policy_dict = data.get("policy")
+        policy = RequestPolicy.from_dict(policy_dict) if isinstance(policy_dict, dict) else resolve_policy(model_event_type=str(event_type or "chat"))
 
         char = None
         if character_id_override:
@@ -732,6 +736,7 @@ class ModelController:
                     "disable_history_compression": disable_history_compression,
                     "sender": sender,
                     "participants": participants,
+                    "policy": policy.to_dict(),
                 },
                 timeout=10.0
             )
@@ -781,10 +786,18 @@ class ModelController:
             return str(v if v is not None else "Current")
 
         if event_type == "react":
-            react_provider_label = str(self.settings.get("REACT_PROVIDER", _("Текущий", "Current")))
-            preset_id = _resolve_label_to_preset_id(react_provider_label)
+            lvl = int(getattr(policy, "react_level", None) or 1)
+
+            if lvl == 2:
+                label = str(self.settings.get("REACT_PROVIDER_L2", self.settings.get("REACT_PROVIDER", _("Текущий", "Current"))))
+            else:
+                label = str(self.settings.get("REACT_PROVIDER_L1", self.settings.get("REACT_PROVIDER", _("Текущий", "Current"))))
+
+            preset_id = _resolve_label_to_preset_id(label)
             if preset_id is None:
                 preset_id = _resolve_label_to_preset_id(_get_char_provider_label(char_id, char_name))
+
+            logger.info(f"[ModelController] react policy: level={lvl}, provider_label='{label}', preset_id={preset_id}")
         else:
             preset_id = _resolve_label_to_preset_id(_get_char_provider_label(char_id, char_name))
 
@@ -794,7 +807,7 @@ class ModelController:
         })
 
         try:
-            use_stream_cb = stream_callback if event_type != "react" else None
+            use_stream_cb = stream_callback if policy.allow_streaming else None
             raw_text = self.model.generate(combined_messages, stream_callback=use_stream_cb, preset_id=preset_id)
 
             if not raw_text:
@@ -821,7 +834,7 @@ class ModelController:
                     final_text
                 )
 
-            if event_type != "react":
+            if policy.write_to_history:
                 origin_message_id = str(data.get("origin_message_id") or "") or None
 
                 self.event_writer.write_turn(

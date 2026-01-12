@@ -165,17 +165,49 @@ def setup_model_interaction_controls(self, parent):
             )
         },
         {
-            'label': _('Провайдер для реакций', 'Provider for react events'),
-            'key': 'REACT_PROVIDER',
+            'label': _('Использовать реакции L1 (тихие)', 'Enable react L1 (silent)'),
+            'key': 'REACT_L1_ENABLED',
+            'type': 'checkbutton',
+            'default_checkbutton': True,
+            'depends_on': 'REACT_ENABLED',
+            'tooltip': _(
+                'Тихие реакции: мимика/поза/действия без ответа текстом.',
+                'Silent reactions: face/pose/actions without text answer.'
+            )
+        },
+        {
+            'label': _('Провайдер для реакций L1', 'Provider for react L1'),
+            'key': 'REACT_PROVIDER_L1',
             'type': 'combobox',
             'options': react_provider_names,
             'default': _('Текущий', 'Current'),
+            'depends_on': 'REACT_L1_ENABLED',
+            'tooltip': _(
+                'Какой API-пресет использовать для тихих react-сообщений (L1).',
+                'Which API preset to use for silent react messages (L1).'
+            )
+        },
+        {
+            'label': _('Использовать реакции L2 (с ответом)', 'Enable react L2 (with answer)'),
+            'key': 'REACT_L2_ENABLED',
+            'type': 'checkbutton',
+            'default_checkbutton': False,
             'depends_on': 'REACT_ENABLED',
             'tooltip': _(
-                'Какой API-пресет использовать для react-сообщений. '
-                '«Текущий» — использовать тот же пресет, что и основной чат.',
-                'Which API preset to use for react messages. '
-                '"Current" — use the same preset as the main chat.'
+                'Реакции с полноценным ответом: текст + озвучка, запись в историю.',
+                'Answer reactions: text + voiceover, saved to history.'
+            )
+        },
+        {
+            'label': _('Провайдер для реакций L2', 'Provider for react L2'),
+            'key': 'REACT_PROVIDER_L2',
+            'type': 'combobox',
+            'options': react_provider_names,
+            'default': _('Текущий', 'Current'),
+            'depends_on': 'REACT_L2_ENABLED',
+            'tooltip': _(
+                'Какой API-пресет использовать для react-ответов (L2).',
+                'Which API preset to use for answer-react messages (L2).'
             )
         },
     ]

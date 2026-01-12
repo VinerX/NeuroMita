@@ -4,6 +4,7 @@ import asyncio
 from typing import Any, Dict, Optional
 
 from core.events import Events
+from core.request_policy import resolve_policy
 from managers.task_manager import TaskStatus
 from game_connections.handlers.registry import RequestContext
 
@@ -56,6 +57,10 @@ class CreateTaskAction:
             return
 
         if event_type == "answer":
+            model_event_type = "chat"
+            policy = resolve_policy(model_event_type=model_event_type)
+            policy_dict = policy.to_dict()
+
             user_input = data.get("message", "")
 
             if user_input:
@@ -67,7 +72,9 @@ class CreateTaskAction:
                     "origin_message_id": origin_message_id,
                 })
 
-            collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
+            collected_sys = ""
+            if policy.use_pending_sysinfo:
+                collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
 
             task_result = event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
                 "type": "chat",
@@ -82,6 +89,7 @@ class CreateTaskAction:
                     "sender": sender,
                     "participants": participants,
                     "origin_message_id": origin_message_id,
+                    "policy": policy_dict,
                 }
             }, timeout=5.0)
 
@@ -95,18 +103,23 @@ class CreateTaskAction:
                     "system_input": collected_sys,
                     "image_data": context.get("image_base64_list", []),
                     "task_uid": task.uid,
-                    "event_type": "chat",
+                    "event_type": model_event_type,
                     "character_id": character_id,
                     "sender": sender,
                     "participants": participants,
                     "req_id": req_id,
                     "origin_message_id": origin_message_id,
+                    "policy": policy_dict,
                 })
             else:
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to create task", req_id=req_id)
             return
 
         if event_type == "idle_timeout":
+            model_event_type = "idle_timeout"
+            policy = resolve_policy(model_event_type=model_event_type)
+            policy_dict = policy.to_dict()
+
             last_idle_uid = server.last_idle_tasks.get(character_id)
             if last_idle_uid:
                 last_task_result = event_bus.emit_and_wait(Events.Task.GET_TASK, {"uid": last_idle_uid}, timeout=1.0)
@@ -116,7 +129,9 @@ class CreateTaskAction:
                     await server.send_task_update(ctx.client_id, last_task)
                     return
 
-            collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
+            collected_sys = ""
+            if policy.use_pending_sysinfo:
+                collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
 
             task_result = event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
                 "type": "idle",
@@ -130,6 +145,7 @@ class CreateTaskAction:
                     "sender": sender,
                     "participants": participants,
                     "origin_message_id": origin_message_id,
+                    "policy": policy_dict,
                 }
             }, timeout=5.0)
 
@@ -148,12 +164,13 @@ class CreateTaskAction:
                     "system_input": idle_prompt,
                     "image_data": [],
                     "task_uid": task.uid,
-                    "event_type": "idle_timeout",
+                    "event_type": model_event_type,
                     "character_id": character_id,
                     "sender": sender,
                     "participants": participants,
                     "req_id": req_id,
                     "origin_message_id": origin_message_id,
+                    "policy": policy_dict,
                 })
             else:
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to create idle task", req_id=req_id)
@@ -167,6 +184,10 @@ class CreateTaskAction:
             return
 
         if event_type == "system_info_flush":
+            model_event_type = "chat"
+            policy = resolve_policy(model_event_type=model_event_type)
+            policy_dict = policy.to_dict()
+
             collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
             if not collected_sys:
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="No pending system_info to flush", req_id=req_id)
@@ -185,6 +206,7 @@ class CreateTaskAction:
                     "sender": sender,
                     "participants": participants,
                     "origin_message_id": origin_message_id,
+                    "policy": policy_dict,
                 }
             }, timeout=5.0)
 
@@ -198,26 +220,29 @@ class CreateTaskAction:
                     "system_input": collected_sys,
                     "image_data": [],
                     "task_uid": task.uid,
-                    "event_type": "chat",
+                    "event_type": model_event_type,
                     "character_id": character_id,
                     "sender": sender,
                     "participants": participants,
                     "req_id": req_id,
                     "origin_message_id": origin_message_id,
+                    "policy": policy_dict,
                 })
             else:
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to flush system info", req_id=req_id)
             return
 
         if event_type == "react":
-            # ---- FIX 1: respect REACT_ENABLED ----
+            model_event_type = "react"
+
+            # --- master enable ---
             react_enabled_res = event_bus.emit_and_wait(
                 Events.Settings.GET_SETTING,
                 {"key": "REACT_ENABLED", "default": False},
                 timeout=0.8
             )
-            react_enabled = bool(react_enabled_res and react_enabled_res[0])
-            if not react_enabled:
+            react_enabled_master = bool(react_enabled_res and react_enabled_res[0])
+            if not react_enabled_master:
                 await server._send_aborted_update(
                     ctx.client_id,
                     event_type,
@@ -227,19 +252,68 @@ class CreateTaskAction:
                 )
                 return
 
-            reason = data.get("reason", "")
+            # --- parse level (default=L1) ---
+            incoming_level = data.get("react_level", None)
+            policy = resolve_policy(model_event_type=model_event_type, react_level=incoming_level)
+            policy_dict = policy.to_dict()
+
+            # --- per-level enable (independent toggles) ---
+            if policy.react_level == 2:
+                l2_enabled_res = event_bus.emit_and_wait(
+                    Events.Settings.GET_SETTING,
+                    {"key": "REACT_L2_ENABLED", "default": False},
+                    timeout=0.8
+                )
+                react_level_enabled = bool(l2_enabled_res and l2_enabled_res[0])
+            else:
+                l1_enabled_res = event_bus.emit_and_wait(
+                    Events.Settings.GET_SETTING,
+                    {"key": "REACT_L1_ENABLED", "default": True},
+                    timeout=0.8
+                )
+                react_level_enabled = bool(l1_enabled_res and l1_enabled_res[0])
+
+            if not react_level_enabled:
+                await server._send_aborted_update(
+                    ctx.client_id,
+                    event_type,
+                    character_id,
+                    reason=f"React level {policy.react_level or 1} disabled by settings",
+                    req_id=req_id
+                )
+                return
+
+            # --- reason payload (new+legacy) ---
+            reason_type = str(data.get("reason_type") or "").strip()
+            reason_content = str(data.get("reason_content") or "").strip()
+            legacy_reason = str(data.get("reason") or "").strip()
+
+            reason_text = reason_content or legacy_reason or "player_react"
+
             duration = data.get("duration", 0.0)
             current_info = context.get("currentInfo", "")
 
             react_system_input_lines = [
                 "This is a react event from the game.",
-                f"Reason: {reason}" if reason else "Reason: player_look",
-                f"Look duration (seconds): {float(duration or 0.0):.1f}",
+                f"React level: {policy.react_level or 1}",
             ]
+            if reason_type:
+                react_system_input_lines.append(f"Reason type: {reason_type}")
+            react_system_input_lines.append(f"Reason: {reason_text}")
+            react_system_input_lines.append(f"Duration (seconds): {float(duration or 0.0):.1f}")
+
             if current_info:
                 react_system_input_lines.append("")
                 react_system_input_lines.append("Current game info:")
                 react_system_input_lines.append(str(current_info))
+
+            # --- attach pending system_info for L2 (policy-driven) ---
+            if policy.use_pending_sysinfo:
+                collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
+                if collected_sys.strip():
+                    react_system_input_lines.append("")
+                    react_system_input_lines.append("Pending system info:")
+                    react_system_input_lines.append(collected_sys)
 
             react_system_input = "\n".join(react_system_input_lines)
 
@@ -252,11 +326,12 @@ class CreateTaskAction:
                     "client_id": ctx.client_id,
                     "event_type": event_type,
                     "req_id": req_id,
-                    "reason": reason,
+                    "reason": reason_text,
                     "duration": duration,
                     "sender": sender,
                     "participants": participants,
                     "origin_message_id": origin_message_id,
+                    "policy": policy_dict,
                 }
             }, timeout=5.0)
 
@@ -270,12 +345,13 @@ class CreateTaskAction:
                     "system_input": react_system_input,
                     "image_data": context.get("image_base64_list", []),
                     "task_uid": task.uid,
-                    "event_type": "react",
+                    "event_type": model_event_type,
                     "character_id": character_id,
                     "sender": sender,
                     "participants": participants,
                     "req_id": req_id,
                     "origin_message_id": origin_message_id,
+                    "policy": policy_dict,
                 })
             else:
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to create react task", req_id=req_id)
