@@ -1,6 +1,8 @@
 import logging
 import datetime
-from typing import Optional, Tuple, List, Set
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+from typing import Optional, Tuple, List, Set, ClassVar
 
 from managers.database_manager import DatabaseManager
 from managers.rag.rag_manager import RAGManager
@@ -14,6 +16,11 @@ class MemoryManager:
     - Забытая память: is_forgotten=1 (не попадает в промпт, но может быть найдена RAG)
     - Ручное удаление: is_deleted=1 (не используется нигде)
     """
+
+    # Process-wide executor для фоновой векторизации памяти (не блокирует UI/генерацию).
+    # max_workers=1: сохраняем порядок и не устраиваем параллельный инференс.
+    _EMBED_EXECUTOR: ClassVar[Optional[ThreadPoolExecutor]] = None
+    _EMBED_EXECUTOR_LOCK: ClassVar[Lock] = Lock()
 
     def __init__(self, character_name: str):
         self.character_name = character_name  # фактически это character_id
@@ -31,6 +38,23 @@ class MemoryManager:
         except Exception as e:
             logging.warning(f"RAGManager init failed (RAG disabled for this session): {e}", exc_info=True)
             self.rag = None
+
+    # ------------------------------------------------------------------
+    # Embedding async helpers
+    # ------------------------------------------------------------------
+    @classmethod
+    def _get_embed_executor(cls) -> ThreadPoolExecutor:
+        ex = cls._EMBED_EXECUTOR
+        if ex is not None:
+            return ex
+        with cls._EMBED_EXECUTOR_LOCK:
+            ex = cls._EMBED_EXECUTOR
+            if ex is None:
+                cls._EMBED_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix="rag-embed-mem",
+                )
+            return cls._EMBED_EXECUTOR
 
     # ------------------------------------------------------------------
     # Schema helpers (never crash)
@@ -262,6 +286,9 @@ class MemoryManager:
         if date is None:
             date = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
+        # NOTE: эмбеддинги считаем ПОСЛЕ успешного commit, но в фоне (см. ниже),
+        # чтобы не блокировать основной поток (UI/генерацию).
+
         conn = self.db.get_connection()
         try:
             cursor = conn.cursor()
@@ -300,9 +327,20 @@ class MemoryManager:
         # RAG опционален и не должен валить основной флоу
         if self.rag:
             try:
-                self.rag.update_memory_embedding(new_id, content)
+                rag = self.rag
+                eid = int(new_id)
+                txt = str(content or "")
+
+                def _embed_job():
+                    try:
+                        rag.update_memory_embedding(eid, txt)
+                    except Exception as e:
+                        logging.warning(f"RAG failed to update memory embedding (ignored): {e}", exc_info=True)
+
+                # В фон: не блокируем UI/генерацию ответа
+                self._get_embed_executor().submit(_embed_job)
             except Exception as e:
-                logging.warning(f"RAG failed to update memory embedding (ignored): {e}", exc_info=True)
+                logging.warning(f"RAG failed to schedule memory embedding (ignored): {e}", exc_info=True)
 
     def update_memory(self, number, content, priority=None):
         """
@@ -355,9 +393,20 @@ class MemoryManager:
 
         if self.rag:
             try:
-                self.rag.update_memory_embedding(number, content)
+                rag = self.rag
+                eid = int(number)
+                txt = str(content or "")
+
+                def _embed_job():
+                    try:
+                        rag.update_memory_embedding(eid, txt)
+                    except Exception as e:
+                        logging.warning(f"RAG failed to update memory embedding (ignored): {e}", exc_info=True)
+
+                # В фон: не блокируем UI/генерацию ответа
+                self._get_embed_executor().submit(_embed_job)
             except Exception as e:
-                logging.warning(f"RAG failed to update memory embedding (ignored): {e}", exc_info=True)
+                logging.warning(f"RAG failed to schedule memory embedding (ignored): {e}", exc_info=True)
 
         return True
 
