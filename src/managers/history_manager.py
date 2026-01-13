@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import datetime
@@ -8,7 +9,7 @@ import uuid
 import hashlib
 import time
 from threading import Lock
-from typing import Any, Optional
+from typing import Any, Optional, ClassVar
 
 from main_logger import logger
 from managers.database_manager import DatabaseManager
@@ -22,6 +23,11 @@ class HistoryManager:
     - аккуратно работает со старыми БД: сам добавляет новые колонки и/или
       делает динамические INSERT/SELECT по фактической схеме.
     """
+
+    # Process-wide executor для фоновой векторизации (не блокирует UI).
+    # max_workers=1: сохраняем порядок, не устраиваем параллельный инференс/конкуренцию по БД.
+    _EMBED_EXECUTOR: ClassVar[Optional[ThreadPoolExecutor]] = None
+    _EMBED_EXECUTOR_LOCK: ClassVar[Lock] = Lock()
 
     # Какие колонки мы хотим иметь в history (и их типы для ALTER TABLE)
     _HISTORY_DESIRED_COLUMNS: dict[str, str] = {
@@ -72,6 +78,20 @@ class HistoryManager:
         except Exception as e:
             logger.warning(f"RAGManager init failed (RAG disabled for this session): {e}", exc_info=True)
             self.rag = None
+
+    # ---------------------------------------------------------------------
+    # Embedding async helpers
+    # ---------------------------------------------------------------------
+    @classmethod
+    def _get_embed_executor(cls) -> ThreadPoolExecutor:
+        ex = cls._EMBED_EXECUTOR
+        if ex is not None:
+            return ex
+        with cls._EMBED_EXECUTOR_LOCK:
+            ex = cls._EMBED_EXECUTOR
+            if ex is None:
+                cls._EMBED_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rag-embed")
+            return cls._EMBED_EXECUTOR
 
     # ---------------------------------------------------------------------
     # Schema helpers
@@ -911,11 +931,21 @@ class HistoryManager:
         if not pending_embeddings or not self.rag:
             return
 
-        for row_id, text in pending_embeddings:
-            try:
-                self.rag.update_history_embedding(row_id, text)
-            except Exception as e:
-                logger.warning(f"RAG failed to update history embedding (ignored): {e}", exc_info=True)
+        # Фоновая векторизация (не блокируем сохранение/GUI).
+        rag = self.rag
+        items = list(pending_embeddings)
+
+        def _bulk_embed_job():
+            for row_id, text in items:
+                try:
+                    rag.update_history_embedding(int(row_id), str(text))
+                except Exception as e:
+                    logger.warning(f"RAG failed to update history embedding (ignored): {e}", exc_info=True)
+
+        try:
+            self._get_embed_executor().submit(_bulk_embed_job)
+        except Exception as e:
+            logger.warning(f"[HistoryManager] Failed to schedule embeddings job (ignored): {e}", exc_info=True)
 
     def add_message(self, message: dict):
         row_id = self._insert_history_row(msg=message, is_active=1)
@@ -924,12 +954,25 @@ class HistoryManager:
         if not self.rag or not row_id:
             return
 
-        content_text = message.get("content", "")
-        if isinstance(content_text, str) and content_text:
+        # Фоновая векторизация (не блокируем вызывающий поток/GUI).
+        content_text = self._extract_text_for_embedding(message.get("content"))
+        if not content_text:
+            return
+
+        rag = self.rag
+        rid = int(row_id)
+        txt = str(content_text)
+
+        def _embed_job():
             try:
-                self.rag.update_history_embedding(int(row_id), content_text)
+                rag.update_history_embedding(rid, txt)
             except Exception as e:
                 logger.warning(f"RAG failed to update embedding for new message (ignored): {e}", exc_info=True)
+
+        try:
+            self._get_embed_executor().submit(_embed_job)
+        except Exception as e:
+            logger.warning(f"[HistoryManager] Failed to schedule embedding for message (ignored): {e}",exc_info=True)
 
     def update_variable(self, key, value):
         conn = self.db.get_connection()

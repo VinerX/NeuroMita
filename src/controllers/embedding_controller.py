@@ -90,7 +90,9 @@ class EmbeddingController:
         prefix = data.get("prefix") or QUERY_PREFIX
         future = data.get("future")
 
-        handler = self.handler
+        # NOTE: lazy init (как в _on_get_embeddings), иначе при выключенном/неуспевшем preload
+        # все запросы будут возвращать None и RAG уйдёт в fallback.
+        handler = self._ensure_handler()
         if handler is None:
             if future is not None:
                 try:
