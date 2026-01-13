@@ -34,8 +34,8 @@ def _resolve_event_name(fallback: str, *path: str) -> str:
         return fallback
 
 
-EMBED_EVENT_NAME = _resolve_event_name("rag.get_embedding", "RAG", "GET_EMBEDDING")
-EMBEDS_EVENT_NAME = _resolve_event_name("rag.get_embeddings", "RAG", "GET_EMBEDDINGS")
+EMBED_EVENT_NAME = Events.RAG.GET_EMBEDDING
+EMBEDS_EVENT_NAME = Events.RAG.GET_EMBEDDINGS
 
 class RAGManager:
     _fallback_handler: Optional[EmbeddingModelHandler] = None
@@ -45,7 +45,7 @@ class RAGManager:
     def _get_fallback_handler(cls) -> EmbeddingModelHandler:
         """
         Fallback handler создаём лениво и один раз на процесс.
-        EmbeddingModelHandler тяжёлый (грузит модель), нельзя инстанцировать на каждый вызов.
+        ВАЖНО: используем EmbeddingModelHandler.shared(), чтобы не грузить модель второй раз.
         """
         if cls._fallback_handler is None:
             with cls._fallback_lock:
@@ -506,6 +506,7 @@ class RAGManager:
 
         if use_event_bus:
             try:
+                logger.debug(f"RAGManager: Запрашиваю embedding через EventBus: {EMBED_EVENT_NAME}")
                 results = self.event_bus.emit_and_wait(EMBED_EVENT_NAME, {"text": text, "prefix": prefix})
                 if results:
                     vec = results[0]
@@ -574,9 +575,14 @@ class RAGManager:
         # Fallback: последовательно (но без повторной загрузки модели)
         try:
             handler = self._get_fallback_handler()
-            for t in cleaned:
-                out.append(handler.get_embedding(t, prefix=prefix) if t else None)
-            return out
+            # Используем batch API модели (быстрее и тоже без повторной загрузки)
+            # batch_size уже нормализован в bs
+            vecs = handler.get_embeddings(cleaned, prefix=prefix, batch_size=bs)
+            if not isinstance(vecs, list):
+                vecs = []
+            if len(vecs) != len(cleaned):
+                vecs = (vecs + [None] * len(cleaned))[:len(cleaned)]
+            return vecs
         except Exception as e:
             logger.error(f"RAGManager: ошибка fallback batch эмбеддингов: {e}", exc_info=True)
             return [None] * len(cleaned)

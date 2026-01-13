@@ -641,6 +641,10 @@ class Events:
         PREPARE_FOR_PROMPT = "prepare_history_for_prompt"
         SAVE_AFTER_RESPONSE = "save_history_after_response"
 
+    class RAG:
+        GET_EMBEDDING = "rag_get_embedding"
+        GET_EMBEDDINGS = "rag_get_embeddings"
+
     class Install:
         """Унифицированные события для менеджера установок"""
         RUN_WITH_UI = "run_install_with_ui"

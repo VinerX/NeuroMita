@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from threading import Lock
+from threading import Lock, Thread
 from typing import List, Optional
 
 import numpy as np
@@ -25,8 +25,8 @@ def _resolve_event_name(fallback: str, *path: str) -> str:
         return fallback
 
 
-EMBED_EVENT_NAME = _resolve_event_name("rag.get_embedding", "RAG", "GET_EMBEDDING")
-EMBEDS_EVENT_NAME = _resolve_event_name("rag.get_embeddings", "RAG", "GET_EMBEDDINGS")
+EMBED_EVENT_NAME = Events.RAG.GET_EMBEDDING
+EMBEDS_EVENT_NAME = Events.RAG.GET_EMBEDDINGS
 
 
 class EmbeddingController:
@@ -39,19 +39,27 @@ class EmbeddingController:
     def __init__(self) -> None:
         self.event_bus = get_event_bus()
 
-        # Проверяем, включен ли RAG глобально
-        self.handler: Optional[EmbeddingModelHandler]
-        if SettingsManager.get("RAG_ENABLED", False):
-            # Единый экземпляр handler создаётся здесь (а не в менеджерах)
-            self.handler = EmbeddingModelHandler()
-        else:
-            self.handler = None
-            logger.info("RAG is disabled in settings. EmbeddingModelHandler not loaded.")
+        # ВАЖНО: сначала подписываемся на события, и только потом (опционально) прогреваем модель.
+        # Иначе во время долгой загрузки модели подписчиков ещё нет -> RAGManager уходит в fallback и грузит вторую копию.
+        self.handler: Optional[EmbeddingModelHandler] = None
 
-        # Чтобы не дергать модель параллельно из разных потоков EventBus
-        self._lock = Lock()
+        # Разделяем блокировку инициализации и блокировку инференса,
+        # чтобы не словить deadlock при ленивой загрузке.
+        self._init_lock = Lock()
+        self._infer_lock = Lock()
 
         self._subscribe_to_events()
+
+        if not SettingsManager.get("RAG_ENABLED", False):
+            logger.info("RAG is disabled in settings. EmbeddingModelHandler not loaded.")
+            return
+
+        # Опциональный прогрев (в фоне), чтобы первый запрос не блокировал пользователя.
+        # По умолчанию включаем, чтобы сохранить прежнее поведение (модель грузилась при старте),
+        # но теперь это безопасно относительно подписки.
+        preload = SettingsManager.get("RAG_PRELOAD_EMBEDDINGS_MODEL", True)
+        if bool(preload):
+            Thread(target=self._ensure_handler, daemon=True).start()
 
     def _subscribe_to_events(self) -> None:
         self.event_bus.subscribe(EMBED_EVENT_NAME, self._on_get_embedding, weak=False)
@@ -59,6 +67,22 @@ class EmbeddingController:
         logger.notify(
             f"EmbeddingController подписался на события: {EMBED_EVENT_NAME}, {EMBEDS_EVENT_NAME}"
         )
+
+    def _ensure_handler(self) -> Optional[EmbeddingModelHandler]:
+        """
+        Ленивая инициализация модели.
+        Использует EmbeddingModelHandler.shared(), чтобы гарантировать единственный экземпляр в процессе,
+        даже если где-то сработал fallback.
+        """
+        if self.handler is not None:
+            return self.handler
+        if not SettingsManager.get("RAG_ENABLED", False):
+            return None
+
+        with self._init_lock:
+            if self.handler is None:
+                self.handler = EmbeddingModelHandler.shared()
+        return self.handler
 
     def _on_get_embedding(self, event: Event) -> Optional[np.ndarray]:
         data = event.data or {}
@@ -76,7 +100,7 @@ class EmbeddingController:
             return None
 
         try:
-            with self._lock:
+            with self._infer_lock:
                 vec = handler.get_embedding(text, prefix=prefix)
 
             if future is not None:
@@ -105,7 +129,7 @@ class EmbeddingController:
         batch_size = data.get("batch_size")  # optional
         future = data.get("future")
 
-        handler = self.handler
+        handler = self._ensure_handler()
         if handler is None:
             if future is not None:
                 try:
@@ -116,9 +140,16 @@ class EmbeddingController:
 
         results: List[Optional[np.ndarray]] = []
         try:
-            with self._lock:
-                for t in texts:
-                    results.append(handler.get_embedding(t or "", prefix=prefix))
+            # Используем настоящий batch API модели (одна токенизация/forward на батч),
+            # это заметно быстрее, чем вызывать get_embedding() в цикле.
+            bs = batch_size
+            try:
+                bs = int(bs) if bs is not None else 32
+            except Exception:
+                bs = 32
+
+            with self._infer_lock:
+                results = handler.get_embeddings(list(texts), prefix=prefix, batch_size=bs)
 
             if future is not None:
                 try:

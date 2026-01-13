@@ -1,6 +1,7 @@
 # Файл с моделью для эмбеддингов
 from __future__ import annotations
 
+from threading import Lock
 from utils.gpu_utils import check_gpu_provider
 from utils.pip_installer import PipInstaller
 import sys, os
@@ -71,6 +72,7 @@ import numpy as np
 import time
 import os
 from typing import Tuple, Optional, List
+from typing import ClassVar
 
 # --- Константы модели ---
 MODEL_NAME = 'Snowflake/snowflake-arctic-embed-m-v2.0'
@@ -79,6 +81,36 @@ QUERY_PREFIX = 'query: '
 
 class EmbeddingModelHandler:
     """Управляет загрузкой модели Snowflake и получением эмбеддингов."""
+
+    # --- Process-wide shared instance (singleton) ---
+    _shared_instance: ClassVar[Optional["EmbeddingModelHandler"]] = None
+    _shared_lock: ClassVar[Lock] = Lock()
+
+    @classmethod
+    def shared(cls, model_name: str = MODEL_NAME) -> "EmbeddingModelHandler":
+        """
+        Возвращает общий (процессный) экземпляр EmbeddingModelHandler.
+        Гарантирует, что тяжёлая модель будет загружена максимум 1 раз.
+        """
+        inst = cls._shared_instance
+        if inst is not None:
+            # Если вдруг кто-то попросит другой model_name — не плодим вторую модель.
+            try:
+                if getattr(inst, "model_name", None) != model_name:
+                    logger.warning(
+                        f"EmbeddingModelHandler.shared(): requested model_name='{model_name}', "
+                        f"but shared instance already uses '{getattr(inst, 'model_name', None)}'. "
+                        f"Reusing shared instance."
+                    )
+            except Exception:
+                pass
+            return inst
+
+        with cls._shared_lock:
+            inst = cls._shared_instance
+            if inst is None:
+                cls._shared_instance = cls(model_name=model_name)
+            return cls._shared_instance
 
     def __init__(self, model_name: str = MODEL_NAME):
         import torch  # локальный импорт (ускоряет import модуля)
