@@ -228,6 +228,7 @@ def build_character_settings_ui(self, parent_layout):
     # --- Ряд 2: Миграция | Индексация ---
 
     # Кнопка "Миграция"
+    # (для выбранного персонажа)
     self.btn_migrate_db = QPushButton(_("Миграция", "Migration"))
     self.btn_migrate_db.setToolTip(_("Перенос файловой истории в БД", "Migrate file history to DB"))
     self.btn_migrate_db.setIcon(qta.icon('fa5s.database', color='#ffffff'))
@@ -249,7 +250,15 @@ def build_character_settings_ui(self, parent_layout):
     row_char_2_l.addWidget(self.btn_reindex, 1)
     self.history_section.add_widget(row_char_2)
 
-    # --- Ряд 3: Удал.Дублей ---
+    # --- Ряд 3: Полная индексация | Удал.Дублей ---
+
+    self.btn_reindex_all = QPushButton(_("Полная индексация", "Full indexing"))
+    self.btn_reindex_all.setToolTip(
+        _("Пересоздать все вектора для RAG (долго)", "Regenerate ALL vectors for RAG (slow)")
+    )
+    self.btn_reindex_all.setIcon(qta.icon('fa5s.brain', color='#ffffff'))
+    self.btn_reindex_all.setObjectName("SecondaryButton")
+    _make_compact(self.btn_reindex_all)
 
     self.btn_dedupe_history = QPushButton(_("Удал.Дублей", "Del.Dups"))
     self.btn_dedupe_history.setToolTip(_("Удалить дубликаты сообщений", "Remove duplicate messages"))
@@ -261,6 +270,7 @@ def build_character_settings_ui(self, parent_layout):
     row_char_3_l = QHBoxLayout(row_char_3)
     row_char_3_l.setContentsMargins(0, 0, 0, 0)
     row_char_3_l.setSpacing(6)
+    row_char_3_l.addWidget(self.btn_reindex_all, 1)
     row_char_3_l.addWidget(self.btn_dedupe_history, 1)
     self.history_section.add_widget(row_char_3)
 
@@ -322,19 +332,27 @@ def build_character_settings_ui(self, parent_layout):
     row_all_2_l.addWidget(self.btn_reindex_global, 1)
     self.history_section.add_widget(row_all_2)
 
-    # --- Ряд 3: Удал.Дублей (глобально) ---
-    # Добавляем кнопку глобального удаления дублей для соответствия структуре,
-    # даже если её не было в исходном коде, чтобы UI был симметричным.
+    # --- Ряд 3: Полная индексация (глобально) | Удал.Дублей (глобально) ---
+
+    self.btn_reindex_all_global = QPushButton(_("Полная индексация", "Full indexing"))
+    self.btn_reindex_all_global.setToolTip(
+        _("Пересоздать все вектора для всех (долго)", "Regenerate ALL vectors for all (slow)")
+    )
+    self.btn_reindex_all_global.setIcon(qta.icon('fa5s.brain', color='#ffffff'))
+    self.btn_reindex_all_global.setObjectName("SecondaryButton")
+    _make_compact(self.btn_reindex_all_global)
 
     self.btn_dedupe_all = QPushButton(_("Удал.Дублей", "Del.Dups"))
     self.btn_dedupe_all.setToolTip(_("Удалить дубликаты у всех (если реализовано)", "Remove duplicates for all"))
     self.btn_dedupe_all.setIcon(qta.icon('fa5s.broom', color='#ffffff'))
     self.btn_dedupe_all.setObjectName("SecondaryButton")
+    _make_compact(self.btn_dedupe_all)
 
     row_all_3 = QWidget()
     row_all_3_l = QHBoxLayout(row_all_3)
     row_all_3_l.setContentsMargins(0, 0, 0, 0)
     row_all_3_l.setSpacing(6)
+    row_all_3_l.addWidget(self.btn_reindex_all_global, 1)
     row_all_3_l.addWidget(self.btn_dedupe_all, 1)
     self.history_section.add_widget(row_all_3)
 
