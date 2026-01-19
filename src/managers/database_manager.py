@@ -667,25 +667,38 @@ class DatabaseManager:
             conn = self.get_connection()
             cur = conn.cursor()
 
+            # Динамическая проверка наличия колонок is_deleted,
+            # чтобы не ломать старые БД, если миграция не прошла.
+            hist_cols = self._get_table_columns_conn(conn, "history")
+            mem_cols = self._get_table_columns_conn(conn, "memories")
+
+            # Для истории: пропускаем удаленные, если колонка есть
+            extra_h = " AND is_deleted=0" if "is_deleted" in hist_cols else ""
+
+            # Для памяти: пропускаем удаленные, если колонка есть
+            extra_m = " AND is_deleted=0" if "is_deleted" in mem_cols else ""
+
             cur.execute(
-                """
+                f"""
                 SELECT COUNT(*)
                 FROM history
                 WHERE character_id=?
                   AND embedding IS NULL
                   AND content IS NOT NULL
                   AND TRIM(content) != ''
+                  {extra_h}
                 """,
                 (cid,),
             )
             h = int((cur.fetchone() or [0])[0] or 0)
 
             cur.execute(
-                """
+                f"""
                 SELECT COUNT(*)
                 FROM memories
                 WHERE character_id=?
                   AND embedding IS NULL
+                  {extra_m}
                 """,
                 (cid,),
             )
@@ -711,45 +724,47 @@ class DatabaseManager:
         """
         cid = str(character_id or "").strip()
         if not cid:
-            cid = str(character_id or "").strip()
-            if not cid:
-                return (0, 0)
+            return (0, 0)
 
-            conn = None
+        conn = None
+        try:
+            conn = self.get_connection()
+            cur = conn.cursor()
+
+            hist_cols = self._get_table_columns_conn(conn, "history")
+            extra_h = " AND is_deleted=0" if "is_deleted" in hist_cols else ""
+
+            cur.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM history
+                WHERE character_id=?
+                  AND content IS NOT NULL
+                  AND TRIM(content) != ''
+                  {extra_h}
+                """,
+                (cid,),
+            )
+            h = int((cur.fetchone() or [0])[0] or 0)
+
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM memories
+                WHERE character_id=?
+                  AND is_deleted=0
+                """,
+                (cid,),
+            )
+            m = int((cur.fetchone() or [0])[0] or 0)
+
+            return (h, m)
+        except Exception as e:
+            logging.debug(f"DB: count_records_for_full_reindex failed (ignored): {e}")
+            return (0, 0)
+        finally:
             try:
-                conn = self.get_connection()
-                cur = conn.cursor()
-
-                cur.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM history
-                    WHERE character_id=?
-                      AND content IS NOT NULL
-                      AND TRIM(content) != ''
-                    """,
-                    (cid,),
-                )
-                h = int((cur.fetchone() or [0])[0] or 0)
-
-                cur.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM memories
-                    WHERE character_id=?
-                      AND is_deleted=0
-                    """,
-                    (cid,),
-                )
-                m = int((cur.fetchone() or [0])[0] or 0)
-
-                return (h, m)
-            except Exception as e:
-                logging.debug(f"DB: count_records_for_full_reindex failed (ignored): {e}")
-                return (0, 0)
-            finally:
-                try:
-                    if conn:
-                        conn.close()
-                except Exception:
-                    pass
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
