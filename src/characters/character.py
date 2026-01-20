@@ -258,6 +258,13 @@ class Character:
         except Exception as e:
             logger.error(f"[{self.char_id}] Error loading/creating config.json: {e}")
 
+    def get_stats_dict(self) -> Dict[str, float]:
+        return {
+            "attitude": float(self.get_variable("attitude", 60.0)),
+            "boredom": float(self.get_variable("boredom", 10.0)),
+            "stress": float(self.get_variable("stress", 5.0)),
+        }
+
     def get_variable(self, name: str, default: Any = None) -> Any:
         return self.variables.get(name, default)
 

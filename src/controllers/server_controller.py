@@ -89,7 +89,7 @@ class ServerController:
         self.ConnectedToGame = False
         self._destroyed = False
 
-        self.settings_to_send = ['ACTION_MENU', 'MITAS_MENU', 'IGNORE_GAME_REQUESTS', 'GAME_BLOCK_LEVEL', 'CHARACTER','MITA_DIALOGUE_AUTO']
+        self.settings_to_send = ['ACTION_MENU', 'MITAS_MENU', 'IGNORE_GAME_REQUESTS', 'GAME_BLOCK_LEVEL', 'CHARACTER']
 
         self.echo_suppressor = ServerEchoSuppressor()
 
@@ -108,7 +108,6 @@ class ServerController:
 
         eb.subscribe(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, self._on_echo_chat_message_requested, weak=False)
 
-        # --- moved from server.py subscriptions ---
         eb.subscribe(Events.Task.TASK_STATUS_CHANGED, self._on_task_status_changed, weak=False)
         eb.subscribe(Events.Server.SEND_TASK_UPDATE, self._on_send_task_update, weak=False)
 
@@ -137,7 +136,6 @@ class ServerController:
         self.server = ChatServerNew()
         logger.info("Используется новый API сервер")
 
-        # controller owns connection state propagation
         def _conn_cb(is_connected: bool, _client_id: str | None):
             try:
                 self.event_bus.emit(Events.Server.SET_GAME_CONNECTION, {"is_connected": bool(is_connected)})
@@ -223,8 +221,18 @@ class ServerController:
     def update_game_connection(self, is_connected):
         if self._destroyed or not self.event_bus:
             return
+
+        prev = bool(self.ConnectedToGame)
         self.ConnectedToGame = bool(is_connected)
+
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+
+        if self.ConnectedToGame and not prev and self.server:
+            try:
+                body = self._prepare_loaded_settings_body()
+                self.server.schedule_broadcast_loaded_settings(body)
+            except Exception:
+                pass
 
     def _on_update_game_connection(self, event: Event):
         if self._destroyed:
@@ -271,7 +279,6 @@ class ServerController:
         if key in self.settings_to_send:
             try:
                 body = self._prepare_loaded_settings_body()
-                # server transport method, thread-safe
                 self.server.schedule_broadcast_loaded_settings(body)
             except Exception as e:
                 logger.warning(f"Не удалось отправить обновлённые настройки клиентам ({key}): {e}")
@@ -285,11 +292,55 @@ class ServerController:
         except Exception as e:
             logger.warning(f"LOAD_SERVER_SETTINGS broadcast failed: {e}")
 
+    def _get_character_stats(self, character_id: str) -> Dict[str, float]:
+        cid = str(character_id or "").strip()
+        if not cid:
+            return {"attitude": 60.0, "boredom": 10.0, "stress": 5.0}
+
+        try:
+            res = self.event_bus.emit_and_wait(
+                Events.Character.GET,
+                {"character_id": cid},
+                timeout=1.0,
+            )
+            ch = res[0] if res else None
+            if ch is not None and hasattr(ch, "get_stats_dict"):
+                v = ch.get_stats_dict()
+                if isinstance(v, dict):
+                    return {
+                        "attitude": float(v.get("attitude", 60.0)),
+                        "boredom": float(v.get("boredom", 10.0)),
+                        "stress": float(v.get("stress", 5.0)),
+                    }
+        except Exception:
+            pass
+
+        return {"attitude": 60.0, "boredom": 10.0, "stress": 5.0}
+
+    def _collect_characters_stats(self) -> Dict[str, Dict[str, float]]:
+        out: Dict[str, Dict[str, float]] = {}
+
+        try:
+            all_ids_res = self.event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
+            all_ids = all_ids_res[0] if all_ids_res and isinstance(all_ids_res[0], list) else []
+        except Exception:
+            all_ids = []
+
+        for cid in all_ids:
+            s = str(cid or "").strip()
+            if not s:
+                continue
+            out[s] = self._get_character_stats(s)
+
+        return out
+
     def _prepare_loaded_settings_body(self) -> Dict[str, Any]:
         settings = {}
         for setting in self.settings_to_send:
             settings[str(setting)] = self._get_setting(setting)
-        return {"settings": settings}
+
+        characters_stats = self._collect_characters_stats()
+        return {"settings": settings, "characters_stats": characters_stats}
 
     def _get_setting(self, key: str, default=None):
         try:
@@ -302,21 +353,38 @@ class ServerController:
         except Exception:
             return default
 
-    # ---------------- moved subscriptions logic ----------------
     def _on_task_status_changed(self, event: Event):
         data = event.data or {}
         task = data.get("task")
         if not task or not getattr(task, "data", None):
             return
 
-        # 1) internal server bookkeeping (idle tracking, last text)
         try:
             if self.server:
                 self.server.on_task_status_changed(task)
         except Exception:
             pass
 
-        # 2) echo suppression bookkeeping
+        try:
+            character_id = str(task.data.get("character") or "")
+            if character_id:
+                stats = self._get_character_stats(character_id)
+
+                try:
+                    task.data["character_stats"] = stats
+                except Exception:
+                    pass
+
+                if task.status == TaskStatus.SUCCESS:
+                    try:
+                        if task.result is None or not isinstance(task.result, dict):
+                            task.result = {}
+                        task.result["character_stats"] = stats
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         try:
             client_id = str(task.data.get("client_id") or "")
             speaker = str(task.data.get("character") or "")
@@ -329,7 +397,6 @@ class ServerController:
         except Exception:
             pass
 
-        # 3) send update to Unity client
         try:
             client_id = str(task.data.get("client_id") or "")
             if client_id and self.server:
@@ -359,7 +426,6 @@ class ServerController:
         except Exception:
             pass
 
-    # ---------------- GUI echo (unchanged) ----------------
     def _on_echo_chat_message_requested(self, event: Event):
         if self._destroyed:
             return

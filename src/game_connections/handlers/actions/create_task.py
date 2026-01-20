@@ -1,7 +1,6 @@
 ﻿from __future__ import annotations
 
-import asyncio
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from core.events import Events
 from core.request_policy import resolve_policy
@@ -44,6 +43,31 @@ class CreateTaskAction:
             if isinstance(last_map, dict):
                 last_map[ctx.client_id] = participants
 
+        def _get_character_stats(cid: str) -> Dict[str, float]:
+            cid = str(cid or "").strip()
+            if not cid:
+                return {"attitude": 60.0, "boredom": 10.0, "stress": 5.0}
+            try:
+                res = event_bus.emit_and_wait(
+                    Events.Character.GET,
+                    {"character_id": cid},
+                    timeout=1.0
+                )
+                ch = res[0] if res else None
+                if ch is not None and hasattr(ch, "get_stats_dict"):
+                    v = ch.get_stats_dict()
+                    if isinstance(v, dict):
+                        return {
+                            "attitude": float(v.get("attitude", 60.0)),
+                            "boredom": float(v.get("boredom", 10.0)),
+                            "stress": float(v.get("stress", 5.0)),
+                        }
+            except Exception:
+                pass
+            return {"attitude": 60.0, "boredom": 10.0, "stress": 5.0}
+
+        character_stats = _get_character_stats(character_id)
+
         event_bus.emit(Events.Server.SET_GAME_DATA, {
             "distance": float(str(context.get("distance", "0")).replace(",", ".")),
             "roomPlayer": int(context.get("roomPlayer", 0)),
@@ -80,6 +104,7 @@ class CreateTaskAction:
                 "type": "chat",
                 "data": {
                     "character": character_id,
+                    "character_stats": character_stats,
                     "user_input": str(user_input or ""),
                     "system_input": collected_sys,
                     "system_info": context.get("currentInfo", ""),
@@ -137,6 +162,7 @@ class CreateTaskAction:
                 "type": "idle",
                 "data": {
                     "character": character_id,
+                    "character_stats": character_stats,
                     "message": data.get("message", "Player idle for 90 seconds"),
                     "system_input": collected_sys,
                     "client_id": ctx.client_id,
@@ -197,6 +223,7 @@ class CreateTaskAction:
                 "type": "chat",
                 "data": {
                     "character": character_id,
+                    "character_stats": character_stats,
                     "user_input": "",
                     "system_input": collected_sys,
                     "system_info": context.get("currentInfo", ""),
@@ -235,7 +262,6 @@ class CreateTaskAction:
         if event_type == "react":
             model_event_type = "react"
 
-            # --- master enable ---
             react_enabled_res = event_bus.emit_and_wait(
                 Events.Settings.GET_SETTING,
                 {"key": "REACT_ENABLED", "default": False},
@@ -252,12 +278,10 @@ class CreateTaskAction:
                 )
                 return
 
-            # --- parse level (default=L1) ---
             incoming_level = data.get("react_level", None)
             policy = resolve_policy(model_event_type=model_event_type, react_level=incoming_level)
             policy_dict = policy.to_dict()
 
-            # --- per-level enable (independent toggles) ---
             if policy.react_level == 2:
                 l2_enabled_res = event_bus.emit_and_wait(
                     Events.Settings.GET_SETTING,
@@ -283,7 +307,6 @@ class CreateTaskAction:
                 )
                 return
 
-            # --- reason payload (new+legacy) ---
             reason_type = str(data.get("reason_type") or "").strip()
             reason_content = str(data.get("reason_content") or "").strip()
             legacy_reason = str(data.get("reason") or "").strip()
@@ -307,7 +330,6 @@ class CreateTaskAction:
                 react_system_input_lines.append("Current game info:")
                 react_system_input_lines.append(str(current_info))
 
-            # --- attach pending system_info for L2 (policy-driven) ---
             if policy.use_pending_sysinfo:
                 collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
                 if collected_sys.strip():
@@ -321,6 +343,7 @@ class CreateTaskAction:
                 "type": "react",
                 "data": {
                     "character": character_id,
+                    "character_stats": character_stats,
                     "user_input": "",
                     "system_input": react_system_input,
                     "client_id": ctx.client_id,
