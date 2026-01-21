@@ -4,7 +4,7 @@ import os
 from typing import Optional, Tuple, List
 
 from PyQt6.QtCore import Qt, QPoint, QTimer
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtSql import QSqlDatabase, QSqlTableModel
 from PyQt6.QtWidgets import (
     QApplication,
@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QHBoxLayout,
+    QPlainTextEdit,
     QHeaderView,
     QInputDialog,
     QLabel,
@@ -197,6 +198,8 @@ class _AdvancedTablePage(QWidget):
         self._user_filter: str = ""
         self._search_filter: str = ""
         self._extended_columns: bool = False
+        self._hscroll_before_click: Optional[int] = None
+        self._vscroll_before_click: Optional[int] = None
 
         self.model = _PrettySqlTableModel(self, self.db)
         self.model.setTable(self.table_name)
@@ -209,6 +212,16 @@ class _AdvancedTablePage(QWidget):
         self.view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.view.setAlternatingRowColors(True)
         self.view.setSortingEnabled(True)
+        # Disable inline editors (QLineEdit) to avoid:
+        # - horizontal scrollbar "jump" after click/edit on long text cells
+        # - single-line editing for multi-line fields like "content"
+        # Editing/viewing is provided via a dedicated multi-line dialog on double click.
+        self.view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+
+        # Preserve scroll position on click (prevents delayed scroll "jump" to the clicked cell).
+        self.view.pressed.connect(self._remember_scroll_pos)
+        self.view.clicked.connect(self._restore_scroll_pos_later)
+        self.view.doubleClicked.connect(self._open_cell_dialog)
 
         header = self.view.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -217,6 +230,13 @@ class _AdvancedTablePage(QWidget):
         # Context menu
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._on_context_menu)
+
+        # Keyboard: Delete -> delete selected rows
+        self._act_delete_shortcut = QAction("Delete Selected Rows", self.view)
+        self._act_delete_shortcut.setShortcut(QKeySequence(Qt.Key.Key_Delete))
+        self._act_delete_shortcut.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+        self._act_delete_shortcut.triggered.connect(self._delete_selected_rows)
+        self.view.addAction(self._act_delete_shortcut)
 
         # --- Filtering UI ---
         self.cmb_column = QComboBox(self)
@@ -710,6 +730,134 @@ class _AdvancedTablePage(QWidget):
             QApplication.clipboard().setText(str(text))
         except Exception as e:
             logger.error(f"DB Viewer: copy failed: {e}", exc_info=True)
+
+    def _remember_scroll_pos(self, _index) -> None:
+        try:
+            self._hscroll_before_click = int(self.view.horizontalScrollBar().value())
+            self._vscroll_before_click = int(self.view.verticalScrollBar().value())
+        except Exception:
+            self._hscroll_before_click = None
+            self._vscroll_before_click = None
+
+    def _restore_scroll_pos_later(self, _index) -> None:
+        """
+        QTableView may auto-scroll to the current index after the click is processed.
+        Restore previous scroll position to prevent the horizontal scrollbar "jump".
+        """
+        h = self._hscroll_before_click
+        v = self._vscroll_before_click
+        if h is None and v is None:
+            return
+
+        hbar = self.view.horizontalScrollBar()
+        vbar = self.view.verticalScrollBar()
+
+        def restore():
+            try:
+                if h is not None:
+                    hbar.setValue(h)
+                if v is not None:
+                    vbar.setValue(v)
+            except Exception:
+                pass
+
+        # Do it twice: immediately after event loop and a tiny bit later
+        # (covers delayed scrollTo/ensureVisible triggered by the view/editor).
+        QTimer.singleShot(0, restore)
+        QTimer.singleShot(50, restore)
+
+        self._hscroll_before_click = None
+        self._vscroll_before_click = None
+
+    def _open_cell_dialog(self, index) -> None:
+        """Multi-line viewer/editor for cell content (replaces single-line inline editor)."""
+        if not index.isValid():
+            return
+
+        col_name = str(self.model.headerData(index.column(), Qt.Orientation.Horizontal) or f"Column {index.column()}")
+        lname = col_name.lower().strip()
+
+        # Don't open huge/opaque blobs in a text editor.
+        if "embedding" in lname:
+            QMessageBox.information(
+                self,
+                "View Cell",
+                f'"{col_name}" looks like a BLOB/embedding field.\n'
+                f"Inline viewing/editing is disabled for this column.",
+            )
+            return
+
+        raw = self.model.data(index, Qt.ItemDataRole.EditRole)
+        text = "" if raw is None else str(raw)
+
+        editable = bool(self.model.flags(index) & Qt.ItemFlag.ItemIsEditable)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"{self.table_name}.{col_name} (row {index.row() + 1})")
+        dlg.resize(900, 520)
+
+        root = QVBoxLayout(dlg)
+        editor = QPlainTextEdit(dlg)
+        editor.setPlainText(text)
+        editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        editor.setReadOnly(not editable)
+        root.addWidget(editor, 1)
+
+        btn_row = QHBoxLayout()
+        btn_copy = QPushButton("Copy", dlg)
+        btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(editor.toPlainText()))
+        btn_row.addWidget(btn_copy)
+
+        btn_row.addStretch(1)
+
+        btn_save = None
+        if editable:
+            btn_save = QPushButton("Save", dlg)
+            btn_row.addWidget(btn_save)
+
+        btn_close = QPushButton("Close", dlg)
+        btn_close.clicked.connect(dlg.reject)
+        btn_row.addWidget(btn_close)
+        root.addLayout(btn_row)
+
+        if editable and btn_save is not None:
+            def do_save() -> None:
+                new_val = editor.toPlainText()
+
+                old_strategy = self.model.editStrategy()
+                self.model.setEditStrategy(QSqlTableModel.EditStrategy.OnManualSubmit)
+                try:
+                    if not self.model.setData(index, new_val, Qt.ItemDataRole.EditRole):
+                        err = self.model.lastError().text()
+                        QMessageBox.critical(self, "Save Failed", f"Failed to set value:\n{err}")
+                        self.model.revertAll()
+                        return
+
+                    if not self.model.submitAll():
+                        err = self.model.lastError().text()
+                        QMessageBox.critical(self, "Save Failed", f"Failed to commit change:\n{err}")
+                        self.model.revertAll()
+                        return
+
+                except Exception as e:
+                    logger.error(f"DB Viewer: cell save exception: {e}", exc_info=True)
+                    QMessageBox.critical(self, "Save Failed", f"Failed to commit change:\n{e}")
+                    try:
+                        self.model.revertAll()
+                    except Exception:
+                        pass
+                    return
+                finally:
+                    try:
+                        self.model.setEditStrategy(old_strategy)
+                    except Exception:
+                        pass
+
+                dlg.accept()
+
+            btn_save.clicked.connect(do_save)
+
+        dlg.exec()
 
     def _delete_selected_rows(self) -> None:
         rows = self._selected_row_numbers()
