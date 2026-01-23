@@ -20,9 +20,11 @@ def setup_game_controls(self, parent):
     )
     
     dialogue_config = [
+        {'label': _('Диалоги мит автоматически', 'Mitas\'s dialogues automatically'), 'key': 'MITA_DIALOGUE_AUTO', 'type': 'checkbutton',
+         'default_checkbutton': False, 'tooltip': _("Миты автоматическики говорят по порядку, без вызова команд","Mitas response by order, without using commands")},
         {'label': _('Лимит речей нпс %', 'Limit NPC conversation'), 'key': 'CC_Limit_mod', 'type': 'entry',
          'default': 100, 'tooltip': _('Сколько от кол-ва персонажей может отклоняться повтор речей нпс',
-                                      'How long NPC can talk ignoring player')},
+                                      'How long NPC can talk ignoring player'),'depends_on':'MITA_DIALOGUE_OLD_ON'},
         {'label': _('ГеймМастер - экспериментальная функция', 'GameMaster is experimental feature'),
          'type': 'text'},
         {'label': _('ГеймМастер включен', 'GameMaster is on'), 'key': 'GM_ON', 'type': 'checkbutton',
