@@ -21,3 +21,5 @@ session_name.session
 session_name.session-journal
 ffmpeg_download_temp.zip
 NeuroMita
+/Models
+vec-768-layer-12.onnx
