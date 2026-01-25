@@ -337,11 +337,11 @@ def setup_model_interaction_controls(self, parent):
                       'Weight of the previous context (remaining messages) in "weighted" mode.')},
 
         {'label': _('Фильтр ролей для хвоста (Weighted)', 'Tail role filter (Weighted)'),
-         'key': 'RAG_QUERY_TAIL_ROLE_FILTER', 'type': 'combobox', 'default': 'all',
-         'options': ['all','user_only'],
+         'key': 'RAG_QUERY_TAIL_ROLE_FILTER', 'type': 'combobox', 'default': 'user_only',
+         'options': ['user_only', 'user_and_assistant', 'assistant_only'],
          'tooltip': _(
-             'Какие роли сообщений включать в хвост для построения запроса в режиме "weighted" (чтобы длинные ответы ассистента не забивали).',
-             'Which message roles to include in the tail for query building in "weighted" mode (so long assistant replies don\'t overload it).')},
+             'Какие роли сообщений включать в хвост для построения запроса в режиме "weighted".',
+             'Which message roles to include in the tail for query building in "weighted" mode.')},
 
         {'label': _('Экспоненциальное затухание веса хвоста (Weighted)', 'Tail weight exponential decay (Weighted)'),
          'key': 'RAG_QUERY_TAIL_EXP_DECAY', 'type': 'entry', 'default': 0.6,
@@ -495,6 +495,96 @@ def setup_model_interaction_controls(self, parent):
          'validation': self.validate_positive_integer,
          'tooltip': _('Минимальная длина слова для включения в токенизацию и поиск FTS5 (по умолчанию 3).',
                       'Minimum word length to include in FTS5 tokenization and search (default 3).')},
+
+        {'type': 'end'},
+
+        {'label': _("Комбинирование", "Combining"), 'type': 'subsection',
+         'depends_on': 'RAG_ENABLED'},
+
+        {'label': _('Режим', 'Mode'),
+         'key': 'RAG_COMBINE_MODE',
+         'type': 'combobox',
+         'default': 'union',
+         'options': ['union', 'vector_only', 'intersect', 'two_stage'],
+         'tooltip': _(
+             'Как объединять результаты разных способов поиска:\n'
+             'union — объединить всё (максимально похоже на старое поведение)\n'
+             'vector_only — только эмбеддинги\n'
+             'intersect — оставить найденное несколькими методами\n'
+             'two_stage — сначала vector recall, а keyword/FTS только добавляют фичи (не добавляют новых id).',
+             'How to combine results:\n'
+             'union — merge all (closest to old behavior)\n'
+             'vector_only — embeddings only\n'
+             'intersect — keep only results found by multiple methods\n'
+             'two_stage — vector recall first, keyword/FTS only add features (no new ids).'
+         )},
+
+        # Если применил мини-патч — можешь прятать по двум значениям:
+        {'label': _('Vec TopK', 'Vec TopK'),
+         'key': 'RAG_VECTOR_TOP_K',
+         'type': 'entry',
+         'default': 0,
+         'validation': self.validate_positive_integer_or_zero,
+         'depends_on': 'RAG_COMBINE_MODE',
+         'depends_on_value': ['vector_only', 'two_stage'],  # <-- работает после патча
+         'hide_when_disabled': True,
+         'tooltip': _(
+             'Лимит кандидатов на vector-этапе (0 = без лимита). Полезно для скорости.',
+             'Candidate cap for vector stage (0 = unlimited). Good for speed.'
+         )},
+
+        # --- Intersect options (показывать только в intersect)
+        {'label': _('Min методов', 'Min methods'),
+         'key': 'RAG_INTERSECT_MIN_METHODS',
+         'type': 'entry',
+         'default': 2,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'RAG_COMBINE_MODE',
+         'depends_on_value': 'intersect',
+         'hide_when_disabled': True,
+         'tooltip': _(
+             'Сколько методов (vector/fts/keyword_only) должны найти один и тот же результат.\n'
+             'Обычно 2.',
+             'How many methods (vector/fts/keyword_only) must find the same result.\n'
+             'Usually 2.'
+         )},
+
+        {'label': _('Треб. vector', 'Require vector'),
+         'key': 'RAG_INTERSECT_REQUIRE_VECTOR',
+         'type': 'checkbutton',
+         'default_checkbutton': True,
+         'depends_on': 'RAG_COMBINE_MODE',
+         'depends_on_value': 'intersect',
+         'hide_when_disabled': True,
+         'tooltip': _(
+             'Если включено — результат должен присутствовать в vector bucket (т.е. иметь embedding match).',
+             'If enabled, result must appear in vector bucket (embedding match required).'
+         )},
+
+        {'label': _('Fallback union', 'Fallback union'),
+         'key': 'RAG_INTERSECT_FALLBACK_UNION',
+         'type': 'checkbutton',
+         'default_checkbutton': True,
+         'depends_on': 'RAG_COMBINE_MODE',
+         'depends_on_value': 'intersect',
+         'hide_when_disabled': True,
+         'tooltip': _(
+             'Если intersect ничего не нашёл — вернуть union, иначе будет пусто.',
+             'If intersect yields nothing, fallback to union, otherwise empty.'
+         )},
+
+        # --- Two-stage options (показывать только в two_stage)
+        {'label': _('Fallback union', 'Fallback union'),
+         'key': 'RAG_TWO_STAGE_FALLBACK_UNION',
+         'type': 'checkbutton',
+         'default_checkbutton': True,
+         'depends_on': 'RAG_COMBINE_MODE',
+         'depends_on_value': 'two_stage',
+         'hide_when_disabled': True,
+         'tooltip': _(
+             'Если vector-этап пуст — можно вернуть union (иначе пустая выдача).',
+             'If vector stage is empty, fallback to union (otherwise empty).'
+         )},
 
         {'type': 'end'},
 

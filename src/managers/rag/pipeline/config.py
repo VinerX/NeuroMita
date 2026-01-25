@@ -73,6 +73,21 @@ class RAGConfig:
     log_bottom_n: int = 5
     log_show_all: bool = False
 
+    # --- NEW: combine / recall controls ---
+    # union|vector_only|intersect|two_stage
+    combine_mode: str = "union"
+
+    # vector candidate cap used by some combiners (vector_only/two_stage)
+    vector_top_k: int = 0  # 0 = no cap
+
+    # intersect settings
+    intersect_min_methods: int = 2
+    intersect_require_vector: bool = True
+    intersect_fallback_union: bool = True
+
+    # two-stage fallback
+    two_stage_fallback_union: bool = True
+
     @classmethod
     def from_settings(cls, *, limit: int, threshold: float) -> "RAGConfig":
         cfg = cls()
@@ -113,5 +128,15 @@ class RAGConfig:
         cfg.log_top_n = _i(SettingsManager.get("RAG_LOG_LIST_TOP_N", 10), 10)
         cfg.log_bottom_n = _i(SettingsManager.get("RAG_LOG_LIST_BOTTOM_N", 5), 5)
         cfg.log_show_all = _b(SettingsManager.get("RAG_LOG_LIST_SHOW_ALL", False), False)
+
+        # --- NEW settings (safe defaults) ---
+        cfg.combine_mode = str(SettingsManager.get("RAG_COMBINE_MODE", "union") or "union").strip().lower()
+        cfg.vector_top_k = _i(SettingsManager.get("RAG_VECTOR_TOP_K", 0), 0)
+
+        cfg.intersect_min_methods = _i(SettingsManager.get("RAG_INTERSECT_MIN_METHODS", 2), 2)
+        cfg.intersect_require_vector = _b(SettingsManager.get("RAG_INTERSECT_REQUIRE_VECTOR", True), True)
+        cfg.intersect_fallback_union = _b(SettingsManager.get("RAG_INTERSECT_FALLBACK_UNION", True), True)
+
+        cfg.two_stage_fallback_union = _b(SettingsManager.get("RAG_TWO_STAGE_FALLBACK_UNION", True), True)
 
         return cfg

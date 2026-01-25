@@ -651,19 +651,27 @@ class RAGManager:
 
     def search_relevant(self, query: str, limit: int = 5, threshold: float = 0.4) -> List[Dict[str, Any]]:
         """
-        New pipeline-based RAG search.
-        Keeps your existing DB schema / helpers, but splits retrieval/scoring into modules.
+        Pipeline-based RAG search with selectable combiner modes:
+          - union (default)
+          - vector_only
+          - intersect (min N methods)
+          - two_stage (vector recall, others only add features; can fallback to union)
         """
         if not SettingsManager.get("RAG_ENABLED", False):
             return []
 
-        # lazy imports (avoid circular on startup)
+        # lazy imports (avoid circular)
         from managers.rag.pipeline.config import RAGConfig
         from managers.rag.pipeline.query_builder import QueryBuilder
         from managers.rag.pipeline.retrievers.vector import VectorRetriever
         from managers.rag.pipeline.retrievers.keyword_only import KeywordOnlyRetriever
         from managers.rag.pipeline.retrievers.fts import FTSRetriever
-        from managers.rag.pipeline.combiner import UnionCombiner
+        from managers.rag.pipeline.combiner import (
+            UnionCombiner,
+            VectorOnlyCombiner,
+            IntersectCombiner,
+            TwoStageCombiner,
+        )
         from managers.rag.pipeline.enrichers.common import TimeEnricher, EntityEnricher, PriorityEnricher
         from managers.rag.pipeline.reranker import LinearReranker
         from managers.rag.pipeline.debug_logger import RagDebugLogger
@@ -673,22 +681,30 @@ class RAGManager:
         qb = QueryBuilder(rag=self, cfg=cfg)
         qs = qb.build(query)
 
-        # If no embedding AND no lexical AND no keywords -> nothing to do
+        # If no embedding AND no keywords AND no fts -> nothing to do
         if qs.query_vec is None and not qs.keywords and not cfg.use_fts:
             return []
 
+        # --- choose retrievers (can depend on combiner mode) ---
         retrievers = []
 
-        # Vector recall (memories/history with embedding)
-        retrievers.append(VectorRetriever(rag=self, cfg=cfg))
+        # vector recall (always useful if query_vec exists)
+        if qs.query_vec is not None:
+            retrievers.append(VectorRetriever(rag=self, cfg=cfg))
 
-        # Keyword-only recall (embedding IS NULL)
+        # keyword-only recall (embedding IS NULL candidates)
+        # In two_stage we still allow it for fallback-to-union when vector set is empty.
         if cfg.kw_enabled and qs.keywords:
             retrievers.append(KeywordOnlyRetriever(rag=self, cfg=cfg))
 
-        # FTS recall (bm25 -> lex score)
+        # FTS recall
+        # In two_stage it is used mainly to add lex features to vector candidates (combiner decides).
         if cfg.use_fts:
             retrievers.append(FTSRetriever(rag=self, cfg=cfg))
+
+        # Fast path: vector_only mode -> don't even run other retrievers
+        if cfg.combine_mode == "vector_only":
+            retrievers = [r for r in retrievers if getattr(r, "name", "") == "vector"]
 
         buckets = {}
         for r in retrievers:
@@ -698,7 +714,22 @@ class RAGManager:
                 logger.debug(f"[RAG][PIPE] retriever '{r.name}' failed (ignored): {e}", exc_info=True)
                 buckets[r.name] = []
 
-        combiner = UnionCombiner()
+        # --- choose combiner ---
+        mode = (cfg.combine_mode or "union").strip().lower()
+        if mode == "vector_only":
+            combiner = VectorOnlyCombiner(cfg=cfg)
+        elif mode in ("intersect", "intersect2", "intersect_n"):
+            combiner = IntersectCombiner(
+                cfg=cfg,
+                min_methods=int(cfg.intersect_min_methods),
+                require_vector=bool(cfg.intersect_require_vector),
+                fallback_union=bool(cfg.intersect_fallback_union),
+            )
+        elif mode == "two_stage":
+            combiner = TwoStageCombiner(cfg=cfg, fallback_union=bool(cfg.two_stage_fallback_union))
+        else:
+            combiner = UnionCombiner(cfg=cfg)
+
         cands = combiner.combine(buckets)
 
         if not cands:
@@ -706,7 +737,7 @@ class RAGManager:
                 RagDebugLogger(rag=self, cfg=cfg).log(qs, buckets, cands)
             return []
 
-        # Common enrichers (time/entity/priority)
+        # --- enrich common features (time/entity/priority) ---
         enrichers = [
             TimeEnricher(rag=self, cfg=cfg),
             EntityEnricher(rag=self, cfg=cfg),
@@ -718,7 +749,7 @@ class RAGManager:
             except Exception as e:
                 logger.debug(f"[RAG][PIPE] enricher '{enr.name}' failed (ignored): {e}", exc_info=True)
 
-        # Final rerank
+        # --- final rerank ---
         reranker = LinearReranker(cfg=cfg)
         reranker.score_all(cands)
 
@@ -727,13 +758,12 @@ class RAGManager:
         if cfg.detailed_logs:
             RagDebugLogger(rag=self, cfg=cfg).log(qs, buckets, cands)
 
-        # Convert to old output format (dicts), drop debug
+        # convert to old output format
         out: list[dict] = []
         for c in cands[: int(cfg.limit)]:
-            d = c.to_public_dict()
-            out.append(d)
+            out.append(c.to_public_dict())
         return out
-    
+
     def _sql_keyword_where(self, keywords: list[str], column: str = "content") -> tuple[str, list[str]]:
         kws = [k for k in (keywords or []) if isinstance(k, str) and k.strip()]
         if not kws:
