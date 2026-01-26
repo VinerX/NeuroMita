@@ -225,6 +225,27 @@ def build_character_settings_ui(self, parent_layout):
     row_char_1_l.addWidget(self.btn_clear_history, 1)
     self.history_section.add_widget(row_char_1)
 
+
+    self.btn_export_db = QPushButton(_("Выгрузить", "Export"))
+    self.btn_export_db.setToolTip(_("Выгрузить данные из БД в файл", "Export data from DB to file"))
+    self.btn_export_db.setIcon(qta.icon('fa5s.file-export', color='#ffffff'))
+    self.btn_export_db.setObjectName("SecondaryButton")
+    _make_compact(self.btn_export_db)
+
+    self.btn_import_db = QPushButton(_("Загрузить", "Import"))
+    self.btn_import_db.setToolTip(_("Загрузить данные из файла в БД", "Import data from file to DB"))
+    self.btn_import_db.setIcon(qta.icon('fa5s.file-import', color='#ffffff'))
+    self.btn_import_db.setObjectName("SecondaryButton")
+    _make_compact(self.btn_import_db)
+
+    row_char_export = QWidget()
+    row_char_export_l = QHBoxLayout(row_char_export)
+    row_char_export_l.setContentsMargins(0, 0, 0, 0)
+    row_char_export_l.setSpacing(6)
+    row_char_export_l.addWidget(self.btn_export_db, 1)
+    row_char_export_l.addWidget(self.btn_import_db, 1)
+    self.history_section.add_widget(row_char_export)
+
     # --- Ряд 2: Миграция | Индексация ---
 
     # Кнопка "Миграция"
@@ -274,6 +295,7 @@ def build_character_settings_ui(self, parent_layout):
     row_char_3_l.addWidget(self.btn_dedupe_history, 1)
     self.history_section.add_widget(row_char_3)
 
+
     # -------- Разделитель --------
     sep = QWidget()
     sep.setFixedHeight(1)
@@ -309,6 +331,28 @@ def build_character_settings_ui(self, parent_layout):
     row_all_1_l.addWidget(self.btn_db_viewer_global, 1)
     row_all_1_l.addWidget(self.btn_clear_all_histories, 1)
     self.history_section.add_widget(row_all_1)
+
+    self.btn_export_db_global = QPushButton(_("Выгрузить (все)", "Export (All)"))
+    self.btn_export_db_global.setToolTip(
+        _("Выгрузить данные всех персонажей в файл", "Export all characters data to file"))
+    self.btn_export_db_global.setIcon(qta.icon('fa5s.file-export', color='#ffffff'))
+    self.btn_export_db_global.setObjectName("SecondaryButton")
+    _make_compact(self.btn_export_db_global)
+
+    self.btn_import_db_global = QPushButton(_("Загрузить (все)", "Import (All)"))
+    self.btn_import_db_global.setToolTip(
+        _("Загрузить данные из файла в БД (все персонажи)", "Import data from file to DB (all)"))
+    self.btn_import_db_global.setIcon(qta.icon('fa5s.file-import', color='#ffffff'))
+    self.btn_import_db_global.setObjectName("SecondaryButton")
+    _make_compact(self.btn_import_db_global)
+
+    row_all_export = QWidget()
+    row_all_export_l = QHBoxLayout(row_all_export)
+    row_all_export_l.setContentsMargins(0, 0, 0, 0)
+    row_all_export_l.setSpacing(6)
+    row_all_export_l.addWidget(self.btn_export_db_global, 1)
+    row_all_export_l.addWidget(self.btn_import_db_global, 1)
+    self.history_section.add_widget(row_all_export)
 
     # --- Ряд 2: Миграция | Индексация ---
 

@@ -2,7 +2,7 @@
 
 import os
 
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QMessageBox, QDialog
 from PyQt6.QtCore import QUrl, Qt, QTimer
 from PyQt6.QtGui import QDesktopServices
 
@@ -13,9 +13,8 @@ from core.events import get_event_bus, Events
 from managers.prompt_catalogue_manager import list_prompt_sets, read_info_json
 from utils.migrate_json_to_sqlite import migrate as run_json_migration
 from ui.dialogs.db_viewer import DbViewerDialog
-from PyQt6.QtWidgets import QProgressDialog
-
-
+from PyQt6.QtWidgets import QProgressDialog,QFileDialog
+from ui.dialogs.db_export_dialog import DbExportDialog
 # Backward-compatible wrappers (in case other parts of UI import these classes).
 # They keep the old names but reuse the universal TaskWorker implementation.
 class ReindexWorker(TaskWorker):
@@ -274,6 +273,15 @@ def wire_character_settings_logic(self):
         self.btn_reindex_all_global.clicked.connect(lambda: run_full_reindexing_all(self))
     if hasattr(self, 'btn_dedupe_all'):
         self.btn_dedupe_all.clicked.connect(lambda: run_history_dedup_all(self))
+    if hasattr(self, 'btn_export_db'):
+        self.btn_export_db.clicked.connect(lambda: export_db_for_character(self))
+    if hasattr(self, 'btn_import_db'):
+        self.btn_import_db.clicked.connect(lambda: import_db_for_character(self))
+
+    if hasattr(self, 'btn_export_db_global'):
+        self.btn_export_db_global.clicked.connect(lambda: export_db_for_all(self))
+    if hasattr(self, 'btn_import_db_global'):
+        self.btn_import_db_global.clicked.connect(lambda: import_db_for_all(self))
 
     update_prompt_set_info(self)
 
@@ -1323,3 +1331,208 @@ def run_full_reindexing_all(gui):
         progress.close()
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
         gui._full_reindex_all_worker = None
+
+def export_db_for_character(gui):
+    event_bus = get_event_bus()
+    res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+    profile = res[0] if res else {}
+    cid = profile.get("character_id") if isinstance(profile, dict) else None
+    if not cid:
+        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Персонаж не выбран.", "No character selected."))
+        return
+
+    dlg = DbExportDialog(gui, character_id=str(cid))
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        return
+    settings = dlg.get_settings()
+
+    _start_export_worker(gui, settings)
+
+
+def export_db_for_all(gui):
+    dlg = DbExportDialog(gui, character_id=None)
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        return
+    settings = dlg.get_settings()
+    _start_export_worker(gui, settings)
+
+
+def _start_export_worker(gui, settings: dict):
+    from managers.database_manager import DatabaseManager
+    db = DatabaseManager()
+
+    gui._export_cancelled = False
+    gui._export_worker = TaskWorker(db.export_to_json_file, kwargs=settings, use_progress=True)
+
+    progress = QProgressDialog(
+        _("Выгрузка данных...", "Exporting data..."),
+        _("Отмена", "Cancel"),
+        0, 100,
+        gui
+    )
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setValue(0)
+    progress.setAutoClose(False)
+    progress.setAutoReset(False)
+
+    def on_progress(curr, total):
+        try:
+            t = int(total or 0)
+            c = int(curr or 0)
+            if t <= 0:
+                progress.setRange(0, 0)
+            else:
+                progress.setRange(0, t)
+                progress.setValue(min(c, t))
+                progress.setLabelText(_("Выгрузка: {c}/{t}", "Export: {c}/{t}").format(c=c, t=t))
+        except Exception:
+            pass
+
+    def on_finished(result):
+        if getattr(gui, "_export_cancelled", False):
+            gui._export_worker = None
+            gui._export_cancelled = False
+            return
+        progress.close()
+
+        msg = str(result or "")
+        QMessageBox.information(gui, _("Успех", "Success"),
+                                _("Выгрузка завершена.\n\n{msg}", "Export completed.\n\n{msg}").format(msg=msg))
+
+        gui._export_worker = None
+        gui._export_cancelled = False
+
+    def on_error(msg: str):
+        if getattr(gui, "_export_cancelled", False):
+            gui._export_worker = None
+            gui._export_cancelled = False
+            return
+        progress.close()
+        QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
+        gui._export_worker = None
+        gui._export_cancelled = False
+
+    def on_cancel():
+        gui._export_cancelled = True
+        try:
+            gui._export_worker.requestInterruption()
+        except Exception:
+            pass
+        progress.close()
+
+    def on_cancelled():
+        gui._export_worker = None
+        gui._export_cancelled = False
+
+    gui._export_worker.progress_signal.connect(on_progress)
+    gui._export_worker.finished_signal.connect(on_finished)
+    gui._export_worker.error_signal.connect(on_error)
+    gui._export_worker.cancelled_signal.connect(on_cancelled)
+    progress.canceled.connect(on_cancel)
+
+    progress.show()
+    QTimer.singleShot(0, gui._export_worker.start)
+
+
+def import_db_for_character(gui):
+    # “просто выбрать путь”, но импорт мапим в текущего персонажа (override character_id)
+    event_bus = get_event_bus()
+    res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+    profile = res[0] if res else {}
+    cid = profile.get("character_id") if isinstance(profile, dict) else None
+    if not cid:
+        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Персонаж не выбран.", "No character selected."))
+        return
+
+    path, _flt = QFileDialog.getOpenFileName(gui, _("Выберите файл", "Select file"), os.getcwd(), "JSON (*.json)")
+    if not path:
+        return
+
+    _start_import_worker(gui, path, override_character_id=str(cid))
+
+
+def import_db_for_all(gui):
+    path, _flt = QFileDialog.getOpenFileName(gui, _("Выберите файл", "Select file"), os.getcwd(), "JSON (*.json)")
+    if not path:
+        return
+    _start_import_worker(gui, path, override_character_id=None)
+
+
+def _start_import_worker(gui, path: str, override_character_id: str | None):
+    from managers.database_manager import DatabaseManager
+    db = DatabaseManager()
+
+    gui._import_cancelled = False
+    gui._import_worker = TaskWorker(
+        db.import_from_json_file,
+        kwargs={"path": path, "override_character_id": override_character_id},
+        use_progress=True
+    )
+
+    progress = QProgressDialog(
+        _("Загрузка данных...", "Importing data..."),
+        _("Отмена", "Cancel"),
+        0, 0,
+        gui
+    )
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setAutoClose(False)
+    progress.setAutoReset(False)
+
+    def on_progress(curr, total):
+        # импорт может не иметь точного total — оставляем busy
+        try:
+            t = int(total or 0)
+            if t > 0:
+                progress.setRange(0, t)
+                progress.setValue(min(int(curr or 0), t))
+        except Exception:
+            pass
+
+    def on_finished(result):
+        if getattr(gui, "_import_cancelled", False):
+            gui._import_worker = None
+            gui._import_cancelled = False
+            return
+        progress.close()
+        QMessageBox.information(gui, _("Успех", "Success"),
+                                _("Загрузка завершена.\n\n{msg}", "Import completed.\n\n{msg}").format(msg=str(result or "")))
+        gui._import_worker = None
+        gui._import_cancelled = False
+        try:
+            get_event_bus().emit(Events.Character.RELOAD_DATA)
+        except Exception:
+            pass
+
+    def on_error(msg: str):
+        if getattr(gui, "_import_cancelled", False):
+            gui._import_worker = None
+            gui._import_cancelled = False
+            return
+        progress.close()
+        QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
+        gui._import_worker = None
+        gui._import_cancelled = False
+
+    def on_cancel():
+        gui._import_cancelled = True
+        try:
+            gui._import_worker.requestInterruption()
+        except Exception:
+            pass
+        progress.close()
+
+    def on_cancelled():
+        gui._import_worker = None
+        gui._import_cancelled = False
+
+    gui._import_worker.progress_signal.connect(on_progress)
+    gui._import_worker.finished_signal.connect(on_finished)
+    gui._import_worker.error_signal.connect(on_error)
+    gui._import_worker.cancelled_signal.connect(on_cancelled)
+    progress.canceled.connect(on_cancel)
+
+    progress.show()
+    QTimer.singleShot(0, gui._import_worker.start)
