@@ -1003,13 +1003,16 @@ class DatabaseManager:
             }
 
             with open(out_path, "w", encoding="utf-8") as f:
-                # Пишем заголовок без tables (tables будем стримить вручную)
                 head = dict(export_meta)
-                head["tables"] = None
+                head.pop("tables", None)  # tables будем стримить вручную
+
                 head_json = json.dumps(head, ensure_ascii=False)
-                # заменим "tables": null на "tables":{
-                head_json = head_json.replace('"tables": null', '"tables": {')
+                # убираем финальную "}" у корневого объекта
+                if head_json.endswith("}"):
+                    head_json = head_json[:-1]
+
                 f.write(head_json)
+                f.write(',"tables":{')  # открываем объект tables
                 first_table = True
 
                 def _write_table(table: str):
