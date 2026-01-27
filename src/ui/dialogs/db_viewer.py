@@ -187,6 +187,13 @@ class _AdvancedTablePage(QWidget):
             "value",
         },
     }
+    # Preferred widths for long-text columns (so they don't become huge).
+    # With "Wrap text + auto row height" enabled, text fits by increasing row height.
+    PREFERRED_TEXT_COL_WIDTH = {
+        "history": {"content": 420},
+        "memories": {"content": 420},
+        "variables": {"value": 420},
+    }
 
     def __init__(self, parent: QWidget, *, db: QSqlDatabase, table_name: str, character_id: Optional[str] = None):
         super().__init__(parent)
@@ -226,6 +233,18 @@ class _AdvancedTablePage(QWidget):
         header = self.view.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(True)
+
+        # Row height / wrap support (toggled from the dialog).
+        self._default_row_height = int(self.view.verticalHeader().defaultSectionSize())
+        self._auto_row_height: bool = False
+
+        self._row_resize_timer = QTimer(self)
+        self._row_resize_timer.setSingleShot(True)
+        self._row_resize_timer.setInterval(150)
+        self._row_resize_timer.timeout.connect(self._resize_rows_to_contents_if_needed)
+
+        # When wrapping is enabled, column width changes affect row height (line breaks).
+        header.sectionResized.connect(lambda *_: self._queue_row_resize())
 
         # Context menu
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -310,6 +329,60 @@ class _AdvancedTablePage(QWidget):
     def set_extended_columns(self, enabled: bool) -> None:
         self._extended_columns = bool(enabled)
         self._apply_column_visibility()
+
+    def set_auto_row_height(self, enabled: bool) -> None:
+        """Enable/disable word-wrap + auto row height (ResizeToContents)."""
+        self._auto_row_height = bool(enabled)
+        self._apply_row_height_mode()
+
+    def _apply_row_height_mode(self) -> None:
+        try:
+            vh = self.view.verticalHeader()
+            self.view.setWordWrap(self._auto_row_height)
+            self.view.setTextElideMode(
+                Qt.TextElideMode.ElideNone if self._auto_row_height else Qt.TextElideMode.ElideRight
+            )
+
+            if self._auto_row_height:
+                vh.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+                self._queue_row_resize()
+            else:
+                vh.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+                vh.setDefaultSectionSize(self._default_row_height)
+        except Exception:
+            pass
+
+    def _queue_row_resize(self) -> None:
+        if not self._auto_row_height:
+            return
+        try:
+            self._row_resize_timer.start()
+        except Exception:
+            pass
+
+    def _resize_rows_to_contents_if_needed(self) -> None:
+        if not self._auto_row_height:
+            return
+        try:
+            self.view.resizeRowsToContents()
+        except Exception:
+            pass
+
+    def _apply_preferred_text_column_widths(self) -> None:
+        prefs = self.PREFERRED_TEXT_COL_WIDTH.get(self.table_name, {})
+        if not prefs:
+            return
+        try:
+            name_to_idx = {str(n).lower().strip(): i for i, n in self._iter_columns()}
+            for col_name, width in prefs.items():
+                idx = name_to_idx.get(col_name.lower().strip())
+                if idx is None:
+                    continue
+                if self.view.isColumnHidden(idx):
+                    continue
+                self.view.setColumnWidth(idx, int(width))
+        except Exception:
+            pass
 
     def cleanup(self) -> None:
         """Ensure models release the DB connection before dialog removes it."""
@@ -453,6 +526,11 @@ class _AdvancedTablePage(QWidget):
             self.view.resizeColumnsToContents()
         except Exception:
             pass
+
+        # Keep long-text columns from becoming too wide.
+        self._apply_preferred_text_column_widths()
+        # Apply current row-height mode (wrap + auto height if enabled).
+        self._apply_row_height_mode()
 
         active = bool(self._user_filter.strip() or self._search_filter.strip())
         self._set_filter_state(active)
@@ -1000,6 +1078,9 @@ class DbViewerDialog(QDialog):
         self.chk_extended = QCheckBox("Extended output (show all columns)", self)
         self.chk_extended.setChecked(False)
         top_row.addWidget(self.chk_extended)
+        self.chk_auto_row_height = QCheckBox("Wrap text + auto row height", self)
+        self.chk_auto_row_height.setChecked(False)
+        top_row.addWidget(self.chk_auto_row_height)
         top_row.addStretch(1)
         layout.addLayout(top_row)
 
@@ -1016,7 +1097,8 @@ class DbViewerDialog(QDialog):
 
         self.chk_extended.toggled.connect(self._apply_extended_to_all)
         self._apply_extended_to_all(self.chk_extended.isChecked())
-
+        self.chk_auto_row_height.toggled.connect(self._apply_auto_row_height_to_all)
+        self._apply_auto_row_height_to_all(self.chk_auto_row_height.isChecked())
         # Bottom buttons
         btn_row = QHBoxLayout()
         self.btn_refresh = QPushButton("Refresh", self)
@@ -1035,6 +1117,14 @@ class DbViewerDialog(QDialog):
             self.history_page.set_extended_columns(enabled)
             self.memories_page.set_extended_columns(enabled)
             self.variables_page.set_extended_columns(enabled)
+        except Exception:
+            pass
+
+    def _apply_auto_row_height_to_all(self, enabled: bool) -> None:
+        try:
+            self.history_page.set_auto_row_height(enabled)
+            self.memories_page.set_auto_row_height(enabled)
+            self.variables_page.set_auto_row_height(enabled)
         except Exception:
             pass
 
