@@ -3,8 +3,12 @@ from __future__ import annotations
 from typing import Any, List
 import numpy as np
 
-from managers.rag.rag_utils import rag_clean_text
-from managers.rag.rag_keyword_search import keyword_score
+from managers.rag.rag_utils import (
+    rag_clean_text,
+    keyword_score,
+    fts_build_match_query,
+    normalize_bm25_to_01,
+)
 from ..types import Candidate, QueryState
 from ..config import RAGConfig
 
@@ -25,13 +29,13 @@ class FTSRetriever:
                 return out
 
             # prefer user query; fallback to expanded
-            match_q = self.rag._fts_build_match_query(
+            match_q = fts_build_match_query(
                 str(qs.user_query or ""),
                 max_terms=int(self.cfg.fts_max_terms),
                 min_len=int(self.cfg.fts_min_len),
             )
             if not match_q:
-                match_q = self.rag._fts_build_match_query(
+                match_q = fts_build_match_query(
                     str(qs.expanded_query_text or ""),
                     max_terms=int(self.cfg.fts_max_terms),
                     min_len=int(self.cfg.fts_min_len),
@@ -55,14 +59,13 @@ class FTSRetriever:
     def _memories(self, cur, qs: QueryState, match_q: str) -> list[Candidate]:
         out: list[Candidate] = []
 
-        rows = self.rag._fts_memory_rows(
+        rows = self._fts_memory_rows(
             cur,
             match_q=match_q,
             top_k=max(1, int(self.cfg.fts_top_k_mem)),
-            memory_mode=self.cfg.memory_mode,
         )
         ranks = [float(r.get("rank") or 0.0) for r in rows]
-        lex_scores = self.rag._normalize_bm25_to_01(ranks)
+        lex_scores = normalize_bm25_to_01(ranks)
 
         for rd, lex in zip(rows, lex_scores):
             mid = int(rd.get("eternal_id") or 0)
@@ -113,13 +116,13 @@ class FTSRetriever:
     def _histories(self, cur, qs: QueryState, match_q: str) -> list[Candidate]:
         out: list[Candidate] = []
 
-        rows = self.rag._fts_history_rows(
+        rows = self._fts_history_rows(
             cur,
             match_q=match_q,
             top_k=max(1, int(self.cfg.fts_top_k_hist)),
         )
         ranks = [float(r.get("rank") or 0.0) for r in rows]
-        lex_scores = self.rag._normalize_bm25_to_01(ranks)
+        lex_scores = normalize_bm25_to_01(ranks)
 
         for rd, lex in zip(rows, lex_scores):
             hid = int(rd.get("id") or 0)
@@ -166,3 +169,109 @@ class FTSRetriever:
             ))
 
         return out
+
+    def _fts_history_rows(
+        self,
+        cursor,
+        *,
+        match_q: str,
+        top_k: int,
+    ) -> List[dict]:
+        if not match_q:
+            return []
+        if not self.rag.db.table_exists(cursor, "history_fts"):
+            return []
+
+        cols = ["h.id", "bm25(history_fts) AS rank", "h.role", "h.content", "h.timestamp"]
+        if "embedding" in self.rag._history_cols:
+            cols.append("h.embedding")
+        opt = []
+        for c in ("speaker", "target", "participants"):
+            if c in self.rag._history_cols:
+                opt.append(f"h.{c}")
+        cols += opt
+
+        where = "h.character_id=? AND h.is_active=0"
+        params: list[Any] = [self.rag.character_id]
+        if "is_deleted" in self.rag._history_cols:
+            where += " AND h.is_deleted=0"
+
+        try:
+            cursor.execute(
+                f"""
+                SELECT {", ".join(cols)}
+                FROM history_fts
+                JOIN history h ON h.id = history_fts.rowid
+                WHERE history_fts MATCH ? AND {where}
+                ORDER BY rank
+                LIMIT ?
+                """,
+                tuple([match_q] + params + [int(top_k)]),
+            )
+            rows = cursor.fetchall() or []
+            keys = [c.split(" AS ")[-1].split(".")[-1] for c in cols]
+            out = []
+            for r in rows:
+                rd = dict(zip(keys, r))
+                out.append(rd)
+            return out
+        except Exception:
+            return []
+
+    def _fts_memory_rows(
+        self,
+        cursor,
+        *,
+        match_q: str,
+        top_k: int,
+    ) -> List[dict]:
+        if not match_q:
+            return []
+        if not self.rag.db.table_exists(cursor, "memories_fts"):
+            return []
+
+        cols = [
+            "m.eternal_id",
+            "bm25(memories_fts) AS rank",
+            "m.content",
+            "m.type",
+            "m.priority",
+            "m.date_created",
+            "m.participants",
+        ]
+        if "embedding" in self.rag._mem_cols:
+            cols.append("m.embedding")
+        if "is_forgotten" in self.rag._mem_cols:
+            cols.append("m.is_forgotten")
+
+        where = "m.character_id=? AND m.is_deleted=0"
+        params: list[Any] = [self.rag.character_id]
+        if "is_forgotten" in self.rag._mem_cols:
+            if self.cfg.memory_mode == "forgotten":
+                where += " AND m.is_forgotten=1"
+            elif self.cfg.memory_mode == "active":
+                where += " AND m.is_forgotten=0"
+            elif self.cfg.memory_mode == "all":
+                pass
+
+        try:
+            cursor.execute(
+                f"""
+                SELECT {", ".join(cols)}
+                FROM memories_fts
+                JOIN memories m ON m.id = memories_fts.rowid
+                WHERE memories_fts MATCH ? AND {where}
+                ORDER BY rank
+                LIMIT ?
+                """,
+                tuple([match_q] + params + [int(top_k)]),
+            )
+            rows = cursor.fetchall() or []
+            keys = [c.split(" AS ")[-1].split(".")[-1] for c in cols]
+            out = []
+            for r in rows:
+                rd = dict(zip(keys, r))
+                out.append(rd)
+            return out
+        except Exception:
+            return []

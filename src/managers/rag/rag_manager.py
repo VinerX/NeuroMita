@@ -1,6 +1,5 @@
 import logging
 import math
-import re
 import sqlite3
 import numpy as np
 from threading import Lock
@@ -16,22 +15,8 @@ from core.events import get_event_bus, Events
 from main_logger import logger
 
 
-from managers.rag.rag_utils import rag_clean_text, make_reindex_progress_logger
+from managers.rag.rag_utils import rag_clean_text, make_reindex_progress_logger, extract_keywords, keyword_score
 from managers.settings_manager import SettingsManager
-
-
-
-from managers.rag.rag_keyword_search import extract_keywords, keyword_score
-from .stopwords.stopwords import STOPWORDS
-
-def _resolve_event_name(fallback: str, *path: str) -> str:
-    try:
-        obj = Events
-        for p in path:
-            obj = getattr(obj, p)
-        return obj
-    except Exception:
-        return fallback
 
 
 EMBED_EVENT_NAME = Events.RAG.GET_EMBEDDING
@@ -192,166 +177,6 @@ class RAGManager:
             except Exception:
                 pass
         return out
-
-    def _fts_build_match_query(self, text: str, *, max_terms: int, min_len: int) -> str:
-        """
-        Build a safe-ish FTS5 MATCH query:
-          token1 OR token2 OR ...
-        Tokens are double-quoted to avoid syntax errors on weird characters.
-        """
-        cleaned = rag_clean_text(str(text or ""))
-        if not cleaned:
-            return ""
-
-        # Unicode-ish tokenization (ru/en/digits/_). Keep it simple and robust.
-        tokens = re.findall(r"[0-9A-Za-zА-Яа-я_]+", cleaned.lower())
-        out: List[str] = []
-        seen = set()
-        for t in tokens:
-            t = t.strip().strip('"').strip("'")
-            if len(t) < int(min_len):
-                continue
-            if t in STOPWORDS:
-                continue
-            if t in seen:
-                continue
-            seen.add(t)
-            out.append(f"\"{t}\"")
-            if len(out) >= int(max_terms):
-                break
-        return " OR ".join(out)
-
-    def _normalize_bm25_to_01(self, ranks: List[float]) -> List[float]:
-        """
-        bm25() direction differs by build; we normalize *relative* within returned top-K:
-          best rank (min) -> 1.0
-          worst rank (max) -> 0.0
-        """
-        rr: List[float] = []
-        for x in ranks or []:
-            try:
-                v = float(x)
-                if np.isnan(v) or np.isinf(v):
-                    v = 0.0
-                rr.append(v)
-            except Exception:
-                rr.append(0.0)
-        if not rr:
-            return []
-        mn = min(rr)
-        mx = max(rr)
-        if abs(mx - mn) < 1e-12:
-            return [1.0 for _ in rr]
-        out: List[float] = []
-        for v in rr:
-            s = 1.0 - ((v - mn) / (mx - mn))  # min -> 1, max -> 0
-            if s < 0.0:
-                s = 0.0
-            if s > 1.0:
-                s = 1.0
-            out.append(float(s))
-        return out
-
-    def _fts_history_rows(
-        self,
-        cursor,
-        *,
-        match_q: str,
-        top_k: int,
-    ) -> List[Dict[str, Any]]:
-        if not match_q:
-            return []
-        if not self.db.table_exists(cursor, "history_fts"):
-            return []
-
-        cols = ["h.id", "bm25(history_fts) AS rank", "h.role", "h.content", "h.timestamp"]
-        if "embedding" in self._history_cols:
-            cols.append("h.embedding")
-        opt = []
-        for c in ("speaker", "target", "participants"):
-            if c in self._history_cols:
-                opt.append(f"h.{c}")
-        cols += opt
-
-        where = "h.character_id=? AND h.is_active=0"
-        params: List[Any] = [self.character_id]
-        if "is_deleted" in self._history_cols:
-            where += " AND h.is_deleted=0"
-
-        try:
-            cursor.execute(
-                f"""
-                SELECT {', '.join(cols)}
-                FROM history_fts
-                JOIN history h ON h.id = history_fts.rowid
-                WHERE history_fts MATCH ? AND {where}
-                ORDER BY rank
-                LIMIT ?
-                """,
-                tuple([match_q] + params + [int(top_k)]),
-            )
-            rows = cursor.fetchall() or []
-            keys = [c.split(" AS ")[-1].split(".")[-1] for c in cols]  # crude but stable here
-            out = []
-            for r in rows:
-                rd = dict(zip(keys, r))
-                out.append(rd)
-            return out
-        except Exception as e:
-            logger.debug(f"[RAG][FTS] history query failed (ignored): {e}")
-            return []
-
-    def _fts_memory_rows(
-        self,
-        cursor,
-        *,
-        match_q: str,
-        top_k: int,
-        memory_mode: str,
-    ) -> List[Dict[str, Any]]:
-        if not match_q:
-            return []
-        if not self.db.table_exists(cursor, "memories_fts"):
-            return []
-
-        cols = ["m.eternal_id", "bm25(memories_fts) AS rank", "m.content", "m.type", "m.priority", "m.date_created", "m.participants"]
-        if "embedding" in self._mem_cols:
-            cols.append("m.embedding")
-        if "is_forgotten" in self._mem_cols:
-            cols.append("m.is_forgotten")
-
-        where = "m.character_id=? AND m.is_deleted=0"
-        params: List[Any] = [self.character_id]
-        if "is_forgotten" in self._mem_cols:
-            if memory_mode == "forgotten":
-                where += " AND m.is_forgotten=1"
-            elif memory_mode == "active":
-                where += " AND m.is_forgotten=0"
-            elif memory_mode == "all":
-                pass
-
-        try:
-            cursor.execute(
-                f"""
-                SELECT {', '.join(cols)}
-                FROM memories_fts
-                JOIN memories m ON m.id = memories_fts.rowid
-                WHERE memories_fts MATCH ? AND {where}
-                ORDER BY rank
-                LIMIT ?
-                """,
-                tuple([match_q] + params + [int(top_k)]),
-            )
-            rows = cursor.fetchall() or []
-            keys = [c.split(" AS ")[-1].split(".")[-1] for c in cols]
-            out = []
-            for r in rows:
-                rd = dict(zip(keys, r))
-                out.append(rd)
-            return out
-        except Exception as e:
-            logger.debug(f"[RAG][FTS] memories query failed (ignored): {e}")
-            return []
 
     def _build_query_embedding(self, user_query: str, tail: int) -> Optional[np.ndarray]:
         """
@@ -711,7 +536,7 @@ class RAGManager:
             try:
                 buckets[r.name] = r.retrieve(qs)
             except Exception as e:
-                logger.debug(f"[RAG][PIPE] retriever '{r.name}' failed (ignored): {e}", exc_info=True)
+                logger.debug(f"[RAG][PIPE] retriever \'{r.name}\' failed (ignored): {e}", exc_info=True)
                 buckets[r.name] = []
 
         # --- choose combiner ---
@@ -747,7 +572,7 @@ class RAGManager:
             try:
                 enr.enrich(qs, cands)
             except Exception as e:
-                logger.debug(f"[RAG][PIPE] enricher '{enr.name}' failed (ignored): {e}", exc_info=True)
+                logger.debug(f"[RAG][PIPE] enricher \'{enr.name}\' failed (ignored): {e}", exc_info=True)
 
         # --- final rerank ---
         reranker = LinearReranker(cfg=cfg)
@@ -764,365 +589,6 @@ class RAGManager:
             out.append(c.to_public_dict())
         return out
 
-    def _sql_keyword_where(self, keywords: list[str], column: str = "content") -> tuple[str, list[str]]:
-        kws = [k for k in (keywords or []) if isinstance(k, str) and k.strip()]
-        if not kws:
-            return "", []
-        clauses = []
-        params: list[str] = []
-        for k in kws:
-            clauses.append(f"{column} LIKE ?")
-            params.append(f"%{k}%")
-        return "(" + " OR ".join(clauses) + ")", params
-
-    def find_keyword_histories_without_embedding(
-        self,
-        *,
-        cursor,
-        scored: list[dict],
-        keywords: list[str],
-        kw_min_score: float,
-        K2: float,
-        K4: float,
-        K5: float,
-        decay_rate: float,
-        noise_max: float,
-        now: datetime.datetime,
-        entity_bonus_history,
-        sql_limit: int,
-    ) -> None:
-        if not keywords:
-            return
-
-        where = "character_id=? AND is_active=0 AND (embedding IS NULL) AND content IS NOT NULL AND TRIM(content) != ''"
-        params: list[Any] = [self.character_id]
-        if "is_deleted" in self._history_cols:
-            where += " AND is_deleted=0"
-
-        kw_where, kw_params = self._sql_keyword_where(keywords, column="content")
-        if not kw_where:
-            return
-        where = f"{where} AND {kw_where}"
-        params.extend(kw_params)
-
-        cols = ["id", "role", "content", "timestamp"]
-        opt_cols = ["speaker", "target", "participants"]
-        cols += [c for c in opt_cols if c in self._history_cols]
-
-        try:
-            cursor.execute(
-                f"""
-                SELECT {', '.join(cols)}
-                FROM history
-                WHERE {where}
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                tuple(params + [int(sql_limit)]),
-            )
-            rows = cursor.fetchall() or []
-        except Exception as e:
-            logger.warning(f"RAGManager: keyword-only history read failed: {e}", exc_info=True)
-            return
-
-        for row in rows:
-            rd = dict(zip(cols, row))
-            content_raw = rd.get("content")
-            content = rag_clean_text(str(content_raw or ""))
-
-            try:
-                kw, _hits = keyword_score(keywords, content)
-            except Exception:
-                kw = 0.0
-
-            if kw < float(kw_min_score):
-                continue
-
-            ts = rd.get("timestamp")
-            dt = self._parse_dt(ts)
-            if dt:
-                days = max(0.0, (now - dt).total_seconds() / 86400.0)
-                tf = 1.0 / (1.0 + (decay_rate * days))
-            else:
-                tf = 0.0
-
-            sp = str(rd.get("speaker") or "").strip()
-            tg = str(rd.get("target") or "").strip()
-            parts = self._json_loads_list(rd.get("participants"))
-            eb = entity_bonus_history(sp, tg, parts)
-
-            noise = random.uniform(0.0, noise_max)
-            final = (tf * K2) + (eb * K4) + (kw * K5) + noise
-
-            scored.append({
-                "source": "history",
-                "id": int(rd.get("id") or 0),
-                "role": rd.get("role"),
-                "content": content_raw,
-                "date": ts,
-                "speaker": sp or None,
-                "target": tg or None,
-                "participants": parts,
-                "score": float(final),
-                "_dbg": {"sim": 0.0, "time": tf, "prio": 0.0, "entity": eb, "kw": kw, "noise": noise, "final": final}
-            })
-
-    def find_keyword_memories_without_embedding(
-        self,
-        *,
-        cursor,
-        scored: list[dict],
-        keywords: list[str],
-        kw_min_score: float,
-        K2: float,
-        K3: float,
-        K4: float,
-        K5: float,
-        decay_rate: float,
-        noise_max: float,
-        now: datetime.datetime,
-        prio_bonus,
-        entity_bonus_from_participants,
-        memory_mode: str,
-        sql_limit: int,
-    ) -> None:
-        if not keywords:
-            return
-
-        mem_where = "character_id=? AND is_deleted=0 AND (embedding IS NULL) AND content IS NOT NULL AND TRIM(content) != ''"
-        params: list[Any] = [self.character_id]
-
-        has_forgotten_col = ("is_forgotten" in self._mem_cols)
-        if has_forgotten_col:
-            if memory_mode == "forgotten":
-                mem_where += " AND is_forgotten=1"
-            elif memory_mode == "active":
-                mem_where += " AND is_forgotten=0"
-
-        kw_where, kw_params = self._sql_keyword_where(keywords, column="content")
-        if not kw_where:
-            return
-        mem_where = f"{mem_where} AND {kw_where}"
-        params.extend(kw_params)
-
-        cols = ["eternal_id", "content", "type", "priority", "date_created", "participants"]
-        if has_forgotten_col:
-            cols.append("is_forgotten")
-
-        try:
-            cursor.execute(
-                f"""
-                SELECT {', '.join(cols)}
-                FROM memories
-                WHERE {mem_where}
-                ORDER BY eternal_id DESC
-                LIMIT ?
-                """,
-                tuple(params + [int(sql_limit)]),
-            )
-            rows = cursor.fetchall() or []
-        except Exception as e:
-            logger.warning(f"RAGManager: keyword-only memories read failed: {e}", exc_info=True)
-            return
-
-        for row in rows:
-            rd = dict(zip(cols, row))
-            content_raw = rd.get("content")
-            content = rag_clean_text(str(content_raw or ""))
-
-            try:
-                kw, _hits = keyword_score(keywords, content)
-            except Exception:
-                kw = 0.0
-
-            if kw < float(kw_min_score):
-                continue
-
-            ts = rd.get("date_created")
-            dt = self._parse_dt(ts)
-            if dt:
-                days = max(0.0, (now - dt).total_seconds() / 86400.0)
-                tf = 1.0 / (1.0 + (decay_rate * days))
-            else:
-                tf = 0.0
-
-            pb = prio_bonus(rd.get("priority"))
-            eb = entity_bonus_from_participants(self._json_loads_list(rd.get("participants")))
-            noise = random.uniform(0.0, noise_max)
-
-            final = (tf * K2) + (pb * K3) + (eb * K4) + (kw * K5) + noise
-
-            scored.append({
-                "source": "memory",
-                "id": int(rd.get("eternal_id") or 0),
-                "content": content_raw,
-                "type": rd.get("type"),
-                "priority": rd.get("priority"),
-                "date_created": rd.get("date_created"),
-                "score": float(final),
-                "_dbg": {"sim": 0.0, "time": tf, "prio": pb, "entity": eb, "kw": kw, "lex": 0.0, "noise": noise, "final": final}
-            })
-
-    def find_forgotten_histories(self, K1, K2, K4, cursor, decay_rate, entity_bonus_history, noise_max, now, query_vec,
-                                 scored, threshold, *, keywords: list[str], KW_ENABLED: bool, kw_min_score: float, K5: float):
-        if query_vec is None:
-            return
-        try:
-            base_cols = ["id", "role", "content", "embedding", "timestamp"]
-            opt_cols = ["speaker", "target", "participants"]
-            cols = base_cols + [c for c in opt_cols if c in self._history_cols]
-
-            where = "character_id=? AND embedding IS NOT NULL AND is_active=0"
-            if "is_deleted" in self._history_cols:
-                where += " AND is_deleted=0"
-
-            cursor.execute(
-                f"SELECT {', '.join(cols)} FROM history WHERE {where}",
-                (self.character_id,),
-            )
-            hist_rows = cursor.fetchall() or []
-        except Exception as e:
-            logger.warning(f"RAGManager: failed to read history for search: {e}", exc_info=True)
-            hist_rows = []
-        for row in hist_rows:
-            rd = dict(zip(cols, row))
-            blob = rd.get("embedding")
-            vec = self._blob_to_array(blob)
-            if vec is None:
-                continue
-            sim = float(np.dot(query_vec, vec))
-
-            # keyword score (может протащить запись даже если sim < threshold)
-            kw = 0.0
-            if KW_ENABLED and keywords:
-                try:
-                    kw, _hits = keyword_score(keywords, rag_clean_text(str(rd.get("content") or "")))
-                except Exception:
-                    kw = 0.0
-
-            if sim < float(threshold) and (not KW_ENABLED or kw < float(kw_min_score)):
-                continue
-
-            ts = rd.get("timestamp")
-            dt = self._parse_dt(ts)
-            if dt:
-                days = max(0.0, (now - dt).total_seconds() / 86400.0)
-                tf = 1.0 / (1.0 + (decay_rate * days))
-            else:
-                tf = 0.0
-
-            sp = str(rd.get("speaker") or "").strip()
-            tg = str(rd.get("target") or "").strip()
-            parts = self._json_loads_list(rd.get("participants"))
-            eb = entity_bonus_history(sp, tg, parts)
-
-            noise = random.uniform(0.0, noise_max)
-            final = (sim * K1) + (tf * K2) + (eb * K4) + (kw * K5) + noise
-
-            scored.append({
-                "source": "history",
-                "id": int(rd.get("id") or 0),
-                "role": rd.get("role"),
-                "content": rd.get("content"),
-                "date": ts,
-                "speaker": sp or None,
-                "target": tg or None,
-                "participants": parts,
-                "score": float(final),
-                "_dbg": {
-                    "sim": sim, "time": tf, "prio": 0.0, "entity": eb, "kw": kw, "lex": 0.0, "noise": noise,
-                    "final": final
-                }
-            })
-
-    def find_forgotten_memories(self, K1, K2, K3, K4, cursor, decay_rate, entity_bonus_from_participants, memory_mode,
-                                noise_max, now, prio_bonus, query_vec, scored, threshold,
-                                *, keywords: list[str], KW_ENABLED: bool, kw_min_score: float, K5: float):
-        if query_vec is None:
-            return
-        try:
-            mem_where = "character_id=? AND is_deleted=0 AND embedding IS NOT NULL"
-
-            has_forgotten_col = ("is_forgotten" in self._mem_cols)
-            if has_forgotten_col:
-                if memory_mode == "forgotten":
-                    mem_where += " AND is_forgotten=1"
-                elif memory_mode == "active":
-                    mem_where += " AND is_forgotten=0"
-                elif memory_mode == "all":
-                    pass  # без фильтра
-
-            # если колонка is_forgotten есть — выберем её, чтобы применить штраф
-            select_cols = [
-                "eternal_id", "content", "embedding", "type",
-                "priority", "date_created", "participants",
-            ]
-            if has_forgotten_col:
-                select_cols.append("is_forgotten")
-
-            cursor.execute(
-                f"SELECT {', '.join(select_cols)} FROM memories WHERE {mem_where}",
-                (self.character_id,),
-            )
-            mem_rows = cursor.fetchall() or []
-        except Exception as e:
-            logger.warning(f"RAGManager: failed to read memories for search: {e}", exc_info=True)
-            mem_rows = []
-        for row in mem_rows:
-            # распакуем безопасно (под разные схемы)
-            if "is_forgotten" in self._mem_cols:
-                eternal_id, content, blob, mtype, priority, date_created, participants, is_forgotten = row
-                is_forgotten = int(is_forgotten or 0)
-            else:
-                eternal_id, content, blob, mtype, priority, date_created, participants = row
-                is_forgotten = 0
-
-            # Если колонки нет (старая БД), а режим "forgotten" — просто ничего не тащим (иначе пойдут дубли).
-            if ("is_forgotten" not in self._mem_cols) and memory_mode == "forgotten":
-                continue
-
-            vec = self._blob_to_array(blob)
-            if vec is None:
-                continue
-            sim = float(np.dot(query_vec, vec))
-
-            kw = 0.0
-            if KW_ENABLED and keywords:
-                try:
-                    kw, _hits = keyword_score(keywords, rag_clean_text(str(content or "")))
-                except Exception:
-                    kw = 0.0
-
-            if sim < float(threshold) and (not KW_ENABLED or kw < float(kw_min_score)):
-                continue
-
-            ts = date_created
-            dt = self._parse_dt(ts)
-            if dt:
-                days = max(0.0, (now - dt).total_seconds() / 86400.0)
-                tf = 1.0 / (1.0 + (decay_rate * days))
-            else:
-                tf = 0.0
-
-            pb = prio_bonus(priority)
-            eb = entity_bonus_from_participants(self._json_loads_list(participants))
-            noise = random.uniform(0.0, noise_max)
-            final = (sim * K1) + (tf * K2) + (pb * K3) + (eb * K4) + (kw * K5) + noise
-
-            scored.append({
-                "source": "memory",
-                "id": int(eternal_id or 0),
-                "content": content,
-                "type": mtype,
-                "priority": priority,
-                "date_created": date_created,
-                "score": float(final),
-                "_dbg": {
-                    "sim": sim, "time": tf, "prio": pb, "entity": eb, "kw": kw, "lex": 0.0, "noise": noise,
-                    "final": final
-                }
-            })
-
     def index_all_missing(self, progress_callback=None) -> int:
         """
         Генерит embedding только для записей без embedding.
@@ -1133,7 +599,7 @@ class RAGManager:
 
         try:
             # History: только пустые embedding
-            hist_where = "character_id=? AND embedding IS NULL AND content != '' AND content IS NOT NULL"
+            hist_where = "character_id=? AND embedding IS NULL AND content != \'\' AND content IS NOT NULL"
             if "is_deleted" in self._history_cols:
                 hist_where += " AND is_deleted=0"
             cursor.execute(
@@ -1223,7 +689,8 @@ class RAGManager:
             return 0
         finally:
             try:
-                conn.close()
+                if conn:
+                    conn.close()
             except Exception:
                 pass
 
@@ -1237,7 +704,7 @@ class RAGManager:
 
         try:
             # History: все записи с контентом
-            hist_where = "character_id=? AND content != '' AND content IS NOT NULL"
+            hist_where = "character_id=? AND content != \'\' AND content IS NOT NULL"
             if "is_deleted" in self._history_cols:
                 hist_where += " AND is_deleted=0"
             cursor.execute(
@@ -1328,7 +795,7 @@ class RAGManager:
             return 0
         finally:
             try:
-                conn.close()
+                if conn:
+                    conn.close()
             except Exception:
                 pass
-    

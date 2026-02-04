@@ -1,7 +1,13 @@
 import re
+from functools import lru_cache
+from typing import Iterable, Tuple, List, Set, Any, Optional
+import numpy as np
 
 from utils.throttled_progress_logger import ThrottledProgressLogger
 from main_logger import logger
+from managers.rag.stopwords.stopwords import STOPWORDS
+
+# --- Text Cleaning ---
 
 def rag_clean_text(text: str) -> str:
     if not isinstance(text, str) or not text.strip():
@@ -43,3 +49,202 @@ def make_reindex_progress_logger(rag_manager, op: str, total: int, extra_meta: s
         log_every=int(log_every),
         log_interval_sec=float(log_interval),
     )
+
+# --- Keyword Search Logic (from rag_keyword_search.py) ---
+
+TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9]+")
+CYR_RE = re.compile(r"[А-Яа-яЁё]")
+
+
+@lru_cache(maxsize=1)
+def _get_morph():
+    import pymorphy2  # type: ignore
+    return pymorphy2.MorphAnalyzer()
+
+
+@lru_cache(maxsize=50_000)
+def _normalize_token(token: str) -> str:
+    t = (token or "").strip().lower()
+    if not t:
+        return ""
+    if not CYR_RE.search(t):
+        return t
+    try:
+        morph = _get_morph()
+        parses = morph.parse(t)
+        if not parses:
+            return t
+        return parses[0].normal_form
+    except Exception:
+        return t
+
+
+def extract_keywords(
+    text: str,
+    *,
+    max_terms: int = 8,
+    min_len: int = 3,
+    from_end: bool = False,
+    lemmatize: bool = False,
+) -> List[str]:
+    if not isinstance(text, str):
+        return []
+
+    raw = text.strip().lower()
+    if not raw:
+        return []
+
+    tokens = TOKEN_RE.findall(raw)
+    if from_end:
+        tokens = list(reversed(tokens))
+
+    out: List[str] = []
+    seen: Set[str] = set()
+
+    for t in tokens:
+        tt = t.strip().lower()
+        if not tt:
+            continue
+        if tt in STOPWORDS:
+            continue
+        if len(tt) < int(min_len) and not any(ch.isdigit() for ch in tt):
+            continue
+        if tt.isdigit():
+            continue
+        kw = _normalize_token(tt) if lemmatize else tt
+        if not kw:
+            continue
+        if kw in STOPWORDS:
+            continue
+        if kw in seen:
+            continue
+        out.append(kw)
+        seen.add(kw)
+        if len(out) >= int(max_terms):
+            break
+
+    if from_end:
+        out = list(reversed(out))
+    return out
+
+
+def _normalized_text_vocab(text: str, *, min_len: int = 3, lemmatize: bool = False) -> Set[str]:
+    if not isinstance(text, str):
+        return set()
+    raw = text.strip().lower()
+    if not raw:
+        return set()
+    vocab: Set[str] = set()
+    for t in TOKEN_RE.findall(raw):
+        tt = t.strip().lower()
+        if not tt:
+            continue
+        if tt.isdigit():
+            continue
+        if len(tt) < int(min_len) and not any(ch.isdigit() for ch in tt):
+            continue
+        vocab.add(_normalize_token(tt) if lemmatize else tt)
+    vocab.discard("")
+    return vocab
+
+
+def keyword_score(
+    keywords: Iterable[str],
+    text: str,
+    *,
+    lemmatize: bool = False,
+    min_len: int = 3,
+) -> Tuple[float, int]:
+    if not isinstance(text, str) or not text.strip():
+        return 0.0, 0
+    uniq_kws: List[str] = []
+    seen: Set[str] = set()
+    for k in keywords or []:
+        kw = str(k).strip().lower()
+        if not kw:
+            continue
+        if kw in seen:
+            continue
+        seen.add(kw)
+        uniq_kws.append(kw)
+    if not uniq_kws:
+        return 0.0, 0
+    if lemmatize:
+        norm_kws: List[str] = []
+        seen_norm: Set[str] = set()
+        for kw in uniq_kws:
+            if kw.isdigit():
+                continue
+            if len(kw) < int(min_len) and not any(ch.isdigit() for ch in kw):
+                continue
+            nk = _normalize_token(kw)
+            if not nk:
+                continue
+            if nk in STOPWORDS:
+                continue
+            if nk in seen_norm:
+                continue
+            seen_norm.add(nk)
+            norm_kws.append(nk)
+        if not norm_kws:
+            return 0.0, 0
+        vocab = _normalized_text_vocab(text, min_len=min_len, lemmatize=True)
+        matches = sum(1 for kw in norm_kws if kw in vocab)
+        score = float(matches) / float(max(1, len(norm_kws)))
+        return score, matches
+    hay = text.lower()
+    matches = 0
+    for kw in uniq_kws:
+        pat = r"(?<!\w)" + re.escape(kw) + r"(?!\w)"
+        if re.search(pat, hay, flags=re.IGNORECASE):
+            matches += 1
+    score = float(matches) / float(max(1, len(uniq_kws)))
+    return score, matches
+
+# --- FTS Helpers (moved from RAGManager) ---
+
+def fts_build_match_query(text: str, *, max_terms: int, min_len: int) -> str:
+    cleaned = rag_clean_text(str(text or ""))
+    if not cleaned:
+        return ""
+    tokens = re.findall(r"[0-9A-Za-zА-Яа-я_]+", cleaned.lower())
+    out: List[str] = []
+    seen = set()
+    for t in tokens:
+        t = t.strip().strip('"').strip("'")
+        if len(t) < int(min_len):
+            continue
+        if t in STOPWORDS:
+            continue
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(f"\"{t}\"")
+        if len(out) >= int(max_terms):
+            break
+    return " OR ".join(out)
+
+
+def normalize_bm25_to_01(ranks: List[float]) -> List[float]:
+    rr: List[float] = []
+    for x in ranks or []:
+        try:
+            v = float(x)
+            if np.isnan(v) or np.isinf(v):
+                v = 0.0
+            rr.append(v)
+        except Exception:
+            rr.append(0.0)
+    if not rr:
+        return []
+    mn = min(rr)
+    mx = max(rr)
+    if abs(mx - mn) < 1e-12:
+        return [1.0 for _ in rr]
+    out: List[float] = []
+    for v in rr:
+        s = 1.0 - ((v - mn) / (mx - mn))
+        if s < 0.0: s = 0.0
+        if s > 1.0: s = 1.0
+        out.append(float(s))
+    return out

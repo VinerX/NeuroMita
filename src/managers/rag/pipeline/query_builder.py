@@ -3,8 +3,7 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
-from managers.rag.rag_utils import rag_clean_text
-from managers.rag.rag_keyword_search import extract_keywords
+from managers.rag.rag_utils import rag_clean_text, extract_keywords
 from .types import QueryState
 from .config import RAGConfig
 

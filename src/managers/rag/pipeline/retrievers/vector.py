@@ -3,8 +3,7 @@ from __future__ import annotations
 from typing import Any, List
 import numpy as np
 
-from managers.rag.rag_utils import rag_clean_text
-from managers.rag.rag_keyword_search import keyword_score
+from managers.rag.rag_utils import rag_clean_text, keyword_score
 from ..types import Candidate, QueryState
 from ..config import RAGConfig
 
