@@ -931,6 +931,8 @@ def run_reindexing(gui):
         QMessageBox.warning(gui, _("Ошибка", "Error"), _("Некорректный ID персонажа.", "Invalid character ID."))
         return
 
+    logger.info(f"Starting reindexing for character_id: {character_id}")
+
     # Предварительная проверка (создаем временный RAGManager для чтения)
     try:
         from managers.database_manager import DatabaseManager
@@ -956,6 +958,18 @@ def run_reindexing(gui):
     progress.setValue(0)
     progress.setAutoClose(False)
     progress.setAutoReset(False)
+
+
+    def on_cancel():
+        # Важно: НЕ обнуляем ссылку на поток пока он работает (может крашить процесс).
+        gui._reindex_cancelled = True
+        try:
+            gui._reindex_worker.requestInterruption()
+        except Exception:
+            pass
+        progress.close()
+
+    progress.rejected.connect(on_cancel)
 
     def on_progress(curr, total):
         progress.setMaximum(total)
@@ -983,14 +997,7 @@ def run_reindexing(gui):
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
         gui._reindex_worker = None
 
-    def on_cancel():
-        # Важно: НЕ обнуляем ссылку на поток пока он работает (может крашить процесс).
-        gui._reindex_cancelled = True
-        try:
-            gui._reindex_worker.requestInterruption()
-        except Exception:
-            pass
-        progress.close()
+
 
     def on_cancelled():
         gui._reindex_worker = None

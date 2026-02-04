@@ -13,6 +13,7 @@ from managers.database_manager import DatabaseManager
 from handlers.embedding_handler import EmbeddingModelHandler, QUERY_PREFIX
 from core.events import get_event_bus, Events
 from main_logger import logger
+from ui.task_worker import TaskWorker
 
 
 from managers.rag.rag_utils import rag_clean_text, make_reindex_progress_logger, extract_keywords, keyword_score
@@ -650,8 +651,10 @@ class RAGManager:
                     if progress_callback:
                         try:
                             progress_callback(processed, total)
+                        except TaskWorker.CancelledError:
+                            raise  # Пробрасываем для прерывания
                         except Exception:
-                            pass
+                            pass  # Другие исключения подавляем
                     prog.tick(processed=processed, updated=updated_count, stage="history")
 
                 conn.commit()
@@ -675,8 +678,10 @@ class RAGManager:
                     if progress_callback:
                         try:
                             progress_callback(processed, total)
+                        except TaskWorker.CancelledError:
+                            raise  # Пробрасываем для прерывания
                         except Exception:
-                            pass
+                            pass  # Другие исключения подавляем
                     prog.tick(processed=processed, updated=updated_count, stage="memories")
 
                 conn.commit()
@@ -756,8 +761,10 @@ class RAGManager:
                     if progress_callback:
                         try:
                             progress_callback(processed, total)
+                        except TaskWorker.CancelledError:
+                            raise  # Пробрасываем для прерывания
                         except Exception:
-                            pass
+                            pass  # Другие исключения подавляем
                     prog.tick(processed=processed, updated=updated_count, stage="history")
 
                 conn.commit()
@@ -781,8 +788,10 @@ class RAGManager:
                     if progress_callback:
                         try:
                             progress_callback(processed, total)
+                        except TaskWorker.CancelledError:
+                            raise  # Пробрасываем для прерывания
                         except Exception:
-                            pass
+                            pass  # Другие исключения подавляем
                     prog.tick(processed=processed, updated=updated_count, stage="memories")
 
                 conn.commit()
