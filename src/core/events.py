@@ -672,3 +672,10 @@ class Events:
         GET_PROTOCOL_FULL = "get_protocol_full"
         GET_TRANSFORM_LIST = "get_transform_list"
         BUILD_HTTP_REQUEST = "build_protocol_http_request"
+
+    class AI:
+        """События для AI hub / engine процессов"""
+        GET_ENGINE = "ai_get_engine"
+        ENGINE_EVENT = "ai_engine_event"
+        RESTART_SERVICE = "ai_restart_service"
+        SERVICE_RESTARTED = "ai_service_restarted"

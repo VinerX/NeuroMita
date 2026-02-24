@@ -2,7 +2,6 @@ import os
 import sys
 import traceback
 import tempfile
-import asyncio
 import re
 from xml.sax.saxutils import escape
 from typing import Optional, Any, List, Dict
@@ -13,7 +12,6 @@ from .base_model import IVoiceModel
 from main_logger import logger
 from utils import getTranslationVariant as _, get_character_voice_paths
 
-from core.events import get_event_bus, Events
 from core.install_types import InstallPlan, InstallAction
 from core.install_requirements import InstallRequirement, check_requirements
 
@@ -40,16 +38,12 @@ class EdgeTTSRVCInstallSpec:
 
         if mid == "low+":
             req.append(InstallRequirement(id="silero", kind="python_dist", spec="silero", required=True))
-            req.append(InstallRequirement(id="silero_module", kind="python_module", module="silero", required=True))
 
-        # AMD uses onnx+dml package; NVIDIA/others use torch variant.
         if gpu == "AMD":
             req.append(InstallRequirement(id="tts_rvc_pkg", kind="python_dist", spec="tts-with-rvc-onnx[dml]", required=True))
         else:
             req.append(InstallRequirement(id="tts_rvc_pkg", kind="python_dist", spec="tts-with-rvc", required=True))
 
-        # Runtime import path in this project
-        req.append(InstallRequirement(id="tts_with_rvc_module", kind="python_module", module="tts_with_rvc", required=True))
         return req
 
     @classmethod
@@ -203,7 +197,6 @@ class EdgeTTS_RVC_Model(IVoiceModel):
         self.current_silero_sample_rate = 48000
 
         self._silero_available = False
-        self.events = get_event_bus()
 
     MODEL_CONFIGS = [
         {
@@ -484,33 +477,7 @@ class EdgeTTS_RVC_Model(IVoiceModel):
 
         self.initialized = True
         self.initialized_for = current_mode
-
-        if init:
-            init_text = f"Инициализация модели {current_mode}" if self.parent.voice_language == "ru" else f"{current_mode} Model Initialization"
-            logger.info(f"Выполнение тестового прогона для {current_mode}...")
-            try:
-                results = self.events.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
-                main_loop = results[0] if results else None
-                if not main_loop or not main_loop.is_running():
-                    raise RuntimeError("Главный цикл событий asyncio недоступен.")
-
-                future = asyncio.run_coroutine_threadsafe(self.voiceover(init_text), main_loop)
-                result_path = future.result(timeout=3600)
-
-                if not result_path or not os.path.exists(result_path) or os.path.getsize(result_path) == 0:
-                    logger.error("Тестовый прогон не создал аудиофайл — инициализация неуспешна.")
-                    self.initialized = False
-                    self.initialized_for = None
-                    return False
-
-                logger.info(f"Тестовый прогон для {current_mode} успешно завершен.")
-            except Exception as e:
-                logger.error(f"Ошибка во время тестового прогона модели {current_mode}: {e}", exc_info=True)
-                self.initialized = False
-                self.initialized_for = None
-                return False
-
-        return self.initialized
+        return True
     
     def _maybe_move_to_output(self, produced_path: Optional[str], output_file: Optional[str]) -> Optional[str]:
         if not produced_path or not os.path.exists(produced_path):
@@ -749,16 +716,6 @@ class EdgeTTS_RVC_Model(IVoiceModel):
                 final_output_path = output_file_rvc
 
             final_output_path = self._maybe_move_to_output(final_output_path, output_file)
-
-            try:
-                res_conn = self.events.emit_and_wait(Events.Server.GET_GAME_CONNECTION)
-                connected_to_game = bool(res_conn and res_conn[0])
-            except Exception:
-                connected_to_game = False
-
-            if connected_to_game and TEST_WITH_DONE_AUDIO is None and final_output_path:
-                self.events.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, final_output_path)
-
             return final_output_path
 
         except Exception as error:
@@ -874,16 +831,6 @@ class EdgeTTS_RVC_Model(IVoiceModel):
             )
 
             final_output_path = self._maybe_move_to_output(final_output_path, output_file)
-
-            try:
-                res_conn = self.events.emit_and_wait(Events.Server.GET_GAME_CONNECTION)
-                connected_to_game = bool(res_conn and res_conn[0])
-            except Exception:
-                connected_to_game = False
-
-            if connected_to_game and final_output_path:
-                self.events.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, final_output_path)
-
             return final_output_path
 
         except Exception as error:

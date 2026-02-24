@@ -13,7 +13,6 @@ from main_logger import logger
 
 from utils import getTranslationVariant as _, get_character_voice_paths
 
-from core.events import Events, get_event_bus
 from core.install_types import InstallPlan, InstallAction
 from core.install_requirements import InstallRequirement, check_requirements
 
@@ -34,15 +33,13 @@ class FishSpeechInstallSpec:
         mid = str(model_id)
         req: list[InstallRequirement] = [
             InstallRequirement(id="fish_speech_lib", kind="python_dist", spec="fish-speech-lib", required=True),
-            InstallRequirement(id="fish_speech_module", kind="python_module", module="fish_speech_lib.inference", required=True),
         ]
         if mid in ("medium+", "medium+low"):
             req.append(InstallRequirement(id="triton", kind="python_dist", spec="triton-windows<3.4", required=True))
-            req.append(InstallRequirement(id="triton_module", kind="python_module", module="triton", required=True))
         if mid == "medium+low":
             req.append(InstallRequirement(id="tts_with_rvc", kind="python_dist", spec="tts-with-rvc", required=True))
         return req
-
+    
     @classmethod
     def is_installed(cls, model_id: str, ctx: dict) -> bool:
         st = check_requirements(cls.requirements(model_id, ctx), ctx=ctx)
@@ -409,9 +406,6 @@ class FishSpeechModel(IVoiceModel):
         super().__init__(parent, model_id)
         self.fish_speech_module = None
         self.current_fish_speech = None
-
-        self.events = get_event_bus()
-
         self.rvc_handler = rvc_handler
 
     MODEL_CONFIGS = [
@@ -626,9 +620,7 @@ class FishSpeechModel(IVoiceModel):
 
             self.current_fish_speech = self.fish_speech_module(device=device, half=half, compile_model=compile_model)
 
-            # фиксируем режим (False/True) для всей сессии
             self.parent.first_compiled = compile_model
-
             logger.info(f"FishSpeech инициализирован (compile={compile_model})")
 
         if mode == "medium+low":
@@ -642,28 +634,6 @@ class FishSpeechModel(IVoiceModel):
 
         self.initialized = True
         self.initialized_for = mode
-
-        if init:
-            init_text = f"Инициализация модели {self.model_id}" if self.parent.voice_language == "ru" else f"{self.model_id} Model Initialization"
-            try:
-                res = self.events.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0) if self.events else []
-                main_loop = res[0] if res else None
-                if not main_loop or not main_loop.is_running():
-                    raise RuntimeError("Главный цикл событий asyncio недоступен.")
-
-                future = asyncio.run_coroutine_threadsafe(self.voiceover(init_text), main_loop)
-                result_path = future.result(timeout=3600)
-
-                if not result_path or not os.path.exists(result_path) or os.path.getsize(result_path) == 0:
-                    self.initialized = False
-                    self.initialized_for = None
-                    return False
-            except Exception as e:
-                logger.error(f"Warmup failed: {e}", exc_info=True)
-                self.initialized = False
-                self.initialized_for = None
-                return False
-
         return True
 
     async def voiceover(self, text: str, character: Optional[Any] = None, **kwargs) -> Optional[str]:
@@ -773,12 +743,6 @@ class FishSpeechModel(IVoiceModel):
                         final_output_path = output_file_abs
                 except Exception:
                     pass
-
-            if self.events:
-                res_conn = self.events.emit_and_wait(Events.Server.GET_GAME_CONNECTION)
-                connected_to_game = res_conn[0] if res_conn else False
-                if connected_to_game and final_output_path:
-                    self.events.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, final_output_path)
 
             return final_output_path
 
