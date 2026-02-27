@@ -51,7 +51,6 @@ class InstallController:
 
         timeout_sec = float(data.get("timeout_sec", 3600.0) or 3600.0)
 
-        # Blocking run, no UI callbacks (but InstallController will still emit TASK_* events)
         return bool(self.run_task(
             task_id=str(task_id),
             runner=runner,
@@ -62,8 +61,8 @@ class InstallController:
 
     def _make_pip_installer(self, cb: InstallCallbacks) -> PipInstaller:
         return PipInstaller(
-            script_path=self.script_path,
-            libs_path=self.libs_path,
+            # script_path=self.script_path,
+            # libs_path=self.libs_path,
             update_status=cb.status,
             update_log=cb.log,
             update_progress=cb.progress,
