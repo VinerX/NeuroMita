@@ -60,6 +60,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time=""):
 
     delegate = _get_delegate(gui)
     hide_tags = gui._get_setting("HIDE_CHAT_TAGS", False)
+    think_italic = (role == "think")
 
     normalized_parts = []
     for part in processed_content_parts:
@@ -91,7 +92,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time=""):
                 color = delegate.tag_color
             else:
                 color = content_color
-            _insert_formatted_text(gui, cursor, part["content"], color)
+            _insert_formatted_text(gui, cursor, part["content"], color, italic=think_italic and part.get("tag") != "tag_green")
         elif part["type"] == "image":
             cursor.insertImage(part["content"])
             cursor.insertText("\n")
@@ -107,7 +108,7 @@ def insert_message_end(gui, cursor=None, role="assistant"):
         cursor = gui.chat_window.textCursor()
     if role == "user":
         cursor.insertText("\n")
-    elif role in {"assistant", "system"}:
+    elif role in {"assistant", "system", "think"}:
         cursor.insertText("\n\n")
 
 

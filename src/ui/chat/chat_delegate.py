@@ -10,9 +10,11 @@ class ChatMessageDelegate:
             "user": QColor("gold"),
             "assistant": QColor("hot pink"),
             "system": QColor("#66ccff"),
+            "think": QColor("#aaaaaa"),
         }
         self.role_content_colors = {
             "system": QColor("#a7d8ff"),
+            "think": QColor("#b0b0b0"),
         }
         self.tag_color = QColor("#00FF00")
 

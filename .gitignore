@@ -23,3 +23,6 @@ ffmpeg_download_temp.zip
 NeuroMita
 /Models
 vec-768-layer-12.onnx
+/checkpoints
+hubert_base.pt
+rmvpe.pt

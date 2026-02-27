@@ -11,6 +11,56 @@ from managers.task_manager import TaskStatus
 from core.request_policy import RequestPolicy, resolve_policy
 
 
+class ThinkTagStreamFilter:
+    """
+    Streaming-time filter that prevents <think>...</think> from being echoed
+    into the normal assistant stream output. Accumulates think text separately.
+
+    Note: simple exact-tag matching (<think>, </think>) to keep it predictable.
+    """
+    START = "<think>"
+    END = "</think>"
+
+    def __init__(self):
+        self._buf = ""
+        self._in_think = False
+        self._think_parts: list[str] = []
+        self._keep_tail = max(len(self.START), len(self.END)) - 1
+
+    def feed(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+        self._buf += str(chunk)
+        out = ""
+
+        while True:
+            if self._in_think:
+                idx = self._buf.find(self.END)
+                if idx == -1:
+                    if len(self._buf) > self._keep_tail:
+                        self._think_parts.append(self._buf[:-self._keep_tail])
+                        self._buf = self._buf[-self._keep_tail:]
+                    break
+                self._think_parts.append(self._buf[:idx])
+                self._buf = self._buf[idx + len(self.END):]
+                self._in_think = False
+            else:
+                idx = self._buf.find(self.START)
+                if idx == -1:
+                    if len(self._buf) > self._keep_tail:
+                        out += self._buf[:-self._keep_tail]
+                        self._buf = self._buf[-self._keep_tail:]
+                    break
+                out += self._buf[:idx]
+                self._buf = self._buf[idx + len(self.START):]
+                self._in_think = True
+
+        return out
+
+    def flush_visible(self) -> str:
+        if self._in_think:
+            if self._buf:
+                self._think_parts.append(self._buf)
 class ChatController:
     def __init__(self, settings):
         self.settings = settings
@@ -109,9 +159,18 @@ class ChatController:
 
             is_streaming = bool(self.settings.get("ENABLE_STREAMING", False)) and eff_policy.allow_streaming and eff_policy.echo_to_ui
 
+            show_think_in_gui = bool(self.settings.get("SHOW_THINK_IN_GUI", False))
+            stream_think_filter = ThinkTagStreamFilter() if (is_streaming and show_think_in_gui) else None
+
             def stream_callback_handler(chunk: str):
-                if eff_policy.echo_to_ui:
+                if not eff_policy.echo_to_ui:
+                    return
+                if stream_think_filter is None:
                     self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": chunk})
+                    return
+                visible = stream_think_filter.feed(str(chunk or ""))
+                if visible:
+                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": visible})
 
             if image_data:
                 prepared: list[bytes] = []
@@ -159,6 +218,7 @@ class ChatController:
                 return None
 
             target = "Player"
+            think_text = None
             if isinstance(payload, dict):
                 response_text = payload.get("text")
                 voice_profile = payload.get("voice_profile")
@@ -189,6 +249,12 @@ class ChatController:
                     "character_name": effective_character_name or "",
                     "speaker_name": effective_character_name or "",
                 })
+
+            # If we filtered streaming output, we may have a small tail held back
+            if is_streaming and eff_policy.echo_to_ui and stream_think_filter is not None:
+                tail = stream_think_filter.flush_visible()
+                if tail:
+                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": tail})
 
             if response_text and self.settings.get("USE_VOICEOVER") and eff_policy.allow_voiceover:
                 if isinstance(voice_profile, dict):
@@ -249,6 +315,23 @@ class ChatController:
                     "target": target,
                 })
 
+            # Show think blocks as a separate GUI-only message (NOT saved in history).
+            # If streaming filter was enabled, payload think should match; fallback to filter.
+            if eff_policy.echo_to_ui and show_think_in_gui:
+                if (not think_text) and (stream_think_filter is not None):
+                    think_text = stream_think_filter.think_text()
+                if isinstance(think_text, str) and think_text.strip():
+                    self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
+                        "role": "think",
+                        "response": [
+                            {"type": "meta", "speaker": effective_character_name or ""},
+                            {"type": "text", "text": think_text.strip()},
+                        ],
+                        "is_initial": False,
+                        "emotion": "",
+                        "character_id": effective_character_id or "",
+                        "character_name": effective_character_name or "",
+                        "speaker_name": effective_character_name or ""})
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)
             self.event_bus.emit(Events.GUI.UPDATE_TOKEN_COUNT)
