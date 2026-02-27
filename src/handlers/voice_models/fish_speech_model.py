@@ -314,14 +314,25 @@ class FishSpeechInstallSpec:
     def build_install_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
         mid = str(model_id)
         if cls.is_installed(mid, ctx):
-            return InstallPlan(actions=[], already_installed=True, already_installed_status=_("Уже установлено", "Already installed"))
+            return InstallPlan(
+                actions=[],
+                already_installed=True,
+                already_installed_status=_("Уже установлено", "Already installed")
+            )
 
         allow_unsupported = os.environ.get("ALLOW_UNSUPPORTED_GPU", "0") == "1"
         gpu = str((ctx or {}).get("gpu_vendor") or "")
 
         if gpu != "NVIDIA" and not allow_unsupported:
             return InstallPlan(
-                actions=[InstallAction(type="call", description=_("Требуется NVIDIA GPU", "NVIDIA GPU required"), progress=5, fn=lambda **_k: False)],
+                actions=[
+                    InstallAction(
+                        type="call",
+                        description=_("Требуется NVIDIA GPU", "NVIDIA GPU required"),
+                        progress=5,
+                        fn=lambda **_k: False
+                    )
+                ],
                 already_installed=False,
             )
 
@@ -329,21 +340,31 @@ class FishSpeechInstallSpec:
 
         actions.append(torch_install_action(ctx, progress=10))
 
+        pkgs = [
+            "fish-speech-lib",
+            "numpy==1.26.0",
+            "librosa==0.9.1",
+            "numba==0.60.0",
+        ]
+        if mid == "medium+low":
+            pkgs.append("tts-with-rvc")
+
         actions.append(
             InstallAction(
                 type="pip",
-                description=_("Установка Fish Speech...", "Installing Fish Speech..."),
-                progress=30,
-                packages=["fish-speech-lib", "librosa==0.9.1"],
+                description=_("Установка зависимостей Fish Speech...", "Installing Fish Speech dependencies..."),
+                progress=45,
+                packages=pkgs,
             )
         )
 
+        # Triton оставляем отдельным шагом (и окно/патчи — отдельно)
         if mid in ("medium+", "medium+low"):
             actions.append(
                 InstallAction(
                     type="pip",
                     description=_("Установка Triton...", "Installing Triton..."),
-                    progress=55,
+                    progress=65,
                     packages=["triton-windows<3.4"],
                     extra_args=["--upgrade"],
                 )
@@ -352,18 +373,8 @@ class FishSpeechInstallSpec:
                 InstallAction(
                     type="call",
                     description=_("Патчи/инициализация Triton...", "Patching/initializing Triton..."),
-                    progress=75,
+                    progress=80,
                     fn=cls._ensure_triton_ready_call(mid),
-                )
-            )
-
-        if mid == "medium+low":
-            actions.append(
-                InstallAction(
-                    type="pip",
-                    description=_("Установка Edge/RVC компонента...", "Installing Edge/RVC component..."),
-                    progress=90,
-                    packages=["tts-with-rvc"],
                 )
             )
 

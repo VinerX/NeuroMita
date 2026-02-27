@@ -94,52 +94,35 @@ class EdgeTTSRVCInstallSpec:
     def build_install_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
         mid = str(model_id)
         if cls.is_installed(mid, ctx):
-            return InstallPlan(actions=[], already_installed=True, already_installed_status=_("Уже установлено", "Already installed"))
+            return InstallPlan(
+                actions=[],
+                already_installed=True,
+                already_installed_status=_("Уже установлено", "Already installed")
+            )
 
         gpu = str((ctx or {}).get("gpu_vendor") or "CPU")
         actions: list[InstallAction] = []
 
-        # Historical behavior: torch only for NVIDIA branch
-        if gpu == "NVIDIA":
-            actions.append(torch_install_action(ctx, progress=10))
+        actions.append(torch_install_action(ctx, progress=10))
+
+        pkgs: list[str] = ["omegaconf"]
+
+        if mid == "low+":
+            pkgs.append("silero")
+
+        if gpu == "AMD":
+            pkgs.append("tts-with-rvc-onnx[dml]")
+        else:
+            pkgs.append("tts-with-rvc")
 
         actions.append(
             InstallAction(
                 type="pip",
                 description=_("Установка зависимостей...", "Installing dependencies..."),
-                progress=35,
-                packages=["omegaconf"],
+                progress=60,
+                packages=pkgs,
             )
         )
-
-        if mid == "low+":
-            actions.append(
-                InstallAction(
-                    type="pip",
-                    description=_("Установка библиотеки silero...", "Installing silero library..."),
-                    progress=45,
-                    packages=["silero"],
-                )
-            )
-
-        if gpu == "AMD":
-            actions.append(
-                InstallAction(
-                    type="pip",
-                    description=_("Установка tts-with-rvc (AMD/DirectML)...", "Installing tts-with-rvc (AMD/DirectML)..."),
-                    progress=70,
-                    packages=["tts-with-rvc-onnx[dml]"],
-                )
-            )
-        else:
-            actions.append(
-                InstallAction(
-                    type="pip",
-                    description=_("Установка tts-with-rvc (NVIDIA)...", "Installing tts-with-rvc (NVIDIA)..."),
-                    progress=70,
-                    packages=["tts-with-rvc"],
-                )
-            )
 
         actions.append(
             InstallAction(
