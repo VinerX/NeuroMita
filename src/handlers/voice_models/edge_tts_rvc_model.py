@@ -56,7 +56,7 @@ class EdgeTTSRVCInstallSpec:
         def _fn(*, pip_installer=None, callbacks=None, ctx=None, **_kwargs) -> bool:
             cb = callbacks
             libs_path_abs = getattr(pip_installer, "libs_path_abs", None) if pip_installer else None
-            libs_path_abs = str(libs_path_abs or os.path.abspath("Lib"))
+            libs_path_abs = str(libs_path_abs or os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib")))
 
             def log(m: str):
                 try:
@@ -335,18 +335,16 @@ class EdgeTTS_RVC_Model(IVoiceModel):
         self._import_attempted = True
         self._silero_available = False
 
-        libs_path_abs = os.path.abspath("Lib")
+        libs_path_abs = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
         if libs_path_abs not in sys.path:
             sys.path.insert(0, libs_path_abs)
 
-        # Try primary import
         try:
             from tts_with_rvc import TTS_RVC
             self.tts_rvc_module = TTS_RVC
         except Exception:
-            # Fallback for some AMD builds (best-effort)
             try:
-                from tts_with_rvc_onnx import TTS_RVC  # type: ignore
+                from tts_with_rvc_onnx import TTS_RVC
                 self.tts_rvc_module = TTS_RVC
             except Exception:
                 self.tts_rvc_module = None

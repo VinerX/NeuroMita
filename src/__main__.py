@@ -84,16 +84,32 @@ if os.environ.get("VERBOSE_TRITON_LOGS", "0") == "1":
     
 os.environ["UV_LINK_MODE"] = "copy"
 
-logger.info(f"Текущий sys.executable: {os.path.dirname(sys.executable)}")
+#region Переменные для путей
+current_file = os.path.abspath(__file__)
+base_dir = os.path.dirname(os.path.dirname(current_file))
 
-libs_dir = os.path.join(os.path.dirname(sys.executable), "Lib")
+os.environ["NEUROMITA_BASE_DIR"] = base_dir
+os.environ["NEUROMITA_LIB_DIR"] = os.path.join(base_dir, "Lib")
+
+libs_dir = os.environ["NEUROMITA_LIB_DIR"]
 if not os.path.exists(libs_dir):
     os.makedirs(libs_dir)
 
+local_python = os.path.join(base_dir, "libs", "python", "python.exe")
+if os.path.exists(local_python):
+    os.environ["NEUROMITA_PYTHON"] = local_python
+else:
+    os.environ["NEUROMITA_PYTHON"] = sys.executable
+#endregion
 
 
+logger.info(f"Базовая директория: {os.environ['NEUROMITA_BASE_DIR']}")
+logger.info(f"Python: {os.environ['NEUROMITA_PYTHON']}")
 logger.info(libs_dir)
-sys.path.insert(0, libs_dir)
+
+
+if libs_dir not in sys.path:
+    sys.path.insert(0, libs_dir)
 import importlib.util, ctypes, pathlib, os
 
 # ort_spec = importlib.util.find_spec("onnxruntime")
@@ -222,7 +238,7 @@ if os.path.exists(build_py_path):
 
 
 def ensure_project_root():
-    project_root_file = os.path.join(os.path.dirname(sys.executable), '.project-root')
+    project_root_file = os.path.join(os.environ["NEUROMITA_BASE_DIR"], '.project-root')
     
     if not os.path.exists(project_root_file):
         open(project_root_file, 'w').close()

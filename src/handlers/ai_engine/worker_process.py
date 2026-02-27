@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 
 
 def _ensure_lib_on_path() -> None:
-    lib_path = os.path.abspath("Lib")
+    lib_path = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
     if lib_path not in sys.path:
         sys.path.insert(0, lib_path)
 
@@ -30,8 +30,6 @@ def run_worker_process(service_name: str, cmd_queue, res_queue, log_queue) -> No
     try:
         _ensure_lib_on_path()
 
-        # onnxruntime может конфликтовать с Qt в одном процессе — здесь Qt нет.
-        # Но если сервису нужен ORT, ранний импорт уменьшает "первый лаг" позже.
         try:
             import importlib
             importlib.invalidate_caches()

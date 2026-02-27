@@ -34,7 +34,7 @@ def run_ai_engine_process(cmd_queue, res_queue, log_queue) -> None:
 
 
 def _ensure_lib_on_path() -> None:
-    lib_path = os.path.abspath("Lib")
+    lib_path = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
     if lib_path not in sys.path:
         sys.path.insert(0, lib_path)
 

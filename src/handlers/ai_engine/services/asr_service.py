@@ -202,7 +202,6 @@ class ASRService:
         if not cls:
             return None
 
-        # pip_installer/логгер им нужны в основном для install/log
         if self._logger is None:
             from main_logger import logger as _logger
             self._logger = _logger
@@ -211,8 +210,6 @@ class ASRService:
             try:
                 from utils.pip_installer import PipInstaller
                 self._pip_installer = PipInstaller(
-                    script_path=r"libs\python\python.exe",
-                    libs_path="Lib",
                     update_log=self._logger.info,
                 )
             except Exception:

@@ -26,14 +26,13 @@ class InstallController:
     - NEW: supports blocking event-driven installs via Events.Install.RUN_BLOCKING
     """
 
-    def __init__(self, script_path: str = r"libs\python\python.exe", libs_path: str = "Lib"):
-        self.script_path = script_path
-        self.libs_path = libs_path
+    def __init__(self):
+        self.script_path = os.environ.get("NEUROMITA_PYTHON", sys.executable)
+        self.libs_path = os.environ.get("NEUROMITA_LIB_DIR", "Lib")
         self.event_bus = get_event_bus()
         self._subscribe_to_events()
 
     def _subscribe_to_events(self) -> None:
-        # This enables providers to do eb.emit_and_wait(Events.Install.RUN_BLOCKING, ...)
         self.event_bus.subscribe(Events.Install.RUN_BLOCKING, self._on_run_blocking, weak=False)
 
     def _on_run_blocking(self, event: Event) -> bool:

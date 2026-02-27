@@ -45,20 +45,19 @@ class FishSpeechInstallSpec:
         st = check_requirements(cls.requirements(model_id, ctx), ctx=ctx)
         return bool(st.get("ok"))
 
-    @classmethod
+    @@classmethod
     def _libs_path_abs(cls, pip_installer) -> str:
         lp = getattr(pip_installer, "libs_path_abs", None)
         if lp:
             return str(lp)
-        libs_path = getattr(pip_installer, "libs_path", None) or "Lib"
-        return os.path.abspath(str(libs_path))
+        return os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
 
     @classmethod
     def _script_path(cls, pip_installer) -> str:
         sp = getattr(pip_installer, "script_path", None)
         if sp:
             return str(sp)
-        return sys.executable
+        return os.environ.get("NEUROMITA_PYTHON", sys.executable)
 
     @classmethod
     def _ensure_sys_path(cls, libs_path_abs: str) -> None:

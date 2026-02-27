@@ -18,8 +18,8 @@ QUERY_PREFIX = "query: "
 
 
 def _ensure_checkpoints_dir() -> str:
-    script_dir = os.path.dirname(sys.executable)
-    checkpoints_dir = os.path.join(script_dir, "checkpoints")
+    base_dir = os.environ.get("NEUROMITA_BASE_DIR", os.path.dirname(sys.executable))
+    checkpoints_dir = os.path.join(base_dir, "checkpoints")
     os.makedirs(checkpoints_dir, exist_ok=True)
     return checkpoints_dir
 
@@ -30,8 +30,6 @@ checkpoints_dir = _ensure_checkpoints_dir()
 def _get_default_pip_installer() -> Optional[PipInstaller]:
     try:
         return PipInstaller(
-            script_path=r"libs\python\python.exe",
-            libs_path="Lib",
             update_log=logger.info
         )
     except Exception:
@@ -39,7 +37,7 @@ def _get_default_pip_installer() -> Optional[PipInstaller]:
 
 
 def _ensure_lib_on_path():
-    lib_path = os.path.abspath("Lib")
+    lib_path = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
     if lib_path not in sys.path:
         sys.path.insert(0, lib_path)
 

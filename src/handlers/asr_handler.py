@@ -173,11 +173,7 @@ class SpeechRecognition:
     @staticmethod
     def _init_pip():
         if SpeechRecognition._pip_installer is None:
-            SpeechRecognition._pip_installer = PipInstaller(
-                script_path=r"libs\python\python.exe",
-                libs_path="Lib",
-                update_log=logger.info
-            )
+            SpeechRecognition._pip_installer = PipInstaller(update_log=logger.info)
 
     @staticmethod
     def _new_instance(engine: str) -> Optional[SpeechRecognizerInterface]:

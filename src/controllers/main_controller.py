@@ -60,8 +60,6 @@ class MainController:
 
         try:
             self.pip_installer = PipInstaller(
-                script_path=r"libs\python\python.exe",
-                libs_path="Lib",
                 update_log=logger.info
             )
             logger.notify("PipInstaller успешно инициализирован.")
@@ -71,7 +69,7 @@ class MainController:
 
         self._check_and_perform_pending_update()
 
-        self.install_controller = InstallController(script_path=r"libs\python\python.exe", libs_path="Lib")
+        self.install_controller = InstallController()
         logger.notify("InstallController успешно инициализирован.")
 
         self.ai_engine_controller = AIEngineController()
