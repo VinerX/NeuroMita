@@ -578,6 +578,10 @@ class SpeechRecognition:
         logger.info(f"Запущено распознавание речи (local) на устройстве {device_id}")
 
     @staticmethod
+    async def speech_recognition_start_async():
+        await SpeechRecognition.live_recognition()
+
+    @staticmethod
     def speech_recognition_stop():
         if not SpeechRecognition._is_running:
             return
