@@ -84,6 +84,8 @@ if os.environ.get("VERBOSE_TRITON_LOGS", "0") == "1":
     
 os.environ["UV_LINK_MODE"] = "copy"
 
+logger.info(f"Текущий sys.executable: {os.path.dirname(sys.executable)}")
+
 libs_dir = os.path.join(os.path.dirname(sys.executable), "Lib")
 if not os.path.exists(libs_dir):
     os.makedirs(libs_dir)
@@ -223,7 +225,7 @@ def ensure_project_root():
     project_root_file = os.path.join(os.path.dirname(sys.executable), '.project-root')
     
     if not os.path.exists(project_root_file):
-        open(project_root_file, 'w').close() # Создать пустой файл
+        open(project_root_file, 'w').close()
         logger.info(f"Файл '{project_root_file}' создан.")
 
 ensure_project_root()

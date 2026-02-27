@@ -22,6 +22,7 @@ from controllers.voice_model_controller import VoiceModelController
 from controllers.install_controller import InstallController
 from controllers.protocols_controller import ProtocolsController
 from controllers.ai_engine_controller import AIEngineController
+from controllers.install_events_controller import InstallEventsController
 
 from main_logger import logger
 from utils.ffmpeg_installer import install_ffmpeg
@@ -73,6 +74,9 @@ class MainController:
 
         self.install_controller = InstallController(script_path=r"libs\python\python.exe", libs_path="Lib")
         logger.notify("InstallController успешно инициализирован.")
+
+        self.install_events_controller = InstallEventsController()
+        logger.notify("InstallEventsController успешно инициализирован.")
 
         self.ai_engine_controller = AIEngineController()
         logger.notify("AIEngineController успешно инициализирован (separate process).")
