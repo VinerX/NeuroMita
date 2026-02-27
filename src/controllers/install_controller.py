@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional, Any, Iterable
 import os
+import sys
 import time
 import urllib.request
 import urllib.error

@@ -11,6 +11,7 @@ from typing import Optional, Any, List, Dict
 from .base_model import IVoiceModel
 from main_logger import logger
 
+from core.events import Events
 from utils import getTranslationVariant as _, get_character_voice_paths
 
 from core.install_types import InstallPlan, InstallAction
@@ -45,7 +46,7 @@ class FishSpeechInstallSpec:
         st = check_requirements(cls.requirements(model_id, ctx), ctx=ctx)
         return bool(st.get("ok"))
 
-    @@classmethod
+    @classmethod
     def _libs_path_abs(cls, pip_installer) -> str:
         lp = getattr(pip_installer, "libs_path_abs", None)
         if lp:
