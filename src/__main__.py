@@ -202,7 +202,7 @@ if os.path.exists(compiler_path):
     # Заменяем путь к tcc.exe
     patched_source = source.replace(
         'cc = os.path.join(sysconfig.get_paths()["platlib"], "triton", "runtime", "tcc", "tcc.exe")',
-        'cc = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tcc", "tcc.exe")'
+        f'cc = os.path.join("{libs_dir}", "triton", "runtime", "tcc", "tcc.exe")'
     )
 
     with open(build_py_path, "w", encoding="utf-8") as f:
