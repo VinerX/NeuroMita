@@ -58,9 +58,19 @@ class ThinkTagStreamFilter:
         return out
 
     def flush_visible(self) -> str:
+        """Вызывается в конце потока для сбора оставшегося видимого текста."""
         if self._in_think:
             if self._buf:
                 self._think_parts.append(self._buf)
+            self._in_think = False
+            self._buf = ""
+        return ""
+
+    def think_text(self) -> str:
+        """Возвращает весь собранный текст размышлений."""
+        return "".join(self._think_parts).strip()
+
+
 class ChatController:
     def __init__(self, settings):
         self.settings = settings
@@ -224,6 +234,7 @@ class ChatController:
                 voice_profile = payload.get("voice_profile")
                 effective_character_id = payload.get("character_id") or character_id
                 target = str(payload.get("target") or "Player")
+                think_text = payload.get("think")
             else:
                 response_text = payload
                 voice_profile = None
