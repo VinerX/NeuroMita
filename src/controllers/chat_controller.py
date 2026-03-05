@@ -314,24 +314,8 @@ class ChatController:
 
             if is_streaming and eff_policy.echo_to_ui:
                 self.event_bus.emit(Events.GUI.FINISH_STREAM_UI)
-            elif (not is_streaming) and eff_policy.echo_to_ui:
-                self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
-                    "role": "assistant",
-                    "response": response_text if response_text is not None else "...",
-                    "is_initial": False,
-                    "emotion": "",
-                    "character_id": effective_character_id or "",
-                    "character_name": effective_character_name or "",
-                    "speaker_name": effective_character_name or "",
-                    "target": target,
-                })
-
-            # Show think blocks as a separate GUI-only message (NOT saved in history).
-            # If streaming filter was enabled, payload think should match; fallback to filter.
-            if eff_policy.echo_to_ui and show_think_in_gui:
-                if (not think_text) and (stream_think_filter is not None):
-                    think_text = stream_think_filter.think_text()
-                if isinstance(think_text, str) and think_text.strip():
+                # После завершения стрима отправляем think, если есть
+                if show_think_in_gui and think_text:
                     self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                         "role": "think",
                         "response": [
@@ -342,7 +326,33 @@ class ChatController:
                         "emotion": "",
                         "character_id": effective_character_id or "",
                         "character_name": effective_character_name or "",
-                        "speaker_name": effective_character_name or ""})
+                        "speaker_name": effective_character_name or ""
+                    })
+            elif (not is_streaming) and eff_policy.echo_to_ui:
+                # Для не-стриминга отправляем think перед основным ответом
+                if show_think_in_gui and think_text:
+                    self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
+                        "role": "think",
+                        "response": [
+                            {"type": "meta", "speaker": effective_character_name or ""},
+                            {"type": "text", "text": think_text.strip()},
+                        ],
+                        "is_initial": False,
+                        "emotion": "",
+                        "character_id": effective_character_id or "",
+                        "character_name": effective_character_name or "",
+                        "speaker_name": effective_character_name or ""
+                    })
+                self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
+                    "role": "assistant",
+                    "response": response_text if response_text is not None else "...",
+                    "is_initial": False,
+                    "emotion": "",
+                    "character_id": effective_character_id or "",
+                    "character_name": effective_character_name or "",
+                    "speaker_name": effective_character_name or "",
+                    "target": target,
+                })
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)
             self.event_bus.emit(Events.GUI.UPDATE_TOKEN_COUNT)
