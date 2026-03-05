@@ -1,6 +1,6 @@
 import io
 import base64
-from PyQt6.QtGui import QTextCursor, QColor, QImage, QFont, QPalette
+from PyQt6.QtGui import QTextCursor, QColor, QImage, QFont, QPalette, QTextCharFormat
 from utils import _
 from main_logger import logger
 from ui.chat.chat_delegate import ChatMessageDelegate
@@ -116,43 +116,68 @@ def insert_speaker_name(gui, cursor=None, role="assistant"):
     delegate = _get_delegate(gui)
     if not cursor:
         cursor = gui.chat_window.textCursor()
-    speaker_name = ""
-    if role == "assistant":
-        speaker_name = str(getattr(gui, "_stream_speaker_name", "") or "")
+    
+    # Получаем имя спикера из метаданных стрима, если оно там есть
+    speaker_name = str(getattr(gui, "_stream_speaker_name", "") or "")
+    
     label_text, label_color, label_bold = delegate.get_label(gui, role, speaker_name=speaker_name)
     _insert_formatted_text(gui, cursor, label_text, label_color, bold=label_bold)
 
 
 def _insert_formatted_text(gui, cursor, text, color=None, bold=False, italic=False):
     char_format = cursor.charFormat()
+    
+    # Создаем новый формат, чтобы не наследовать старые свойства
+    new_format = QTextCharFormat()
+    
     if color:
-        char_format.setForeground(color)
+        new_format.setForeground(color)
     else:
         default_text_color = gui.chat_window.palette().color(QPalette.ColorRole.Text)
-        char_format.setForeground(default_text_color)
+        new_format.setForeground(default_text_color)
+        
     font = QFont("Arial", int(gui._get_setting("CHAT_FONT_SIZE", 12)))
     font.setBold(bold)
     font.setItalic(italic)
-    char_format.setFont(font)
-    cursor.insertText(text, char_format)
+    new_format.setFont(font)
+    
+    cursor.insertText(text, new_format)
 
 
-def append_message(gui, text):
+def append_message(gui, text, color=None, italic=False):
     cursor = gui.chat_window.textCursor()
     cursor.movePosition(QTextCursor.MoveOperation.End)
-    _insert_formatted_text(gui, cursor, text)
+    
+    # Если текст начинается с новой строки, убираем лишние пробелы
+    if text.startswith("\n"):
+        _insert_formatted_text(gui, cursor, text, color=color, italic=italic)
+    else:
+        _insert_formatted_text(gui, cursor, text, color=color, italic=italic)
+        
     gui.chat_window.verticalScrollBar().setValue(gui.chat_window.verticalScrollBar().maximum())
 
 
-def prepare_stream_slot(gui):
-    insert_speaker_name(gui, role="assistant")
+def prepare_stream_slot(gui, role="assistant"):
+    # Если мы переключаемся на ассистента после think,
+    # нам нужно вставить имя спикера.
+    # Но если это самое начало стрима и роль think, тоже вставляем.
+    insert_speaker_name(gui, role=role)
 
 
 def append_stream_chunk_slot(gui, chunk, role="assistant"):
-    # Если роль - think, мы можем захотеть отображать это иначе,
-    # но пока просто убеждаемся, что текст добавляется.
-    # В будущем здесь можно добавить переключение контекста рендеринга.
-    append_message(gui, chunk)
+    delegate = _get_delegate(gui)
+    
+    # Получаем цвет контента для текущей роли
+    color = delegate.get_content_color(role)
+    
+    # Для роли think всегда используем курсив
+    italic = (role == "think")
+    
+    # Если цвет не задан в делегате, используем цвет по умолчанию для этой роли из меток
+    if not color and role in delegate.role_label_colors:
+        color = delegate.role_label_colors[role]
+        
+    append_message(gui, chunk, color=color, italic=italic)
 
 
 def finish_stream_slot(gui):

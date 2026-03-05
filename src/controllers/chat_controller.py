@@ -178,7 +178,19 @@ class ChatController:
 
             show_think_in_gui = bool(self.settings.get("SHOW_THINK_IN_GUI", False))
             
+            self._stream_current_role = None
+
             def on_think_chunk(think_chunk: str):
+                if self._stream_current_role != "think":
+                    # При первом чанке размышлений подготавливаем UI
+                    self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                        "character_id": character_id or "",
+                        "character_name": self._resolve_character_name(character_id),
+                        "speaker_name": self._resolve_character_name(character_id),
+                        "role": "think"
+                    })
+                    self._stream_current_role = "think"
+                
                 # Отправляем чанки размышлений в UI в реальном времени
                 self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": think_chunk, "role": "think"})
 
@@ -188,18 +200,34 @@ class ChatController:
                 if not eff_policy.echo_to_ui:
                     return
                 
-                # Убеждаемся, что чанк - это строка
                 chunk_str = str(chunk or "")
                 if not chunk_str:
                     return
 
                 if stream_think_filter is None:
-                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": chunk_str})
+                    if self._stream_current_role != "assistant":
+                        self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                            "character_id": effective_character_id or "",
+                            "character_name": effective_character_name or "",
+                            "speaker_name": effective_character_name or "",
+                            "role": "assistant"
+                        })
+                        self._stream_current_role = "assistant"
+                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": chunk_str, "role": "assistant"})
                     return
                 
                 visible = stream_think_filter.feed(chunk_str)
                 if visible:
-                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": visible})
+                    if self._stream_current_role != "assistant":
+                        self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                            "character_id": effective_character_id or "",
+                            "character_name": effective_character_name or "",
+                            "speaker_name": effective_character_name or "",
+                            "role": "assistant"
+                        })
+                        self._stream_current_role = "assistant"
+                    
+                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": visible, "role": "assistant"})
 
             if image_data:
                 prepared: list[bytes] = []
@@ -274,11 +302,10 @@ class ChatController:
             effective_character_name = self._resolve_character_name(effective_character_id)
 
             if is_streaming and eff_policy.echo_to_ui:
-                self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
-                    "character_id": effective_character_id or "",
-                    "character_name": effective_character_name or "",
-                    "speaker_name": effective_character_name or "",
-                })
+                # Мы НЕ вызываем PREPARE_STREAM_UI здесь, так как он будет вызван
+                # динамически в stream_callback_handler при получении первого чанка
+                # (либо для think, либо для assistant).
+                pass
 
             # If we filtered streaming output, we may have a small tail held back
             if is_streaming and eff_policy.echo_to_ui and stream_think_filter is not None:
@@ -333,19 +360,25 @@ class ChatController:
 
             if is_streaming and eff_policy.echo_to_ui:
                 self.event_bus.emit(Events.GUI.FINISH_STREAM_UI)
-                # После завершения стрима отправляем think, если есть
-                if show_think_in_gui and think_text:
+                # ВАЖНО: Мы НЕ отправляем UPDATE_CHAT_UI для think после стрима,
+                # так как мы уже вывели его в реальном времени через APPEND_STREAM_CHUNK_UI.
+                # Это предотвращает дублирование.
+                
+                # Но нам нужно отправить основной ответ, если он не был выведен полностью
+                # (хотя в теории он должен был быть выведен через стрим).
+                # Однако, чтобы гарантировать наличие итогового сообщения в истории UI
+                # и корректное завершение, мы можем отправить финальный UPDATE_CHAT_UI
+                # ТОЛЬКО для роли assistant, если текст ответа есть.
+                if response_text:
                     self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
-                        "role": "think",
-                        "response": [
-                            {"type": "meta", "speaker": effective_character_name or ""},
-                            {"type": "text", "text": think_text.strip()},
-                        ],
+                        "role": "assistant",
+                        "response": response_text,
                         "is_initial": False,
                         "emotion": "",
                         "character_id": effective_character_id or "",
                         "character_name": effective_character_name or "",
-                        "speaker_name": effective_character_name or ""
+                        "speaker_name": effective_character_name or "",
+                        "target": target,
                     })
             elif (not is_streaming) and eff_policy.echo_to_ui:
                 # Для не-стриминга отправляем think перед основным ответом

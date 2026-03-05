@@ -31,6 +31,10 @@ class ChatMessageDelegate:
         if role == "system":
             return (_("Система: ", "System: "), self.role_label_colors["system"], True)
 
+        if role == "think":
+            name = speaker_name or (gui._get_character_name() if hasattr(gui, "_get_character_name") else "Assistant")
+            return (_("Мышление {}: ", "Thinking {}: ").format(name), self.role_label_colors["think"], True)
+
         return (f"{role}: ", QColor("#dcdcdc"), True)
 
     def get_content_color(self, role: str):
