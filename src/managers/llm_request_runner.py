@@ -108,4 +108,17 @@ class LLMRequestRunner:
             kwargs = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(func, *args, **kwargs)
-            return future.result(timeout=timeout)
+            
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                if future.done():
+                    return future.result()
+                
+                # Даем возможность другим потокам/событиям выполниться.
+                # В контексте Qt/asyncio это помогает избежать полной заморозки,
+                # хотя сам метод остается синхронным.
+                time.sleep(0.01)
+            
+            # Если вышли из цикла по таймауту
+            future.cancel()
+            raise concurrent.futures.TimeoutError(f"Request timed out after {timeout}s")

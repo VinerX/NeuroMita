@@ -21,11 +21,12 @@ class ThinkTagStreamFilter:
     START = "<think>"
     END = "</think>"
 
-    def __init__(self):
+    def __init__(self, on_think_chunk=None):
         self._buf = ""
         self._in_think = False
         self._think_parts: list[str] = []
         self._keep_tail = max(len(self.START), len(self.END)) - 1
+        self.on_think_chunk = on_think_chunk
 
     def feed(self, chunk: str) -> str:
         if not chunk:
@@ -38,10 +39,16 @@ class ThinkTagStreamFilter:
                 idx = self._buf.find(self.END)
                 if idx == -1:
                     if len(self._buf) > self._keep_tail:
-                        self._think_parts.append(self._buf[:-self._keep_tail])
+                        new_think = self._buf[:-self._keep_tail]
+                        self._think_parts.append(new_think)
+                        if self.on_think_chunk:
+                            self.on_think_chunk(new_think)
                         self._buf = self._buf[-self._keep_tail:]
                     break
-                self._think_parts.append(self._buf[:idx])
+                new_think = self._buf[:idx]
+                self._think_parts.append(new_think)
+                if self.on_think_chunk:
+                    self.on_think_chunk(new_think)
                 self._buf = self._buf[idx + len(self.END):]
                 self._in_think = False
             else:
@@ -170,15 +177,27 @@ class ChatController:
             is_streaming = bool(self.settings.get("ENABLE_STREAMING", False)) and eff_policy.allow_streaming and eff_policy.echo_to_ui
 
             show_think_in_gui = bool(self.settings.get("SHOW_THINK_IN_GUI", False))
-            stream_think_filter = ThinkTagStreamFilter() if (is_streaming and show_think_in_gui) else None
+            
+            def on_think_chunk(think_chunk: str):
+                # Отправляем чанки размышлений в UI в реальном времени
+                self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": think_chunk, "role": "think"})
+
+            stream_think_filter = ThinkTagStreamFilter(on_think_chunk=on_think_chunk if show_think_in_gui else None) if is_streaming else None
 
             def stream_callback_handler(chunk: str):
                 if not eff_policy.echo_to_ui:
                     return
-                if stream_think_filter is None:
-                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": chunk})
+                
+                # Убеждаемся, что чанк - это строка
+                chunk_str = str(chunk or "")
+                if not chunk_str:
                     return
-                visible = stream_think_filter.feed(str(chunk or ""))
+
+                if stream_think_filter is None:
+                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": chunk_str})
+                    return
+                
+                visible = stream_think_filter.feed(chunk_str)
                 if visible:
                     self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": visible})
 

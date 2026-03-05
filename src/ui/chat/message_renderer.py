@@ -148,7 +148,10 @@ def prepare_stream_slot(gui):
     insert_speaker_name(gui, role="assistant")
 
 
-def append_stream_chunk_slot(gui, chunk):
+def append_stream_chunk_slot(gui, chunk, role="assistant"):
+    # Если роль - think, мы можем захотеть отображать это иначе,
+    # но пока просто убеждаемся, что текст добавляется.
+    # В будущем здесь можно добавить переключение контекста рендеринга.
     append_message(gui, chunk)
 
 

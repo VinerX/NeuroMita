@@ -60,7 +60,7 @@ class ChatGUI(QMainWindow):
     update_debug_signal = pyqtSignal()
 
     prepare_stream_signal = pyqtSignal()
-    append_stream_chunk_signal = pyqtSignal(str)
+    append_stream_chunk_signal = pyqtSignal(object)
     finish_stream_signal = pyqtSignal()
 
     show_thinking_signal = pyqtSignal(str)
@@ -150,7 +150,11 @@ class ChatGUI(QMainWindow):
         self.update_debug_signal.connect(self.update_debug_info)
 
         self.prepare_stream_signal.connect(lambda: message_renderer.prepare_stream_slot(self))
-        self.append_stream_chunk_signal.connect(lambda chunk: message_renderer.append_stream_chunk_slot(self, chunk))
+        self.append_stream_chunk_signal.connect(lambda data: message_renderer.append_stream_chunk_slot(
+            self,
+            data.get("chunk") if isinstance(data, dict) else data,
+            role=data.get("role", "assistant") if isinstance(data, dict) else "assistant"
+        ))
         self.finish_stream_signal.connect(lambda: message_renderer.finish_stream_slot(self))
 
         self.show_thinking_signal.connect(self._show_thinking_slot)
@@ -1060,9 +1064,11 @@ class ChatGUI(QMainWindow):
         from ui.chat import message_renderer
         return message_renderer.prepare_stream_slot(self)
 
-    def _append_stream_chunk_slot(self, chunk):
+    def _append_stream_chunk_slot(self, data):
         from ui.chat import message_renderer
-        return message_renderer.append_stream_chunk_slot(self, chunk)
+        chunk = data.get("chunk") if isinstance(data, dict) else data
+        role = data.get("role", "assistant") if isinstance(data, dict) else "assistant"
+        return message_renderer.append_stream_chunk_slot(self, chunk, role=role)
 
     def _finish_stream_slot(self):
         from ui.chat import message_renderer
