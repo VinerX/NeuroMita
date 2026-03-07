@@ -177,6 +177,7 @@ class ChatController:
             is_streaming = bool(self.settings.get("ENABLE_STREAMING", False)) and eff_policy.allow_streaming and eff_policy.echo_to_ui
 
             show_think_in_gui = bool(self.settings.get("SHOW_THINK_IN_GUI", False))
+            effective_character_name = self._resolve_character_name(character_id)
             
             self._stream_current_role = None
 
@@ -185,8 +186,8 @@ class ChatController:
                     # При первом чанке размышлений подготавливаем UI
                     self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
                         "character_id": character_id or "",
-                        "character_name": self._resolve_character_name(character_id),
-                        "speaker_name": self._resolve_character_name(character_id),
+                        "character_name": effective_character_name,
+                        "speaker_name": effective_character_name,
                         "role": "think"
                     })
                     self._stream_current_role = "think"
@@ -207,9 +208,9 @@ class ChatController:
                 if stream_think_filter is None:
                     if self._stream_current_role != "assistant":
                         self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
-                            "character_id": effective_character_id or "",
-                            "character_name": effective_character_name or "",
-                            "speaker_name": effective_character_name or "",
+                            "character_id": character_id or "",
+                            "character_name": effective_character_name,
+                            "speaker_name": effective_character_name,
                             "role": "assistant"
                         })
                         self._stream_current_role = "assistant"
@@ -220,9 +221,9 @@ class ChatController:
                 if visible:
                     if self._stream_current_role != "assistant":
                         self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
-                            "character_id": effective_character_id or "",
-                            "character_name": effective_character_name or "",
-                            "speaker_name": effective_character_name or "",
+                            "character_id": character_id or "",
+                            "character_name": effective_character_name,
+                            "speaker_name": effective_character_name,
                             "role": "assistant"
                         })
                         self._stream_current_role = "assistant"
@@ -360,26 +361,8 @@ class ChatController:
 
             if is_streaming and eff_policy.echo_to_ui:
                 self.event_bus.emit(Events.GUI.FINISH_STREAM_UI)
-                # ВАЖНО: Мы НЕ отправляем UPDATE_CHAT_UI для think после стрима,
-                # так как мы уже вывели его в реальном времени через APPEND_STREAM_CHUNK_UI.
-                # Это предотвращает дублирование.
-                
-                # Но нам нужно отправить основной ответ, если он не был выведен полностью
-                # (хотя в теории он должен был быть выведен через стрим).
-                # Однако, чтобы гарантировать наличие итогового сообщения в истории UI
-                # и корректное завершение, мы можем отправить финальный UPDATE_CHAT_UI
-                # ТОЛЬКО для роли assistant, если текст ответа есть.
-                if response_text:
-                    self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
-                        "role": "assistant",
-                        "response": response_text,
-                        "is_initial": False,
-                        "emotion": "",
-                        "character_id": effective_character_id or "",
-                        "character_name": effective_character_name or "",
-                        "speaker_name": effective_character_name or "",
-                        "target": target,
-                    })
+                # При стриминге весь текст (think и assistant) уже выведен
+                # в UI в реальном времени. Повторный UPDATE_CHAT_UI не нужен.
             elif (not is_streaming) and eff_policy.echo_to_ui:
                 # Для не-стриминга отправляем think перед основным ответом
                 if show_think_in_gui and think_text:

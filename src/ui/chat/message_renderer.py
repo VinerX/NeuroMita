@@ -158,9 +158,18 @@ def append_message(gui, text, color=None, italic=False):
 
 
 def prepare_stream_slot(gui, role="assistant"):
-    # Если мы переключаемся на ассистента после think,
-    # нам нужно вставить имя спикера.
-    # Но если это самое начало стрима и роль think, тоже вставляем.
+    """Подготавливает UI к стримингу для указанной роли.
+    
+    Если предыдущий блок был другой роли — завершает его (вставляет отступ),
+    затем вставляет заголовок (имя спикера) для новой роли.
+    """
+    prev_role = getattr(gui, "_stream_current_render_role", None)
+    
+    # Если была предыдущая роль и она отличается — завершаем предыдущий блок
+    if prev_role is not None and prev_role != role:
+        insert_message_end(gui, role=prev_role)
+    
+    gui._stream_current_render_role = role
     insert_speaker_name(gui, role=role)
 
 
@@ -181,7 +190,9 @@ def append_stream_chunk_slot(gui, chunk, role="assistant"):
 
 
 def finish_stream_slot(gui):
-    insert_message_end(gui, role="assistant")
+    current_role = getattr(gui, "_stream_current_render_role", "assistant")
+    insert_message_end(gui, role=current_role)
+    gui._stream_current_render_role = None
 
 
 def process_image_for_chat(gui, has_image_content, item, processed_content_parts):
