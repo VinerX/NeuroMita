@@ -227,13 +227,13 @@ class EditorMixin:
         key_url = str(preset.get("key_url") or "")
 
         v.url_help_label.setVisible(bool(doc_url))
-        v.url_help_label.setText(f'<a href="{doc_url}">{_("Документация", "Documentation")}</a>' if doc_url else "")
+        v.url_help_label.setText(f'<a href="{doc_url}" style="color: #ab5df5; text-decoration: underline;">{_("Документация", "Documentation")}</a>' if doc_url else "")
 
         v.model_help_label.setVisible(bool(models_url))
-        v.model_help_label.setText(f'<a href="{models_url}">{_("Список моделей", "Models list")}</a>' if models_url else "")
+        v.model_help_label.setText(f'<a href="{models_url}" style="color: #ab5df5; text-decoration: underline;">{_("Список моделей", "Models list")}</a>' if models_url else "")
 
         v.key_help_label.setVisible(bool(key_url))
-        v.key_help_label.setText(f'<a href="{key_url}">{_("Получить ключ", "Get API key")}</a>' if key_url else "")
+        v.key_help_label.setText(f'<a href="{key_url}" style="color: #ab5df5; text-decoration: underline;">{_("Получить ключ", "Get API key")}</a>' if key_url else "")
 
     def _set_protocol_config_visible(self, visible: bool) -> None:
         v = self.view
