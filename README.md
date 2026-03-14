@@ -124,10 +124,10 @@ Translation (DeepSeek) [English readme](README_EN.md)
 
   Второй способ: Использование API https://g4f.space/api/nvidia - использует провайдера Nvidia.
   
-  Создаём аккаунт тут https://g4f.dev/members.html (для удобства регаемся через дискорд), и на сайте сгенерировать ключ API.
+  Создаём аккаунт тут https://g4f.dev/members.html (для удобства регаемся через дискорд) и генерим ключ API.
   
   
- - Стабильные модели:  
+ - Список моделей:  
   meta/llama-3.3-70b-instruct  
   moonshotai/kimi-k2-instruct-0905  
   meta/llama-3.2-90b-vision-instruct  
@@ -137,7 +137,7 @@ Translation (DeepSeek) [English readme](README_EN.md)
   
   Используете первый способ? Прописываем модели в поле "Модель gpt4free".  
   
-  Полный список всех моделей: https://g4f.dev/docs/providers-and-models (слева будет название провайдера, жмём справа от него Show для просмотра всех моделей)
+  Полный список всех моделей: https://g4f.dev/docs/providers-and-models (слева название провайдера, жмём справа от него Show)
   
   - Лимиты:  
   100 запросов в час  
@@ -185,12 +185,11 @@ API ссылка - https://openrouter.ai/api/v1
 Если тут пишет, что ваша страна не поддерживается (Например РФ), тогда вам нужен первый пункт. 
 Если у вас нет проблем с поддержкой, то переходим сразу ко второму пункту.  
 
-1) Для использования, нам понадобится файл hosts. Ссылки на файл:  
-Гугл диск - https://drive.google.com/file/d/1M8VR6sgruNiTnmydXz7DBjo6_mfFUEdr/view?usp=sharing  
-Сервер (installation-bugs) - https://discord.com/channels/1341427480942350356/1342238028864950313/1480273751047274760  
+1) Для использования, нам понадобится файл hosts отсюда:  
+- https://discord.com/channels/1341427480942350356/1342238028864950313/1480273751047274760   
 
 Файл нужно вставить по этому пути - C:\Windows\System32\drivers\etc  
-Порядок установки: Скачать > скопировать > вставить с заменой.
+Порядок установки: Скачать > скопировать > вставить с заменой.  
 
 Именно в таком порядке, не с перемещением, ЭТО ВАЖНО, так как в ином случае могут быть баги.  
 
@@ -207,15 +206,15 @@ API ссылка - https://openrouter.ai/api/v1
    gemma-3-12b-it  
    gemma-3-4b-it  
    gemma-3-1b-it  
- - Все они имеют лимит 15к токенов и 30 запросов в минуту, и при этом в день 14.4к запросов (подойдут для общения с картриждем).  
+ - У Gemma 3 контекст всего 15к токенов/минуту, и при этом в день 14.4 тыс. запросов.  
  
- - Ну и самое сладкое:  
-   gemini-3.1-flash-lite-preview (500 запросов в день!)  
+ - Ну и новая модель:  
+   gemini-3.1-flash-lite-preview (пока доступно 500 запросов в день)  
    
  - Помните, новые модели так или иначе через какое-то время поменяют или снизят свои лимиты (в лучшем случае до 20 запросов в день)  
 
 Чтобы они работали, ставим фикс с одной из двух ссылок (нужен только файл NeuroMita.exe):  
-Файл на гугл диске - https://drive.google.com/file/d/1_SUU2hCFwZWEgm-cgxgU1IpiXRtRVxx8/view?usp=drive_link  
+Гугл диск - https://drive.google.com/file/d/1_SUU2hCFwZWEgm-cgxgU1IpiXRtRVxx8/view?usp=drive_link  
 Сервер (base-ru) - https://discord.com/channels/1341427480942350356/1341429975147872320/1375176535434334249  
 
 Размещаем файл в папку с нейромитой, вставляем с заменой.  
@@ -239,13 +238,14 @@ API ссылка - https://openrouter.ai/api/v1
    
 ### ProxyApi (РФ)
   Модели от ProxyApi, выбраны так как нормально можно оплатить в РФ. Ключи и цены здесь: https://console.proxyapi.ru/billing  
+  Промокод NeuroMita26 даёт скидку 25% единоразово.  
   
   Обратите внимание на вид ссылки моделей Gemini. Эти модели - самые дешевые. 
     ![img_3.png](ReadmeFiles/img_3.png)
   - https://api.proxyapi.ru/google/v1/models/gemini-2.0-flash-lite:generateContent - gemini-2.0-flash-lite
   - https://api.proxyapi.ru/google/v1/models/gemini-1.5-flash:generateContent - gemini-1.5-flash (устаревшая модель на 2026 год)
   
-  Для GPT и DeepSeek ссылки имеют ввид по типу https://api.proxyapi.ru/openai/v1, галок не нужно:
+  GPT и DeepSeek имеют ссылки такого типа - https://api.proxyapi.ru/openai/v1, галок не нужно:
 
 ![img_4.png](ReadmeFiles/img_4.png)
 
