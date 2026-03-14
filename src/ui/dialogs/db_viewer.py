@@ -1139,6 +1139,9 @@ class DbViewerDialog(QDialog):
             err = db.lastError().text()
             logger.error(f"DB Viewer: failed to open Qt DB connection: {err}")
             QMessageBox.critical(self, "Database Viewer", f"Failed to open database:\n{err}")
+            # Remove orphaned connection to prevent leak
+            db = QSqlDatabase()
+            QSqlDatabase.removeDatabase(self._connection_name)
             return db
 
         try:

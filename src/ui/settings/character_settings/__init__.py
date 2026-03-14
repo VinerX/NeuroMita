@@ -11,6 +11,7 @@ from .logic import (
     reload_character_data,
     save_character_provider,
     migrate_to_db,
+    cleanup_character_workers,
 )
 
 
@@ -35,5 +36,6 @@ __all__ = [
     "clear_history_all",
     "reload_character_data",
     "save_character_provider",
-    "migrate_to_db"
+    "migrate_to_db",
+    "cleanup_character_workers",
 ]

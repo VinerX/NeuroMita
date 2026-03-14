@@ -71,7 +71,7 @@ class DatabaseManager:
         conn = self.get_connection()
         try:
             cur = conn.cursor()
-            cur.execute(f"PRAGMA table_info({table})")
+            cur.execute(f"PRAGMA table_info({self._q_ident(table)})")
             return set(r[1] for r in cur.fetchall() if r and len(r) > 1)
         except Exception as e:
             logging.warning(f"Failed to read schema for table '{table}': {e}")
@@ -101,7 +101,7 @@ class DatabaseManager:
                 for col, col_type in to_add:
                     try:
                         logging.info(f"DB ensure: adding column {table}.{col} {col_type}")
-                        cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+                        cur.execute(f"ALTER TABLE {self._q_ident(table)} ADD COLUMN {self._q_ident(col)} {col_type}")
                     except Exception as e:
                         logging.warning(f"DB ensure: failed to add {table}.{col}: {e}")
                 conn.commit()
@@ -118,7 +118,7 @@ class DatabaseManager:
     def _get_table_columns_conn(self, conn: sqlite3.Connection, table: str) -> Set[str]:
         try:
             cur = conn.cursor()
-            cur.execute(f"PRAGMA table_info({table})")
+            cur.execute(f"PRAGMA table_info({self._q_ident(table)})")
             return set(r[1] for r in cur.fetchall() if r and len(r) > 1)
         except Exception:
             return set()
@@ -231,8 +231,8 @@ class DatabaseManager:
                 try:
                     self._drop_fts_triggers(conn)
                     conn.commit()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.warning(f"DB: failed to drop FTS triggers on commit: {e}")
                 return
 
             cur = conn.cursor()
@@ -267,8 +267,8 @@ class DatabaseManager:
                 try:
                     self._drop_fts_triggers(conn)
                     conn.commit()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.warning(f"DB: failed to drop FTS triggers after FTS5 table creation failure: {e}")
                 return
 
             # Use ACTUAL FTS columns
@@ -353,8 +353,8 @@ class DatabaseManager:
 
             try:
                 conn.commit()
-            except Exception:
-                pass
+            except Exception as e:
+                logging.warning(f"DB: FTS5 schema commit failed: {e}")
 
         except Exception as e:
             logging.warning(f"DB upgrade: ensure FTS5 schema failed (ignored): {e}")
@@ -556,6 +556,16 @@ class DatabaseManager:
                 except Exception as e:
                     logging.warning(f"DB upgrade: failed to create UNIQUE index idx_history_unique_msg (ignored): {e}")
 
+            # --- Performance indexes for common queries ---
+            for idx_sql in [
+                "CREATE INDEX IF NOT EXISTS idx_history_char_active ON history(character_id, is_active)",
+                "CREATE INDEX IF NOT EXISTS idx_memories_char_deleted_forgotten ON memories(character_id, is_deleted, is_forgotten)",
+            ]:
+                try:
+                    cursor.execute(idx_sql)
+                except Exception as e:
+                    logging.warning(f"DB upgrade: failed to create index (ignored): {e}")
+
             # --- FTS5 lexical indexes (safe, optional) ---
             self._ensure_fts5_schema(conn)
 
@@ -634,8 +644,8 @@ class DatabaseManager:
 
             try:
                 conn.commit()
-            except Exception:
-                pass
+            except Exception as e:
+                logging.warning(f"DB: dedupe commit failed: {e}")
 
             return deleted
         except Exception as e:

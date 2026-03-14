@@ -83,6 +83,11 @@ class VectorRetriever:
             vec = self.rag._blob_to_array(blob)
             if vec is None:
                 continue
+            if np.isnan(vec).any() or np.isinf(vec).any():
+                continue
+            vec = self.rag._l2_normalize(vec)
+            if vec is None:
+                continue
 
             sim = float(np.dot(qs.query_vec, vec))
 
@@ -146,6 +151,11 @@ class VectorRetriever:
 
             blob = rd.get("embedding")
             vec = self.rag._blob_to_array(blob)
+            if vec is None:
+                continue
+            if np.isnan(vec).any() or np.isinf(vec).any():
+                continue
+            vec = self.rag._l2_normalize(vec)
             if vec is None:
                 continue
 

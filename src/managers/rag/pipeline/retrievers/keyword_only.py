@@ -39,7 +39,11 @@ class KeywordOnlyRetriever:
                 pass
         return out
 
+    _ALLOWED_COLUMNS = frozenset({"content"})
+
     def _sql_keyword_where(self, keywords: list[str], column: str = "content") -> tuple[str, list[str]]:
+        if column not in self._ALLOWED_COLUMNS:
+            raise ValueError(f"Invalid column for keyword search: {column!r}")
         kws = [k for k in (keywords or []) if isinstance(k, str) and k.strip()]
         if not kws:
             return "", []

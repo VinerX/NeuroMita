@@ -3,7 +3,9 @@
 import os
 import json
 import hashlib
+import shutil
 import sqlite3  # kept for backward compatibility / possible external usage
+import logging
 from datetime import datetime
 import re
 from typing import Optional, Callable, Any, Dict
@@ -118,6 +120,17 @@ def migrate(
       }
     """
     db_manager = DatabaseManager()
+
+    # --- Backup before migration ---
+    db_path = db_manager.db_path
+    if os.path.exists(db_path):
+        backup_path = db_path + ".pre_migration_backup"
+        try:
+            shutil.copy2(db_path, backup_path)
+            logging.info(f"Migration backup created: {backup_path}")
+        except Exception as e:
+            logging.warning(f"Failed to create migration backup: {e}")
+
     conn = db_manager.get_connection()
     cursor = conn.cursor()
 
@@ -319,10 +332,16 @@ def migrate(
                 finally:
                     tick()
 
-        try:
-            conn.commit()
-        except Exception:
-            pass
+            # Commit per character — partial migration is better than none
+            try:
+                conn.commit()
+            except Exception as e:
+                logging.error(f"Migration commit failed for character '{char_id}': {e}", exc_info=True)
+                stats["errors"].append(f"Commit failed for {char_id}: {e}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
         return stats
 

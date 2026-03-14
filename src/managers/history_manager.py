@@ -29,6 +29,24 @@ class HistoryManager:
     _EMBED_EXECUTOR: ClassVar[Optional[ThreadPoolExecutor]] = None
     _EMBED_EXECUTOR_LOCK: ClassVar[Lock] = Lock()
 
+    # Class-level write locks per character_id to prevent race conditions
+    # when multiple HistoryManager instances exist for the same character.
+    _CHAR_WRITE_LOCKS: ClassVar[dict[str, Lock]] = {}
+    _CHAR_LOCKS_LOCK: ClassVar[Lock] = Lock()
+
+    @classmethod
+    def _get_char_write_lock(cls, storage_key: str) -> Lock:
+        """Return a shared Lock for the given storage_key (character)."""
+        lk = cls._CHAR_WRITE_LOCKS.get(storage_key)
+        if lk is not None:
+            return lk
+        with cls._CHAR_LOCKS_LOCK:
+            lk = cls._CHAR_WRITE_LOCKS.get(storage_key)
+            if lk is None:
+                lk = Lock()
+                cls._CHAR_WRITE_LOCKS[storage_key] = lk
+            return lk
+
     # Какие колонки мы хотим иметь в history (и их типы для ALTER TABLE)
     _HISTORY_DESIRED_COLUMNS: dict[str, str] = {
         "target": "TEXT",
@@ -62,8 +80,8 @@ class HistoryManager:
 
         # кеш фактических колонок history
         self._history_cols: set[str] = set()
-        # сериализация write-операций для дедуп/check-then-insert
-        self._write_lock = Lock()
+        # сериализация write-операций для дедуп/check-then-insert (class-level per character)
+        self._write_lock = self._get_char_write_lock(self.storage_key)
 
         # небольшой кеш для картинок: filename -> file_path
         self._img_cache_lock = Lock()
@@ -137,7 +155,7 @@ class HistoryManager:
             cur = conn.cursor()
             for col, col_type in to_add:
                 try:
-                    cur.execute(f"ALTER TABLE history ADD COLUMN {col} {col_type}")
+                    cur.execute(f"ALTER TABLE history ADD COLUMN {self.db._q_ident(col)} {col_type}")
                     logger.info(f"DB upgrade: added history.{col} {col_type}")
                 except Exception as e:
                     # Не валим приложение: просто логируем
@@ -827,31 +845,36 @@ class HistoryManager:
     # ---------------------------------------------------------------------
     def load_history(self):
         conn = self.db.get_connection()
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        # 1) Переменные
-        cursor.execute("SELECT key, value FROM variables WHERE character_id = ?", (self.storage_key,))
-        variables = {}
-        for row in cursor.fetchall():
+            # 1) Переменные
+            cursor.execute("SELECT key, value FROM variables WHERE character_id = ?", (self.storage_key,))
+            variables = {}
+            for row in cursor.fetchall():
+                try:
+                    variables[row[0]] = json.loads(row[1])
+                except Exception:
+                    variables[row[0]] = row[1]
+
+            # 2) Сообщения
+            # динамический SELECT по фактическим колонкам
+            self._ensure_history_schema()
+            select_cols = self._history_select_columns()
+
+            sql = f"""
+                SELECT {", ".join(select_cols)}
+                FROM history
+                WHERE character_id = ? AND is_active = 1 {self._history_not_deleted_clause()}
+                ORDER BY id ASC
+            """
+            cursor.execute(sql, (self.storage_key,))
+            rows = cursor.fetchall()
+        finally:
             try:
-                variables[row[0]] = json.loads(row[1])
+                conn.close()
             except Exception:
-                variables[row[0]] = row[1]
-
-        # 2) Сообщения
-        # динамический SELECT по фактическим колонкам
-        self._ensure_history_schema()
-        select_cols = self._history_select_columns()
-
-        sql = f"""
-            SELECT {", ".join(select_cols)}
-            FROM history
-            WHERE character_id = ? AND is_active = 1 {self._history_not_deleted_clause()}
-            ORDER BY id ASC
-        """
-        cursor.execute(sql, (self.storage_key,))
-        rows = cursor.fetchall()
-        conn.close()
+                pass
 
         messages: list[dict] = []
         for row in rows:
@@ -976,17 +999,22 @@ class HistoryManager:
 
     def update_variable(self, key, value):
         conn = self.db.get_connection()
-        cursor = conn.cursor()
-        val_str = json.dumps(value, ensure_ascii=False)
-        cursor.execute(
-            """
-            INSERT INTO variables (character_id, key, value) VALUES(?, ?, ?)
-            ON CONFLICT(character_id, key) DO UPDATE SET value=excluded.value
-            """,
-            (self.storage_key, key, val_str),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            val_str = json.dumps(value, ensure_ascii=False)
+            cursor.execute(
+                """
+                INSERT INTO variables (character_id, key, value) VALUES(?, ?, ?)
+                ON CONFLICT(character_id, key) DO UPDATE SET value=excluded.value
+                """,
+                (self.storage_key, key, val_str),
+            )
+            conn.commit()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def save_missed_history(self, missed_messages: list):
         for msg in missed_messages or []:
@@ -996,10 +1024,15 @@ class HistoryManager:
 
     def clear_history(self):
         conn = self.db.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE history SET is_active = 0 WHERE character_id = ?", (self.storage_key,))
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE history SET is_active = 0 WHERE character_id = ?", (self.storage_key,))
+            conn.commit()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _default_history(self):
         return {"fixed_parts": [], "messages": [], "variables": {}}
@@ -1009,29 +1042,39 @@ class HistoryManager:
     # ---------------------------------------------------------------------
     def get_total_messages_count(self) -> int:
         conn = self.db.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT COUNT(*) FROM history WHERE character_id = ? AND is_active = 1 {self._history_not_deleted_clause()}", (self.storage_key,))
-        count = cursor.fetchone()[0]
-        conn.close()
-        return count
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT COUNT(*) FROM history WHERE character_id = ? AND is_active = 1 {self._history_not_deleted_clause()}", (self.storage_key,))
+            count = cursor.fetchone()[0]
+            return count
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def get_recent_messages(self, limit: int = 50, offset: int = 0) -> list[dict]:
         conn = self.db.get_connection()
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        self._ensure_history_schema()
-        select_cols = self._history_select_columns()
+            self._ensure_history_schema()
+            select_cols = self._history_select_columns()
 
-        sql = f"""
-            SELECT {", ".join(select_cols)}
-            FROM history
-            WHERE character_id = ? AND is_active = 1 {self._history_not_deleted_clause()}
-            ORDER BY id DESC
-            LIMIT ? OFFSET ?
-        """
-        cursor.execute(sql, (self.storage_key, int(limit), int(offset)))
-        rows = cursor.fetchall()
-        conn.close()
+            sql = f"""
+                SELECT {", ".join(select_cols)}
+                FROM history
+                WHERE character_id = ? AND is_active = 1 {self._history_not_deleted_clause()}
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?
+            """
+            cursor.execute(sql, (self.storage_key, int(limit), int(offset)))
+            rows = cursor.fetchall()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
         messages: list[dict] = []
         for row in rows:
@@ -1066,29 +1109,34 @@ class HistoryManager:
         messages_to_compress = messages[:num_messages]
 
         conn = self.db.get_connection()
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        cursor.execute(
-            """
-            SELECT id FROM history
-            WHERE character_id = ? AND is_active = 1
-            {self._history_not_deleted_clause()}
-            ORDER BY id ASC
-            LIMIT ?
-            """,
-            (self.storage_key, num_messages),
-        )
-        ids_to_hide = [row[0] for row in cursor.fetchall()]
-
-        if ids_to_hide:
-            placeholders = ",".join("?" for _ in ids_to_hide)
             cursor.execute(
-                f"UPDATE history SET is_active = 0 WHERE id IN ({placeholders})",
-                tuple(ids_to_hide),
+                """
+                SELECT id FROM history
+                WHERE character_id = ? AND is_active = 1
+                {self._history_not_deleted_clause()}
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (self.storage_key, num_messages),
             )
-            conn.commit()
+            ids_to_hide = [row[0] for row in cursor.fetchall()]
 
-        conn.close()
+            if ids_to_hide:
+                placeholders = ",".join("?" for _ in ids_to_hide)
+                cursor.execute(
+                    f"UPDATE history SET is_active = 0 WHERE id IN ({placeholders})",
+                    tuple(ids_to_hide),
+                )
+                conn.commit()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
         logger.info(f"Archived {len(messages_to_compress)} messages for compression.")
         return messages_to_compress
 
@@ -1100,36 +1148,41 @@ class HistoryManager:
     # ---------------------------------------------------------------------
     def get_missing_embeddings_count(self) -> int:
         conn = self.db.get_connection()
-        cursor = conn.cursor()
-        # history: учитываем is_deleted, если колонка есть
         try:
-            extra = " AND is_deleted = 0 " if "is_deleted" in self._history_cols else ""
-            cursor.execute(
-                f"""
-                SELECT COUNT(*) FROM history
-                WHERE character_id = ? AND (embedding IS NULL) AND content != "" AND content IS NOT NULL {extra}
-                """,
-                (self.storage_key,),
-            )
-            hist_count = cursor.fetchone()[0]
-        except Exception:
+            cursor = conn.cursor()
+            # history: учитываем is_deleted, если колонка есть
+            try:
+                extra = " AND is_deleted = 0 " if "is_deleted" in self._history_cols else ""
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(*) FROM history
+                    WHERE character_id = ? AND (embedding IS NULL) AND content != "" AND content IS NOT NULL {extra}
+                    """,
+                    (self.storage_key,),
+                )
+                hist_count = cursor.fetchone()[0]
+            except Exception:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) FROM history
+                    WHERE character_id = ? AND (embedding IS NULL) AND content != "" AND content IS NOT NULL
+                    """,
+                    (self.storage_key,),
+                )
+                hist_count = cursor.fetchone()[0]
+
             cursor.execute(
                 """
-                SELECT COUNT(*) FROM history
-                WHERE character_id = ? AND (embedding IS NULL) AND content != "" AND content IS NOT NULL
+                SELECT COUNT(*) FROM memories
+                WHERE character_id = ? AND (embedding IS NULL) AND is_deleted = 0
                 """,
                 (self.storage_key,),
             )
-            hist_count = cursor.fetchone()[0]
+            mem_count = cursor.fetchone()[0]
 
-        cursor.execute(
-            """
-            SELECT COUNT(*) FROM memories
-            WHERE character_id = ? AND (embedding IS NULL) AND is_deleted = 0
-            """,
-            (self.storage_key,),
-        )
-        mem_count = cursor.fetchone()[0]
-
-        conn.close()
-        return hist_count + mem_count
+            return hist_count + mem_count
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass

@@ -139,4 +139,28 @@ class RAGConfig:
 
         cfg.two_stage_fallback_union = _b(SettingsManager.get("RAG_TWO_STAGE_FALLBACK_UNION", True), True)
 
+        cfg._validate()
         return cfg
+
+    def _validate(self) -> None:
+        """Clamp values to sane ranges to prevent misconfiguration."""
+        self.limit = max(1, self.limit)
+        self.threshold = max(0.0, min(1.0, self.threshold))
+        self.decay_rate = max(0.0, min(1.0, self.decay_rate))
+        self.noise_max = max(0.0, min(1.0, self.noise_max))
+        self.tail_messages = max(0, self.tail_messages)
+        self.kw_max_terms = max(1, self.kw_max_terms)
+        self.kw_min_score = max(0.0, min(1.0, self.kw_min_score))
+        self.kw_sql_limit = max(1, self.kw_sql_limit)
+        self.kw_min_len = max(1, self.kw_min_len)
+        self.fts_top_k_hist = max(1, self.fts_top_k_hist)
+        self.fts_top_k_mem = max(1, self.fts_top_k_mem)
+        self.fts_max_terms = max(1, self.fts_max_terms)
+        self.fts_min_len = max(1, self.fts_min_len)
+        if self.memory_mode not in ("forgotten", "active", "all"):
+            self.memory_mode = "forgotten"
+        _VALID_MODES = ("union", "vector_only", "intersect", "intersect2", "intersect_n", "two_stage")
+        if self.combine_mode not in _VALID_MODES:
+            self.combine_mode = "union"
+        self.vector_top_k = max(0, self.vector_top_k)
+        self.intersect_min_methods = max(1, self.intersect_min_methods)

@@ -1543,3 +1543,27 @@ def _start_import_worker(gui, path: str, override_character_id: str | None):
 
     progress.show()
     QTimer.singleShot(0, gui._import_worker.start)
+
+
+def cleanup_character_workers(gui):
+    """Stop and clean up any running background workers. Call from closeEvent."""
+    _WORKER_ATTRS = (
+        "_reindex_worker",
+        "_migration_worker",
+        "_dedupe_worker",
+        "_export_worker",
+        "_import_worker",
+    )
+    for attr in _WORKER_ATTRS:
+        worker = getattr(gui, attr, None)
+        if worker is None:
+            continue
+        try:
+            worker.requestInterruption()
+            worker.wait(2000)
+        except Exception:
+            pass
+        try:
+            setattr(gui, attr, None)
+        except Exception:
+            pass

@@ -36,7 +36,7 @@ class RAGManager:
         if cls._fallback_handler is None:
             with cls._fallback_lock:
                 if cls._fallback_handler is None:
-                    cls._fallback_handler = EmbeddingModelHandler()
+                    cls._fallback_handler = EmbeddingModelHandler.shared()
         return cls._fallback_handler
 
     def __init__(self, character_id: str):
