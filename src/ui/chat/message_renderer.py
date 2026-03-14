@@ -169,17 +169,8 @@ def prepare_stream_slot(gui, role="assistant"):
 
 def append_stream_chunk_slot(gui, chunk, role="assistant"):
     delegate = _get_delegate(gui)
-    
-    # Получаем цвет контента для текущей роли
-    color = delegate.get_content_color(role)
-    
-    # Для роли think всегда используем курсив
+    color = delegate.get_content_color(role)  # None для assistant → дефолтный цвет текста
     italic = (role == "think")
-    
-    # Если цвет не задан в делегате, используем цвет по умолчанию для этой роли из меток
-    if not color and role in delegate.role_label_colors:
-        color = delegate.role_label_colors[role]
-        
     append_message(gui, chunk, color=color, italic=italic)
 
 
