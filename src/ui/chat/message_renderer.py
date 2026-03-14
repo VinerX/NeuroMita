@@ -147,13 +147,7 @@ def _insert_formatted_text(gui, cursor, text, color=None, bold=False, italic=Fal
 def append_message(gui, text, color=None, italic=False):
     cursor = gui.chat_window.textCursor()
     cursor.movePosition(QTextCursor.MoveOperation.End)
-    
-    # Если текст начинается с новой строки, убираем лишние пробелы
-    if text.startswith("\n"):
-        _insert_formatted_text(gui, cursor, text, color=color, italic=italic)
-    else:
-        _insert_formatted_text(gui, cursor, text, color=color, italic=italic)
-        
+    _insert_formatted_text(gui, cursor, text, color=color, italic=italic)
     gui.chat_window.verticalScrollBar().setValue(gui.chat_window.verticalScrollBar().maximum())
 
 

@@ -71,7 +71,11 @@ class ThinkTagStreamFilter:
                 self._think_parts.append(self._buf)
             self._in_think = False
             self._buf = ""
-        return ""
+            return ""
+        # Сбрасываем буфер видимых символов, удержанных для поиска границ тегов
+        tail = self._buf
+        self._buf = ""
+        return tail
 
     def think_text(self) -> str:
         """Возвращает весь собранный текст размышлений."""
@@ -312,7 +316,16 @@ class ChatController:
             if is_streaming and eff_policy.echo_to_ui and stream_think_filter is not None:
                 tail = stream_think_filter.flush_visible()
                 if tail:
-                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": tail})
+                    # Если блок ассистента ещё не открыт — открываем его
+                    if self._stream_current_role != "assistant":
+                        self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                            "character_id": effective_character_id or "",
+                            "character_name": effective_character_name,
+                            "speaker_name": effective_character_name,
+                            "role": "assistant"
+                        })
+                        self._stream_current_role = "assistant"
+                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": tail, "role": "assistant"})
 
             if response_text and self.settings.get("USE_VOICEOVER") and eff_policy.allow_voiceover:
                 if isinstance(voice_profile, dict):
