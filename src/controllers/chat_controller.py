@@ -193,11 +193,11 @@ class ChatController:
                         "character_name": effective_character_name,
                         "speaker_name": effective_character_name,
                         "role": "think"
-                    })
+                    }, sync=True)
                     self._stream_current_role = "think"
-                
+
                 # Отправляем чанки размышлений в UI в реальном времени
-                self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": think_chunk, "role": "think"})
+                self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": think_chunk, "role": "think"}, sync=True)
 
             stream_think_filter = ThinkTagStreamFilter(on_think_chunk=on_think_chunk if show_think_in_gui else None) if is_streaming else None
 
@@ -216,11 +216,11 @@ class ChatController:
                             "character_name": effective_character_name,
                             "speaker_name": effective_character_name,
                             "role": "assistant"
-                        })
+                        }, sync=True)
                         self._stream_current_role = "assistant"
-                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": chunk_str, "role": "assistant"})
+                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": chunk_str, "role": "assistant"}, sync=True)
                     return
-                
+
                 visible = stream_think_filter.feed(chunk_str)
                 if visible:
                     if self._stream_current_role != "assistant":
@@ -229,10 +229,10 @@ class ChatController:
                             "character_name": effective_character_name,
                             "speaker_name": effective_character_name,
                             "role": "assistant"
-                        })
+                        }, sync=True)
                         self._stream_current_role = "assistant"
-                    
-                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": visible, "role": "assistant"})
+
+                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": visible, "role": "assistant"}, sync=True)
 
             if image_data:
                 prepared: list[bytes] = []
@@ -323,9 +323,9 @@ class ChatController:
                             "character_name": effective_character_name,
                             "speaker_name": effective_character_name,
                             "role": "assistant"
-                        })
+                        }, sync=True)
                         self._stream_current_role = "assistant"
-                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": tail, "role": "assistant"})
+                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": tail, "role": "assistant"}, sync=True)
 
             if response_text and self.settings.get("USE_VOICEOVER") and eff_policy.allow_voiceover:
                 if isinstance(voice_profile, dict):
@@ -373,7 +373,7 @@ class ChatController:
                     })
 
             if is_streaming and eff_policy.echo_to_ui:
-                self.event_bus.emit(Events.GUI.FINISH_STREAM_UI)
+                self.event_bus.emit(Events.GUI.FINISH_STREAM_UI, sync=True)
                 # При стриминге весь текст (think и assistant) уже выведен
                 # в UI в реальном времени. Повторный UPDATE_CHAT_UI не нужен.
             elif (not is_streaming) and eff_policy.echo_to_ui:
@@ -390,7 +390,7 @@ class ChatController:
                         "character_id": effective_character_id or "",
                         "character_name": effective_character_name or "",
                         "speaker_name": effective_character_name or ""
-                    })
+                    }, sync=True)
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                     "role": "assistant",
                     "response": response_text if response_text is not None else "...",
@@ -400,7 +400,7 @@ class ChatController:
                     "character_name": effective_character_name or "",
                     "speaker_name": effective_character_name or "",
                     "target": target,
-                })
+                }, sync=True)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)
             self.event_bus.emit(Events.GUI.UPDATE_TOKEN_COUNT)
