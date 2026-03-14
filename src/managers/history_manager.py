@@ -47,19 +47,11 @@ class HistoryManager:
                 cls._CHAR_WRITE_LOCKS[storage_key] = lk
             return lk
 
-    # Какие колонки мы хотим иметь в history (и их типы для ALTER TABLE)
-    _HISTORY_DESIRED_COLUMNS: dict[str, str] = {
-        "target": "TEXT",
-        "participants": "TEXT",   # JSON list
-        "tags": "TEXT",           # JSON list
-        "rag_id": "TEXT",
-        "message_id": "TEXT",
-        "speaker": "TEXT",
-        "sender": "TEXT",
-        "event_type": "TEXT",
-        "req_id": "TEXT",
-        "task_uid": "TEXT",
-    }
+    # Single source of truth is DatabaseManager.HISTORY_EXTRA_COLUMNS.
+    # This property provides backward-compatible access.
+    @property
+    def _HISTORY_DESIRED_COLUMNS(self) -> dict[str, str]:
+        return DatabaseManager.HISTORY_EXTRA_COLUMNS
 
     # Базовые колонки, которые точно есть в вашей таблице history (по вашему DatabaseManager)
     _HISTORY_BASE_COLUMNS: tuple[str, ...] = (
@@ -174,98 +166,19 @@ class HistoryManager:
 
     def dedupe_history(self) -> int:
         """
-        Публичный метод: удаляем уже накопившиеся дубли истории строго по ключу:
-        (character_id, content, timestamp)
-
-        Важно:
-        - трогаем ТОЛЬКО строки, где content и timestamp непустые
-        - оставляем минимальный id, остальные удаляем
-        - возвращаем количество удалённых строк
+        Remove duplicate history rows for this character.
+        Delegates to DatabaseManager.dedupe_history() for single implementation.
         """
-        deleted_total = 0
         try:
             self._ensure_history_schema()
             if not self._history_cols:
                 return 0
-            # content/timestamp должны существовать (для старых/битых БД — безопасный no-op)
             if "content" not in self._history_cols or "timestamp" not in self._history_cols:
                 return 0
-
-            try:
-                conn = self.db.get_connection()
-            except Exception as e:
-                logger.warning(f"[HistoryManager] Dedup failed: can't open DB connection: {e}", exc_info=True)
-                return 0
-            if conn is None:
-                logger.warning("[HistoryManager] Dedup failed: DB connection is None")
-                return 0
-
-            try:
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                    DELETE FROM history
-                    WHERE character_id = ?
-                      AND content   IS NOT NULL AND TRIM(content)   != ''
-                      AND timestamp  IS NOT NULL AND TRIM(timestamp)  != ''
-                      AND id NOT IN (
-                        SELECT MIN(id)
-                        FROM history
-                        WHERE character_id = ?
-                          AND content   IS NOT NULL AND TRIM(content)   != ''
-                          AND timestamp  IS NOT NULL AND TRIM(timestamp)  != ''
-                        GROUP BY content, timestamp
-                      )
-                    """,
-                    (self.storage_key, self.storage_key),
-                )
-
-
-                # SQLite: самым надёжным способом взять число удалённых строк — changes() сразу после DELETE.
-                try:
-                    cur.execute("SELECT changes()")
-                    row = cur.fetchone()
-                    deleted_total = int(row[0] or 0) if row else 0
-                except Exception:
-                    deleted_total = int(cur.rowcount or 0)
-
-                # Поставим защиту от повторного появления дублей (partial UNIQUE INDEX)
-                # По ключу: character_id + content + timestamp
-                try:
-                    cur.execute(
-                        """
-                        CREATE UNIQUE INDEX IF NOT EXISTS idx_history_unique_content_ts
-                        ON history(character_id, content, timestamp)
-                        WHERE content   IS NOT NULL AND TRIM(content)   != ''
-                          AND timestamp  IS NOT NULL AND TRIM(timestamp)  != ''
-                        """
-                    )
-                except Exception as e:
-                    logger.warning(f"[HistoryManager] Failed to create UNIQUE index after dedupe (ignored): {e}")
-
-                conn.commit()
-                if deleted_total:
-                    logger.info(
-                        f"[HistoryManager] Dedup: removed {deleted_total} duplicate history rows for {self.storage_key}"
-                    )
-            except Exception as e:
-                logger.warning(f"[HistoryManager] Dedup existing duplicates failed (ignored): {e}", exc_info=True)
-                try:
-                    if conn:
-                        conn.rollback()
-                except Exception:
-                    pass
-                return 0
-            finally:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+            return self.db.dedupe_history(character_id=self.storage_key)
         except Exception as e:
-            logger.warning(f"[HistoryManager] Dedup existing duplicates failed (ignored): {e}", exc_info=True)
+            logger.warning(f"[HistoryManager] Dedup failed (ignored): {e}", exc_info=True)
             return 0
-
-        return int(deleted_total)
 
     # Backward-compat: старое приватное имя могло вызываться из других мест
     def _dedupe_existing_history_duplicates(self) -> int:

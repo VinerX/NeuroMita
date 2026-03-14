@@ -18,6 +18,23 @@ class DatabaseManager:
     # Required for concurrent QtSql reads while sqlite3 writes
     _BUSY_TIMEOUT_MS: int = 5000
 
+    # Single source of truth: extra columns to ensure in history table.
+    # (column_name -> SQL type). Base columns (id, character_id, role, content,
+    # timestamp, is_active, meta_data, embedding) are always in CREATE TABLE.
+    HISTORY_EXTRA_COLUMNS: dict = {
+        "target": "TEXT",
+        "participants": "TEXT",
+        "tags": "TEXT",
+        "rag_id": "TEXT",
+        "message_id": "TEXT",
+        "speaker": "TEXT",
+        "sender": "TEXT",
+        "event_type": "TEXT",
+        "req_id": "TEXT",
+        "task_uid": "TEXT",
+        "is_deleted": "INTEGER DEFAULT 0",
+    }
+
     def __new__(cls):
         with cls._lock:
             if cls._instance is None:
