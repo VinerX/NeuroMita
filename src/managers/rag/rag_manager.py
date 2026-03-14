@@ -23,6 +23,15 @@ from managers.settings_manager import SettingsManager
 EMBED_EVENT_NAME = Events.RAG.GET_EMBEDDING
 EMBEDS_EVENT_NAME = Events.RAG.GET_EMBEDDINGS
 
+# --- Default configuration constants ---
+DEFAULT_QUERY_WEIGHT_USER = 0.7
+DEFAULT_QUERY_WEIGHT_TAIL = 0.3
+DEFAULT_TAIL_EXP_DECAY = 0.6
+DEFAULT_SEARCH_LIMIT = 5
+DEFAULT_SEARCH_THRESHOLD = 0.4
+DEFAULT_EXPANDED_QUERY_MAX_CHARS = 4000
+DEFAULT_RECENT_TAIL_MAX_CHARS = 1200
+
 class RAGManager:
     _fallback_handler: Optional[EmbeddingModelHandler] = None
     _fallback_lock: Lock = Lock()
@@ -160,7 +169,7 @@ class RAGManager:
             )
             rows = cur.fetchall() or []
 
-            max_chars = int(SettingsManager.get("RAG_QUERY_TAIL_MAX_CHARS", 1200) or 1200)
+            max_chars = int(SettingsManager.get("RAG_QUERY_TAIL_MAX_CHARS", DEFAULT_RECENT_TAIL_MAX_CHARS) or DEFAULT_RECENT_TAIL_MAX_CHARS)
             for role, content in rows:
                 r = str(role or "").strip().lower()
                 if rf == "user_only" and r != "user":
@@ -195,15 +204,15 @@ class RAGManager:
             return self._l2_normalize(self._get_embedding(qt))
 
         # weighted
-        w_user = float(SettingsManager.get("RAG_QUERY_WEIGHT_LAST_USER", 0.7) or 0.7)
-        w_tail = float(SettingsManager.get("RAG_QUERY_WEIGHT_PREV_CONTEXT", 0.3) or 0.3)
+        w_user = float(SettingsManager.get("RAG_QUERY_WEIGHT_LAST_USER", DEFAULT_QUERY_WEIGHT_USER) or DEFAULT_QUERY_WEIGHT_USER)
+        w_tail = float(SettingsManager.get("RAG_QUERY_WEIGHT_PREV_CONTEXT", DEFAULT_QUERY_WEIGHT_TAIL) or DEFAULT_QUERY_WEIGHT_TAIL)
         if w_user < 0.0:
             w_user = 0.0
         if w_tail < 0.0:
             w_tail = 0.0
         s = w_user + w_tail
         if s <= 0.0:
-            w_user, w_tail = 0.7, 0.3
+            w_user, w_tail = DEFAULT_QUERY_WEIGHT_USER, DEFAULT_QUERY_WEIGHT_TAIL
             s = 1.0
         # нормализуем веса (чтобы было стабильно)
         w_user /= s
@@ -233,9 +242,9 @@ class RAGManager:
             return None
 
         # распределение веса хвоста: экспоненциальный спад от самого свежего к старым
-        decay = float(SettingsManager.get("RAG_QUERY_TAIL_EXP_DECAY", 0.6) or 0.6)
+        decay = float(SettingsManager.get("RAG_QUERY_TAIL_EXP_DECAY", DEFAULT_TAIL_EXP_DECAY) or DEFAULT_TAIL_EXP_DECAY)
         if not (0.0 < decay < 1.0):
-            decay = 0.6
+            decay = DEFAULT_TAIL_EXP_DECAY
 
         tail_weights: list[float] = []
         if e_tail:
@@ -304,8 +313,8 @@ class RAGManager:
 
         # ограничим размер строки (на всякий случай)
         out = "\n".join(parts).strip()
-        if len(out) > 4000:
-            out = out[-4000:]
+        if len(out) > DEFAULT_EXPANDED_QUERY_MAX_CHARS:
+            out = out[-DEFAULT_EXPANDED_QUERY_MAX_CHARS:]
         return out or uq
 
     def _blob_to_array(self, blob) -> Optional[np.ndarray]:
@@ -475,7 +484,7 @@ class RAGManager:
             except Exception:
                 pass
 
-    def search_relevant(self, query: str, limit: int = 5, threshold: float = 0.4) -> List[Dict[str, Any]]:
+    def search_relevant(self, query: str, limit: int = DEFAULT_SEARCH_LIMIT, threshold: float = DEFAULT_SEARCH_THRESHOLD) -> List[Dict[str, Any]]:
         """
         Pipeline-based RAG search with selectable combiner modes:
           - union (default)

@@ -15,30 +15,25 @@ from utils.migrate_json_to_sqlite import migrate as run_json_migration
 from ui.dialogs.db_viewer import DbViewerDialog
 from PyQt6.QtWidgets import QProgressDialog,QFileDialog
 from ui.dialogs.db_export_dialog import DbExportDialog
-# Backward-compatible wrappers (in case other parts of UI import these classes).
-# They keep the old names but reuse the universal TaskWorker implementation.
-class ReindexWorker(TaskWorker):
-    def __init__(self, character_id: str):
-        character_id = str(character_id or "").strip()
+def _create_reindex_worker(character_id: str, *, full: bool = False) -> TaskWorker:
+    """Factory for single-character reindex workers."""
+    character_id = str(character_id or "").strip()
 
-        def _do_reindex(*, progress_callback=None):
-            from managers.rag.rag_manager import RAGManager
-            rag = RAGManager(character_id)
-            return rag.index_all_missing(progress_callback=progress_callback)
+    def _do_reindex(*, progress_callback=None):
+        from managers.rag.rag_manager import RAGManager
+        rag = RAGManager(character_id)
+        method = rag.index_all if full else rag.index_all_missing
+        return method(progress_callback=progress_callback)
 
-        super().__init__(_do_reindex, use_progress=True)
+    return TaskWorker(_do_reindex, use_progress=True)
 
 
-class FullReindexWorker(TaskWorker):
-    def __init__(self, character_id: str):
-        character_id = str(character_id or "").strip()
+# Backward-compatible aliases
+def ReindexWorker(character_id: str) -> TaskWorker:
+    return _create_reindex_worker(character_id, full=False)
 
-        def _do_full_reindex(*, progress_callback=None):
-            from managers.rag.rag_manager import RAGManager
-            rag = RAGManager(character_id)
-            return rag.index_all(progress_callback=progress_callback)
-
-        super().__init__(_do_full_reindex, use_progress=True)
+def FullReindexWorker(character_id: str) -> TaskWorker:
+    return _create_reindex_worker(character_id, full=True)
 
 
 class ReindexAllCharactersWorker(TaskWorker):
