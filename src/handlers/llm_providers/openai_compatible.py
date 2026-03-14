@@ -50,9 +50,6 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                     params["tools"] = tools_payload
                     params["stream"] = False
 
-            # Принудительно передаем stream в параметры, если он включен
-            if req.stream:
-                params["stream"] = True
             completion = client.chat.completions.create(**params, stream=req.stream)
 
             if req.stream:
@@ -110,9 +107,6 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
     def _handle_stream(self, completion, stream_callback=None) -> str:
         parts: List[str] = []
         try:
-            # Библиотека openai сама обрабатывает итерацию по чанкам.
-            # Если возникают проблемы с кодировкой, это может быть связано с тем,
-            # как чанки текста объединяются или передаются в callback.
             for chunk in completion:
                 text = ""
                 try:
@@ -122,7 +116,6 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                     continue
 
                 if text:
-                    # Убеждаемся, что текст корректно передается в callback
                     if stream_callback:
                         stream_callback(text)
                     parts.append(text)

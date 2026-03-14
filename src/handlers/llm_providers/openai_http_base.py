@@ -165,17 +165,12 @@ class OpenAIHTTPProviderBase(BaseProvider):
     def _handle_stream(self, resp: requests.Response, stream_callback: Optional[callable] = None) -> str:
         parts: List[str] = []
         try:
-            # Используем decode_unicode=False, чтобы вручную декодировать чанки.
-            # Это предотвращает разрыв многобайтовых UTF-8 символов на границах чанков.
             for line_bytes in resp.iter_lines(decode_unicode=False):
                 if not line_bytes:
                     continue
-                
                 try:
                     line = line_bytes.decode("utf-8")
                 except UnicodeDecodeError:
-                    # Если не удалось декодировать строку целиком, пробуем игнорировать ошибки
-                    # или обрабатывать как сырые данные.
                     line = line_bytes.decode("utf-8", errors="replace")
 
                 if not line.startswith("data: "):
