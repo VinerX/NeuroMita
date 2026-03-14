@@ -342,8 +342,6 @@ API ссылка - https://openrouter.ai/api/v1
 Пишите в лс дискорд, если удобней каким-то другим типом криптовалюты.
 
 <!-- Идеи для разработчика на исправления для Нейромиты:
-1: Переиминовать галочки на новые названия - "Использовать Requests" и "Requests для Gemini API и ProxyAPI" (для англ. языка это "Use Requests" и "Gemini for ProxyAPI")
+1: Переиминовать галочки на новые названия - "Использовать Requests" и "Requests для Gemini API и ProxyAPI" (для англ. языка это "Use Requests" и "Requests for Gemini API/ProxyAPI")
 2: Исправить ошибку "Penalty is not enabled for this model" убрав значение presencePenalty из chat_model.py, и выпустить фикс-обнову v0.011-fix
-
-
 >
