@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
 import datetime
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from managers.database_manager import DatabaseManager
@@ -221,6 +223,149 @@ class Scenario:
         )
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  Batch testing & metrics
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class TestCase:
+    """One query + expected relevant document IDs."""
+    query: str
+    expected_ids: list[str | int] = field(default_factory=list)
+    description: str = ""
+
+    def to_dict(self) -> dict:
+        return {"query": self.query, "expected_ids": self.expected_ids, "description": self.description}
+
+    @staticmethod
+    def from_dict(d: dict) -> "TestCase":
+        return TestCase(
+            query=str(d.get("query") or ""),
+            expected_ids=list(d.get("expected_ids") or []),
+            description=str(d.get("description") or ""),
+        )
+
+
+@dataclass
+class TestSuite:
+    """A collection of test cases for batch evaluation."""
+    name: str = "Untitled"
+    character_id: str = "RAG_TEST"
+    cases: list[TestCase] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "character_id": self.character_id,
+            "cases": [c.to_dict() for c in self.cases],
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def from_dict(d: dict) -> "TestSuite":
+        return TestSuite(
+            name=str(d.get("name") or "Untitled"),
+            character_id=str(d.get("character_id") or "RAG_TEST"),
+            cases=[TestCase.from_dict(c) for c in (d.get("cases") or [])],
+        )
+
+    @staticmethod
+    def from_json(text: str) -> "TestSuite":
+        return TestSuite.from_dict(json.loads(text))
+
+    @staticmethod
+    def template() -> "TestSuite":
+        return TestSuite(
+            name="Sample RAG Test Suite",
+            character_id="RAG_TEST",
+            cases=[
+                TestCase(
+                    query="Что я говорил про горы?",
+                    expected_ids=["in:old-1"],
+                    description="Должен найти сообщение про Альпы",
+                ),
+                TestCase(
+                    query="Какие у меня планы на весну?",
+                    expected_ids=["in:old-1", "out:old-1"],
+                    description="Должен найти оба сообщения про поездку",
+                ),
+            ],
+        )
+
+
+@dataclass
+class SingleResult:
+    """Result of running one test case."""
+    test_case: TestCase
+    retrieved_ids: list[str | int]
+    retrieved_scores: list[float]
+    retrieved_contents: list[str]
+    precision_at_k: float
+    recall: float
+    reciprocal_rank: float
+    ndcg: float
+    elapsed_ms: float
+
+
+@dataclass
+class BatchResult:
+    """Aggregated results of running a full test suite."""
+    suite_name: str
+    results: list[SingleResult]
+    mean_precision: float
+    mean_recall: float
+    mrr: float          # Mean Reciprocal Rank
+    mean_ndcg: float
+    total_elapsed_ms: float
+
+    def summary_text(self) -> str:
+        lines = [
+            f"=== Batch Results: {self.suite_name} ===",
+            f"Queries:          {len(self.results)}",
+            f"Mean Precision@K: {self.mean_precision:.4f}",
+            f"Mean Recall:      {self.mean_recall:.4f}",
+            f"MRR:              {self.mrr:.4f}",
+            f"Mean nDCG:        {self.mean_ndcg:.4f}",
+            f"Total time:       {self.total_elapsed_ms:.0f} ms",
+            "",
+        ]
+        for i, r in enumerate(self.results):
+            status = "PASS" if r.recall >= 1.0 else ("PARTIAL" if r.recall > 0 else "MISS")
+            lines.append(
+                f"  [{status}] Q{i+1}: \"{r.test_case.query[:60]}\" "
+                f"P={r.precision_at_k:.2f} R={r.recall:.2f} RR={r.reciprocal_rank:.2f} "
+                f"nDCG={r.ndcg:.2f} ({r.elapsed_ms:.0f}ms)"
+            )
+            if r.test_case.description:
+                lines.append(f"        {r.test_case.description}")
+            if status != "PASS":
+                expected = set(str(x) for x in r.test_case.expected_ids)
+                found = set(str(x) for x in r.retrieved_ids)
+                missing = expected - found
+                if missing:
+                    lines.append(f"        Missing: {missing}")
+        return "\n".join(lines)
+
+
+def _dcg(relevances: list[float]) -> float:
+    """Discounted Cumulative Gain."""
+    return sum(rel / math.log2(i + 2) for i, rel in enumerate(relevances))
+
+
+def _ndcg(retrieved_ids: list, expected_ids: set, k: int) -> float:
+    """Normalized DCG at K."""
+    expected_set = set(str(x) for x in expected_ids)
+    relevances = [1.0 if str(rid) in expected_set else 0.0 for rid in retrieved_ids[:k]]
+    ideal = sorted(relevances, reverse=True)
+    dcg = _dcg(relevances)
+    idcg = _dcg(ideal)
+    if idcg == 0:
+        return 0.0
+    return dcg / idcg
+
+
 class RagTesterService:
     """
     Логика тестера (Model/Presenter):
@@ -229,9 +374,48 @@ class RagTesterService:
     - загрузка/выгрузка в DB
     - индексирование
     - поиск + prod-like overrides + превью инжекта
+    - batch testing с метриками
     """
     def __init__(self):
         self.db = DatabaseManager()
+        self._ensure_rag_enabled()
+
+    @staticmethod
+    def _ensure_rag_enabled() -> None:
+        """
+        RAGManager._get_embedding() проверяет RAG_ENABLED — если False, возвращает None.
+        В тестере RAG всегда должен быть включён.
+        Также форсируем загрузку модели эмбеддингов (singleton fallback).
+        """
+        # Если SettingsManager инициализирован — ставим RAG_ENABLED
+        try:
+            if SettingsManager.instance is not None:
+                SettingsManager.set("RAG_ENABLED", True)
+        except Exception:
+            pass
+
+        # Если SettingsManager НЕ инициализирован — monkey-patch get() чтобы
+        # RAG_ENABLED всегда возвращал True
+        if SettingsManager.instance is None:
+            _orig_get = getattr(SettingsManager, "get", None)
+
+            def _patched_get(key, default=None):
+                if key == "RAG_ENABLED":
+                    return True
+                if callable(_orig_get):
+                    return _orig_get(key, default)
+                return default
+
+            try:
+                SettingsManager.get = staticmethod(_patched_get)
+            except Exception:
+                pass
+
+        # Форсируем загрузку embedding-модели, чтобы fallback заработал
+        try:
+            RAGManager._get_fallback_handler()
+        except Exception:
+            pass
 
     # -------------------------
     # Scenario file helpers
@@ -346,31 +530,50 @@ class RagTesterService:
             except Exception:
                 pass
 
-    def clear_character_data(self, character_id: str) -> None:
+    def db_stats(self, character_id: str) -> dict[str, int]:
+        """Counts of history/memories rows for the character."""
         cid = str(character_id)
+        conn = self.db.get_connection()
+        try:
+            cur = conn.cursor()
+            stats: dict[str, int] = {}
 
-        hcols = self.table_cols("history")
-        mcols = self.table_cols("memories")
+            for label, sql in [
+                ("history_active", "SELECT COUNT(*) FROM history WHERE character_id=? AND is_active=1"),
+                ("history_archived", "SELECT COUNT(*) FROM history WHERE character_id=? AND is_active=0"),
+                ("history_embedded", "SELECT COUNT(*) FROM history WHERE character_id=? AND is_active=0 AND embedding IS NOT NULL"),
+                ("memories_total", "SELECT COUNT(*) FROM memories WHERE character_id=?"),
+                ("memories_embedded", "SELECT COUNT(*) FROM memories WHERE character_id=? AND embedding IS NOT NULL"),
+            ]:
+                try:
+                    cur.execute(sql, (cid,))
+                    row = cur.fetchone()
+                    stats[label] = int(row[0]) if row else 0
+                except Exception:
+                    stats[label] = -1
+            return stats
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def clear_character_data(self, character_id: str) -> None:
+        """Hard DELETE (не soft-delete) — тестеру нужно реально удалить строки,
+        иначе UNIQUE constraint не даст вставить те же message_id+timestamp."""
+        cid = str(character_id)
 
         conn = self.db.get_connection()
         try:
             cur = conn.cursor()
-
-            if "is_deleted" in hcols:
-                cur.execute("UPDATE history SET is_deleted=1 WHERE character_id=?", (cid,))
-            else:
-                cur.execute("DELETE FROM history WHERE character_id=?", (cid,))
+            cur.execute("DELETE FROM history WHERE character_id=?", (cid,))
 
             try:
                 cur.execute("DELETE FROM variables WHERE character_id=?", (cid,))
             except Exception:
                 pass
 
-            if "is_deleted" in mcols:
-                cur.execute("UPDATE memories SET is_deleted=1 WHERE character_id=?", (cid,))
-            else:
-                cur.execute("DELETE FROM memories WHERE character_id=?", (cid,))
-
+            cur.execute("DELETE FROM memories WHERE character_id=?", (cid,))
             conn.commit()
         finally:
             try:
@@ -386,6 +589,7 @@ class RagTesterService:
         rag = RAGManager(cid)
 
         inserted = 0
+        embedded = 0
         for msg in msgs:
             if not isinstance(msg, dict):
                 continue
@@ -404,9 +608,14 @@ class RagTesterService:
                         txt = hm._extract_text_for_embedding(m2.get("content"))
                         if txt:
                             rag.update_history_embedding(int(row_id), txt)
-                    except Exception:
-                        pass
+                            embedded += 1
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).warning(f"Embed history failed for row {row_id}: {e}")
 
+        if embed_now:
+            import logging
+            logging.getLogger(__name__).info(f"History insert: {inserted} rows, {embedded} embedded")
         return inserted
 
     def insert_memories(self, cid: str, memories: list[dict], *, embed_now: bool) -> int:
@@ -422,6 +631,7 @@ class RagTesterService:
         has_is_deleted = "is_deleted" in cols
 
         inserted = 0
+        embedded = 0
         conn = self.db.get_connection()
         try:
             cur = conn.cursor()
@@ -467,8 +677,10 @@ class RagTesterService:
                 if embed_now:
                     try:
                         rag.update_memory_embedding(max_eid, content)
-                    except Exception:
-                        pass
+                        embedded += 1
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).warning(f"Embed memory failed for eid {max_eid}: {e}")
 
             conn.commit()
         finally:
@@ -477,6 +689,9 @@ class RagTesterService:
             except Exception:
                 pass
 
+        if embed_now:
+            import logging
+            logging.getLogger(__name__).info(f"Memory insert: {inserted} rows, {embedded} embedded")
         return inserted
 
     def apply_scenario_to_db(self, scenario: Scenario, *, clear_before: bool, embed_now: bool) -> dict[str, int]:
@@ -636,7 +851,7 @@ class RagTesterService:
 
     def build_injection_preview(self, results: list[dict]) -> str:
         """
-        Превью блоков как в твоём process_rag():
+        Превью блоков как в process_rag():
         <relevant_memories>...</relevant_memories>
         <past_context>...</past_context>
         """
@@ -674,3 +889,92 @@ class RagTesterService:
             blocks.append("<past_context>\n" + "\n".join(hist_lines) + "\n</past_context>")
 
         return "\n\n".join(blocks)
+
+    # -------------------------
+    # Batch testing
+    # -------------------------
+    def run_batch(
+        self,
+        suite: TestSuite,
+        *,
+        limit: int,
+        threshold: float,
+        use_overrides: bool,
+        overrides: dict[str, Any] | None,
+        progress_callback=None,
+    ) -> BatchResult:
+        results: list[SingleResult] = []
+        total_start = time.perf_counter()
+
+        for idx, tc in enumerate(suite.cases):
+            if progress_callback:
+                progress_callback(idx, len(suite.cases), tc.query)
+
+            t0 = time.perf_counter()
+            raw = self.search(
+                cid=suite.character_id, query=tc.query,
+                limit=limit, threshold=threshold,
+                use_overrides=use_overrides, overrides=overrides,
+            )
+            elapsed = (time.perf_counter() - t0) * 1000
+
+            retrieved_ids = []
+            retrieved_scores = []
+            retrieved_contents = []
+            for r in raw:
+                rid = r.get("id") or r.get("message_id") or ""
+                retrieved_ids.append(str(rid))
+                retrieved_scores.append(safe_float(r.get("score"), 0.0))
+                retrieved_contents.append(str(r.get("content") or "")[:200])
+
+            expected_set = set(str(x) for x in tc.expected_ids)
+            k = len(retrieved_ids)
+
+            # Precision@K
+            if k > 0:
+                hits = sum(1 for rid in retrieved_ids if str(rid) in expected_set)
+                precision = hits / k
+            else:
+                precision = 0.0
+
+            # Recall
+            if expected_set:
+                found = sum(1 for eid in expected_set if eid in set(str(x) for x in retrieved_ids))
+                recall = found / len(expected_set)
+            else:
+                recall = 1.0  # no expected = vacuously true
+
+            # Reciprocal Rank
+            rr = 0.0
+            for i, rid in enumerate(retrieved_ids):
+                if str(rid) in expected_set:
+                    rr = 1.0 / (i + 1)
+                    break
+
+            # nDCG
+            ndcg = _ndcg(retrieved_ids, expected_set, max(k, 1))
+
+            results.append(SingleResult(
+                test_case=tc,
+                retrieved_ids=retrieved_ids,
+                retrieved_scores=retrieved_scores,
+                retrieved_contents=retrieved_contents,
+                precision_at_k=precision,
+                recall=recall,
+                reciprocal_rank=rr,
+                ndcg=ndcg,
+                elapsed_ms=elapsed,
+            ))
+
+        total_elapsed = (time.perf_counter() - total_start) * 1000
+
+        n = len(results) or 1
+        return BatchResult(
+            suite_name=suite.name,
+            results=results,
+            mean_precision=sum(r.precision_at_k for r in results) / n,
+            mean_recall=sum(r.recall for r in results) / n,
+            mrr=sum(r.reciprocal_rank for r in results) / n,
+            mean_ndcg=sum(r.ndcg for r in results) / n,
+            total_elapsed_ms=total_elapsed,
+        )

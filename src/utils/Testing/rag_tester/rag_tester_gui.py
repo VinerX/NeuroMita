@@ -7,12 +7,12 @@ from typing import Any
 
 # --- make project root importable ---
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(THIS_DIR, ".."))
+PROJECT_ROOT = os.path.abspath(os.path.join(THIS_DIR, "..", "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QColor
+from PyQt6.QtGui import QAction, QColor, QFont
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -41,10 +41,15 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QListWidget,
     QListWidgetItem,
+    QStatusBar,
+    QProgressBar,
 )
 
 from styles.main_styles import get_stylesheet
-from rag_tester_core import RagTesterService, Scenario
+from rag_tester_core import (
+    RagTesterService, Scenario, TestSuite, TestCase, BatchResult,
+)
+from tester_styles import TESTER_QSS
 
 
 def as_stripped(v: Any) -> str:
@@ -75,7 +80,6 @@ def _fmt_features(features: dict) -> str:
         v = features.get(key)
         if v is not None:
             parts.append(f"{abbr}={float(v):.2f}")
-    # include any unexpected keys
     known = {k for k, _ in mapping}
     for k, v in features.items():
         if k not in known:
@@ -111,6 +115,7 @@ class RagTesterWindow(QMainWindow):
         self._build_menu()
         self._build_central_ui()
         self._build_settings_dock()
+        self._build_status_bar()
         self._wire_events()
 
         self.on_template()
@@ -125,6 +130,32 @@ class RagTesterWindow(QMainWindow):
     def _build_menu(self) -> None:
         view = self.menuBar().addMenu("View")
         view.addAction(self.act_toggle_settings)
+
+    def _build_status_bar(self) -> None:
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_label = QLabel("Ready")
+        self.status_bar.addWidget(self.status_label, 1)
+        self.db_stats_label = QLabel("")
+        self.status_bar.addPermanentWidget(self.db_stats_label)
+
+    def _update_status(self, text: str) -> None:
+        self.status_label.setText(text)
+        QApplication.processEvents()
+
+    def _update_db_stats(self) -> None:
+        cid = self.current_cid()
+        try:
+            stats = self.svc.db_stats(cid)
+            self.db_stats_label.setText(
+                f"[{cid}] hist: {stats.get('history_archived', '?')} "
+                f"(emb: {stats.get('history_embedded', '?')}) | "
+                f"mem: {stats.get('memories_total', '?')} "
+                f"(emb: {stats.get('memories_embedded', '?')}) | "
+                f"ctx: {stats.get('history_active', '?')}"
+            )
+        except Exception:
+            self.db_stats_label.setText(f"[{cid}] DB stats unavailable")
 
     def _build_central_ui(self) -> None:
         central = QWidget()
@@ -180,8 +211,10 @@ class RagTesterWindow(QMainWindow):
         db_btns = QHBoxLayout()
         self.btn_apply = QPushButton("Залить scenario в БД")
         self.btn_load_from_db = QPushButton("Загрузить scenario из БД")
+        self.btn_refresh_stats = QPushButton("Refresh stats")
         db_btns.addWidget(self.btn_apply)
         db_btns.addWidget(self.btn_load_from_db)
+        db_btns.addWidget(self.btn_refresh_stats)
         gb_db_l.addLayout(db_btns)
 
         chk_l = QVBoxLayout()
@@ -243,6 +276,43 @@ class RagTesterWindow(QMainWindow):
         tab_data_l.addStretch(1)
         left_tabs.addTab(tab_data, "Data")
 
+        # ── Batch Test Tab ───────────────────────────────────────────────────
+        tab_batch = QWidget()
+        tab_batch_l = QVBoxLayout(tab_batch)
+        tab_batch_l.setContentsMargins(15, 15, 15, 15)
+        tab_batch_l.setSpacing(10)
+
+        batch_top = QHBoxLayout()
+        self.btn_batch_template = QPushButton("Шаблон suite")
+        self.btn_batch_load = QPushButton("Load suite…")
+        self.btn_batch_save = QPushButton("Save suite…")
+        batch_top.addWidget(self.btn_batch_template)
+        batch_top.addWidget(self.btn_batch_load)
+        batch_top.addWidget(self.btn_batch_save)
+        batch_top.addStretch(1)
+        tab_batch_l.addLayout(batch_top)
+
+        self.batch_edit = QTextEdit()
+        self.batch_edit.setAcceptRichText(False)
+        self.batch_edit.setPlaceholderText("Test suite JSON — загрузите шаблон или файл")
+        tab_batch_l.addWidget(self.batch_edit, 2)
+
+        batch_run_row = QHBoxLayout()
+        self.btn_batch_run = QPushButton("Run Batch Test")
+        self.btn_batch_run.setMinimumHeight(36)
+        font = self.btn_batch_run.font()
+        font.setBold(True)
+        self.btn_batch_run.setFont(font)
+        batch_run_row.addWidget(self.btn_batch_run)
+        batch_run_row.addStretch(1)
+        tab_batch_l.addLayout(batch_run_row)
+
+        self.batch_results_view = QPlainTextEdit()
+        self.batch_results_view.setReadOnly(True)
+        self.batch_results_view.setPlaceholderText("Результаты batch-теста")
+        tab_batch_l.addWidget(self.batch_results_view, 3)
+        left_tabs.addTab(tab_batch, "Batch Test")
+
         # ═══ RIGHT PANEL (SEARCH) ════════════════════════════════════════════
         right = QWidget()
         right_l = QVBoxLayout(right)
@@ -275,6 +345,7 @@ class RagTesterWindow(QMainWindow):
         self.threshold_spin.setRange(-1.0, 1.0)
         self.threshold_spin.setValue(0.40)
         self.threshold_spin.setFixedWidth(70)
+        self.threshold_spin.setSingleStep(0.05)
 
         qrow.addWidget(QLabel("limit"))
         qrow.addWidget(self.limit_spin)
@@ -363,11 +434,6 @@ class RagTesterWindow(QMainWindow):
         scroll_layout = QVBoxLayout(scroll_widget)
         scroll_layout.setSpacing(10)
 
-        # ── Weights ──────────────────────────────────────────────────────────
-        gb_w = QGroupBox("Weights")
-        form_w = QFormLayout(gb_w)
-        form_w.setVerticalSpacing(6)
-
         def dspin(lo=-10.0, hi=10.0, val=1.0, step=0.1):
             s = QDoubleSpinBox()
             s.setRange(lo, hi)
@@ -375,6 +441,18 @@ class RagTesterWindow(QMainWindow):
             s.setSingleStep(step)
             s.setFixedWidth(90)
             return s
+
+        def ispin(lo=0, hi=1000, val=0):
+            s = QSpinBox()
+            s.setRange(lo, hi)
+            s.setValue(val)
+            s.setFixedWidth(90)
+            return s
+
+        # ── Weights ──────────────────────────────────────────────────────────
+        gb_w = QGroupBox("Weights")
+        form_w = QFormLayout(gb_w)
+        form_w.setVerticalSpacing(6)
 
         self.k1 = dspin(val=1.0);  form_w.addRow("K1 similarity:", self.k1)
         self.k2 = dspin(val=1.0);  form_w.addRow("K2 time:", self.k2)
@@ -393,10 +471,7 @@ class RagTesterWindow(QMainWindow):
         form_q = QFormLayout(gb_q)
         form_q.setVerticalSpacing(6)
 
-        self.tail_messages = QSpinBox()
-        self.tail_messages.setRange(0, 20)
-        self.tail_messages.setValue(2)
-        self.tail_messages.setFixedWidth(90)
+        self.tail_messages = ispin(0, 20, 2)
         form_q.addRow("tail messages:", self.tail_messages)
 
         self.search_memory = QCheckBox("search_memory")
@@ -419,18 +494,79 @@ class RagTesterWindow(QMainWindow):
         form_r.setVerticalSpacing(6)
 
         self.combine_mode_combo = QComboBox()
-        self.combine_mode_combo.addItems(["union", "vector_only", "intersect", "two_stage"])
+        self.combine_mode_combo.addItems(["union", "vector_only", "intersect", "intersect2", "intersect_n", "two_stage"])
         self.combine_mode_combo.setCurrentText("union")
         form_r.addRow("combine mode:", self.combine_mode_combo)
 
-        self.kw_enabled = QCheckBox("keyword search")
-        self.kw_enabled.setChecked(False)
-        form_r.addRow(self.kw_enabled)
+        self.vector_top_k = ispin(0, 500, 0)
+        form_r.addRow("vector_top_k:", self.vector_top_k)
 
-        self.use_fts = QCheckBox("FTS search")
-        self.use_fts.setChecked(False)
-        form_r.addRow(self.use_fts)
+        self.intersect_min_methods = ispin(1, 5, 2)
+        form_r.addRow("intersect min:", self.intersect_min_methods)
+
+        self.intersect_require_vector = QCheckBox("require vector")
+        self.intersect_require_vector.setChecked(True)
+        form_r.addRow(self.intersect_require_vector)
+
+        self.intersect_fallback_union = QCheckBox("fallback union")
+        self.intersect_fallback_union.setChecked(True)
+        form_r.addRow(self.intersect_fallback_union)
+
+        self.two_stage_fallback_union = QCheckBox("2-stage fallback")
+        self.two_stage_fallback_union.setChecked(True)
+        form_r.addRow(self.two_stage_fallback_union)
+
         scroll_layout.addWidget(gb_r)
+
+        # ── Keyword search ────────────────────────────────────────────────────
+        gb_kw = QGroupBox("Keyword Search")
+        form_kw = QFormLayout(gb_kw)
+        form_kw.setVerticalSpacing(6)
+
+        self.kw_enabled = QCheckBox("enabled")
+        self.kw_enabled.setChecked(False)
+        form_kw.addRow(self.kw_enabled)
+
+        self.kw_max_terms = ispin(1, 50, 8)
+        form_kw.addRow("max terms:", self.kw_max_terms)
+
+        self.kw_min_score = dspin(lo=0.0, hi=1.0, val=0.34, step=0.05)
+        form_kw.addRow("min score:", self.kw_min_score)
+
+        self.kw_sql_limit = ispin(1, 5000, 250)
+        form_kw.addRow("SQL limit:", self.kw_sql_limit)
+
+        self.kw_min_len = ispin(1, 20, 3)
+        form_kw.addRow("min len:", self.kw_min_len)
+
+        self.kw_lemmatization = QCheckBox("lemmatization")
+        self.kw_lemmatization.setChecked(True)
+        form_kw.addRow(self.kw_lemmatization)
+
+        scroll_layout.addWidget(gb_kw)
+
+        # ── FTS ───────────────────────────────────────────────────────────────
+        gb_fts = QGroupBox("FTS (Full-Text Search)")
+        form_fts = QFormLayout(gb_fts)
+        form_fts.setVerticalSpacing(6)
+
+        self.use_fts = QCheckBox("enabled")
+        self.use_fts.setChecked(False)
+        form_fts.addRow(self.use_fts)
+
+        self.fts_top_k_hist = ispin(1, 500, 50)
+        form_fts.addRow("top_k history:", self.fts_top_k_hist)
+
+        self.fts_top_k_mem = ispin(1, 500, 50)
+        form_fts.addRow("top_k memories:", self.fts_top_k_mem)
+
+        self.fts_max_terms = ispin(1, 50, 10)
+        form_fts.addRow("max terms:", self.fts_max_terms)
+
+        self.fts_min_len = ispin(1, 20, 3)
+        form_fts.addRow("min len:", self.fts_min_len)
+
+        scroll_layout.addWidget(gb_fts)
 
         # ── Misc ──────────────────────────────────────────────────────────────
         gb_m = QGroupBox("Misc")
@@ -447,6 +583,13 @@ class RagTesterWindow(QMainWindow):
 
         self.forgotten_penalty = dspin(lo=-5.0, hi=5.0, val=-0.15, step=0.05)
         form_m.addRow("forgotten penalty:", self.forgotten_penalty)
+
+        self.log_top_n = ispin(0, 100, 10)
+        form_m.addRow("log top N:", self.log_top_n)
+
+        self.log_bottom_n = ispin(0, 100, 5)
+        form_m.addRow("log bottom N:", self.log_bottom_n)
+
         scroll_layout.addWidget(gb_m)
 
         scroll_layout.addStretch(1)
@@ -477,6 +620,7 @@ class RagTesterWindow(QMainWindow):
 
         self.btn_apply.clicked.connect(self.on_apply)
         self.btn_load_from_db.clicked.connect(self.on_load_from_db)
+        self.btn_refresh_stats.clicked.connect(self._update_db_stats)
 
         self.btn_import_old_history.clicked.connect(self.on_import_old_history)
         self.btn_import_old_memories.clicked.connect(self.on_import_old_memories)
@@ -485,6 +629,7 @@ class RagTesterWindow(QMainWindow):
         self.btn_missing_count.clicked.connect(self.on_missing_count)
 
         self.btn_search.clicked.connect(self.on_search)
+        self.query_edit.returnPressed.connect(self.on_search)
         self.btn_preview_inject.clicked.connect(self.on_preview_inject)
         self.btn_export_json.clicked.connect(self.on_export_json)
 
@@ -492,6 +637,15 @@ class RagTesterWindow(QMainWindow):
         self.history_list.itemClicked.connect(self._on_history_item_clicked)
 
         self.table.itemSelectionChanged.connect(self.on_table_selection)
+
+        # batch
+        self.btn_batch_template.clicked.connect(self.on_batch_template)
+        self.btn_batch_load.clicked.connect(self.on_batch_load)
+        self.btn_batch_save.clicked.connect(self.on_batch_save)
+        self.btn_batch_run.clicked.connect(self.on_batch_run)
+
+        # update stats when character changes
+        self.character_id_edit.editingFinished.connect(self._update_db_stats)
 
     # ─────────────────────────── helpers ────────────────────────────────────
 
@@ -524,6 +678,9 @@ class RagTesterWindow(QMainWindow):
 
     def collect_overrides(self) -> dict[str, Any]:
         return {
+            # always enabled in tester
+            "RAG_ENABLED":              True,
+            # weights
             "RAG_WEIGHT_SIMILARITY":    float(self.k1.value()),
             "RAG_WEIGHT_TIME":          float(self.k2.value()),
             "RAG_WEIGHT_PRIORITY":      float(self.k3.value()),
@@ -532,38 +689,80 @@ class RagTesterWindow(QMainWindow):
             "RAG_WEIGHT_LEXICAL":       float(self.k6.value()),
             "RAG_TIME_DECAY_RATE":      float(self.decay.value()),
             "RAG_NOISE_MAX":            float(self.noise.value()),
-            "RAG_MEMORY_MODE":          str(self.memory_mode.currentText() or "forgotten"),
-            "RAG_DETAILED_LOGS":        bool(self.detailed_logs.isChecked()),
-            "RAG_INCLUDE_FORGOTTEN":    bool(self.include_forgotten.isChecked()),
-            "RAG_FORGOTTEN_PENALTY":    float(self.forgotten_penalty.value()),
+            # query
             "RAG_QUERY_TAIL_MESSAGES":  int(self.tail_messages.value()),
             "RAG_SEARCH_MEMORY":        bool(self.search_memory.isChecked()),
             "RAG_SEARCH_HISTORY":       bool(self.search_history.isChecked()),
+            "RAG_MEMORY_MODE":          str(self.memory_mode.currentText() or "forgotten"),
+            # retrieval
             "RAG_COMBINE_MODE":         str(self.combine_mode_combo.currentText()),
+            "RAG_VECTOR_TOP_K":         int(self.vector_top_k.value()),
+            "RAG_INTERSECT_MIN_METHODS": int(self.intersect_min_methods.value()),
+            "RAG_INTERSECT_REQUIRE_VECTOR": bool(self.intersect_require_vector.isChecked()),
+            "RAG_INTERSECT_FALLBACK_UNION": bool(self.intersect_fallback_union.isChecked()),
+            "RAG_TWO_STAGE_FALLBACK_UNION": bool(self.two_stage_fallback_union.isChecked()),
+            # keyword
             "RAG_KEYWORD_SEARCH":       bool(self.kw_enabled.isChecked()),
+            "RAG_KEYWORDS_MAX_TERMS":   int(self.kw_max_terms.value()),
+            "RAG_KEYWORD_MIN_SCORE":    float(self.kw_min_score.value()),
+            "RAG_KEYWORD_SQL_LIMIT":    int(self.kw_sql_limit.value()),
+            "RAG_KEYWORDS_MIN_LEN":     int(self.kw_min_len.value()),
+            "RAG_LEMMATIZATION":        bool(self.kw_lemmatization.isChecked()),
+            # fts
             "RAG_USE_FTS":              bool(self.use_fts.isChecked()),
+            "RAG_FTS_TOP_K_HISTORY":    int(self.fts_top_k_hist.value()),
+            "RAG_FTS_TOP_K_MEMORIES":   int(self.fts_top_k_mem.value()),
+            "RAG_FTS_MAX_TERMS":        int(self.fts_max_terms.value()),
+            "RAG_FTS_MIN_LEN":          int(self.fts_min_len.value()),
+            # misc
+            "RAG_DETAILED_LOGS":        bool(self.detailed_logs.isChecked()),
+            "RAG_INCLUDE_FORGOTTEN":    bool(self.include_forgotten.isChecked()),
+            "RAG_FORGOTTEN_PENALTY":    float(self.forgotten_penalty.value()),
+            "RAG_LOG_LIST_TOP_N":       int(self.log_top_n.value()),
+            "RAG_LOG_LIST_BOTTOM_N":    int(self.log_bottom_n.value()),
         }
 
     def _reset_settings_defaults(self) -> None:
+        # weights
         self.k1.setValue(1.0);  self.k2.setValue(1.0);  self.k3.setValue(1.0)
         self.k4.setValue(0.5);  self.k5.setValue(0.6);  self.k6.setValue(0.3)
         self.decay.setValue(0.15);  self.noise.setValue(0.05)
-        self.memory_mode.setCurrentText("forgotten")
+        # query
         self.tail_messages.setValue(2)
         self.search_memory.setChecked(False)
         self.search_history.setChecked(True)
+        self.memory_mode.setCurrentText("forgotten")
+        # retrieval
         self.combine_mode_combo.setCurrentText("union")
+        self.vector_top_k.setValue(0)
+        self.intersect_min_methods.setValue(2)
+        self.intersect_require_vector.setChecked(True)
+        self.intersect_fallback_union.setChecked(True)
+        self.two_stage_fallback_union.setChecked(True)
+        # keyword
         self.kw_enabled.setChecked(False)
+        self.kw_max_terms.setValue(8)
+        self.kw_min_score.setValue(0.34)
+        self.kw_sql_limit.setValue(250)
+        self.kw_min_len.setValue(3)
+        self.kw_lemmatization.setChecked(True)
+        # fts
         self.use_fts.setChecked(False)
+        self.fts_top_k_hist.setValue(50)
+        self.fts_top_k_mem.setValue(50)
+        self.fts_max_terms.setValue(10)
+        self.fts_min_len.setValue(3)
+        # misc
         self.detailed_logs.setChecked(True)
         self.include_forgotten.setChecked(False)
         self.forgotten_penalty.setValue(-0.15)
+        self.log_top_n.setValue(10)
+        self.log_bottom_n.setValue(5)
 
     def _push_query_history(self, query: str) -> None:
         q = query.strip()
         if not q:
             return
-        # remove duplicate if present
         self._query_history = [x for x in self._query_history if x != q]
         self._query_history.insert(0, q)
         self._query_history = self._query_history[:_HISTORY_MAX]
@@ -625,7 +824,6 @@ class RagTesterWindow(QMainWindow):
             self.table.setItem(row, _COL_SCORE, score_item)
 
             feat_item = cell(feat_str)
-            # dim zero-only feature cells
             if not feat_str or all(v == 0.0 for v in features.values()):
                 feat_item.setForeground(_CLR_GREY)
             self.table.setItem(row, _COL_FEAT, feat_item)
@@ -636,7 +834,6 @@ class RagTesterWindow(QMainWindow):
             self.table.setItem(row, _COL_SP_TG,   cell(st))
             self.table.setItem(row, _COL_CONTENT, cell(clip))
 
-            # store full payload for details pane and export
             self.table.item(row, _COL_SOURCE).setData(Qt.ItemDataRole.UserRole, item)
 
     # ─────────────────────────── actions ────────────────────────────────────
@@ -652,6 +849,7 @@ class RagTesterWindow(QMainWindow):
         try:
             sc = self.svc.load_scenario_file(path, fallback_character_id=self.current_cid())
             self.set_editor_scenario(sc)
+            self._update_status(f"Loaded scenario from {os.path.basename(path)}")
         except Exception as e:
             QMessageBox.critical(self, "Load failed", str(e))
 
@@ -662,6 +860,7 @@ class RagTesterWindow(QMainWindow):
         try:
             sc = self.parse_editor_scenario()
             self.svc.save_scenario_file(sc, path)
+            self._update_status(f"Saved to {os.path.basename(path)}")
         except Exception as e:
             QMessageBox.critical(self, "Save failed", str(e))
 
@@ -678,7 +877,12 @@ class RagTesterWindow(QMainWindow):
                 if ok != QMessageBox.StandardButton.Yes:
                     return
             embed_now = bool(self.chk_embed_now.isChecked())
+            self._update_status("Загрузка в БД...")
             counts = self.svc.apply_scenario_to_db(sc, clear_before=clear_before, embed_now=embed_now)
+            self._update_db_stats()
+            self._update_status(
+                f"Залито: ctx={counts['context']}, hist={counts['history']}, mem={counts['memories']}"
+            )
             QMessageBox.information(
                 self, "Готово",
                 f"Заливка завершена для {sc.character_id}:\n"
@@ -692,12 +896,17 @@ class RagTesterWindow(QMainWindow):
     def on_load_from_db(self) -> None:
         cid = self.current_cid()
         try:
+            self._update_status(f"Loading from DB for {cid}...")
             sc = self.svc.load_scenario_from_db(
                 cid,
                 hist_limit=int(self.db_hist_limit.value()),
                 mem_limit=int(self.db_mem_limit.value()),
             )
             self.set_editor_scenario(sc)
+            self._update_db_stats()
+            self._update_status(
+                f"Loaded: ctx={len(sc.context)}, hist={len(sc.history)}, mem={len(sc.memories)}"
+            )
             QMessageBox.information(
                 self, "Loaded",
                 f"{cid}:\n"
@@ -723,6 +932,7 @@ class RagTesterWindow(QMainWindow):
             base = self.parse_editor_scenario()
             merged = self.svc.merge_scenarios(base, add, replace=replace)
             self.set_editor_scenario(merged)
+            self._update_status(f"Imported history: {len(add.history)} archived, {len(add.context)} context")
         except RuntimeError:
             return
         except Exception as e:
@@ -740,6 +950,7 @@ class RagTesterWindow(QMainWindow):
             base = self.parse_editor_scenario()
             merged = self.svc.merge_scenarios(base, add, replace=replace)
             self.set_editor_scenario(merged)
+            self._update_status(f"Imported {len(add.memories)} memories")
         except RuntimeError:
             return
         except Exception as e:
@@ -748,7 +959,10 @@ class RagTesterWindow(QMainWindow):
     def on_index_missing(self) -> None:
         cid = self.current_cid()
         try:
+            self._update_status(f"Indexing {cid}...")
             updated = self.svc.index_missing(cid)
+            self._update_db_stats()
+            self._update_status(f"Indexed {updated} rows")
             QMessageBox.information(self, "Index done", f"Обновлено записей: {updated}")
         except Exception as e:
             QMessageBox.critical(self, "Index failed", str(e))
@@ -757,6 +971,7 @@ class RagTesterWindow(QMainWindow):
         cid = self.current_cid()
         try:
             missing = self.svc.missing_count(cid)
+            self._update_status(f"Missing embeddings: {missing}")
             QMessageBox.information(self, "Missing embeddings", f"Missing embeddings count: {missing}")
         except Exception as e:
             QMessageBox.critical(self, "Failed", str(e))
@@ -764,11 +979,14 @@ class RagTesterWindow(QMainWindow):
     def on_search(self) -> None:
         cid   = self.current_cid()
         query = self.query_edit.text()
+        if not query.strip():
+            return
         limit = int(self.limit_spin.value())
         thr   = float(self.threshold_spin.value())
 
         try:
-            eq = self.svc.build_effective_query(cid, query, tail=2)
+            self._update_status("Searching...")
+            eq = self.svc.build_effective_query(cid, query, tail=int(self.tail_messages.value()))
             self.effective_query_view.setPlainText(eq or "")
 
             use_overrides = bool(self.chk_use_overrides.isChecked())
@@ -783,6 +1001,8 @@ class RagTesterWindow(QMainWindow):
             self._populate_table(res)
             self._push_query_history(query)
 
+            self._update_status(f"Found {len(res)} results")
+
             if res:
                 self.table.selectRow(0)
                 self.right_tabs.setCurrentIndex(0)
@@ -790,6 +1010,7 @@ class RagTesterWindow(QMainWindow):
                 self.details.setPlainText("(no results)")
 
         except Exception as e:
+            self._update_status(f"Search error: {e}")
             QMessageBox.critical(self, "Search failed", str(e))
 
     def on_preview_inject(self) -> None:
@@ -830,7 +1051,7 @@ class RagTesterWindow(QMainWindow):
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self._last_results, f, ensure_ascii=False, indent=2)
-            QMessageBox.information(self, "Export", f"Сохранено {len(self._last_results)} записей в:\n{path}")
+            self._update_status(f"Exported {len(self._last_results)} results")
         except Exception as e:
             QMessageBox.critical(self, "Export failed", str(e))
 
@@ -848,13 +1069,93 @@ class RagTesterWindow(QMainWindow):
         except Exception:
             self.details.setPlainText(str(payload))
 
+    # ─────────────────── batch test actions ─────────────────────────────────
+
+    def on_batch_template(self) -> None:
+        suite = TestSuite.template()
+        suite.character_id = self.current_cid()
+        self.batch_edit.setPlainText(suite.to_json())
+
+    def on_batch_load(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Load test suite", "", "JSON (*.json);;All (*.*)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+            suite = TestSuite.from_json(text)
+            self.batch_edit.setPlainText(suite.to_json())
+            self._update_status(f"Loaded suite: {suite.name} ({len(suite.cases)} cases)")
+        except Exception as e:
+            QMessageBox.critical(self, "Load failed", str(e))
+
+    def on_batch_save(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Save test suite", "", "JSON (*.json);;All (*.*)")
+        if not path:
+            return
+        try:
+            text = self.batch_edit.toPlainText().strip()
+            suite = TestSuite.from_json(text)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(suite.to_json())
+            self._update_status(f"Saved suite to {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.critical(self, "Save failed", str(e))
+
+    def on_batch_run(self) -> None:
+        try:
+            text = self.batch_edit.toPlainText().strip()
+            if not text:
+                QMessageBox.warning(self, "Batch", "Загрузите или создайте test suite.")
+                return
+            suite = TestSuite.from_json(text)
+            if not suite.cases:
+                QMessageBox.warning(self, "Batch", "Suite пустой — добавьте test cases.")
+                return
+
+            limit = int(self.limit_spin.value())
+            thr = float(self.threshold_spin.value())
+            use_overrides = bool(self.chk_use_overrides.isChecked())
+            overrides = self.collect_overrides()
+
+            self._update_status(f"Running batch: {len(suite.cases)} queries...")
+            self.batch_results_view.setPlainText("Running...")
+            QApplication.processEvents()
+
+            def on_progress(idx, total, query):
+                self._update_status(f"Batch [{idx+1}/{total}]: {query[:40]}...")
+                QApplication.processEvents()
+
+            result = self.svc.run_batch(
+                suite,
+                limit=limit,
+                threshold=thr,
+                use_overrides=use_overrides,
+                overrides=overrides,
+                progress_callback=on_progress,
+            )
+
+            self.batch_results_view.setPlainText(result.summary_text())
+            self._update_status(
+                f"Batch done: P={result.mean_precision:.3f} R={result.mean_recall:.3f} "
+                f"MRR={result.mrr:.3f} nDCG={result.mean_ndcg:.3f}"
+            )
+
+        except Exception as e:
+            self._update_status(f"Batch error: {e}")
+            QMessageBox.critical(self, "Batch failed", str(e))
+
 
 def main() -> int:
     app = QApplication(sys.argv)
     try:
-        app.setStyleSheet(get_stylesheet())
+        base_qss = get_stylesheet()
+        app.setStyleSheet(base_qss + "\n" + TESTER_QSS)
     except Exception:
-        pass
+        try:
+            app.setStyleSheet(TESTER_QSS)
+        except Exception:
+            pass
 
     w = RagTesterWindow()
     w.resize(1400, 860)
