@@ -88,6 +88,10 @@ def start_think_block(gui, name: str, is_streaming: bool = False) -> int:
     cursor = _doc_cursor(gui)
     cursor.movePosition(QTextCursor.MoveOperation.End)
 
+    # Blank line before the think header (separates from user message)
+    plain_fmt = _make_plain_fmt(gui)
+    cursor.insertText("\n", plain_fmt)
+
     header_start, dots_start, header_end = _insert_think_header(gui, cursor, name, block_id, is_streaming)
 
     plain_fmt = _make_plain_fmt(gui)
@@ -127,16 +131,18 @@ def _insert_static_think_block(gui, text: str, name: str, insert_at_start: bool 
     gui._think_block_counter += 1
 
     cursor = _doc_cursor(gui)
+    plain_fmt = _make_plain_fmt(gui)
     if insert_at_start:
         cursor.movePosition(QTextCursor.MoveOperation.Start)
     else:
         cursor.movePosition(QTextCursor.MoveOperation.End)
+        # Blank line before the think header (separates from user message)
+        cursor.insertText("\n", plain_fmt)
 
     header_start, dots_start, header_end = _insert_think_header(
         gui, cursor, name, block_id, is_streaming=False
     )
 
-    plain_fmt = _make_plain_fmt(gui)
     cursor.insertText("\n", plain_fmt)
     content_start = cursor.position()
 
@@ -428,7 +434,9 @@ def insert_message_end(gui, cursor=None, role="assistant"):
         cursor = gui.chat_window.textCursor()
     if role == "user":
         cursor.insertText("\n")
-    elif role in {"assistant", "system", "think"}:
+    elif role == "think":
+        cursor.insertText("\n")
+    elif role in {"assistant", "system"}:
         cursor.insertText("\n\n")
 
 
@@ -479,6 +487,7 @@ def prepare_stream_slot(gui, role="assistant"):
         insert_message_end(gui, role=prev_role)
 
     gui._stream_current_render_role = role
+    gui._stream_is_first_chunk = True
 
     if role == "think":
         name = str(getattr(gui, "_stream_speaker_name", "") or "")
@@ -490,6 +499,13 @@ def prepare_stream_slot(gui, role="assistant"):
 
 
 def append_stream_chunk_slot(gui, chunk, role="assistant"):
+    # Strip leading newlines from the very first chunk of each streaming block
+    if getattr(gui, '_stream_is_first_chunk', False):
+        gui._stream_is_first_chunk = False
+        chunk = chunk.lstrip('\n')
+        if not chunk:
+            return
+
     delegate = _get_delegate(gui)
     color = delegate.get_content_color(role)
     italic = (role == "think")
