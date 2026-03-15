@@ -724,14 +724,14 @@ class RagTesterWindow(QMainWindow):
 
     def _reset_settings_defaults(self) -> None:
         # weights
-        self.k1.setValue(1.0);  self.k2.setValue(1.0);  self.k3.setValue(1.0)
+        self.k1.setValue(1.0);  self.k2.setValue(0.3);  self.k3.setValue(0.5)
         self.k4.setValue(0.5);  self.k5.setValue(0.6);  self.k6.setValue(0.3)
-        self.decay.setValue(0.15);  self.noise.setValue(0.05)
+        self.decay.setValue(0.05);  self.noise.setValue(0.02)
         # query
         self.tail_messages.setValue(2)
-        self.search_memory.setChecked(False)
+        self.search_memory.setChecked(True)
         self.search_history.setChecked(True)
-        self.memory_mode.setCurrentText("forgotten")
+        self.memory_mode.setCurrentText("all")
         # retrieval
         self.combine_mode_combo.setCurrentText("union")
         self.vector_top_k.setValue(0)
@@ -740,14 +740,14 @@ class RagTesterWindow(QMainWindow):
         self.intersect_fallback_union.setChecked(True)
         self.two_stage_fallback_union.setChecked(True)
         # keyword
-        self.kw_enabled.setChecked(False)
+        self.kw_enabled.setChecked(True)
         self.kw_max_terms.setValue(8)
         self.kw_min_score.setValue(0.34)
         self.kw_sql_limit.setValue(250)
         self.kw_min_len.setValue(3)
         self.kw_lemmatization.setChecked(True)
         # fts
-        self.use_fts.setChecked(False)
+        self.use_fts.setChecked(True)
         self.fts_top_k_hist.setValue(50)
         self.fts_top_k_mem.setValue(50)
         self.fts_max_terms.setValue(10)

@@ -1,6 +1,30 @@
+from PyQt6.QtWidgets import QLineEdit, QCheckBox, QComboBox, QMessageBox
+
 from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
 from core.events import get_event_bus, Events
+from managers.rag.pipeline.config import RAG_DEFAULTS
+
+
+def _reset_rag_defaults(gui) -> None:
+    """Reset all RAG settings to optimal defaults and update UI widgets."""
+    for key, val in RAG_DEFAULTS.items():
+        gui._save_setting(key, val)
+        widget = getattr(gui, key, None)
+        if widget is None:
+            continue
+        if isinstance(widget, QCheckBox):
+            widget.setChecked(bool(val))
+        elif isinstance(widget, QComboBox):
+            widget.setCurrentText(str(val))
+        elif isinstance(widget, QLineEdit):
+            widget.setText(str(val))
+    QMessageBox.information(
+        gui,
+        _("Сброс RAG", "RAG Reset"),
+        _("Все настройки RAG сброшены к оптимальным значениям.",
+          "All RAG settings have been reset to optimal defaults."),
+    )
 
 def setup_model_interaction_controls(self, parent):
     create_section_header(parent, _("Настройки взаимодействия с моделью", "Model Interaction Settings"))
@@ -288,7 +312,7 @@ def setup_model_interaction_controls(self, parent):
                'depends_on': 'RAG_ENABLED'},
 
         {'label': _('Искать в истории', 'Search in history'),
-         'key': 'RAG_SEARCH_HISTORY', 'type': 'checkbutton', 'default_checkbutton': False,
+         'key': 'RAG_SEARCH_HISTORY', 'type': 'checkbutton', 'default_checkbutton': True,
          'depends_on': 'RAG_ENABLED'},
 
 
@@ -300,7 +324,7 @@ def setup_model_interaction_controls(self, parent):
          'depends_on': 'RAG_ENABLED'},
 
         {'label': _('Порог схожести (Sim threshold)', 'Similarity threshold (Sim threshold)'),
-         'key': 'RAG_SIM_THRESHOLD', 'type': 'entry', 'default': 0.40,
+         'key': 'RAG_SIM_THRESHOLD', 'type': 'entry', 'default': 0.30,
          'validation': self.validate_float_0_to_1,
          'tooltip': _('Минимальная косинусная схожесть для кандидата (0..1).',
                       'Minimum cosine similarity for a candidate (0..1).'),
@@ -374,12 +398,12 @@ def setup_model_interaction_controls(self, parent):
          'depends_on': 'RAG_ENABLED'},
 
         {'label': _('Вес времени K2 (history)', 'Time weight K2 (history)'),
-         'key': 'RAG_WEIGHT_TIME', 'type': 'entry', 'default': 1.0,
+         'key': 'RAG_WEIGHT_TIME', 'type': 'entry', 'default': 0.3,
          'validation': self.validate_float_positive_or_zero,
          'depends_on': 'RAG_ENABLED'},
 
         {'label': _('Вес приоритета K3 (memories)', 'Priority weight K3 (memories)'),
-         'key': 'RAG_WEIGHT_PRIORITY', 'type': 'entry', 'default': 1.0,
+         'key': 'RAG_WEIGHT_PRIORITY', 'type': 'entry', 'default': 0.5,
          'validation': self.validate_float_positive_or_zero,
          'depends_on': 'RAG_ENABLED'},
 
@@ -396,7 +420,7 @@ def setup_model_interaction_controls(self, parent):
          'depends_on': 'RAG_ENABLED'},
 
         {'label': _('Шум (serendipity) максимум', 'Noise (serendipity) max'),
-         'key': 'RAG_NOISE_MAX', 'type': 'entry', 'default': 0.05,
+         'key': 'RAG_NOISE_MAX', 'type': 'entry', 'default': 0.02,
          'validation': self.validate_float_0_to_1,
          'tooltip': _('Случайная добавка 0..NoiseMax для редких неожиданных совпадений.',
                       'Random bonus 0..NoiseMax for occasional unexpected matches.'),
@@ -410,7 +434,7 @@ def setup_model_interaction_controls(self, parent):
          'depends_on': 'RAG_ENABLED'},
 
         {'label': _('Включить поиск по ключевым словам', 'Enable keyword search'),
-         'key': 'RAG_KEYWORD_SEARCH', 'type': 'checkbutton', 'default_checkbutton': False,
+         'key': 'RAG_KEYWORD_SEARCH', 'type': 'checkbutton', 'default_checkbutton': True,
          'tooltip': _('Включает дополнительный поиск по ключевым словам в истории/памяти.',
                       'Enables additional keyword search in history/memory.')},
 
@@ -460,7 +484,7 @@ def setup_model_interaction_controls(self, parent):
          'depends_on': 'RAG_ENABLED'},
 
         {'label': _('Использовать FTS5 для поиска', 'Use FTS5 for search'),
-         'key': 'RAG_USE_FTS', 'type': 'checkbutton', 'default_checkbutton': False,
+         'key': 'RAG_USE_FTS', 'type': 'checkbutton', 'default_checkbutton': True,
          'tooltip': _(
              'Включает лексический поиск через SQLite FTS5 для памяти и/или истории (в зависимости от включенных опций).',
              'Enables lexical search via SQLite FTS5 for memory and/or history (depending on enabled options).')},
@@ -616,6 +640,11 @@ def setup_model_interaction_controls(self, parent):
                       'How many last results from the candidate list to display in the log (for debugging "noise").')},
 
         {'type': 'end'},
+
+        {'type': 'button_group', 'buttons': [
+            {'label': _('Сбросить RAG к базовым', 'Reset RAG defaults'),
+             'command': lambda: _reset_rag_defaults(self)},
+        ]},
 
     ]
 
