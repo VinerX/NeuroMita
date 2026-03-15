@@ -224,12 +224,20 @@ def _finalize_streaming_think_block(gui):
     block = blocks[block_id]
     block['is_streaming'] = False
 
-    # Set final '...'
     cursor = _doc_cursor(gui)
+    fmt = _make_think_header_fmt(gui, block_id)
     dots_start = block['dots_start']
+
+    # "думает" → "думала"  (оба 6 символов → позиции не сдвигаются)
+    verb_start = dots_start - 6
+    cursor.setPosition(verb_start)
+    cursor.setPosition(dots_start, QTextCursor.MoveMode.KeepAnchor)
+    cursor.insertText("думала", fmt)
+
+    # Set final '...'
     cursor.setPosition(dots_start)
     cursor.setPosition(dots_start + 3, QTextCursor.MoveMode.KeepAnchor)
-    cursor.insertText("...", _make_think_header_fmt(gui, block_id))
+    cursor.insertText("...", fmt)
 
     _stop_think_animation(gui)
     gui._current_streaming_think_block_id = None
@@ -496,6 +504,10 @@ def prepare_stream_slot(gui, role="assistant"):
         start_think_block(gui, name, is_streaming=True)
     else:
         insert_speaker_name(gui, role=role)
+        # Remember where content starts so we can reapply tag colours after streaming
+        c = _doc_cursor(gui)
+        c.movePosition(QTextCursor.MoveOperation.End)
+        gui._stream_content_start = c.position()
 
 
 def append_stream_chunk_slot(gui, chunk, role="assistant"):
@@ -520,10 +532,50 @@ def append_stream_chunk_slot(gui, chunk, role="assistant"):
                 blocks[block_id]['content_end'] += len(chunk)
 
 
+def _reformat_streamed_content(gui):
+    """Re-apply tag colouring to the content that was just streamed (assistant/system)."""
+    content_start = getattr(gui, '_stream_content_start', None)
+    if content_start is None:
+        return
+
+    delegate = _get_delegate(gui)
+    hide_tags = gui._get_setting("HIDE_CHAT_TAGS", False)
+
+    cursor = _doc_cursor(gui)
+    cursor.movePosition(QTextCursor.MoveOperation.End)
+    content_end = cursor.position()
+
+    if content_start >= content_end:
+        return
+
+    cursor.setPosition(content_start)
+    cursor.setPosition(content_end, QTextCursor.MoveMode.KeepAnchor)
+    # selectedText() uses U+2029 as paragraph separator — convert to \n
+    text = cursor.selectedText().replace('\u2029', '\n')
+
+    parts = delegate.split_text_with_tags(text, hide_tags)
+
+    # Skip reformat if there are no coloured parts
+    if not any(p.get("tag") == "tag_green" for p in parts):
+        return
+
+    cursor.removeSelectedText()
+    for part in parts:
+        color = delegate.tag_color if part.get("tag") == "tag_green" else None
+        _insert_formatted_text(gui, cursor, part["content"], color)
+
+    gui.chat_window.verticalScrollBar().setValue(
+        gui.chat_window.verticalScrollBar().maximum()
+    )
+
+
 def finish_stream_slot(gui):
     current_role = getattr(gui, "_stream_current_render_role", "assistant")
     if current_role == "think":
         _finalize_streaming_think_block(gui)
+    else:
+        _reformat_streamed_content(gui)
+    gui._stream_content_start = None
     insert_message_end(gui, role=current_role)
     gui._stream_current_render_role = None
 
