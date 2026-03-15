@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from managers.database_manager import DatabaseManager
-from managers.rag_manager import RAGManager
+from managers.rag.rag_manager import RAGManager
 from managers.history_manager import HistoryManager
 from managers.memory_manager import MemoryManager
 from managers.settings_manager import SettingsManager

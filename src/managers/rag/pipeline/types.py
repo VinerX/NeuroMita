@@ -81,6 +81,7 @@ class Candidate:
             "id": int(self.id or 0),
             "content": self.content,
             "score": float(self.score or 0.0),
+            "features": {k: round(float(v), 4) for k, v in (self.features or {}).items()},
         }
         if self.source == "memory":
             base.update({
