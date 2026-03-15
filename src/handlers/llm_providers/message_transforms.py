@@ -81,39 +81,36 @@ def ensure_alternating_roles(messages: List[Dict[str, Any]]) -> List[Dict[str, A
     collapsed into one by joining their text content with "\\n\\n".
     """
 
-    def _extract_text(content: Any) -> str:
+    def _to_list(content: Any) -> list:
+        if not content and content != 0:
+            return []
         if isinstance(content, str):
-            return content
+            return [{"type": "text", "text": content}]
         if isinstance(content, list):
-            parts = []
-            for chunk in content:
-                if isinstance(chunk, dict) and chunk.get("type") == "text":
-                    parts.append(_as_text(chunk.get("text", "")))
-            return "\n\n".join(parts)
-        return _as_text(content)
+            return content
+        return [{"type": "text", "text": _as_text(content)}]
 
     def _merge_two(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
-        text_a = _extract_text(a.get("content"))
-        text_b = _extract_text(b.get("content"))
-        merged_text = "\n\n".join(t for t in [text_a, text_b] if t)
-        # Preserve list structure if the first message used it
-        content_a = a.get("content")
-        if isinstance(content_a, list):
-            new_chunks = []
-            inserted = False
-            for chunk in content_a:
-                if isinstance(chunk, dict) and chunk.get("type") == "text" and not inserted:
-                    new_chunks.append({"type": "text", "text": merged_text})
-                    inserted = True
-                else:
-                    new_chunks.append(chunk)
-            if not inserted:
-                new_chunks.insert(0, {"type": "text", "text": merged_text})
-            merged_content: Any = new_chunks
+        content_a = a.get("content", "")
+        content_b = b.get("content", "")
+
+        # Both plain strings — keep simple string output
+        if isinstance(content_a, str) and isinstance(content_b, str):
+            merged_content: Any = "\n\n".join(t for t in [content_a, content_b] if t)
         else:
-            merged_content = merged_text
+            # At least one is a list (multimodal) — concatenate block arrays
+            # so non-text blocks (images, files) are never lost
+            merged_content = _to_list(content_a) + _to_list(content_b)
+
         merged = dict(a)
         merged["content"] = merged_content
+
+        # Preserve tool_calls from both messages
+        tc_a = a.get("tool_calls") or []
+        tc_b = b.get("tool_calls") or []
+        if tc_a or tc_b:
+            merged["tool_calls"] = tc_a + tc_b
+
         return merged
 
     out: List[Dict[str, Any]] = []
