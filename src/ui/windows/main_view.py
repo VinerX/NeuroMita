@@ -166,6 +166,7 @@ class ChatGUI(QMainWindow):
         self.settings_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
 
         self.chat_window.installEventFilter(self)
+        self.chat_window.anchorClicked.connect(self._on_chat_anchor_clicked)
 
         self.overlay = OverlayWidget(self)
         self.image_preview_bar = None
@@ -789,6 +790,15 @@ class ChatGUI(QMainWindow):
     def _on_show_tg_password_dialog(self, data: dict):
         password_future = data.get('future')
         show_tg_password_dialog(self, password_future, self.event_bus)
+
+    def _on_chat_anchor_clicked(self, url):
+        href = url.toString()
+        if href.startswith("think://toggle/"):
+            try:
+                block_id = int(href.split("/")[-1])
+                message_renderer.toggle_think_block(self, block_id)
+            except Exception as e:
+                logger.error(f"Error toggling think block {block_id}: {e}")
 
     def _show_thinking_slot(self, character_name: str):
         if hasattr(self, 'mita_status') and self.mita_status:
