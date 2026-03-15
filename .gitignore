@@ -24,5 +24,4 @@ NeuroMita
 /Models
 vec-768-layer-12.onnx
 /checkpoints
-hubert_base.pt
-rmvpe.pt
+/src/.claude
