@@ -32,7 +32,11 @@ def setup_general_settings_controls(self, parent):
                       'Hide tags (<e>, <c>, <a>, [b], [i], [color]) in the displayed chat text.')},
 
         {'label': _('Выводить мышление', 'Show thinking'), 'key': 'SHOW_THINK_IN_GUI',
-         'type': 'checkbutton', 'default_checkbutton': True}
+         'type': 'checkbutton', 'default_checkbutton': True},
+        {'label': _('Выводить structured output', 'Show structured output'), 'key': 'SHOW_STRUCTURED_IN_GUI',
+         'type': 'checkbutton', 'default_checkbutton': True,
+         'tooltip': _('Показывать свёртываемый блок с командами/эмоциями/памятью из ответа модели.',
+                      'Show collapsible block with commands/emotions/memory from model response.')}
     ]
 
     create_settings_section(

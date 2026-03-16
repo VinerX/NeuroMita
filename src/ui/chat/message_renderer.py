@@ -21,38 +21,58 @@ def _format_structured_block_text(data: dict) -> str:
     """
     Format structured response data into a human-readable collapsible block.
 
-    Example output:
-        att +1.5 | bore -0.3 | stress +0.1
+    Example output (2 segments):
+        ❤ att +1.5↑  😴 bore -0.3↓  😰 stress +0.1↑
 
-        [seg 1]  smile · Помахать в приветствие · → Подойти к игроку близко
-          «О, ты тоже любишь кошек?»
-        [seg 2]  smileteeth
-          «Я всегда мечтала о котёнке!»
+        ┌─ seg 1 ──────────────────────────────────────
+        │ «О, ты тоже любишь кошек?»
+        │  😊 smile   👋 Помахать   → Подойти близко
+        ├─ seg 2 ──────────────────────────────────────
+        │ «Я всегда мечтала о котёнке!»
+        │  😁 smileteeth
+        └──────────────────────────────────────────────
 
-        + memory [normal]: Игрок любит кошек
+        🧠 memory:
+          + [normal] Игрок любит кошек
     """
     lines = []
 
-    # Global params
-    att = data.get("attitude_change", 0)
-    bore = data.get("boredom_change", 0)
-    stress = data.get("stress_change", 0)
+    att  = data.get("attitude_change", 0) or 0
+    bore = data.get("boredom_change",  0) or 0
+    stress = data.get("stress_change", 0) or 0
 
     def _fmt(v):
-        return f"+{v:.2g}" if v > 0 else (f"{v:.2g}" if v != 0 else "±0")
+        s = f"+{v:.2g}" if v > 0 else (f"{v:.2g}" if v != 0 else "±0")
+        arrow = "↑" if v > 0 else ("↓" if v < 0 else "")
+        return f"{s}{arrow}"
 
-    params_line = f"att {_fmt(att)}  |  bore {_fmt(bore)}  |  stress {_fmt(stress)}"
-    lines.append(params_line)
+    params_parts = [
+        f"❤ att {_fmt(att)}",
+        f"😴 bore {_fmt(bore)}",
+        f"😰 stress {_fmt(stress)}",
+    ]
+    lines.append("  ".join(params_parts))
 
     # Segments
+    SEP = "─" * 42
     segments = data.get("segments") or []
     if segments:
         lines.append("")
         for i, seg in enumerate(segments, 1):
+            prefix = "┌" if i == 1 else "├"
+            lines.append(f"{prefix}─ seg {i} {SEP[:max(0, 36 - len(str(i)))]}")
+
+            text = (seg.get("text") or "").strip()
+            if text:
+                lines.append(f"│ «{text}»")
+
             tags = []
-            for field in ("emotions", "animations", "movement_modes"):
-                for v in (seg.get(field) or []):
-                    tags.append(str(v))
+            for v in (seg.get("emotions") or []):
+                tags.append(f"😊 {v}")
+            for v in (seg.get("animations") or []):
+                tags.append(f"👋 {v}")
+            for v in (seg.get("movement_modes") or []):
+                tags.append(f"🚶 {v}")
             for v in (seg.get("commands") or []):
                 tags.append(f"→ {v}")
             for v in (seg.get("visual_effects") or []):
@@ -65,35 +85,38 @@ def _format_structured_block_text(data: dict) -> str:
                 tags.append(f"⇆ {v}")
             for v in (seg.get("face_params") or []):
                 tags.append(f"face:{v}")
+            if seg.get("target"):
+                tags.append(f"→to:{seg['target']}")
             if seg.get("start_game"):
-                tags.append(f"▶game:{seg['start_game']}")
+                tags.append(f"▶ {seg['start_game']}")
             if seg.get("end_game"):
-                tags.append(f"■game:{seg['end_game']}")
+                tags.append(f"■ {seg['end_game']}")
             if seg.get("hint"):
-                tags.append(f"hint:{seg['hint']}")
+                tags.append(f"💡 {seg['hint']}")
             if seg.get("allow_sleep") is not None:
-                tags.append(f"sleep:{seg['allow_sleep']}")
+                tags.append(f"💤 sleep:{seg['allow_sleep']}")
 
-            header = f"[seg {i}]"
             if tags:
-                header += "  " + "  ·  ".join(tags)
-            lines.append(header)
+                lines.append("│  " + "   ".join(tags))
 
-            text = seg.get("text", "").strip()
-            if text:
-                lines.append(f'  «{text}»')
+        lines.append(f"└{SEP}")
 
     # Memory operations
     mem_lines = []
     for entry in (data.get("memory_add") or []):
-        mem_lines.append(f"  + [{entry}]")
+        # parse optional "priority|content"
+        if "|" in str(entry):
+            priority, content = str(entry).split("|", 1)
+            mem_lines.append(f"  + [{priority.strip()}] {content.strip()}")
+        else:
+            mem_lines.append(f"  + {entry}")
     for entry in (data.get("memory_update") or []):
-        mem_lines.append(f"  ~ [{entry}]")
+        mem_lines.append(f"  ~ {entry}")
     for entry in (data.get("memory_delete") or []):
-        mem_lines.append(f"  - [{entry}]")
+        mem_lines.append(f"  - #{entry}")
     if mem_lines:
         lines.append("")
-        lines.append("memory:")
+        lines.append("🧠 memory:")
         lines.extend(mem_lines)
 
     return "\n".join(lines)
@@ -480,6 +503,9 @@ def insert_message(gui, role, content, insert_at_start=False, message_time=""):
 
     # ── Structured role: collapsible block ───────────────────────────────────
     if role == "structured":
+        if not gui._get_setting("SHOW_STRUCTURED_IN_GUI", True):
+            return
+
         structured_data = {}
         if isinstance(content, list):
             for item in content:
@@ -491,13 +517,19 @@ def insert_message(gui, role, content, insert_at_start=False, message_time=""):
 
         segs = structured_data.get("segments") or []
         n_segs = len(segs)
-        att = structured_data.get("attitude_change", 0)
-        mem_count = len(structured_data.get("memory_add") or []) + len(structured_data.get("memory_update") or [])
+        att = structured_data.get("attitude_change", 0) or 0
+        bore = structured_data.get("boredom_change", 0) or 0
+        stress = structured_data.get("stress_change", 0) or 0
+        mem_count = (len(structured_data.get("memory_add") or [])
+                     + len(structured_data.get("memory_update") or [])
+                     + len(structured_data.get("memory_delete") or []))
+
+        def _arrow(v): return "↑" if v > 0 else ("↓" if v < 0 else "·")
         summary_parts = [f"{n_segs} seg"]
-        if att != 0:
-            summary_parts.append(f"att {'+' if att>0 else ''}{att:.2g}")
-        if mem_count:
-            summary_parts.append(f"+{mem_count} mem")
+        if att: summary_parts.append(f"att {'+' if att>0 else ''}{att:.2g}{_arrow(att)}")
+        if bore: summary_parts.append(f"bore {'+' if bore>0 else ''}{bore:.2g}{_arrow(bore)}")
+        if stress: summary_parts.append(f"stress {'+' if stress>0 else ''}{stress:.2g}{_arrow(stress)}")
+        if mem_count: summary_parts.append(f"mem ×{mem_count}")
         summary = "  ·  ".join(summary_parts)
 
         block_text = _format_structured_block_text(structured_data)
