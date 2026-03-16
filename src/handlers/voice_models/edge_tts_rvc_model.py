@@ -2,7 +2,6 @@ import os
 import sys
 import traceback
 import tempfile
-import asyncio
 import re
 from xml.sax.saxutils import escape
 from typing import Optional, Any, List, Dict
@@ -13,7 +12,6 @@ from .base_model import IVoiceModel
 from main_logger import logger
 from utils import getTranslationVariant as _, get_character_voice_paths
 
-from core.events import get_event_bus, Events
 from core.install_types import InstallPlan, InstallAction
 from core.install_requirements import InstallRequirement, check_requirements
 
@@ -40,16 +38,12 @@ class EdgeTTSRVCInstallSpec:
 
         if mid == "low+":
             req.append(InstallRequirement(id="silero", kind="python_dist", spec="silero", required=True))
-            req.append(InstallRequirement(id="silero_module", kind="python_module", module="silero", required=True))
 
-        # AMD uses onnx+dml package; NVIDIA/others use torch variant.
         if gpu == "AMD":
             req.append(InstallRequirement(id="tts_rvc_pkg", kind="python_dist", spec="tts-with-rvc-onnx[dml]", required=True))
         else:
             req.append(InstallRequirement(id="tts_rvc_pkg", kind="python_dist", spec="tts-with-rvc", required=True))
 
-        # Runtime import path in this project
-        req.append(InstallRequirement(id="tts_with_rvc_module", kind="python_module", module="tts_with_rvc", required=True))
         return req
 
     @classmethod
@@ -62,7 +56,7 @@ class EdgeTTSRVCInstallSpec:
         def _fn(*, pip_installer=None, callbacks=None, ctx=None, **_kwargs) -> bool:
             cb = callbacks
             libs_path_abs = getattr(pip_installer, "libs_path_abs", None) if pip_installer else None
-            libs_path_abs = str(libs_path_abs or os.path.abspath("Lib"))
+            libs_path_abs = str(libs_path_abs or os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib")))
 
             def log(m: str):
                 try:
@@ -100,52 +94,35 @@ class EdgeTTSRVCInstallSpec:
     def build_install_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
         mid = str(model_id)
         if cls.is_installed(mid, ctx):
-            return InstallPlan(actions=[], already_installed=True, already_installed_status=_("Уже установлено", "Already installed"))
+            return InstallPlan(
+                actions=[],
+                already_installed=True,
+                already_installed_status=_("Уже установлено", "Already installed")
+            )
 
         gpu = str((ctx or {}).get("gpu_vendor") or "CPU")
         actions: list[InstallAction] = []
 
-        # Historical behavior: torch only for NVIDIA branch
-        if gpu == "NVIDIA":
-            actions.append(torch_install_action(ctx, progress=10))
+        actions.append(torch_install_action(ctx, progress=10))
+
+        pkgs: list[str] = ["omegaconf"]
+
+        if mid == "low+":
+            pkgs.append("silero")
+
+        if gpu == "AMD":
+            pkgs.append("tts-with-rvc-onnx[dml]")
+        else:
+            pkgs.append("tts-with-rvc")
 
         actions.append(
             InstallAction(
                 type="pip",
                 description=_("Установка зависимостей...", "Installing dependencies..."),
-                progress=35,
-                packages=["omegaconf"],
+                progress=60,
+                packages=pkgs,
             )
         )
-
-        if mid == "low+":
-            actions.append(
-                InstallAction(
-                    type="pip",
-                    description=_("Установка библиотеки silero...", "Installing silero library..."),
-                    progress=45,
-                    packages=["silero"],
-                )
-            )
-
-        if gpu == "AMD":
-            actions.append(
-                InstallAction(
-                    type="pip",
-                    description=_("Установка tts-with-rvc (AMD/DirectML)...", "Installing tts-with-rvc (AMD/DirectML)..."),
-                    progress=70,
-                    packages=["tts-with-rvc-onnx[dml]"],
-                )
-            )
-        else:
-            actions.append(
-                InstallAction(
-                    type="pip",
-                    description=_("Установка tts-with-rvc (NVIDIA)...", "Installing tts-with-rvc (NVIDIA)..."),
-                    progress=70,
-                    packages=["tts-with-rvc"],
-                )
-            )
 
         actions.append(
             InstallAction(
@@ -203,7 +180,6 @@ class EdgeTTS_RVC_Model(IVoiceModel):
         self.current_silero_sample_rate = 48000
 
         self._silero_available = False
-        self.events = get_event_bus()
 
     MODEL_CONFIGS = [
         {
@@ -359,18 +335,16 @@ class EdgeTTS_RVC_Model(IVoiceModel):
         self._import_attempted = True
         self._silero_available = False
 
-        libs_path_abs = os.path.abspath("Lib")
+        libs_path_abs = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
         if libs_path_abs not in sys.path:
             sys.path.insert(0, libs_path_abs)
 
-        # Try primary import
         try:
             from tts_with_rvc import TTS_RVC
             self.tts_rvc_module = TTS_RVC
         except Exception:
-            # Fallback for some AMD builds (best-effort)
             try:
-                from tts_with_rvc_onnx import TTS_RVC  # type: ignore
+                from tts_with_rvc_onnx import TTS_RVC
                 self.tts_rvc_module = TTS_RVC
             except Exception:
                 self.tts_rvc_module = None
@@ -484,33 +458,7 @@ class EdgeTTS_RVC_Model(IVoiceModel):
 
         self.initialized = True
         self.initialized_for = current_mode
-
-        if init:
-            init_text = f"Инициализация модели {current_mode}" if self.parent.voice_language == "ru" else f"{current_mode} Model Initialization"
-            logger.info(f"Выполнение тестового прогона для {current_mode}...")
-            try:
-                results = self.events.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
-                main_loop = results[0] if results else None
-                if not main_loop or not main_loop.is_running():
-                    raise RuntimeError("Главный цикл событий asyncio недоступен.")
-
-                future = asyncio.run_coroutine_threadsafe(self.voiceover(init_text), main_loop)
-                result_path = future.result(timeout=3600)
-
-                if not result_path or not os.path.exists(result_path) or os.path.getsize(result_path) == 0:
-                    logger.error("Тестовый прогон не создал аудиофайл — инициализация неуспешна.")
-                    self.initialized = False
-                    self.initialized_for = None
-                    return False
-
-                logger.info(f"Тестовый прогон для {current_mode} успешно завершен.")
-            except Exception as e:
-                logger.error(f"Ошибка во время тестового прогона модели {current_mode}: {e}", exc_info=True)
-                self.initialized = False
-                self.initialized_for = None
-                return False
-
-        return self.initialized
+        return True
     
     def _maybe_move_to_output(self, produced_path: Optional[str], output_file: Optional[str]) -> Optional[str]:
         if not produced_path or not os.path.exists(produced_path):
@@ -749,16 +697,6 @@ class EdgeTTS_RVC_Model(IVoiceModel):
                 final_output_path = output_file_rvc
 
             final_output_path = self._maybe_move_to_output(final_output_path, output_file)
-
-            try:
-                res_conn = self.events.emit_and_wait(Events.Server.GET_GAME_CONNECTION)
-                connected_to_game = bool(res_conn and res_conn[0])
-            except Exception:
-                connected_to_game = False
-
-            if connected_to_game and TEST_WITH_DONE_AUDIO is None and final_output_path:
-                self.events.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, final_output_path)
-
             return final_output_path
 
         except Exception as error:
@@ -874,16 +812,6 @@ class EdgeTTS_RVC_Model(IVoiceModel):
             )
 
             final_output_path = self._maybe_move_to_output(final_output_path, output_file)
-
-            try:
-                res_conn = self.events.emit_and_wait(Events.Server.GET_GAME_CONNECTION)
-                connected_to_game = bool(res_conn and res_conn[0])
-            except Exception:
-                connected_to_game = False
-
-            if connected_to_game and final_output_path:
-                self.events.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, final_output_path)
-
             return final_output_path
 
         except Exception as error:

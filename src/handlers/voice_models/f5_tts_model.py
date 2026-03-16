@@ -49,30 +49,38 @@ class F5TTSInstallSpec:
     def build_install_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
         mid = str(model_id)
         if cls.is_installed(mid, ctx):
-            return InstallPlan(actions=[], already_installed=True, already_installed_status=_("Уже установлено", "Already installed"))
+            return InstallPlan(
+                actions=[],
+                already_installed=True,
+                already_installed_status=_("Уже установлено", "Already installed")
+            )
 
         model_dir = os.path.join("checkpoints", "F5-TTS")
         ckpt_dest = os.path.join(model_dir, "model.safetensors")
         vocab_dest = os.path.join(model_dir, "vocab.txt")
 
         actions: list[InstallAction] = []
+
         actions.append(torch_install_action(ctx, progress=10))
 
-        actions.append(
-            InstallAction(
-                type="pip",
-                description=_("Установка F5-TTS...", "Installing F5-TTS..."),
-                progress=30,
-                packages=["f5-tts", "cached_path", "google-api-core", "numpy==1.26.0", "librosa==0.9.1", "numba==0.60.0"],
-            )
-        )
+        pkgs = [
+            "f5-tts",
+            "cached_path",
+            "google-api-core",
+            "numpy==1.26.0",
+            "librosa==0.9.1",
+            "numba==0.60.0",
+            "ruaccent",
+        ]
+        if mid == "high+low":
+            pkgs.insert(0, "tts-with-rvc")
 
         actions.append(
             InstallAction(
                 type="pip",
-                description=_("Установка RUAccent (опционально)...", "Installing RUAccent (optional)..."),
-                progress=40,
-                packages=["ruaccent"],
+                description=_("Установка зависимостей F5-TTS...", "Installing F5-TTS dependencies..."),
+                progress=35,
+                packages=pkgs,
             )
         )
 
@@ -94,27 +102,17 @@ class F5TTSInstallSpec:
                 files=[
                     {
                         "url": "https://huggingface.co/Misha24-10/F5-TTS_RUSSIAN/resolve/main/"
-                               "F5TTS_v1_Base/model_240000_inference.safetensors?download=true",
+                            "F5TTS_v1_Base/model_240000_inference.safetensors?download=true",
                         "dest": ckpt_dest,
                     },
                     {
                         "url": "https://huggingface.co/Misha24-10/F5-TTS_RUSSIAN/resolve/main/"
-                               "F5TTS_v1_Base/vocab.txt?download=true",
+                            "F5TTS_v1_Base/vocab.txt?download=true",
                         "dest": vocab_dest,
                     },
                 ],
             )
         )
-
-        if mid == "high+low":
-            actions.append(
-                InstallAction(
-                    type="pip",
-                    description=_("Установка Edge/RVC компонента...", "Installing Edge/RVC component..."),
-                    progress=92,
-                    packages=["tts-with-rvc"],
-                )
-            )
 
         actions.append(
             InstallAction(
@@ -126,6 +124,7 @@ class F5TTSInstallSpec:
         )
 
         return InstallPlan(actions=actions, ok_status=_("Готово", "Done"))
+
 
     @classmethod
     def build_uninstall_plan(cls, model_id: str, ctx: dict) -> InstallPlan:

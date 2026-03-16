@@ -165,17 +165,15 @@ class DependencyResolver:
 class PipInstaller:
     def __init__(
         self,
-        script_path: str,
-        libs_path: str = "Lib",
         update_status=None,
         update_log=None,
         progress_window=None,
         update_progress=None,
         protected_packages: Optional[List[str]] = None
     ):
-        self.script_path = script_path
-        self.libs_path = libs_path
-        self.python_root = Path(script_path).resolve().parent
+        self.script_path = os.environ.get("NEUROMITA_PYTHON", sys.executable)
+        self.libs_path = os.environ.get("NEUROMITA_LIB_DIR", "Lib")
+        self.python_root = Path(self.script_path).resolve().parent
         self.libs_path_abs = os.path.abspath(self.libs_path)
         self.update_status = update_status or (lambda m: logger.info(f"STATUS: {m}"))
         self.update_log = update_log or (lambda m: logger.info(f"LOG: {m}"))

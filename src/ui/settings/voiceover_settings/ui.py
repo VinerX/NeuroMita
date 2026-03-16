@@ -153,11 +153,14 @@ def build_voiceover_settings_ui(self, parent_layout):
          'key': 'VOICEOVER_LOCAL_CHAT', 'type': 'checkbutton',
          'default_checkbutton': True},
 
+        {'label': _('Перезапустить нейро-ядро озвучки', 'Restart Voice AI Engine'),
+         'type': 'button',
+         'command': (lambda: get_event_bus().emit(Events.AI.RESTART_SERVICE, {"service": "tts"}))},
+
         {'label': _('Управление моделями', 'Manage Models'),
          'type': 'button',
          'command': (lambda: get_event_bus().emit(Events.GUI.SHOW_WINDOW, {"window_id": "voice_models", "payload": {}}))}
     ]
-
     if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1":
         local_config.insert(2, {
             'label': _('Удалять аудио', 'Delete audio'),

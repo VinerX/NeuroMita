@@ -13,8 +13,6 @@ from utils import getTranslationVariant as _
 
 from core.events import get_event_bus, Events, Event
 
-from handlers.voice_models.catalog import get_voice_spec
-
 try:
     from utils.gpu_utils import check_gpu_provider, get_cuda_devices, get_gpu_name_by_id
 except Exception:
@@ -24,6 +22,11 @@ except Exception:
         return []
     def get_gpu_name_by_id(_id):
         return None
+
+
+def _get_voice_spec(model_id: str):
+    from handlers.voice_models.catalog import get_voice_spec
+    return get_voice_spec(model_id)
 
 
 class VoiceModelController:
@@ -67,6 +70,8 @@ class VoiceModelController:
         self.docs_manager = DocsManager()
         self.event_bus = get_event_bus()
 
+        self._last_voiceover_refresh_reload_ts: float = 0.0
+
         self.reload()
         self._subscribe_to_events()
 
@@ -83,6 +88,34 @@ class VoiceModelController:
 
         eb.subscribe(Events.Install.TASK_FINISHED, self._on_install_task_finished, weak=False)
         eb.subscribe(Events.Install.TASK_FAILED, self._on_install_task_failed, weak=False)
+
+        eb.subscribe(Events.GUI.VOICEOVER_REFRESH, self._on_voiceover_refresh, weak=False)
+
+    def _on_voiceover_refresh(self, _event: Event):
+        with self._lock:
+            empty = not bool(self.local_voice_models)
+
+        if not empty:
+            return
+
+        now = time.time()
+        if (now - float(self._last_voiceover_refresh_reload_ts or 0.0)) < 1.0:
+            return
+
+        try:
+            struct = self.get_default_model_structure()
+            if not struct:
+                return
+        except Exception:
+            return
+
+        self._last_voiceover_refresh_reload_ts = now
+        try:
+            self.reload()
+        except Exception:
+            return
+
+        self.event_bus.emit(Events.VoiceModel.REFRESH_MODEL_PANELS)
 
     def _ctx(self) -> dict:
         return {
@@ -118,14 +151,12 @@ class VoiceModelController:
         with self._lock:
             have = bool(self.local_voice_models)
         if not have:
-            logger.warning("if not have в _handle_get_model_data")
             try:
                 self.reload()
             except Exception:
                 pass
         with self._lock:
             return self.local_voice_models
-        
 
     def _handle_get_installed_models(self, event: Event):
         with self._lock:
@@ -238,9 +269,6 @@ class VoiceModelController:
             self.local_voice_models = merged_model_structure
 
     def save_settings_values(self, values: dict) -> dict:
-        """
-        values: {model_id: {setting_key: value}}
-        """
         if not isinstance(values, dict) or not values:
             return {"changed": 0, "changed_by_model": {}}
 
@@ -316,7 +344,6 @@ class VoiceModelController:
 
     def refresh_installed_models(self):
         ctx_base = self._ctx()
-
         vendors = [self.detected_gpu_vendor] if self.detected_gpu_vendor else ["NVIDIA", "AMD", "CPU"]
 
         installed = set()
@@ -324,7 +351,8 @@ class VoiceModelController:
             mid = m.get("id")
             if not mid:
                 continue
-            spec = get_voice_spec(mid)
+
+            spec = _get_voice_spec(mid)
             if not spec:
                 continue
 
@@ -347,7 +375,7 @@ class VoiceModelController:
 
     def start_install(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = 3600.0) -> bool:
         mid = str(model_id or "").strip()
-        spec = get_voice_spec(mid)
+        spec = _get_voice_spec(mid)
         if not spec:
             logger.error(f"Unknown voice model spec for '{mid}'")
             return False
@@ -379,7 +407,7 @@ class VoiceModelController:
 
     def start_uninstall(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = 3600.0) -> bool:
         mid = str(model_id or "").strip()
-        spec = get_voice_spec(mid)
+        spec = _get_voice_spec(mid)
         if not spec:
             logger.error(f"Unknown voice model spec for '{mid}'")
             return False
