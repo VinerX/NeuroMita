@@ -29,7 +29,9 @@ API_PROTOCOLS_DATA = [
         "provider": "common",
         "auth": {"mode": "bearer"},
         "headers": {"HTTP-Referer": "https://github.com/Atm4x/NeuroMita", "X-Title": "NeuroMita"},
-        "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False, "structured_output": True},
+        # OpenRouter aggregates many providers — not all support json_schema,
+        # so use json_object (softer mode, relies on prompt) to avoid 400 errors.
+        "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False, "structured_output": True, "structured_output_mode": "json_object"},
         "transforms": [{"id": "merge_system_messages"}],
     },
     {
