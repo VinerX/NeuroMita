@@ -1,7 +1,7 @@
 import datetime
 import re
 import os
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import json
 
 from DSL.path_resolver import LocalPathResolver
@@ -13,6 +13,7 @@ from core.events import get_event_bus, Events
 import os
 
 from managers.game_manager import GameManager
+from schemas.structured_response import StructuredResponse
 
 from main_logger import logger
 
@@ -498,6 +499,153 @@ class Character:
         )
 
         return response
+
+    def process_structured_response(self, structured: StructuredResponse, save_as_missed: bool = False) -> StructuredResponse:
+        """
+        Process a StructuredResponse: apply global fields (behavior changes,
+        memory operations) and game tags from segments.
+
+        This is the structured-output counterpart of process_response_nlp_commands.
+        It modifies character state in-place and returns the (possibly modified)
+        StructuredResponse.
+        """
+        logger.info(
+            f"[{self.char_id}] Processing structured response: "
+            f"{len(structured.segments)} segment(s), "
+            f"attitude_change={structured.attitude_change}, "
+            f"boredom_change={structured.boredom_change}, "
+            f"stress_change={structured.stress_change}"
+        )
+
+        self.set_variable(
+            "LongMemoryRememberCount",
+            self.get_variable("LongMemoryRememberCount", 0) + 1,
+        )
+        try:
+            results = self.event_bus.emit_and_wait(
+                Events.Settings.GET_APP_VARS, timeout=1.0
+            )
+            app_vars: Dict[str, Any] = {}
+            for r in results or []:
+                if isinstance(r, dict):
+                    app_vars.update(r)
+            self.update_app_vars(app_vars)
+        except Exception as e:
+            logger.warning(
+                f"[{self.char_id}] Could not get app_vars via events: {e}"
+            )
+            self.update_app_vars({})
+
+        # Apply behavior changes from global fields
+        try:
+            if structured.attitude_change:
+                self.adjust_attitude(structured.attitude_change)
+            if structured.boredom_change:
+                self.adjust_boredom(structured.boredom_change)
+            if structured.stress_change:
+                self.adjust_stress(structured.stress_change)
+        except Exception as e:
+            logger.warning(
+                f"[{self.char_id}] Error applying behavior changes from structured response: {e}",
+                exc_info=True,
+            )
+
+        # Apply memory operations from global fields
+        try:
+            self._apply_structured_memory_ops(structured, save_as_missed)
+        except Exception as e:
+            logger.error(
+                f"[{self.char_id}] Error applying memory ops from structured response: {e}",
+                exc_info=True,
+            )
+
+        # Process game tags from segments (start_game / end_game)
+        try:
+            self._process_structured_game_tags(structured)
+        except Exception as e:
+            logger.error(
+                f"[{self.char_id}] Error processing game tags from structured response: {e}",
+                exc_info=True,
+            )
+
+        # Extract target from first segment that has one
+        target = None
+        for seg in structured.segments:
+            if seg.target:
+                target = seg.target
+                break
+        self._pending_target = target
+
+        return structured
+
+    def _apply_structured_memory_ops(self, structured: StructuredResponse, save_as_missed: bool = False):
+        """Apply memory add/update/delete operations from a StructuredResponse."""
+        for mem_text in structured.memory_add:
+            mem_text = (mem_text or "").strip()
+            if not mem_text:
+                continue
+            # Support priority prefix: "priority|content"
+            parts = [p.strip() for p in mem_text.split("|", 1)]
+            if len(parts) == 2 and parts[0] in ("low", "normal", "high", "critical"):
+                priority, content = parts
+            else:
+                priority, content = "normal", mem_text
+            try:
+                self.memory_system.add_memory(priority=priority, content=content)
+                logger.info(f"[{self.char_id}] Structured: added memory (P: {priority}): {content[:50]}...")
+            except Exception as e:
+                logger.error(f"[{self.char_id}] Structured: error adding memory: {e}")
+
+        for update_str in structured.memory_update:
+            update_str = (update_str or "").strip()
+            if not update_str or "|" not in update_str:
+                continue
+            parts = [p.strip() for p in update_str.split("|", 1)]
+            if len(parts) == 2 and parts[0].isdigit():
+                try:
+                    self.memory_system.update_memory(
+                        number=int(parts[0]),
+                        priority=None,
+                        content=parts[1],
+                    )
+                    logger.info(f"[{self.char_id}] Structured: updated memory #{parts[0]}")
+                except Exception as e:
+                    logger.error(f"[{self.char_id}] Structured: error updating memory #{parts[0]}: {e}")
+
+        for delete_str in structured.memory_delete:
+            delete_str = (delete_str or "").strip()
+            if not delete_str:
+                continue
+            try:
+                if "," in delete_str:
+                    for num_str in delete_str.split(","):
+                        num_str = num_str.strip()
+                        if num_str.isdigit():
+                            self.memory_system.delete_memory(int(num_str), save_as_missed)
+                elif "-" in delete_str:
+                    parts = [s.strip() for s in delete_str.split("-")]
+                    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                        for n in range(int(parts[0]), int(parts[1]) + 1):
+                            self.memory_system.delete_memory(n, save_as_missed)
+                elif delete_str.isdigit():
+                    self.memory_system.delete_memory(int(delete_str), save_as_missed)
+                logger.info(f"[{self.char_id}] Structured: deleted memory(ies): {delete_str}")
+            except Exception as e:
+                logger.error(f"[{self.char_id}] Structured: error deleting memory '{delete_str}': {e}")
+
+    def _process_structured_game_tags(self, structured: StructuredResponse):
+        """Process start_game / end_game from segments."""
+        for seg in structured.segments:
+            if seg.start_game:
+                started = self.game_manager.start_game(seg.start_game)
+                if started:
+                    logger.info(f"[{self.char_id}] Structured: started game '{seg.start_game}'")
+                else:
+                    logger.info(f"[{self.char_id}] Structured: game start '{seg.start_game}' blocked by settings")
+
+            if seg.end_game:
+                self.game_manager.stop_game(seg.end_game)
+                logger.info(f"[{self.char_id}] Structured: ended game '{seg.end_game}'")
 
     def _process_game_tags(self, response: str) -> str:
         """

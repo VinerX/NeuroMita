@@ -7,6 +7,7 @@ import json
 import copy
 from main_logger import logger
 from handlers.llm_providers.param_mapper import filter_jsonable_params
+from schemas.structured_response import StructuredResponse
 
 
 class GeminiProvider(BaseProvider):
@@ -179,6 +180,14 @@ class GeminiProvider(BaseProvider):
                     part["text"] = f"[SYSTEM INFO] {part['text']}"
 
         gen_cfg = self._map_unified_params_to_generation_config(req.extra, req.model)
+
+        # Add structured output schema for Gemini when capability is enabled
+        caps = req.capabilities or {}
+        if caps.get("structured_output", False):
+            gen_cfg["responseMimeType"] = "application/json"
+            gen_cfg["responseSchema"] = StructuredResponse.json_schema_dict()
+            logger.debug("[GeminiProvider] Structured output enabled: responseSchema added to generationConfig")
+
         if gen_cfg:
             data["generationConfig"] = gen_cfg
 
