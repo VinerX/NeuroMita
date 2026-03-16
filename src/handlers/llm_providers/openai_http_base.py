@@ -102,10 +102,16 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 payload["tools"] = tools_payload
                 payload["stream"] = False
 
-        # Add structured output response_format when capability is enabled
+        # Add structured output response_format when capability is enabled.
+        # Use json_schema (strict) by default; json_object is a softer fallback
+        # for providers that don't support json_schema (OpenRouter/StepFun, etc.)
         if self._supports_structured_output(req):
-            payload["response_format"] = StructuredResponse.openai_response_format()
-            logger.debug(f"[{self.name}] Structured output enabled: response_format added to payload")
+            rf_mode = (req.capabilities or {}).get("structured_output_mode", "json_schema")
+            if rf_mode == "json_object":
+                payload["response_format"] = {"type": "json_object"}
+            else:
+                payload["response_format"] = StructuredResponse.openai_response_format()
+            logger.debug(f"[{self.name}] Structured output enabled: response_format={rf_mode}")
 
         return payload
 
@@ -132,6 +138,23 @@ class OpenAIHTTPProviderBase(BaseProvider):
         payload = self._build_payload(req, model_to_use, msgs)
 
         resp = self._request(req, payload)
+
+        # If json_schema was rejected (HTTP 400), retry once with json_object
+        if resp.status_code == 400 and self._supports_structured_output(req):
+            rf_mode = (req.capabilities or {}).get("structured_output_mode", "json_schema")
+            if rf_mode != "json_object" and "response_format" in payload:
+                try:
+                    err_body = resp.json()
+                except Exception:
+                    err_body = {}
+                err_msg = str(err_body)
+                if "response_format" in err_msg or "json_schema" in err_msg or "json_object" in err_msg:
+                    logger.warning(
+                        f"[{self.name}] json_schema rejected by provider, retrying with json_object. "
+                        f"Error: {err_msg[:200]}"
+                    )
+                    payload["response_format"] = {"type": "json_object"}
+                    resp = self._request(req, payload)
 
         if resp.status_code != 200:
             try:
