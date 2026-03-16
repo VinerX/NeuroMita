@@ -122,6 +122,26 @@ def _format_structured_block_text(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _build_structured_summary(structured_data: dict) -> str:
+    """Build a compact summary string for the structured block header."""
+    segs = structured_data.get("segments") or []
+    n_segs = len(segs)
+    att = structured_data.get("attitude_change", 0) or 0
+    bore = structured_data.get("boredom_change", 0) or 0
+    stress = structured_data.get("stress_change", 0) or 0
+    mem_count = (len(structured_data.get("memory_add") or [])
+                 + len(structured_data.get("memory_update") or [])
+                 + len(structured_data.get("memory_delete") or []))
+
+    def _arrow(v): return "↑" if v > 0 else ("↓" if v < 0 else "·")
+    parts = [f"{n_segs} seg"]
+    if att: parts.append(f"att {'+' if att>0 else ''}{att:.2g}{_arrow(att)}")
+    if bore: parts.append(f"bore {'+' if bore>0 else ''}{bore:.2g}{_arrow(bore)}")
+    if stress: parts.append(f"stress {'+' if stress>0 else ''}{stress:.2g}{_arrow(stress)}")
+    if mem_count: parts.append(f"mem ×{mem_count}")
+    return "  ·  ".join(parts)
+
+
 def _get_delegate(gui) -> ChatMessageDelegate:
     if hasattr(gui, "chat_delegate") and gui.chat_delegate:
         return gui.chat_delegate
@@ -453,6 +473,15 @@ def _collapse_think_block(gui, block: dict):
     _adjust_block_positions(gui, content_end, delta, exclude_id=block['id'])
 
 
+def _make_structured_content_fmt(gui) -> QTextCharFormat:
+    font_size = int(gui._get_setting("CHAT_FONT_SIZE", 12))
+    font = QFont("Courier New", font_size - 1)
+    fmt = QTextCharFormat()
+    fmt.setForeground(QColor(STRUCTURED_CONTENT_COLOR))
+    fmt.setFont(font)
+    return fmt
+
+
 def _expand_think_block(gui, block: dict):
     content_start = block['content_start']
     _update_think_arrow(gui, block, THINK_ARROW_EXPANDED)
@@ -460,7 +489,13 @@ def _expand_think_block(gui, block: dict):
     cursor = _doc_cursor(gui)
     cursor.setPosition(content_start)
     text = block['content_text']
-    cursor.insertText(text, _make_think_content_fmt(gui))
+
+    # Use appropriate format based on block type
+    if block.get('name') == "structured":
+        fmt = _make_structured_content_fmt(gui)
+    else:
+        fmt = _make_think_content_fmt(gui)
+    cursor.insertText(text, fmt)
 
     delta = len(text)
     block['content_end'] = content_start + delta
@@ -497,43 +532,27 @@ def _adjust_block_positions(gui, threshold_pos: int, delta: int, exclude_id: int
 
 # ─── Public message renderer API ──────────────────────────────────────────────
 
-def insert_message(gui, role, content, insert_at_start=False, message_time=""):
+def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None):
     if not hasattr(gui, '_images_in_chat'):
         gui._images_in_chat = []
 
-    # ── Structured role: collapsible block ───────────────────────────────────
+    # ── Legacy structured role: convert to assistant + structured_data ────────
     if role == "structured":
+        # Old code path — extract data and render as standalone block for back-compat
         if not gui._get_setting("SHOW_STRUCTURED_IN_GUI", True):
             return
-
-        structured_data = {}
+        sd = {}
         if isinstance(content, list):
             for item in content:
                 if isinstance(item, dict) and item.get("type") == "structured":
-                    structured_data = item.get("data") or {}
+                    sd = item.get("data") or {}
                     break
         elif isinstance(content, dict):
-            structured_data = content
-
-        segs = structured_data.get("segments") or []
-        n_segs = len(segs)
-        att = structured_data.get("attitude_change", 0) or 0
-        bore = structured_data.get("boredom_change", 0) or 0
-        stress = structured_data.get("stress_change", 0) or 0
-        mem_count = (len(structured_data.get("memory_add") or [])
-                     + len(structured_data.get("memory_update") or [])
-                     + len(structured_data.get("memory_delete") or []))
-
-        def _arrow(v): return "↑" if v > 0 else ("↓" if v < 0 else "·")
-        summary_parts = [f"{n_segs} seg"]
-        if att: summary_parts.append(f"att {'+' if att>0 else ''}{att:.2g}{_arrow(att)}")
-        if bore: summary_parts.append(f"bore {'+' if bore>0 else ''}{bore:.2g}{_arrow(bore)}")
-        if stress: summary_parts.append(f"stress {'+' if stress>0 else ''}{stress:.2g}{_arrow(stress)}")
-        if mem_count: summary_parts.append(f"mem ×{mem_count}")
-        summary = "  ·  ".join(summary_parts)
-
-        block_text = _format_structured_block_text(structured_data)
-        _insert_static_structured_block(gui, block_text, summary, insert_at_start)
+            sd = content
+        if sd:
+            block_text = _format_structured_block_text(sd)
+            summary = _build_structured_summary(sd)
+            _insert_static_structured_block(gui, block_text, summary, insert_at_start)
         return
 
     # ── Think role: collapsible block ────────────────────────────────────────
@@ -644,8 +663,70 @@ def insert_message(gui, role, content, insert_at_start=False, message_time=""):
 
     insert_message_end(gui, cursor, role)
 
+    # ── Inline structured block (collapsed by default) after assistant text ──
+    if (role == "assistant"
+            and structured_data
+            and gui._get_setting("SHOW_STRUCTURED_IN_GUI", True)):
+        block_text = _format_structured_block_text(structured_data)
+        summary = _build_structured_summary(structured_data)
+        _insert_inline_structured_block(gui, block_text, summary, insert_at_start)
+
     if not insert_at_start:
         gui.chat_window.verticalScrollBar().setValue(gui.chat_window.verticalScrollBar().maximum())
+
+
+def _insert_inline_structured_block(gui, text: str, summary: str, insert_at_start: bool = False):
+    """Insert a collapsed-by-default structured block right after an assistant message."""
+    if not hasattr(gui, '_images_in_chat'):
+        gui._images_in_chat = []
+
+    blocks = _get_think_blocks(gui)
+    block_id = gui._think_block_counter
+    gui._think_block_counter += 1
+
+    cursor = _doc_cursor(gui)
+    plain_fmt = _make_plain_fmt(gui)
+    if insert_at_start:
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+    else:
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+
+    # Header: "▶ 📊 structured  <summary>"  (collapsed by default)
+    font_size = int(gui._get_setting("CHAT_FONT_SIZE", 12))
+    font = QFont("Arial", font_size - 1)
+    font.setBold(True)
+    header_fmt = QTextCharFormat()
+    header_fmt.setForeground(QColor(STRUCTURED_HEADER_COLOR))
+    header_fmt.setFont(font)
+    header_fmt.setAnchor(True)
+    header_fmt.setAnchorHref(f"think://toggle/{block_id}")
+
+    header_start = cursor.position()
+    cursor.insertText(f"{THINK_ARROW_COLLAPSED} 📊", header_fmt)
+    dots_start = cursor.position()
+    cursor.insertText("   ", header_fmt)
+    if summary:
+        cursor.insertText(f"  {summary}", header_fmt)
+    header_end = cursor.position()
+
+    # Content is HIDDEN by default (collapsed)
+    cursor.insertText("\n", plain_fmt)
+    content_start = cursor.position()
+    # Insert content as invisible (zero-height) — will be shown on expand
+    content_end = content_start  # empty, content_text stored for expand
+
+    blocks[block_id] = {
+        'id': block_id,
+        'collapsed': True,
+        'name': "structured",
+        'header_start': header_start,
+        'dots_start': dots_start,
+        'header_end': header_end,
+        'content_start': content_start,
+        'content_end': content_end,
+        'content_text': text,
+        'is_streaming': False,
+    }
 
 
 def insert_message_end(gui, cursor=None, role="assistant"):

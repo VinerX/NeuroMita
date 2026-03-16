@@ -981,6 +981,7 @@ class ModelController:
                 assistant_target=target,
                 event_type=event_type,
                 task_uid=task_uid,
+                structured_data=result_dict,
             )
 
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)

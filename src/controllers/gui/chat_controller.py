@@ -77,6 +77,7 @@ class ChatController(BaseController):
         response = data.get('response', '')
         is_initial = data.get('is_initial', False)
         emotion = data.get('emotion', '')
+        structured_data = data.get('structured_data')
 
         speaker_name = str(data.get("speaker_name") or data.get("character_name") or "")
         target = str(data.get("target") or "")
@@ -85,6 +86,9 @@ class ChatController(BaseController):
         if role == "assistant" and speaker_name and target and target != "Player":
             speaker_label = f"{speaker_name} → {target}"
 
+        # Attach structured_data to the view for the next insert_message call
+        if self.view and structured_data:
+            self.view._pending_structured_data = structured_data
         self.update_chat(role, response, is_initial, emotion, speaker_label=speaker_label)
 
     def _on_prepare_stream_ui(self, event: Event):

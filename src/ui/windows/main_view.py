@@ -144,8 +144,7 @@ class ChatGUI(QMainWindow):
         self._voice_model_controller_callback = None
         self._voice_model_init_in_progress_model_id = None
 
-        self.update_chat_signal.connect(lambda role, content, insert_at_start, message_time:
-                                        message_renderer.insert_message(self, role, content, insert_at_start, message_time))
+        self.update_chat_signal.connect(self._on_update_chat_signal)
         self.update_status_signal.connect(self.update_status_colors)
         self.update_debug_signal.connect(self.update_debug_info)
 
@@ -516,8 +515,10 @@ class ChatGUI(QMainWindow):
             role = entry["role"]
             content = entry["content"]
             message_time = entry.get("time", "???")
+            structured_data = entry.get("structured_data")
             try:
-                message_renderer.insert_message(self, role, content, message_time=message_time)
+                message_renderer.insert_message(self, role, content, message_time=message_time,
+                                                structured_data=structured_data)
             except Exception as ex:
                 logger.error(f"_on_history_loaded: НУ Я ПОНЯЛ: {str(ex)}")
         self.update_debug_info()
@@ -709,7 +710,9 @@ class ChatGUI(QMainWindow):
             role = entry["role"]
             content = entry["content"]
             message_time = entry.get("time", "???")
-            message_renderer.insert_message(self, role, content, insert_at_start=True, message_time=message_time)
+            structured_data = entry.get("structured_data")
+            message_renderer.insert_message(self, role, content, insert_at_start=True,
+                                            message_time=message_time, structured_data=structured_data)
         QTimer.singleShot(0, lambda: scrollbar.setValue(scrollbar.maximum() - old_max + old_value))
         logger.info(f"Загружено еще {len(messages_to_prepend)} сообщений.")
 
@@ -1047,12 +1050,21 @@ class ChatGUI(QMainWindow):
                   "Failed to save settings for the update. Please check the logs."))
 
     # ===== Совместимость: рендер сообщений (обёртки к message_renderer) =====
+    def _on_update_chat_signal(self, role, content, insert_at_start, message_time):
+        """Slot for update_chat_signal — picks up pending structured_data if available."""
+        structured_data = getattr(self, '_pending_structured_data', None)
+        self._pending_structured_data = None
+        from ui.chat import message_renderer
+        message_renderer.insert_message(self, role, content, insert_at_start, message_time,
+                                        structured_data=structured_data)
+
     def _insert_message_slot(self, role, content, insert_at_start, message_time):
         return self.insert_message(role, content, insert_at_start, message_time)
 
-    def insert_message(self, role, content, insert_at_start=False, message_time=""):
+    def insert_message(self, role, content, insert_at_start=False, message_time="", structured_data=None):
         from ui.chat import message_renderer
-        return message_renderer.insert_message(self, role, content, insert_at_start, message_time)
+        return message_renderer.insert_message(self, role, content, insert_at_start, message_time,
+                                               structured_data=structured_data)
 
     def insert_message_end(self, cursor=None, role="assistant"):
         from ui.chat import message_renderer
