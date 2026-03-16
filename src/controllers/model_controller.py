@@ -644,13 +644,12 @@ class ModelController:
 
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
+        preset_id = preset_id_override  # Initialize early for capability resolution
 
         if event_type == "compress":
             messages = []
             if system_input:
                 messages.append({"role": "system", "content": system_input})
-
-            preset_id = preset_id_override
 
             self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
                 "character_id": char_id,
