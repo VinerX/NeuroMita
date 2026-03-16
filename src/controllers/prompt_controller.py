@@ -9,6 +9,10 @@ from main_logger import logger
 from utils.prompt_builder import build_system_prompts
 from core.request_policy import RequestPolicy, resolve_policy
 
+_STRUCTURED_OUTPUT_PROMPT_PATH = os.path.join(
+    os.path.abspath("Prompts"), "Structural", "response_format_json.txt"
+)
+
 
 class PromptController:
     def __init__(self):
@@ -54,6 +58,7 @@ class PromptController:
         event_type: str,
         separate_prompts: bool,
         policy: RequestPolicy | None = None,
+        capabilities: Dict[str, Any] | None = None,
     ) -> tuple[List[Dict[str, Any]], List[str]]:
         self._setup_character_for_prompt(character, event_type)
 
@@ -87,6 +92,13 @@ class PromptController:
         system_messages: List[Dict[str, Any]] = []
         system_messages.extend(build_system_prompts(blocks, separate=separate_prompts))
 
+        # Inject structured output format instructions when capability is enabled
+        caps = capabilities or {}
+        if caps.get("structured_output", False):
+            so_prompt = self._load_structured_output_prompt()
+            if so_prompt:
+                system_messages.append({"role": "system", "content": so_prompt})
+
         memory_message_content = ""
         try:
             if hasattr(character, "memory_system") and character.memory_system:
@@ -102,6 +114,22 @@ class PromptController:
             system_messages.append({"role": "system", "content": memory_message_content})
 
         return system_messages, dsl_system_infos
+
+    def _load_structured_output_prompt(self) -> str:
+        """Load the structured output format instructions from the prompt file."""
+        try:
+            if os.path.exists(_STRUCTURED_OUTPUT_PROMPT_PATH):
+                with open(_STRUCTURED_OUTPUT_PROMPT_PATH, "r", encoding="utf-8") as f:
+                    return f.read().strip()
+            else:
+                logger.warning(
+                    f"[PromptController] Structured output prompt not found: "
+                    f"{_STRUCTURED_OUTPUT_PROMPT_PATH}"
+                )
+                return ""
+        except Exception as e:
+            logger.warning(f"[PromptController] Failed to load structured output prompt: {e}")
+            return ""
 
     def _on_build_prompt(self, event: Event) -> Dict[str, Any]:
         data = event.data or {}
@@ -140,6 +168,7 @@ class PromptController:
         extra_system_infos: List[Any] = data.get("extra_system_infos") or []
         game_state: Dict[str, Any] = data.get("game_state") or {}
         disable_history_compression: bool = bool(data.get("disable_history_compression", False))
+        capabilities: Dict[str, Any] = data.get("capabilities") or {}
 
         policy_dict = data.get("policy")
         policy = (
@@ -167,7 +196,8 @@ class PromptController:
         messages: List[Dict[str, Any]] = []
 
         system_messages, dsl_system_infos = self._build_system_messages(
-            character, event_type, separate_prompts, policy=policy
+            character, event_type, separate_prompts, policy=policy,
+            capabilities=capabilities,
         )
         messages.extend(system_messages)
 

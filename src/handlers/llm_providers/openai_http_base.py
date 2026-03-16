@@ -8,6 +8,7 @@ import requests
 
 from main_logger import logger
 from handlers.llm_providers.base import BaseProvider, LLMRequest
+from schemas.structured_response import StructuredResponse
 
 
 class OpenAIHTTPProviderBase(BaseProvider):
@@ -83,6 +84,10 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
         return out
 
+    def _supports_structured_output(self, req: LLMRequest) -> bool:
+        caps = req.capabilities or {}
+        return bool(caps.get("structured_output", False))
+
     def _build_payload(self, req: LLMRequest, model_to_use: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "model": model_to_use,
@@ -96,6 +101,11 @@ class OpenAIHTTPProviderBase(BaseProvider):
             if tools_payload:
                 payload["tools"] = tools_payload
                 payload["stream"] = False
+
+        # Add structured output response_format when capability is enabled
+        if self._supports_structured_output(req):
+            payload["response_format"] = StructuredResponse.openai_response_format()
+            logger.debug(f"[{self.name}] Structured output enabled: response_format added to payload")
 
         return payload
 

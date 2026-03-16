@@ -16,7 +16,7 @@ API_PROTOCOLS_DATA = [
         "provider": "common",
         "auth": {"mode": "bearer"},
         "headers": {},
-        "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False},
+        "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False, "structured_output": True},
         "transforms": [
             {"id": "merge_system_messages"},
             {"id": "ensure_last_message_user", "params": {"fallback_user_text": "."}},
@@ -29,7 +29,7 @@ API_PROTOCOLS_DATA = [
         "provider": "common",
         "auth": {"mode": "bearer"},
         "headers": {"HTTP-Referer": "https://github.com/Atm4x/NeuroMita", "X-Title": "NeuroMita"},
-        "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False},
+        "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False, "structured_output": True},
         "transforms": [{"id": "merge_system_messages"}],
     },
     {
@@ -39,7 +39,7 @@ API_PROTOCOLS_DATA = [
         "provider": "common",
         "auth": {"mode": "bearer"},
         "headers": {},
-        "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False},
+        "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False, "structured_output": True},
         "transforms": [{"id": "merge_system_messages"}],
     },
     {
@@ -49,7 +49,7 @@ API_PROTOCOLS_DATA = [
         "provider": "common",
         "auth": {"mode": "bearer"},
         "headers": {},
-        "capabilities": {"tools_native": False, "streaming": True, "streaming_with_tools": False},
+        "capabilities": {"tools_native": False, "streaming": True, "streaming_with_tools": False, "structured_output": False},
         "transforms": [{"id": "system_to_user_prefix", "params": {"tag": "[SYSTEM CONTEXT]"}}],
     },
     {
@@ -59,7 +59,7 @@ API_PROTOCOLS_DATA = [
         "provider": "gemini",
         "auth": {"mode": "query", "param": "key"},
         "headers": {"Content-Type": "application/json"},
-        "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False},
+        "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False, "structured_output": True},
         "transforms": [],
     },
     {
@@ -69,7 +69,7 @@ API_PROTOCOLS_DATA = [
         "provider": "g4f",
         "auth": {"mode": "none"},
         "headers": {},
-        "capabilities": {"tools_native": False, "streaming": False, "streaming_with_tools": False},
+        "capabilities": {"tools_native": False, "streaming": False, "streaming_with_tools": False, "structured_output": False},
         "transforms": [],
     },
 ]

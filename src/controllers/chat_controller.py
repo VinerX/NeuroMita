@@ -281,12 +281,14 @@ class ChatController:
 
             target = "Player"
             think_text = None
+            structured_data = None
             if isinstance(payload, dict):
                 response_text = payload.get("text")
                 voice_profile = payload.get("voice_profile")
                 effective_character_id = payload.get("character_id") or character_id
                 target = str(payload.get("target") or "Player")
                 think_text = payload.get("think")
+                structured_data = payload.get("structured")  # segments + global fields
             else:
                 response_text = payload
                 voice_profile = None
@@ -335,7 +337,7 @@ class ChatController:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.VOICING,
-                                "result": {"response": response_text, "target": target}
+                                "result": self._build_task_result(response_text, target, structured_data)
                             })
 
                         speaker = voice_profile.get("silero_command", "")
@@ -355,21 +357,21 @@ class ChatController:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.SUCCESS,
-                                "result": {"response": response_text, "target": target}
+                                "result": self._build_task_result(response_text, target, structured_data)
                             })
                 else:
                     if task_uid:
                         self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                             "uid": task_uid,
                             "status": TaskStatus.SUCCESS,
-                            "result": {"response": response_text, "target": target}
+                            "result": self._build_task_result(response_text, target, structured_data)
                         })
             else:
                 if task_uid:
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                         "uid": task_uid,
                         "status": TaskStatus.SUCCESS,
-                        "result": {"response": response_text, "target": target}
+                        "result": self._build_task_result(response_text, target, structured_data)
                     })
 
             if is_streaming and eff_policy.echo_to_ui:
@@ -491,6 +493,20 @@ class ChatController:
                     policy=policy,
                 )
             )
+
+    @staticmethod
+    def _build_task_result(response_text: str, target: str, structured_data: dict | None = None) -> dict:
+        """Build the result dict for task_update, optionally including structured segments."""
+        result = {"response": response_text, "target": target}
+        if structured_data:
+            result["segments"] = structured_data.get("segments", [])
+            result["attitude_change"] = structured_data.get("attitude_change", 0)
+            result["boredom_change"] = structured_data.get("boredom_change", 0)
+            result["stress_change"] = structured_data.get("stress_change", 0)
+            result["memory_add"] = structured_data.get("memory_add", [])
+            result["memory_update"] = structured_data.get("memory_update", [])
+            result["memory_delete"] = structured_data.get("memory_delete", [])
+        return result
 
     def _on_get_llm_processing_status(self, event: Event):
         return self.llm_processing
