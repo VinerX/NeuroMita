@@ -50,6 +50,7 @@ def setup_chat_panel(gui, main_layout):
     
     gui.chat_window = QTextBrowser()
     gui.chat_window.setOpenExternalLinks(False)
+    gui.chat_window.setOpenLinks(False)
     gui.chat_window.setReadOnly(True)
     initial_font_size = int(gui._get_setting("CHAT_FONT_SIZE", 12))
     font = QFont("Arial", initial_font_size)

@@ -11,6 +11,77 @@ from managers.task_manager import TaskStatus
 from core.request_policy import RequestPolicy, resolve_policy
 
 
+class ThinkTagStreamFilter:
+    """
+    Streaming-time filter that prevents <think>...</think> from being echoed
+    into the normal assistant stream output. Accumulates think text separately.
+
+    Note: simple exact-tag matching (<think>, </think>) to keep it predictable.
+    """
+    START = "<think>"
+    END = "</think>"
+
+    def __init__(self, on_think_chunk=None):
+        self._buf = ""
+        self._in_think = False
+        self._think_parts: list[str] = []
+        self._keep_tail = max(len(self.START), len(self.END)) - 1
+        self.on_think_chunk = on_think_chunk
+
+    def feed(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+        self._buf += str(chunk)
+        out = ""
+
+        while True:
+            if self._in_think:
+                idx = self._buf.find(self.END)
+                if idx == -1:
+                    if len(self._buf) > self._keep_tail:
+                        new_think = self._buf[:-self._keep_tail]
+                        self._think_parts.append(new_think)
+                        if self.on_think_chunk:
+                            self.on_think_chunk(new_think)
+                        self._buf = self._buf[-self._keep_tail:]
+                    break
+                new_think = self._buf[:idx]
+                self._think_parts.append(new_think)
+                if self.on_think_chunk:
+                    self.on_think_chunk(new_think)
+                self._buf = self._buf[idx + len(self.END):]
+                self._in_think = False
+            else:
+                idx = self._buf.find(self.START)
+                if idx == -1:
+                    if len(self._buf) > self._keep_tail:
+                        out += self._buf[:-self._keep_tail]
+                        self._buf = self._buf[-self._keep_tail:]
+                    break
+                out += self._buf[:idx]
+                self._buf = self._buf[idx + len(self.START):]
+                self._in_think = True
+
+        return out
+
+    def flush_visible(self) -> str:
+        """Вызывается в конце потока для сбора оставшегося видимого текста."""
+        if self._in_think:
+            if self._buf:
+                self._think_parts.append(self._buf)
+            self._in_think = False
+            self._buf = ""
+            return ""
+        # Сбрасываем буфер видимых символов, удержанных для поиска границ тегов
+        tail = self._buf
+        self._buf = ""
+        return tail
+
+    def think_text(self) -> str:
+        """Возвращает весь собранный текст размышлений."""
+        return "".join(self._think_parts).strip()
+
+
 class ChatController:
     def __init__(self, settings):
         self.settings = settings
@@ -109,9 +180,59 @@ class ChatController:
 
             is_streaming = bool(self.settings.get("ENABLE_STREAMING", False)) and eff_policy.allow_streaming and eff_policy.echo_to_ui
 
+            show_think_in_gui = bool(self.settings.get("SHOW_THINK_IN_GUI", False))
+            effective_character_name = self._resolve_character_name(character_id)
+            
+            self._stream_current_role = None
+
+            def on_think_chunk(think_chunk: str):
+                if self._stream_current_role != "think":
+                    # При первом чанке размышлений подготавливаем UI
+                    self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                        "character_id": character_id or "",
+                        "character_name": effective_character_name,
+                        "speaker_name": effective_character_name,
+                        "role": "think"
+                    }, sync=True)
+                    self._stream_current_role = "think"
+
+                # Отправляем чанки размышлений в UI в реальном времени
+                self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": think_chunk, "role": "think"}, sync=True)
+
+            stream_think_filter = ThinkTagStreamFilter(on_think_chunk=on_think_chunk if show_think_in_gui else None) if is_streaming else None
+
             def stream_callback_handler(chunk: str):
-                if eff_policy.echo_to_ui:
-                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": chunk})
+                if not eff_policy.echo_to_ui:
+                    return
+                
+                chunk_str = str(chunk or "")
+                if not chunk_str:
+                    return
+
+                if stream_think_filter is None:
+                    if self._stream_current_role != "assistant":
+                        self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                            "character_id": character_id or "",
+                            "character_name": effective_character_name,
+                            "speaker_name": effective_character_name,
+                            "role": "assistant"
+                        }, sync=True)
+                        self._stream_current_role = "assistant"
+                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": chunk_str, "role": "assistant"}, sync=True)
+                    return
+
+                visible = stream_think_filter.feed(chunk_str)
+                if visible:
+                    if self._stream_current_role != "assistant":
+                        self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                            "character_id": character_id or "",
+                            "character_name": effective_character_name,
+                            "speaker_name": effective_character_name,
+                            "role": "assistant"
+                        }, sync=True)
+                        self._stream_current_role = "assistant"
+
+                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": visible, "role": "assistant"}, sync=True)
 
             if image_data:
                 prepared: list[bytes] = []
@@ -159,11 +280,13 @@ class ChatController:
                 return None
 
             target = "Player"
+            think_text = None
             if isinstance(payload, dict):
                 response_text = payload.get("text")
                 voice_profile = payload.get("voice_profile")
                 effective_character_id = payload.get("character_id") or character_id
                 target = str(payload.get("target") or "Player")
+                think_text = payload.get("think")
             else:
                 response_text = payload
                 voice_profile = None
@@ -184,11 +307,25 @@ class ChatController:
             effective_character_name = self._resolve_character_name(effective_character_id)
 
             if is_streaming and eff_policy.echo_to_ui:
-                self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
-                    "character_id": effective_character_id or "",
-                    "character_name": effective_character_name or "",
-                    "speaker_name": effective_character_name or "",
-                })
+                # Мы НЕ вызываем PREPARE_STREAM_UI здесь, так как он будет вызван
+                # динамически в stream_callback_handler при получении первого чанка
+                # (либо для think, либо для assistant).
+                pass
+
+            # If we filtered streaming output, we may have a small tail held back
+            if is_streaming and eff_policy.echo_to_ui and stream_think_filter is not None:
+                tail = stream_think_filter.flush_visible()
+                if tail:
+                    # Если блок ассистента ещё не открыт — открываем его
+                    if self._stream_current_role != "assistant":
+                        self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                            "character_id": effective_character_id or "",
+                            "character_name": effective_character_name,
+                            "speaker_name": effective_character_name,
+                            "role": "assistant"
+                        }, sync=True)
+                        self._stream_current_role = "assistant"
+                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": tail, "role": "assistant"}, sync=True)
 
             if response_text and self.settings.get("USE_VOICEOVER") and eff_policy.allow_voiceover:
                 if isinstance(voice_profile, dict):
@@ -236,8 +373,24 @@ class ChatController:
                     })
 
             if is_streaming and eff_policy.echo_to_ui:
-                self.event_bus.emit(Events.GUI.FINISH_STREAM_UI)
+                self.event_bus.emit(Events.GUI.FINISH_STREAM_UI, sync=True)
+                # При стриминге весь текст (think и assistant) уже выведен
+                # в UI в реальном времени. Повторный UPDATE_CHAT_UI не нужен.
             elif (not is_streaming) and eff_policy.echo_to_ui:
+                # Для не-стриминга отправляем think перед основным ответом
+                if show_think_in_gui and think_text:
+                    self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
+                        "role": "think",
+                        "response": [
+                            {"type": "meta", "speaker": effective_character_name or ""},
+                            {"type": "text", "text": think_text.strip()},
+                        ],
+                        "is_initial": False,
+                        "emotion": "",
+                        "character_id": effective_character_id or "",
+                        "character_name": effective_character_name or "",
+                        "speaker_name": effective_character_name or ""
+                    }, sync=True)
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                     "role": "assistant",
                     "response": response_text if response_text is not None else "...",
@@ -247,8 +400,7 @@ class ChatController:
                     "character_name": effective_character_name or "",
                     "speaker_name": effective_character_name or "",
                     "target": target,
-                })
-
+                }, sync=True)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)
             self.event_bus.emit(Events.GUI.UPDATE_TOKEN_COUNT)

@@ -565,6 +565,38 @@ class ModelController:
     # Generation
     # ---------------------------------------------------------------------
 
+    def _extract_think_blocks(self, text: str) -> tuple[str, str]:
+        """
+        Extracts <think>...</think> blocks.
+        Returns: (visible_text_without_think, think_text_joined)
+
+        - Think blocks SHOULD NOT be stored in history.
+        - Think blocks SHOULD NOT be sent to voiceover.
+        """
+        if not isinstance(text, str) or not text:
+            return ("" if text is None else str(text), "")
+
+        # Capture content inside <think ...>...</think>
+        # Keep it permissive (attrs allowed), DOTALL for multiline.
+        pattern = re.compile(r"<think\b[^>]*>(.*?)</think\s*>", flags=re.IGNORECASE | re.DOTALL)
+        think_parts: list[str] = []
+        for m in pattern.finditer(text):
+            part = m.group(1)
+            if part is None:
+                continue
+            part_s = str(part).strip()
+            if part_s:
+                think_parts.append(part_s)
+
+        visible = pattern.sub("", text)
+        # Also drop any stray <think> or </think> tags (unbalanced)
+        visible = re.sub(r"</?think\b[^>]*>", "", visible, flags=re.IGNORECASE)
+
+        # Light cleanup (avoid accidental extra blank lines)
+        visible = re.sub(r"\n{3,}", "\n\n", visible).strip()
+        think_text = "\n\n".join(think_parts).strip()
+        return visible, think_text
+
     def _on_generate_response(self, event: Event):
         data = event.data or {}
 
@@ -756,7 +788,10 @@ class ModelController:
                 })
                 return None
 
-            processed = char.process_response_nlp_commands(raw_text, self.settings.get("SAVE_MISSED_MEMORY", False))
+            # Strip <think> blocks BEFORE any downstream processing (commands, voiceover, history)
+            visible_raw, think_text = self._extract_think_blocks(str(raw_text))
+
+            processed = char.process_response_nlp_commands(visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False))
 
             target = None
             if hasattr(char, "consume_pending_target"):
@@ -805,6 +840,7 @@ class ModelController:
                 "character_id": char_id,
                 "voice_profile": voice_profile,
                 "target": target,
+                "think": think_text or None,
             }
 
         except Exception as e:

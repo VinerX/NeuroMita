@@ -30,6 +30,9 @@ def setup_general_settings_controls(self, parent):
          'type': 'checkbutton', 'default_checkbutton': True,
          'tooltip': _('Скрывать теги (<e>, <c>, <a>, [b], [i], [color]) в отображаемом тексте чата.',
                       'Hide tags (<e>, <c>, <a>, [b], [i], [color]) in the displayed chat text.')},
+
+        {'label': _('Выводить мышление', 'Show thinking'), 'key': 'SHOW_THINK_IN_GUI',
+         'type': 'checkbutton', 'default_checkbutton': True}
     ]
 
     create_settings_section(

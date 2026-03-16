@@ -59,8 +59,8 @@ class ChatGUI(QMainWindow):
     update_status_signal = pyqtSignal()
     update_debug_signal = pyqtSignal()
 
-    prepare_stream_signal = pyqtSignal()
-    append_stream_chunk_signal = pyqtSignal(str)
+    prepare_stream_signal = pyqtSignal(object)
+    append_stream_chunk_signal = pyqtSignal(object)
     finish_stream_signal = pyqtSignal()
 
     show_thinking_signal = pyqtSignal(str)
@@ -149,9 +149,9 @@ class ChatGUI(QMainWindow):
         self.update_status_signal.connect(self.update_status_colors)
         self.update_debug_signal.connect(self.update_debug_info)
 
-        self.prepare_stream_signal.connect(lambda: message_renderer.prepare_stream_slot(self))
-        self.append_stream_chunk_signal.connect(lambda chunk: message_renderer.append_stream_chunk_slot(self, chunk))
-        self.finish_stream_signal.connect(lambda: message_renderer.finish_stream_slot(self))
+        self.prepare_stream_signal.connect(self._on_prepare_stream_signal)
+        self.append_stream_chunk_signal.connect(self._append_stream_chunk_slot)
+        self.finish_stream_signal.connect(self._finish_stream_slot)
 
         self.show_thinking_signal.connect(self._show_thinking_slot)
         self.show_error_signal.connect(self._show_error_slot)
@@ -166,6 +166,7 @@ class ChatGUI(QMainWindow):
         self.settings_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
 
         self.chat_window.installEventFilter(self)
+        self.chat_window.anchorClicked.connect(self._on_chat_anchor_clicked)
 
         self.overlay = OverlayWidget(self)
         self.image_preview_bar = None
@@ -790,6 +791,15 @@ class ChatGUI(QMainWindow):
         password_future = data.get('future')
         show_tg_password_dialog(self, password_future, self.event_bus)
 
+    def _on_chat_anchor_clicked(self, url):
+        href = url.toString()
+        if href.startswith("think://toggle/"):
+            try:
+                block_id = int(href.split("/")[-1])
+                message_renderer.toggle_think_block(self, block_id)
+            except Exception as e:
+                logger.error(f"Error toggling think block {block_id}: {e}")
+
     def _show_thinking_slot(self, character_name: str):
         if hasattr(self, 'mita_status') and self.mita_status:
             logger.info('Показываем статус "Думает" для персонажа: %s', character_name)
@@ -1056,16 +1066,26 @@ class ChatGUI(QMainWindow):
         from ui.chat import message_renderer
         return message_renderer._insert_formatted_text(self, cursor, text, color, bold, italic)
 
-    def _prepare_stream_slot(self):
+    def _on_prepare_stream_signal(self, data=None):
         from ui.chat import message_renderer
-        return message_renderer.prepare_stream_slot(self)
+        role = data.get("role", "assistant") if isinstance(data, dict) else "assistant"
+        
+        # Сохраняем имя спикера, если оно пришло
+        if isinstance(data, dict) and "speaker_name" in data:
+            self._stream_speaker_name = data["speaker_name"]
+            
+        return message_renderer.prepare_stream_slot(self, role=role)
 
-    def _append_stream_chunk_slot(self, chunk):
+    def _append_stream_chunk_slot(self, data):
         from ui.chat import message_renderer
-        return message_renderer.append_stream_chunk_slot(self, chunk)
+        chunk = data.get("chunk") if isinstance(data, dict) else data
+        role = data.get("role", "assistant") if isinstance(data, dict) else "assistant"
+        return message_renderer.append_stream_chunk_slot(self, chunk, role=role)
 
     def _finish_stream_slot(self):
         from ui.chat import message_renderer
+        # Сбрасываем имя спикера после завершения стрима
+        self._stream_speaker_name = ""
         return message_renderer.finish_stream_slot(self)
 
     def process_image_for_chat(self, has_image_content, item, processed_content_parts):

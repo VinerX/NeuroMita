@@ -101,6 +101,9 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
     def _request(self, req: LLMRequest, payload: Dict[str, Any]) -> requests.Response:
         headers = self._headers(req)
+        # Принудительно добавляем stream в payload, если он включен в запросе
+        if req.stream:
+            payload["stream"] = True
         return requests.post(req.api_url, headers=headers, json=payload, stream=req.stream)
 
     def generate(self, req: LLMRequest) -> Optional[str]:
@@ -162,9 +165,14 @@ class OpenAIHTTPProviderBase(BaseProvider):
     def _handle_stream(self, resp: requests.Response, stream_callback: Optional[callable] = None) -> str:
         parts: List[str] = []
         try:
-            for line in resp.iter_lines(decode_unicode=True):
-                if not line:
+            for line_bytes in resp.iter_lines(decode_unicode=False):
+                if not line_bytes:
                     continue
+                try:
+                    line = line_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    line = line_bytes.decode("utf-8", errors="replace")
+
                 if not line.startswith("data: "):
                     continue
 
