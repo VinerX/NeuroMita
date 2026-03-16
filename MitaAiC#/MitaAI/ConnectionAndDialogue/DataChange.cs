@@ -221,6 +221,7 @@ namespace MitaAI
             bool GM_READ = false;
             bool GM_VOICE = false;
             int id = 0;
+            StructuredResponse structuredResponse = null;
             if (responseTask.IsCompleted)
             {
 
@@ -297,6 +298,21 @@ namespace MitaAI
                     MelonLogger.Error(ex);
                 }
 
+                // Try to parse structured response (segments) from task result
+                try
+                {
+                    structuredResponse = StructuredResponse.TryParse(messageData2);
+                    if (structuredResponse != null)
+                    {
+                        MelonLogger.Msg($"Parsed structured response with {structuredResponse.segments.Count} segment(s)");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"Failed to parse structured response, using legacy path: {ex.Message}");
+                    structuredResponse = null;
+                }
+
             }
             else
             {
@@ -311,16 +327,22 @@ namespace MitaAI
             {
                 MelonLogger.Msg($"after GetResponseFromPythonSocketAsync char {characterToSend} {GM_READ} {GM_VOICE}");
 
-                if (characterToSend.ToString().Contains("Cart")) MelonCoroutines.Start(DialogueControl.DisplayResponseAndEmotionCoroutine(id, characterToSend, response, AudioControl.cartAudioSource));
-                else if (characterToSend == characterType.GameMaster)
+                if (structuredResponse != null && structuredResponse.segments.Count > 0)
                 {
-
-
-
-                    if (GM_READ) MelonCoroutines.Start(DialogueControl.DisplayResponseAndEmotionCoroutine(id, characterToSend, response, AudioControl.playerAudioSource, GM_VOICE));
-                    else CommandProcessor.ProcessCommands(CommandProcessor.ExtractCommands(response).Item1);
+                    // Structured output path: segments already parsed, no tag extraction needed
+                    MelonCoroutines.Start(DialogueControl.DisplayStructuredResponseCoroutine(id, characterToSend, structuredResponse));
                 }
-                else MelonCoroutines.Start(DialogueControl.DisplayResponseAndEmotionCoroutine(id, characterToSend,response));
+                else
+                {
+                    // Legacy tag-based path
+                    if (characterToSend.ToString().Contains("Cart")) MelonCoroutines.Start(DialogueControl.DisplayResponseAndEmotionCoroutine(id, characterToSend, response, AudioControl.cartAudioSource));
+                    else if (characterToSend == characterType.GameMaster)
+                    {
+                        if (GM_READ) MelonCoroutines.Start(DialogueControl.DisplayResponseAndEmotionCoroutine(id, characterToSend, response, AudioControl.playerAudioSource, GM_VOICE));
+                        else CommandProcessor.ProcessCommands(CommandProcessor.ExtractCommands(response).Item1);
+                    }
+                    else MelonCoroutines.Start(DialogueControl.DisplayResponseAndEmotionCoroutine(id, characterToSend, response));
+                }
 
                 if (characterToSend != characterType.GameMaster) CharacterMessages.sendInfoListeners(Utils.CleanFromTags(response), Characters, characterToSend, CharacterControl.extendCharsString(characterToSend));
                 else CharacterMessages.sendInfoListenersFromGm(Utils.CleanFromTags(response), Characters, characterToSend);
