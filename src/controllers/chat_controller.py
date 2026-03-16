@@ -403,6 +403,16 @@ class ChatController:
                     "speaker_name": effective_character_name or "",
                     "target": target,
                 }, sync=True)
+                # Structured output: show collapsible debug block after the reply
+                if structured_data and bool(self.settings.get("SHOW_THINK_IN_GUI", False)):
+                    self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
+                        "role": "structured",
+                        "response": [{"type": "structured", "data": structured_data}],
+                        "is_initial": False,
+                        "emotion": "",
+                        "character_id": effective_character_id or "",
+                        "character_name": effective_character_name or "",
+                    }, sync=True)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)
             self.event_bus.emit(Events.GUI.UPDATE_TOKEN_COUNT)

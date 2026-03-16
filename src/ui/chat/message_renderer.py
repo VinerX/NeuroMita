@@ -12,6 +12,92 @@ THINK_DOTS_PHASES = [".  ", ".. ", "..."]
 THINK_ARROW_EXPANDED = "▼"
 THINK_ARROW_COLLAPSED = "▶"
 
+# ─── Structured block constants ──────────────────────────────────────────────
+STRUCTURED_HEADER_COLOR = "#7a9cc4"   # muted blue
+STRUCTURED_CONTENT_COLOR = "#9ab5cc"  # lighter blue for content
+
+
+def _format_structured_block_text(data: dict) -> str:
+    """
+    Format structured response data into a human-readable collapsible block.
+
+    Example output:
+        att +1.5 | bore -0.3 | stress +0.1
+
+        [seg 1]  smile · Помахать в приветствие · → Подойти к игроку близко
+          «О, ты тоже любишь кошек?»
+        [seg 2]  smileteeth
+          «Я всегда мечтала о котёнке!»
+
+        + memory [normal]: Игрок любит кошек
+    """
+    lines = []
+
+    # Global params
+    att = data.get("attitude_change", 0)
+    bore = data.get("boredom_change", 0)
+    stress = data.get("stress_change", 0)
+
+    def _fmt(v):
+        return f"+{v:.2g}" if v > 0 else (f"{v:.2g}" if v != 0 else "±0")
+
+    params_line = f"att {_fmt(att)}  |  bore {_fmt(bore)}  |  stress {_fmt(stress)}"
+    lines.append(params_line)
+
+    # Segments
+    segments = data.get("segments") or []
+    if segments:
+        lines.append("")
+        for i, seg in enumerate(segments, 1):
+            tags = []
+            for field in ("emotions", "animations", "movement_modes"):
+                for v in (seg.get(field) or []):
+                    tags.append(str(v))
+            for v in (seg.get("commands") or []):
+                tags.append(f"→ {v}")
+            for v in (seg.get("visual_effects") or []):
+                tags.append(f"✦ {v}")
+            for v in (seg.get("clothes") or []):
+                tags.append(f"👗 {v}")
+            for v in (seg.get("music") or []):
+                tags.append(f"♪ {v}")
+            for v in (seg.get("interactions") or []):
+                tags.append(f"⇆ {v}")
+            for v in (seg.get("face_params") or []):
+                tags.append(f"face:{v}")
+            if seg.get("start_game"):
+                tags.append(f"▶game:{seg['start_game']}")
+            if seg.get("end_game"):
+                tags.append(f"■game:{seg['end_game']}")
+            if seg.get("hint"):
+                tags.append(f"hint:{seg['hint']}")
+            if seg.get("allow_sleep") is not None:
+                tags.append(f"sleep:{seg['allow_sleep']}")
+
+            header = f"[seg {i}]"
+            if tags:
+                header += "  " + "  ·  ".join(tags)
+            lines.append(header)
+
+            text = seg.get("text", "").strip()
+            if text:
+                lines.append(f'  «{text}»')
+
+    # Memory operations
+    mem_lines = []
+    for entry in (data.get("memory_add") or []):
+        mem_lines.append(f"  + [{entry}]")
+    for entry in (data.get("memory_update") or []):
+        mem_lines.append(f"  ~ [{entry}]")
+    for entry in (data.get("memory_delete") or []):
+        mem_lines.append(f"  - [{entry}]")
+    if mem_lines:
+        lines.append("")
+        lines.append("memory:")
+        lines.extend(mem_lines)
+
+    return "\n".join(lines)
+
 
 def _get_delegate(gui) -> ChatMessageDelegate:
     if hasattr(gui, "chat_delegate") and gui.chat_delegate:
@@ -119,6 +205,73 @@ def start_think_block(gui, name: str, is_streaming: bool = False) -> int:
         gui.chat_window.verticalScrollBar().maximum()
     )
     return block_id
+
+
+def _insert_static_structured_block(gui, text: str, summary: str, insert_at_start: bool = False):
+    """Insert a collapsible structured-output block (reuses think block infrastructure)."""
+    if not hasattr(gui, '_images_in_chat'):
+        gui._images_in_chat = []
+
+    blocks = _get_think_blocks(gui)
+    block_id = gui._think_block_counter
+    gui._think_block_counter += 1
+
+    cursor = _doc_cursor(gui)
+    plain_fmt = _make_plain_fmt(gui)
+    if insert_at_start:
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+    else:
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText("\n", plain_fmt)
+
+    # Header: "▼ structured  <summary>"
+    font_size = int(gui._get_setting("CHAT_FONT_SIZE", 12))
+    from PyQt6.QtGui import QFont
+    font = QFont("Arial", font_size)
+    font.setBold(True)
+    header_fmt = QTextCharFormat()
+    header_fmt.setForeground(QColor(STRUCTURED_HEADER_COLOR))
+    header_fmt.setFont(font)
+    header_fmt.setAnchor(True)
+    header_fmt.setAnchorHref(f"think://toggle/{block_id}")
+
+    header_start = cursor.position()
+    cursor.insertText(f"{THINK_ARROW_EXPANDED} structured", header_fmt)
+    dots_start = cursor.position()
+    cursor.insertText("   ", header_fmt)  # 3 spaces (same width as dots in think)
+    if summary:
+        cursor.insertText(f"  {summary}", header_fmt)
+    header_end = cursor.position()
+
+    cursor.insertText("\n", plain_fmt)
+    content_start = cursor.position()
+
+    content_fmt = QTextCharFormat()
+    content_fmt.setForeground(QColor(STRUCTURED_CONTENT_COLOR))
+    font2 = QFont("Courier New", font_size - 1)
+    content_fmt.setFont(font2)
+    cursor.insertText(text, content_fmt)
+    content_end = cursor.position()
+
+    blocks[block_id] = {
+        'id': block_id,
+        'collapsed': False,
+        'name': "structured",
+        'header_start': header_start,
+        'dots_start': dots_start,
+        'header_end': header_end,
+        'content_start': content_start,
+        'content_end': content_end,
+        'content_text': text,
+        'is_streaming': False,
+    }
+
+    cursor.insertText("\n\n", plain_fmt)
+
+    if not insert_at_start:
+        gui.chat_window.verticalScrollBar().setValue(
+            gui.chat_window.verticalScrollBar().maximum()
+        )
 
 
 def _insert_static_think_block(gui, text: str, name: str, insert_at_start: bool = False):
@@ -325,6 +478,32 @@ def insert_message(gui, role, content, insert_at_start=False, message_time=""):
     if not hasattr(gui, '_images_in_chat'):
         gui._images_in_chat = []
 
+    # ── Structured role: collapsible block ───────────────────────────────────
+    if role == "structured":
+        structured_data = {}
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "structured":
+                    structured_data = item.get("data") or {}
+                    break
+        elif isinstance(content, dict):
+            structured_data = content
+
+        segs = structured_data.get("segments") or []
+        n_segs = len(segs)
+        att = structured_data.get("attitude_change", 0)
+        mem_count = len(structured_data.get("memory_add") or []) + len(structured_data.get("memory_update") or [])
+        summary_parts = [f"{n_segs} seg"]
+        if att != 0:
+            summary_parts.append(f"att {'+' if att>0 else ''}{att:.2g}")
+        if mem_count:
+            summary_parts.append(f"+{mem_count} mem")
+        summary = "  ·  ".join(summary_parts)
+
+        block_text = _format_structured_block_text(structured_data)
+        _insert_static_structured_block(gui, block_text, summary, insert_at_start)
+        return
+
     # ── Think role: collapsible block ────────────────────────────────────────
     if role == "think":
         think_text = ""
@@ -442,7 +621,7 @@ def insert_message_end(gui, cursor=None, role="assistant"):
         cursor = gui.chat_window.textCursor()
     if role == "user":
         cursor.insertText("\n")
-    elif role == "think":
+    elif role in {"think", "structured"}:
         cursor.insertText("\n")
     elif role in {"assistant", "system"}:
         cursor.insertText("\n\n")
