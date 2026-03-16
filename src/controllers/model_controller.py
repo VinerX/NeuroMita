@@ -698,6 +698,11 @@ class ModelController:
         try:
             effective_preset = self.preset_resolver.resolve(preset_id)
             effective_capabilities = dict(getattr(effective_preset, "capabilities", {}) or {})
+            logger.info(
+                f"[ModelController] preset_id={preset_id!r} → "
+                f"structured_output={effective_capabilities.get('structured_output')} "
+                f"mode={effective_capabilities.get('structured_output_mode', 'json_schema')}"
+            )
         except Exception as e:
             logger.warning(f"[ModelController] Failed to resolve preset capabilities: {e}")
 
