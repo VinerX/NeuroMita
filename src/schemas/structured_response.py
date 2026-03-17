@@ -22,45 +22,73 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
-def _inline_refs(schema: dict) -> dict:
+def _to_gemini_schema(schema: dict) -> dict:
     """
-    Resolve all $ref/$defs in a JSON Schema dict, returning a fully inlined copy.
+    Convert a Pydantic-generated JSON Schema to a Gemini-compatible responseSchema.
 
-    Gemini's response_schema only accepts a flat OpenAPI-subset schema with no
-    references — every type must be spelled out inline.
+    Gemini supports only a strict subset of OpenAPI 3.0:
+      - Supported: type, description, properties, required, items, enum, nullable
+      - NOT supported: $ref/$defs, anyOf/oneOf/allOf, default, title,
+                       additionalProperties, $schema
+
+    Transformations applied:
+      1. Resolve all $ref / $defs inline.
+      2. Strip: title, default, additionalProperties, $schema, $defs.
+      3. Convert  anyOf: [{type: X}, {type: null}]  →  {type: X, nullable: true}.
+      4. Recurse into properties, items, anyOf members, etc.
     """
     import copy
 
     defs = schema.get("$defs", {})
 
-    def resolve(node):
+    _STRIP_KEYS = {"title", "default", "additionalProperties", "$schema", "$defs"}
+
+    def convert(node):
         if not isinstance(node, dict):
             return node
 
-        # Resolve $ref
+        # Resolve $ref first
         if "$ref" in node:
-            ref_path = node["$ref"]  # e.g. "#/$defs/ResponseSegment"
+            ref_path = node["$ref"]
             if ref_path.startswith("#/$defs/"):
                 def_name = ref_path[len("#/$defs/"):]
                 if def_name in defs:
-                    return resolve(copy.deepcopy(defs[def_name]))
-            return node  # unresolvable ref — leave as-is
+                    return convert(copy.deepcopy(defs[def_name]))
+            return node  # unresolvable
 
-        # Recurse into object
+        # Collapse anyOf: [{type: X, ...}, {type: null}]  →  {type: X, nullable: true}
+        if "anyOf" in node and isinstance(node["anyOf"], list):
+            members = node["anyOf"]
+            null_members = [m for m in members if m == {"type": "null"} or m.get("type") == "null"]
+            non_null = [m for m in members if m not in null_members and m.get("type") != "null"]
+            if null_members and len(non_null) == 1:
+                merged = convert(copy.deepcopy(non_null[0]))
+                merged["nullable"] = True
+                # Carry over description from the outer node if present
+                if "description" in node and "description" not in merged:
+                    merged["description"] = node["description"]
+                return merged
+            # Otherwise drop anyOf entirely (unsupported) — use first non-null member
+            if non_null:
+                return convert(copy.deepcopy(non_null[0]))
+
+        # Build clean result, recursing into sub-nodes
         result = {}
         for key, value in node.items():
-            if key == "$defs":
-                continue  # strip out the definitions block
+            if key in _STRIP_KEYS or key.startswith("$"):
+                continue
+            if key == "anyOf":
+                continue  # already handled above or skipping
             if isinstance(value, dict):
-                result[key] = resolve(value)
+                result[key] = convert(value)
             elif isinstance(value, list):
-                result[key] = [resolve(item) if isinstance(item, dict) else item
+                result[key] = [convert(item) if isinstance(item, dict) else item
                                for item in value]
             else:
                 result[key] = value
         return result
 
-    return resolve(copy.deepcopy(schema))
+    return convert(copy.deepcopy(schema))
 
 
 class ResponseSegment(BaseModel):
@@ -140,10 +168,10 @@ class StructuredResponse(BaseModel):
     @classmethod
     def gemini_schema_dict(cls) -> dict:
         """
-        Return a Gemini-compatible schema with all $ref/$defs inlined.
+        Return a Gemini-compatible responseSchema dict.
 
-        Gemini's response_schema does not support JSON Schema $ref or $defs —
-        all nested types must be fully inlined.
+        Strips all JSON Schema features Gemini doesn't support:
+        $ref/$defs, anyOf/null, default, title, additionalProperties.
+        Converts Optional[X] → {type: X, nullable: true}.
         """
-        schema = cls.model_json_schema()
-        return _inline_refs(schema)
+        return _to_gemini_schema(cls.model_json_schema())
