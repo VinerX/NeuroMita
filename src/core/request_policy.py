@@ -91,7 +91,7 @@ def resolve_policy(*, model_event_type: str, react_level: Any = None) -> Request
                 write_to_history=True,
                 allow_voiceover=True,
                 allow_streaming=True,
-                echo_to_ui=False,
+                echo_to_ui=True,
                 use_pending_sysinfo=True,
                 system_input_role="event",
             )
