@@ -22,6 +22,47 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
+def _inline_refs(schema: dict) -> dict:
+    """
+    Resolve all $ref/$defs in a JSON Schema dict, returning a fully inlined copy.
+
+    Gemini's response_schema only accepts a flat OpenAPI-subset schema with no
+    references — every type must be spelled out inline.
+    """
+    import copy
+
+    defs = schema.get("$defs", {})
+
+    def resolve(node):
+        if not isinstance(node, dict):
+            return node
+
+        # Resolve $ref
+        if "$ref" in node:
+            ref_path = node["$ref"]  # e.g. "#/$defs/ResponseSegment"
+            if ref_path.startswith("#/$defs/"):
+                def_name = ref_path[len("#/$defs/"):]
+                if def_name in defs:
+                    return resolve(copy.deepcopy(defs[def_name]))
+            return node  # unresolvable ref — leave as-is
+
+        # Recurse into object
+        result = {}
+        for key, value in node.items():
+            if key == "$defs":
+                continue  # strip out the definitions block
+            if isinstance(value, dict):
+                result[key] = resolve(value)
+            elif isinstance(value, list):
+                result[key] = [resolve(item) if isinstance(item, dict) else item
+                               for item in value]
+            else:
+                result[key] = value
+        return result
+
+    return resolve(copy.deepcopy(schema))
+
+
 class ResponseSegment(BaseModel):
     """A single segment of the response tied to a chunk of displayed text."""
 
@@ -95,3 +136,14 @@ class StructuredResponse(BaseModel):
     def json_schema_dict(cls) -> dict:
         """Return the raw JSON Schema dict (e.g. for Gemini or other providers)."""
         return cls.model_json_schema()
+
+    @classmethod
+    def gemini_schema_dict(cls) -> dict:
+        """
+        Return a Gemini-compatible schema with all $ref/$defs inlined.
+
+        Gemini's response_schema does not support JSON Schema $ref or $defs —
+        all nested types must be fully inlined.
+        """
+        schema = cls.model_json_schema()
+        return _inline_refs(schema)

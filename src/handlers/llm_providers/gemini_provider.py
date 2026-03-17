@@ -185,8 +185,9 @@ class GeminiProvider(BaseProvider):
         caps = req.capabilities or {}
         if caps.get("structured_output", False):
             gen_cfg["responseMimeType"] = "application/json"
-            gen_cfg["responseSchema"] = StructuredResponse.json_schema_dict()
-            logger.debug("[GeminiProvider] Structured output enabled: responseSchema added to generationConfig")
+            # Gemini does not support JSON Schema $ref/$defs — use inlined schema
+            gen_cfg["responseSchema"] = StructuredResponse.gemini_schema_dict()
+            logger.debug("[GeminiProvider] Structured output enabled: responseSchema (inlined) added to generationConfig")
 
         if gen_cfg:
             data["generationConfig"] = gen_cfg
