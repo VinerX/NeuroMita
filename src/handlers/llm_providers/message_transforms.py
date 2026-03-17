@@ -70,6 +70,63 @@ def ensure_last_message_user(messages: List[Dict[str, Any]], fallback_user_text:
     return out
 
 
+def ensure_alternating_roles(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge consecutive messages with the same role so user/assistant strictly alternate.
+
+    System messages at the very beginning (before the first user message) are
+    kept as-is and never merged with non-system messages.  Two adjacent system
+    messages are merged together.
+
+    For user/assistant runs: all consecutive messages of the same role are
+    collapsed into one by joining their text content with "\\n\\n".
+    """
+
+    def _to_list(content: Any) -> list:
+        if not content and content != 0:
+            return []
+        if isinstance(content, str):
+            return [{"type": "text", "text": content}]
+        if isinstance(content, list):
+            return content
+        return [{"type": "text", "text": _as_text(content)}]
+
+    def _merge_two(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
+        content_a = a.get("content", "")
+        content_b = b.get("content", "")
+
+        # Both plain strings — keep simple string output
+        if isinstance(content_a, str) and isinstance(content_b, str):
+            merged_content: Any = "\n\n".join(t for t in [content_a, content_b] if t)
+        else:
+            # At least one is a list (multimodal) — concatenate block arrays
+            # so non-text blocks (images, files) are never lost
+            merged_content = _to_list(content_a) + _to_list(content_b)
+
+        merged = dict(a)
+        merged["content"] = merged_content
+
+        # Preserve tool_calls from both messages
+        tc_a = a.get("tool_calls") or []
+        tc_b = b.get("tool_calls") or []
+        if tc_a or tc_b:
+            merged["tool_calls"] = tc_a + tc_b
+
+        return merged
+
+    out: List[Dict[str, Any]] = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        if not out:
+            out.append(dict(msg))
+            continue
+        if out[-1].get("role") == msg.get("role"):
+            out[-1] = _merge_two(out[-1], msg)
+        else:
+            out.append(dict(msg))
+    return out
+
+
 def system_to_user_prefix(messages: List[Dict[str, Any]], tag: str = "[SYSTEM CONTEXT]") -> List[Dict[str, Any]]:
     system_texts: List[str] = []
     out: List[Dict[str, Any]] = []
@@ -139,6 +196,12 @@ _TRANSFORM_CATALOG: List[Dict[str, Any]] = [
         "description": "Move system messages into the first user message as a text prefix.",
         "params_schema": {"tag": "str"},
     },
+    {
+        "id": "ensure_alternating_roles",
+        "title": "Ensure alternating roles",
+        "description": "Merge consecutive messages with the same role so user/assistant strictly alternate.",
+        "params_schema": None,
+    },
 ]
 
 
@@ -154,6 +217,7 @@ _TRANSFORMS = {
     "system_to_user_prefix": lambda msgs, params: system_to_user_prefix(
         msgs, tag=str((params or {}).get("tag", "[SYSTEM CONTEXT]"))
     ),
+    "ensure_alternating_roles": lambda msgs, params: ensure_alternating_roles(msgs),
 }
 
 
