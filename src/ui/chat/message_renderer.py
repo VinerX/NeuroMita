@@ -20,6 +20,9 @@ STRUCTURED_KEY_MEMORY_COLOR = "#7ab870"  # green  — memory keys
 STRUCTURED_SEG_HDR_COLOR    = "#8fb0cc"  # blue-grey — "Seg N:" line
 STRUCTURED_TEXT_COLOR       = "#d4d4d4"  # near-white — segment text value
 
+STRUCTURED_SEP_LINE = "  " + "─" * 40 + "\n"  # visual container border
+STRUCTURED_INDENT   = "    "                    # 4-space indent for content
+
 # Display mode values (must match combobox options in general_settings.py)
 STRUCTURED_MODE_OFF   = "Выкл"
 STRUCTURED_MODE_BRIEF = "Кратко"
@@ -62,18 +65,21 @@ def _format_structured_brief(data: dict) -> list:
     bore   = data.get("boredom_change",  0) or 0
     stress = data.get("stress_change",   0) or 0
 
+    I = STRUCTURED_INDENT      # 4 spaces — first-level indent
+    I2 = I + "  "              # 6 spaces — second-level indent
+
     # — Parameter line —
-    p("att", CP); p(f" {_fmt_val(att)}   ", C)
+    p(I + "att", CP); p(f" {_fmt_val(att)}   ", C)
     p("bore", CP); p(f" {_fmt_val(bore)}   ", C)
     p("stress", CP); p(f" {_fmt_val(stress)}\n", C)
 
     # — Segments —
     segments = data.get("segments") or []
     for i, seg in enumerate(segments, 1):
-        p(f"\nSeg {i}:\n", CS)
+        p(f"\n{I}Seg {i}:\n", CS)
         text = (seg.get("text") or "").strip()
         if text:
-            p(f'  "{text}"\n', CT)
+            p(f'{I2}"{text}"\n', CT)
 
         # Collect key: value lines
         field_map = [
@@ -90,7 +96,7 @@ def _format_structured_brief(data: dict) -> list:
         for field, label in field_map:
             vals = seg.get(field) or []
             if vals:
-                p(f"  {label}: ", C)
+                p(f"{I2}{label}: ", C)
                 p(", ".join(str(v) for v in vals) + "\n", CT)
 
         for fname, label in [("start_game", "start_game"),
@@ -99,26 +105,26 @@ def _format_structured_brief(data: dict) -> list:
                               ("hint",       "hint")]:
             val = seg.get(fname)
             if val:
-                p(f"  {label}: ", C); p(f"{val}\n", CT)
+                p(f"{I2}{label}: ", C); p(f"{val}\n", CT)
         if seg.get("allow_sleep") is not None:
-            p("  allow_sleep: ", C); p(f"{seg['allow_sleep']}\n", CT)
+            p(f"{I2}allow_sleep: ", C); p(f"{seg['allow_sleep']}\n", CT)
 
     # — Memory —
     mem_add    = data.get("memory_add") or []
     mem_update = data.get("memory_update") or []
     mem_delete = data.get("memory_delete") or []
     if mem_add or mem_update or mem_delete:
-        p("\nmemory:\n", CM)
+        p(f"\n{I}memory:\n", CM)
         for entry in mem_add:
             if "|" in str(entry):
                 priority, content = str(entry).split("|", 1)
-                p(f"  + [{priority.strip()}] {content.strip()}\n", C)
+                p(f"{I2}+ [{priority.strip()}] {content.strip()}\n", C)
             else:
-                p(f"  + {entry}\n", C)
+                p(f"{I2}+ {entry}\n", C)
         for entry in mem_update:
-            p(f"  ~ {entry}\n", C)
+            p(f"{I2}~ {entry}\n", C)
         for entry in mem_delete:
-            p(f"  - #{entry}\n", C)
+            p(f"{I2}- #{entry}\n", C)
 
     return parts
 
@@ -497,26 +503,36 @@ def _make_structured_content_fmt(gui) -> QTextCharFormat:
 
 def _insert_structured_content(gui, cursor, content_text, content_parts) -> int:
     """
-    Insert structured block content at cursor position.
-    Returns the new cursor end position.
+    Insert structured block content at cursor position (with decorators).
+    Adds separator lines above/below and returns the new cursor end position.
     """
     font_size = int(gui._get_setting("CHAT_FONT_SIZE", 12))
     mono_font = QFont("Courier New", font_size - 1)
 
+    sep_fmt = QTextCharFormat()
+    sep_fmt.setFont(mono_font)
+    sep_fmt.setForeground(QColor(STRUCTURED_HEADER_COLOR))
+    cursor.insertText(STRUCTURED_SEP_LINE, sep_fmt)
+
     if content_parts:
-        # Rich colored parts
         for text, color in content_parts:
             fmt = QTextCharFormat()
             fmt.setFont(mono_font)
             fmt.setForeground(QColor(color if color else STRUCTURED_CONTENT_COLOR))
             cursor.insertText(text, fmt)
     else:
-        # Plain text (JSON mode or fallback)
+        # JSON mode — indent every line by STRUCTURED_INDENT
+        raw = content_text or ""
+        indented = STRUCTURED_INDENT + raw.replace("\n", "\n" + STRUCTURED_INDENT)
+        # Remove trailing indent after the final newline
+        if raw.endswith("\n"):
+            indented = indented[: -len(STRUCTURED_INDENT)]
         fmt = QTextCharFormat()
         fmt.setFont(mono_font)
         fmt.setForeground(QColor(STRUCTURED_CONTENT_COLOR))
-        cursor.insertText(content_text or "", fmt)
+        cursor.insertText(indented, fmt)
 
+    cursor.insertText(STRUCTURED_SEP_LINE, sep_fmt)
     return cursor.position()
 
 
@@ -683,7 +699,6 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
     else:
         cursor.movePosition(QTextCursor.MoveOperation.End)
 
-    # ── Pre-allocate structured block — diamond before label ─────────────────
     struct_mode = gui._get_setting("SHOW_STRUCTURED_IN_GUI", STRUCTURED_MODE_OFF)
     has_structured_display = (
         role == "assistant"
@@ -697,6 +712,11 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
     struct_header_end = None
     start_expanded = False
 
+    # ── Timestamp (before diamond) ────────────────────────────────────────────
+    if show_timestamps and timestamp_str:
+        _insert_formatted_text(gui, cursor, timestamp_str, QColor("#888888"), italic=True)
+
+    # ── Diamond anchor — after timestamp, before label ────────────────────────
     if has_structured_display:
         _get_think_blocks(gui)  # ensures _think_block_counter is initialized
         struct_block_id = gui._think_block_counter
@@ -718,9 +738,6 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         struct_dots_start = struct_header_start + 1  # after the arrow char
         struct_header_end = cursor.position()        # after "▶ " / "▼ "
 
-    if show_timestamps and timestamp_str:
-        _insert_formatted_text(gui, cursor, timestamp_str, QColor("#888888"), italic=True)
-
     label_text, label_color, label_bold = delegate.get_label(gui, role, speaker_name=speaker_name)
     _insert_formatted_text(gui, cursor, label_text, label_color, bold=label_bold)
 
@@ -737,7 +754,12 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             cursor.insertImage(part["content"])
             cursor.insertText("\n")
 
-    insert_message_end(gui, cursor, role)
+    # ── End of message text ───────────────────────────────────────────────────
+    if has_structured_display and role == "assistant":
+        # Single \n — content block provides visual separation; trailing \n added after
+        cursor.insertText("\n", _make_plain_fmt(gui))
+    else:
+        insert_message_end(gui, cursor, role)
 
     # ── Register structured content panel (after message end) ────────────────
     if has_structured_display and struct_block_id is not None:
@@ -768,6 +790,9 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             'content_parts': s_content_parts,
             'is_streaming': False,
         }
+
+        # Always-visible trailing \n: provides gap with next message when collapsed
+        cursor.insertText("\n", _make_plain_fmt(gui))
 
     if not insert_at_start:
         gui.chat_window.verticalScrollBar().setValue(gui.chat_window.verticalScrollBar().maximum())
@@ -1026,7 +1051,16 @@ def attach_structured_to_stream(gui, structured_data: dict):
     # Shift all existing blocks whose positions are >= label_start
     _adjust_block_positions(gui, label_start, 2, exclude_id=block_id)
 
-    # Content panel goes at document end (after insert_message_end's newlines)
+    # insert_message_end added \n\n; remove one \n so content is flush with message
+    cursor.movePosition(QTextCursor.MoveOperation.End)
+    end_pos = cursor.position()
+    cursor.setPosition(end_pos - 1)
+    cursor.setPosition(end_pos, QTextCursor.MoveMode.KeepAnchor)
+    if cursor.selectedText() in ("\n", "\u2029"):
+        cursor.removeSelectedText()
+        # Also shift all block positions that were after the removed char
+        _adjust_block_positions(gui, end_pos - 1, -1, exclude_id=block_id)
+
     cursor.movePosition(QTextCursor.MoveOperation.End)
     content_start = cursor.position()
     content_end = content_start
@@ -1055,6 +1089,9 @@ def attach_structured_to_stream(gui, structured_data: dict):
         'content_parts': s_content_parts,
         'is_streaming': False,
     }
+
+    # Always-visible trailing \n: provides gap with next message when collapsed
+    cursor.insertText("\n", _make_plain_fmt(gui))
 
     gui.chat_window.verticalScrollBar().setValue(gui.chat_window.verticalScrollBar().maximum())
 
