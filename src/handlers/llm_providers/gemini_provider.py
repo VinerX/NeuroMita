@@ -206,15 +206,29 @@ class GeminiProvider(BaseProvider):
                 if k and v is not None:
                     headers[str(k)] = str(v)
 
+        import json as _json
+        gen_cfg_log = data.get("generationConfig", {})
+        if "responseSchema" in gen_cfg_log:
+            schema_keys = list(gen_cfg_log.get("responseSchema", {}).get("properties", {}).keys())
+            logger.info(f"[GeminiProvider] Sending responseSchema with top-level keys: {schema_keys}")
+            logger.debug(f"[GeminiProvider] Full responseSchema: {_json.dumps(gen_cfg_log.get('responseSchema'), ensure_ascii=False)[:2000]}")
+        else:
+            logger.info("[GeminiProvider] No responseSchema in request")
+        logger.info(f"[GeminiProvider] need_stream={need_stream}, generationConfig keys: {list(gen_cfg_log.keys())}")
+
+        import time as _time
+        _t0 = _time.time()
         response = requests.post(
             req.api_url,
             headers=headers,
             json=data,
-            stream=need_stream
+            stream=need_stream,
+            timeout=120,
         )
+        logger.info(f"[GeminiProvider] Response received in {_time.time()-_t0:.1f}s, status={response.status_code}")
 
         if response.status_code != 200:
-            logger.error(f"Gemini API error: {response.status_code} - {response.text}")
+            logger.error(f"Gemini API error: {response.status_code} - {response.text[:500]}")
             return None
 
         if need_stream:
