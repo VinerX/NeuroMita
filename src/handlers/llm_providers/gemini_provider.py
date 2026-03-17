@@ -198,9 +198,7 @@ class GeminiProvider(BaseProvider):
             if tools_payload:
                 data["tools"] = tools_payload
 
-        # Gemini does not support streaming when responseSchema is set
-        has_schema = bool(gen_cfg.get("responseSchema"))
-        need_stream = req.stream and "tools" not in data and not has_schema
+        need_stream = req.stream and "tools" not in data
 
         headers = {"Content-Type": "application/json"}
         if isinstance(req.headers, dict):
