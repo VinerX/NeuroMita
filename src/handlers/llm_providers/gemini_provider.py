@@ -7,7 +7,6 @@ import json
 import copy
 from main_logger import logger
 from handlers.llm_providers.param_mapper import filter_jsonable_params
-from schemas.structured_response import StructuredResponse
 
 
 class GeminiProvider(BaseProvider):
@@ -181,13 +180,13 @@ class GeminiProvider(BaseProvider):
 
         gen_cfg = self._map_unified_params_to_generation_config(req.extra, req.model)
 
-        # Add structured output schema for Gemini when capability is enabled
+        # Add structured output for Gemini when capability is enabled.
+        # Use prompt-guided JSON mode (responseMimeType only, no responseSchema).
+        # responseSchema triggers constrained decoding which hangs on complex schemas.
         caps = req.capabilities or {}
         if caps.get("structured_output", False):
             gen_cfg["responseMimeType"] = "application/json"
-            # Gemini does not support JSON Schema $ref/$defs — use inlined schema
-            gen_cfg["responseSchema"] = StructuredResponse.gemini_schema_dict()
-            logger.debug("[GeminiProvider] Structured output enabled: responseSchema (inlined) added to generationConfig")
+            logger.debug("[GeminiProvider] Structured output enabled: responseMimeType=application/json (prompt-guided)")
 
         if gen_cfg:
             data["generationConfig"] = gen_cfg
@@ -206,14 +205,7 @@ class GeminiProvider(BaseProvider):
                 if k and v is not None:
                     headers[str(k)] = str(v)
 
-        import json as _json
         gen_cfg_log = data.get("generationConfig", {})
-        if "responseSchema" in gen_cfg_log:
-            schema_keys = list(gen_cfg_log.get("responseSchema", {}).get("properties", {}).keys())
-            logger.info(f"[GeminiProvider] Sending responseSchema with top-level keys: {schema_keys}")
-            logger.debug(f"[GeminiProvider] Full responseSchema: {_json.dumps(gen_cfg_log.get('responseSchema'), ensure_ascii=False)[:2000]}")
-        else:
-            logger.info("[GeminiProvider] No responseSchema in request")
         logger.info(f"[GeminiProvider] need_stream={need_stream}, generationConfig keys: {list(gen_cfg_log.keys())}")
 
         import time as _time
