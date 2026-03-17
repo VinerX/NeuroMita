@@ -1098,7 +1098,12 @@ class ChatGUI(QMainWindow):
         from ui.chat import message_renderer
         # Сбрасываем имя спикера после завершения стрима
         self._stream_speaker_name = ""
-        return message_renderer.finish_stream_slot(self)
+        message_renderer.finish_stream_slot(self)
+        # Attach structured diamond if structured_data arrived with stream finish
+        pending = getattr(self, '_pending_structured_data', None)
+        if pending:
+            self._pending_structured_data = None
+            message_renderer.attach_structured_to_stream(self, pending)
 
     def process_image_for_chat(self, has_image_content, item, processed_content_parts):
         from ui.chat import message_renderer

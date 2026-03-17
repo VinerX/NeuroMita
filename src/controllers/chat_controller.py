@@ -375,7 +375,9 @@ class ChatController:
                     })
 
             if is_streaming and eff_policy.echo_to_ui:
-                self.event_bus.emit(Events.GUI.FINISH_STREAM_UI, sync=True)
+                self.event_bus.emit(Events.GUI.FINISH_STREAM_UI,
+                                    {"structured_data": structured_data} if structured_data else {},
+                                    sync=True)
                 # При стриминге весь текст (think и assistant) уже выведен
                 # в UI в реальном времени. Повторный UPDATE_CHAT_UI не нужен.
             elif (not is_streaming) and eff_policy.echo_to_ui:

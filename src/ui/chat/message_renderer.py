@@ -683,6 +683,41 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
     else:
         cursor.movePosition(QTextCursor.MoveOperation.End)
 
+    # ── Pre-allocate structured block — diamond before label ─────────────────
+    struct_mode = gui._get_setting("SHOW_STRUCTURED_IN_GUI", STRUCTURED_MODE_OFF)
+    has_structured_display = (
+        role == "assistant"
+        and bool(structured_data)
+        and struct_mode not in (STRUCTURED_MODE_OFF, _STRUCTURED_MODE_OFF_EN, "", False, None)
+    )
+
+    struct_block_id = None
+    struct_header_start = None
+    struct_dots_start = None
+    struct_header_end = None
+    start_expanded = False
+
+    if has_structured_display:
+        _get_think_blocks(gui)  # ensures _think_block_counter is initialized
+        struct_block_id = gui._think_block_counter
+        gui._think_block_counter += 1
+        start_expanded = bool(gui._get_setting("STRUCTURED_EXPANDED_DEFAULT", False))
+
+        font_size = int(gui._get_setting("CHAT_FONT_SIZE", 12))
+        diamond_font = QFont("Arial", font_size)
+        diamond_font.setBold(True)
+        diamond_fmt = QTextCharFormat()
+        diamond_fmt.setForeground(QColor(STRUCTURED_HEADER_COLOR))
+        diamond_fmt.setFont(diamond_font)
+        diamond_fmt.setAnchor(True)
+        diamond_fmt.setAnchorHref(f"think://toggle/{struct_block_id}")
+
+        initial_arrow = THINK_ARROW_EXPANDED if start_expanded else THINK_ARROW_COLLAPSED
+        struct_header_start = cursor.position()
+        cursor.insertText(initial_arrow + " ", diamond_fmt)
+        struct_dots_start = struct_header_start + 1  # after the arrow char
+        struct_header_end = cursor.position()        # after "▶ " / "▼ "
+
     if show_timestamps and timestamp_str:
         _insert_formatted_text(gui, cursor, timestamp_str, QColor("#888888"), italic=True)
 
@@ -704,27 +739,35 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
 
     insert_message_end(gui, cursor, role)
 
-    # ── Inline structured block after assistant text ──────────────────────────
-    if role == "assistant" and structured_data:
-        mode = gui._get_setting("SHOW_STRUCTURED_IN_GUI", STRUCTURED_MODE_OFF)
-        # Accept English values too (for older saved settings)
-        if mode in (_STRUCTURED_MODE_OFF_EN, STRUCTURED_MODE_OFF, "", False, None):
-            pass  # hidden
+    # ── Register structured content panel (after message end) ────────────────
+    if has_structured_display and struct_block_id is not None:
+        content_start = cursor.position()
+        content_end = content_start
+
+        if struct_mode in (STRUCTURED_MODE_JSON, "JSON"):
+            s_content_text = _format_structured_json(structured_data)
+            s_content_parts = None
         else:
-            start_expanded = bool(gui._get_setting("STRUCTURED_EXPANDED_DEFAULT", False))
-            summary = _build_structured_summary(structured_data)
-            if mode in (STRUCTURED_MODE_JSON, "JSON"):
-                content_text  = _format_structured_json(structured_data)
-                content_parts = None
-            else:  # brief (default)
-                content_text  = None
-                content_parts = _format_structured_brief(structured_data)
-            _insert_inline_structured_block(
-                gui, summary, insert_at_start,
-                content_text=content_text,
-                content_parts=content_parts,
-                start_expanded=start_expanded,
-            )
+            s_content_text = None
+            s_content_parts = _format_structured_brief(structured_data)
+
+        if start_expanded:
+            content_end = _insert_structured_content(gui, cursor, s_content_text, s_content_parts)
+
+        blocks = _get_think_blocks(gui)
+        blocks[struct_block_id] = {
+            'id': struct_block_id,
+            'collapsed': not start_expanded,
+            'name': "structured",
+            'header_start': struct_header_start,
+            'dots_start': struct_dots_start,
+            'header_end': struct_header_end,
+            'content_start': content_start,
+            'content_end': content_end,
+            'content_text': s_content_text or "",
+            'content_parts': s_content_parts,
+            'is_streaming': False,
+        }
 
     if not insert_at_start:
         gui.chat_window.verticalScrollBar().setValue(gui.chat_window.verticalScrollBar().maximum())
@@ -867,6 +910,11 @@ def prepare_stream_slot(gui, role="assistant"):
             name = gui._get_character_name()
         start_think_block(gui, name, is_streaming=True)
     else:
+        # Save label start position for retroactive diamond insertion
+        c_pre = _doc_cursor(gui)
+        c_pre.movePosition(QTextCursor.MoveOperation.End)
+        gui._stream_label_start = c_pre.position()
+
         insert_speaker_name(gui, role=role)
         # Remember where content starts so we can reapply tag colours after streaming
         c = _doc_cursor(gui)
@@ -931,6 +979,84 @@ def _reformat_streamed_content(gui):
     gui.chat_window.verticalScrollBar().setValue(
         gui.chat_window.verticalScrollBar().maximum()
     )
+
+
+def attach_structured_to_stream(gui, structured_data: dict):
+    """
+    Retroactively attach a clickable diamond and structured panel to the
+    message that was just streamed.
+
+    Must be called right after finish_stream_slot completes.
+    Reads gui._stream_label_start (set in prepare_stream_slot) to know
+    where to insert the arrow character.
+    """
+    mode = gui._get_setting("SHOW_STRUCTURED_IN_GUI", STRUCTURED_MODE_OFF)
+    if mode in (STRUCTURED_MODE_OFF, _STRUCTURED_MODE_OFF_EN, "", False, None):
+        return
+
+    label_start = getattr(gui, '_stream_label_start', None)
+    if label_start is None:
+        return
+    gui._stream_label_start = None
+
+    _get_think_blocks(gui)
+    block_id = gui._think_block_counter
+    gui._think_block_counter += 1
+    start_expanded = bool(gui._get_setting("STRUCTURED_EXPANDED_DEFAULT", False))
+
+    font_size = int(gui._get_setting("CHAT_FONT_SIZE", 12))
+    diamond_font = QFont("Arial", font_size)
+    diamond_font.setBold(True)
+    diamond_fmt = QTextCharFormat()
+    diamond_fmt.setForeground(QColor(STRUCTURED_HEADER_COLOR))
+    diamond_fmt.setFont(diamond_font)
+    diamond_fmt.setAnchor(True)
+    diamond_fmt.setAnchorHref(f"think://toggle/{block_id}")
+
+    initial_arrow = THINK_ARROW_EXPANDED if start_expanded else THINK_ARROW_COLLAPSED
+
+    # Insert diamond at label_start (retroactively)
+    cursor = _doc_cursor(gui)
+    cursor.setPosition(label_start)
+    struct_header_start = label_start
+    cursor.insertText(initial_arrow + " ", diamond_fmt)
+    struct_dots_start = struct_header_start + 1
+    struct_header_end = cursor.position()
+
+    # Shift all existing blocks whose positions are >= label_start
+    _adjust_block_positions(gui, label_start, 2, exclude_id=block_id)
+
+    # Content panel goes at document end (after insert_message_end's newlines)
+    cursor.movePosition(QTextCursor.MoveOperation.End)
+    content_start = cursor.position()
+    content_end = content_start
+
+    if mode in (STRUCTURED_MODE_JSON, "JSON"):
+        s_content_text = _format_structured_json(structured_data)
+        s_content_parts = None
+    else:
+        s_content_text = None
+        s_content_parts = _format_structured_brief(structured_data)
+
+    if start_expanded:
+        content_end = _insert_structured_content(gui, cursor, s_content_text, s_content_parts)
+
+    blocks = _get_think_blocks(gui)
+    blocks[block_id] = {
+        'id': block_id,
+        'collapsed': not start_expanded,
+        'name': "structured",
+        'header_start': struct_header_start,
+        'dots_start': struct_dots_start,
+        'header_end': struct_header_end,
+        'content_start': content_start,
+        'content_end': content_end,
+        'content_text': s_content_text or "",
+        'content_parts': s_content_parts,
+        'is_streaming': False,
+    }
+
+    gui.chat_window.verticalScrollBar().setValue(gui.chat_window.verticalScrollBar().maximum())
 
 
 def finish_stream_slot(gui):

@@ -105,6 +105,9 @@ class ChatController(BaseController):
         self.stream_callback_handler(chunk, role)
 
     def _on_finish_stream_ui(self, event: Event):
+        structured_data = (event.data or {}).get("structured_data")
+        if self.view and structured_data:
+            self.view._pending_structured_data = structured_data
         self.finish_stream()
         if self.view is not None and hasattr(self.view, "_stream_speaker_name"):
             self.view._stream_speaker_name = ""
