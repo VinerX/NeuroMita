@@ -712,15 +712,11 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
     struct_header_end = None
     start_expanded = False
 
-    # ── Timestamp ─────────────────────────────────────────────────────────────
+    # ── Timestamp (before diamond) ────────────────────────────────────────────
     if show_timestamps and timestamp_str:
         _insert_formatted_text(gui, cursor, timestamp_str, QColor("#888888"), italic=True)
 
-    # ── Label ─────────────────────────────────────────────────────────────────
-    label_text, label_color, label_bold = delegate.get_label(gui, role, speaker_name=speaker_name)
-    _insert_formatted_text(gui, cursor, label_text, label_color, bold=label_bold)
-
-    # ── Diamond anchor — after label (date is already before label) ───────────
+    # ── Diamond anchor — after timestamp, before label ────────────────────────
     if has_structured_display:
         _get_think_blocks(gui)  # ensures _think_block_counter is initialized
         struct_block_id = gui._think_block_counter
@@ -742,6 +738,9 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         struct_dots_start = struct_header_start + 1  # after the arrow char
         struct_header_end = cursor.position()        # after "▶ " / "▼ "
 
+    label_text, label_color, label_bold = delegate.get_label(gui, role, speaker_name=speaker_name)
+    _insert_formatted_text(gui, cursor, label_text, label_color, bold=label_bold)
+
     content_color = delegate.get_content_color(role)
 
     for part in normalized_parts:
@@ -756,9 +755,11 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             cursor.insertText("\n")
 
     # ── End of message text ───────────────────────────────────────────────────
-    if not has_structured_display:
+    if has_structured_display and role == "assistant":
+        # Single \n — content block provides visual separation; trailing \n added after
+        cursor.insertText("\n", _make_plain_fmt(gui))
+    else:
         insert_message_end(gui, cursor, role)
-    # For structured display: message text's own trailing \n provides separation
 
     # ── Register structured content panel (after message end) ────────────────
     if has_structured_display and struct_block_id is not None:
@@ -934,12 +935,12 @@ def prepare_stream_slot(gui, role="assistant"):
             name = gui._get_character_name()
         start_think_block(gui, name, is_streaming=True)
     else:
-        insert_speaker_name(gui, role=role)
+        # Save label start position for retroactive diamond insertion
+        c_pre = _doc_cursor(gui)
+        c_pre.movePosition(QTextCursor.MoveOperation.End)
+        gui._stream_label_start = c_pre.position()
 
-        # Save position after label for retroactive diamond insertion (after date+name)
-        c_post = _doc_cursor(gui)
-        c_post.movePosition(QTextCursor.MoveOperation.End)
-        gui._stream_label_start = c_post.position()
+        insert_speaker_name(gui, role=role)
         # Remember where content starts so we can reapply tag colours after streaming
         c = _doc_cursor(gui)
         c.movePosition(QTextCursor.MoveOperation.End)
