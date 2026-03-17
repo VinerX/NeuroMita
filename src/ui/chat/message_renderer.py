@@ -13,113 +13,126 @@ THINK_ARROW_EXPANDED = "▼"
 THINK_ARROW_COLLAPSED = "▶"
 
 # ─── Structured block constants ──────────────────────────────────────────────
-STRUCTURED_HEADER_COLOR = "#7a9cc4"   # muted blue
-STRUCTURED_CONTENT_COLOR = "#9ab5cc"  # lighter blue for content
+STRUCTURED_HEADER_COLOR  = "#7a9cc4"   # muted blue — header / arrow
+STRUCTURED_CONTENT_COLOR = "#9ab5cc"   # lighter blue — default content text
+STRUCTURED_KEY_PARAM_COLOR  = "#c8a84b"  # amber — att / bore / stress keys
+STRUCTURED_KEY_MEMORY_COLOR = "#7ab870"  # green  — memory keys
+STRUCTURED_SEG_HDR_COLOR    = "#8fb0cc"  # blue-grey — "Seg N:" line
+STRUCTURED_TEXT_COLOR       = "#d4d4d4"  # near-white — segment text value
+
+# Display mode values (must match combobox options in general_settings.py)
+STRUCTURED_MODE_OFF   = "Выкл"
+STRUCTURED_MODE_BRIEF = "Кратко"
+STRUCTURED_MODE_JSON  = "JSON"
+# English aliases
+_STRUCTURED_MODE_OFF_EN   = "Off"
+_STRUCTURED_MODE_BRIEF_EN = "Brief"
+
+
+def _fmt_val(v: float) -> str:
+    """Format a numeric parameter change value with sign and arrow."""
+    if v == 0:
+        return "±0"
+    s = f"+{v:.2g}" if v > 0 else f"{v:.2g}"
+    arrow = "↑" if v > 0 else "↓"
+    return f"{s}{arrow}"
+
+
+# ─── Parts type: list of (text, color_or_None) tuples ────────────────────────
+# None color means "use the default content color"
+
+def _format_structured_brief(data: dict) -> list:
+    """
+    Return a list of (text, color | None) pairs for "brief" mode.
+
+    Keys att/bore/stress are highlighted in amber; memory keys in green.
+    No emoji. Each segment: text first, then commands.
+    """
+    parts = []  # (text, color | None)
+    C = STRUCTURED_CONTENT_COLOR
+    CP = STRUCTURED_KEY_PARAM_COLOR
+    CM = STRUCTURED_KEY_MEMORY_COLOR
+    CS = STRUCTURED_SEG_HDR_COLOR
+    CT = STRUCTURED_TEXT_COLOR
+
+    def p(text, color=None):
+        parts.append((text, color))
+
+    att    = data.get("attitude_change", 0) or 0
+    bore   = data.get("boredom_change",  0) or 0
+    stress = data.get("stress_change",   0) or 0
+
+    # — Parameter line —
+    p("att", CP); p(f" {_fmt_val(att)}   ", C)
+    p("bore", CP); p(f" {_fmt_val(bore)}   ", C)
+    p("stress", CP); p(f" {_fmt_val(stress)}\n", C)
+
+    # — Segments —
+    segments = data.get("segments") or []
+    for i, seg in enumerate(segments, 1):
+        p(f"\nSeg {i}:\n", CS)
+        text = (seg.get("text") or "").strip()
+        if text:
+            p(f'  "{text}"\n', CT)
+
+        # Collect key: value lines
+        field_map = [
+            ("emotions",      "emotions"),
+            ("animations",    "animations"),
+            ("commands",      "commands"),
+            ("movement_modes","movement"),
+            ("visual_effects","effects"),
+            ("clothes",       "clothes"),
+            ("music",         "music"),
+            ("interactions",  "interactions"),
+            ("face_params",   "face"),
+        ]
+        for field, label in field_map:
+            vals = seg.get(field) or []
+            if vals:
+                p(f"  {label}: ", C)
+                p(", ".join(str(v) for v in vals) + "\n", CT)
+
+        for fname, label in [("start_game", "start_game"),
+                              ("end_game",   "end_game"),
+                              ("target",     "target"),
+                              ("hint",       "hint")]:
+            val = seg.get(fname)
+            if val:
+                p(f"  {label}: ", C); p(f"{val}\n", CT)
+        if seg.get("allow_sleep") is not None:
+            p("  allow_sleep: ", C); p(f"{seg['allow_sleep']}\n", CT)
+
+    # — Memory —
+    mem_add    = data.get("memory_add") or []
+    mem_update = data.get("memory_update") or []
+    mem_delete = data.get("memory_delete") or []
+    if mem_add or mem_update or mem_delete:
+        p("\nmemory:\n", CM)
+        for entry in mem_add:
+            if "|" in str(entry):
+                priority, content = str(entry).split("|", 1)
+                p(f"  + [{priority.strip()}] {content.strip()}\n", C)
+            else:
+                p(f"  + {entry}\n", C)
+        for entry in mem_update:
+            p(f"  ~ {entry}\n", C)
+        for entry in mem_delete:
+            p(f"  - #{entry}\n", C)
+
+    return parts
+
+
+def _format_structured_json(data: dict) -> str:
+    """Return pretty-printed JSON of the raw structured data."""
+    import json
+    return json.dumps(data, ensure_ascii=False, indent=2)
 
 
 def _format_structured_block_text(data: dict) -> str:
-    """
-    Format structured response data into a human-readable collapsible block.
-
-    Example output (2 segments):
-        ❤ att +1.5↑  😴 bore -0.3↓  😰 stress +0.1↑
-
-        ┌─ seg 1 ──────────────────────────────────────
-        │ «О, ты тоже любишь кошек?»
-        │  😊 smile   👋 Помахать   → Подойти близко
-        ├─ seg 2 ──────────────────────────────────────
-        │ «Я всегда мечтала о котёнке!»
-        │  😁 smileteeth
-        └──────────────────────────────────────────────
-
-        🧠 memory:
-          + [normal] Игрок любит кошек
-    """
-    lines = []
-
-    att  = data.get("attitude_change", 0) or 0
-    bore = data.get("boredom_change",  0) or 0
-    stress = data.get("stress_change", 0) or 0
-
-    def _fmt(v):
-        s = f"+{v:.2g}" if v > 0 else (f"{v:.2g}" if v != 0 else "±0")
-        arrow = "↑" if v > 0 else ("↓" if v < 0 else "")
-        return f"{s}{arrow}"
-
-    params_parts = [
-        f"❤ att {_fmt(att)}",
-        f"😴 bore {_fmt(bore)}",
-        f"😰 stress {_fmt(stress)}",
-    ]
-    lines.append("  ".join(params_parts))
-
-    # Segments
-    SEP = "─" * 42
-    segments = data.get("segments") or []
-    if segments:
-        lines.append("")
-        for i, seg in enumerate(segments, 1):
-            prefix = "┌" if i == 1 else "├"
-            lines.append(f"{prefix}─ seg {i} {SEP[:max(0, 36 - len(str(i)))]}")
-
-            text = (seg.get("text") or "").strip()
-            if text:
-                lines.append(f"│ «{text}»")
-
-            tags = []
-            for v in (seg.get("emotions") or []):
-                tags.append(f"😊 {v}")
-            for v in (seg.get("animations") or []):
-                tags.append(f"👋 {v}")
-            for v in (seg.get("movement_modes") or []):
-                tags.append(f"🚶 {v}")
-            for v in (seg.get("commands") or []):
-                tags.append(f"→ {v}")
-            for v in (seg.get("visual_effects") or []):
-                tags.append(f"✦ {v}")
-            for v in (seg.get("clothes") or []):
-                tags.append(f"👗 {v}")
-            for v in (seg.get("music") or []):
-                tags.append(f"♪ {v}")
-            for v in (seg.get("interactions") or []):
-                tags.append(f"⇆ {v}")
-            for v in (seg.get("face_params") or []):
-                tags.append(f"face:{v}")
-            if seg.get("target"):
-                tags.append(f"→to:{seg['target']}")
-            if seg.get("start_game"):
-                tags.append(f"▶ {seg['start_game']}")
-            if seg.get("end_game"):
-                tags.append(f"■ {seg['end_game']}")
-            if seg.get("hint"):
-                tags.append(f"💡 {seg['hint']}")
-            if seg.get("allow_sleep") is not None:
-                tags.append(f"💤 sleep:{seg['allow_sleep']}")
-
-            if tags:
-                lines.append("│  " + "   ".join(tags))
-
-        lines.append(f"└{SEP}")
-
-    # Memory operations
-    mem_lines = []
-    for entry in (data.get("memory_add") or []):
-        # parse optional "priority|content"
-        if "|" in str(entry):
-            priority, content = str(entry).split("|", 1)
-            mem_lines.append(f"  + [{priority.strip()}] {content.strip()}")
-        else:
-            mem_lines.append(f"  + {entry}")
-    for entry in (data.get("memory_update") or []):
-        mem_lines.append(f"  ~ {entry}")
-    for entry in (data.get("memory_delete") or []):
-        mem_lines.append(f"  - #{entry}")
-    if mem_lines:
-        lines.append("")
-        lines.append("🧠 memory:")
-        lines.extend(mem_lines)
-
-    return "\n".join(lines)
+    """Legacy plain-text formatter (kept for back-compat, not used in new code)."""
+    parts = _format_structured_brief(data)
+    return "".join(text for text, _ in parts)
 
 
 def _build_structured_summary(structured_data: dict) -> str:
@@ -482,23 +495,51 @@ def _make_structured_content_fmt(gui) -> QTextCharFormat:
     return fmt
 
 
+def _insert_structured_content(gui, cursor, content_text, content_parts) -> int:
+    """
+    Insert structured block content at cursor position.
+    Returns the new cursor end position.
+    """
+    font_size = int(gui._get_setting("CHAT_FONT_SIZE", 12))
+    mono_font = QFont("Courier New", font_size - 1)
+
+    if content_parts:
+        # Rich colored parts
+        for text, color in content_parts:
+            fmt = QTextCharFormat()
+            fmt.setFont(mono_font)
+            fmt.setForeground(QColor(color if color else STRUCTURED_CONTENT_COLOR))
+            cursor.insertText(text, fmt)
+    else:
+        # Plain text (JSON mode or fallback)
+        fmt = QTextCharFormat()
+        fmt.setFont(mono_font)
+        fmt.setForeground(QColor(STRUCTURED_CONTENT_COLOR))
+        cursor.insertText(content_text or "", fmt)
+
+    return cursor.position()
+
+
 def _expand_think_block(gui, block: dict):
     content_start = block['content_start']
     _update_think_arrow(gui, block, THINK_ARROW_EXPANDED)
 
     cursor = _doc_cursor(gui)
     cursor.setPosition(content_start)
-    text = block['content_text']
 
-    # Use appropriate format based on block type
     if block.get('name') == "structured":
-        fmt = _make_structured_content_fmt(gui)
+        new_end = _insert_structured_content(
+            gui, cursor,
+            block.get('content_text'),
+            block.get('content_parts'),
+        )
     else:
-        fmt = _make_think_content_fmt(gui)
-    cursor.insertText(text, fmt)
+        text = block['content_text']
+        cursor.insertText(text, _make_think_content_fmt(gui))
+        new_end = content_start + len(text)
 
-    delta = len(text)
-    block['content_end'] = content_start + delta
+    delta = new_end - content_start
+    block['content_end'] = new_end
     block['collapsed'] = False
     _adjust_block_positions(gui, content_start, delta, exclude_id=block['id'])
 
@@ -663,20 +704,48 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
 
     insert_message_end(gui, cursor, role)
 
-    # ── Inline structured block (collapsed by default) after assistant text ──
-    if (role == "assistant"
-            and structured_data
-            and gui._get_setting("SHOW_STRUCTURED_IN_GUI", True)):
-        block_text = _format_structured_block_text(structured_data)
-        summary = _build_structured_summary(structured_data)
-        _insert_inline_structured_block(gui, block_text, summary, insert_at_start)
+    # ── Inline structured block after assistant text ──────────────────────────
+    if role == "assistant" and structured_data:
+        mode = gui._get_setting("SHOW_STRUCTURED_IN_GUI", STRUCTURED_MODE_OFF)
+        # Accept English values too (for older saved settings)
+        if mode in (_STRUCTURED_MODE_OFF_EN, STRUCTURED_MODE_OFF, "", False, None):
+            pass  # hidden
+        else:
+            start_expanded = bool(gui._get_setting("STRUCTURED_EXPANDED_DEFAULT", False))
+            summary = _build_structured_summary(structured_data)
+            if mode in (STRUCTURED_MODE_JSON, "JSON"):
+                content_text  = _format_structured_json(structured_data)
+                content_parts = None
+            else:  # brief (default)
+                content_text  = None
+                content_parts = _format_structured_brief(structured_data)
+            _insert_inline_structured_block(
+                gui, summary, insert_at_start,
+                content_text=content_text,
+                content_parts=content_parts,
+                start_expanded=start_expanded,
+            )
 
     if not insert_at_start:
         gui.chat_window.verticalScrollBar().setValue(gui.chat_window.verticalScrollBar().maximum())
 
 
-def _insert_inline_structured_block(gui, text: str, summary: str, insert_at_start: bool = False):
-    """Insert a collapsed-by-default structured block right after an assistant message."""
+def _insert_inline_structured_block(
+    gui,
+    summary: str,
+    insert_at_start: bool = False,
+    *,
+    content_text: str | None = None,
+    content_parts: list | None = None,
+    start_expanded: bool = False,
+):
+    """
+    Insert a structured-output block right after an assistant message.
+
+    content_text  — plain string (used for JSON mode)
+    content_parts — list of (text, color|None) for brief mode
+    start_expanded — if True, render expanded immediately
+    """
     if not hasattr(gui, '_images_in_chat'):
         gui._images_in_chat = []
 
@@ -691,7 +760,6 @@ def _insert_inline_structured_block(gui, text: str, summary: str, insert_at_star
     else:
         cursor.movePosition(QTextCursor.MoveOperation.End)
 
-    # Header: "▶ 📊 structured  <summary>"  (collapsed by default)
     font_size = int(gui._get_setting("CHAT_FONT_SIZE", 12))
     font = QFont("Arial", font_size - 1)
     font.setBold(True)
@@ -701,30 +769,34 @@ def _insert_inline_structured_block(gui, text: str, summary: str, insert_at_star
     header_fmt.setAnchor(True)
     header_fmt.setAnchorHref(f"think://toggle/{block_id}")
 
+    initial_arrow = THINK_ARROW_EXPANDED if start_expanded else THINK_ARROW_COLLAPSED
+
     header_start = cursor.position()
-    cursor.insertText(f"{THINK_ARROW_COLLAPSED} 📊", header_fmt)
+    cursor.insertText(initial_arrow, header_fmt)
     dots_start = cursor.position()
     cursor.insertText("   ", header_fmt)
     if summary:
         cursor.insertText(f"  {summary}", header_fmt)
     header_end = cursor.position()
 
-    # Content is HIDDEN by default (collapsed)
     cursor.insertText("\n", plain_fmt)
     content_start = cursor.position()
-    # Insert content as invisible (zero-height) — will be shown on expand
-    content_end = content_start  # empty, content_text stored for expand
+    content_end = content_start
+
+    if start_expanded:
+        content_end = _insert_structured_content(gui, cursor, content_text, content_parts)
 
     blocks[block_id] = {
         'id': block_id,
-        'collapsed': True,
+        'collapsed': not start_expanded,
         'name': "structured",
         'header_start': header_start,
         'dots_start': dots_start,
         'header_end': header_end,
         'content_start': content_start,
         'content_end': content_end,
-        'content_text': text,
+        'content_text': content_text or "",
+        'content_parts': content_parts,
         'is_streaming': False,
     }
 
