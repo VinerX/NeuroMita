@@ -1,26 +1,25 @@
 """
-MessageWidget — Telegram-style chat message: avatar separate from card.
+MessageWidget — comic-style speech bubble chat messages.
 
-Layout (assistant):
-  [avatar]  ┌─────────────────────────────┐
-            │ SpeakerName          [≡ btn] │
-            │ message text ...             │
-            │ [structured output panel]    │
-            └─────────────────────────────┘
+Layout (assistant):          Layout (user):
+  [avatar]  ◄─bubble─┐      ┌─bubble─► [avatar]
+            │  text   │      │  text  │
+            │   time ─┤      ├─ time  │
+            └─────────┘      └────────┘
 
-Layout (user, left-aligned, no avatar):
-  ┌──────────────────────────┐
-  │ You:                     │
-  │ message text ...         │
-  └──────────────────────────┘
+Avatar is bottom-aligned. Bubble has a pointed tail toward the avatar.
+Text is selectable. Timestamps are semi-transparent at the bottom-right.
 """
 
 import os
+import time as _time
 from PyQt6.QtWidgets import (
     QFrame, QHBoxLayout, QVBoxLayout, QLabel, QWidget, QSizePolicy, QPushButton,
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QPixmap, QPainter, QPainterPath, QColor, QFont
+from PyQt6.QtCore import Qt, QSize, QRectF, QPointF
+from PyQt6.QtGui import (
+    QPixmap, QPainter, QPainterPath, QColor, QFont, QBrush, QPen, QPolygonF,
+)
 
 
 # ── Avatar paths ────────────────────────────────────────────────────────────
@@ -39,19 +38,31 @@ AVATAR_MAP = {
 }
 
 AVATAR_SIZE = 36
+TAIL_W = 8        # width of the speech-bubble tail
+TAIL_H = 10       # height of the tail triangle
+BUBBLE_RADIUS = 10
+
 ROLE_COLORS = {
-    "user":      "#FFD700",   # gold
-    "assistant": "#FF69B4",   # hot pink
-    "system":    "#66ccff",   # cyan
-    "think":     "#aaaaaa",   # grey
+    "user":      "#FFD700",
+    "assistant": "#FF69B4",
+    "system":    "#66ccff",
+    "think":     "#aaaaaa",
 }
 CARD_BG = {
-    "user":      "rgba(255, 215, 0, 0.06)",
-    "assistant": "rgba(255, 105, 180, 0.04)",
-    "system":    "rgba(102, 204, 255, 0.04)",
-    "think":     "rgba(170, 170, 170, 0.04)",
+    "user":      QColor(255, 215, 0, 15),
+    "assistant": QColor(255, 105, 180, 10),
+    "system":    QColor(102, 204, 255, 10),
+    "think":     QColor(170, 170, 170, 10),
+}
+CARD_BORDER = {
+    "user":      QColor(255, 215, 0, 30),
+    "assistant": QColor(255, 105, 180, 20),
+    "system":    QColor(102, 204, 255, 20),
+    "think":     QColor(170, 170, 170, 20),
 }
 
+
+# ── Avatar helpers ──────────────────────────────────────────────────────────
 
 def _round_pixmap(pixmap: QPixmap, size: int) -> QPixmap:
     scaled = pixmap.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
@@ -70,7 +81,16 @@ def _round_pixmap(pixmap: QPixmap, size: int) -> QPixmap:
     return result
 
 
-def _placeholder_avatar(size: int, color: str, letter: str = "M") -> QPixmap:
+def _initials(name: str) -> str:
+    """Get 1-2 letter initials from name. 'Crazy Mita' -> 'CM'."""
+    parts = (name or "").split()
+    if len(parts) >= 2:
+        return (parts[0][:1] + parts[1][:1]).upper()
+    return (name or "M")[:1].upper()
+
+
+def _placeholder_avatar(size: int, color: str, name: str = "M") -> QPixmap:
+    letters = _initials(name)
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pm)
@@ -79,9 +99,10 @@ def _placeholder_avatar(size: int, color: str, letter: str = "M") -> QPixmap:
     painter.setPen(Qt.PenStyle.NoPen)
     painter.drawEllipse(0, 0, size, size)
     painter.setPen(QColor("#ffffff"))
-    font = QFont("Arial", size // 3, QFont.Weight.Bold)
+    fs = size // 3 if len(letters) == 1 else size // 4
+    font = QFont("Arial", fs, QFont.Weight.Bold)
     painter.setFont(font)
-    painter.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, letter)
+    painter.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, letters)
     painter.end()
     return pm
 
@@ -95,14 +116,95 @@ def _get_avatar_pixmap(character_name: str, role: str) -> QPixmap:
             if not pm.isNull():
                 return _round_pixmap(pm, AVATAR_SIZE)
     color = ROLE_COLORS.get(role, "#8a2be2")
-    letter = (character_name or "M")[:1].upper()
-    return _placeholder_avatar(AVATAR_SIZE, color, letter)
+    return _placeholder_avatar(AVATAR_SIZE, color, character_name)
 
+
+# ── Speech bubble frame ─────────────────────────────────────────────────────
+
+class BubbleFrame(QFrame):
+    """
+    A QFrame that paints itself as a comic-style speech bubble.
+    tail_side='left' means the pointed tail is on the left (assistant).
+    tail_side='right' means the pointed tail is on the right (user).
+    tail_side=None means no tail (system, etc.).
+    """
+
+    def __init__(self, role: str, tail_side: str | None = "left", parent=None):
+        super().__init__(parent)
+        self._bg = CARD_BG.get(role, QColor(30, 30, 35, 240))
+        self._border = CARD_BORDER.get(role, QColor(255, 255, 255, 15))
+        self._tail_side = tail_side
+        # Extra left/right margin for the tail
+        left_margin = TAIL_W if tail_side == "left" else 0
+        right_margin = TAIL_W if tail_side == "right" else 0
+        self.setContentsMargins(left_margin + 10, 6, right_margin + 10, 8)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+        r = BUBBLE_RADIUS
+        tw = TAIL_W
+        th = TAIL_H
+
+        # Bubble rect (inset from tail side)
+        if self._tail_side == "left":
+            bx, by, bw, bh = tw, 0, w - tw, h
+        elif self._tail_side == "right":
+            bx, by, bw, bh = 0, 0, w - tw, h
+        else:
+            bx, by, bw, bh = 0, 0, w, h
+
+        path = QPainterPath()
+
+        if self._tail_side == "left":
+            # Rounded rect but bottom-left corner is sharp (tail)
+            path.moveTo(bx + r, by)
+            path.lineTo(bx + bw - r, by)
+            path.arcTo(bx + bw - 2*r, by, 2*r, 2*r, 90, -90)           # top-right
+            path.lineTo(bx + bw, by + bh - r)
+            path.arcTo(bx + bw - 2*r, by + bh - 2*r, 2*r, 2*r, 0, -90) # bottom-right
+            path.lineTo(bx + r, by + bh)
+            # Tail: bottom-left pointed toward avatar
+            path.lineTo(bx, by + bh)              # bottom edge to tail start
+            path.lineTo(bx - tw, by + bh)          # tail tip (points left)
+            path.lineTo(bx, by + bh - th)          # back up
+            path.lineTo(bx, by + r)
+            path.arcTo(bx, by, 2*r, 2*r, 180, -90)                      # top-left
+            path.closeSubpath()
+
+        elif self._tail_side == "right":
+            # Rounded rect but bottom-right corner is sharp (tail)
+            path.moveTo(bx + r, by)
+            path.lineTo(bx + bw - r, by)
+            path.arcTo(bx + bw - 2*r, by, 2*r, 2*r, 90, -90)           # top-right
+            path.lineTo(bx + bw, by + r)
+            path.lineTo(bx + bw, by + bh - th)     # right side down to tail
+            path.lineTo(bx + bw + tw, by + bh)      # tail tip (points right)
+            path.lineTo(bx + bw, by + bh)           # back
+            path.lineTo(bx + r, by + bh)
+            path.arcTo(bx, by + bh - 2*r, 2*r, 2*r, 270, -90)          # bottom-left
+            path.lineTo(bx, by + r)
+            path.arcTo(bx, by, 2*r, 2*r, 180, -90)                      # top-left
+            path.closeSubpath()
+
+        else:
+            path.addRoundedRect(QRectF(bx, by, bw, bh), r, r)
+
+        painter.setBrush(QBrush(self._bg))
+        painter.setPen(QPen(self._border, 1))
+        painter.drawPath(path)
+        painter.end()
+
+
+# ── Main message widget ─────────────────────────────────────────────────────
 
 class MessageWidget(QWidget):
     """
-    Chat message: avatar sits outside the card frame (Telegram-style).
-    User messages are flush-left with no avatar.
+    Comic-style chat message with speech-bubble tail, avatar at bottom,
+    selectable text, and optional structured output toggle.
     """
 
     def __init__(
@@ -112,53 +214,57 @@ class MessageWidget(QWidget):
         content_text: str = "",
         show_avatar: bool = True,
         font_size: int = 12,
+        message_time: str = "",
         parent=None,
     ):
         super().__init__(parent)
         self._role = role
         self._speaker_name = speaker_name
         self._font_size = font_size
-        self._structured_panel = None  # will be set by add_structured_widget
+        self._structured_panel = None
         self._toggle_btn = None
 
         self.setStyleSheet("background: transparent; border: none;")
 
         label_color = ROLE_COLORS.get(role, "#dcdcdc")
-        bg = CARD_BG.get(role, "transparent")
-        border_color = label_color
+        is_user = (role == "user")
 
-        # ── Outer row: [avatar] [card] ──────────────────────────────────────
+        # ── Outer row ───────────────────────────────────────────────────────
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 2, 0, 2)
-        outer.setSpacing(8)
-        outer.setAlignment(Qt.AlignmentFlag.AlignTop)
+        outer.setSpacing(4)
+        outer.setAlignment(Qt.AlignmentFlag.AlignBottom)
 
-        # Avatar (only for assistant; user is left-flush without avatar)
+        # Determine tail direction
+        tail_side = None
+        if show_avatar and role in ("assistant", "user"):
+            tail_side = "right" if is_user else "left"
+
+        # ── Avatar ──────────────────────────────────────────────────────────
         self._avatar_label = None
-        if show_avatar and role == "assistant":
+        if show_avatar and role in ("assistant", "user"):
             self._avatar_label = QLabel()
             self._avatar_label.setFixedSize(AVATAR_SIZE, AVATAR_SIZE)
             self._avatar_label.setStyleSheet("background: transparent; border: none;")
             pm = _get_avatar_pixmap(speaker_name, role)
             self._avatar_label.setPixmap(pm)
-            outer.addWidget(self._avatar_label, 0, Qt.AlignmentFlag.AlignTop)
 
-        # ── Card frame ──────────────────────────────────────────────────────
-        self._card = QFrame()
-        self._card.setObjectName("MsgCard")
-        self._card.setStyleSheet(f"""
-            QFrame#MsgCard {{
-                background-color: {bg};
-                border: 1px solid rgba(255,255,255,0.06);
-                border-left: 3px solid {border_color};
-                border-radius: 8px;
-            }}
-        """)
-        card_layout = QVBoxLayout(self._card)
-        card_layout.setContentsMargins(10, 6, 10, 8)
-        card_layout.setSpacing(4)
+        # Assistant: avatar on the left
+        if not is_user and self._avatar_label:
+            outer.addWidget(self._avatar_label, 0, Qt.AlignmentFlag.AlignBottom)
 
-        # ── Name row: [name] [stretch] [toggle btn] ────────────────────────
+        # User: stretch on the left to push right
+        if is_user:
+            outer.addStretch()
+
+        # ── Bubble ──────────────────────────────────────────────────────────
+        self._card = BubbleFrame(role, tail_side)
+        card_layout = QVBoxLayout()
+        card_layout.setContentsMargins(0, 0, 0, 0)
+        card_layout.setSpacing(3)
+        self._card.setLayout(card_layout)
+
+        # Name row: [name] [stretch] [toggle btn]
         name_row = QHBoxLayout()
         name_row.setContentsMargins(0, 0, 0, 0)
         name_row.setSpacing(6)
@@ -168,28 +274,26 @@ class MessageWidget(QWidget):
             f"color: {label_color}; font-weight: bold; font-size: {font_size}pt; "
             f"background: transparent; border: none; padding: 0px;"
         )
-        self._name_label.setText(f"{speaker_name}" if speaker_name else "")
+        self._name_label.setText(speaker_name or "")
         name_row.addWidget(self._name_label)
         name_row.addStretch()
 
-        # Toggle button placeholder — hidden by default, shown when structured panel attached
+        # Toggle button (hidden until structured panel attached)
         self._toggle_btn = QPushButton("▼")
         self._toggle_btn.setFixedSize(22, 22)
         self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._toggle_btn.setStyleSheet(f"""
-            QPushButton {{
+        self._toggle_btn.setStyleSheet("""
+            QPushButton {
                 background: rgba(255,255,255,0.06);
                 border: 1px solid rgba(255,255,255,0.08);
                 border-radius: 6px;
                 color: rgba(255,255,255,0.35);
-                font-size: 10pt;
-                font-weight: bold;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
+                font-size: 10pt; font-weight: bold; padding: 0px;
+            }
+            QPushButton:hover {
                 background: rgba(255,255,255,0.12);
                 color: rgba(255,255,255,0.6);
-            }}
+            }
         """)
         self._toggle_btn.clicked.connect(self._on_toggle_structured)
         self._toggle_btn.hide()
@@ -197,10 +301,15 @@ class MessageWidget(QWidget):
 
         card_layout.addLayout(name_row)
 
-        # Text label
+        # Text label — SELECTABLE
         self._text_label = QLabel()
         self._text_label.setWordWrap(True)
         self._text_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._text_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        self._text_label.setCursor(Qt.CursorShape.IBeamCursor)
         self._text_label.setStyleSheet(
             f"color: #e6e6eb; font-size: {font_size}pt; "
             f"background: transparent; border: none; padding: 0px;"
@@ -216,12 +325,23 @@ class MessageWidget(QWidget):
         self._structured_container.setSpacing(0)
         card_layout.addLayout(self._structured_container)
 
-        # Add card to outer layout
+        # Timestamp row (bottom-right, semi-transparent)
+        self._time_label = QLabel()
+        self._time_label.setStyleSheet(
+            f"color: rgba(255,255,255,0.25); font-size: {max(font_size - 3, 7)}pt; "
+            f"background: transparent; border: none; padding: 0px;"
+        )
+        self._time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        ts = message_time or _time.strftime("%H:%M")
+        self._time_label.setText(ts)
+        card_layout.addWidget(self._time_label)
+
         self._card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        if role == "user":
-            # User: stretch on left pushes card to the right
-            outer.addStretch()
         outer.addWidget(self._card, 1)
+
+        # User: avatar on the right
+        if is_user and self._avatar_label:
+            outer.addWidget(self._avatar_label, 0, Qt.AlignmentFlag.AlignBottom)
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -229,21 +349,22 @@ class MessageWidget(QWidget):
         self._text_label.setText(text)
 
     def append_text(self, text: str):
-        current = self._text_label.text()
-        self._text_label.setText(current + text)
+        self._text_label.setText(self._text_label.text() + text)
 
     def get_text(self) -> str:
         return self._text_label.text()
 
     def set_speaker_name(self, name: str):
         self._speaker_name = name
-        self._name_label.setText(f"{name}")
+        self._name_label.setText(name)
         if self._avatar_label:
             pm = _get_avatar_pixmap(name, self._role)
             self._avatar_label.setPixmap(pm)
 
+    def set_time(self, ts: str):
+        self._time_label.setText(ts)
+
     def add_structured_widget(self, widget: QWidget):
-        """Add a structured output panel below the message text and show toggle button."""
         self._structured_panel = widget
         self._structured_container.addWidget(widget)
         self._toggle_btn.show()
@@ -265,11 +386,10 @@ class MessageWidget(QWidget):
 
     def _update_toggle_icon(self):
         if self._structured_panel and hasattr(self._structured_panel, 'is_collapsed'):
-            if self._structured_panel.is_collapsed():
-                self._toggle_btn.setText("▶")
-            else:
-                self._toggle_btn.setText("▼")
+            self._toggle_btn.setText("▶" if self._structured_panel.is_collapsed() else "▼")
 
+
+# ── ThinkBlockWidget ────────────────────────────────────────────────────────
 
 class ThinkBlockWidget(QFrame):
     """Collapsible think/reasoning block."""
@@ -303,7 +423,6 @@ class ThinkBlockWidget(QFrame):
         layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(4)
 
-        # Header (clickable)
         self._header = QLabel()
         self._header.setStyleSheet(
             f"color: #aaaaaa; font-weight: bold; font-size: {font_size}pt; "
@@ -316,9 +435,12 @@ class ThinkBlockWidget(QFrame):
         self._header.setText(f"▼ {speaker_name} {verb}{dots}")
         layout.addWidget(self._header)
 
-        # Content
         self._content_label = QLabel()
         self._content_label.setWordWrap(True)
+        self._content_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._content_label.setCursor(Qt.CursorShape.IBeamCursor)
         self._content_label.setStyleSheet(
             f"color: #b0b0b0; font-size: {font_size}pt; font-style: italic; "
             f"background: transparent; border: none;"
@@ -327,7 +449,6 @@ class ThinkBlockWidget(QFrame):
         layout.addWidget(self._content_label)
 
         self._speaker_name = speaker_name
-
         if is_streaming:
             self._start_animation()
 

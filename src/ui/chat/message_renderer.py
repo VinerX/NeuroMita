@@ -179,6 +179,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         content_text=full_text,
         show_avatar=(role in ("user", "assistant")),
         font_size=font_size,
+        message_time=message_time,
     )
 
     # Attach structured output panel if available
