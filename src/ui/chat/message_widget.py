@@ -217,13 +217,11 @@ class MessageWidget(QWidget):
         card_layout.addLayout(self._structured_container)
 
         # Add card to outer layout
+        self._card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         if role == "user":
-            # User: card flush-left, limited width
-            self._card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            outer.addWidget(self._card, 1)
-        else:
-            self._card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            outer.addWidget(self._card, 1)
+            # User: stretch on left pushes card to the right
+            outer.addStretch()
+        outer.addWidget(self._card, 1)
 
     # ── Public API ──────────────────────────────────────────────────────────
 
