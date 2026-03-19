@@ -197,9 +197,16 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         gui._think_block_counter += 1
         blocks[block_id] = panel
 
-        msg_widget.add_structured_widget(panel)
+        msg_widget.set_structured_ref(panel)
+        _pending_struct_panel = panel
+    else:
+        _pending_struct_panel = None
 
     gui.chat_window.add_message_widget(msg_widget, at_start=insert_at_start)
+
+    # Add structured panel as a separate widget after the message
+    if _pending_struct_panel is not None:
+        gui.chat_window.add_message_widget(_pending_struct_panel, at_start=insert_at_start)
 
 
 # ─── Streaming API ───────────────────────────────────────────────────────────
@@ -298,7 +305,8 @@ def attach_structured_to_stream(gui, structured_data: dict):
     gui._think_block_counter += 1
     blocks[block_id] = panel
 
-    msg.add_structured_widget(panel)
+    msg.set_structured_ref(panel)
+    gui.chat_window.add_message_widget(panel)
     gui.chat_window.scroll_to_bottom()
 
 

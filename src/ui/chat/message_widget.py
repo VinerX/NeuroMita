@@ -1,14 +1,9 @@
 """
 MessageWidget — comic-style speech bubble chat messages.
 
-Layout (assistant):          Layout (user):
-  [avatar]  ◄─bubble─┐      ┌─bubble─► [avatar]
-            │  text   │      │  text  │
-            │   time ─┤      ├─ time  │
-            └─────────┘      └────────┘
-
 Avatar is bottom-aligned. Bubble has a pointed tail toward the avatar.
 Text is selectable. Timestamps are semi-transparent at the bottom-right.
+Structured output is a SEPARATE widget added after the message in the scroll area.
 """
 
 import os
@@ -18,7 +13,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSize, QRectF, QPointF
 from PyQt6.QtGui import (
-    QPixmap, QPainter, QPainterPath, QColor, QFont, QBrush, QPen, QPolygonF,
+    QPixmap, QPainter, QPainterPath, QColor, QFont, QBrush, QPen,
 )
 
 
@@ -38,9 +33,12 @@ AVATAR_MAP = {
 }
 
 AVATAR_SIZE = 36
-TAIL_W = 8        # width of the speech-bubble tail
-TAIL_H = 10       # height of the tail triangle
+TAIL_W = 8
+TAIL_H = 10
 BUBBLE_RADIUS = 10
+
+MAX_BUBBLE_WIDTH_ASSISTANT = 500  # ~60% of typical chat area
+MAX_BUBBLE_WIDTH_USER = 400
 
 ROLE_COLORS = {
     "user":      "#FFD700",
@@ -49,16 +47,35 @@ ROLE_COLORS = {
     "think":     "#aaaaaa",
 }
 CARD_BG = {
-    "user":      QColor(255, 215, 0, 15),
-    "assistant": QColor(255, 105, 180, 10),
-    "system":    QColor(102, 204, 255, 10),
-    "think":     QColor(170, 170, 170, 10),
+    "user":      QColor(0xfb, 0xdc, 0x6d),       # #fbdc6d — gold
+    "assistant": QColor(0x2b, 0x35, 0x59),        # #2b3559 — dark blue
+    "system":    QColor(102, 204, 255, 25),
+    "think":     QColor(170, 170, 170, 15),
 }
 CARD_BORDER = {
-    "user":      QColor(255, 215, 0, 30),
-    "assistant": QColor(255, 105, 180, 20),
-    "system":    QColor(102, 204, 255, 20),
-    "think":     QColor(170, 170, 170, 20),
+    "user":      QColor(0xfb, 0xdc, 0x6d, 80),
+    "assistant": QColor(0x2b, 0x35, 0x59, 80),
+    "system":    QColor(102, 204, 255, 30),
+    "think":     QColor(170, 170, 170, 25),
+}
+# Text color inside bubble
+TEXT_COLOR = {
+    "user":      "#1a1a2e",   # dark on gold bg
+    "assistant": "#e6e6eb",   # light on dark bg
+    "system":    "#e6e6eb",
+    "think":     "#b0b0b0",
+}
+NAME_COLOR = {
+    "user":      "#5a4a00",   # dark gold
+    "assistant": "#FF69B4",   # hot pink
+    "system":    "#66ccff",
+    "think":     "#aaaaaa",
+}
+TIME_COLOR = {
+    "user":      "rgba(0,0,0,0.3)",
+    "assistant": "rgba(255,255,255,0.25)",
+    "system":    "rgba(255,255,255,0.25)",
+    "think":     "rgba(255,255,255,0.2)",
 }
 
 
@@ -82,7 +99,6 @@ def _round_pixmap(pixmap: QPixmap, size: int) -> QPixmap:
 
 
 def _initials(name: str) -> str:
-    """Get 1-2 letter initials from name. 'Crazy Mita' -> 'CM'."""
     parts = (name or "").split()
     if len(parts) >= 2:
         return (parts[0][:1] + parts[1][:1]).upper()
@@ -122,19 +138,13 @@ def _get_avatar_pixmap(character_name: str, role: str) -> QPixmap:
 # ── Speech bubble frame ─────────────────────────────────────────────────────
 
 class BubbleFrame(QFrame):
-    """
-    A QFrame that paints itself as a comic-style speech bubble.
-    tail_side='left' means the pointed tail is on the left (assistant).
-    tail_side='right' means the pointed tail is on the right (user).
-    tail_side=None means no tail (system, etc.).
-    """
+    """QFrame painted as a comic-style speech bubble with a pointed tail."""
 
     def __init__(self, role: str, tail_side: str | None = "left", parent=None):
         super().__init__(parent)
         self._bg = CARD_BG.get(role, QColor(30, 30, 35, 240))
         self._border = CARD_BORDER.get(role, QColor(255, 255, 255, 15))
         self._tail_side = tail_side
-        # Extra left/right margin for the tail
         left_margin = TAIL_W if tail_side == "left" else 0
         right_margin = TAIL_W if tail_side == "right" else 0
         self.setContentsMargins(left_margin + 10, 6, right_margin + 10, 8)
@@ -143,13 +153,9 @@ class BubbleFrame(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        w = self.width()
-        h = self.height()
-        r = BUBBLE_RADIUS
-        tw = TAIL_W
-        th = TAIL_H
+        w, h = self.width(), self.height()
+        r, tw, th = BUBBLE_RADIUS, TAIL_W, TAIL_H
 
-        # Bubble rect (inset from tail side)
         if self._tail_side == "left":
             bx, by, bw, bh = tw, 0, w - tw, h
         elif self._tail_side == "right":
@@ -160,34 +166,30 @@ class BubbleFrame(QFrame):
         path = QPainterPath()
 
         if self._tail_side == "left":
-            # Rounded rect but bottom-left corner is sharp (tail)
             path.moveTo(bx + r, by)
             path.lineTo(bx + bw - r, by)
-            path.arcTo(bx + bw - 2*r, by, 2*r, 2*r, 90, -90)           # top-right
+            path.arcTo(bx + bw - 2*r, by, 2*r, 2*r, 90, -90)
             path.lineTo(bx + bw, by + bh - r)
-            path.arcTo(bx + bw - 2*r, by + bh - 2*r, 2*r, 2*r, 0, -90) # bottom-right
+            path.arcTo(bx + bw - 2*r, by + bh - 2*r, 2*r, 2*r, 0, -90)
             path.lineTo(bx + r, by + bh)
-            # Tail: bottom-left pointed toward avatar
-            path.lineTo(bx, by + bh)              # bottom edge to tail start
-            path.lineTo(bx - tw, by + bh)          # tail tip (points left)
-            path.lineTo(bx, by + bh - th)          # back up
+            path.lineTo(bx, by + bh)
+            path.lineTo(bx - tw, by + bh)
+            path.lineTo(bx, by + bh - th)
             path.lineTo(bx, by + r)
-            path.arcTo(bx, by, 2*r, 2*r, 180, -90)                      # top-left
+            path.arcTo(bx, by, 2*r, 2*r, 180, -90)
             path.closeSubpath()
 
         elif self._tail_side == "right":
-            # Rounded rect but bottom-right corner is sharp (tail)
             path.moveTo(bx + r, by)
             path.lineTo(bx + bw - r, by)
-            path.arcTo(bx + bw - 2*r, by, 2*r, 2*r, 90, -90)           # top-right
-            path.lineTo(bx + bw, by + r)
-            path.lineTo(bx + bw, by + bh - th)     # right side down to tail
-            path.lineTo(bx + bw + tw, by + bh)      # tail tip (points right)
-            path.lineTo(bx + bw, by + bh)           # back
+            path.arcTo(bx + bw - 2*r, by, 2*r, 2*r, 90, -90)
+            path.lineTo(bx + bw, by + bh - th)
+            path.lineTo(bx + bw + tw, by + bh)
+            path.lineTo(bx + bw, by + bh)
             path.lineTo(bx + r, by + bh)
-            path.arcTo(bx, by + bh - 2*r, 2*r, 2*r, 270, -90)          # bottom-left
+            path.arcTo(bx, by + bh - 2*r, 2*r, 2*r, 270, -90)
             path.lineTo(bx, by + r)
-            path.arcTo(bx, by, 2*r, 2*r, 180, -90)                      # top-left
+            path.arcTo(bx, by, 2*r, 2*r, 180, -90)
             path.closeSubpath()
 
         else:
@@ -203,8 +205,9 @@ class BubbleFrame(QFrame):
 
 class MessageWidget(QWidget):
     """
-    Comic-style chat message with speech-bubble tail, avatar at bottom,
-    selectable text, and optional structured output toggle.
+    Comic-style chat message. Structured output is NOT inside the bubble —
+    it's a separate widget added to the scroll area by the renderer.
+    The toggle button in the name row controls the external panel.
     """
 
     def __init__(
@@ -221,12 +224,14 @@ class MessageWidget(QWidget):
         self._role = role
         self._speaker_name = speaker_name
         self._font_size = font_size
-        self._structured_panel = None
+        self._structured_panel = None  # external widget ref
         self._toggle_btn = None
 
         self.setStyleSheet("background: transparent; border: none;")
 
-        label_color = ROLE_COLORS.get(role, "#dcdcdc")
+        label_color = NAME_COLOR.get(role, "#dcdcdc")
+        text_color = TEXT_COLOR.get(role, "#e6e6eb")
+        time_color = TIME_COLOR.get(role, "rgba(255,255,255,0.25)")
         is_user = (role == "user")
 
         # ── Outer row ───────────────────────────────────────────────────────
@@ -235,7 +240,6 @@ class MessageWidget(QWidget):
         outer.setSpacing(4)
         outer.setAlignment(Qt.AlignmentFlag.AlignBottom)
 
-        # Determine tail direction
         tail_side = None
         if show_avatar and role in ("assistant", "user"):
             tail_side = "right" if is_user else "left"
@@ -249,16 +253,20 @@ class MessageWidget(QWidget):
             pm = _get_avatar_pixmap(speaker_name, role)
             self._avatar_label.setPixmap(pm)
 
-        # Assistant: avatar on the left
+        # Assistant: avatar left
         if not is_user and self._avatar_label:
             outer.addWidget(self._avatar_label, 0, Qt.AlignmentFlag.AlignBottom)
 
-        # User: stretch on the left to push right
+        # User: push to right
         if is_user:
             outer.addStretch()
 
         # ── Bubble ──────────────────────────────────────────────────────────
         self._card = BubbleFrame(role, tail_side)
+        max_w = MAX_BUBBLE_WIDTH_USER if is_user else MAX_BUBBLE_WIDTH_ASSISTANT
+        self._card.setMaximumWidth(max_w)
+        self._card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+
         card_layout = QVBoxLayout()
         card_layout.setContentsMargins(0, 0, 0, 0)
         card_layout.setSpacing(3)
@@ -311,24 +319,18 @@ class MessageWidget(QWidget):
         )
         self._text_label.setCursor(Qt.CursorShape.IBeamCursor)
         self._text_label.setStyleSheet(
-            f"color: #e6e6eb; font-size: {font_size}pt; "
+            f"color: {text_color}; font-size: {font_size}pt; "
             f"background: transparent; border: none; padding: 0px;"
         )
-        self._text_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._text_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         if content_text:
             self._text_label.setText(content_text)
         card_layout.addWidget(self._text_label)
 
-        # Structured output container
-        self._structured_container = QVBoxLayout()
-        self._structured_container.setContentsMargins(0, 0, 0, 0)
-        self._structured_container.setSpacing(0)
-        card_layout.addLayout(self._structured_container)
-
-        # Timestamp row (bottom-right, semi-transparent)
+        # Timestamp (bottom-right, semi-transparent)
         self._time_label = QLabel()
         self._time_label.setStyleSheet(
-            f"color: rgba(255,255,255,0.25); font-size: {max(font_size - 3, 7)}pt; "
+            f"color: {time_color}; font-size: {max(font_size - 3, 7)}pt; "
             f"background: transparent; border: none; padding: 0px;"
         )
         self._time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
@@ -336,12 +338,15 @@ class MessageWidget(QWidget):
         self._time_label.setText(ts)
         card_layout.addWidget(self._time_label)
 
-        self._card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        outer.addWidget(self._card, 1)
+        outer.addWidget(self._card, 0)  # stretch=0 so it doesn't expand
 
-        # User: avatar on the right
+        # User: avatar right
         if is_user and self._avatar_label:
             outer.addWidget(self._avatar_label, 0, Qt.AlignmentFlag.AlignBottom)
+
+        # Non-user: push remaining space right
+        if not is_user:
+            outer.addStretch()
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -364,14 +369,18 @@ class MessageWidget(QWidget):
     def set_time(self, ts: str):
         self._time_label.setText(ts)
 
-    def add_structured_widget(self, widget: QWidget):
-        self._structured_panel = widget
-        self._structured_container.addWidget(widget)
+    def set_structured_ref(self, panel):
+        """Store a reference to an external structured panel and show toggle button."""
+        self._structured_panel = panel
         self._toggle_btn.show()
         self._update_toggle_icon()
 
-    def get_content_layout(self) -> QVBoxLayout:
-        return self._structured_container
+    def add_structured_widget(self, widget: QWidget):
+        """Compat: same as set_structured_ref."""
+        self.set_structured_ref(widget)
+
+    def get_content_layout(self) -> QVBoxLayout | None:
+        return None
 
     @property
     def role(self) -> str:
