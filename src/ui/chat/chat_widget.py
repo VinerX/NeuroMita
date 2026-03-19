@@ -23,10 +23,23 @@ class ChatWidget(QScrollArea):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setObjectName("ChatScrollArea")
+        # Explicit background to match input field (panel_bg)
+        self.setStyleSheet("""
+            QScrollArea#ChatScrollArea {
+                background-color: rgba(18,18,22,0.92);
+                border: none;
+                border-radius: 10px;
+            }
+            QScrollArea#ChatScrollArea > QWidget > QWidget {
+                background-color: rgba(18,18,22,0.92);
+            }
+        """)
+        self.viewport().setStyleSheet("background-color: rgba(18,18,22,0.92);")
 
         # Inner container
         self._container = QWidget()
         self._container.setObjectName("ChatContainer")
+        self._container.setStyleSheet("background-color: rgba(18,18,22,0.92);")
         self._layout = QVBoxLayout(self._container)
         self._layout.setContentsMargins(6, 6, 6, 6)
         self._layout.setSpacing(4)

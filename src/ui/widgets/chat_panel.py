@@ -60,8 +60,10 @@ def setup_chat_panel(gui, main_layout):
     gui.scroll_to_bottom_btn = gui.chat_window._scroll_btn
     gui.scroll_to_bottom_anim = gui.chat_window._scroll_btn._opacity_anim
 
-    gui.mita_status = MitaStatusWidget(gui.chat_window)
-    position_mita_status(gui)
+    # Typing indicator — sits between chat and input, not overlapping messages
+    gui.mita_status = MitaStatusWidget()
+    gui.mita_status.setFixedHeight(28)
+    chat_layout.addWidget(gui.mita_status)
 
     input_frame = QFrame()
     input_frame.setStyleSheet(get_stylesheet())
@@ -320,12 +322,5 @@ def send_screen_capture(gui):
     update_send_button_state(gui)
 
 def position_mita_status(gui):
-    if not hasattr(gui, 'mita_status') or not gui.mita_status:
-        return
-    chat_width = gui.chat_window.width()
-    chat_height = gui.chat_window.height()
-    status_width = min(320, chat_width - 16)
-    status_height = 28
-    x = 8
-    y = chat_height - status_height - 4
-    gui.mita_status.setGeometry(x, y, status_width, status_height)
+    """No-op: MitaStatusWidget is now in the layout, not absolutely positioned."""
+    pass

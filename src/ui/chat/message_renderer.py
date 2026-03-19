@@ -14,8 +14,6 @@ Public API (same function signatures as the old renderer for compatibility):
   toggle_think_block(gui, block_id)   — compat stub (widgets toggle themselves)
 """
 
-import io
-import base64
 from utils import _
 from main_logger import logger
 from ui.chat.chat_delegate import ChatMessageDelegate
@@ -201,21 +199,21 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         gui._think_block_counter += 1
         blocks[block_id] = panel
 
-        msg_widget.add_structured_widget_attached(panel)
-        _pending_struct_panel = None
+        msg_widget.set_structured_ref(panel)
+        _pending_struct_panel = panel
     else:
         _pending_struct_panel = None
 
     gui.chat_window.add_message_widget(msg_widget, at_start=insert_at_start)
 
+    # Add structured panel as separate widget right after the message
+    if _pending_struct_panel is not None:
+        gui.chat_window.add_message_widget(_pending_struct_panel, at_start=insert_at_start)
+
     # Add images as separate widgets
     for image_data in images:
         img_widget = ImageWidget(image_data, role=role)
         gui.chat_window.add_message_widget(img_widget, at_start=insert_at_start)
-
-    # Add structured panel as a separate widget after the message
-    if _pending_struct_panel is not None:
-        gui.chat_window.add_message_widget(_pending_struct_panel, at_start=insert_at_start)
 
 
 # ─── Streaming API ───────────────────────────────────────────────────────────
@@ -315,7 +313,8 @@ def attach_structured_to_stream(gui, structured_data: dict):
     gui._think_block_counter += 1
     blocks[block_id] = panel
 
-    msg.add_structured_widget_attached(panel)
+    msg.set_structured_ref(panel)
+    gui.chat_window.add_message_widget(panel)
     gui.chat_window.scroll_to_bottom()
 
 
@@ -349,21 +348,13 @@ def append_message(gui, text, color=None, italic=False):
 
 
 def process_image_for_chat(gui, has_image_content, item, processed_content_parts):
-    """Process an image item for display in chat."""
-    image_data_base64 = item.get("image_url", {}).get("url", "")
-    if image_data_base64.startswith("data:image/jpeg;base64,"):
-        image_data_base64 = image_data_base64.replace("data:image/jpeg;base64,", "")
-    elif image_data_base64.startswith("data:image/png;base64,"):
-        image_data_base64 = image_data_base64.replace("data:image/png;base64,", "")
-    try:
-        from PIL import Image
-        image_bytes = base64.b64decode(image_data_base64)
-        image = Image.open(io.BytesIO(image_bytes))
-        # For widget-based chat, we just note there's an image
-        processed_content_parts.append({"type": "text", "content": _("<Изображение>", "<Image>") + "\n"})
+    """Process an image item for display in chat — pass through as image_url for ImageWidget."""
+    image_url = item.get("image_url", {}).get("url", "")
+    if image_url:
+        # Pass through the full data URI so insert_message creates an ImageWidget
+        processed_content_parts.append({"type": "image_url", "image_url": {"url": image_url}})
         has_image_content = True
-    except Exception as e:
-        logger.error(f"Ошибка при декодировании или обработке изображения: {e}")
+    else:
         processed_content_parts.append({"type": "text",
                                          "content": _("<Ошибка загрузки изображения>", "<Image load error>")})
     return has_image_content

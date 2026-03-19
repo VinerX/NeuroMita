@@ -11,7 +11,7 @@ import time as _time
 import base64
 import io
 from PyQt6.QtWidgets import (
-    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QWidget, QSizePolicy, QPushButton, QScrollArea,
+    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QWidget, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QSize, QRectF, QPointF
 from PyQt6.QtGui import (
@@ -228,7 +228,6 @@ class MessageWidget(QWidget):
         self._speaker_name = speaker_name
         self._font_size = font_size
         self._structured_panel = None  # external widget ref
-        self._toggle_btn = None
 
         self.setStyleSheet("background: transparent; border: none;")
 
@@ -289,28 +288,6 @@ class MessageWidget(QWidget):
         self._name_label.setText(speaker_name or "")
         name_row.addWidget(self._name_label)
         name_row.addStretch()
-
-        # Toggle button (hidden until structured panel attached)
-        self._toggle_btn = QPushButton("▼")
-        self._toggle_btn.setFixedSize(22, 22)
-        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._toggle_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(255,255,255,0.06);
-                border: 1px solid rgba(255,255,255,0.08);
-                border-radius: 6px;
-                color: rgba(255,255,255,0.35);
-                font-size: 10pt; font-weight: bold; padding: 0px;
-            }
-            QPushButton:hover {
-                background: rgba(255,255,255,0.12);
-                color: rgba(255,255,255,0.6);
-            }
-        """)
-        self._toggle_btn.clicked.connect(self._on_toggle_structured)
-        self._toggle_btn.hide()
-        name_row.addWidget(self._toggle_btn)
-
         card_layout.addLayout(name_row)
 
         # Text label — SELECTABLE
@@ -374,22 +351,16 @@ class MessageWidget(QWidget):
         self._time_label.setText(ts)
 
     def set_structured_ref(self, panel):
-        """Store a reference to an external structured panel and show toggle button."""
+        """Store a reference to an external structured panel."""
         self._structured_panel = panel
-        self._toggle_btn.show()
-        self._update_toggle_icon()
 
     def add_structured_widget(self, widget: QWidget):
         """Compat: same as set_structured_ref."""
         self.set_structured_ref(widget)
 
     def add_structured_widget_attached(self, widget: QWidget):
-        """Add structured widget inside the bubble (below text)."""
-        self._structured_panel = widget
-        self._toggle_btn.show()
-        self._update_toggle_icon()
-        # Insert before timestamp
-        self._card_layout.insertWidget(self._card_layout.count() - 1, widget)
+        """Compat: stores ref only. Panel is added separately to scroll area."""
+        self.set_structured_ref(widget)
 
     def get_content_layout(self) -> QVBoxLayout | None:
         return None
@@ -397,17 +368,6 @@ class MessageWidget(QWidget):
     @property
     def role(self) -> str:
         return self._role
-
-    # ── Toggle ──────────────────────────────────────────────────────────────
-
-    def _on_toggle_structured(self):
-        if self._structured_panel and hasattr(self._structured_panel, 'toggle'):
-            self._structured_panel.toggle()
-            self._update_toggle_icon()
-
-    def _update_toggle_icon(self):
-        if self._structured_panel and hasattr(self._structured_panel, 'is_collapsed'):
-            self._toggle_btn.setText("▶" if self._structured_panel.is_collapsed() else "▼")
 
 
 # ── ImageWidget ─────────────────────────────────────────────────────────────
