@@ -401,7 +401,7 @@ class MessageWidget(QWidget):
 # ── ThinkBlockWidget ────────────────────────────────────────────────────────
 
 class ThinkBlockWidget(QFrame):
-    """Collapsible think/reasoning block."""
+    """Compact collapsible think/reasoning block (Telegram-style)."""
 
     def __init__(
         self,
@@ -412,36 +412,40 @@ class ThinkBlockWidget(QFrame):
         parent=None,
     ):
         super().__init__(parent)
-        self._collapsed = False
+        self._collapsed = not is_streaming  # start collapsed when loaded from history
         self._is_streaming = is_streaming
         self._content_text = content_text
         self._anim_phase = 0
         self._anim_timer = None
         self.setObjectName("ThinkBlock")
+        self.setMaximumWidth(MAX_BUBBLE_WIDTH_ASSISTANT)
         self.setStyleSheet("""
             QFrame#ThinkBlock {
-                background-color: rgba(170, 170, 170, 0.04);
+                background-color: rgba(255, 255, 255, 0.03);
                 border: 1px solid rgba(255,255,255,0.06);
-                border-left: 3px solid #aaaaaa;
-                border-radius: 8px;
-                margin: 2px 0px;
+                border-left: 2px solid rgba(170, 170, 170, 0.4);
+                border-radius: 6px;
+                margin: 1px 0px;
             }
         """)
 
+        fs = max(font_size - 2, 8)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 6, 10, 6)
-        layout.setSpacing(4)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(2)
 
         self._header = QLabel()
         self._header.setStyleSheet(
-            f"color: #aaaaaa; font-weight: bold; font-size: {font_size}pt; "
+            f"color: rgba(180,180,190,0.5); font-weight: bold; font-size: {fs}pt; "
             f"background: transparent; border: none;"
         )
         self._header.setCursor(Qt.CursorShape.PointingHandCursor)
         self._header.mousePressEvent = lambda e: self.toggle()
-        verb = "думает" if is_streaming else "думала"
-        dots = "." if is_streaming else "..."
-        self._header.setText(f"▼ {speaker_name} {verb}{dots}")
+        if is_streaming:
+            self._header.setText(f"▼ {speaker_name} думает.")
+        else:
+            arrow = "▶" if self._collapsed else "▼"
+            self._header.setText(f"{arrow} {speaker_name} думала...")
         layout.addWidget(self._header)
 
         self._content_label = QLabel()
@@ -451,10 +455,11 @@ class ThinkBlockWidget(QFrame):
         )
         self._content_label.setCursor(Qt.CursorShape.IBeamCursor)
         self._content_label.setStyleSheet(
-            f"color: #b0b0b0; font-size: {font_size}pt; font-style: italic; "
+            f"color: rgba(180,180,190,0.45); font-size: {fs}pt; font-style: italic; "
             f"background: transparent; border: none;"
         )
         self._content_label.setText(content_text)
+        self._content_label.setVisible(not self._collapsed)
         layout.addWidget(self._content_label)
 
         self._speaker_name = speaker_name

@@ -324,8 +324,8 @@ def position_mita_status(gui):
         return
     chat_width = gui.chat_window.width()
     chat_height = gui.chat_window.height()
-    status_width = min(300, chat_width - 20)
-    status_height = 40
-    x = (chat_width - status_width) // 2
-    y = chat_height - status_height + 3
+    status_width = min(320, chat_width - 16)
+    status_height = 28
+    x = 8
+    y = chat_height - status_height - 4
     gui.mita_status.setGeometry(x, y, status_width, status_height)

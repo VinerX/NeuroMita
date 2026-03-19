@@ -386,7 +386,7 @@ QPushButton#SecondaryButton[dangerHover="true"]:pressed {
 
 /* ========= Chat scroll area (widget-based) ========= */
 QScrollArea#ChatScrollArea {
-    background-color: {bg_window};
+    background-color: {panel_bg};
     border: none;
     border-radius: 10px;
 }
