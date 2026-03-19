@@ -8,13 +8,16 @@ Structured output is a SEPARATE widget added after the message in the scroll are
 
 import os
 import time as _time
+import base64
+import io
 from PyQt6.QtWidgets import (
-    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QWidget, QSizePolicy, QPushButton,
+    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QWidget, QSizePolicy, QPushButton, QScrollArea,
 )
 from PyQt6.QtCore import Qt, QSize, QRectF, QPointF
 from PyQt6.QtGui import (
     QPixmap, QPainter, QPainterPath, QColor, QFont, QBrush, QPen,
 )
+from main_logger import logger
 
 
 # ── Avatar paths ────────────────────────────────────────────────────────────
@@ -271,6 +274,7 @@ class MessageWidget(QWidget):
         card_layout.setContentsMargins(0, 0, 0, 0)
         card_layout.setSpacing(3)
         self._card.setLayout(card_layout)
+        self._card_layout = card_layout  # Store for adding structured widgets later
 
         # Name row: [name] [stretch] [toggle btn]
         name_row = QHBoxLayout()
@@ -379,6 +383,14 @@ class MessageWidget(QWidget):
         """Compat: same as set_structured_ref."""
         self.set_structured_ref(widget)
 
+    def add_structured_widget_attached(self, widget: QWidget):
+        """Add structured widget inside the bubble (below text)."""
+        self._structured_panel = widget
+        self._toggle_btn.show()
+        self._update_toggle_icon()
+        # Insert before timestamp
+        self._card_layout.insertWidget(self._card_layout.count() - 1, widget)
+
     def get_content_layout(self) -> QVBoxLayout | None:
         return None
 
@@ -396,6 +408,91 @@ class MessageWidget(QWidget):
     def _update_toggle_icon(self):
         if self._structured_panel and hasattr(self._structured_panel, 'is_collapsed'):
             self._toggle_btn.setText("▶" if self._structured_panel.is_collapsed() else "▼")
+
+
+# ── ImageWidget ─────────────────────────────────────────────────────────────
+
+class ImageWidget(QWidget):
+    """Display an image in chat (like Telegram)."""
+
+    MAX_WIDTH = 300
+    MAX_HEIGHT = 400
+
+    def __init__(self, image_data, role: str = "assistant", parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background: transparent; border: none;")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Left padding for assistant, right for user
+        if role == "user":
+            layout.addStretch()
+
+        # Image frame
+        frame = QFrame()
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: rgba(255,255,255,0.08);
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 8px;
+                padding: 0px;
+            }
+        """)
+        frame_layout = QVBoxLayout(frame)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        frame_layout.setSpacing(0)
+
+        # Load and display image
+        pixmap = self._load_image(image_data)
+        if not pixmap.isNull():
+            # Scale to max dimensions while preserving aspect ratio
+            scaled = pixmap.scaledToWidth(
+                self.MAX_WIDTH,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            if scaled.height() > self.MAX_HEIGHT:
+                scaled = pixmap.scaledToHeight(
+                    self.MAX_HEIGHT,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+
+            img_label = QLabel()
+            img_label.setPixmap(scaled)
+            img_label.setStyleSheet("background: transparent; border: none; padding: 0px;")
+            frame_layout.addWidget(img_label)
+
+        layout.addWidget(frame)
+
+        # Right padding for assistant, left for user
+        if role != "user":
+            layout.addStretch()
+
+        self.setMaximumWidth(self.MAX_WIDTH + 20)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+
+    def _load_image(self, image_data) -> QPixmap:
+        """Load image from base64, file path, or bytes."""
+        try:
+            pixmap = QPixmap()
+            if isinstance(image_data, str):
+                if image_data.startswith("data:image"):
+                    # Base64-encoded data URI
+                    parts = image_data.split(",", 1)
+                    if len(parts) == 2:
+                        base64_str = parts[1]
+                        image_bytes = base64.b64decode(base64_str)
+                        pixmap.loadFromData(image_bytes)
+                else:
+                    # File path
+                    pixmap.load(image_data)
+            elif isinstance(image_data, bytes):
+                pixmap.loadFromData(image_data)
+            return pixmap
+        except Exception as e:
+            logger.error(f"Failed to load image: {e}")
+            return QPixmap()
 
 
 # ── ThinkBlockWidget ────────────────────────────────────────────────────────

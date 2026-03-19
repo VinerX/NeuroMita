@@ -390,8 +390,12 @@ QScrollArea#ChatScrollArea {
     border: none;
     border-radius: 10px;
 }
-QScrollArea#ChatScrollArea > QWidget#ChatContainer {
-    background-color: transparent;
+QScrollArea#ChatScrollArea::viewport {
+    background-color: {panel_bg};
+    border: none;
+}
+QWidget#ChatContainer {
+    background-color: {panel_bg};
 }
 """
 

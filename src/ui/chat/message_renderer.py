@@ -19,7 +19,7 @@ import base64
 from utils import _
 from main_logger import logger
 from ui.chat.chat_delegate import ChatMessageDelegate
-from ui.chat.message_widget import MessageWidget, ThinkBlockWidget
+from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget
 from ui.chat.structured_panel import StructuredOutputPanel
 
 
@@ -131,6 +131,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
     # ── Other roles (user, assistant, system) ───────────────────────────────
     text_parts = []
     speaker_name = ""
+    images = []
 
     if isinstance(content, list):
         for item in content:
@@ -149,7 +150,9 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
                     txt = item.get("content", "")
                 text_parts.append(txt)
             elif item.get("type") == "image_url":
-                text_parts.append(_("<Изображение>", "<Image>"))
+                image_url = item.get("image_url", {}).get("url", "")
+                if image_url:
+                    images.append(image_url)
     elif isinstance(content, str):
         text_parts.append(content)
     else:
@@ -188,7 +191,8 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         display_mode = "json" if mode in (STRUCTURED_MODE_JSON, "JSON") else "brief"
         start_expanded = bool(gui._get_setting("STRUCTURED_EXPANDED_DEFAULT", False))
         panel = StructuredOutputPanel(
-            structured_data, font_size, start_expanded=start_expanded, mode=display_mode
+            structured_data, font_size, start_expanded=start_expanded, mode=display_mode,
+            attached_to_message=True
         )
 
         # Register for toggle compat
@@ -197,12 +201,17 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         gui._think_block_counter += 1
         blocks[block_id] = panel
 
-        msg_widget.set_structured_ref(panel)
-        _pending_struct_panel = panel
+        msg_widget.add_structured_widget_attached(panel)
+        _pending_struct_panel = None
     else:
         _pending_struct_panel = None
 
     gui.chat_window.add_message_widget(msg_widget, at_start=insert_at_start)
+
+    # Add images as separate widgets
+    for image_data in images:
+        img_widget = ImageWidget(image_data, role=role)
+        gui.chat_window.add_message_widget(img_widget, at_start=insert_at_start)
 
     # Add structured panel as a separate widget after the message
     if _pending_struct_panel is not None:
@@ -297,7 +306,8 @@ def attach_structured_to_stream(gui, structured_data: dict):
     start_expanded = bool(gui._get_setting("STRUCTURED_EXPANDED_DEFAULT", False))
 
     panel = StructuredOutputPanel(
-        structured_data, font_size, start_expanded=start_expanded, mode=display_mode
+        structured_data, font_size, start_expanded=start_expanded, mode=display_mode,
+        attached_to_message=True
     )
 
     blocks = _get_think_blocks(gui)
@@ -305,8 +315,7 @@ def attach_structured_to_stream(gui, structured_data: dict):
     gui._think_block_counter += 1
     blocks[block_id] = panel
 
-    msg.set_structured_ref(panel)
-    gui.chat_window.add_message_widget(panel)
+    msg.add_structured_widget_attached(panel)
     gui.chat_window.scroll_to_bottom()
 
 

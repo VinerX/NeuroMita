@@ -120,6 +120,8 @@ class SegmentCard(QFrame):
             display_text = text if len(text) <= 120 else text[:117] + "..."
             text_label = QLabel(f'"{display_text}"')
             text_label.setWordWrap(True)
+            text_label.setCursor(Qt.CursorShape.IBeamCursor)
+            text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             text_label.setStyleSheet(
                 f"color: {CLR_TEXT_QUOTE}; font-size: {fs}pt; "
                 f"background: transparent; border: none; padding-left: 2px;"
@@ -131,6 +133,8 @@ class SegmentCard(QFrame):
             if vals:
                 line = QLabel(f"{emoji} {display_label}: {', '.join(str(v) for v in vals)}")
                 line.setWordWrap(True)
+                line.setCursor(Qt.CursorShape.IBeamCursor)
+                line.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 line.setStyleSheet(
                     f"color: {CLR_FIELD_LABEL}; font-size: {fs}pt; "
                     f"background: transparent; border: none; padding-left: 2px;"
@@ -141,6 +145,8 @@ class SegmentCard(QFrame):
             val = segment_data.get(field_key)
             if val:
                 line = QLabel(f"{display_label}: {val}")
+                line.setCursor(Qt.CursorShape.IBeamCursor)
+                line.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 line.setStyleSheet(
                     f"color: {CLR_FIELD_LABEL}; font-size: {fs}pt; "
                     f"background: transparent; border: none; padding-left: 2px;"
@@ -149,6 +155,8 @@ class SegmentCard(QFrame):
 
         if segment_data.get("allow_sleep") is not None:
             line = QLabel(f"sleep: {segment_data['allow_sleep']}")
+            line.setCursor(Qt.CursorShape.IBeamCursor)
+            line.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             line.setStyleSheet(
                 f"color: {CLR_FIELD_LABEL}; font-size: {fs}pt; "
                 f"background: transparent; border: none; padding-left: 2px;"
@@ -193,6 +201,8 @@ class MemoryBlock(QFrame):
                 display = f"+ {text}"
             lbl = QLabel(display)
             lbl.setWordWrap(True)
+            lbl.setCursor(Qt.CursorShape.IBeamCursor)
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             lbl.setStyleSheet(
                 f"color: {CLR_MEMORY_TEXT}; font-size: {fs}pt; "
                 f"background: transparent; border: none; padding-left: 4px;"
@@ -202,6 +212,8 @@ class MemoryBlock(QFrame):
         for entry in mem_update:
             lbl = QLabel(f"~ {entry}")
             lbl.setWordWrap(True)
+            lbl.setCursor(Qt.CursorShape.IBeamCursor)
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             lbl.setStyleSheet(
                 f"color: {CLR_MEMORY_TEXT}; font-size: {fs}pt; "
                 f"background: transparent; border: none; padding-left: 4px;"
@@ -211,6 +223,8 @@ class MemoryBlock(QFrame):
         for entry in mem_delete:
             lbl = QLabel(f"- #{entry}")
             lbl.setWordWrap(True)
+            lbl.setCursor(Qt.CursorShape.IBeamCursor)
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             lbl.setStyleSheet(
                 f"color: {CLR_MEMORY_TEXT}; font-size: {fs}pt; "
                 f"background: transparent; border: none; padding-left: 4px;"
@@ -226,59 +240,101 @@ class StructuredOutputPanel(QFrame):
     """
 
     def __init__(self, structured_data: dict, font_size: int = 10,
-                 start_expanded: bool = True, mode: str = "brief", parent=None):
+                 start_expanded: bool = True, mode: str = "brief", parent=None,
+                 attached_to_message: bool = False):
         super().__init__(parent)
         self._collapsed = not start_expanded
         self._data = structured_data
+        self._attached = attached_to_message
         self.setObjectName("StructuredPanel")
         self.setMaximumWidth(MAX_PANEL_WIDTH)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-        self.setStyleSheet("""
-            QFrame#StructuredPanel {
-                background: rgba(255,255,255,0.02);
-                border: 1px solid rgba(255,255,255,0.06);
-                border-radius: 8px;
-                margin: 1px 0px;
-            }
-        """)
+
+        if attached_to_message:
+            self.setStyleSheet("""
+                QFrame#StructuredPanel {
+                    background: transparent;
+                    border: none;
+                    margin: 2px 0px;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QFrame#StructuredPanel {
+                    background: rgba(255,255,255,0.02);
+                    border: 1px solid rgba(255,255,255,0.06);
+                    border-radius: 8px;
+                    margin: 1px 0px;
+                }
+            """)
 
         outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(6, 4, 6, 4)
+        if attached_to_message:
+            outer_layout.setContentsMargins(0, 2, 0, 0)
+        else:
+            outer_layout.setContentsMargins(6, 4, 6, 4)
         outer_layout.setSpacing(2)
 
         # ── Header row (always visible, clickable) ───────────────────────────
-        self._header_widget = QWidget()
-        self._header_widget.setStyleSheet("background: transparent; border: none;")
-        self._header_widget.setCursor(Qt.CursorShape.PointingHandCursor)
-        header_layout = QHBoxLayout(self._header_widget)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(6)
+        if not attached_to_message:
+            self._header_widget = QWidget()
+            self._header_widget.setStyleSheet("background: transparent; border: none;")
+            self._header_widget.setCursor(Qt.CursorShape.PointingHandCursor)
+            header_layout = QHBoxLayout(self._header_widget)
+            header_layout.setContentsMargins(0, 0, 0, 0)
+            header_layout.setSpacing(6)
 
-        self._arrow = QLabel("▼" if start_expanded else "▶")
-        self._arrow.setStyleSheet(
-            f"color: {CLR_HEADER_TEXT}; font-size: {_COMPACT_FONT}pt; font-weight: bold; "
-            f"background: transparent; border: none;"
-        )
-        header_layout.addWidget(self._arrow)
+            self._arrow = QLabel("▼" if start_expanded else "▶")
+            self._arrow.setStyleSheet(
+                f"color: {CLR_HEADER_TEXT}; font-size: {_COMPACT_FONT}pt; font-weight: bold; "
+                f"background: transparent; border: none;"
+            )
+            header_layout.addWidget(self._arrow)
 
-        title = QLabel("debug")
-        title.setStyleSheet(
-            f"color: {CLR_HEADER_TEXT}; font-size: {_COMPACT_FONT}pt; font-weight: bold; "
-            f"background: transparent; border: none;"
-        )
-        header_layout.addWidget(title)
+            title = QLabel("debug")
+            title.setStyleSheet(
+                f"color: {CLR_HEADER_TEXT}; font-size: {_COMPACT_FONT}pt; font-weight: bold; "
+                f"background: transparent; border: none;"
+            )
+            header_layout.addWidget(title)
 
-        # Inline stat badges in header
-        att    = structured_data.get("attitude_change", 0) or 0
-        bore   = structured_data.get("boredom_change",  0) or 0
-        stress = structured_data.get("stress_change",   0) or 0
-        header_layout.addWidget(_make_badge("att", att, CLR_ATT))
-        header_layout.addWidget(_make_badge("bore", bore, CLR_BORE))
-        header_layout.addWidget(_make_badge("stress", stress, CLR_STRESS))
-        header_layout.addStretch()
+            # Inline stat badges in header
+            att    = structured_data.get("attitude_change", 0) or 0
+            bore   = structured_data.get("boredom_change",  0) or 0
+            stress = structured_data.get("stress_change",   0) or 0
+            header_layout.addWidget(_make_badge("att", att, CLR_ATT))
+            header_layout.addWidget(_make_badge("bore", bore, CLR_BORE))
+            header_layout.addWidget(_make_badge("stress", stress, CLR_STRESS))
+            header_layout.addStretch()
 
-        self._header_widget.mousePressEvent = lambda e: self.toggle()
-        outer_layout.addWidget(self._header_widget)
+            self._header_widget.mousePressEvent = lambda e: self.toggle()
+            outer_layout.addWidget(self._header_widget)
+        else:
+            # For attached mode: just collapse/expand arrow + badges
+            self._header_widget = QWidget()
+            self._header_widget.setStyleSheet("background: transparent; border: none;")
+            self._header_widget.setCursor(Qt.CursorShape.PointingHandCursor)
+            header_layout = QHBoxLayout(self._header_widget)
+            header_layout.setContentsMargins(0, 0, 0, 0)
+            header_layout.setSpacing(4)
+
+            self._arrow = QLabel("▼" if start_expanded else "▶")
+            self._arrow.setStyleSheet(
+                f"color: rgba(255,255,255,0.25); font-size: {_COMPACT_FONT}pt; font-weight: bold; "
+                f"background: transparent; border: none;"
+            )
+            header_layout.addWidget(self._arrow)
+
+            att    = structured_data.get("attitude_change", 0) or 0
+            bore   = structured_data.get("boredom_change",  0) or 0
+            stress = structured_data.get("stress_change",   0) or 0
+            header_layout.addWidget(_make_badge("att", att, CLR_ATT))
+            header_layout.addWidget(_make_badge("bore", bore, CLR_BORE))
+            header_layout.addWidget(_make_badge("stress", stress, CLR_STRESS))
+            header_layout.addStretch()
+
+            self._header_widget.mousePressEvent = lambda e: self.toggle()
+            outer_layout.addWidget(self._header_widget)
 
         # ── Content area (collapsible) ───────────────────────────────────────
         self._content = QWidget()
@@ -313,7 +369,10 @@ class StructuredOutputPanel(QFrame):
         lbl = QLabel(json_text)
         lbl.setWordWrap(True)
         lbl.setTextFormat(Qt.TextFormat.PlainText)
-        lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        lbl.setCursor(Qt.CursorShape.IBeamCursor)
+        lbl.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         lbl.setStyleSheet(
             f"color: #8aa0b8; font-family: 'Courier New', monospace; "
             f"font-size: {_COMPACT_FONT}pt; background: rgba(0,0,0,0.15); "
