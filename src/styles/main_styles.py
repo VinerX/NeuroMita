@@ -383,6 +383,16 @@ QPushButton#SecondaryButton[dangerHover="true"]:hover {
 QPushButton#SecondaryButton[dangerHover="true"]:pressed {
     background-color: rgba(214, 69, 69, 0.26);   /* чуть сильнее при нажатии */
 }
+
+/* ========= Chat scroll area (widget-based) ========= */
+QScrollArea#ChatScrollArea {
+    background-color: {bg_window};
+    border: none;
+    border-radius: 10px;
+}
+QScrollArea#ChatScrollArea > QWidget#ChatContainer {
+    background-color: transparent;
+}
 """
 
 def get_stylesheet(overrides: dict | None = None) -> str:

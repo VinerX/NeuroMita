@@ -19,9 +19,9 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
     QMessageBox, QDialog, QProgressBar, QStackedWidget,
-    QTextBrowser, QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy
+    QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy
 )
-from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor, QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap
+from PyQt6.QtGui import QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap
 
 from ui.settings import (
     api_settings, character_settings, game_settings, 
@@ -165,7 +165,6 @@ class ChatGUI(QMainWindow):
         self.settings_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
 
         self.chat_window.installEventFilter(self)
-        self.chat_window.anchorClicked.connect(self._on_chat_anchor_clicked)
 
         self.overlay = OverlayWidget(self)
         self.image_preview_bar = None
@@ -522,7 +521,7 @@ class ChatGUI(QMainWindow):
             except Exception as ex:
                 logger.error(f"_on_history_loaded: НУ Я ПОНЯЛ: {str(ex)}")
         self.update_debug_info()
-        self.chat_window.verticalScrollBar().setValue(self.chat_window.verticalScrollBar().maximum())
+        self.chat_window.scroll_to_bottom()
 
     def validate_number_0_60(self, new_value):
         if not new_value.isdigit():
@@ -619,11 +618,10 @@ class ChatGUI(QMainWindow):
         self.update_debug_info()
 
     def update_chat_font_size(self, font_size):
-        base_font = QFont("Arial", font_size)
-        self.chat_window.setFont(base_font)
+        self._chat_font_size = font_size
 
     def clear_chat_display(self):
-        self.chat_window.clear()
+        self.chat_window.clear_messages()
         self.event_bus.emit(Events.Chat.CLEAR_CHAT)
 
     def send_message(self, system_input: str = "", image_data: list[bytes] = None):
@@ -1181,17 +1179,12 @@ class ChatGUI(QMainWindow):
     # ===== Совместимость: упрощённая вставка диалога =====
     def insert_dialog(self, input_text="", response="", system_text=""):
         MitaName = self._get_character_name()
-        cursor = self.chat_window.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        if input_text != "":
-            self._insert_formatted_text(cursor, "Вы: ", QColor("gold"), bold=True)
-            cursor.insertText(f"{input_text}\n")
-        if system_text != "":
-            self._insert_formatted_text(cursor, f"System to {MitaName}: ", QColor("white"), bold=True)
-            cursor.insertText(f"{system_text}\n\n")
-        if response != "":
-            self._insert_formatted_text(cursor, f"{MitaName}: ", QColor("hot pink"), bold=True)
-            cursor.insertText(f"{response}\n\n")
+        if input_text:
+            self.insert_message("user", input_text)
+        if system_text:
+            self.insert_message("system", system_text)
+        if response:
+            self.insert_message("assistant", response)
 
     def set_settings_icon_indicator(self, category: str, state: str | None, tooltip: str | None = None) -> None:
         btn = getattr(self, "settings_buttons", {}).get(category)
