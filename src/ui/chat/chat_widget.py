@@ -6,50 +6,122 @@ inside a scroll area, giving proper widget-level control over layout.
 """
 
 from PyQt6.QtWidgets import (
-    QScrollArea, QWidget, QVBoxLayout, QScrollBar, QPushButton,
-    QGraphicsOpacityEffect,
+    QScrollArea, QWidget, QVBoxLayout, QHBoxLayout, QScrollBar, QPushButton,
+    QGraphicsOpacityEffect, QLabel, QFrame,
 )
-from PyQt6.QtCore import Qt, QPropertyAnimation, QPoint, QTimer
+from PyQt6.QtCore import Qt, QPropertyAnimation, QPoint, QTimer, QRectF
+from PyQt6.QtGui import QPainter, QPainterPath, QColor, QBrush
 import qtawesome as qta
 
+_PANEL_BG = "rgba(18,18,22,0.92)"
+_PANEL_BG_COLOR = QColor(18, 18, 22, 234)  # 0.92 * 255 ≈ 234
 
-class ChatWidget(QScrollArea):
-    """Scrollable container that hosts message widgets vertically."""
+
+class RoundedScrollArea(QScrollArea):
+    """QScrollArea with truly rounded corners (clips content)."""
+
+    def __init__(self, radius: int = 10, parent=None):
+        super().__init__(parent)
+        self._radius = radius
+
+    def paintEvent(self, event):
+        painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.viewport().rect()), self._radius, self._radius)
+        painter.setClipPath(path)
+        painter.setBrush(QBrush(_PANEL_BG_COLOR))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(QRectF(self.viewport().rect()), self._radius, self._radius)
+        painter.end()
+        super().paintEvent(event)
+
+
+class ChatWidget(QFrame):
+    """
+    Rounded chat container with scroll area + typing indicator at bottom.
+
+    Layout:
+      [RoundedScrollArea with messages]  (stretch=1)
+      [TypingIndicator at bottom]        (fixed height, hidden by default)
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWidgetResizable(True)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setObjectName("ChatScrollArea")
-        # Explicit background to match input field (panel_bg)
-        self.setStyleSheet("""
-            QScrollArea#ChatScrollArea {
-                background-color: rgba(18,18,22,0.92);
-                border: none;
+        self.setObjectName("ChatWidgetFrame")
+        self.setStyleSheet(f"""
+            QFrame#ChatWidgetFrame {{
+                background-color: {_PANEL_BG};
+                border: 1px solid rgba(255,255,255,0.08);
                 border-radius: 10px;
-            }
-            QScrollArea#ChatScrollArea > QWidget > QWidget {
-                background-color: rgba(18,18,22,0.92);
-            }
+            }}
         """)
-        self.viewport().setStyleSheet("background-color: rgba(18,18,22,0.92);")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # ── Scroll area ──────────────────────────────────────────────────────
+        self._scroll = RoundedScrollArea(radius=10)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._scroll.setObjectName("ChatScrollArea")
+        self._scroll.setStyleSheet(f"""
+            QScrollArea#ChatScrollArea {{
+                background-color: {_PANEL_BG};
+                border: none;
+            }}
+        """)
+        self._scroll.viewport().setStyleSheet(f"background-color: {_PANEL_BG};")
 
         # Inner container
         self._container = QWidget()
         self._container.setObjectName("ChatContainer")
-        self._container.setStyleSheet("background-color: rgba(18,18,22,0.92);")
+        self._container.setStyleSheet(f"background-color: {_PANEL_BG};")
         self._layout = QVBoxLayout(self._container)
         self._layout.setContentsMargins(6, 6, 6, 6)
         self._layout.setSpacing(4)
         self._layout.addStretch()  # push messages to top initially
-        self.setWidget(self._container)
+        self._scroll.setWidget(self._container)
+
+        outer.addWidget(self._scroll, 1)
+
+        # ── Typing indicator (inside the rounded frame, at bottom) ───────────
+        self._typing_bar = QWidget()
+        self._typing_bar.setObjectName("TypingBar")
+        self._typing_bar.setFixedHeight(28)
+        self._typing_bar.setStyleSheet(f"""
+            QWidget#TypingBar {{
+                background-color: rgba(30,30,36,0.85);
+                border-top: 1px solid rgba(255,255,255,0.06);
+            }}
+        """)
+        self._typing_bar.hide()
+        typing_layout = QHBoxLayout(self._typing_bar)
+        typing_layout.setContentsMargins(8, 2, 8, 2)
+        typing_layout.setSpacing(6)
+
+        self._typing_avatar = QLabel()
+        self._typing_avatar.setFixedSize(20, 20)
+        self._typing_avatar.setStyleSheet("background: transparent; border: none;")
+        typing_layout.addWidget(self._typing_avatar)
+
+        self._typing_label = QLabel()
+        self._typing_label.setStyleSheet(
+            "color: rgba(180,180,195,0.6); font-size: 9pt; "
+            "background: transparent; border: none;"
+        )
+        typing_layout.addWidget(self._typing_label)
+        typing_layout.addStretch()
+
+        outer.addWidget(self._typing_bar)
 
         # Track whether user was at bottom before adding content
         self._auto_scroll = True
-        self.verticalScrollBar().valueChanged.connect(self._on_scroll)
-        self.verticalScrollBar().rangeChanged.connect(self._on_range_changed)
+        self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        self._scroll.verticalScrollBar().rangeChanged.connect(self._on_range_changed)
 
         # Scroll-to-bottom button
         self._scroll_btn = self._create_scroll_button()
@@ -84,16 +156,40 @@ class ChatWidget(QScrollArea):
         self._messages.clear()
 
     def scroll_to_bottom(self):
-        bar = self.verticalScrollBar()
+        bar = self._scroll.verticalScrollBar()
         bar.setValue(bar.maximum())
 
     def message_count(self) -> int:
         return len(self._messages)
 
+    # ── Typing indicator API ─────────────────────────────────────────────────
+
+    def show_typing(self, name: str, avatar_pixmap=None):
+        """Show typing indicator with character name and optional avatar."""
+        self._typing_label.setText(f"{name} печатает...")
+        if avatar_pixmap and not avatar_pixmap.isNull():
+            from PyQt6.QtGui import QPixmap
+            scaled = avatar_pixmap.scaled(20, 20,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation)
+            self._typing_avatar.setPixmap(scaled)
+            self._typing_avatar.show()
+        else:
+            self._typing_avatar.hide()
+        self._typing_bar.show()
+        if self._auto_scroll:
+            QTimer.singleShot(10, self.scroll_to_bottom)
+
+    def hide_typing(self):
+        self._typing_bar.hide()
+
     # ── Scroll management ───────────────────────────────────────────────────
 
+    def verticalScrollBar(self):
+        return self._scroll.verticalScrollBar()
+
     def _on_scroll(self):
-        bar = self.verticalScrollBar()
+        bar = self._scroll.verticalScrollBar()
         self._auto_scroll = bar.value() >= bar.maximum() - 20
         self._update_scroll_button()
 
@@ -102,7 +198,7 @@ class ChatWidget(QScrollArea):
             QTimer.singleShot(5, self.scroll_to_bottom)
 
     def _update_scroll_button(self):
-        bar = self.verticalScrollBar()
+        bar = self._scroll.verticalScrollBar()
         at_bottom = bar.value() >= bar.maximum() - 20
         if at_bottom:
             self._fade_button(0.0)
@@ -125,7 +221,7 @@ class ChatWidget(QScrollArea):
 
     def _reposition_scroll_button(self):
         margin = 12
-        vp = self.viewport()
+        vp = self._scroll.viewport()
         x = vp.width() - self._scroll_btn.width() - margin
         y = vp.height() - self._scroll_btn.height() - margin
         self._scroll_btn.move(QPoint(max(0, x), max(0, y)))
@@ -134,10 +230,14 @@ class ChatWidget(QScrollArea):
         super().resizeEvent(event)
         self._reposition_scroll_button()
 
+    def viewport(self):
+        """Compat: return the scroll area viewport."""
+        return self._scroll.viewport()
+
     # ── Scroll button ───────────────────────────────────────────────────────
 
     def _create_scroll_button(self) -> QPushButton:
-        btn = QPushButton(qta.icon('fa6s.angle-down', color='white'), '', self)
+        btn = QPushButton(qta.icon('fa6s.angle-down', color='white'), '', self._scroll)
         btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn.setObjectName("ScrollToBottomButton")
         btn.setFixedSize(34, 34)

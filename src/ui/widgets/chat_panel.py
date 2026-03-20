@@ -60,10 +60,8 @@ def setup_chat_panel(gui, main_layout):
     gui.scroll_to_bottom_btn = gui.chat_window._scroll_btn
     gui.scroll_to_bottom_anim = gui.chat_window._scroll_btn._opacity_anim
 
-    # Typing indicator — sits between chat and input, not overlapping messages
-    gui.mita_status = MitaStatusWidget()
-    gui.mita_status.setFixedHeight(28)
-    chat_layout.addWidget(gui.mita_status)
+    # MitaStatusWidget: bridges old API → ChatWidget typing bar
+    gui.mita_status = MitaStatusWidget(gui.chat_window)
 
     input_frame = QFrame()
     input_frame.setStyleSheet(get_stylesheet())

@@ -14,11 +14,25 @@ Public API (same function signatures as the old renderer for compatibility):
   toggle_think_block(gui, block_id)   — compat stub (widgets toggle themselves)
 """
 
+from PyQt6.QtWidgets import QWidget, QHBoxLayout
+from PyQt6.QtCore import Qt
 from utils import _
 from main_logger import logger
 from ui.chat.chat_delegate import ChatMessageDelegate
-from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget
+from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget, AVATAR_SIZE
 from ui.chat.structured_panel import StructuredOutputPanel
+
+
+def _wrap_panel_aligned(panel, role="assistant"):
+    """Wrap a structured panel in a container with left margin to align under message bubble."""
+    wrapper = QWidget()
+    wrapper.setStyleSheet("background: transparent; border: none;")
+    lay = QHBoxLayout(wrapper)
+    lay.setContentsMargins(AVATAR_SIZE + 4, 0, 0, 0)  # offset past avatar
+    lay.setSpacing(0)
+    lay.addWidget(panel)
+    lay.addStretch()
+    return wrapper
 
 
 # ── Display mode values (must match combobox options in general_settings.py) ──
@@ -206,9 +220,10 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
 
     gui.chat_window.add_message_widget(msg_widget, at_start=insert_at_start)
 
-    # Add structured panel as separate widget right after the message
+    # Add structured panel as separate widget right after the message, aligned under bubble
     if _pending_struct_panel is not None:
-        gui.chat_window.add_message_widget(_pending_struct_panel, at_start=insert_at_start)
+        wrapped = _wrap_panel_aligned(_pending_struct_panel, role)
+        gui.chat_window.add_message_widget(wrapped, at_start=insert_at_start)
 
     # Add images as separate widgets
     for image_data in images:
@@ -314,7 +329,8 @@ def attach_structured_to_stream(gui, structured_data: dict):
     blocks[block_id] = panel
 
     msg.set_structured_ref(panel)
-    gui.chat_window.add_message_widget(panel)
+    wrapped = _wrap_panel_aligned(panel, "assistant")
+    gui.chat_window.add_message_widget(wrapped)
     gui.chat_window.scroll_to_bottom()
 
 
