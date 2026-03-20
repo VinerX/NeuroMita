@@ -98,8 +98,8 @@ class ResponseSegment(BaseModel):
 
     emotions: List[str] = Field(default_factory=list, description="Emotion IDs to set for this segment")
     animations: List[str] = Field(default_factory=list, description="Animations to play once during this segment")
-    idle_animations: List[str] = Field(default_factory=list, description="Animations to set as idle/loop")
-    commands: List[str] = Field(default_factory=list, description="Game commands to execute (supports prefix routing: light:*, music:*, eye:*)")
+    idle_animations: List[str] = Field(default_factory=list, description="Animations to set as looping idle")
+    commands: List[str] = Field(default_factory=list, description="Game commands to execute")
     movement_modes: List[str] = Field(default_factory=list, description="Movement mode changes")
     visual_effects: List[str] = Field(default_factory=list, description="Visual effects to trigger")
     clothes: List[str] = Field(default_factory=list, description="Clothing/outfit changes")

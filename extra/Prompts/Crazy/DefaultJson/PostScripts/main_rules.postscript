@@ -1,0 +1,49 @@
+// Rule to handle a custom <love> tag
+RULE LoveTagHandler
+    MATCH REGEX "<love>([+-]?\d*\.?\d+)</love>" CAPTURE (love_value_str)
+    ACTIONS
+        SET LOCAL love_value = float(love_value_str)
+        SET Love = Love + int(love_value)
+        LOG "Character love updated by " + str(love_value) + ". New love: " + str(Love)
+        REMOVE_MATCH // This will remove "<love>X</love>" from the response
+    END_ACTIONS
+END_RULE
+
+// Rule for a boolean <secret_revealed> tag
+RULE SecretExposedByTag
+    MATCH TEXT "<secret_revealed>" // Simple text match
+    ACTIONS
+        SET secretExposed = True
+        LOG "secretExposed set to True by <secret_revealed> tag."
+        REMOVE_MATCH
+    END_ACTIONS
+END_RULE
+
+// Rule to modify response text without changing variables
+RULE PoliteGreeting
+    MATCH TEXT "Hello."
+    ACTIONS
+        REPLACE_MATCH WITH "Greetings and salutations!" // Replaces "Hello."
+        LOG "Replaced 'Hello.' with a more formal greeting."
+    END_ACTIONS
+END_RULE
+
+// Rule to extract multiple parameters
+RULE ActionParams
+    MATCH REGEX "<action name=\"(\w+)\" value1=\"(\d+)\" value2=\"(true|false)\"/>" CAPTURE (action_name, val1_str, val2_str)
+    ACTIONS
+        SET current_action = action_name
+        SET action_param1 = int(val1_str)
+        SET action_param2 = (val2_str == "true")
+        LOG "Parsed action: " + current_action + " with params " + str(action_param1) + ", " + str(action_param2)
+        REMOVE_MATCH
+    END_ACTIONS
+END_RULE
+
+DEBUG_DISPLAY
+    attitude: attitude      // "LabelForAttitude" будет видно в UI, "attitude" - имя переменной
+    boredom: boredom
+    stress: stress
+    Love: Love           // <<< Наша новая переменная
+    //"Состояние FSM": current_fsm_state // Можно использовать строки в кавычках для меток с пробелами
+END_DEBUG_DISPLAY
