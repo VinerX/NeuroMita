@@ -948,8 +948,19 @@ class ModelController:
             save_as_missed=self.settings.get("SAVE_MISSED_MEMORY", False),
         )
 
+        # Extract reasoning from structured response (if model used the reasoning field)
+        if structured.reasoning:
+            schema_reasoning = structured.reasoning.strip()
+            if schema_reasoning:
+                if think_text:
+                    think_text = think_text + "\n\n" + schema_reasoning
+                else:
+                    think_text = schema_reasoning
+
         # Build the result dict with segments
         result_dict = structured_response_to_result_dict(structured)
+        # Remove reasoning from debug display — it's shown as a think block
+        result_dict.pop("reasoning", None)
         final_text = result_dict["response"]
 
         target = None

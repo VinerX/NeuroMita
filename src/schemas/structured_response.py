@@ -116,6 +116,15 @@ class ResponseSegment(BaseModel):
 class StructuredResponse(BaseModel):
     """Top-level structured response from the LLM."""
 
+    # Optional reasoning field — lets the model "think" inside the JSON itself.
+    # Extracted as a think block in the UI, not shown in the main message.
+    reasoning: Optional[str] = Field(
+        default=None,
+        description="Your internal reasoning / chain-of-thought before answering. "
+                    "Write your analysis here, then fill the rest of the fields. "
+                    "This field is never shown to the player."
+    )
+
     # Global fields (not tied to a specific segment)
     attitude_change: float = Field(default=0.0, description="Change in attitude (-6 to 6)")
     boredom_change: float = Field(default=0.0, description="Change in boredom (-6 to 6)")
