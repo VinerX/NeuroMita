@@ -136,6 +136,8 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
             seg_dict["emotions"] = seg.emotions
         if seg.animations:
             seg_dict["animations"] = seg.animations
+        if seg.idle_animations:
+            seg_dict["idle_animations"] = seg.idle_animations
         if seg.commands:
             seg_dict["commands"] = seg.commands
         if seg.movement_modes:

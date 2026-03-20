@@ -1,0 +1,11 @@
+LOG "COOLTEST"
+
+IF my_cool_variable == None THEN
+	LOG "my_cool_variable is null: " + my_cool_variable
+	SET my_cool_variable = "123"
+	LOG "now it is: " + my_cool_variable
+ELSE 
+	LOG "my_cool_variable is not null -------- " + my_cool_variable
+ENDIF
+
+	

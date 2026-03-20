@@ -1,0 +1,8 @@
+FORMAT RULES:
+1. ALWAYS START: <p>attitude,boredom,stress</p> (-5.0 to 5.0).
+2. MANDATORY: <e>emotion</e> (Face is always active).
+3. OPTIONAL: <a>animation</a> (Body language).
+4. SITUATIONAL: <c>command</c>, <v>effect</v>, <f>face_effect</f>.
+
+OUTPUT EXAMPLE:
+<p>0.5,0,-1</p><e>quest</e><a>Поднести палец к подбородку</a>

@@ -1,0 +1,8 @@
+LOG "ExampleSelector: Script started. secretExposed=" + secretExposed
+IF secretExposed == True THEN
+    LOG "ExampleSelector: Secret is exposed. Loading examplesLongCrazy.txt."
+    RETURN LOAD "Context/examplesLongCrazy.txt"
+ELSE
+    LOG "ExampleSelector: Secret is not exposed. Loading examplesLong.txt."
+    RETURN LOAD "Context/examplesLong.txt"
+ENDIF
