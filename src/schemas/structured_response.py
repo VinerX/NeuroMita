@@ -117,6 +117,14 @@ class ResponseSegment(BaseModel):
 class StructuredResponse(BaseModel):
     """Top-level structured response from the LLM."""
 
+    # Secret reveal flag — set to true when the character's secret is discovered.
+    # Processed by character-specific logic (e.g. CrazyMita sets secretExposed variable).
+    secret_exposed: Optional[bool] = Field(
+        default=None,
+        description="Set to true when the player has discovered your secret identity or hidden nature. "
+                    "Only use once — when the secret is first revealed."
+    )
+
     # Optional reasoning field — lets the model "think" inside the JSON itself.
     # Extracted as a think block in the UI, not shown in the main message.
     reasoning: Optional[str] = Field(

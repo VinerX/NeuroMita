@@ -9,6 +9,7 @@ Schema:
   "stress_change": <number -5..5>,
   "memory_add": ["priority|content", ...],
   "memory_update": ["number|priority|content", ...],
+  "secret_exposed": true/false,
   "memory_delete": ["number" or "start-end", ...],
   "segments": [
     {
@@ -33,6 +34,7 @@ Schema:
 }
 
 Field descriptions:
+- "secret_exposed": set to true ONCE when player discovers your secret identity (omit otherwise)
 - "animations": play animation once, "idle_animations": set as idle/loop
 - "text" must contain ONLY spoken words. NEVER put XML tags in text.
 
