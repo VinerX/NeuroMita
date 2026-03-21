@@ -9,12 +9,11 @@ All writes use the shared DatabaseManager singleton (WAL, busy_timeout).
 """
 from __future__ import annotations
 
-import logging
 import sqlite3
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+from main_logger import logger
 
 
 class GraphStore:
