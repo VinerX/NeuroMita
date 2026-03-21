@@ -5,7 +5,7 @@ from typing import Optional, Tuple, List
 
 from PyQt6.QtCore import Qt, QPoint, QTimer
 from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtSql import QSqlDatabase, QSqlTableModel
+from PyQt6.QtSql import QSqlDatabase, QSqlQuery, QSqlTableModel
 from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -901,36 +901,34 @@ class _AdvancedTablePage(QWidget):
         if editable and btn_save is not None:
             def do_save() -> None:
                 new_val = editor.toPlainText()
+                col_name_save = str(self.model.headerData(index.column(), Qt.Orientation.Horizontal) or "")
+                if not col_name_save:
+                    QMessageBox.critical(self, "Save Failed", "Could not determine column name.")
+                    return
 
-                old_strategy = self.model.editStrategy()
-                self.model.setEditStrategy(QSqlTableModel.EditStrategy.OnManualSubmit)
+                rec = self.model.record(index.row())
+                pk = rec.value("id")
+                if pk is None:
+                    QMessageBox.critical(self, "Save Failed", "Could not determine row ID (no 'id' column?).")
+                    return
+
                 try:
-                    if not self.model.setData(index, new_val, Qt.ItemDataRole.EditRole):
-                        err = self.model.lastError().text()
-                        QMessageBox.critical(self, "Save Failed", f"Failed to set value:\n{err}")
-                        self.model.revertAll()
-                        return
-
-                    if not self.model.submitAll():
-                        err = self.model.lastError().text()
+                    db = self.model.database()
+                    q = QSqlQuery(db)
+                    q.prepare(f'UPDATE "{self.table_name}" SET "{col_name_save}" = ? WHERE id = ?')
+                    q.addBindValue(new_val)
+                    q.addBindValue(pk)
+                    if not q.exec():
+                        err = q.lastError().text()
+                        logger.error(f"DB Viewer: cell save failed for '{self.table_name}.{col_name_save}': {err}")
                         QMessageBox.critical(self, "Save Failed", f"Failed to commit change:\n{err}")
-                        self.model.revertAll()
                         return
-
                 except Exception as e:
                     logger.error(f"DB Viewer: cell save exception: {e}", exc_info=True)
                     QMessageBox.critical(self, "Save Failed", f"Failed to commit change:\n{e}")
-                    try:
-                        self.model.revertAll()
-                    except Exception:
-                        pass
                     return
-                finally:
-                    try:
-                        self.model.setEditStrategy(old_strategy)
-                    except Exception:
-                        pass
 
+                self.refresh()
                 dlg.accept()
 
             btn_save.clicked.connect(do_save)
@@ -952,38 +950,32 @@ class _AdvancedTablePage(QWidget):
         if resp != QMessageBox.StandardButton.Yes:
             return
 
-        rows_desc = sorted(rows, reverse=True)
+        # Collect IDs first, then write via direct SQL (same reason as batch edit:
+        # avoids QSqlTableModel.submitAll() "database is locked" on QSQLITE).
+        row_ids = []
+        for r in rows:
+            rec = self.model.record(r)
+            pk = rec.value("id")
+            if pk is not None:
+                row_ids.append(pk)
 
-        old_strategy = self.model.editStrategy()
-        self.model.setEditStrategy(QSqlTableModel.EditStrategy.OnManualSubmit)
+        if not row_ids:
+            QMessageBox.warning(self, "Delete Failed", "Could not determine row IDs (no 'id' column?).")
+            return
 
-        ok = True
         try:
-            for r in rows_desc:
-                if not self.model.removeRow(r):
-                    ok = False
-                    break
-
-            if ok:
-                ok = self.model.submitAll()
-
-            if not ok:
-                err = self.model.lastError().text()
+            ids_literal = ",".join(str(int(pk)) for pk in row_ids)
+            db = self.model.database()
+            q = QSqlQuery(db)
+            if not q.exec(f'DELETE FROM "{self.table_name}" WHERE id IN ({ids_literal})'):
+                err = q.lastError().text()
                 logger.error(f"DB Viewer: delete failed on '{self.table_name}': {err}")
                 QMessageBox.critical(self, "Delete Failed", f"Failed to delete rows:\n{err}")
-                self.model.revertAll()
+                return
         except Exception as e:
             logger.error(f"DB Viewer: delete exception on '{self.table_name}': {e}", exc_info=True)
             QMessageBox.critical(self, "Delete Failed", f"Failed to delete rows:\n{e}")
-            try:
-                self.model.revertAll()
-            except Exception:
-                pass
-        finally:
-            try:
-                self.model.setEditStrategy(old_strategy)
-            except Exception:
-                pass
+            return
 
         self.refresh()
 
@@ -1016,38 +1008,36 @@ class _AdvancedTablePage(QWidget):
         if not ok:
             return
 
-        old_strategy = self.model.editStrategy()
-        self.model.setEditStrategy(QSqlTableModel.EditStrategy.OnManualSubmit)
+        # Collect primary key values for selected rows (avoids QSqlTableModel.submitAll()
+        # which can fail with "database is locked" due to Qt keeping a SELECT cursor open
+        # on the same connection while trying to re-fetch rows after each UPDATE).
+        row_ids = []
+        for r in rows:
+            rec = self.model.record(r)
+            pk = rec.value("id")
+            if pk is not None:
+                row_ids.append(pk)
 
+        if not row_ids:
+            QMessageBox.warning(self, "Batch Edit", "Could not determine row IDs (no 'id' column?).")
+            return
+
+        # Direct SQL via QSqlQuery — bypasses model's submitAll() fetch-back loop.
+        db = self.model.database()
         try:
-            for r in rows:
-                idx = self.model.index(r, col)
-                if not self.model.setData(idx, new_val, Qt.ItemDataRole.EditRole):
-                    err = self.model.lastError().text()
-                    logger.error(f"DB Viewer: setData failed for batch edit '{self.table_name}.{col_name}': {err}")
-                    QMessageBox.critical(self, "Batch Edit Failed", f"Failed to update values:\n{err}")
-                    self.model.revertAll()
-                    return
-
-            if not self.model.submitAll():
-                err = self.model.lastError().text()
-                logger.error(f"DB Viewer: submitAll failed for batch edit '{self.table_name}.{col_name}': {err}")
+            ids_literal = ",".join(str(int(pk)) for pk in row_ids)
+            q = QSqlQuery(db)
+            q.prepare(f'UPDATE "{self.table_name}" SET "{col_name}" = ? WHERE id IN ({ids_literal})')
+            q.addBindValue(new_val)
+            if not q.exec():
+                err = q.lastError().text()
+                logger.error(f"DB Viewer: direct UPDATE failed for batch edit '{self.table_name}.{col_name}': {err}")
                 QMessageBox.critical(self, "Batch Edit Failed", f"Failed to commit changes:\n{err}")
-                self.model.revertAll()
                 return
-
         except Exception as e:
             logger.error(f"DB Viewer: batch edit exception: {e}", exc_info=True)
             QMessageBox.critical(self, "Batch Edit Failed", f"Failed to update values:\n{e}")
-            try:
-                self.model.revertAll()
-            except Exception:
-                pass
-        finally:
-            try:
-                self.model.setEditStrategy(old_strategy)
-            except Exception:
-                pass
+            return
 
         self.refresh()
 
