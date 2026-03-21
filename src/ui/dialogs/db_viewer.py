@@ -1112,6 +1112,16 @@ class DbViewerDialog(QDialog):
                 self.tabs.addTab(page, tab_label)
                 self._graph_pages.append(page)
 
+        # Interactive graph visualisation tab (if graph tables exist).
+        self._graph_view_page = None
+        if self._table_exists("graph_entities"):
+            try:
+                from ui.dialogs.graph_view_widget import GraphViewPage
+                self._graph_view_page = GraphViewPage(self, db=self.db, character_id=self.character_id)
+                self.tabs.addTab(self._graph_view_page, "Graph: Visual")
+            except Exception as e:
+                logger.warning(f"DB Viewer: could not load graph visualisation: {e}")
+
         self.chk_extended.toggled.connect(self._apply_extended_to_all)
         self._apply_extended_to_all(self.chk_extended.isChecked())
         self.chk_auto_row_height.toggled.connect(self._apply_auto_row_height_to_all)
@@ -1144,6 +1154,14 @@ class DbViewerDialog(QDialog):
     def _all_pages(self) -> list:
         pages = [self.history_page, self.memories_page, self.variables_page]
         pages.extend(self._graph_pages)
+        return pages
+
+    @property
+    def _all_closeable(self) -> list:
+        """All pages including graph view (for cleanup)."""
+        pages = list(self._all_pages)
+        if self._graph_view_page is not None:
+            pages.append(self._graph_view_page)
         return pages
 
     def _apply_extended_to_all(self, enabled: bool) -> None:
@@ -1187,10 +1205,15 @@ class DbViewerDialog(QDialog):
     def refresh_all(self) -> None:
         for page in self._all_pages:
             page.refresh()
+        if self._graph_view_page is not None:
+            try:
+                self._graph_view_page._reload()
+            except Exception:
+                pass
 
     def closeEvent(self, event) -> None:
         try:
-            for page in self._all_pages:
+            for page in self._all_closeable:
                 page.cleanup()
         except Exception:
             pass

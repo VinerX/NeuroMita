@@ -13,38 +13,154 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from main_logger import logger
 
-# Regex to extract the first JSON object from a potentially messy LLM response.
-_JSON_RE = re.compile(r"\{[\s\S]*\}")
+# Matches individual top-level {...} blocks (non-greedy per block).
+_JSON_BLOCK_RE = re.compile(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", re.DOTALL)
 
 
 def parse_extraction_response(text: str) -> Optional[Dict[str, Any]]:
     """
     Parse a (possibly dirty) LLM response into an extraction dict.
 
+    Handles common local-model failures:
+    - Clean JSON (ideal case).
+    - JSON wrapped in markdown code fences.
+    - Two separate objects {"entities":[...]} {"relations":[...]} split across lines.
+    - Malformed relations array (items outside the []).
+
     Returns dict with keys ``entities`` and ``relations``, or ``None`` on failure.
     """
     if not text or not text.strip():
         return None
 
-    # Try direct parse first (clean JSON).
+    clean = text.strip()
+
+    # Strip markdown code fences if present.
+    fence_m = re.search(r"```(?:json)?\s*([\s\S]*?)```", clean)
+    if fence_m:
+        clean = fence_m.group(1).strip()
+
+    # 1. Try direct parse (clean JSON).
     try:
-        data = json.loads(text.strip())
+        data = json.loads(clean)
         if _validate(data):
             return data
     except (json.JSONDecodeError, ValueError):
         pass
 
-    # Fallback: extract the first {...} block via regex.
-    m = _JSON_RE.search(text)
-    if m:
+    # 2. Try merging multiple top-level JSON objects (e.g. model split entities/relations).
+    merged = _try_merge_objects(clean)
+    if merged is not None:
+        return merged
+
+    # 3. Fallback: scan for the longest parseable {...} block.
+    best = _try_largest_block(clean)
+    if best is not None:
+        return best
+
+    logger.debug("entity_extractor: could not parse JSON from LLM response")
+    return None
+
+
+def _try_merge_objects(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Find all top-level JSON objects in text and merge their keys.
+    Useful when a model outputs {"entities":[...]} then {"relations":[...]} separately.
+    """
+    merged: Dict[str, Any] = {}
+    found_any = False
+
+    # Scan for {...} blocks at the top level using a brace-depth counter.
+    depth = 0
+    start = None
+    blocks = []
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                blocks.append(text[start:i + 1])
+                start = None
+
+    for block in blocks:
         try:
-            data = json.loads(m.group())
+            obj = json.loads(block)
+            if isinstance(obj, dict):
+                # Keep entities/relations lists; merge by extending.
+                for key in ("entities", "relations"):
+                    if isinstance(obj.get(key), list):
+                        existing = merged.setdefault(key, [])
+                        existing.extend(obj[key])
+                        found_any = True
+        except (json.JSONDecodeError, ValueError):
+            # Block itself might be malformed — try extracting arrays from it.
+            for key in ("entities", "relations"):
+                arr = _extract_array_for_key(block, key)
+                if arr:
+                    merged.setdefault(key, []).extend(arr)
+                    found_any = True
+
+    if found_any and _validate(merged):
+        return merged
+    return None
+
+
+def _extract_array_for_key(text: str, key: str) -> List[Any]:
+    """
+    Try to extract a JSON array value for a given key from a text fragment,
+    even if the surrounding object is malformed.
+    """
+    # Find  "key": [
+    pattern = re.compile(r'"' + re.escape(key) + r'"\s*:\s*(\[)', )
+    m = pattern.search(text)
+    if not m:
+        return []
+    # Extract the array by counting brackets.
+    start = m.start(1)
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "[":
+            depth += 1
+        elif text[i] == "]":
+            depth -= 1
+            if depth == 0:
+                arr_str = text[start:i + 1]
+                try:
+                    result = json.loads(arr_str)
+                    if isinstance(result, list):
+                        return result
+                except (json.JSONDecodeError, ValueError):
+                    pass
+                break
+    return []
+
+
+def _try_largest_block(text: str) -> Optional[Dict[str, Any]]:
+    """Last-resort: try each {...} block from largest to smallest."""
+    # Collect all {...} substrings.
+    candidates = []
+    depth = 0
+    start = None
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                candidates.append(text[start:i + 1])
+                start = None
+    candidates.sort(key=len, reverse=True)
+    for block in candidates:
+        try:
+            data = json.loads(block)
             if _validate(data):
                 return data
         except (json.JSONDecodeError, ValueError):
             pass
-
-    logger.debug("entity_extractor: could not parse JSON from LLM response")
     return None
 
 

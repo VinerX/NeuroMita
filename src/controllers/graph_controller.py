@@ -260,10 +260,31 @@ class GraphController:
         return template.replace("{text}", text)
 
     def _resolve_preset(self, label: str) -> Optional[int]:
-        """Resolve provider label to preset_id (mirrors HistoryController pattern)."""
+        """Resolve provider label (preset name or numeric ID) to preset_id."""
         if not label or label in ("Current", "Текущий"):
             return None
+        # Try numeric ID first (legacy / direct ID usage).
         try:
             return int(label)
         except ValueError:
-            return None
+            pass
+        # Look up by display name via ApiPresets event.
+        try:
+            meta_res = self.event_bus.emit_and_wait(
+                Events.ApiPresets.GET_PRESET_LIST, timeout=1.0
+            )
+            meta = meta_res[0] if meta_res else None
+            if meta:
+                for bucket in ("custom", "builtin"):
+                    for pm in (meta.get(bucket) or []):
+                        if getattr(pm, "name", None) == label:
+                            pid = getattr(pm, "id", None)
+                            if isinstance(pid, int):
+                                return pid
+            logger.warning(
+                f"[GraphController] Could not resolve preset name '{label}' to ID, "
+                f"falling back to current preset."
+            )
+        except Exception as e:
+            logger.warning(f"[GraphController] Preset name lookup failed: {e}")
+        return None
