@@ -9,14 +9,12 @@ in a background thread to never block the conversation.
 """
 from __future__ import annotations
 
-import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, ClassVar, Dict, Optional
 
 from core.events import get_event_bus, Events, Event
-
-logger = logging.getLogger(__name__)
+from main_logger import logger
 
 # Default extraction prompt (can be overridden via GRAPH_EXTRACTION_PROMPT setting
 # or via Structural/graph_extraction_prompt.txt in the prompt set).
@@ -77,6 +75,32 @@ class GraphController:
     def _is_enabled(self) -> bool:
         return bool(self._get_setting("GRAPH_EXTRACTION_ENABLED", False))
 
+    def _get_preset_description(self, preset_id: Optional[int]) -> str:
+        """Return a human-readable 'Name (model)' string for logging."""
+        try:
+            effective_id = preset_id
+            if effective_id is None:
+                res = self.event_bus.emit_and_wait(
+                    Events.ApiPresets.GET_CURRENT_PRESET_ID, {}, timeout=1.0
+                )
+                effective_id = res[0] if res else None
+
+            if effective_id is None:
+                return "Current"
+
+            res = self.event_bus.emit_and_wait(
+                Events.ApiPresets.GET_PRESET_FULL, {"id": effective_id}, timeout=1.0
+            )
+            info = res[0] if res else None
+            if not info:
+                return f"preset#{effective_id}"
+
+            name = info.get("name") or f"preset#{effective_id}"
+            model = info.get("default_model") or ""
+            return f"{name} ({model})" if model else name
+        except Exception:
+            return f"preset#{preset_id}"
+
     # ------------------------------------------------------------------
     # Event handler
     # ------------------------------------------------------------------
@@ -131,9 +155,10 @@ class GraphController:
             # Resolve provider preset.
             provider_label = str(self._get_setting("GRAPH_PROVIDER", "Current"))
             preset_id = self._resolve_preset(provider_label)
+            preset_desc = self._get_preset_description(preset_id)
             logger.info(
-                f"[GraphController] Calling provider (label='{provider_label}', "
-                f"preset_id={preset_id}) for '{char_id}'"
+                f"[GraphController] Extracting graph for '{char_id}' "
+                f"via {preset_desc}"
             )
 
             # Call provider.

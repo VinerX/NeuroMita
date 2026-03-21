@@ -8,11 +8,10 @@ Expected LLM output format:
 from __future__ import annotations
 
 import json
-import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+from main_logger import logger
 
 # Regex to extract the first JSON object from a potentially messy LLM response.
 _JSON_RE = re.compile(r"\{[\s\S]*\}")
