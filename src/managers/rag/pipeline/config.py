@@ -39,6 +39,10 @@ class RAGConfig:
     K4: float = 0.5
     K5: float = 0.6
     K6: float = 0.3
+    # K7 — graph score multiplier: scales the final score of graph candidates
+    # so they can compete with vector/memory results.  Default 1.5 means a
+    # perfect-kw-match graph triple (~0.6) becomes ~0.9 after boost.
+    K7: float = 1.5
 
     decay_rate: float = 0.05
     noise_max: float = 0.02
@@ -51,6 +55,9 @@ class RAGConfig:
     search_memory: bool = True
     search_history: bool = True
     search_graph: bool = False
+    # guaranteed graph slots: at least N graph triples are included regardless
+    # of their rank (0 = disabled, compete on equal terms).
+    graph_min_results: int = 0
 
     # keyword
     kw_enabled: bool = True
@@ -102,6 +109,7 @@ class RAGConfig:
         cfg.K4 = _f(SettingsManager.get("RAG_WEIGHT_ENTITY", 0.5), 0.5)
         cfg.K5 = _f(SettingsManager.get("RAG_WEIGHT_KEYWORDS", 0.6), 0.6)
         cfg.K6 = _f(SettingsManager.get("RAG_WEIGHT_LEXICAL", 0.3), 0.3)
+        cfg.K7 = _f(SettingsManager.get("RAG_WEIGHT_GRAPH", 1.5), 1.5)
 
         cfg.decay_rate = _f(SettingsManager.get("RAG_TIME_DECAY_RATE", 0.05), 0.05)
         cfg.noise_max = _f(SettingsManager.get("RAG_NOISE_MAX", 0.02), 0.02)
@@ -113,6 +121,7 @@ class RAGConfig:
         cfg.search_memory = _b(SettingsManager.get("RAG_SEARCH_MEMORY", True), True)
         cfg.search_history = _b(SettingsManager.get("RAG_SEARCH_HISTORY", True), True)
         cfg.search_graph = _b(SettingsManager.get("RAG_SEARCH_GRAPH", False), False)
+        cfg.graph_min_results = _i(SettingsManager.get("RAG_GRAPH_MIN_RESULTS", 0), 0)
 
         cfg.kw_enabled = _b(SettingsManager.get("RAG_KEYWORD_SEARCH", True), True)
         cfg.kw_max_terms = _i(SettingsManager.get("RAG_KEYWORDS_MAX_TERMS", 8), 8)
@@ -169,6 +178,8 @@ class RAGConfig:
             self.combine_mode = "union"
         self.vector_top_k = max(0, self.vector_top_k)
         self.intersect_min_methods = max(1, self.intersect_min_methods)
+        self.K7 = max(0.0, self.K7)
+        self.graph_min_results = max(0, self.graph_min_results)
 
 
 # ── Default values for all SettingsManager RAG keys ──────────────────────
@@ -180,6 +191,8 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_WEIGHT_ENTITY": 0.5,
     "RAG_WEIGHT_KEYWORDS": 0.6,
     "RAG_WEIGHT_LEXICAL": 0.3,
+    "RAG_WEIGHT_GRAPH": 1.5,
+    "RAG_GRAPH_MIN_RESULTS": 0,
     "RAG_TIME_DECAY_RATE": 0.05,
     "RAG_NOISE_MAX": 0.02,
     "RAG_MAX_RESULTS": 10,

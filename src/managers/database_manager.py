@@ -541,6 +541,7 @@ class DatabaseManager:
                 ("tags", "TEXT"),
                 ("participants", "TEXT"),
                 ("embedding", "BLOB"),
+                ("entities", "TEXT DEFAULT '[]'"),
             ],
             "history": [
                 ("character_id", "TEXT"),
@@ -561,6 +562,7 @@ class DatabaseManager:
                 ("is_deleted", "INTEGER DEFAULT 0"),
                 ("meta_data", "TEXT"),
                 ("embedding", "BLOB"),
+                ("entities", "TEXT DEFAULT '[]'"),
             ],
             "variables": [
                 ("character_id", "TEXT"),

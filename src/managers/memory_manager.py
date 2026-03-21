@@ -1,3 +1,4 @@
+import json
 import logging
 import datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -280,7 +281,7 @@ class MemoryManager:
     def save_memories(self):
         pass
 
-    def add_memory(self, content, date=None, priority="Normal", memory_type="fact", skip_if_exists=False):
+    def add_memory(self, content, date=None, priority="Normal", memory_type="fact", skip_if_exists=False, entities=None):
         if skip_if_exists and content:
             with self.db.connection() as conn:
                 cur = conn.cursor()
@@ -319,6 +320,13 @@ class MemoryManager:
             if "is_forgotten" in cols:
                 insert_cols.append("is_forgotten")
                 insert_vals.append(0)
+
+            if "entities" in cols and entities:
+                insert_cols.append("entities")
+                if isinstance(entities, str):
+                    insert_vals.append(entities)
+                else:
+                    insert_vals.append(json.dumps(list(entities), ensure_ascii=False))
 
             placeholders = ",".join(["?"] * len(insert_cols))
             sql = f"INSERT INTO memories ({', '.join(insert_cols)}) VALUES ({placeholders})"

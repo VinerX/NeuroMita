@@ -16,6 +16,9 @@ class QueryState:
     ctx_speaker: str = ""
     ctx_target: str = ""
     ctx_participants: list[str] = field(default_factory=list)
+    # Populated by GraphRetriever: entity names that matched the query keywords.
+    # Used by EntityEnricher to boost candidates tagged with these entities.
+    matched_entities: set[str] = field(default_factory=set)
 
     @property
     def ctx_actors(self) -> set[str]:
