@@ -640,6 +640,7 @@ class Events:
         """Работа с историей диалога"""
         PREPARE_FOR_PROMPT = "prepare_history_for_prompt"
         SAVE_AFTER_RESPONSE = "save_history_after_response"
+        MESSAGE_COMPLETED = "history_message_completed"
 
     class RAG:
         GET_EMBEDDING = "rag_get_embedding"
