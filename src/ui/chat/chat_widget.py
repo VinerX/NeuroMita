@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QGraphicsOpacityEffect, QLabel, QFrame,
 )
 from PyQt6.QtCore import Qt, QPropertyAnimation, QPoint, QTimer, QRectF
-from PyQt6.QtGui import QPainter, QPainterPath, QColor, QBrush
+from PyQt6.QtGui import QPainter, QPainterPath, QColor, QBrush, QBitmap, QRegion
 import qtawesome as qta
 
 _PANEL_BG = "rgba(18,18,22,0.92)"
@@ -18,23 +18,11 @@ _PANEL_BG_COLOR = QColor(18, 18, 22, 234)  # 0.92 * 255 ≈ 234
 
 
 class RoundedScrollArea(QScrollArea):
-    """QScrollArea with truly rounded corners (clips content)."""
+    """QScrollArea — background painted normally; outer clipping handled by ChatWidget mask."""
 
     def __init__(self, radius: int = 12, parent=None):
         super().__init__(parent)
         self._radius = radius
-
-    def paintEvent(self, event):
-        painter = QPainter(self.viewport())
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(self.viewport().rect()), self._radius, self._radius)
-        painter.setClipPath(path)
-        painter.setBrush(QBrush(_PANEL_BG_COLOR))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(QRectF(self.viewport().rect()), self._radius, self._radius)
-        painter.end()
-        super().paintEvent(event)
 
 
 class ChatWidget(QFrame):
@@ -228,7 +216,19 @@ class ChatWidget(QFrame):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._apply_mask()
         self._reposition_scroll_button()
+
+    def _apply_mask(self):
+        """Clip widget (and all children) to rounded rect via OS-level bitmap mask."""
+        bmp = QBitmap(self.size())
+        bmp.fill(Qt.GlobalColor.color0)
+        p = QPainter(bmp)
+        p.setBrush(Qt.GlobalColor.color1)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(self.rect(), 12, 12)
+        p.end()
+        self.setMask(QRegion(bmp))
 
     def viewport(self):
         """Compat: return the scroll area viewport."""
