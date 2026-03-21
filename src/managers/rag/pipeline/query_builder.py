@@ -57,34 +57,29 @@ class QueryBuilder:
         ctx_target = ""
         ctx_participants: list[str] = []
         try:
-            conn = self.rag.db.get_connection()
-            cur = conn.cursor()
+            with self.rag.db.connection() as conn:
+                cur = conn.cursor()
 
-            where = "character_id=? AND is_active=1"
-            params = [self.rag.character_id]
-            if "is_deleted" in self.rag._history_cols:
-                where += " AND is_deleted=0"
+                where = "character_id=? AND is_active=1"
+                params = [self.rag.character_id]
+                if "is_deleted" in self.rag._history_cols:
+                    where += " AND is_deleted=0"
 
-            cols = ["speaker", "target", "participants", "sender"]
-            cols = [c for c in cols if c in self.rag._history_cols]
-            if cols:
-                cur.execute(
-                    f"SELECT {', '.join(cols)} FROM history WHERE {where} ORDER BY id DESC LIMIT 1",
-                    tuple(params),
-                )
-                row = cur.fetchone()
-                if row:
-                    rd = dict(zip(cols, row))
-                    ctx_speaker = str(rd.get("speaker") or rd.get("sender") or "").strip()
-                    ctx_target = str(rd.get("target") or "").strip()
-                    ctx_participants = self.rag._json_loads_list(rd.get("participants"))
+                cols = ["speaker", "target", "participants", "sender"]
+                cols = [c for c in cols if c in self.rag._history_cols]
+                if cols:
+                    cur.execute(
+                        f"SELECT {', '.join(cols)} FROM history WHERE {where} ORDER BY id DESC LIMIT 1",
+                        tuple(params),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        rd = dict(zip(cols, row))
+                        ctx_speaker = str(rd.get("speaker") or rd.get("sender") or "").strip()
+                        ctx_target = str(rd.get("target") or "").strip()
+                        ctx_participants = self.rag._json_loads_list(rd.get("participants"))
         except Exception:
             pass
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
         return QueryState(
             character_id=self.rag.character_id,

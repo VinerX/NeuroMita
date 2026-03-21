@@ -10,6 +10,7 @@ class LinearReranker:
 
     def __init__(self, *, cfg: RAGConfig):
         self.cfg = cfg
+        self._rng = random.Random(cfg.noise_seed) if cfg.noise_seed is not None else random
 
     def score_all(self, cands: list[Candidate]) -> None:
         for c in cands:
@@ -21,7 +22,7 @@ class LinearReranker:
             kw = float(f.get("kw", 0.0) or 0.0)
             lex = float(f.get("lex", 0.0) or 0.0)
 
-            noise = random.uniform(0.0, max(0.0, float(self.cfg.noise_max or 0.0)))
+            noise = self._rng.uniform(0.0, max(0.0, float(self.cfg.noise_max or 0.0)))
 
             score = (
                 sim * self.cfg.K1

@@ -22,8 +22,7 @@ class FTSRetriever:
 
     def retrieve(self, qs: QueryState) -> List[Candidate]:
         out: list[Candidate] = []
-        conn = self.rag.db.get_connection()
-        try:
+        with self.rag.db.connection() as conn:
             cur = conn.cursor()
             if not self.rag.db.fts5_ready(cur):
                 return out
@@ -47,12 +46,6 @@ class FTSRetriever:
                 out.extend(self._memories(cur, qs, match_q))
             if self.cfg.search_history:
                 out.extend(self._histories(cur, qs, match_q))
-
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
         return out
 
