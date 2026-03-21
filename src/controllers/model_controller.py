@@ -665,7 +665,7 @@ class ModelController:
 
 
         # [RAG INTEGRATION] Внедрение контекста из памяти
-        if bool(self.settings.get("RAG_ENABLED", False)) and event_type!="compress":
+        if bool(self.settings.get("RAG_ENABLED", False)) and event_type not in ("compress", "graph_extract"):
             prompt_set_path = getattr(char, "base_data_path", None)
             system_input = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
 
