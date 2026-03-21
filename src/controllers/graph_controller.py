@@ -125,11 +125,16 @@ class GraphController:
             # Build prompt.
             prompt = self._build_extraction_prompt(character, text)
             if not prompt:
+                logger.warning("[GraphController] Empty extraction prompt, skipping.")
                 return
 
             # Resolve provider preset.
             provider_label = str(self._get_setting("GRAPH_PROVIDER", "Current"))
             preset_id = self._resolve_preset(provider_label)
+            logger.info(
+                f"[GraphController] Calling provider (label='{provider_label}', "
+                f"preset_id={preset_id}) for '{char_id}'"
+            )
 
             # Call provider.
             res = self.event_bus.emit_and_wait(
@@ -147,10 +152,13 @@ class GraphController:
             )
 
             if not res or not res[0]:
-                logger.debug("[GraphController] Provider returned empty response.")
+                logger.warning("[GraphController] Provider returned empty response.")
                 return
 
             raw_response = str(res[0])
+            # Truncate for logging to avoid flooding.
+            preview = raw_response[:500] + ("..." if len(raw_response) > 500 else "")
+            logger.info(f"[GraphController] Raw LLM response: {preview}")
 
             # Parse and store.
             from managers.rag.graph.entity_extractor import (
@@ -162,17 +170,35 @@ class GraphController:
 
             extraction = parse_extraction_response(raw_response)
             if extraction is None:
-                logger.debug("[GraphController] Could not parse extraction JSON.")
+                logger.warning(
+                    f"[GraphController] Could not parse extraction JSON from response: {preview}"
+                )
                 return
+
+            entities = extraction.get("entities", [])
+            relations = extraction.get("relations", [])
+            logger.info(
+                f"[GraphController] Parsed: {len(entities)} entities, "
+                f"{len(relations)} relations"
+            )
+            if entities:
+                ent_names = [e.get("name", "?") for e in entities[:10]]
+                logger.info(f"[GraphController] Entities: {ent_names}")
+            if relations:
+                rel_strs = [
+                    f"{r.get('s','?')} --{r.get('p','?')}--> {r.get('o','?')}"
+                    for r in relations[:10]
+                ]
+                logger.info(f"[GraphController] Relations: {rel_strs}")
 
             db = DatabaseManager()
             gs = GraphStore(db, char_id)
             n_ent, n_rel = store_extraction(gs, extraction)
 
-            if n_ent or n_rel:
-                logger.info(
-                    f"[GraphController] Extracted {n_ent} entities, {n_rel} relations for '{char_id}'"
-                )
+            logger.info(
+                f"[GraphController] Stored {n_ent} entities, {n_rel} relations "
+                f"for '{char_id}' (total in DB: {gs.get_stats()})"
+            )
 
         except Exception as e:
             logger.warning(f"[GraphController] Extraction failed (ignored): {e}", exc_info=True)

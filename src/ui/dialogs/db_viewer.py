@@ -186,6 +186,24 @@ class _AdvancedTablePage(QWidget):
             "key",
             "value",
         },
+        "graph_entities": {
+            "id",
+            "character_id",
+            "name",
+            "entity_type",
+            "mention_count",
+            "first_seen",
+            "last_seen",
+        },
+        "graph_relations": {
+            "id",
+            "character_id",
+            "subject_id",
+            "predicate",
+            "object_id",
+            "confidence",
+            "created_at",
+        },
     }
     # Preferred widths for long-text columns (so they don't become huge).
     # With "Wrap text + auto row height" enabled, text fits by increasing row height.
@@ -193,6 +211,7 @@ class _AdvancedTablePage(QWidget):
         "history": {"content": 420},
         "memories": {"content": 420},
         "variables": {"value": 420},
+        "graph_relations": {"predicate": 300},
     }
 
     def __init__(self, parent: QWidget, *, db: QSqlDatabase, table_name: str, character_id: Optional[str] = None):
@@ -1085,6 +1104,14 @@ class DbViewerDialog(QDialog):
         self.tabs.addTab(self.memories_page, "Memories")
         self.tabs.addTab(self.variables_page, "Variables")
 
+        # Graph tables (only if they exist in the database).
+        self._graph_pages: list[_AdvancedTablePage] = []
+        for tbl_name, tab_label in [("graph_entities", "Graph: Entities"), ("graph_relations", "Graph: Relations")]:
+            if self._table_exists(tbl_name):
+                page = _AdvancedTablePage(self, db=self.db, table_name=tbl_name, character_id=self.character_id)
+                self.tabs.addTab(page, tab_label)
+                self._graph_pages.append(page)
+
         self.chk_extended.toggled.connect(self._apply_extended_to_all)
         self._apply_extended_to_all(self.chk_extended.isChecked())
         self.chk_auto_row_height.toggled.connect(self._apply_auto_row_height_to_all)
@@ -1102,19 +1129,34 @@ class DbViewerDialog(QDialog):
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
+    def _table_exists(self, table_name: str) -> bool:
+        """Check if a table exists in the database."""
+        if not self.db or not self.db.isOpen():
+            return False
+        q = QSqlQuery(self.db)
+        q.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
+        q.addBindValue(table_name)
+        if q.exec() and q.next():
+            return True
+        return False
+
+    @property
+    def _all_pages(self) -> list:
+        pages = [self.history_page, self.memories_page, self.variables_page]
+        pages.extend(self._graph_pages)
+        return pages
+
     def _apply_extended_to_all(self, enabled: bool) -> None:
         try:
-            self.history_page.set_extended_columns(enabled)
-            self.memories_page.set_extended_columns(enabled)
-            self.variables_page.set_extended_columns(enabled)
+            for page in self._all_pages:
+                page.set_extended_columns(enabled)
         except Exception:
             pass
 
     def _apply_auto_row_height_to_all(self, enabled: bool) -> None:
         try:
-            self.history_page.set_auto_row_height(enabled)
-            self.memories_page.set_auto_row_height(enabled)
-            self.variables_page.set_auto_row_height(enabled)
+            for page in self._all_pages:
+                page.set_auto_row_height(enabled)
         except Exception:
             pass
 
@@ -1143,15 +1185,13 @@ class DbViewerDialog(QDialog):
         return db
 
     def refresh_all(self) -> None:
-        self.history_page.refresh()
-        self.memories_page.refresh()
-        self.variables_page.refresh()
+        for page in self._all_pages:
+            page.refresh()
 
     def closeEvent(self, event) -> None:
         try:
-            self.history_page.cleanup()
-            self.memories_page.cleanup()
-            self.variables_page.cleanup()
+            for page in self._all_pages:
+                page.cleanup()
         except Exception:
             pass
 
