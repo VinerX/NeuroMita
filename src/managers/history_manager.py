@@ -964,16 +964,21 @@ class HistoryManager:
             self._insert_history_row(msg=msg, is_active=0)
 
     def clear_history(self):
-        conn = self.db.get_connection()
-        try:
+        with self.db.connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("UPDATE history SET is_active = 0 WHERE character_id = ?", (self.storage_key,))
+            # Mark as inactive AND deleted so RAG stops finding reset messages.
+            # RAG searches is_active=0 for archived history; is_deleted=1 excludes them.
+            if "is_deleted" in self._history_cols:
+                cursor.execute(
+                    "UPDATE history SET is_active = 0, is_deleted = 1 WHERE character_id = ?",
+                    (self.storage_key,),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE history SET is_active = 0 WHERE character_id = ?",
+                    (self.storage_key,),
+                )
             conn.commit()
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
     def _default_history(self):
         return {"fixed_parts": [], "messages": [], "variables": {}}
