@@ -13,9 +13,12 @@ from typing import Any, Optional, ClassVar
 
 from main_logger import logger
 from managers.database_manager import DatabaseManager
-from managers.rag.rag_manager import RAGManager
 
 
+# TODO: Decompose — this class is 1100+ lines. Consider splitting into:
+#   history_reader.py (load_history, get_messages, pagination)
+#   history_writer.py (add_message, save_history, _insert_history_row)
+#   variable_store.py (update_variable, update_variables_batch, load/save vars)
 class HistoryManager:
     """
     HistoryManager (SQL):
@@ -83,7 +86,9 @@ class HistoryManager:
         self._ensure_history_schema()
 
         # RAG опционален: любые проблемы не должны ломать основную логику
+        # Lazy import to avoid pulling heavy ML dependencies when RAG is disabled
         try:
+            from managers.rag.rag_manager import RAGManager
             self.rag = RAGManager(self.storage_key)
         except Exception as e:
             logger.warning(f"RAGManager init failed (RAG disabled for this session): {e}", exc_info=True)
@@ -922,6 +927,29 @@ class HistoryManager:
                 """,
                 (self.storage_key, key, val_str),
             )
+            conn.commit()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def update_variables_batch(self, variables: dict):
+        """Batch-write multiple variables in a single transaction."""
+        if not variables:
+            return
+        conn = self.db.get_connection()
+        try:
+            cursor = conn.cursor()
+            for key, value in variables.items():
+                val_str = json.dumps(value, ensure_ascii=False)
+                cursor.execute(
+                    """
+                    INSERT INTO variables (character_id, key, value) VALUES(?, ?, ?)
+                    ON CONFLICT(character_id, key) DO UPDATE SET value=excluded.value
+                    """,
+                    (self.storage_key, key, val_str),
+                )
             conn.commit()
         finally:
             try:

@@ -42,6 +42,7 @@ class RAGConfig:
 
     decay_rate: float = 0.05
     noise_max: float = 0.02
+    noise_seed: int | None = None
 
     # query build
     tail_messages: int = 2
@@ -103,6 +104,8 @@ class RAGConfig:
 
         cfg.decay_rate = _f(SettingsManager.get("RAG_TIME_DECAY_RATE", 0.05), 0.05)
         cfg.noise_max = _f(SettingsManager.get("RAG_NOISE_MAX", 0.02), 0.02)
+        _seed = SettingsManager.get("RAG_NOISE_SEED", None)
+        cfg.noise_seed = _i(_seed, 0) if _seed is not None else None
 
         cfg.tail_messages = _i(SettingsManager.get("RAG_QUERY_TAIL_MESSAGES", 2), 2)
 

@@ -2,11 +2,17 @@ import json
 import sqlite3
 import logging
 import os
+from contextlib import contextmanager
 from datetime import datetime
 from threading import Lock
 from typing import Iterable, Tuple, Set, Optional, List
 
 
+# TODO: Decompose — this class is 1200+ lines. Consider splitting into:
+#   schema_manager.py (DDL, migrations, ensure_columns)
+#   connection_pool.py (get_connection, connection context manager, pragmas)
+#   fts_manager.py (FTS5 setup, sync, queries)
+#   embedding_storage.py (blob I/O, indexing)
 class DatabaseManager:
     _instance = None
     _lock = Lock()
@@ -82,6 +88,18 @@ class DatabaseManager:
         )
         self._apply_sqlite_pragmas(conn)
         return conn
+
+    @contextmanager
+    def connection(self):
+        """Context manager that yields a connection and closes it on exit."""
+        conn = self.get_connection()
+        try:
+            yield conn
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def get_table_columns(self, table: str) -> Set[str]:
         """Возвращает set фактических колонок таблицы (не падает)."""

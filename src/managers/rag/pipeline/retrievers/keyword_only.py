@@ -25,18 +25,12 @@ class KeywordOnlyRetriever:
             return []
 
         out: list[Candidate] = []
-        conn = self.rag.db.get_connection()
-        try:
+        with self.rag.db.connection() as conn:
             cur = conn.cursor()
             if self.cfg.search_memory:
                 out.extend(self._memories(cur, qs))
             if self.cfg.search_history:
                 out.extend(self._histories(cur, qs))
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
         return out
 
     _ALLOWED_COLUMNS = frozenset({"content"})

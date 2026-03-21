@@ -66,6 +66,7 @@ class Character:
         self.main_template_path_relative = "main_template.txt"
 
         self.variables: Dict[str, Any] = {}
+        self._dirty_vars: set = set()
         self.is_cartridge = is_cartridge
         self.app_vars: Dict[str, Any] = {}
 
@@ -290,11 +291,16 @@ class Character:
                     value = value[1:-1]
 
         self.variables[name] = value
+        self._dirty_vars.add(name)
 
-        # [NEW] Сразу пишем в БД, чтобы не ждать конца хода
-        # Это защитит от потери данных при краше
-        if hasattr(self, "history_manager"):
-            self.history_manager.update_variable(name, value)
+    def flush_variables(self):
+        """Batch-write all dirty variables to DB in a single transaction."""
+        if not self._dirty_vars or not hasattr(self, "history_manager"):
+            return
+        to_flush = {k: self.variables[k] for k in self._dirty_vars if k in self.variables}
+        if to_flush:
+            self.history_manager.update_variables_batch(to_flush)
+        self._dirty_vars.clear()
 
     def consume_pending_target(self) -> str | None:
         t = getattr(self, "_pending_target", None)
@@ -749,11 +755,9 @@ class Character:
         return data
 
     def save_character_state_to_history(self, messages: List[Dict[str, str]]):
-        # [ОБНОВЛЕНИЕ]
-        # Так как мы перешли на точечные add_message и update_variable,
-        # этот метод по сути становится "Legacy" или "Force Sync".
-        # Можно оставить его для надежности, но HistoryManager.save_history теперь делает
-        # DELETE активных и INSERT новых, что безопасно.
+        """Force-sync full state to DB: flushes dirty variables, then persists
+        all messages and variables. Called at end-of-turn and on explicit saves."""
+        self.flush_variables()
         history_data = {"messages": messages, "variables": self.variables.copy()}
         self.history_manager.save_history(history_data)
 
@@ -979,27 +983,3 @@ class Character:
     def __str__(self):
         return f"Character(id='{self.char_id}', name='{self.name}')"
 
-    def get_relevant_context(self, user_query: str) -> str:
-        """Возвращает строку с найденными фактами для системного промпта"""
-        if not hasattr(self, "memory_system"):
-            return ""
-
-        # Предположим, мы добавили rag в memory_system или character имеет свой RAGManager
-        # Лучше инициализировать RAGManager внутри Character
-        if not hasattr(self, "rag_manager"):
-            from managers.rag_manager import RAGManager
-            self.rag_manager = RAGManager(self.char_id)
-
-        results = self.rag_manager.search_relevant(user_query, limit=5, threshold=0.35)
-
-        if not results:
-            return ""
-
-        context_str = "Relevant memories/history:\n"
-        for r in results:
-            if r['source'] == 'memory':
-                context_str += f"- [Memory {r['date']}] {r['content']}\n"
-            else:
-                context_str += f"- [History {r['date']}] {r['role']}: {r['content']}\n"
-
-        return context_str

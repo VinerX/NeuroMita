@@ -21,8 +21,7 @@ class VectorRetriever:
 
         out: list[Candidate] = []
 
-        conn = self.rag.db.get_connection()
-        try:
+        with self.rag.db.connection() as conn:
             cur = conn.cursor()
 
             # --- Memories (embedding NOT NULL)
@@ -32,12 +31,6 @@ class VectorRetriever:
             # --- History (embedding NOT NULL)
             if self.cfg.search_history:
                 out.extend(self._histories(cur, qs))
-
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
         return out
 
