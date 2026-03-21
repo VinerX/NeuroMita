@@ -25,6 +25,7 @@ class MemoryManager:
     def __init__(self, character_name: str):
         self.character_name = character_name  # фактически это character_id
         self.db = DatabaseManager()
+        self.prompt_set_path: Optional[str] = None  # set by Character for template loading
 
         # гарантируем колонку is_forgotten, но не падаем если не получилось
         self._ensure_memories_schema()
@@ -279,7 +280,17 @@ class MemoryManager:
     def save_memories(self):
         pass
 
-    def add_memory(self, content, date=None, priority="Normal", memory_type="fact"):
+    def add_memory(self, content, date=None, priority="Normal", memory_type="fact", skip_if_exists=False):
+        if skip_if_exists and content:
+            with self.db.connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT 1 FROM memories WHERE character_id=? AND content=? AND is_deleted=0 LIMIT 1",
+                    (self.character_name, str(content)),
+                )
+                if cur.fetchone():
+                    return
+
         # забываем ПЕРЕД добавлением новой
         self._forget_over_limit_memories()
 
@@ -473,6 +484,11 @@ class MemoryManager:
                 pass
         self.total_characters = 0
 
+    # Default templates (used when no custom file is found in prompt set)
+    _DEFAULT_ITEM_TEMPLATE = "{risk_tag}N:{id}, Date {date}, Priority: {priority}: {content}"
+    _DEFAULT_SUMMARY_TEMPLATE = "{risk_tag}N:{id}, Date {date}, Type: Summary: {content}"
+    _DEFAULT_WRAPPER_TEMPLATE = "LongMemory< {items} >EndLongMemory"
+
     def get_memories_formatted(self):
         """
         Показываем ВСЕ активные воспоминания (is_deleted=0 AND is_forgotten=0).
@@ -482,7 +498,24 @@ class MemoryManager:
         - ВНИЗУ: те, кто пойдут на забывание первыми (Low/старые)
 
         [RISK] помечаем ХВОСТ списка (самые вероятные кандидаты на забывание).
+
+        Templates can be customized per prompt set by placing files in Structural/:
+        - memory_template.txt — item format (vars: {risk_tag}, {id}, {date}, {priority}, {content}, {type})
+        - memory_summary_template.txt — summary item format (same vars)
+        - memory_wrapper.txt — outer wrapper (vars: {items}, {stats}, {tips}, {examples})
         """
+        from utils.template_loader import load_optional_template
+
+        item_tpl = load_optional_template(
+            self.prompt_set_path, "Structural/memory_template.txt", self._DEFAULT_ITEM_TEMPLATE
+        )
+        summary_tpl = load_optional_template(
+            self.prompt_set_path, "Structural/memory_summary_template.txt", self._DEFAULT_SUMMARY_TEMPLATE
+        )
+        wrapper_tpl = load_optional_template(
+            self.prompt_set_path, "Structural/memory_wrapper.txt", self._DEFAULT_WRAPPER_TEMPLATE
+        )
+
         cols = self._mem_cols()
 
         where = "character_id=? AND is_deleted=0"
@@ -490,8 +523,7 @@ class MemoryManager:
         if "is_forgotten" in cols:
             where += " AND is_forgotten=0"
 
-        conn = self.db.get_connection()
-        try:
+        with self.db.connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 f"""
@@ -502,19 +534,7 @@ class MemoryManager:
                 tuple(params),
             )
             rows = cursor.fetchall() or []
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
-        # Сортируем по "важности удержания" (обратная сортировке на забывание):
-        # - выше priority => выше
-        # - более новый date_created => выше
-        #
-        # Используем существующий self._priority_rank_for_forget:
-        # Low=0, Normal=1, High=2, Critical=999.
-        # Чтобы "важное вверх" при обычной сортировке (ascending), делаем -rank.
         def _dt_score(s: str) -> float:
             dt = self._parse_dt(s)
             if dt == datetime.datetime.min:
@@ -527,9 +547,9 @@ class MemoryManager:
         rows_sorted = sorted(
             rows,
             key=lambda r: (
-                -self._priority_rank_for_forget(r[2]),  # важные выше
-                -_dt_score(r[1]),  # свежие выше
-                int(r[0] or 0),  # стабильность
+                -self._priority_rank_for_forget(r[2]),
+                -_dt_score(r[1]),
+                int(r[0] or 0),
             )
         )
 
@@ -543,9 +563,13 @@ class MemoryManager:
         formatted_memories = []
         for i, (mid, date, prio, content, mtype) in enumerate(rows_sorted):
             risk_tag = "[RISK] " if i >= risk_start_idx else ""
-            if mtype == "summary":
-                formatted_memories.append(f"{risk_tag}N:{mid}, Date {date}, Type: Summary: {content}")
-            else:
+            tpl = summary_tpl if mtype == "summary" else item_tpl
+            try:
+                formatted_memories.append(tpl.format(
+                    risk_tag=risk_tag, id=mid, date=date, priority=prio,
+                    content=content, type=mtype,
+                ))
+            except (KeyError, IndexError):
                 formatted_memories.append(f"{risk_tag}N:{mid}, Date {date}, Priority: {prio}: {content}")
 
         memory_stats = f"\nMemory status: {len(rows_sorted)} facts, {self.total_characters} characters"
@@ -572,12 +596,17 @@ class MemoryManager:
             "Prioritize English in memories to save tokens."
         ]
 
-        full_message = (
-                "LongMemory< " +
-                "\n".join(formatted_memories) +
-                " >EndLongMemory\n" +
-                memory_stats + "\n" +
-                "\n".join(management_tips) + "\n" +
-                "\n".join(examples)
-        )
+        items_text = "\n".join(formatted_memories)
+        stats_text = memory_stats
+        tips_text = "\n".join(management_tips)
+        examples_text = "\n".join(examples)
+
+        try:
+            full_message = wrapper_tpl.format(
+                items=items_text, stats=stats_text, tips=tips_text, examples=examples_text,
+            )
+        except (KeyError, IndexError):
+            full_message = f"LongMemory< {items_text} >EndLongMemory"
+
+        full_message += f"\n{stats_text}\n{tips_text}\n{examples_text}"
         return full_message

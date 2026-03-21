@@ -1,0 +1,3 @@
+LOG "InitializeCharacter: Script started."
+LOG "InitializeCharacter: Script finished. All core variables should be set by Python."
+RETURN ""

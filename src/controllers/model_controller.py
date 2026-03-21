@@ -666,7 +666,8 @@ class ModelController:
 
         # [RAG INTEGRATION] Внедрение контекста из памяти
         if bool(self.settings.get("RAG_ENABLED", False)) and event_type!="compress":
-            system_input = self.process_rag(char_id, system_input, user_input)
+            prompt_set_path = getattr(char, "base_data_path", None)
+            system_input = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
 
         if event_type == "compress":
             messages = []
@@ -872,12 +873,19 @@ class ModelController:
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": str(e)})
             return None
 
-    def process_rag(self, char_id, system_input, user_input):
+    # Default RAG output templates
+    _DEFAULT_RAG_MEM_ITEM = "- [{score:.3f}] ({type}, prio={priority}, date={date}) {content}"
+    _DEFAULT_RAG_HIST_ITEM = "- [{score:.3f}] ({date}){meta} {content}"
+    _DEFAULT_RAG_WRAPPER = "<relevant_memories>\n{memory_block}\n</relevant_memories>\n\n<past_context>\n{history_block}\n</past_context>"
+
+    def process_rag(self, char_id, system_input, user_input, prompt_set_path=None):
         # ---------------------------------------------------------------------
-        # Требования:
-        # - RAG выполняется ДО BUILD_PROMPT
-        # - результаты НЕ смешиваются с chat history, а кладутся в system prompt
-        # - формат: <relevant_memories>...</relevant_memories> и <past_context>...</past_context>
+        # RAG выполняется ДО BUILD_PROMPT
+        # результаты кладутся в system prompt
+        # Templates can be customized per prompt set via Structural/ files:
+        #   rag_memory_item.txt, rag_history_item.txt, rag_wrapper.txt
+        from utils.template_loader import load_optional_template
+
         final_input = False
         if user_input:
             final_input = user_input
@@ -891,50 +899,79 @@ class ModelController:
                 results = rag.search_relevant(str(final_input), limit=rag_limit, threshold=rag_thr)
 
                 if results:
-                    mem_lines = []
-                    hist_lines = []
+                    mem_tpl = load_optional_template(
+                        prompt_set_path, "Structural/rag_memory_item.txt", self._DEFAULT_RAG_MEM_ITEM
+                    )
+                    hist_tpl = load_optional_template(
+                        prompt_set_path, "Structural/rag_history_item.txt", self._DEFAULT_RAG_HIST_ITEM
+                    )
+                    wrapper_tpl = load_optional_template(
+                        prompt_set_path, "Structural/rag_wrapper.txt", self._DEFAULT_RAG_WRAPPER
+                    )
 
-                    def _clip(s: Any, n: int = 700) -> str:
+                    clip_max = int(self.settings.get("RAG_CLIP_MAX_CHARS", 700))
+
+                    def _clip(s, n=clip_max):
                         t = str(s or "").strip()
                         return (t[:n] + "…") if len(t) > n else t
+
+                    mem_lines = []
+                    hist_lines = []
 
                     for r in results:
                         if not isinstance(r, dict):
                             continue
                         src = r.get("source")
                         if src == "memory":
-                            pr = r.get("priority")
-                            tp = r.get("type")
-                            dt = r.get("date_created")
-                            mem_lines.append(
-                                f"- [{r.get('score'):.3f}] ({tp}, prio={pr}, date={dt}) {_clip(r.get('content'))}"
-                            )
+                            try:
+                                mem_lines.append(mem_tpl.format(
+                                    score=float(r.get("score", 0)),
+                                    type=r.get("type", ""),
+                                    priority=r.get("priority", ""),
+                                    date=r.get("date_created", ""),
+                                    content=_clip(r.get("content")),
+                                ))
+                            except (KeyError, IndexError, ValueError):
+                                mem_lines.append(f"- [{r.get('score', 0):.3f}] {_clip(r.get('content'))}")
                         elif src == "history":
-                            dt = r.get("date")
                             sp = r.get("speaker") or ""
                             tg = r.get("target") or ""
                             meta = ""
                             if sp and tg:
-                                meta = f"{sp}→{tg}"
+                                meta = f" ({sp}→{tg})"
                             elif sp:
-                                meta = sp
+                                meta = f" ({sp})"
                             elif tg:
-                                meta = f"→{tg}"
-                            meta_s = f" ({meta})" if meta else ""
+                                meta = f" (→{tg})"
+                            try:
+                                hist_lines.append(hist_tpl.format(
+                                    score=float(r.get("score", 0)),
+                                    date=r.get("date", ""),
+                                    meta=meta,
+                                    content=_clip(r.get("content")),
+                                    speaker=sp,
+                                    target=tg,
+                                    role=r.get("role", ""),
+                                ))
+                            except (KeyError, IndexError, ValueError):
+                                hist_lines.append(f"- [{r.get('score', 0):.3f}] {_clip(r.get('content'))}")
 
-                            hist_lines.append(
-                                f"- [{r.get('score'):.3f}] ({dt}){meta_s} {_clip(r.get('content'))}"
+                    if mem_lines or hist_lines:
+                        try:
+                            rag_block = wrapper_tpl.format(
+                                memory_block="\n".join(mem_lines) if mem_lines else "",
+                                history_block="\n".join(hist_lines) if hist_lines else "",
                             )
+                        except (KeyError, IndexError):
+                            parts = []
+                            if mem_lines:
+                                parts.append("<relevant_memories>\n" + "\n".join(mem_lines) + "\n</relevant_memories>")
+                            if hist_lines:
+                                parts.append("<past_context>\n" + "\n".join(hist_lines) + "\n</past_context>")
+                            rag_block = "\n\n".join(parts)
 
-                    blocks = []
-                    if mem_lines:
-                        blocks.append("<relevant_memories>\n" + "\n".join(mem_lines) + "\n</relevant_memories>")
-                    if hist_lines:
-                        blocks.append("<past_context>\n" + "\n".join(hist_lines) + "\n</past_context>")
-
-                    if blocks:
                         separator = "\n\n" if system_input else ""
-                        system_input = f"{system_input}{separator}" + "\n\n".join(blocks)
+                        system_input = f"{system_input}{separator}{rag_block}"
                         logger.info(
                             f"[{char_id}] RAG blocks injected into system_input (mem={len(mem_lines)}, hist={len(hist_lines)}).")
             except Exception as e:

@@ -574,6 +574,18 @@ class DslInterpreter:
                         returned_value_for_log = returned is not None
                         return (returned or "", sys_msgs)
 
+                    if command == "SEED_MEMORY":
+                        if not args or "|" not in args:
+                            raise DslError("SEED_MEMORY requires format: SEED_MEMORY priority | content", resolved_script_id, num, raw)
+                        parts = args.split("|", 1)
+                        priority = parts[0].strip()
+                        content = self._eval_expr(f'f"""{parts[1].strip()}"""', resolved_script_id, num, raw, sys_msgs=sys_msgs) if '{' in parts[1] else parts[1].strip()
+                        if content and hasattr(self.character, "memory_system") and self.character.memory_system:
+                            self.character.memory_system.add_memory(
+                                str(content), priority=priority, skip_if_exists=True
+                            )
+                        continue
+
                     raise DslError(f"Unknown DSL command '{command}'", resolved_script_id, num, raw)
 
                 if if_stack:

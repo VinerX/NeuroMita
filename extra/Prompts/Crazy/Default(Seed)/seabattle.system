@@ -1,0 +1,74 @@
+// File: Prompts/Mita/seabattle.system
+// Этот скрипт формирует системное сообщение с состоянием игры "Морской бой".
+
+SET LOCAL prompt_text = ""
+
+SET prompt_text = prompt_text + "--- СОСТОЯНИЕ ИГРЫ 'МОРСКОЙ БОЙ' ---\n"
+SET prompt_text = prompt_text + "Ты играешь против человека. Твоя задача — потопить все его корабли раньше, чем он потопит твои.\n"
+
+// --- Статус игры ---
+IF GAME_STATE_IS_GAME_OVER == True THEN
+    SET prompt_text = prompt_text + "СТАТУС ИГРЫ: ОКОНЧЕНА.\n"
+    SET prompt_text = prompt_text + f"РЕЗУЛЬТАТ: {GAME_STATE_OUTCOME}.\n"
+ELSE
+    SET prompt_text = prompt_text + f"СТАТУС ИГРЫ: ПРОДОЛЖАЕТСЯ (Фаза: {GAME_STATE_PHASE}).\n"
+ENDIF
+
+// --- Доски ---
+SET prompt_text = prompt_text + "\nТВОЯ ДОСКА (S - твой корабль, H - в тебя попали, M - по тебе промахнулись, X - твой потопленный корабль, . - пустая вода):\n"
+SET prompt_text = prompt_text + "   A B C D E F G H I J\n"
+SET prompt_text = prompt_text + f"{GAME_STATE_MY_BOARD}\n"
+
+SET prompt_text = prompt_text + "\nДОСКА ПРОТИВНИКА (твое видение) (H - твое попадание, M - твой промах, X - потопленный тобой корабль, . - неисследованная вода):\n"
+SET prompt_text = prompt_text + "   A B C D E F G H I J\n"
+SET prompt_text = prompt_text + f"{GAME_STATE_OPPONENT_BOARD}\n"
+
+// --- Последний ход ---
+IF GAME_STATE_PHASE == "battle" THEN
+    IF GAME_STATE_LAST_MOVE_COORD != None THEN
+        IF GAME_STATE_IS_LLM_LAST_MOVER == True THEN
+            SET prompt_text = prompt_text + f"\nПОСЛЕДНИЙ ХОД СДЕЛАЛ ТЫ: выстрел на {GAME_STATE_LAST_MOVE_COORD}, результат - '{GAME_STATE_LAST_MOVE_RESULT}'.\n"
+        ELSE
+            SET prompt_text = prompt_text + f"\nПОСЛЕДНИЙ ХОД СДЕЛАЛ ИГРОК: выстрел на {GAME_STATE_LAST_MOVE_COORD}, результат - '{GAME_STATE_LAST_MOVE_RESULT}'.\n"
+        ENDIF
+    ENDIF
+ENDIF
+
+// --- Тактическая сводка и инструкции ---
+IF GAME_STATE_IS_GAME_OVER == False THEN
+    IF GAME_STATE_IS_LLM_TURN == True THEN
+        SET prompt_text = prompt_text + "\n--- ТВОЙ ХОД! ---\n"
+        IF GAME_STATE_PHASE == "placement" THEN
+            SET prompt_text = prompt_text + "Тебе нужно расставить свои корабли.\n"
+            IF GAME_STATE_HAS_SHIPS_TO_PLACE == True THEN
+                SET prompt_text = prompt_text + f"Оставшиеся корабли (по палубам): {GAME_STATE_SHIPS_TO_PLACE_LIST}.\n"
+                SET prompt_text = prompt_text + "Используй тег <PlaceShip>координата,длина,ориентация</PlaceShip> (H-горизонтально, V-вертикально).\n"
+                SET prompt_text = prompt_text + "Пример для 4-палубного горизонтально на А1: <PlaceShip>A1,4,H</PlaceShip>\n"
+                SET prompt_text = prompt_text + "Или используй <PlaceShipsRandomly/> чтобы расставить все оставшиеся корабли автоматически.\n"
+            ELSE
+                SET prompt_text = prompt_text + "Все твои корабли расставлены. Ожидай, пока расставит свои корабли игрок.\n"
+            ENDIF
+        ELSE // Фаза 'battle'
+            SET prompt_text = prompt_text + "Тебе нужно сделать выстрел. Используй тег <MakeMove>координата</MakeMove>.\n"
+            IF GAME_STATE_HAS_WOUNDED_SHIPS == True THEN
+                SET prompt_text = prompt_text + "ТАКТИЧЕСКАЯ ЦЕЛЬ: ДОБИТЬ РАНЕНЫЙ КОРАБЛЬ!\n"
+                SET prompt_text = prompt_text + f"ИНФОРМАЦИЯ: {GAME_STATE_WOUNDED_SHIPS_INFO}\n"
+                IF GAME_STATE_HUNT_TARGETS_LIST != "" THEN
+                    SET prompt_text = prompt_text + f"РЕКОМЕНДУЕМЫЕ ЦЕЛИ ДЛЯ ДОБИВАНИЯ: {GAME_STATE_HUNT_TARGETS_LIST}.\n"
+                ELSE
+                    SET prompt_text = prompt_text + "Все смежные клетки уже обстреляны. Ищи другие корабли.\n"
+                ENDIF
+            ELSE
+                SET prompt_text = prompt_text + "ТАКТИЧЕСКАЯ ЦЕЛЬ: ПОИСК НОВЫХ КОРАБЛЕЙ.\n"
+                SET prompt_text = prompt_text + "Стреляй по неизведанным клеткам, чтобы найти корабль противника.\n"
+            ENDIF
+            SET prompt_text = prompt_text + f"ИСТОРИЯ ВЫСТРЕЛОВ (не повторяйся): {GAME_STATE_SHOT_HISTORY_STRING}.\n"
+        ENDIF
+    ELSE
+        SET prompt_text = prompt_text + "\nСЕЙЧАС ХОД ИГРОКА. Ожидай его действий и анализируй ситуацию.\n"
+    ENDIF
+ENDIF
+
+SET prompt_text = prompt_text + "--- КОНЕЦ ИНФОРМАЦИИ О МОРСКОМ БОЕ ---"
+
+RETURN prompt_text

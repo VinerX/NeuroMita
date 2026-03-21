@@ -114,6 +114,7 @@ class Character:
 
         self.history_manager = HistoryManager(character_name=self.name, character_id=self.char_id)
         self.memory_system = MemoryManager(self.char_id)
+        self.memory_system.prompt_set_path = self.base_data_path
 
         self.load_history()
 
