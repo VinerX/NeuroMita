@@ -20,7 +20,7 @@ _PANEL_BG_COLOR = QColor(18, 18, 22, 234)  # 0.92 * 255 ≈ 234
 class RoundedScrollArea(QScrollArea):
     """QScrollArea with truly rounded corners (clips content)."""
 
-    def __init__(self, radius: int = 10, parent=None):
+    def __init__(self, radius: int = 12, parent=None):
         super().__init__(parent)
         self._radius = radius
 
@@ -39,11 +39,12 @@ class RoundedScrollArea(QScrollArea):
 
 class ChatWidget(QFrame):
     """
-    Rounded chat container with scroll area + typing indicator at bottom.
+    Rounded chat container with scroll area + typing indicator inside scroll.
 
-    Layout:
-      [RoundedScrollArea with messages]  (stretch=1)
-      [TypingIndicator at bottom]        (fixed height, hidden by default)
+    Layout (inside scroll container):
+      [stretch]
+      [messages...]
+      [TypingIndicator]  (hidden by default, no space when hidden)
     """
 
     def __init__(self, parent=None):
@@ -53,7 +54,7 @@ class ChatWidget(QFrame):
             QFrame#ChatWidgetFrame {{
                 background-color: {_PANEL_BG};
                 border: 1px solid rgba(255,255,255,0.08);
-                border-radius: 10px;
+                border-radius: 12px;
             }}
         """)
 
@@ -62,7 +63,7 @@ class ChatWidget(QFrame):
         outer.setSpacing(0)
 
         # ── Scroll area ──────────────────────────────────────────────────────
-        self._scroll = RoundedScrollArea(radius=10)
+        self._scroll = RoundedScrollArea(radius=12)
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -84,39 +85,36 @@ class ChatWidget(QFrame):
         self._layout.setContentsMargins(6, 6, 6, 6)
         self._layout.setSpacing(4)
         self._layout.addStretch()  # push messages to top initially
-        self._scroll.setWidget(self._container)
 
-        outer.addWidget(self._scroll, 1)
-
-        # ── Typing indicator (inside the rounded frame, at bottom) ───────────
+        # ── Typing indicator (inside scroll area, at bottom of messages) ─────
         self._typing_bar = QWidget()
         self._typing_bar.setObjectName("TypingBar")
-        self._typing_bar.setFixedHeight(28)
-        self._typing_bar.setStyleSheet(f"""
-            QWidget#TypingBar {{
-                background-color: rgba(30,30,36,0.85);
-                border-top: 1px solid rgba(255,255,255,0.06);
-            }}
-        """)
-        self._typing_bar.hide()
+        self._typing_bar.setStyleSheet("QWidget#TypingBar { background-color: transparent; }")
+        # Start with max-height=0 so it takes no space when hidden
+        self._typing_bar.setMinimumHeight(0)
+        self._typing_bar.setMaximumHeight(0)
         typing_layout = QHBoxLayout(self._typing_bar)
-        typing_layout.setContentsMargins(8, 2, 8, 2)
+        typing_layout.setContentsMargins(8, 4, 8, 4)
         typing_layout.setSpacing(6)
 
         self._typing_avatar = QLabel()
-        self._typing_avatar.setFixedSize(20, 20)
+        self._typing_avatar.setFixedSize(24, 24)
         self._typing_avatar.setStyleSheet("background: transparent; border: none;")
         typing_layout.addWidget(self._typing_avatar)
 
         self._typing_label = QLabel()
         self._typing_label.setStyleSheet(
-            "color: rgba(180,180,195,0.6); font-size: 9pt; "
+            "color: rgba(180,180,195,0.75); font-size: 9pt; "
             "background: transparent; border: none;"
         )
         typing_layout.addWidget(self._typing_label)
         typing_layout.addStretch()
 
-        outer.addWidget(self._typing_bar)
+        # Add typing bar as last item in scroll container (after stretch + messages)
+        self._layout.addWidget(self._typing_bar)
+        self._scroll.setWidget(self._container)
+
+        outer.addWidget(self._scroll, 1)
 
         # Track whether user was at bottom before adding content
         self._auto_scroll = True
@@ -137,8 +135,8 @@ class ChatWidget(QFrame):
             self._layout.insertWidget(0, widget)
             self._messages.insert(0, widget)
         else:
-            # Insert before the trailing stretch
-            idx = self._layout.count() - 1  # before stretch
+            # Insert before typing bar (last item in layout)
+            idx = self._layout.count() - 1
             self._layout.insertWidget(idx, widget)
             self._messages.append(widget)
 
@@ -169,18 +167,20 @@ class ChatWidget(QFrame):
         self._typing_label.setText(f"{name} печатает...")
         if avatar_pixmap and not avatar_pixmap.isNull():
             from PyQt6.QtGui import QPixmap
-            scaled = avatar_pixmap.scaled(20, 20,
+            scaled = avatar_pixmap.scaled(24, 24,
                 Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                 Qt.TransformationMode.SmoothTransformation)
             self._typing_avatar.setPixmap(scaled)
             self._typing_avatar.show()
         else:
             self._typing_avatar.hide()
+        self._typing_bar.setMaximumHeight(32)
         self._typing_bar.show()
         if self._auto_scroll:
             QTimer.singleShot(10, self.scroll_to_bottom)
 
     def hide_typing(self):
+        self._typing_bar.setMaximumHeight(0)
         self._typing_bar.hide()
 
     # ── Scroll management ───────────────────────────────────────────────────
