@@ -1,7 +1,7 @@
 """
 GraphController — background entity extraction from dialogue messages.
 
-Subscribes to SAVE_AFTER_RESPONSE, extracts entities/relations via a
+Subscribes to MESSAGE_COMPLETED, extracts entities/relations via a
 configurable LLM provider (GRAPH_PROVIDER setting), stores them in GraphStore.
 
 Pattern mirrors HistoryController._compress_history() but runs asynchronously
@@ -55,8 +55,8 @@ class GraphController:
 
     def _subscribe(self):
         self.event_bus.subscribe(
-            Events.History.SAVE_AFTER_RESPONSE,
-            self._on_save_after_response,
+            Events.History.MESSAGE_COMPLETED,
+            self._on_message_completed,
             weak=False,
         )
 
@@ -80,9 +80,10 @@ class GraphController:
     # ------------------------------------------------------------------
     # Event handler
     # ------------------------------------------------------------------
-    def _on_save_after_response(self, event: Event) -> None:
+    def _on_message_completed(self, event: Event) -> None:
         """Called after every assistant response is saved."""
         if not self._is_enabled():
+            logger.debug("[GraphController] Skipped: GRAPH_EXTRACTION_ENABLED is False")
             return
 
         data = event.data or {}
@@ -107,6 +108,7 @@ class GraphController:
             text += f"Character: {assistant_output}\n"
 
         # Schedule extraction in background.
+        logger.info(f"[GraphController] Scheduling extraction for '{char_id}' ({len(text)} chars)")
         try:
             self._get_executor().submit(
                 self._extract_and_store, character, char_id, text.strip()

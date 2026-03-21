@@ -855,6 +855,14 @@ class ModelController:
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
+            # Notify graph extraction (and any future subscribers).
+            self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
+                "character_id": char_id,
+                "character_ref": char,
+                "user_input": user_input,
+                "assistant_output": final_text,
+            })
+
             voice_profile = None
             if hasattr(char, "to_voice_profile"):
                 try:
