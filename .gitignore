@@ -25,3 +25,4 @@ NeuroMita
 vec-768-layer-12.onnx
 /checkpoints
 /src/.claude
+/.claude
