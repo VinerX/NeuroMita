@@ -672,7 +672,12 @@ class ModelController:
         if event_type in ("compress", "graph_extract"):
             messages = []
             if system_input:
-                messages.append({"role": "system", "content": system_input})
+                # For graph_extract: send as user message since many OpenAI-compatible
+                # APIs (LMStudio, Ollama) require at least one user message to generate.
+                if event_type == "graph_extract":
+                    messages.append({"role": "user", "content": system_input})
+                else:
+                    messages.append({"role": "system", "content": system_input})
 
             preset_id = preset_id_override
 
@@ -682,8 +687,16 @@ class ModelController:
                     "character_name": char_name or char_id or "Мита",
                 })
 
+            logger.info(
+                f"[ModelController] {event_type}: sending {len(messages)} messages, "
+                f"preset_id={preset_id}, char='{char_id}'"
+            )
+
             try:
-                return self.model.generate(messages, stream_callback=None, preset_id=preset_id)
+                result = self.model.generate(messages, stream_callback=None, preset_id=preset_id)
+                if not result:
+                    logger.warning(f"[ModelController] {event_type}: model.generate() returned empty/None")
+                return result
             except Exception as e:
                 logger.error(f"Ошибка при {event_type}: {e}", exc_info=True)
                 return None
