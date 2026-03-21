@@ -18,6 +18,7 @@ from controllers.api_presets_controller import ApiPresetsController
 from controllers.local_voice_controller import LocalVoiceController
 from controllers.prompt_controller import PromptController
 from controllers.history_controller import HistoryController
+from controllers.graph_controller import GraphController
 from controllers.voice_model_controller import VoiceModelController
 from controllers.install_controller import InstallController
 from controllers.protocols_controller import ProtocolsController
@@ -82,6 +83,9 @@ class MainController:
 
         self.history_controller = HistoryController()
         logger.notify("HistoryController успешно инициализирован.")
+
+        self.graph_controller = GraphController()
+        logger.notify("GraphController успешно инициализирован.")
 
         self.prompt_controller = PromptController()
         logger.notify("PromptController успешно инициализирован.")

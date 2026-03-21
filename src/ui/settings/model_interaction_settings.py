@@ -330,6 +330,32 @@ def setup_model_interaction_controls(self, parent):
                       'Minimum cosine similarity for a candidate (0..1).'),
          'depends_on': 'RAG_ENABLED'},
 
+        {'label': _('Искать в графе знаний', 'Search in knowledge graph'),
+         'key': 'RAG_SEARCH_GRAPH', 'type': 'checkbutton', 'default_checkbutton': False,
+         'depends_on': 'GRAPH_EXTRACTION_ENABLED',
+         'tooltip': _('Включает поиск в графе сущностей при RAG-запросе.',
+                       'Enables entity graph search during RAG queries.')},
+
+        {'type': 'end'},
+
+        {'label': _('Граф знаний (экстракция сущностей)', 'Knowledge Graph (entity extraction)'),
+         'type': 'subsection'},
+
+        {'label': _('Включить экстракцию сущностей', 'Enable entity extraction'),
+         'key': 'GRAPH_EXTRACTION_ENABLED', 'type': 'checkbutton',
+         'default_checkbutton': False,
+         'tooltip': _('Извлекать сущности и связи из диалога через LLM-провайдер и сохранять в граф.',
+                       'Extract entities and relations from dialogue via LLM provider and store in graph.')},
+
+        {'label': _('Провайдер для экстракции графа', 'Provider for graph extraction'),
+         'key': 'GRAPH_PROVIDER',
+         'type': 'combobox',
+         'options': hc_provider_names,
+         'default': _('Текущий', 'Current'),
+         'depends_on': 'GRAPH_EXTRACTION_ENABLED',
+         'tooltip': _('Какой LLM-провайдер использовать для экстракции сущностей (рекомендуется лёгкая модель).',
+                       'Which LLM provider to use for entity extraction (lightweight model recommended).')},
+
         {'type': 'end'},
 
         {'label': _('Хвост сообщений', 'Query tail'), 'type': 'subsection'},

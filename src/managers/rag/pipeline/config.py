@@ -50,6 +50,7 @@ class RAGConfig:
     # enabled scopes
     search_memory: bool = True
     search_history: bool = True
+    search_graph: bool = False
 
     # keyword
     kw_enabled: bool = True
@@ -111,6 +112,7 @@ class RAGConfig:
 
         cfg.search_memory = _b(SettingsManager.get("RAG_SEARCH_MEMORY", True), True)
         cfg.search_history = _b(SettingsManager.get("RAG_SEARCH_HISTORY", True), True)
+        cfg.search_graph = _b(SettingsManager.get("RAG_SEARCH_GRAPH", False), False)
 
         cfg.kw_enabled = _b(SettingsManager.get("RAG_KEYWORD_SEARCH", True), True)
         cfg.kw_max_terms = _i(SettingsManager.get("RAG_KEYWORDS_MAX_TERMS", 8), 8)
@@ -185,6 +187,7 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_QUERY_TAIL_MESSAGES": 2,
     "RAG_SEARCH_MEMORY": True,
     "RAG_SEARCH_HISTORY": True,
+    "RAG_SEARCH_GRAPH": False,
     "RAG_KEYWORD_SEARCH": True,
     "RAG_LEMMATIZATION": True,
     "RAG_KEYWORDS_MAX_TERMS": 8,

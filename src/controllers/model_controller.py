@@ -669,22 +669,23 @@ class ModelController:
             prompt_set_path = getattr(char, "base_data_path", None)
             system_input = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
 
-        if event_type == "compress":
+        if event_type in ("compress", "graph_extract"):
             messages = []
             if system_input:
                 messages.append({"role": "system", "content": system_input})
 
             preset_id = preset_id_override
 
-            self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
-                "character_id": char_id,
-                "character_name": char_name or char_id or "Мита",
-            })
+            if event_type == "compress":
+                self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
+                    "character_id": char_id,
+                    "character_name": char_name or char_id or "Мита",
+                })
 
             try:
                 return self.model.generate(messages, stream_callback=None, preset_id=preset_id)
             except Exception as e:
-                logger.error(f"Ошибка при сжатии истории: {e}", exc_info=True)
+                logger.error(f"Ошибка при {event_type}: {e}", exc_info=True)
                 return None
 
         game_state = self.game_state.to_prompt_dict()
@@ -917,6 +918,7 @@ class ModelController:
 
                     mem_lines = []
                     hist_lines = []
+                    graph_lines = []
 
                     for r in results:
                         if not isinstance(r, dict):
@@ -933,6 +935,8 @@ class ModelController:
                                 ))
                             except (KeyError, IndexError, ValueError):
                                 mem_lines.append(f"- [{r.get('score', 0):.3f}] {_clip(r.get('content'))}")
+                        elif src == "graph":
+                            graph_lines.append(f"- [{r.get('score', 0):.2f}] {_clip(r.get('content'))}")
                         elif src == "history":
                             sp = r.get("speaker") or ""
                             tg = r.get("target") or ""
@@ -956,11 +960,12 @@ class ModelController:
                             except (KeyError, IndexError, ValueError):
                                 hist_lines.append(f"- [{r.get('score', 0):.3f}] {_clip(r.get('content'))}")
 
-                    if mem_lines or hist_lines:
+                    if mem_lines or hist_lines or graph_lines:
                         try:
                             rag_block = wrapper_tpl.format(
                                 memory_block="\n".join(mem_lines) if mem_lines else "",
                                 history_block="\n".join(hist_lines) if hist_lines else "",
+                                graph_block="\n".join(graph_lines) if graph_lines else "",
                             )
                         except (KeyError, IndexError):
                             parts = []
@@ -968,12 +973,15 @@ class ModelController:
                                 parts.append("<relevant_memories>\n" + "\n".join(mem_lines) + "\n</relevant_memories>")
                             if hist_lines:
                                 parts.append("<past_context>\n" + "\n".join(hist_lines) + "\n</past_context>")
+                            if graph_lines:
+                                parts.append("<entity_knowledge>\n" + "\n".join(graph_lines) + "\n</entity_knowledge>")
                             rag_block = "\n\n".join(parts)
 
                         separator = "\n\n" if system_input else ""
                         system_input = f"{system_input}{separator}{rag_block}"
                         logger.info(
-                            f"[{char_id}] RAG blocks injected into system_input (mem={len(mem_lines)}, hist={len(hist_lines)}).")
+                            f"[{char_id}] RAG blocks injected into system_input "
+                            f"(mem={len(mem_lines)}, hist={len(hist_lines)}, graph={len(graph_lines)}).")
             except Exception as e:
                 logger.warning(f"[{char_id}] Failed to run RAG (ignored): {e}", exc_info=True)
         return system_input
