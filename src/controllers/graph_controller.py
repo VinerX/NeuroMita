@@ -151,8 +151,15 @@ class GraphController:
                 timeout=30.0,
             )
 
-            if not res or not res[0]:
-                logger.warning("[GraphController] Provider returned empty response.")
+            if not res:
+                logger.warning(
+                    "[GraphController] emit_and_wait returned empty list — "
+                    "either no subscriber for GENERATE_RESPONSE or subscriber returned None "
+                    "(generation failed). Check model_controller logs above."
+                )
+                return
+            if not res[0]:
+                logger.warning(f"[GraphController] Provider returned falsy result: {res[0]!r}")
                 return
 
             raw_response = str(res[0])
