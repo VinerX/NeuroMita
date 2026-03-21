@@ -32,7 +32,7 @@ class EventBus:
 
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
 
-        wait_workers = max(8, max_workers * 2)
+        wait_workers = max(24, max_workers * 4)
         self._wait_executor = ThreadPoolExecutor(max_workers=wait_workers)
 
         self._event_queue = Queue()
