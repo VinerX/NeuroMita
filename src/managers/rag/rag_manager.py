@@ -537,6 +537,16 @@ class RAGManager:
         if cfg.use_fts:
             retrievers.append(FTSRetriever(rag=self, cfg=cfg))
 
+        # Graph retriever (entity-relation triples from knowledge graph).
+        if cfg.search_graph:
+            try:
+                from managers.rag.graph.graph_store import GraphStore
+                gs = GraphStore(self.db, self.character_id)
+                from managers.rag.pipeline.retrievers.graph import GraphRetriever
+                retrievers.append(GraphRetriever(graph_store=gs, cfg=cfg))
+            except Exception as e:
+                logger.debug(f"[RAG][PIPE] GraphRetriever init failed (ignored): {e}", exc_info=True)
+
         # Fast path: vector_only mode -> don't even run other retrievers
         if cfg.combine_mode == "vector_only":
             retrievers = [r for r in retrievers if getattr(r, "name", "") == "vector"]

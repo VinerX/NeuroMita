@@ -24,7 +24,7 @@ class QueryState:
 
 @dataclass
 class Candidate:
-    source: str          # "memory" | "history"
+    source: str          # "memory" | "history" | "graph"
     id: int
     content: Any = None  # keep raw
     meta: dict[str, Any] = field(default_factory=dict)
@@ -88,6 +88,12 @@ class Candidate:
                 "type": self.meta.get("type"),
                 "priority": self.meta.get("priority"),
                 "date_created": self.meta.get("date_created"),
+            })
+        elif self.source == "graph":
+            base.update({
+                "subject": self.meta.get("subject"),
+                "predicate": self.meta.get("predicate"),
+                "object": self.meta.get("object"),
             })
         else:
             base.update({

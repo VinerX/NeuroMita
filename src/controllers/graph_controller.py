@@ -1,0 +1,209 @@
+"""
+GraphController — background entity extraction from dialogue messages.
+
+Subscribes to SAVE_AFTER_RESPONSE, extracts entities/relations via a
+configurable LLM provider (GRAPH_PROVIDER setting), stores them in GraphStore.
+
+Pattern mirrors HistoryController._compress_history() but runs asynchronously
+in a background thread to never block the conversation.
+"""
+from __future__ import annotations
+
+import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, ClassVar, Dict, Optional
+
+from core.events import get_event_bus, Events, Event
+
+logger = logging.getLogger(__name__)
+
+# Default extraction prompt (can be overridden via GRAPH_EXTRACTION_PROMPT setting
+# or via Structural/graph_extraction_prompt.txt in the prompt set).
+_DEFAULT_EXTRACTION_PROMPT = """\
+Extract entities and relations from this dialogue message.
+Output ONLY valid JSON (no commentary):
+{"entities":[{"name":"...","type":"person|place|thing|concept"}],
+ "relations":[{"s":"subject","p":"predicate","o":"object"}]}
+
+Rules:
+- Keep entity names short (1-3 words).
+- Use lowercase for names and predicates.
+- Only extract clearly stated facts, not speculation.
+- If nothing meaningful, return {"entities":[],"relations":[]}
+
+Message:
+{text}"""
+
+
+class GraphController:
+    """Coordinates background graph extraction."""
+
+    _executor: ClassVar[Optional[ThreadPoolExecutor]] = None
+
+    def __init__(self):
+        self.event_bus = get_event_bus()
+        self._subscribe()
+
+    @classmethod
+    def _get_executor(cls) -> ThreadPoolExecutor:
+        if cls._executor is None:
+            cls._executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="graph-extract"
+            )
+        return cls._executor
+
+    def _subscribe(self):
+        self.event_bus.subscribe(
+            Events.History.SAVE_AFTER_RESPONSE,
+            self._on_save_after_response,
+            weak=False,
+        )
+
+    # ------------------------------------------------------------------
+    # Settings helpers
+    # ------------------------------------------------------------------
+    def _get_setting(self, key: str, default: Any = None) -> Any:
+        try:
+            res = self.event_bus.emit_and_wait(
+                Events.Settings.GET_SETTING,
+                {"key": key, "default": default},
+                timeout=1.0,
+            )
+            return res[0] if res else default
+        except Exception:
+            return default
+
+    def _is_enabled(self) -> bool:
+        return bool(self._get_setting("GRAPH_EXTRACTION_ENABLED", False))
+
+    # ------------------------------------------------------------------
+    # Event handler
+    # ------------------------------------------------------------------
+    def _on_save_after_response(self, event: Event) -> None:
+        """Called after every assistant response is saved."""
+        if not self._is_enabled():
+            return
+
+        data = event.data or {}
+        char_id = data.get("character_id")
+        if not char_id:
+            return
+
+        character = data.get("character_ref")
+        if character is None:
+            return
+
+        # Gather the messages that were just saved (user + assistant).
+        user_input = str(data.get("user_input") or "").strip()
+        assistant_output = str(data.get("assistant_output") or data.get("response_text") or "").strip()
+        if not user_input and not assistant_output:
+            return
+
+        text = ""
+        if user_input:
+            text += f"Player: {user_input}\n"
+        if assistant_output:
+            text += f"Character: {assistant_output}\n"
+
+        # Schedule extraction in background.
+        try:
+            self._get_executor().submit(
+                self._extract_and_store, character, char_id, text.strip()
+            )
+        except Exception as e:
+            logger.warning(f"[GraphController] Failed to schedule extraction: {e}")
+
+    # ------------------------------------------------------------------
+    # Background extraction
+    # ------------------------------------------------------------------
+    def _extract_and_store(self, character, char_id: str, text: str) -> None:
+        """Run in background thread: call LLM provider, parse JSON, store graph."""
+        try:
+            # Build prompt.
+            prompt = self._build_extraction_prompt(character, text)
+            if not prompt:
+                return
+
+            # Resolve provider preset.
+            provider_label = str(self._get_setting("GRAPH_PROVIDER", "Current"))
+            preset_id = self._resolve_preset(provider_label)
+
+            # Call provider.
+            res = self.event_bus.emit_and_wait(
+                Events.Model.GENERATE_RESPONSE,
+                {
+                    "user_input": "",
+                    "system_input": prompt,
+                    "image_data": [],
+                    "stream_callback": None,
+                    "message_id": None,
+                    "event_type": "graph_extract",
+                    "preset_id": preset_id,
+                },
+                timeout=30.0,
+            )
+
+            if not res or not res[0]:
+                logger.debug("[GraphController] Provider returned empty response.")
+                return
+
+            raw_response = str(res[0])
+
+            # Parse and store.
+            from managers.rag.graph.entity_extractor import (
+                parse_extraction_response,
+                store_extraction,
+            )
+            from managers.rag.graph.graph_store import GraphStore
+            from managers.database_manager import DatabaseManager
+
+            extraction = parse_extraction_response(raw_response)
+            if extraction is None:
+                logger.debug("[GraphController] Could not parse extraction JSON.")
+                return
+
+            db = DatabaseManager()
+            gs = GraphStore(db, char_id)
+            n_ent, n_rel = store_extraction(gs, extraction)
+
+            if n_ent or n_rel:
+                logger.info(
+                    f"[GraphController] Extracted {n_ent} entities, {n_rel} relations for '{char_id}'"
+                )
+
+        except Exception as e:
+            logger.warning(f"[GraphController] Extraction failed (ignored): {e}", exc_info=True)
+
+    def _build_extraction_prompt(self, character, text: str) -> Optional[str]:
+        """Load extraction prompt template, format with message text."""
+        # Try custom template from settings.
+        custom = self._get_setting("GRAPH_EXTRACTION_PROMPT", None)
+        if custom and str(custom).strip():
+            template = str(custom).strip()
+        else:
+            # Try character's prompt set Structural directory.
+            base_path = getattr(character, "base_data_path", None)
+            if base_path:
+                template_file = os.path.join(base_path, "Structural", "graph_extraction_prompt.txt")
+                if os.path.isfile(template_file):
+                    try:
+                        with open(template_file, "r", encoding="utf-8") as f:
+                            template = f.read().strip()
+                    except Exception:
+                        template = _DEFAULT_EXTRACTION_PROMPT
+                else:
+                    template = _DEFAULT_EXTRACTION_PROMPT
+            else:
+                template = _DEFAULT_EXTRACTION_PROMPT
+
+        return template.replace("{text}", text)
+
+    def _resolve_preset(self, label: str) -> Optional[int]:
+        """Resolve provider label to preset_id (mirrors HistoryController pattern)."""
+        if not label or label in ("Current", "Текущий"):
+            return None
+        try:
+            return int(label)
+        except ValueError:
+            return None
