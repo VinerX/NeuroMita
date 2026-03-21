@@ -572,6 +572,22 @@ class DatabaseManager:
         }
 
         try:
+            # --- ADD missing columns for each table ---
+            for table, columns in desired.items():
+                try:
+                    cursor.execute(f"PRAGMA table_info({table})")
+                    existing_cols = {row[1] for row in cursor.fetchall() if row and len(row) > 1}
+                except Exception:
+                    existing_cols = set()
+
+                for col_name, col_def in columns:
+                    if col_name not in existing_cols:
+                        try:
+                            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
+                            logging.info(f"DB upgrade: added column '{col_name}' to '{table}'")
+                        except Exception as e:
+                            logging.warning(f"DB upgrade: failed to add '{col_name}' to '{table}' (ignored): {e}")
+
             # --- Индекс против дублей history по (character_id, message_id, timestamp) ---
             try:
                 cursor.execute("PRAGMA table_info(history)")
