@@ -218,6 +218,11 @@ class GraphController:
 
             entities = extraction.get("entities", [])
             relations = extraction.get("relations", [])
+            # Normalise: some local models return bare strings instead of dicts.
+            entities = [
+                e if isinstance(e, dict) else {"name": str(e), "type": "thing"}
+                for e in entities if e
+            ]
             logger.info(
                 f"[GraphController] Parsed: {len(entities)} entities, "
                 f"{len(relations)} relations"
