@@ -97,6 +97,7 @@ class FTSRetriever:
                     "priority": rd.get("priority"),
                     "date_created": rd.get("date_created"),
                     "participants": parts,
+                    "entities": rd.get("entities"),
                     # optional debug-only:
                     "_bm25": float(rd.get("rank") or 0.0),
                 },
@@ -155,6 +156,7 @@ class FTSRetriever:
                     "speaker": str(rd.get("speaker") or "").strip() or None,
                     "target": str(rd.get("target") or "").strip() or None,
                     "participants": parts,
+                    "entities": rd.get("entities"),
                     "_bm25": float(rd.get("rank") or 0.0),
                 },
                 features={"sim": sim, "kw": float(kw), "lex": float(lex), "time": 0.0, "entity": 0.0, "prio": 0.0},
@@ -179,7 +181,7 @@ class FTSRetriever:
         if "embedding" in self.rag._history_cols:
             cols.append("h.embedding")
         opt = []
-        for c in ("speaker", "target", "participants"):
+        for c in ("speaker", "target", "participants", "entities"):
             if c in self.rag._history_cols:
                 opt.append(f"h.{c}")
         cols += opt
@@ -236,6 +238,8 @@ class FTSRetriever:
             cols.append("m.embedding")
         if "is_forgotten" in self.rag._mem_cols:
             cols.append("m.is_forgotten")
+        if "entities" in self.rag._mem_cols:
+            cols.append("m.entities")
 
         where = "m.character_id=? AND m.is_deleted=0"
         params: list[Any] = [self.rag.character_id]

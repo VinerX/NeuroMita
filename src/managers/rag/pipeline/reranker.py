@@ -33,9 +33,18 @@ class LinearReranker:
                 + lex * self.cfg.K6
                 + noise
             )
+
+            # Graph candidates get a global multiplier (K7) so they can
+            # realistically compete with vector/memory results despite having
+            # sim=0.  K7=1.0 means no boost; K7=1.5 is the default.
+            graph_boost = 1.0
+            if c.source == "graph":
+                graph_boost = float(self.cfg.K7)
+                score *= graph_boost
+
             c.score = float(score)
             c.debug = c.debug or {}
             c.debug.update({
                 "sim": sim, "time": tf, "prio": pb, "entity": eb, "kw": kw, "lex": lex,
-                "noise": noise, "final": float(score),
+                "noise": noise, "graph_boost": graph_boost, "final": float(score),
             })

@@ -73,6 +73,8 @@ class KeywordOnlyRetriever:
         cols = ["eternal_id", "content", "type", "priority", "date_created", "participants"]
         if has_forgotten_col:
             cols.append("is_forgotten")
+        if "entities" in self.rag._mem_cols:
+            cols.append("entities")
 
         try:
             cur.execute(
@@ -116,6 +118,7 @@ class KeywordOnlyRetriever:
                     "priority": rd.get("priority"),
                     "date_created": rd.get("date_created"),
                     "participants": parts,
+                    "entities": rd.get("entities"),
                 },
                 features={"sim": 0.0, "kw": float(kw), "lex": 0.0, "time": 0.0, "entity": 0.0, "prio": 0.0},
             ))
@@ -137,7 +140,7 @@ class KeywordOnlyRetriever:
         params.extend(kw_params)
 
         cols = ["id", "role", "content", "timestamp"]
-        for opt in ("speaker", "target", "participants"):
+        for opt in ("speaker", "target", "participants", "entities"):
             if opt in self.rag._history_cols:
                 cols.append(opt)
 
@@ -184,6 +187,7 @@ class KeywordOnlyRetriever:
                     "speaker": str(rd.get("speaker") or "").strip() or None,
                     "target": str(rd.get("target") or "").strip() or None,
                     "participants": parts,
+                    "entities": rd.get("entities"),
                 },
                 features={"sim": 0.0, "kw": float(kw), "lex": 0.0, "time": 0.0, "entity": 0.0, "prio": 0.0},
             ))

@@ -9,9 +9,10 @@ in a background thread to never block the conversation.
 """
 from __future__ import annotations
 
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, ClassVar, Dict, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 from core.events import get_event_bus, Events, Event
 from main_logger import logger
@@ -135,7 +136,8 @@ class GraphController:
         logger.info(f"[GraphController] Scheduling extraction for '{char_id}' ({len(text)} chars)")
         try:
             self._get_executor().submit(
-                self._extract_and_store, character, char_id, text.strip()
+                self._extract_and_store, character, char_id, text.strip(),
+                user_input, assistant_output,
             )
         except Exception as e:
             logger.warning(f"[GraphController] Failed to schedule extraction: {e}")
@@ -143,7 +145,14 @@ class GraphController:
     # ------------------------------------------------------------------
     # Background extraction
     # ------------------------------------------------------------------
-    def _extract_and_store(self, character, char_id: str, text: str) -> None:
+    def _extract_and_store(
+        self,
+        character,
+        char_id: str,
+        text: str,
+        user_input: str = "",
+        assistant_output: str = "",
+    ) -> None:
         """Run in background thread: call LLM provider, parse JSON, store graph."""
         try:
             # Build prompt.
@@ -232,8 +241,98 @@ class GraphController:
                 f"for '{char_id}' (total in DB: {gs.get_stats()})"
             )
 
+            # Tag source history messages with extracted entity names.
+            if entities:
+                entity_names = [e.get("name", "") for e in entities if e.get("name")]
+                self._tag_history_messages(
+                    db, char_id, entity_names,
+                    user_input, assistant_output,
+                )
+
         except Exception as e:
             logger.warning(f"[GraphController] Extraction failed (ignored): {e}", exc_info=True)
+
+    @staticmethod
+    def _tag_history_messages(
+        db,
+        char_id: str,
+        entity_names: List[str],
+        user_input: str,
+        assistant_output: str,
+    ) -> None:
+        """Tag recent history rows (matched by content) with extracted entity names.
+
+        Uses a merge strategy: existing entity tags are preserved, new ones added.
+        """
+        if not entity_names:
+            return
+
+        # Find the most recent history entries that match the texts we extracted from.
+        # We match by content substring + character_id to avoid tagging wrong rows.
+        texts_to_match = []
+        if user_input and user_input.strip():
+            texts_to_match.append(user_input.strip())
+        if assistant_output and assistant_output.strip():
+            texts_to_match.append(assistant_output.strip())
+
+        if not texts_to_match:
+            return
+
+        try:
+            with db.connection() as conn:
+                cur = conn.cursor()
+
+                # Check if 'entities' column exists (migration may not have run yet).
+                cur.execute("PRAGMA table_info(history)")
+                cols = {row[1] for row in cur.fetchall()}
+                if "entities" not in cols:
+                    logger.debug("[GraphController] 'entities' column not in history table, skip tagging")
+                    return
+
+                new_names_set = {n.lower().strip() for n in entity_names if n.strip()}
+                entities_json = json.dumps(sorted(new_names_set), ensure_ascii=False)
+
+                for txt in texts_to_match:
+                    # Match by exact content and character_id, most recent first.
+                    cur.execute(
+                        """
+                        SELECT id, entities FROM history
+                        WHERE character_id = ? AND content = ?
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (char_id, txt),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        continue
+
+                    row_id = row[0]
+                    existing_raw = row[1]
+
+                    # Merge with existing entities.
+                    try:
+                        existing = set(json.loads(existing_raw or "[]"))
+                    except (json.JSONDecodeError, TypeError):
+                        existing = set()
+
+                    merged = existing | new_names_set
+                    merged_json = json.dumps(sorted(merged), ensure_ascii=False)
+
+                    cur.execute(
+                        "UPDATE history SET entities = ? WHERE id = ?",
+                        (merged_json, row_id),
+                    )
+
+                conn.commit()
+
+                tagged_count = len(texts_to_match)
+                logger.info(
+                    f"[GraphController] Tagged {tagged_count} history message(s) "
+                    f"with {len(new_names_set)} entities: {sorted(new_names_set)[:5]}"
+                )
+
+        except Exception as e:
+            logger.warning(f"[GraphController] Failed to tag history messages (ignored): {e}", exc_info=True)
 
     def _build_extraction_prompt(self, character, text: str) -> Optional[str]:
         """Load extraction prompt template, format with message text."""

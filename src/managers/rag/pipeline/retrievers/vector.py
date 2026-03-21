@@ -54,6 +54,8 @@ class VectorRetriever:
         cols = ["eternal_id", "content", "embedding", "type", "priority", "date_created", "participants"]
         if has_forgotten_col:
             cols.append("is_forgotten")
+        if "entities" in self.rag._mem_cols:
+            cols.append("entities")
 
         try:
             cur.execute(
@@ -105,6 +107,7 @@ class VectorRetriever:
                     "priority": rd.get("priority"),
                     "date_created": rd.get("date_created"),
                     "participants": parts,
+                    "entities": rd.get("entities"),
                 },
                 features={"sim": sim, "kw": kw, "lex": 0.0, "time": 0.0, "entity": 0.0, "prio": 0.0},
             )
@@ -116,7 +119,7 @@ class VectorRetriever:
         out: list[Candidate] = []
 
         cols = ["id", "role", "content", "embedding", "timestamp"]
-        for opt in ("speaker", "target", "participants"):
+        for opt in ("speaker", "target", "participants", "entities"):
             if opt in self.rag._history_cols:
                 cols.append(opt)
 
@@ -175,6 +178,7 @@ class VectorRetriever:
                     "speaker": str(rd.get("speaker") or "").strip() or None,
                     "target": str(rd.get("target") or "").strip() or None,
                     "participants": parts,
+                    "entities": rd.get("entities"),
                 },
                 features={"sim": sim, "kw": kw, "lex": 0.0, "time": 0.0, "entity": 0.0, "prio": 0.0},
             )

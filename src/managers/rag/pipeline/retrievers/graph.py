@@ -28,6 +28,9 @@ class GraphRetriever:
 
         # Match keywords against entity names.
         matched_names = self._match_entities(qs.keywords)
+        # Store matched entities in QueryState for EntityEnricher to use.
+        if matched_names:
+            qs.matched_entities = qs.matched_entities | set(matched_names)
         if not matched_names:
             return []
 
