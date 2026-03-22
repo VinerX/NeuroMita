@@ -192,40 +192,35 @@ class EmbeddingModelHandler:
             token=hf_token,
         )
 
-        try:
-            model = AutoModel.from_pretrained(
-                self.model_name,
-                trust_remote_code=True,
-                add_pooling_layer=False,
-                attn_implementation="sdpa",
-                use_memory_efficient_attention=False,
-                cache_dir=checkpoints_dir,
-                token=hf_token,
-            )
-            logger.info("Модель успешно загружена с attn_implementation='sdpa'.")
-        except ValueError as ve:
-            sdpa_errors = ["SDPA implementation requires", "Cannot use SDPA on CPU",
-                           "Torch SDPA backend requires torch>=2.0", "flash attention is not available",
-                           "requires a GPU", "No available kernel"]
-            if any(error_msg in str(ve) for error_msg in sdpa_errors):
-                logger.error(
-                    f"ПРЕДУПРЕЖДЕНИЕ: Не удалось использовать 'sdpa'. Переключаемся на 'eager'. (Ошибка: {ve})")
-                model = AutoModel.from_pretrained(
-                    self.model_name,
-                    trust_remote_code=True,
-                    add_pooling_layer=False,
-                    attn_implementation="eager",
-                    use_memory_efficient_attention=False,
-                    cache_dir=checkpoints_dir,
-                    token=hf_token,
-                )
-                logger.info("Модель успешно загружена с attn_implementation='eager'.")
-            else:
-                logger.error(f"Непредвиденная ошибка ValueError при загрузке модели: {ve}")
-                raise ve
-        except Exception as e:
-            logger.error(f"Критическая ошибка при загрузке модели: {e}")
-            raise e
+        # Цепочка загрузки: sdpa+extras → sdpa → eager → базовая
+        # use_memory_efficient_attention и add_pooling_layer — специфичны для Snowflake,
+        # другие модели (XLMRoberta и т.д.) их не поддерживают.
+        _base = dict(trust_remote_code=True, cache_dir=checkpoints_dir, token=hf_token)
+        _load_attempts = [
+            {**_base, "add_pooling_layer": False, "attn_implementation": "sdpa", "use_memory_efficient_attention": False},
+            {**_base, "add_pooling_layer": False, "attn_implementation": "sdpa"},
+            {**_base, "attn_implementation": "sdpa"},
+            {**_base, "add_pooling_layer": False, "attn_implementation": "eager"},
+            {**_base, "attn_implementation": "eager"},
+            {**_base},
+        ]
+
+        model = None
+        last_err = None
+        for i, kwargs in enumerate(_load_attempts):
+            try:
+                model = AutoModel.from_pretrained(self.model_name, **kwargs)
+                attn = kwargs.get("attn_implementation", "default")
+                logger.info(f"Модель загружена (attempt {i+1}, attn={attn}).")
+                break
+            except (TypeError, ValueError) as e:
+                last_err = e
+                logger.debug(f"Загрузка attempt {i+1} не удалась: {e}")
+                continue
+
+        if model is None:
+            logger.error(f"Критическая ошибка при загрузке модели: все попытки провалены. Последняя ошибка: {last_err}")
+            raise last_err
 
         model.eval()
         model.to(self.device)
