@@ -61,6 +61,15 @@ class RAGManager:
         self._history_cols = self.db.get_table_columns("history")
         self._mem_cols = self.db.get_table_columns("memories")
 
+    def _current_model_name(self) -> str:
+        """Возвращает HF-имя текущей модели эмбеддингов (разрешает пресет)."""
+        ms = resolve_model_settings()
+        return ms["hf_name"]
+
+    def _current_dimensions(self) -> int:
+        ms = resolve_model_settings()
+        return int(ms.get("dimensions") or 0)
+
     def _get_bool_setting(self, key: str, default: bool) -> bool:
         try:
             v = SettingsManager.get(key, default)
@@ -439,12 +448,22 @@ class RAGManager:
             return
 
         blob = self._array_to_blob(vector)
+        model = self._current_model_name()
+        dims = self._current_dimensions() or (vector.shape[0] if vector is not None else 0)
         conn = None
         try:
             conn = self.db.get_connection()
+            # Legacy BLOB column (backwards compat)
             conn.execute(
                 "UPDATE memories SET embedding = ? WHERE character_id = ? AND eternal_id = ?",
                 (blob, self.character_id, eternal_id)
+            )
+            # New embeddings table
+            conn.execute(
+                """INSERT OR REPLACE INTO embeddings
+                   (source_table, source_id, character_id, model_name, dimensions, embedding, created_at)
+                   VALUES ('memories', ?, ?, ?, ?, ?, datetime('now'))""",
+                (eternal_id, self.character_id, model, dims, blob),
             )
             conn.commit()
         except sqlite3.OperationalError as e:
@@ -470,12 +489,22 @@ class RAGManager:
             return
 
         blob = self._array_to_blob(vector)
+        model = self._current_model_name()
+        dims = self._current_dimensions() or (vector.shape[0] if vector is not None else 0)
         conn = None
         try:
             conn = self.db.get_connection()
+            # Legacy BLOB column (backwards compat)
             conn.execute(
                 "UPDATE history SET embedding = ? WHERE id = ?",
                 (blob, msg_id)
+            )
+            # New embeddings table
+            conn.execute(
+                """INSERT OR REPLACE INTO embeddings
+                   (source_table, source_id, character_id, model_name, dimensions, embedding, created_at)
+                   VALUES ('history', ?, ?, ?, ?, ?, datetime('now'))""",
+                (msg_id, self.character_id, model, dims, blob),
             )
             conn.commit()
         except sqlite3.OperationalError as e:
@@ -616,28 +645,38 @@ class RAGManager:
 
     def index_all_missing(self, progress_callback=None) -> int:
         """
-        Генерит embedding только для записей без embedding.
+        Генерит embedding только для записей без embedding для текущей модели.
+        Проверяет таблицу embeddings — если для данной модели нет записи, генерирует.
         Возвращает количество записей, где embedding реально записали (updated_count).
         """
+        model = self._current_model_name()
+        dims = self._current_dimensions()
         conn = self.db.get_connection()
         cursor = conn.cursor()
 
         try:
-            # History: только пустые embedding
-            hist_where = "character_id=? AND embedding IS NULL AND content != \'\' AND content IS NOT NULL"
+            # History: нет записи в embeddings для текущей модели
+            hist_where = "h.character_id=? AND h.content != '' AND h.content IS NOT NULL"
             if "is_deleted" in self._history_cols:
-                hist_where += " AND is_deleted=0"
+                hist_where += " AND h.is_deleted=0"
             cursor.execute(
-                f"SELECT id, content FROM history WHERE {hist_where}",
-                (self.character_id,),
+                f"""SELECT h.id, h.content FROM history h
+                    LEFT JOIN embeddings e
+                      ON e.source_table='history' AND e.source_id=h.id
+                      AND e.character_id=h.character_id AND e.model_name=?
+                    WHERE {hist_where} AND e.id IS NULL""",
+                (model, self.character_id),
             )
             hist_rows = cursor.fetchall() or []
 
-            # Memories: только пустые embedding
-            mem_where = "character_id=? AND embedding IS NULL AND is_deleted=0"
+            # Memories: нет записи в embeddings для текущей модели
             cursor.execute(
-                f"SELECT eternal_id, content FROM memories WHERE {mem_where}",
-                (self.character_id,),
+                """SELECT m.eternal_id, m.content FROM memories m
+                   LEFT JOIN embeddings e
+                     ON e.source_table='memories' AND e.source_id=m.eternal_id
+                     AND e.character_id=m.character_id AND e.model_name=?
+                   WHERE m.character_id=? AND m.is_deleted=0 AND e.id IS NULL""",
+                (model, self.character_id),
             )
             mem_rows = cursor.fetchall() or []
 
@@ -655,7 +694,7 @@ class RAGManager:
             prog = make_reindex_progress_logger(self,
                 "index_all_missing",
                 total,
-                extra_meta=f"batch_size={batch_size} | hist={len(hist_rows)} | mem={len(mem_rows)}",
+                extra_meta=f"model={model} | batch_size={batch_size} | hist={len(hist_rows)} | mem={len(mem_rows)}",
             )
             prog.start()
 
@@ -668,7 +707,14 @@ class RAGManager:
                 for (row_id, _), vec in zip(chunk, vecs):
                     if vec is not None:
                         blob = self._array_to_blob(vec)
+                        d = dims or (vec.shape[0] if vec is not None else 0)
                         cursor.execute("UPDATE history SET embedding = ? WHERE id = ?", (blob, row_id))
+                        cursor.execute(
+                            """INSERT OR REPLACE INTO embeddings
+                               (source_table, source_id, character_id, model_name, dimensions, embedding, created_at)
+                               VALUES ('history', ?, ?, ?, ?, ?, datetime('now'))""",
+                            (row_id, self.character_id, model, d, blob),
+                        )
                         updated_count += 1
 
                     processed += 1
@@ -676,9 +722,9 @@ class RAGManager:
                         try:
                             progress_callback(processed, total)
                         except TaskWorker.CancelledError:
-                            raise  # Пробрасываем для прерывания
+                            raise
                         except Exception:
-                            pass  # Другие исключения подавляем
+                            pass
                     prog.tick(processed=processed, updated=updated_count, stage="history")
 
                 conn.commit()
@@ -692,9 +738,16 @@ class RAGManager:
                 for (eternal_id, _), vec in zip(chunk, vecs):
                     if vec is not None:
                         blob = self._array_to_blob(vec)
+                        d = dims or (vec.shape[0] if vec is not None else 0)
                         cursor.execute(
                             "UPDATE memories SET embedding = ? WHERE character_id = ? AND eternal_id = ?",
                             (blob, self.character_id, eternal_id),
+                        )
+                        cursor.execute(
+                            """INSERT OR REPLACE INTO embeddings
+                               (source_table, source_id, character_id, model_name, dimensions, embedding, created_at)
+                               VALUES ('memories', ?, ?, ?, ?, ?, datetime('now'))""",
+                            (eternal_id, self.character_id, model, d, blob),
                         )
                         updated_count += 1
 
@@ -703,9 +756,9 @@ class RAGManager:
                         try:
                             progress_callback(processed, total)
                         except TaskWorker.CancelledError:
-                            raise  # Пробрасываем для прерывания
+                            raise
                         except Exception:
-                            pass  # Другие исключения подавляем
+                            pass
                     prog.tick(processed=processed, updated=updated_count, stage="memories")
 
                 conn.commit()
@@ -725,15 +778,17 @@ class RAGManager:
 
     def index_all(self, progress_callback=None) -> int:
         """
-        Полная переиндексация: пересоздаёт embedding для ВСЕХ записей.
+        Полная переиндексация: пересоздаёт embedding для ВСЕХ записей текущей моделью.
         Возвращает количество записей, где embedding реально записали (updated_count).
         """
+        model = self._current_model_name()
+        dims = self._current_dimensions()
         conn = self.db.get_connection()
         cursor = conn.cursor()
 
         try:
             # History: все записи с контентом
-            hist_where = "character_id=? AND content != \'\' AND content IS NOT NULL"
+            hist_where = "character_id=? AND content != '' AND content IS NOT NULL"
             if "is_deleted" in self._history_cols:
                 hist_where += " AND is_deleted=0"
             cursor.execute(
@@ -765,7 +820,7 @@ class RAGManager:
                 self,
                 "index_all",
                 total,
-                extra_meta=f"batch_size={batch_size} | hist={len(hist_rows)} | mem={len(mem_rows)}",
+                extra_meta=f"model={model} | batch_size={batch_size} | hist={len(hist_rows)} | mem={len(mem_rows)}",
             )
             prog.start()
 
@@ -778,7 +833,14 @@ class RAGManager:
                 for (row_id, _), vec in zip(chunk, vecs):
                     if vec is not None:
                         blob = self._array_to_blob(vec)
+                        d = dims or (vec.shape[0] if vec is not None else 0)
                         cursor.execute("UPDATE history SET embedding = ? WHERE id = ?", (blob, row_id))
+                        cursor.execute(
+                            """INSERT OR REPLACE INTO embeddings
+                               (source_table, source_id, character_id, model_name, dimensions, embedding, created_at)
+                               VALUES ('history', ?, ?, ?, ?, ?, datetime('now'))""",
+                            (row_id, self.character_id, model, d, blob),
+                        )
                         updated_count += 1
 
                     processed += 1
@@ -786,9 +848,9 @@ class RAGManager:
                         try:
                             progress_callback(processed, total)
                         except TaskWorker.CancelledError:
-                            raise  # Пробрасываем для прерывания
+                            raise
                         except Exception:
-                            pass  # Другие исключения подавляем
+                            pass
                     prog.tick(processed=processed, updated=updated_count, stage="history")
 
                 conn.commit()
@@ -802,9 +864,16 @@ class RAGManager:
                 for (eternal_id, _), vec in zip(chunk, vecs):
                     if vec is not None:
                         blob = self._array_to_blob(vec)
+                        d = dims or (vec.shape[0] if vec is not None else 0)
                         cursor.execute(
                             "UPDATE memories SET embedding = ? WHERE character_id = ? AND eternal_id = ?",
                             (blob, self.character_id, eternal_id),
+                        )
+                        cursor.execute(
+                            """INSERT OR REPLACE INTO embeddings
+                               (source_table, source_id, character_id, model_name, dimensions, embedding, created_at)
+                               VALUES ('memories', ?, ?, ?, ?, ?, datetime('now'))""",
+                            (eternal_id, self.character_id, model, d, blob),
                         )
                         updated_count += 1
 
@@ -813,9 +882,9 @@ class RAGManager:
                         try:
                             progress_callback(processed, total)
                         except TaskWorker.CancelledError:
-                            raise  # Пробрасываем для прерывания
+                            raise
                         except Exception:
-                            pass  # Другие исключения подавляем
+                            pass
                     prog.tick(processed=processed, updated=updated_count, stage="memories")
 
                 conn.commit()

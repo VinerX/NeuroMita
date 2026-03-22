@@ -9,6 +9,7 @@ from managers.rag.rag_utils import (
     fts_build_match_query,
     normalize_bm25_to_01,
 )
+from handlers.embedding_presets import resolve_model_settings
 from ..types import Candidate, QueryState
 from ..config import RAGConfig
 
@@ -19,6 +20,7 @@ class FTSRetriever:
     def __init__(self, *, rag: Any, cfg: RAGConfig):
         self.rag = rag
         self.cfg = cfg
+        self._model_name = resolve_model_settings()["hf_name"]
 
     def retrieve(self, qs: QueryState) -> List[Candidate]:
         out: list[Candidate] = []
@@ -179,8 +181,7 @@ class FTSRetriever:
             return []
 
         cols = ["h.id", "bm25(history_fts) AS rank", "h.role", "h.content", "h.timestamp"]
-        if "embedding" in self.rag._history_cols:
-            cols.append("h.embedding")
+        cols.append("e.embedding")
         opt = []
         for c in ("message_id", "speaker", "target", "participants", "entities"):
             if c in self.rag._history_cols:
@@ -198,11 +199,14 @@ class FTSRetriever:
                 SELECT {", ".join(cols)}
                 FROM history_fts
                 JOIN history h ON h.id = history_fts.rowid
+                LEFT JOIN embeddings e
+                  ON e.source_table='history' AND e.source_id=h.id
+                  AND e.character_id=h.character_id AND e.model_name=?
                 WHERE history_fts MATCH ? AND {where}
                 ORDER BY rank
                 LIMIT ?
                 """,
-                tuple([match_q] + params + [int(top_k)]),
+                tuple([self._model_name, match_q] + params + [int(top_k)]),
             )
             rows = cursor.fetchall() or []
             keys = [c.split(" AS ")[-1].split(".")[-1] for c in cols]
@@ -235,8 +239,7 @@ class FTSRetriever:
             "m.date_created",
             "m.participants",
         ]
-        if "embedding" in self.rag._mem_cols:
-            cols.append("m.embedding")
+        cols.append("e.embedding")
         if "is_forgotten" in self.rag._mem_cols:
             cols.append("m.is_forgotten")
         if "entities" in self.rag._mem_cols:
@@ -258,11 +261,14 @@ class FTSRetriever:
                 SELECT {", ".join(cols)}
                 FROM memories_fts
                 JOIN memories m ON m.id = memories_fts.rowid
+                LEFT JOIN embeddings e
+                  ON e.source_table='memories' AND e.source_id=m.eternal_id
+                  AND e.character_id=m.character_id AND e.model_name=?
                 WHERE memories_fts MATCH ? AND {where}
                 ORDER BY rank
                 LIMIT ?
                 """,
-                tuple([match_q] + params + [int(top_k)]),
+                tuple([self._model_name, match_q] + params + [int(top_k)]),
             )
             rows = cursor.fetchall() or []
             keys = [c.split(" AS ")[-1].split(".")[-1] for c in cols]

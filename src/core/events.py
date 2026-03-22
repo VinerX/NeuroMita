@@ -645,6 +645,7 @@ class Events:
     class RAG:
         GET_EMBEDDING = "rag_get_embedding"
         GET_EMBEDDINGS = "rag_get_embeddings"
+        MODEL_CHANGED = "rag_model_changed"
 
     class Install:
         """Унифицированные события для менеджера установок"""

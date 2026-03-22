@@ -7,6 +7,18 @@ from managers.rag.pipeline.config import RAG_DEFAULTS
 from handlers.embedding_presets import list_preset_names
 
 
+def _reindex_embeddings(gui) -> None:
+    """Trigger full re-indexing of embeddings with the current model."""
+    eb = get_event_bus()
+    eb.emit(Events.RAG.MODEL_CHANGED, {"reindex_requested": True})
+    QMessageBox.information(
+        gui,
+        _("Переиндексация", "Reindex"),
+        _("Запрос на переиндексацию эмбеддингов отправлен. Это может занять время.",
+          "Embedding reindex request sent. This may take a while."),
+    )
+
+
 def _reset_rag_defaults(gui) -> None:
     """Reset all RAG settings to optimal defaults and update UI widgets."""
     for key, val in RAG_DEFAULTS.items():
@@ -365,6 +377,11 @@ def setup_model_interaction_controls(self, parent):
          'depends_on': 'RAG_ENABLED',
          'tooltip': _('Токен HuggingFace для ускорения загрузки и доступа к gated-моделям.',
                       'HuggingFace token for faster downloads and gated model access.')},
+
+        {'type': 'button_group', 'buttons': [
+            {'label': _('Переиндексировать эмбеддинги', 'Reindex embeddings'),
+             'command': lambda: _reindex_embeddings(self)},
+        ]},
 
         {'type': 'end'},
 

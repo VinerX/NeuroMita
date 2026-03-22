@@ -515,6 +515,26 @@ class DatabaseManager:
            '''
         )
 
+        cursor.execute(
+            '''
+               CREATE TABLE IF NOT EXISTS embeddings (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   source_table TEXT NOT NULL,
+                   source_id INTEGER NOT NULL,
+                   character_id TEXT NOT NULL,
+                   model_name TEXT NOT NULL,
+                   dimensions INTEGER NOT NULL DEFAULT 0,
+                   embedding BLOB NOT NULL,
+                   created_at TEXT,
+                   UNIQUE(source_table, source_id, character_id, model_name)
+               )
+           '''
+        )
+        cursor.execute(
+            '''CREATE INDEX IF NOT EXISTS idx_emb_lookup
+               ON embeddings(source_table, character_id, model_name)'''
+        )
+
         conn.commit()
         conn.close()
 
@@ -622,12 +642,103 @@ class DatabaseManager:
             # --- FTS5 lexical indexes (safe, optional) ---
             self._ensure_fts5_schema(conn)
 
+            # --- Ensure embeddings table exists (for DBs created before this code) ---
+            try:
+                cursor.execute(
+                    """CREATE TABLE IF NOT EXISTS embeddings (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_table TEXT NOT NULL,
+                        source_id INTEGER NOT NULL,
+                        character_id TEXT NOT NULL,
+                        model_name TEXT NOT NULL,
+                        dimensions INTEGER NOT NULL DEFAULT 0,
+                        embedding BLOB NOT NULL,
+                        created_at TEXT,
+                        UNIQUE(source_table, source_id, character_id, model_name)
+                    )"""
+                )
+                cursor.execute(
+                    """CREATE INDEX IF NOT EXISTS idx_emb_lookup
+                       ON embeddings(source_table, character_id, model_name)"""
+                )
+            except Exception as e:
+                logging.warning(f"DB upgrade: failed to ensure embeddings table (ignored): {e}")
+
+            # --- Migrate old BLOB embeddings into separate table ---
+            self._migrate_embeddings_to_table(cursor)
+
             conn.commit()
         finally:
             try:
                 conn.close()
             except Exception:
                 pass
+
+    def _migrate_embeddings_to_table(self, cursor: sqlite3.Cursor) -> None:
+        """Migrate BLOB embeddings from history/memories into the separate embeddings table.
+
+        Uses a flag in 'variables' table (character_id='_system', key='_embeddings_migrated')
+        to avoid re-running. The old BLOB columns are NOT dropped for backwards compatibility.
+        """
+        DEFAULT_MODEL = "Snowflake/snowflake-arctic-embed-m-v2.0"
+        DEFAULT_DIM = 768
+
+        try:
+            cursor.execute(
+                "SELECT value FROM variables WHERE character_id='_system' AND key='_embeddings_migrated'"
+            )
+            row = cursor.fetchone()
+            if row and str(row[0]).strip() == "1":
+                return  # already migrated
+        except Exception:
+            pass
+
+        migrated = 0
+        try:
+            # History embeddings
+            cursor.execute(
+                "SELECT id, character_id, embedding FROM history WHERE embedding IS NOT NULL"
+            )
+            for row_id, char_id, blob in cursor.fetchall():
+                if not blob:
+                    continue
+                try:
+                    cursor.execute(
+                        """INSERT OR IGNORE INTO embeddings
+                           (source_table, source_id, character_id, model_name, dimensions, embedding, created_at)
+                           VALUES ('history', ?, ?, ?, ?, ?, datetime('now'))""",
+                        (row_id, char_id, DEFAULT_MODEL, DEFAULT_DIM, blob),
+                    )
+                    migrated += 1
+                except Exception:
+                    pass
+
+            # Memories embeddings
+            cursor.execute(
+                "SELECT eternal_id, character_id, embedding FROM memories WHERE embedding IS NOT NULL"
+            )
+            for eternal_id, char_id, blob in cursor.fetchall():
+                if not blob:
+                    continue
+                try:
+                    cursor.execute(
+                        """INSERT OR IGNORE INTO embeddings
+                           (source_table, source_id, character_id, model_name, dimensions, embedding, created_at)
+                           VALUES ('memories', ?, ?, ?, ?, ?, datetime('now'))""",
+                        (eternal_id, char_id, DEFAULT_MODEL, DEFAULT_DIM, blob),
+                    )
+                    migrated += 1
+                except Exception:
+                    pass
+
+            # Mark as migrated
+            cursor.execute(
+                "INSERT OR REPLACE INTO variables (character_id, key, value) VALUES ('_system', '_embeddings_migrated', '1')"
+            )
+            if migrated:
+                logging.info(f"DB upgrade: migrated {migrated} embeddings to separate table")
+        except Exception as e:
+            logging.warning(f"DB upgrade: embedding migration failed (ignored): {e}")
 
     def _drop_fts_triggers(self, conn: sqlite3.Connection) -> None:
         """Drop FTS sync triggers so base table writes never fail (safe no-op)."""

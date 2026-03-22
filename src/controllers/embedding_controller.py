@@ -82,6 +82,11 @@ class EmbeddingController:
         logger.info(f"EmbeddingController: настройка '{key}' изменилась, сбрасываю handler")
         with self._init_lock:
             self.handler = None
+        if key in ("RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM"):
+            self.event_bus.emit(Events.RAG.MODEL_CHANGED, {
+                "key": key,
+                "value": data.get("value"),
+            })
 
     def _ensure_handler(self) -> Optional[EmbeddingModelHandler]:
         """

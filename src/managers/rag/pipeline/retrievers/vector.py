@@ -4,6 +4,7 @@ from typing import Any, List
 import numpy as np
 
 from managers.rag.rag_utils import rag_clean_text, keyword_score
+from handlers.embedding_presets import resolve_model_settings
 from ..types import Candidate, QueryState
 from ..config import RAGConfig
 
@@ -14,6 +15,7 @@ class VectorRetriever:
     def __init__(self, *, rag: Any, cfg: RAGConfig):
         self.rag = rag
         self.cfg = cfg
+        self._model_name = resolve_model_settings()["hf_name"]
 
     def retrieve(self, qs: QueryState) -> List[Candidate]:
         if qs.query_vec is None:
@@ -24,11 +26,11 @@ class VectorRetriever:
         with self.rag.db.connection() as conn:
             cur = conn.cursor()
 
-            # --- Memories (embedding NOT NULL)
+            # --- Memories ---
             if self.cfg.search_memory:
                 out.extend(self._memories(cur, qs))
 
-            # --- History (embedding NOT NULL)
+            # --- History ---
             if self.cfg.search_history:
                 out.extend(self._histories(cur, qs))
 
@@ -37,30 +39,36 @@ class VectorRetriever:
     def _memories(self, cur, qs: QueryState) -> list[Candidate]:
         out: list[Candidate] = []
 
-        mem_where = "character_id=? AND is_deleted=0 AND embedding IS NOT NULL"
-        params = [self.rag.character_id]
+        mem_where = "m.character_id=? AND m.is_deleted=0"
+        params: list = [self.rag.character_id]
 
         has_forgotten_col = ("is_forgotten" in self.rag._mem_cols)
         if has_forgotten_col:
             if self.cfg.memory_mode == "forgotten":
-                mem_where += " AND is_forgotten=1"
+                mem_where += " AND m.is_forgotten=1"
             elif self.cfg.memory_mode == "active":
-                mem_where += " AND is_forgotten=0"
+                mem_where += " AND m.is_forgotten=0"
         else:
-            # old DB behavior: if asked forgotten-only but column missing -> return nothing
             if self.cfg.memory_mode == "forgotten":
                 return out
 
-        cols = ["eternal_id", "content", "embedding", "type", "priority", "date_created", "participants"]
+        cols = ["m.eternal_id", "m.content", "e.embedding", "m.type", "m.priority", "m.date_created", "m.participants"]
+        keys = ["eternal_id", "content", "embedding", "type", "priority", "date_created", "participants"]
         if has_forgotten_col:
-            cols.append("is_forgotten")
+            cols.append("m.is_forgotten")
+            keys.append("is_forgotten")
         if "entities" in self.rag._mem_cols:
-            cols.append("entities")
+            cols.append("m.entities")
+            keys.append("entities")
 
         try:
             cur.execute(
-                f"SELECT {', '.join(cols)} FROM memories WHERE {mem_where}",
-                tuple(params),
+                f"""SELECT {', '.join(cols)} FROM memories m
+                    INNER JOIN embeddings e
+                      ON e.source_table='memories' AND e.source_id=m.eternal_id
+                      AND e.character_id=m.character_id AND e.model_name=?
+                    WHERE {mem_where}""",
+                tuple([self._model_name] + params),
             )
             rows = cur.fetchall() or []
         except Exception:
@@ -69,7 +77,7 @@ class VectorRetriever:
         thr = float(self.cfg.threshold or 0.0)
 
         for row in rows:
-            rd = dict(zip(cols, row))
+            rd = dict(zip(keys, row))
             eternal_id = int(rd.get("eternal_id") or 0)
             if eternal_id <= 0:
                 continue
@@ -93,7 +101,6 @@ class VectorRetriever:
                 except Exception:
                     kw = 0.0
 
-            # keep behavior: kw can "rescue" below-threshold sim
             if sim < thr and (not self.cfg.kw_enabled or kw < float(self.cfg.kw_min_score or 0.0)):
                 continue
 
@@ -118,20 +125,26 @@ class VectorRetriever:
     def _histories(self, cur, qs: QueryState) -> list[Candidate]:
         out: list[Candidate] = []
 
-        cols = ["id", "role", "content", "embedding", "timestamp"]
+        cols = ["h.id", "h.role", "h.content", "e.embedding", "h.timestamp"]
+        keys = ["id", "role", "content", "embedding", "timestamp"]
         for opt in ("message_id", "speaker", "target", "participants", "entities"):
             if opt in self.rag._history_cols:
-                cols.append(opt)
+                cols.append(f"h.{opt}")
+                keys.append(opt)
 
-        where = "character_id=? AND embedding IS NOT NULL AND is_active=0"
-        params = [self.rag.character_id]
+        where = "h.character_id=? AND h.is_active=0"
+        params: list = [self.rag.character_id]
         if "is_deleted" in self.rag._history_cols:
-            where += " AND is_deleted=0"
+            where += " AND h.is_deleted=0"
 
         try:
             cur.execute(
-                f"SELECT {', '.join(cols)} FROM history WHERE {where}",
-                tuple(params),
+                f"""SELECT {', '.join(cols)} FROM history h
+                    INNER JOIN embeddings e
+                      ON e.source_table='history' AND e.source_id=h.id
+                      AND e.character_id=h.character_id AND e.model_name=?
+                    WHERE {where}""",
+                tuple([self._model_name] + params),
             )
             rows = cur.fetchall() or []
         except Exception:
@@ -140,7 +153,7 @@ class VectorRetriever:
         thr = float(self.cfg.threshold or 0.0)
 
         for row in rows:
-            rd = dict(zip(cols, row))
+            rd = dict(zip(keys, row))
             hid = int(rd.get("id") or 0)
             if hid <= 0:
                 continue
