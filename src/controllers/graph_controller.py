@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, ClassVar, Dict, List, Optional
 
@@ -123,6 +124,8 @@ class GraphController:
         # Gather the messages that were just saved (user + assistant).
         user_input = str(data.get("user_input") or "").strip()
         assistant_output = str(data.get("assistant_output") or data.get("response_text") or "").strip()
+        # raw_response still contains <+memory> tags (before NLP stripping).
+        raw_response = str(data.get("raw_response") or "").strip()
         if not user_input and not assistant_output:
             return
 
@@ -137,7 +140,7 @@ class GraphController:
         try:
             self._get_executor().submit(
                 self._extract_and_store, character, char_id, text.strip(),
-                user_input, assistant_output,
+                user_input, assistant_output, raw_response,
             )
         except Exception as e:
             logger.warning(f"[GraphController] Failed to schedule extraction: {e}")
@@ -152,6 +155,7 @@ class GraphController:
         text: str,
         user_input: str = "",
         assistant_output: str = "",
+        raw_response: str = "",
     ) -> None:
         """Run in background thread: call LLM provider, parse JSON, store graph."""
         try:
@@ -253,6 +257,9 @@ class GraphController:
                     db, char_id, entity_names,
                     user_input, assistant_output,
                 )
+                self._tag_memory_messages(
+                    db, char_id, entity_names, raw_response or assistant_output,
+                )
 
         except Exception as e:
             logger.warning(f"[GraphController] Extraction failed (ignored): {e}", exc_info=True)
@@ -338,6 +345,104 @@ class GraphController:
 
         except Exception as e:
             logger.warning(f"[GraphController] Failed to tag history messages (ignored): {e}", exc_info=True)
+
+    # Regex mirrors character.py:585 — matches <+memory> tags (new memories only).
+    _MEMORY_TAG_RE = re.compile(
+        r"<\+memory(?:_[a-zA-Z]+)?>(.*?)</\+?memory>", re.DOTALL
+    )
+
+    @classmethod
+    def _tag_memory_messages(
+        cls,
+        db,
+        char_id: str,
+        entity_names: List[str],
+        assistant_output: str,
+    ) -> None:
+        """Tag memories created from <+memory> tags in assistant_output.
+
+        Parses <+memory>content</memory> from the raw LLM output, finds
+        the matching rows in ``memories`` by exact content, and merges
+        extracted entity names into ``memories.entities``.
+        """
+        if not entity_names or not assistant_output:
+            return
+
+        # Extract memory contents from the raw assistant output.
+        matches = cls._MEMORY_TAG_RE.findall(assistant_output)
+        if not matches:
+            return
+
+        # Parse memory content the same way character.py does:
+        # <+memory>priority|content</memory>  or  <+memory>content</memory>
+        mem_contents = []
+        for raw in matches:
+            content = raw.strip()
+            if not content:
+                continue
+            parts = [p.strip() for p in content.split("|", 1)]
+            if len(parts) == 2 and parts[0].lower() in ("low", "normal", "high", "critical"):
+                mem_contents.append(parts[1])
+            else:
+                mem_contents.append(content)
+
+        if not mem_contents:
+            return
+
+        try:
+            with db.connection() as conn:
+                cur = conn.cursor()
+
+                # Check if 'entities' column exists.
+                cur.execute("PRAGMA table_info(memories)")
+                cols = {row[1] for row in cur.fetchall()}
+                if "entities" not in cols:
+                    logger.debug("[GraphController] 'entities' column not in memories table, skip tagging")
+                    return
+
+                new_names_set = {n.lower().strip() for n in entity_names if n.strip()}
+                tagged = 0
+
+                for mem_text in mem_contents:
+                    cur.execute(
+                        """
+                        SELECT id, entities FROM memories
+                        WHERE character_id = ? AND content = ? AND is_deleted = 0
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (char_id, mem_text),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        continue
+
+                    row_id = row[0]
+                    existing_raw = row[1]
+
+                    try:
+                        existing = set(json.loads(existing_raw or "[]"))
+                    except (json.JSONDecodeError, TypeError):
+                        existing = set()
+
+                    merged = existing | new_names_set
+                    merged_json = json.dumps(sorted(merged), ensure_ascii=False)
+
+                    cur.execute(
+                        "UPDATE memories SET entities = ? WHERE id = ?",
+                        (merged_json, row_id),
+                    )
+                    tagged += 1
+
+                conn.commit()
+
+                if tagged:
+                    logger.info(
+                        f"[GraphController] Tagged {tagged} memory(ies) "
+                        f"with {len(new_names_set)} entities: {sorted(new_names_set)[:5]}"
+                    )
+
+        except Exception as e:
+            logger.warning(f"[GraphController] Failed to tag memories (ignored): {e}", exc_info=True)
 
     def _build_extraction_prompt(self, character, text: str) -> Optional[str]:
         """Load extraction prompt template, format with message text."""

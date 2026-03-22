@@ -874,6 +874,7 @@ class ModelController:
                 "character_ref": char,
                 "user_input": user_input,
                 "assistant_output": final_text,
+                "raw_response": raw_text,
             })
 
             voice_profile = None
