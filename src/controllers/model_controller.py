@@ -869,12 +869,13 @@ class ModelController:
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
             # Notify graph extraction (and any future subscribers).
+            created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
             self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
                 "character_id": char_id,
                 "character_ref": char,
                 "user_input": user_input,
                 "assistant_output": final_text,
-                "raw_response": raw_text,
+                "created_memory_ids": created_memory_ids,
             })
 
             voice_profile = None

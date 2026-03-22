@@ -582,6 +582,7 @@ class Character:
         Extracts memory operation tags (<+memory>, <#memory>, <-memory>)
         from the LLM response, processes them, and removes them from the response string.
         """
+        self._last_created_memory_ids: list[int] = []
         memory_pattern = r"<([+#-])memory(?:_([a-zA-Z]+))?>(.*?)</\1?memory>"
 
         def memory_processor(match_obj):
@@ -606,9 +607,11 @@ class Character:
                         mem_content = content
                         priority = tag_priority or "normal"
 
-                    self.memory_system.add_memory(
+                    eid = self.memory_system.add_memory(
                         priority=priority, content=mem_content
                     )
+                    if eid is not None:
+                        self._last_created_memory_ids.append(eid)
                     logger.info(
                         f"[{self.char_id}] Added memory (P: {priority}): {mem_content[:50]}..."
                     )

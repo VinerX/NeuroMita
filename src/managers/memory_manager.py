@@ -282,6 +282,7 @@ class MemoryManager:
         pass
 
     def add_memory(self, content, date=None, priority="Normal", memory_type="fact", skip_if_exists=False, entities=None):
+        """Add a new memory. Returns the eternal_id of the created memory, or None."""
         if skip_if_exists and content:
             with self.db.connection() as conn:
                 cur = conn.cursor()
@@ -290,7 +291,7 @@ class MemoryManager:
                     (self.character_name, str(content)),
                 )
                 if cur.fetchone():
-                    return
+                    return None
 
         # забываем ПЕРЕД добавлением новой
         self._forget_over_limit_memories()
@@ -360,6 +361,55 @@ class MemoryManager:
                 self._get_embed_executor().submit(_embed_job)
             except Exception as e:
                 logging.warning(f"RAG failed to schedule memory embedding (ignored): {e}", exc_info=True)
+
+        return new_id
+
+    def tag_with_entities(self, eternal_id: int, entity_names: list) -> bool:
+        """Merge entity names into the entities column for a given memory."""
+        if not entity_names:
+            return False
+
+        cols = self._mem_cols()
+        if "entities" not in cols:
+            return False
+
+        new_names = {str(n).lower().strip() for n in entity_names if str(n).strip()}
+        if not new_names:
+            return False
+
+        conn = self.db.get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT entities FROM memories WHERE character_id = ? AND eternal_id = ? AND is_deleted = 0",
+                (self.character_name, eternal_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                return False
+
+            try:
+                existing = set(json.loads(row[0] or "[]"))
+            except (json.JSONDecodeError, TypeError):
+                existing = set()
+
+            merged = existing | new_names
+            merged_json = json.dumps(sorted(merged), ensure_ascii=False)
+
+            cur.execute(
+                "UPDATE memories SET entities = ? WHERE character_id = ? AND eternal_id = ?",
+                (merged_json, self.character_name, eternal_id),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            logging.warning(f"[MemoryManager] tag_with_entities failed (ignored): {e}", exc_info=True)
+            return False
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def update_memory(self, number, content, priority=None):
         """
