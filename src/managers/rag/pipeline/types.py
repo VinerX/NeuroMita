@@ -102,6 +102,7 @@ class Candidate:
             base.update({
                 "role": self.meta.get("role"),
                 "date": self.meta.get("date"),
+                "message_id": self.meta.get("message_id"),
                 "speaker": self.meta.get("speaker"),
                 "target": self.meta.get("target"),
                 "participants": self.meta.get("participants") or [],

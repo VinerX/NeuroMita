@@ -249,6 +249,33 @@ class GraphStore:
             cols = [d[0] for d in cur.description]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
 
+    def get_all_relations(self, limit: int = 10000) -> List[Dict]:
+        """Export all relations as dicts with resolved entity names."""
+        with self.db.connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT
+                    e1.name          AS subject,
+                    r.predicate,
+                    e2.name          AS object,
+                    r.confidence,
+                    e1.entity_type   AS subject_type,
+                    e2.entity_type   AS object_type,
+                    r.source_message_id,
+                    r.created_at
+                FROM graph_relations r
+                JOIN graph_entities e1 ON r.subject_id = e1.id
+                JOIN graph_entities e2 ON r.object_id  = e2.id
+                WHERE r.character_id = ?
+                ORDER BY r.confidence DESC
+                LIMIT ?
+                """,
+                (self.character_id, limit),
+            )
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+
     def get_stats(self) -> Dict[str, int]:
         """Quick statistics for debugging."""
         with self.db.connection() as conn:
