@@ -1,22 +1,294 @@
-from PyQt6.QtWidgets import QLineEdit, QCheckBox, QComboBox, QMessageBox
+import os
+
+from PyQt6.QtWidgets import (
+    QLineEdit, QCheckBox, QComboBox, QMessageBox,
+    QProgressDialog, QLabel, QHBoxLayout, QWidget, QPushButton,
+)
+from PyQt6.QtCore import Qt
 
 from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
 from core.events import get_event_bus, Events
 from managers.rag.pipeline.config import RAG_DEFAULTS
-from handlers.embedding_presets import list_preset_names
+from handlers.embedding_presets import list_preset_names, resolve_model_settings
+
+
+def _get_embed_status_text() -> str:
+    """Check if current model has missing embeddings."""
+    try:
+        from managers.database_manager import DatabaseManager
+        ms = resolve_model_settings()
+        model = ms["hf_name"]
+        db = DatabaseManager()
+        conn = db.get_connection()
+        cur = conn.cursor()
+
+        # Count rows without embedding for current model
+        cur.execute(
+            """SELECT COUNT(*) FROM history h
+               LEFT JOIN embeddings e
+                 ON e.source_table='history' AND e.source_id=h.id
+                 AND e.character_id=h.character_id AND e.model_name=?
+               WHERE h.content != '' AND h.content IS NOT NULL AND e.id IS NULL""",
+            (model,),
+        )
+        missing_hist = cur.fetchone()[0] or 0
+
+        cur.execute(
+            """SELECT COUNT(*) FROM memories m
+               LEFT JOIN embeddings e
+                 ON e.source_table='memories' AND e.source_id=m.eternal_id
+                 AND e.character_id=m.character_id AND e.model_name=?
+               WHERE m.is_deleted=0 AND e.id IS NULL""",
+            (model,),
+        )
+        missing_mem = cur.fetchone()[0] or 0
+        conn.close()
+
+        total_missing = missing_hist + missing_mem
+        if total_missing > 0:
+            return _("Нужна переиндексация ({n} записей)", "Reindex needed ({n} records)").format(n=total_missing)
+        return _("Актуально", "Up to date")
+    except Exception:
+        return "?"
+
+
+def _get_model_download_status() -> str:
+    """Check if current model is cached locally."""
+    try:
+        import sys
+        ms = resolve_model_settings()
+        hf_name = ms["hf_name"]
+        script_dir = os.path.dirname(sys.executable)
+        checkpoints_dir = os.path.join(script_dir, "checkpoints")
+
+        # HF caches models in subdirectories like models--org--name
+        cache_dir_name = "models--" + hf_name.replace("/", "--")
+        model_path = os.path.join(checkpoints_dir, cache_dir_name)
+
+        if os.path.isdir(model_path):
+            return _("Скачана", "Downloaded")
+        return _("Не скачана", "Not downloaded")
+    except Exception:
+        return "?"
 
 
 def _reindex_embeddings(gui) -> None:
-    """Trigger full re-indexing of embeddings with the current model."""
-    eb = get_event_bus()
-    eb.emit(Events.RAG.MODEL_CHANGED, {"reindex_requested": True})
-    QMessageBox.information(
-        gui,
-        _("Переиндексация", "Reindex"),
-        _("Запрос на переиндексацию эмбеддингов отправлен. Это может занять время.",
-          "Embedding reindex request sent. This may take a while."),
+    """Run full reindex of embeddings for all characters with progress dialog."""
+    from ui.settings.character_settings.logic import FullReindexAllCharactersWorker
+    from managers.database_manager import DatabaseManager
+
+    db = DatabaseManager()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT DISTINCT character_id FROM history")
+    cids = [r[0] for r in cur.fetchall() if r[0]]
+    conn.close()
+
+    if not cids:
+        QMessageBox.information(gui, _("Готово", "Done"), _("Нет персонажей для переиндексации.", "No characters to reindex."))
+        return
+
+    worker = FullReindexAllCharactersWorker(cids)
+
+    progress = QProgressDialog(
+        _("Переиндексация эмбеддингов...", "Reindexing embeddings..."),
+        _("Отмена", "Cancel"), 0, 100, gui,
     )
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setValue(0)
+
+    def on_progress(curr, total):
+        try:
+            progress.setRange(0, max(int(total), 1))
+            progress.setValue(min(int(curr), max(int(total), 1)))
+        except Exception:
+            pass
+
+    def on_finished(count):
+        progress.close()
+        QMessageBox.information(
+            gui, _("Готово", "Done"),
+            _("Переиндексировано: {n}", "Reindexed: {n}").format(n=int(count or 0)),
+        )
+        # Update status label
+        if hasattr(gui, '_embed_status_label'):
+            gui._embed_status_label.setText(_get_embed_status_text())
+
+    def on_error(msg):
+        progress.close()
+        QMessageBox.critical(gui, _("Ошибка", "Error"), str(msg))
+
+    def on_cancel():
+        try:
+            worker.requestInterruption()
+        except Exception:
+            pass
+        progress.close()
+
+    worker.progress_signal.connect(on_progress)
+    worker.finished_signal.connect(on_finished)
+    worker.error_signal.connect(on_error)
+    progress.canceled.connect(on_cancel)
+
+    gui._embed_reindex_worker = worker
+    progress.show()
+    worker.start()
+
+
+def _extract_entities_all(gui) -> None:
+    """Run entity extraction for all history messages via GraphController."""
+    from managers.database_manager import DatabaseManager
+    from managers.rag.graph.graph_store import GraphStore
+    from managers.rag.graph.entity_extractor import parse_extraction_response, store_extraction
+    from ui.task_worker import TaskWorker
+
+    db = DatabaseManager()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT DISTINCT character_id FROM history")
+    cids = [r[0] for r in cur.fetchall() if r[0]]
+    conn.close()
+
+    if not cids:
+        QMessageBox.information(gui, _("Готово", "Done"), _("Нет персонажей.", "No characters."))
+        return
+
+    def _do_extract(*, progress_callback=None):
+        eb = get_event_bus()
+        from managers.settings_manager import SettingsManager
+
+        total_processed = 0
+        grand_total = 0
+
+        # Count total messages
+        for cid in cids:
+            c = db.get_connection()
+            cur2 = c.cursor()
+            cur2.execute(
+                "SELECT COUNT(*) FROM history WHERE character_id=? AND content IS NOT NULL AND content != ''",
+                (cid,),
+            )
+            grand_total += cur2.fetchone()[0] or 0
+            c.close()
+
+        for cid in cids:
+            gs = GraphStore(db, cid)
+            c = db.get_connection()
+            cur2 = c.cursor()
+            cur2.execute(
+                """SELECT id, role, content FROM history
+                   WHERE character_id=? AND content IS NOT NULL AND content != ''
+                   ORDER BY id""",
+                (cid,),
+            )
+            rows = cur2.fetchall() or []
+            c.close()
+
+            # Process in pairs (user + assistant)
+            i = 0
+            while i < len(rows):
+                hid, role, content = rows[i]
+                user_text = ""
+                assistant_text = ""
+
+                if role == "user":
+                    user_text = content.strip()
+                    if i + 1 < len(rows) and rows[i + 1][1] != "user":
+                        assistant_text = rows[i + 1][2].strip()
+                        i += 1
+                else:
+                    assistant_text = content.strip()
+
+                text = ""
+                if user_text:
+                    text += f"Player: {user_text}\n"
+                if assistant_text:
+                    text += f"Character: {assistant_text}\n"
+
+                if text.strip():
+                    # Use LLM for extraction via event
+                    prompt = f"""Extract entities and relations from this dialogue message.
+Output ONLY valid JSON (no commentary):
+{{"entities":[{{"name":"...","type":"person|place|thing|concept"}}],
+ "relations":[{{"s":"subject","p":"predicate","o":"object"}}]}}
+
+Rules:
+- Keep entity names short (1-3 words).
+- Use lowercase for names and predicates.
+- Only extract clearly stated facts, not speculation.
+- If nothing meaningful, return {{"entities":[],"relations":[]}}
+
+Message:
+{text.strip()}"""
+
+                    try:
+                        res = eb.emit_and_wait(
+                            Events.Model.GENERATE_RESPONSE,
+                            {
+                                "user_input": "",
+                                "system_input": prompt,
+                                "image_data": [],
+                                "stream_callback": None,
+                                "message_id": None,
+                                "event_type": "graph_extract",
+                            },
+                            timeout=30.0,
+                        )
+                        if res and res[0]:
+                            parsed = parse_extraction_response(str(res[0]))
+                            if parsed:
+                                store_extraction(gs, parsed, hid)
+                    except Exception:
+                        pass
+
+                total_processed += 1
+                i += 1
+                if progress_callback and total_processed % 5 == 0:
+                    try:
+                        progress_callback(total_processed, grand_total)
+                    except Exception:
+                        pass
+
+        return total_processed
+
+    worker = TaskWorker(_do_extract, use_progress=True)
+
+    progress = QProgressDialog(
+        _("Извлечение сущностей...", "Extracting entities..."),
+        _("Отмена", "Cancel"), 0, 100, gui,
+    )
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setValue(0)
+
+    def on_progress(curr, total):
+        try:
+            progress.setRange(0, max(int(total), 1))
+            progress.setValue(min(int(curr), max(int(total), 1)))
+        except Exception:
+            pass
+
+    def on_finished(count):
+        progress.close()
+        QMessageBox.information(
+            gui, _("Готово", "Done"),
+            _("Обработано сообщений: {n}", "Messages processed: {n}").format(n=int(count or 0)),
+        )
+
+    def on_error(msg):
+        progress.close()
+        QMessageBox.critical(gui, _("Ошибка", "Error"), str(msg))
+
+    worker.progress_signal.connect(on_progress)
+    worker.finished_signal.connect(on_finished)
+    worker.error_signal.connect(on_error)
+    progress.canceled.connect(lambda: worker.requestInterruption())
+
+    gui._entity_extract_worker = worker
+    progress.show()
+    worker.start()
 
 
 def _reset_rag_defaults(gui) -> None:
@@ -374,6 +646,7 @@ def setup_model_interaction_controls(self, parent):
 
         {'label': _('HuggingFace токен', 'HuggingFace token'),
          'key': 'HF_TOKEN', 'type': 'entry', 'default': '',
+         'hide': bool(self.settings.get("HIDE_PRIVATE")),
          'depends_on': 'RAG_ENABLED',
          'tooltip': _('Токен HuggingFace для ускорения загрузки и доступа к gated-моделям.',
                       'HuggingFace token for faster downloads and gated model access.')},
@@ -408,6 +681,11 @@ def setup_model_interaction_controls(self, parent):
          'depends_on': 'GRAPH_EXTRACTION_ENABLED',
          'tooltip': _('Включает поиск в графе сущностей при RAG-запросе.',
                        'Enables entity graph search during RAG queries.')},
+
+        {'type': 'button_group', 'buttons': [
+            {'label': _('Извлечь сущности из истории', 'Extract entities from history'),
+             'command': lambda: _extract_entities_all(self)},
+        ]},
 
         {'type': 'end'},
 
@@ -732,6 +1010,40 @@ def setup_model_interaction_controls(self, parent):
                            _("Настройки Памяти и RAG", "Memory & RAG Settings"),
                            rag_memory_config)
 
+    # --- Dynamic status labels for embedding model (injected after section) ---
+    try:
+        _embed_status_frame = QWidget()
+        _embed_status_layout = QHBoxLayout(_embed_status_frame)
+        _embed_status_layout.setContentsMargins(10, 2, 10, 2)
+        _embed_status_layout.setSpacing(10)
+
+        _dl_label = QLabel(_get_model_download_status())
+        _dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        _idx_label = QLabel(_get_embed_status_text())
+        _idx_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        self._embed_status_label = _idx_label
+        self._embed_dl_label = _dl_label
+
+        _embed_status_layout.addWidget(QLabel(_("Модель:", "Model:")))
+        _embed_status_layout.addWidget(_dl_label)
+        _embed_status_layout.addWidget(QLabel(" | "))
+        _embed_status_layout.addWidget(QLabel(_("Индекс:", "Index:")))
+        _embed_status_layout.addWidget(_idx_label)
+        _embed_status_layout.addStretch()
+
+        _refresh_btn = QPushButton(_("Обновить статус", "Refresh status"))
+        _refresh_btn.setFixedWidth(140)
+
+        def _refresh_embed_status():
+            self._embed_dl_label.setText(_get_model_download_status())
+            self._embed_status_label.setText(_get_embed_status_text())
+
+        _refresh_btn.clicked.connect(_refresh_embed_status)
+        _embed_status_layout.addWidget(_refresh_btn)
+
+        parent.addWidget(_embed_status_frame)
+    except Exception:
+        pass
 
     token_settings_config = [
         {'label': _('Показывать информацию о токенах', 'Show Token Info'), 'key': 'SHOW_TOKEN_INFO',

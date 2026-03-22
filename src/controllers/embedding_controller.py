@@ -70,9 +70,15 @@ class EmbeddingController:
         self.event_bus.subscribe(EMBED_EVENT_NAME, self._on_get_embedding, weak=False)
         self.event_bus.subscribe(EMBEDS_EVENT_NAME, self._on_get_embeddings, weak=False)
         self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
+        self.event_bus.subscribe(Events.RAG.MODEL_CHANGED, self._on_model_changed, weak=False)
         logger.notify(
             f"EmbeddingController подписался на события: {EMBED_EVENT_NAME}, {EMBEDS_EVENT_NAME}"
         )
+
+    def _on_model_changed(self, event) -> None:
+        """Handle MODEL_CHANGED: log and optionally re-init handler."""
+        data = event.data or {}
+        logger.info(f"EmbeddingController: MODEL_CHANGED event received: {data}")
 
     def _on_setting_changed(self, event: Event) -> None:
         data = event.data or {}

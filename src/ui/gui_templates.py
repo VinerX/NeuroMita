@@ -257,6 +257,7 @@ def create_setting_widget(
     layout = QHBoxLayout(frame)
     layout.setContentsMargins(0, 2, 0, 2)
     layout.setSpacing(10)
+    frame.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
     lbl = QLabel(label)
     lbl.setMinimumWidth(140)
@@ -299,6 +300,7 @@ def create_setting_widget(
     elif widget_type == 'entry':
         widget = QLineEdit(str(gui.settings.get(setting_key, default)))
         widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        widget.setMinimumWidth(60)
         if hide:
             widget.setEchoMode(QLineEdit.EchoMode.Password)
 
@@ -321,6 +323,7 @@ def create_setting_widget(
     elif widget_type == 'combobox':
         widget = QComboBox()
         widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        widget.setMinimumWidth(60)
         if options:
             widget.addItems([str(o) for o in options])
         widget.setCurrentText(str(gui.settings.get(setting_key, default)))
