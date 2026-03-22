@@ -78,6 +78,17 @@ class Scenario:
     context: list[dict]    # history.is_active=1
     history: list[dict]    # history.is_active=0 (корпус для RAG)
     memories: list[dict]   # memories
+    graph_entities: list[dict] = field(default_factory=list)   # entity nodes
+    graph_relations: list[dict] = field(default_factory=list)  # relation triples
+
+    def all_message_ids(self) -> set[str]:
+        """Return set of all message_id values from history + context."""
+        ids: set[str] = set()
+        for m in self.history + self.context:
+            mid = m.get("message_id", "")
+            if mid:
+                ids.add(str(mid))
+        return ids
 
     @staticmethod
     def template(character_id: str = "RAG_TEST") -> "Scenario":
@@ -153,6 +164,8 @@ class Scenario:
         context = obj.get("context") or []
         history = obj.get("history") or []
         memories = obj.get("memories") or []
+        graph_entities = obj.get("graph_entities") or []
+        graph_relations = obj.get("graph_relations") or []
 
         if not isinstance(context, list) or not isinstance(history, list) or not isinstance(memories, list):
             raise ValueError("context/history/memories должны быть списками.")
@@ -208,19 +221,22 @@ class Scenario:
             context=norm_msgs(context),
             history=norm_msgs(history),
             memories=norm_mems(memories),
+            graph_entities=[d for d in graph_entities if isinstance(d, dict)],
+            graph_relations=[d for d in graph_relations if isinstance(d, dict)],
         )
 
     def to_pretty_json(self) -> str:
-        return json.dumps(
-            {
-                "character_id": self.character_id,
-                "context": self.context,
-                "history": self.history,
-                "memories": self.memories,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
+        data: dict = {
+            "character_id": self.character_id,
+            "context": self.context,
+            "history": self.history,
+            "memories": self.memories,
+        }
+        if self.graph_entities:
+            data["graph_entities"] = self.graph_entities
+        if self.graph_relations:
+            data["graph_relations"] = self.graph_relations
+        return json.dumps(data, ensure_ascii=False, indent=2)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -229,19 +245,24 @@ class Scenario:
 
 @dataclass
 class TestCase:
-    """One query + expected relevant document IDs."""
+    """One query + expected relevant document IDs with optional graded relevance."""
     query: str
     expected_ids: list[str | int] = field(default_factory=list)
+    relevance_grades: dict[str, int] = field(default_factory=dict)  # id → grade (1-3), empty = binary
     description: str = ""
 
     def to_dict(self) -> dict:
-        return {"query": self.query, "expected_ids": self.expected_ids, "description": self.description}
+        d = {"query": self.query, "expected_ids": self.expected_ids, "description": self.description}
+        if self.relevance_grades:
+            d["relevance_grades"] = self.relevance_grades
+        return d
 
     @staticmethod
     def from_dict(d: dict) -> "TestCase":
         return TestCase(
             query=str(d.get("query") or ""),
             expected_ids=list(d.get("expected_ids") or []),
+            relevance_grades=dict(d.get("relevance_grades") or {}),
             description=str(d.get("description") or ""),
         )
 
@@ -308,6 +329,21 @@ class SingleResult:
     ndcg: float
     elapsed_ms: float
 
+    def to_dict(self) -> dict:
+        return {
+            "query": self.test_case.query,
+            "description": self.test_case.description,
+            "expected_ids": self.test_case.expected_ids,
+            "retrieved_ids": self.retrieved_ids,
+            "retrieved_scores": self.retrieved_scores,
+            "retrieved_contents": self.retrieved_contents,
+            "precision_at_k": self.precision_at_k,
+            "recall": self.recall,
+            "reciprocal_rank": self.reciprocal_rank,
+            "ndcg": self.ndcg,
+            "elapsed_ms": self.elapsed_ms,
+        }
+
 
 @dataclass
 class BatchResult:
@@ -319,6 +355,17 @@ class BatchResult:
     mrr: float          # Mean Reciprocal Rank
     mean_ndcg: float
     total_elapsed_ms: float
+
+    def to_dict(self) -> dict:
+        return {
+            "suite_name": self.suite_name,
+            "mean_precision": self.mean_precision,
+            "mean_recall": self.mean_recall,
+            "mrr": self.mrr,
+            "mean_ndcg": self.mean_ndcg,
+            "total_elapsed_ms": self.total_elapsed_ms,
+            "results": [r.to_dict() for r in self.results],
+        }
 
     def summary_text(self) -> str:
         lines = [
@@ -354,11 +401,26 @@ def _dcg(relevances: list[float]) -> float:
     return sum(rel / math.log2(i + 2) for i, rel in enumerate(relevances))
 
 
-def _ndcg(retrieved_ids: list, expected_ids: set, k: int) -> float:
-    """Normalized DCG at K."""
+def _ndcg(retrieved_ids: list, expected_ids: set, k: int,
+          relevance_grades: dict[str, int] | None = None) -> float:
+    """Normalized DCG at K, with optional graded relevance (1-3 scale)."""
     expected_set = set(str(x) for x in expected_ids)
-    relevances = [1.0 if str(rid) in expected_set else 0.0 for rid in retrieved_ids[:k]]
-    ideal = sorted(relevances, reverse=True)
+
+    if relevance_grades:
+        # Graded: use relevance grades for scoring
+        relevances = [float(relevance_grades.get(str(rid), 0.0))
+                      for rid in retrieved_ids[:k]]
+        # Ideal: best possible ordering of all expected grades
+        ideal_rels = sorted([float(relevance_grades.get(str(eid), 1.0))
+                             for eid in expected_ids], reverse=True)
+        # Pad with zeros or truncate to k
+        ideal = (ideal_rels + [0.0] * k)[:k]
+    else:
+        # Binary: all expected docs have relevance 1.0
+        relevances = [1.0 if str(rid) in expected_set else 0.0
+                      for rid in retrieved_ids[:k]]
+        ideal = sorted(relevances, reverse=True)
+
     dcg = _dcg(relevances)
     idcg = _dcg(ideal)
     if idcg == 0:
@@ -574,6 +636,14 @@ class RagTesterService:
                 pass
 
             cur.execute("DELETE FROM memories WHERE character_id=?", (cid,))
+
+            # Clear graph data if tables exist
+            try:
+                cur.execute("DELETE FROM graph_relations WHERE character_id=?", (cid,))
+                cur.execute("DELETE FROM graph_entities WHERE character_id=?", (cid,))
+            except Exception:
+                pass
+
             conn.commit()
         finally:
             try:
@@ -703,7 +773,57 @@ class RagTesterService:
         n_hist = self.insert_history_messages(cid, scenario.history, is_active=0, embed_now=embed_now)
         n_mem = self.insert_memories(cid, scenario.memories, embed_now=embed_now)
 
-        return {"context": n_ctx, "history": n_hist, "memories": n_mem}
+        # Import graph data if present
+        n_graph = 0
+        if scenario.graph_entities or scenario.graph_relations:
+            try:
+                from managers.rag.graph.graph_store import GraphStore
+                gs = GraphStore(self.db, cid)
+                conn = self.db.get_connection()
+                try:
+                    # Insert entities first, collect name → id mapping
+                    ent_ids: dict[str, int] = {}
+                    for ent in scenario.graph_entities:
+                        name = ent.get("name", "").strip()
+                        if not name:
+                            continue
+                        eid = gs.upsert_entity(
+                            name,
+                            ent.get("entity_type", "thing"),
+                            conn=conn,
+                        )
+                        ent_ids[name.lower()] = eid
+
+                    # Insert relations
+                    for rel in scenario.graph_relations:
+                        subj = rel.get("subject", "").strip().lower()
+                        obj = rel.get("object", "").strip().lower()
+                        pred = rel.get("predicate", "").strip()
+                        if not (subj and obj and pred):
+                            continue
+                        # Ensure entities exist
+                        if subj not in ent_ids:
+                            ent_ids[subj] = gs.upsert_entity(subj, conn=conn)
+                        if obj not in ent_ids:
+                            ent_ids[obj] = gs.upsert_entity(obj, conn=conn)
+                        gs.upsert_relation(
+                            ent_ids[subj], pred, ent_ids[obj],
+                            confidence=float(rel.get("confidence", 1.0)),
+                            source_message_id=rel.get("source_message_id"),
+                            conn=conn,
+                        )
+                        n_graph += 1
+                    conn.commit()
+                finally:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Graph import failed: {e}")
+
+        return {"context": n_ctx, "history": n_hist, "memories": n_mem, "graph": n_graph}
 
     def load_scenario_from_db(self, cid: str, *, hist_limit: int, mem_limit: int) -> Scenario:
         cid = str(cid or "").strip() or "RAG_TEST"
@@ -813,7 +933,25 @@ class RagTesterService:
                 d["participants"] = participants
             mems.append(d)
 
-        return Scenario(character_id=cid, context=active, history=corpus, memories=mems)
+        # Export graph data (entities + relations)
+        graph_entities: list[dict] = []
+        graph_relations: list[dict] = []
+        try:
+            from managers.rag.graph.graph_store import GraphStore
+            gs = GraphStore(self.db, cid)
+            graph_entities = gs.get_all_entities(limit=10000)
+            graph_relations = gs.get_all_relations(limit=10000)
+        except Exception:
+            pass
+
+        return Scenario(
+            character_id=cid,
+            context=active,
+            history=corpus,
+            memories=mems,
+            graph_entities=graph_entities,
+            graph_relations=graph_relations,
+        )
 
     def index_missing(self, cid: str) -> int:
         rag = RAGManager(cid)
@@ -922,7 +1060,7 @@ class RagTesterService:
             retrieved_scores = []
             retrieved_contents = []
             for r in raw:
-                rid = r.get("id") or r.get("message_id") or ""
+                rid = r.get("message_id") or r.get("id") or ""
                 retrieved_ids.append(str(rid))
                 retrieved_scores.append(safe_float(r.get("score"), 0.0))
                 retrieved_contents.append(str(r.get("content") or "")[:200])
@@ -951,8 +1089,9 @@ class RagTesterService:
                     rr = 1.0 / (i + 1)
                     break
 
-            # nDCG
-            ndcg = _ndcg(retrieved_ids, expected_set, max(k, 1))
+            # nDCG (graded if available)
+            ndcg = _ndcg(retrieved_ids, expected_set, max(k, 1),
+                         relevance_grades=tc.relevance_grades or None)
 
             results.append(SingleResult(
                 test_case=tc,

@@ -119,7 +119,7 @@ class VectorRetriever:
         out: list[Candidate] = []
 
         cols = ["id", "role", "content", "embedding", "timestamp"]
-        for opt in ("speaker", "target", "participants", "entities"):
+        for opt in ("message_id", "speaker", "target", "participants", "entities"):
             if opt in self.rag._history_cols:
                 cols.append(opt)
 
@@ -175,6 +175,7 @@ class VectorRetriever:
                 meta={
                     "role": rd.get("role"),
                     "date": rd.get("timestamp"),
+                    "message_id": rd.get("message_id"),
                     "speaker": str(rd.get("speaker") or "").strip() or None,
                     "target": str(rd.get("target") or "").strip() or None,
                     "participants": parts,
