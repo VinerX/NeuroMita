@@ -4,6 +4,7 @@ from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
 from core.events import get_event_bus, Events
 from managers.rag.pipeline.config import RAG_DEFAULTS
+from handlers.embedding_presets import list_preset_names
 
 
 def _reset_rag_defaults(gui) -> None:
@@ -329,6 +330,41 @@ def setup_model_interaction_controls(self, parent):
          'tooltip': _('Минимальная косинусная схожесть для кандидата (0..1).',
                       'Minimum cosine similarity for a candidate (0..1).'),
          'depends_on': 'RAG_ENABLED'},
+
+        {'type': 'end'},
+
+        {'label': _('Модель эмбеддингов', 'Embedding Model'), 'type': 'subsection',
+         'depends_on': 'RAG_ENABLED'},
+
+        {'label': _('Модель', 'Model'),
+         'key': 'RAG_EMBED_MODEL', 'type': 'combobox',
+         'options': list_preset_names(),
+         'default': 'Snowflake Arctic M v2.0',
+         'tooltip': _('Выберите пресет или "Custom" для ручного ввода HuggingFace модели.',
+                      'Choose a preset or "Custom" for manual HuggingFace model input.'),
+         'depends_on': 'RAG_ENABLED'},
+
+        {'label': _('HF имя модели (Custom)', 'HF model name (Custom)'),
+         'key': 'RAG_EMBED_MODEL_CUSTOM', 'type': 'entry', 'default': '',
+         'depends_on': 'RAG_EMBED_MODEL',
+         'depends_on_value': 'Custom',
+         'hide_when_disabled': True,
+         'tooltip': _('Полное имя модели на HuggingFace, напр. "BAAI/bge-m3".',
+                      'Full HuggingFace model name, e.g. "BAAI/bge-m3".')},
+
+        {'label': _('Префикс запроса (Custom)', 'Query prefix (Custom)'),
+         'key': 'RAG_EMBED_QUERY_PREFIX', 'type': 'entry', 'default': '',
+         'depends_on': 'RAG_EMBED_MODEL',
+         'depends_on_value': 'Custom',
+         'hide_when_disabled': True,
+         'tooltip': _('Префикс, добавляемый перед текстом запроса (напр. "query: ").',
+                      'Prefix prepended to query text (e.g. "query: ").')},
+
+        {'label': _('HuggingFace токен', 'HuggingFace token'),
+         'key': 'HF_TOKEN', 'type': 'entry', 'default': '',
+         'depends_on': 'RAG_ENABLED',
+         'tooltip': _('Токен HuggingFace для ускорения загрузки и доступа к gated-моделям.',
+                      'HuggingFace token for faster downloads and gated model access.')},
 
         {'type': 'end'},
 

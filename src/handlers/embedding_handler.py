@@ -87,34 +87,71 @@ class EmbeddingModelHandler:
     _shared_lock: ClassVar[Lock] = Lock()
 
     @classmethod
-    def shared(cls, model_name: str = MODEL_NAME) -> "EmbeddingModelHandler":
+    def shared(
+        cls,
+        model_name: str = "",
+        query_prefix: str = "",
+        reload_if_changed: bool = True,
+    ) -> "EmbeddingModelHandler":
         """
         Возвращает общий (процессный) экземпляр EmbeddingModelHandler.
-        Гарантирует, что тяжёлая модель будет загружена максимум 1 раз.
+        Если model_name отличается от текущего — выгружает старую и создаёт новую.
+        Пустой model_name = MODEL_NAME (default fallback).
         """
+        if not model_name:
+            model_name = MODEL_NAME
+        if not query_prefix and model_name == MODEL_NAME:
+            query_prefix = QUERY_PREFIX
+
         inst = cls._shared_instance
         if inst is not None:
-            # Если вдруг кто-то попросит другой model_name — не плодим вторую модель.
-            try:
-                if getattr(inst, "model_name", None) != model_name:
-                    logger.warning(
-                        f"EmbeddingModelHandler.shared(): requested model_name='{model_name}', "
-                        f"but shared instance already uses '{getattr(inst, 'model_name', None)}'. "
-                        f"Reusing shared instance."
+            if reload_if_changed and getattr(inst, "model_name", None) != model_name:
+                logger.info(
+                    f"EmbeddingModelHandler.shared(): model changed "
+                    f"'{getattr(inst, 'model_name', None)}' -> '{model_name}'. Reloading."
+                )
+                with cls._shared_lock:
+                    cls._unload_shared()
+                    cls._shared_instance = cls(
+                        model_name=model_name,
+                        query_prefix=query_prefix,
                     )
-            except Exception:
-                pass
+                    return cls._shared_instance
             return inst
 
         with cls._shared_lock:
             inst = cls._shared_instance
             if inst is None:
-                cls._shared_instance = cls(model_name=model_name)
+                cls._shared_instance = cls(
+                    model_name=model_name,
+                    query_prefix=query_prefix,
+                )
             return cls._shared_instance
 
-    def __init__(self, model_name: str = MODEL_NAME):
+    @classmethod
+    def _unload_shared(cls) -> None:
+        """Выгружает текущий shared instance и освобождает память."""
+        import torch
+        import gc
+
+        inst = cls._shared_instance
+        if inst is None:
+            return
+        cls._shared_instance = None
+        try:
+            del inst.model
+            del inst.tokenizer
+        except Exception:
+            pass
+        del inst
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def __init__(self, model_name: str = MODEL_NAME, query_prefix: str = ""):
         import torch  # локальный импорт (ускоряет import модуля)
         self.model_name = model_name
+        self.query_prefix = query_prefix if query_prefix else QUERY_PREFIX
         self.device = self._get_device()
         self.tokenizer, self.model = self._load_model()
         self.hidden_size = self.model.config.hidden_size  # Сохраняем размерность
@@ -145,10 +182,14 @@ class EmbeddingModelHandler:
         logger.info(f"Модель будет сохранена в {checkpoints_dir}")
         start_time = time.time()
 
+        # HF_TOKEN для быстрой загрузки / gated-моделей
+        hf_token = str(SettingsManager.get("HF_TOKEN", "") or "").strip() or None
+
         # Используем папку checkpoints для кэширования
         tokenizer = AutoTokenizer.from_pretrained(
             self.model_name,
-            cache_dir=checkpoints_dir
+            cache_dir=checkpoints_dir,
+            token=hf_token,
         )
 
         try:
@@ -158,11 +199,11 @@ class EmbeddingModelHandler:
                 add_pooling_layer=False,
                 attn_implementation="sdpa",
                 use_memory_efficient_attention=False,
-                cache_dir=checkpoints_dir  # Добавлено для локального кэширования
+                cache_dir=checkpoints_dir,
+                token=hf_token,
             )
             logger.info("Модель успешно загружена с attn_implementation='sdpa'.")
         except ValueError as ve:
-            # Тот же обработчик ошибок, но с добавленным cache_dir
             sdpa_errors = ["SDPA implementation requires", "Cannot use SDPA on CPU",
                            "Torch SDPA backend requires torch>=2.0", "flash attention is not available",
                            "requires a GPU", "No available kernel"]
@@ -175,7 +216,8 @@ class EmbeddingModelHandler:
                     add_pooling_layer=False,
                     attn_implementation="eager",
                     use_memory_efficient_attention=False,
-                    cache_dir=checkpoints_dir  # Добавлено для локального кэширования
+                    cache_dir=checkpoints_dir,
+                    token=hf_token,
                 )
                 logger.info("Модель успешно загружена с attn_implementation='eager'.")
             else:
@@ -193,11 +235,13 @@ class EmbeddingModelHandler:
         logger.info(f"Фактическая реализация внимания: {actual_attn_impl}")
         return tokenizer, model
 
-    def get_embedding(self, text: str, prefix: str = QUERY_PREFIX) -> Optional[np.ndarray]:
+    def get_embedding(self, text: str, prefix: str = "") -> Optional[np.ndarray]:
         """Получает нормализованный эмбеддинг для одного текста."""
         import torch  # локальный импорт
         if not text:
             return None
+        if not prefix:
+            prefix = self.query_prefix
         try:
             inputs = [prefix + text]
             # Используем self.tokenizer и self.model
@@ -215,7 +259,7 @@ class EmbeddingModelHandler:
     def get_embeddings(
         self,
         texts: List[str],
-        prefix: str = QUERY_PREFIX,
+        prefix: str = "",
         batch_size: int = 32,
     ) -> List[Optional[np.ndarray]]:
         """
@@ -227,6 +271,8 @@ class EmbeddingModelHandler:
         import torch  # локальный импорт
         if not texts:
             return []
+        if not prefix:
+            prefix = self.query_prefix
 
         # Нормализуем вход и сохраняем индексы непустых
         norm_texts: List[str] = []

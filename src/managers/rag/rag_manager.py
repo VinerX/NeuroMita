@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 from managers.database_manager import DatabaseManager
 from handlers.embedding_handler import EmbeddingModelHandler, QUERY_PREFIX
+from handlers.embedding_presets import resolve_model_settings
 from core.events import get_event_bus, Events
 from main_logger import logger
 from ui.task_worker import TaskWorker
@@ -45,7 +46,11 @@ class RAGManager:
         if cls._fallback_handler is None:
             with cls._fallback_lock:
                 if cls._fallback_handler is None:
-                    cls._fallback_handler = EmbeddingModelHandler.shared()
+                    ms = resolve_model_settings()
+                    cls._fallback_handler = EmbeddingModelHandler.shared(
+                        model_name=ms["hf_name"],
+                        query_prefix=ms["query_prefix"],
+                    )
         return cls._fallback_handler
 
     def __init__(self, character_id: str):
@@ -328,7 +333,7 @@ class RAGManager:
         """Конвертирует numpy array в байты для сохранения"""
         return array.astype(np.float32).tobytes()
 
-    def _get_embedding(self, text: str, prefix: str = QUERY_PREFIX, use_event_bus: bool = True) -> Optional[np.ndarray]:
+    def _get_embedding(self, text: str, prefix: str = "", use_event_bus: bool = True) -> Optional[np.ndarray]:
         """
         1) Пытаемся получить эмбеддинг через EventBus (EmbeddingController).
         2) Если не вышло — fallback на Singleton EmbeddingModelHandler().
@@ -360,7 +365,7 @@ class RAGManager:
     def _get_embeddings(
         self,
         texts: List[str],
-        prefix: str = QUERY_PREFIX,
+        prefix: str = "",
         use_event_bus: bool = True,
         batch_size: Optional[int] = None,
     ) -> List[Optional[np.ndarray]]:

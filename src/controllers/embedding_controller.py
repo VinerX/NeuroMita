@@ -7,6 +7,7 @@ import numpy as np
 
 from core.events import get_event_bus, Events, Event
 from handlers.embedding_handler import EmbeddingModelHandler, QUERY_PREFIX
+from handlers.embedding_presets import resolve_model_settings
 from main_logger import logger
 from managers.settings_manager import SettingsManager
 
@@ -61,18 +62,33 @@ class EmbeddingController:
         if bool(preload):
             Thread(target=self._ensure_handler, daemon=True).start()
 
+    _EMBED_SETTING_KEYS = frozenset({
+        "RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM", "RAG_EMBED_QUERY_PREFIX", "HF_TOKEN",
+    })
+
     def _subscribe_to_events(self) -> None:
         self.event_bus.subscribe(EMBED_EVENT_NAME, self._on_get_embedding, weak=False)
         self.event_bus.subscribe(EMBEDS_EVENT_NAME, self._on_get_embeddings, weak=False)
+        self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
         logger.notify(
             f"EmbeddingController подписался на события: {EMBED_EVENT_NAME}, {EMBEDS_EVENT_NAME}"
         )
+
+    def _on_setting_changed(self, event: Event) -> None:
+        data = event.data or {}
+        key = data.get("key", "")
+        if key not in self._EMBED_SETTING_KEYS:
+            return
+        logger.info(f"EmbeddingController: настройка '{key}' изменилась, сбрасываю handler")
+        with self._init_lock:
+            self.handler = None
 
     def _ensure_handler(self) -> Optional[EmbeddingModelHandler]:
         """
         Ленивая инициализация модели.
         Использует EmbeddingModelHandler.shared(), чтобы гарантировать единственный экземпляр в процессе,
         даже если где-то сработал fallback.
+        Читает модель из настроек через пресеты.
         """
         if self.handler is not None:
             return self.handler
@@ -81,13 +97,17 @@ class EmbeddingController:
 
         with self._init_lock:
             if self.handler is None:
-                self.handler = EmbeddingModelHandler.shared()
+                ms = resolve_model_settings()
+                self.handler = EmbeddingModelHandler.shared(
+                    model_name=ms["hf_name"],
+                    query_prefix=ms["query_prefix"],
+                )
         return self.handler
 
     def _on_get_embedding(self, event: Event) -> Optional[np.ndarray]:
         data = event.data or {}
         text = data.get("text") or ""
-        prefix = data.get("prefix") or QUERY_PREFIX
+        prefix = data.get("prefix") or ""
         future = data.get("future")
 
         # NOTE: lazy init (как в _on_get_embeddings), иначе при выключенном/неуспевшем preload
@@ -127,7 +147,7 @@ class EmbeddingController:
         """
         data = event.data or {}
         texts = data.get("texts") or []
-        prefix = data.get("prefix") or QUERY_PREFIX
+        prefix = data.get("prefix") or ""
         batch_size = data.get("batch_size")  # optional
         future = data.get("future")
 

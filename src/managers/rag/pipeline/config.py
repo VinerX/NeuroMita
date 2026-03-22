@@ -185,6 +185,10 @@ class RAGConfig:
 # ── Default values for all SettingsManager RAG keys ──────────────────────
 # Used by the "Reset RAG defaults" button in the UI.
 RAG_DEFAULTS: dict[str, object] = {
+    "RAG_EMBED_MODEL": "Snowflake Arctic M v2.0",
+    "RAG_EMBED_MODEL_CUSTOM": "",
+    "RAG_EMBED_QUERY_PREFIX": "query: ",
+    "HF_TOKEN": "",
     "RAG_WEIGHT_SIMILARITY": 1.0,
     "RAG_WEIGHT_TIME": 0.3,
     "RAG_WEIGHT_PRIORITY": 0.5,
