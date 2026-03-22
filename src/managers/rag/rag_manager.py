@@ -401,20 +401,28 @@ class RAGManager:
 
         if use_event_bus:
             try:
+                _eventbus_ok = False
                 for i in range(0, len(cleaned), bs):
                     chunk = cleaned[i:i + bs]
                     results = self.event_bus.emit_and_wait(
                         EMBEDS_EVENT_NAME,
                         {"texts": chunk, "prefix": prefix, "batch_size": bs},
                     )
-                    vecs = results[0] if results else []
+                    if not results:
+                        # No subscribers — fall through to fallback handler
+                        out.clear()
+                        _eventbus_ok = False
+                        break
+                    vecs = results[0]
                     if not isinstance(vecs, list):
                         vecs = []
                     # выравниваем длину под входной chunk
                     if len(vecs) != len(chunk):
                         vecs = (vecs + [None] * len(chunk))[:len(chunk)]
                     out.extend(vecs)
-                return out
+                    _eventbus_ok = True
+                if _eventbus_ok:
+                    return out
             except Exception as e:
                 logger.warning(
                     f"RAGManager: EventBus batch embedding не сработал, fallback на singleton. Причина: {e}"
@@ -766,6 +774,8 @@ class RAGManager:
             prog.done(processed=processed, updated=updated_count)
             return updated_count
 
+        except TaskWorker.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"Error during re-indexing: {e}", exc_info=True)
             return 0
@@ -892,6 +902,8 @@ class RAGManager:
             prog.done(processed=processed, updated=updated_count)
             return updated_count
 
+        except TaskWorker.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"Error during full re-indexing: {e}", exc_info=True)
             return 0

@@ -102,25 +102,31 @@ class FullReindexAllCharactersWorker(TaskWorker):
 
     def __init__(self, character_ids: list[str]):
         character_ids = [str(c or "").strip() for c in (character_ids or []) if str(c or "").strip()]
+        worker_ref = self  # capture for closure
 
         def _do_all_full(*, progress_callback=None):
             from managers.rag.rag_manager import RAGManager
 
             processed_total = 0
-            # We don't have a reliable total here (DB helper has a bug); rely on per-task totals from RAG.
-            # Use a "growing" maximum.
             global_done = 0
             global_total = 0
+            num_chars = len(character_ids)
 
             if progress_callback:
                 progress_callback(0, 1)
 
-            for cid in character_ids:
+            for char_idx, cid in enumerate(character_ids):
+                # Emit status with character name and overall progress
+                try:
+                    status = f"[{char_idx + 1}/{num_chars}] {cid}"
+                    worker_ref.status_signal.emit(status)
+                except Exception:
+                    pass
+
                 rag = RAGManager(cid)
 
                 def _cb(curr, total):
                     nonlocal global_total
-                    # Make total monotonic (for QProgressDialog)
                     est = global_done + int(total or 0)
                     if est > global_total:
                         global_total = est
@@ -131,7 +137,6 @@ class FullReindexAllCharactersWorker(TaskWorker):
                     processed_total += int(processed or 0)
                 except Exception:
                     pass
-                # advance by last known "total" if available, otherwise by "processed"
                 global_done = max(global_done, global_total)
 
             progress_callback(global_done, max(global_total, 1))

@@ -90,6 +90,7 @@ def _reindex_embeddings(gui) -> None:
         return
 
     worker = FullReindexAllCharactersWorker(cids)
+    num_chars = len(cids)
 
     progress = QProgressDialog(
         _("Переиндексация эмбеддингов...", "Reindexing embeddings..."),
@@ -97,6 +98,7 @@ def _reindex_embeddings(gui) -> None:
     )
     progress.setWindowModality(Qt.WindowModality.WindowModal)
     progress.setMinimumDuration(0)
+    progress.setMinimumWidth(400)
     progress.setValue(0)
 
     def on_progress(curr, total):
@@ -106,15 +108,20 @@ def _reindex_embeddings(gui) -> None:
         except Exception:
             pass
 
+    def on_status(status_text):
+        try:
+            base = _("Переиндексация эмбеддингов", "Reindexing embeddings")
+            progress.setLabelText(f"{base}\n{status_text}")
+        except Exception:
+            pass
+
     def on_finished(count):
         progress.close()
         QMessageBox.information(
             gui, _("Готово", "Done"),
             _("Переиндексировано: {n}", "Reindexed: {n}").format(n=int(count or 0)),
         )
-        # Update status label
-        if hasattr(gui, '_embed_status_label'):
-            gui._embed_status_label.setText(_get_embed_status_text())
+        _refresh_embed_status(gui)
 
     def on_error(msg):
         progress.close()
@@ -128,6 +135,7 @@ def _reindex_embeddings(gui) -> None:
         progress.close()
 
     worker.progress_signal.connect(on_progress)
+    worker.status_signal.connect(on_status)
     worker.finished_signal.connect(on_finished)
     worker.error_signal.connect(on_error)
     progress.canceled.connect(on_cancel)
@@ -135,6 +143,17 @@ def _reindex_embeddings(gui) -> None:
     gui._embed_reindex_worker = worker
     progress.show()
     worker.start()
+
+
+def _refresh_embed_status(gui) -> None:
+    """Refresh embedding status labels."""
+    try:
+        if hasattr(gui, '_embed_dl_label'):
+            gui._embed_dl_label.setText(_("Модель:", "Model:") + " " + _get_model_download_status())
+        if hasattr(gui, '_embed_status_label'):
+            gui._embed_status_label.setText(_("Индекс:", "Index:") + " " + _get_embed_status_text())
+    except Exception:
+        pass
 
 
 def _extract_entities_all(gui) -> None:
@@ -654,6 +673,8 @@ def setup_model_interaction_controls(self, parent):
         {'type': 'button_group', 'buttons': [
             {'label': _('Переиндексировать эмбеддинги', 'Reindex embeddings'),
              'command': lambda: _reindex_embeddings(self)},
+            {'label': _('Обновить статус', 'Refresh status'),
+             'command': lambda: _refresh_embed_status(self)},
         ]},
 
         {'type': 'end'},
@@ -1010,38 +1031,36 @@ def setup_model_interaction_controls(self, parent):
                            _("Настройки Памяти и RAG", "Memory & RAG Settings"),
                            rag_memory_config)
 
-    # --- Dynamic status labels for embedding model (injected after section) ---
+    # --- Dynamic status labels for embedding model (injected into subsection) ---
     try:
-        _embed_status_frame = QWidget()
-        _embed_status_layout = QHBoxLayout(_embed_status_frame)
-        _embed_status_layout.setContentsMargins(10, 2, 10, 2)
-        _embed_status_layout.setSpacing(10)
-
-        _dl_label = QLabel(_get_model_download_status())
+        _dl_label = QLabel(_("Модель:", "Model:") + " " + _get_model_download_status())
         _dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _idx_label = QLabel(_get_embed_status_text())
+        _idx_label = QLabel(_("Индекс:", "Index:") + " " + _get_embed_status_text())
         _idx_label.setStyleSheet("color: #aaa; font-size: 11px;")
         self._embed_status_label = _idx_label
         self._embed_dl_label = _dl_label
 
-        _embed_status_layout.addWidget(QLabel(_("Модель:", "Model:")))
-        _embed_status_layout.addWidget(_dl_label)
-        _embed_status_layout.addWidget(QLabel(" | "))
-        _embed_status_layout.addWidget(QLabel(_("Индекс:", "Index:")))
-        _embed_status_layout.addWidget(_idx_label)
-        _embed_status_layout.addStretch()
-
-        _refresh_btn = QPushButton(_("Обновить статус", "Refresh status"))
-        _refresh_btn.setFixedWidth(140)
-
-        def _refresh_embed_status():
-            self._embed_dl_label.setText(_get_model_download_status())
-            self._embed_status_label.setText(_get_embed_status_text())
-
-        _refresh_btn.clicked.connect(_refresh_embed_status)
-        _embed_status_layout.addWidget(_refresh_btn)
-
-        parent.addWidget(_embed_status_frame)
+        # Find the "Embedding Model" subsection inside the created section and inject labels
+        _rag_section = parent.layout().itemAt(parent.layout().count() - 1)
+        if _rag_section and _rag_section.widget():
+            _sec_widget = _rag_section.widget()
+            # CollapsibleSection stores child InnerCollapsibleSections; find the embedding one
+            _content = getattr(_sec_widget, 'content', None)
+            if _content:
+                _content_layout = _content.layout()
+                if _content_layout:
+                    for i in range(_content_layout.count()):
+                        _item = _content_layout.itemAt(i)
+                        if _item and _item.widget():
+                            _w = _item.widget()
+                            from managers.settings_manager import InnerCollapsibleSection
+                            if isinstance(_w, InnerCollapsibleSection):
+                                _tl = getattr(_w, 'title_label', None)
+                                _title = _tl.text() if _tl else ''
+                                if 'мбеддинг' in _title.lower() or 'mbedding' in _title.lower():
+                                    _w.add_widget(_dl_label)
+                                    _w.add_widget(_idx_label)
+                                    break
     except Exception:
         pass
 

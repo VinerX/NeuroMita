@@ -1104,6 +1104,11 @@ class DbViewerDialog(QDialog):
         self.tabs.addTab(self.memories_page, "Memories")
         self.tabs.addTab(self.variables_page, "Variables")
 
+        # Embeddings table (only if it exists in the database).
+        if self._table_exists("embeddings"):
+            self.embeddings_page = _AdvancedTablePage(self, db=self.db, table_name="embeddings", character_id=self.character_id)
+            self.tabs.addTab(self.embeddings_page, "Embeddings")
+
         # Graph tables (only if they exist in the database).
         self._graph_pages: list[_AdvancedTablePage] = []
         for tbl_name, tab_label in [("graph_entities", "Graph: Entities"), ("graph_relations", "Graph: Relations")]:

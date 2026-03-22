@@ -8,6 +8,7 @@ class TaskWorker(QThread):
     Чтобы не плодить отдельный QThread-класс под каждую кнопку.
     """
     progress_signal = pyqtSignal(int, int)   # current, total (optional)
+    status_signal = pyqtSignal(str)          # status text (e.g. character name)
     finished_signal = pyqtSignal(object)     # result
     error_signal = pyqtSignal(str)
     cancelled_signal = pyqtSignal()
