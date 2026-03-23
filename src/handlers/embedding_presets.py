@@ -44,6 +44,11 @@ EMBED_MODEL_PRESETS: Dict[str, dict] = {
         "query_prefix": "query: ",
         "dimensions": 768,
     },
+    "Qwen3-Embedding-0.6B (600M, 2025)": {
+        "hf_name": "Qwen/Qwen3-Embedding-0.6B",
+        "query_prefix": "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ",
+        "dimensions": 1024,
+    },
     # ── Large (1GB+, better quality) ─────────────────────────────────────
     "multilingual-e5-large-instruct (1.3G)": {
         "hf_name": "intfloat/multilingual-e5-large-instruct",

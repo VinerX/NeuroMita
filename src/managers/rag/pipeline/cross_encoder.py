@@ -5,6 +5,9 @@ scores (query, passage) pairs with a single relevance logit.  Runs on the
 top-K candidates returned by the first LinearReranker pass and replaces
 their scores in-place.
 
+Also supports LM-based rerankers (e.g. Qwen3-Reranker-0.6B) that use
+yes/no token probabilities from a causal LM for scoring.
+
 Model is loaded lazily and cached as a per-model-name singleton so it is
 loaded at most once per process (same pattern as EmbeddingModelHandler).
 """
@@ -16,6 +19,19 @@ from threading import Lock
 from typing import Optional
 
 from main_logger import logger
+
+
+# Model names (or substrings) that use AutoModelForCausalLM + yes/no scoring
+_LM_RERANKER_PATTERNS = (
+    "qwen3-reranker",
+    "qwen/qwen3-reranker",
+)
+
+
+def _is_lm_reranker(model_name: str) -> bool:
+    """Return True if model_name is a known LM-based reranker."""
+    lower = model_name.lower()
+    return any(p in lower for p in _LM_RERANKER_PATTERNS)
 
 
 def _checkpoints_dir() -> str:
@@ -34,6 +50,10 @@ class CrossEncoderReranker:
         self._model = None
         self._load_lock = Lock()
         self._failed = False  # skip retries after a permanent failure
+        self._is_lm = _is_lm_reranker(model_name)  # LM-based yes/no scorer
+        self._token_true_id: Optional[int] = None
+        self._token_false_id: Optional[int] = None
+        self._device = None  # set on first load
 
     # ------------------------------------------------------------------ #
     @classmethod
@@ -57,27 +77,49 @@ class CrossEncoderReranker:
             if self._failed:
                 return False
             try:
-                from transformers import AutoTokenizer, AutoModelForSequenceClassification
                 import torch
-
                 cache_dir = _checkpoints_dir()
                 from managers.settings_manager import SettingsManager
                 token = str(SettingsManager.get("HF_TOKEN", "") or "").strip() or None
                 logger.info(
                     f"[CrossEncoder] Loading '{self.model_name}' "
-                    f"(cache: {cache_dir}) ..."
-                )
-                self._tokenizer = AutoTokenizer.from_pretrained(
-                    self.model_name, cache_dir=cache_dir, token=token,
-                    trust_remote_code=True,
+                    f"(lm_mode={self._is_lm}, cache: {cache_dir}) ..."
                 )
                 dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-                self._model = AutoModelForSequenceClassification.from_pretrained(
-                    self.model_name, cache_dir=cache_dir, token=token,
-                    trust_remote_code=True, torch_dtype=dtype,
-                )
+
+                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+                if self._is_lm:
+                    from transformers import AutoTokenizer, AutoModelForCausalLM
+                    self._tokenizer = AutoTokenizer.from_pretrained(
+                        self.model_name, cache_dir=cache_dir, token=token,
+                        trust_remote_code=True, padding_side="left",
+                    )
+                    self._model = AutoModelForCausalLM.from_pretrained(
+                        self.model_name, cache_dir=cache_dir, token=token,
+                        trust_remote_code=True, torch_dtype=dtype,
+                    )
+                    self._token_true_id = self._tokenizer.convert_tokens_to_ids("yes")
+                    self._token_false_id = self._tokenizer.convert_tokens_to_ids("no")
+                    logger.info(
+                        f"[CrossEncoder] LM reranker ready: "
+                        f"yes={self._token_true_id}, no={self._token_false_id}"
+                    )
+                else:
+                    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+                    self._tokenizer = AutoTokenizer.from_pretrained(
+                        self.model_name, cache_dir=cache_dir, token=token,
+                        trust_remote_code=True,
+                    )
+                    self._model = AutoModelForSequenceClassification.from_pretrained(
+                        self.model_name, cache_dir=cache_dir, token=token,
+                        trust_remote_code=True, torch_dtype=dtype,
+                    )
+
+                self._model.to(device)
+                self._device = device
                 self._model.eval()
-                logger.info(f"[CrossEncoder] Model '{self.model_name}' ready.")
+                logger.info(f"[CrossEncoder] Model '{self.model_name}' ready (device={device}).")
                 return True
             except Exception as exc:
                 logger.warning(
@@ -86,6 +128,68 @@ class CrossEncoderReranker:
                 )
                 self._failed = True
                 return False
+
+    # ------------------------------------------------------------------ #
+    _QWEN3_RERANKER_INSTRUCTION = (
+        "Given a web search query, retrieve relevant passages that answer the query"
+    )
+
+    def _score_seqcls(self, query: str, cands: list) -> list:
+        """Score with AutoModelForSequenceClassification (standard cross-encoder)."""
+        import torch
+        pairs = [(query, str(c.content or "")) for c in cands]
+        enc = self._tokenizer(
+            [p[0] for p in pairs],
+            [p[1] for p in pairs],
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors="pt",
+        ).to(self._device)
+        with torch.no_grad():
+            logits = self._model(**enc).logits  # (N, num_labels)
+        if logits.shape[-1] == 1:
+            raw = logits.squeeze(-1)
+        else:
+            raw = logits[:, -1]
+        return raw.tolist()
+
+    def _score_lm(self, query: str, cands: list) -> list:
+        """Score with LM-based reranker (Qwen3-Reranker style yes/no tokens)."""
+        import torch
+
+        instruction = self._QWEN3_RERANKER_INSTRUCTION
+        prefix = (
+            "<|im_start|>system\n"
+            "Judge whether the Document meets the requirements based on the Query and "
+            "the Instruct provided. Note that the answer can only be \"yes\" or \"no\"."
+            "<|im_end|>\n<|im_start|>user\n"
+        )
+        suffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+        input_texts = []
+        for c in cands:
+            doc = str(c.content or "")
+            content = f"<Instruct>: {instruction}\n<Query>: {query}\n<Document>: {doc}"
+            input_texts.append(prefix + content + suffix)
+
+        enc = self._tokenizer(
+            input_texts,
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors="pt",
+        ).to(self._device)
+        with torch.no_grad():
+            logits = self._model(**enc).logits  # (N, vocab_size)
+
+        # Extract yes/no logits at last token position
+        last_logits = logits[:, -1, :]  # (N, vocab_size)
+        true_id = self._token_true_id
+        false_id = self._token_false_id
+        pair = torch.stack([last_logits[:, false_id], last_logits[:, true_id]], dim=-1)
+        probs = torch.softmax(pair, dim=-1)  # (N, 2)
+        return probs[:, 1].tolist()  # P(yes)
 
     # ------------------------------------------------------------------ #
     def rerank(self, query: str, cands: list, top_k: int = 20) -> None:
@@ -100,31 +204,13 @@ class CrossEncoderReranker:
         if not self._ensure_loaded():
             return
 
-        import torch
-
         to_score = cands[:top_k]
-        pairs = [(query, str(c.content or "")) for c in to_score]
 
         try:
-            enc = self._tokenizer(
-                [p[0] for p in pairs],
-                [p[1] for p in pairs],
-                padding=True,
-                truncation=True,
-                max_length=512,
-                return_tensors="pt",
-            )
-            with torch.no_grad():
-                logits = self._model(**enc).logits  # (N, num_labels)
-
-            # For binary models (num_labels=2) take positive-class logit;
-            # for single-output models (num_labels=1) squeeze directly.
-            if logits.shape[-1] == 1:
-                raw = logits.squeeze(-1)
+            if self._is_lm:
+                scores = self._score_lm(query, to_score)
             else:
-                raw = logits[:, -1]  # last logit = "relevant" class
-
-            scores = raw.tolist()
+                scores = self._score_seqcls(query, to_score)
 
             # Determine position changes before modifying scores
             post_order = sorted(range(len(to_score)), key=lambda i: scores[i], reverse=True)

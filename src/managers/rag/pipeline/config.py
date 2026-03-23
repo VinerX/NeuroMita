@@ -12,6 +12,8 @@ CE_PRESETS: dict[str, str] = {
     "Jina Reranker v2 multilingual (278M)":  "jinaai/jina-reranker-v2-base-multilingual",
     "BGE Reranker v2-m3 (568M, best)":       "BAAI/bge-reranker-v2-m3",
     "mMiniLM-L12 mMARCO (117M)":             "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+    # LM-based rerankers (yes/no scoring)
+    "Qwen3-Reranker-0.6B (600M, 2025)":      "Qwen/Qwen3-Reranker-0.6B",
     # English only (MS MARCO)
     "MiniLM-L6 v2 EN (22M, fast)":           "cross-encoder/ms-marco-MiniLM-L-6-v2",
     "MiniLM-L12 v2 EN (33M)":                "cross-encoder/ms-marco-MiniLM-L-12-v2",

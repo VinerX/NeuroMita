@@ -148,6 +148,13 @@ class EmbeddingModelHandler:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    # Decoder-only model types that need last-token pooling instead of CLS
+    _DECODER_TYPES = frozenset({
+        "qwen3", "qwen2", "qwen", "llama", "mistral", "falcon", "gpt2",
+        "gpt_neox", "bloom", "opt", "gemma", "gemma2", "phi", "phi3",
+        "stablelm", "mpt", "rwkv",
+    })
+
     def __init__(self, model_name: str = MODEL_NAME, query_prefix: str = ""):
         import torch  # локальный импорт (ускоряет import модуля)
         self.model_name = model_name
@@ -155,23 +162,24 @@ class EmbeddingModelHandler:
         self.device = self._get_device()
         self.tokenizer, self.model = self._load_model()
         self.hidden_size = self.model.config.hidden_size  # Сохраняем размерность
+        # Detect pooling strategy: CLS (encoder) vs last-token (decoder)
+        model_type = getattr(self.model.config, "model_type", "").lower()
+        self._use_last_token_pooling = model_type in self._DECODER_TYPES
+        if self._use_last_token_pooling:
+            logger.info(f"EmbeddingModelHandler: using last-token pooling for decoder model '{model_type}'")
 
     def _get_device(self) -> "torch.device":
         """Определяет устройство для вычислений (CPU/GPU)."""
         import torch  # локальный импорт
-        logger.info("Проверка доступности CUDA (GPU):")
         if torch.cuda.is_available():
             cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
-            if cuda_visible_devices == "" or cuda_visible_devices == "-1":
-                logger.info("CUDA доступна, но скрыта. Используется CPU.")
+            if cuda_visible_devices in ("", "-1"):
+                logger.info("CUDA доступна, но скрыта (CUDA_VISIBLE_DEVICES). Используется CPU.")
                 return torch.device('cpu')
-            else:
-                # ОСТАВЛЯЕМ ПРИНУДИТЕЛЬНЫЙ CPU, как и было
-                logger.info("CUDA доступна. Используется CPU принудительно.")
-                return torch.device('cpu')
-        else:
-            logger.info("CUDA недоступна. Используется CPU.")
-            return torch.device('cpu')
+            logger.info(f"CUDA доступна: {torch.cuda.get_device_name(0)}. Используется GPU.")
+            return torch.device('cuda')
+        logger.info("CUDA недоступна. Используется CPU.")
+        return torch.device('cpu')
 
     def _load_model(self) -> Tuple["AutoTokenizer", "AutoModel"]:
         """Загружает модель и токенизатор с указанными параметрами."""
@@ -230,6 +238,18 @@ class EmbeddingModelHandler:
         logger.info(f"Фактическая реализация внимания: {actual_attn_impl}")
         return tokenizer, model
 
+    @staticmethod
+    def _pool(last_hidden_state, attention_mask, use_last_token: bool):
+        """Select embedding vector: CLS token or last non-padding token."""
+        import torch
+        if use_last_token:
+            # Last non-padding token index per sequence
+            seq_len = attention_mask.sum(dim=1) - 1  # (batch,)
+            batch_idx = torch.arange(last_hidden_state.size(0), device=last_hidden_state.device)
+            return last_hidden_state[batch_idx, seq_len]
+        else:
+            return last_hidden_state[:, 0]
+
     def get_embedding(self, text: str, prefix: str = "") -> Optional[np.ndarray]:
         """Получает нормализованный эмбеддинг для одного текста."""
         import torch  # локальный импорт
@@ -239,13 +259,12 @@ class EmbeddingModelHandler:
             prefix = self.query_prefix
         try:
             inputs = [prefix + text]
-            # Используем self.tokenizer и self.model
             tokens = self.tokenizer(inputs, padding=True, truncation=True, return_tensors='pt', max_length=512).to(
                 self.device)
             with torch.no_grad():
                 outputs = self.model(**tokens)
-                embedding = outputs.last_hidden_state[:, 0]
-            normalized_embedding = torch.nn.functional.normalize(embedding, p=2, dim=1)
+                embedding = self._pool(outputs.last_hidden_state, tokens["attention_mask"], self._use_last_token_pooling)
+            normalized_embedding = torch.nn.functional.normalize(embedding.to(torch.float32), p=2, dim=1)
             return normalized_embedding.cpu().numpy()[0]
         except Exception as e:
             logger.error(f"Ошибка при вычислении эмбеддинга для текста '{text}': {e}")
@@ -305,8 +324,8 @@ class EmbeddingModelHandler:
                     ).to(self.device)
 
                     outputs = self.model(**tokens)
-                    embedding = outputs.last_hidden_state[:, 0]
-                    normalized = torch.nn.functional.normalize(embedding, p=2, dim=1)
+                    embedding = self._pool(outputs.last_hidden_state, tokens["attention_mask"], self._use_last_token_pooling)
+                    normalized = torch.nn.functional.normalize(embedding.to(torch.float32), p=2, dim=1)
                     arr = normalized.cpu().numpy()  # shape: (batch, hidden)
 
                     for j, orig_i in enumerate(chunk_indices):
