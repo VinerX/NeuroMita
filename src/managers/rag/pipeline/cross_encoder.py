@@ -68,10 +68,13 @@ class CrossEncoderReranker:
                     f"(cache: {cache_dir}) ..."
                 )
                 self._tokenizer = AutoTokenizer.from_pretrained(
-                    self.model_name, cache_dir=cache_dir, token=token
+                    self.model_name, cache_dir=cache_dir, token=token,
+                    trust_remote_code=True,
                 )
+                dtype = torch.float16 if torch.cuda.is_available() else torch.float32
                 self._model = AutoModelForSequenceClassification.from_pretrained(
-                    self.model_name, cache_dir=cache_dir, token=token
+                    self.model_name, cache_dir=cache_dir, token=token,
+                    trust_remote_code=True, torch_dtype=dtype,
                 )
                 self._model.eval()
                 logger.info(f"[CrossEncoder] Model '{self.model_name}' ready.")
