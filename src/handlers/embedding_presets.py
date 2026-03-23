@@ -7,7 +7,23 @@ from managers.settings_manager import SettingsManager
 
 
 EMBED_MODEL_PRESETS: Dict[str, dict] = {
-    # ── Recommended multilingual (Russian supported) ──────────────────────
+    # ── Light (~100-300MB, CPU-friendly) ─────────────────────────────────
+    "multilingual-e5-small (118M, fast)": {
+        "hf_name": "intfloat/multilingual-e5-small",
+        "query_prefix": "query: ",
+        "dimensions": 384,
+    },
+    "multilingual-e5-base (278M)": {
+        "hf_name": "intfloat/multilingual-e5-base",
+        "query_prefix": "query: ",
+        "dimensions": 768,
+    },
+    "paraphrase-multilingual-MiniLM-L12 (118M)": {
+        "hf_name": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        "query_prefix": "",
+        "dimensions": 384,
+    },
+    # ── Medium (~300-700MB, recommended) ─────────────────────────────────
     "GTE multilingual base (620M, 2024)": {
         "hf_name": "Alibaba-NLP/gte-multilingual-base",
         "query_prefix": "",
@@ -18,31 +34,26 @@ EMBED_MODEL_PRESETS: Dict[str, dict] = {
         "query_prefix": "",
         "dimensions": 1024,
     },
-    "GTE Qwen2 1.5B instruct (3.3G)": {
-        "hf_name": "Alibaba-NLP/gte-Qwen2-1.5B-instruct",
-        "query_prefix": "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ",
-        "dimensions": 1536,
-    },
-    "multilingual-e5-large-instruct (1.3G)": {
-        "hf_name": "intfloat/multilingual-e5-large-instruct",
-        "query_prefix": "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ",
-        "dimensions": 1024,
-    },
     "deepvk/USER-bge-m3 (570M, RU-tuned)": {
         "hf_name": "deepvk/USER-bge-m3",
         "query_prefix": "",
         "dimensions": 1024,
     },
-    # ── Legacy / English-biased ───────────────────────────────────────────
-    "Snowflake Arctic M v2.0 (EN)": {
+    "Snowflake Arctic M v2.0 (300M, EN)": {
         "hf_name": "Snowflake/snowflake-arctic-embed-m-v2.0",
         "query_prefix": "query: ",
         "dimensions": 768,
     },
-    "nomic-embed-text-v1.5 (EN)": {
-        "hf_name": "nomic-ai/nomic-embed-text-v1.5",
-        "query_prefix": "search_query: ",
-        "dimensions": 768,
+    # ── Large (1GB+, better quality) ─────────────────────────────────────
+    "multilingual-e5-large-instruct (1.3G)": {
+        "hf_name": "intfloat/multilingual-e5-large-instruct",
+        "query_prefix": "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ",
+        "dimensions": 1024,
+    },
+    "GTE Qwen2 1.5B instruct (3.3G)": {
+        "hf_name": "Alibaba-NLP/gte-Qwen2-1.5B-instruct",
+        "query_prefix": "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ",
+        "dimensions": 1536,
     },
     # ── Backwards-compat aliases ──────────────────────────────────────────
     "BAAI/bge-m3": {
@@ -53,6 +64,16 @@ EMBED_MODEL_PRESETS: Dict[str, dict] = {
     "Snowflake Arctic M v2.0": {
         "hf_name": "Snowflake/snowflake-arctic-embed-m-v2.0",
         "query_prefix": "query: ",
+        "dimensions": 768,
+    },
+    "multilingual-e5-large-instruct": {
+        "hf_name": "intfloat/multilingual-e5-large-instruct",
+        "query_prefix": "query: ",
+        "dimensions": 1024,
+    },
+    "nomic-embed-text-v1.5": {
+        "hf_name": "nomic-ai/nomic-embed-text-v1.5",
+        "query_prefix": "search_query: ",
         "dimensions": 768,
     },
 }
