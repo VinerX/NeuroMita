@@ -341,9 +341,12 @@ class EntityGC:
 
         # 4. Orphan detection (no relations, 1 mention, not already handled)
         handled_ids = {a.entity_id for a in plan.actions}
+        merge_target_ids = {a.merge_into_id for a in plan.actions if a.action == "merge"}
         for ent in entities:
             if ent["id"] in handled_ids:
                 continue
+            if ent["id"] in merge_target_ids:
+                continue  # don't delete merge targets as orphans
             if ent["mentions"] <= 1 and not self._entity_has_relations(ent["id"], relations):
                 plan.actions.append(GCAction(
                     action="delete",

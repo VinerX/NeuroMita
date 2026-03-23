@@ -6,6 +6,8 @@ Requires ``pip install optuna``.
 from __future__ import annotations
 
 import json
+import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -94,6 +96,7 @@ def run_optuna_sweep(
     target_metric: str = "mean_recall",
     config: Optional[OptimizeConfig] = None,
     progress_callback=None,
+    progress_file: Optional[str] = None,
 ) -> OptimizeResult:
     """Run Bayesian optimization over RAG parameters.
 
@@ -116,7 +119,32 @@ def run_optuna_sweep(
     cfg = config or OptimizeConfig()
     trial_count = [0]
     best_so_far = [0.0]
+    best_params_so_far: Dict[str, Any] = {}
     convergence_log: List[Dict[str, Any]] = []
+    start_time = time.time()
+
+    def _write_progress(value: float):
+        if not progress_file:
+            return
+        try:
+            elapsed = time.time() - start_time
+            data = {
+                "status": "running",
+                "trial": trial_count[0],
+                "total_trials": cfg.n_trials,
+                "pct": round(100.0 * trial_count[0] / max(cfg.n_trials, 1), 1),
+                "current_value": round(value, 4),
+                "best_value": round(best_so_far[0], 4),
+                "best_params": best_params_so_far,
+                "elapsed_sec": round(elapsed, 1),
+                "eta_sec": round(elapsed / max(trial_count[0], 1) * (cfg.n_trials - trial_count[0]), 1),
+                "target_metric": target_metric,
+            }
+            os.makedirs(os.path.dirname(os.path.abspath(progress_file)), exist_ok=True)
+            with open(progress_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
 
     def objective(trial):
         overrides = dict(cfg.fixed_overrides)
@@ -144,7 +172,10 @@ def run_optuna_sweep(
         trial_count[0] += 1
         if value > best_so_far[0]:
             best_so_far[0] = value
+            best_params_so_far.clear()
+            best_params_so_far.update(overrides)
 
+        _write_progress(value)
         convergence_log.append({
             "trial": trial_count[0],
             "value": round(value, 5),
@@ -172,6 +203,25 @@ def run_optuna_sweep(
         timeout=cfg.timeout,
         show_progress_bar=False,
     )
+
+    # Mark progress as completed
+    if progress_file:
+        try:
+            elapsed = time.time() - start_time
+            data = {
+                "status": "completed",
+                "trial": len(study.trials),
+                "total_trials": cfg.n_trials,
+                "pct": 100.0,
+                "best_value": round(study.best_value, 4),
+                "best_params": study.best_params,
+                "elapsed_sec": round(elapsed, 1),
+                "target_metric": target_metric,
+            }
+            with open(progress_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
 
     # Collect top trials
     sorted_trials = sorted(study.trials, key=lambda t: t.value or 0.0, reverse=True)

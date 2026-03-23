@@ -981,10 +981,13 @@ class RagTesterService:
         use_overrides: bool,
         overrides: dict[str, Any] | None,
     ) -> list[dict]:
-        rag = RAGManager(cid)
         if use_overrides and overrides:
             with SettingsOverride(overrides):
+                # RAGManager must be created INSIDE the context so that pipeline
+                # components (e.g. vector retriever) read the overridden model name.
+                rag = RAGManager(cid)
                 return rag.search_relevant(query=query, limit=int(limit), threshold=float(threshold))
+        rag = RAGManager(cid)
         return rag.search_relevant(query=query, limit=int(limit), threshold=float(threshold))
 
     def build_injection_preview(self, results: list[dict]) -> str:

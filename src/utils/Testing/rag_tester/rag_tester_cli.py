@@ -309,6 +309,8 @@ def cmd_optimize(args):
     cli_overrides = _parse_overrides(args.overrides) if hasattr(args, 'overrides') and args.overrides else {}
     if cli_overrides:
         config.fixed_overrides.update(cli_overrides)  # ensure per-trial runs also use correct embed model
+    # RAG_ENABLED must survive the embedding-phase SettingsOverride closing before trials start
+    config.fixed_overrides.setdefault("RAG_ENABLED", True)
     embed_overrides = dict(config.fixed_overrides)
 
     _embed_keys = {"RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM", "RAG_EMBED_QUERY_PREFIX"}
@@ -339,11 +341,19 @@ def cmd_optimize(args):
 
     print(f"Optimizing {args.metric} with {args.n_trials} trials…", file=sys.stderr)
 
+    # Progress file: same path as output but with _progress suffix
+    progress_file = None
+    if args.output:
+        progress_file = args.output.replace(".json", "_progress.json")
+    else:
+        progress_file = os.path.join("results", "optuna_progress.json")
+
     result = run_optuna_sweep(
         svc, suite,
         target_metric=args.metric,
         config=config,
         progress_callback=progress,
+        progress_file=progress_file,
     )
 
     if args.format == "json":

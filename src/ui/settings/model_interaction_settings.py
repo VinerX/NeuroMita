@@ -291,10 +291,14 @@ Message:
 
     def on_finished(count):
         progress.close()
-        QMessageBox.information(
-            gui, _("Готово", "Done"),
-            _("Обработано сообщений: {n}", "Messages processed: {n}").format(n=int(count or 0)),
-        )
+        from managers.settings_manager import SettingsManager
+        if SettingsManager.get("GRAPH_GC_AUTO", False):
+            _run_entity_gc(gui)
+        else:
+            QMessageBox.information(
+                gui, _("Готово", "Done"),
+                _("Обработано сообщений: {n}", "Messages processed: {n}").format(n=int(count or 0)),
+            )
 
     def on_error(msg):
         progress.close()
@@ -306,6 +310,87 @@ Message:
     progress.canceled.connect(lambda: worker.requestInterruption())
 
     gui._entity_extract_worker = worker
+    progress.show()
+    worker.start()
+
+
+def _run_entity_gc(gui, dry_run: bool = False) -> None:
+    """Run entity GC for all characters (dry-run shows plan, apply executes it)."""
+    from managers.database_manager import DatabaseManager
+    from managers.rag.graph.entity_gc import EntityGC
+    from ui.task_worker import TaskWorker
+
+    db = DatabaseManager()
+    conn = db.get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT DISTINCT character_id FROM graph_entities")
+    cids = [r[0] for r in cur.fetchall() if r[0]]
+    conn.close()
+
+    if not cids:
+        QMessageBox.information(gui, _("Готово", "Done"),
+                                _("Нет персонажей с сущностями в графе.", "No characters with entities in graph."))
+        return
+
+    def _do_gc(*, progress_callback=None):
+        results = {}
+        for i, cid in enumerate(cids):
+            gc = EntityGC(db, cid)
+            plan = gc.analyze()
+            if not dry_run:
+                counts = gc.apply(plan)
+                results[cid] = counts
+            else:
+                results[cid] = {"plan": plan.summary()}
+            if progress_callback:
+                try:
+                    progress_callback(i + 1, len(cids))
+                except Exception:
+                    pass
+        return results
+
+    worker = TaskWorker(_do_gc, use_progress=True)
+
+    progress = QProgressDialog(
+        _("GC графа сущностей...", "Entity graph GC..."),
+        _("Отмена", "Cancel"), 0, len(cids), gui,
+    )
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setValue(0)
+
+    def on_progress(curr, total):
+        try:
+            progress.setValue(min(int(curr), max(int(total), 1)))
+        except Exception:
+            pass
+
+    def on_finished(results):
+        progress.close()
+        if dry_run:
+            lines = []
+            for cid, info in results.items():
+                lines.append(info.get("plan", ""))
+            QMessageBox.information(gui, _("GC — предпросмотр", "GC — dry run"),
+                                    "\n\n".join(lines) or _("Нечего чистить.", "Nothing to clean."))
+        else:
+            summary = "\n".join(
+                f"{cid}: del={v.get('delete', 0)} merge={v.get('merge', 0)} "
+                f"rename={v.get('rename', 0)}"
+                for cid, v in results.items()
+            )
+            QMessageBox.information(gui, _("GC завершён", "GC done"), summary)
+
+    def on_error(msg):
+        progress.close()
+        QMessageBox.critical(gui, _("Ошибка", "Error"), str(msg))
+
+    worker.progress_signal.connect(on_progress)
+    worker.finished_signal.connect(on_finished)
+    worker.error_signal.connect(on_error)
+    progress.canceled.connect(lambda: worker.requestInterruption())
+
+    gui._entity_gc_worker = worker
     progress.show()
     worker.start()
 
@@ -703,9 +788,21 @@ def setup_model_interaction_controls(self, parent):
          'tooltip': _('Включает поиск в графе сущностей при RAG-запросе.',
                        'Enables entity graph search during RAG queries.')},
 
+        {'label': _('Авто-очистка графа (GC) после экстракции', 'Auto-clean graph (GC) after extraction'),
+         'key': 'GRAPH_GC_AUTO', 'type': 'checkbutton', 'default_checkbutton': False,
+         'depends_on': 'GRAPH_EXTRACTION_ENABLED',
+         'tooltip': _('Автоматически запускать сборщик мусора графа после каждой экстракции сущностей. '
+                       'Удаляет мусор, дубли, объединяет синонимы.',
+                       'Automatically run entity graph GC after each extraction. '
+                       'Removes garbage entities, duplicates, merges synonyms.')},
+
         {'type': 'button_group', 'buttons': [
             {'label': _('Извлечь сущности из истории', 'Extract entities from history'),
              'command': lambda: _extract_entities_all(self)},
+            {'label': _('Очистить граф (GC)', 'Clean graph (GC)'),
+             'command': lambda: _run_entity_gc(self)},
+            {'label': _('Предпросмотр GC', 'Preview GC'),
+             'command': lambda: _run_entity_gc(self, dry_run=True)},
         ]},
 
         {'type': 'end'},
