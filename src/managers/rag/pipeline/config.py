@@ -25,7 +25,7 @@ def list_ce_preset_names() -> list[str]:
 
 def resolve_ce_model() -> str:
     """Return the actual HF model ID for the cross-encoder (resolves preset name)."""
-    model = str(SettingsManager.get("RAG_CROSS_ENCODER_MODEL", "MiniLM-L6 v2 (22M, fast)") or "").strip()
+    model = str(SettingsManager.get("RAG_CROSS_ENCODER_MODEL", "mMiniLM-L6 multilingual (66M)") or "").strip()
     if model in CE_PRESETS:
         hf_id = CE_PRESETS[model]
         if not hf_id:  # "Custom"
@@ -129,8 +129,8 @@ class RAGConfig:
     two_stage_fallback_union: bool = True
 
     # cross-encoder reranker (optional second pass)
-    cross_encoder_enabled: bool = False
-    cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    cross_encoder_enabled: bool = True
+    cross_encoder_model: str = "cross-encoder/mmarco-mMiniLMv2-L6-H384-v1"
     cross_encoder_top_k: int = 20
 
     @classmethod
@@ -189,7 +189,7 @@ class RAGConfig:
 
         cfg.two_stage_fallback_union = _b(SettingsManager.get("RAG_TWO_STAGE_FALLBACK_UNION", True), True)
 
-        cfg.cross_encoder_enabled = _b(SettingsManager.get("RAG_CROSS_ENCODER_ENABLED", False), False)
+        cfg.cross_encoder_enabled = _b(SettingsManager.get("RAG_CROSS_ENCODER_ENABLED", True), True)
         cfg.cross_encoder_model = resolve_ce_model()
         cfg.cross_encoder_top_k = _i(SettingsManager.get("RAG_CROSS_ENCODER_TOP_K", 20), 20)
 
@@ -226,7 +226,7 @@ class RAGConfig:
 # ── Default values for all SettingsManager RAG keys ──────────────────────
 # Used by the "Reset RAG defaults" button in the UI.
 RAG_DEFAULTS: dict[str, object] = {
-    "RAG_EMBED_MODEL": "Snowflake Arctic M v2.0",
+    "RAG_EMBED_MODEL": "BAAI/bge-m3",
     "RAG_EMBED_MODEL_CUSTOM": "",
     "RAG_EMBED_QUERY_PREFIX": "query: ",
     "HF_TOKEN": "",
@@ -264,8 +264,8 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_INTERSECT_REQUIRE_VECTOR": True,
     "RAG_INTERSECT_FALLBACK_UNION": True,
     "RAG_TWO_STAGE_FALLBACK_UNION": True,
-    "RAG_CROSS_ENCODER_ENABLED": False,
-    "RAG_CROSS_ENCODER_MODEL": "MiniLM-L6 v2 (22M, fast)",
+    "RAG_CROSS_ENCODER_ENABLED": True,
+    "RAG_CROSS_ENCODER_MODEL": "mMiniLM-L6 multilingual (66M)",
     "RAG_CROSS_ENCODER_MODEL_CUSTOM": "",
     "RAG_CROSS_ENCODER_TOP_K": 20,
     "RAG_DETAILED_LOGS": True,

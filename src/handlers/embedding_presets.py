@@ -50,7 +50,7 @@ def resolve_model_settings() -> dict:
 
     Returns dict with keys: hf_name, query_prefix, dimensions.
     """
-    chosen = str(SettingsManager.get("RAG_EMBED_MODEL", "Snowflake Arctic M v2.0") or "").strip()
+    chosen = str(SettingsManager.get("RAG_EMBED_MODEL", "BAAI/bge-m3") or "").strip()
     preset = get_preset(chosen)
     if preset:
         return dict(preset)
@@ -59,7 +59,7 @@ def resolve_model_settings() -> dict:
     hf_name = str(SettingsManager.get("RAG_EMBED_MODEL_CUSTOM", "") or "").strip()
     if not hf_name:
         # fallback to default
-        return dict(EMBED_MODEL_PRESETS["Snowflake Arctic M v2.0"])
+        return dict(EMBED_MODEL_PRESETS["BAAI/bge-m3"])
 
     return {
         "hf_name": hf_name,
