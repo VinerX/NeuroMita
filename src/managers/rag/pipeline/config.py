@@ -12,7 +12,6 @@ CE_PRESETS: dict[str, str] = {
     "MiniLM-L12 v2 (33M, accurate)": "cross-encoder/ms-marco-MiniLM-L-12-v2",
     "MiniLM-L2 v2 (6M, tiny)":       "cross-encoder/ms-marco-MiniLM-L-2-v2",
     # Multilingual (mMARCO — includes Russian)
-    "mMiniLM-L6 multilingual (66M)":  "cross-encoder/mmarco-mMiniLMv2-L6-H384-v1",
     "mMiniLM-L12 multilingual (117M)": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
     "BGE Reranker v2-m3 (568M, best)": "BAAI/bge-reranker-v2-m3",
     "Custom": "",
@@ -25,7 +24,7 @@ def list_ce_preset_names() -> list[str]:
 
 def resolve_ce_model() -> str:
     """Return the actual HF model ID for the cross-encoder (resolves preset name)."""
-    model = str(SettingsManager.get("RAG_CROSS_ENCODER_MODEL", "mMiniLM-L6 multilingual (66M)") or "").strip()
+    model = str(SettingsManager.get("RAG_CROSS_ENCODER_MODEL", "mMiniLM-L12 multilingual (117M)") or "").strip()
     if model in CE_PRESETS:
         hf_id = CE_PRESETS[model]
         if not hf_id:  # "Custom"
@@ -130,7 +129,7 @@ class RAGConfig:
 
     # cross-encoder reranker (optional second pass)
     cross_encoder_enabled: bool = True
-    cross_encoder_model: str = "cross-encoder/mmarco-mMiniLMv2-L6-H384-v1"
+    cross_encoder_model: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
     cross_encoder_top_k: int = 20
 
     @classmethod
@@ -265,7 +264,7 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_INTERSECT_FALLBACK_UNION": True,
     "RAG_TWO_STAGE_FALLBACK_UNION": True,
     "RAG_CROSS_ENCODER_ENABLED": True,
-    "RAG_CROSS_ENCODER_MODEL": "mMiniLM-L6 multilingual (66M)",
+    "RAG_CROSS_ENCODER_MODEL": "mMiniLM-L12 multilingual (117M)",
     "RAG_CROSS_ENCODER_MODEL_CUSTOM": "",
     "RAG_CROSS_ENCODER_TOP_K": 20,
     "RAG_DETAILED_LOGS": True,

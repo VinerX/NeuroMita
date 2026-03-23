@@ -61,15 +61,17 @@ class CrossEncoderReranker:
                 import torch
 
                 cache_dir = _checkpoints_dir()
+                from managers.settings_manager import SettingsManager
+                token = str(SettingsManager.get("HF_TOKEN", "") or "").strip() or None
                 logger.info(
                     f"[CrossEncoder] Loading '{self.model_name}' "
                     f"(cache: {cache_dir}) ..."
                 )
                 self._tokenizer = AutoTokenizer.from_pretrained(
-                    self.model_name, cache_dir=cache_dir
+                    self.model_name, cache_dir=cache_dir, token=token
                 )
                 self._model = AutoModelForSequenceClassification.from_pretrained(
-                    self.model_name, cache_dir=cache_dir
+                    self.model_name, cache_dir=cache_dir, token=token
                 )
                 self._model.eval()
                 logger.info(f"[CrossEncoder] Model '{self.model_name}' ready.")
@@ -120,15 +122,33 @@ class CrossEncoderReranker:
                 raw = logits[:, -1]  # last logit = "relevant" class
 
             scores = raw.tolist()
+
+            # Record pre-CE order for move logging
+            pre_order = {c: i for i, c in enumerate(to_score)}
+
             for c, s in zip(to_score, scores):
                 c.score = float(s)
                 if c.debug is None:
                     c.debug = {}
                 c.debug["cross_encoder"] = float(s)
 
-            logger.debug(
-                f"[CrossEncoder] Re-scored {len(to_score)}/{len(cands)} candidates "
-                f"(top score={max(scores):.3f})"
-            )
+            # Log position changes after sort
+            post_order = sorted(range(len(to_score)), key=lambda i: scores[i], reverse=True)
+            moves = []
+            for new_pos, old_pos in enumerate(post_order):
+                if old_pos != new_pos:
+                    c = to_score[old_pos]
+                    moves.append(f"{c.source}:{c.id} {old_pos+1}→{new_pos+1}")
+            if moves:
+                logger.info(
+                    f"[CrossEncoder] Re-ranked {len(to_score)}/{len(cands)} | "
+                    f"top={max(scores):.3f} | moves: " + ", ".join(moves[:10])
+                    + (f" (+{len(moves)-10} more)" if len(moves) > 10 else "")
+                )
+            else:
+                logger.info(
+                    f"[CrossEncoder] Re-ranked {len(to_score)}/{len(cands)} | "
+                    f"top={max(scores):.3f} | no position changes"
+                )
         except Exception as exc:
             logger.warning(f"[CrossEncoder] predict failed (ignored): {exc}")

@@ -226,9 +226,11 @@ def _download_model_bg(gui, hf_name: str, on_done) -> None:
     def _do_download(*, progress_callback=None):
         import sys
         from huggingface_hub import snapshot_download
+        from managers.settings_manager import SettingsManager
+        token = str(SettingsManager.get("HF_TOKEN", "") or "").strip() or None
         script_dir = os.path.dirname(sys.executable)
         checkpoints_dir = os.path.join(script_dir, "checkpoints")
-        snapshot_download(repo_id=hf_name, cache_dir=checkpoints_dir)
+        snapshot_download(repo_id=hf_name, cache_dir=checkpoints_dir, token=token)
         return hf_name
 
     worker = TaskWorker(_do_download)
