@@ -74,6 +74,7 @@ class OptimizeResult:
     target_metric: str
     n_trials: int
     top_trials: List[Dict[str, Any]]  # top-N trial summaries
+    convergence: List[Dict[str, Any]] = field(default_factory=list)  # per-trial best
 
     def to_dict(self) -> dict:
         return {
@@ -82,6 +83,7 @@ class OptimizeResult:
             "target_metric": self.target_metric,
             "n_trials": self.n_trials,
             "top_trials": self.top_trials,
+            "convergence": self.convergence,
         }
 
 
@@ -114,6 +116,7 @@ def run_optuna_sweep(
     cfg = config or OptimizeConfig()
     trial_count = [0]
     best_so_far = [0.0]
+    convergence_log: List[Dict[str, Any]] = []
 
     def objective(trial):
         overrides = dict(cfg.fixed_overrides)
@@ -141,6 +144,13 @@ def run_optuna_sweep(
         trial_count[0] += 1
         if value > best_so_far[0]:
             best_so_far[0] = value
+
+        convergence_log.append({
+            "trial": trial_count[0],
+            "value": round(value, 5),
+            "best": round(best_so_far[0], 5),
+        })
+
         print(
             f"  Trial {trial_count[0]:>4d}/{cfg.n_trials}  "
             f"{target_metric}={value:.4f}  "
@@ -180,4 +190,5 @@ def run_optuna_sweep(
         target_metric=target_metric,
         n_trials=len(study.trials),
         top_trials=top_trials,
+        convergence=convergence_log,
     )

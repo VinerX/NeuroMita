@@ -76,25 +76,47 @@ def _output(data, fmt: str, output_path: str | None):
 
 def cmd_run(args):
     """Run a test suite against a scenario and report metrics."""
-    svc = RagTesterService()
-    scenario = svc.load_scenario_file(args.scenario, fallback_character_id="RAG_TEST")
-    suite = TestSuite.from_json(open(args.suite, "r", encoding="utf-8").read())
-
-    # Load scenario into DB
-    print("Loading scenario into DB…", file=sys.stderr)
-    stats = svc.apply_scenario_to_db(scenario, clear_before=True, embed_now=True)
-    print(f"  context={stats['context']} history={stats['history']} memories={stats['memories']}", file=sys.stderr)
+    from rag_tester_core import SettingsOverride
+    from managers.rag.rag_manager import RAGManager
+    from handlers.embedding_handler import EmbeddingModelHandler
 
     overrides = _parse_overrides(args.overrides)
 
-    print(f"Running {len(suite.cases)} test cases…", file=sys.stderr)
-    result = svc.run_batch(
-        suite,
-        limit=args.limit,
-        threshold=args.threshold,
-        use_overrides=bool(overrides),
-        overrides=overrides or None,
-    )
+    # If overrides contain embed model settings, apply them BEFORE embedding the scenario
+    # and reset cached singletons so the right model is used.
+    _embed_keys = {"RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM", "RAG_EMBED_QUERY_PREFIX"}
+    _embed_overridden = bool(overrides) and bool(_embed_keys & set(overrides))
+    if _embed_overridden:
+        # Reset fallback handler singleton so it re-initialises with overridden model
+        RAGManager._fallback_handler = None
+        EmbeddingModelHandler._unload_shared()
+
+    ctx = SettingsOverride(overrides) if overrides else None
+    if ctx:
+        ctx.__enter__()
+    try:
+        svc = RagTesterService()
+        scenario = svc.load_scenario_file(args.scenario, fallback_character_id="RAG_TEST")
+        suite = TestSuite.from_json(open(args.suite, "r", encoding="utf-8").read())
+
+        # Load scenario into DB (uses current/overridden model for embeddings)
+        print("Loading scenario into DB…", file=sys.stderr)
+        if overrides:
+            print(f"  overrides: {overrides}", file=sys.stderr)
+        stats = svc.apply_scenario_to_db(scenario, clear_before=True, embed_now=True)
+        print(f"  context={stats['context']} history={stats['history']} memories={stats['memories']}", file=sys.stderr)
+
+        print(f"Running {len(suite.cases)} test cases…", file=sys.stderr)
+        result = svc.run_batch(
+            suite,
+            limit=args.limit,
+            threshold=args.threshold,
+            use_overrides=bool(overrides),
+            overrides=overrides or None,
+        )
+    finally:
+        if ctx:
+            ctx.__exit__(None, None, None)
 
     if args.format == "json":
         _output(result.to_dict(), "json", args.output)
@@ -272,15 +294,9 @@ def cmd_generate_suite(args):
 def cmd_optimize(args):
     """Bayesian optimization of RAG parameters via Optuna."""
     from optuna_sweep import OptimizeConfig, run_optuna_sweep
-
-    svc = RagTesterService()
-    scenario = svc.load_scenario_file(args.scenario, fallback_character_id="RAG_TEST")
-    suite = TestSuite.from_json(open(args.suite, "r", encoding="utf-8").read())
-
-    # Load scenario into DB once
-    print("Loading scenario into DB…", file=sys.stderr)
-    stats = svc.apply_scenario_to_db(scenario, clear_before=True, embed_now=True)
-    print(f"  context={stats['context']} history={stats['history']} memories={stats['memories']}", file=sys.stderr)
+    from rag_tester_core import SettingsOverride
+    from managers.rag.rag_manager import RAGManager
+    from handlers.embedding_handler import EmbeddingModelHandler
 
     config = OptimizeConfig()
     if args.optimize_config:
@@ -288,6 +304,35 @@ def cmd_optimize(args):
     config.n_trials = args.n_trials
     if args.timeout:
         config.timeout = args.timeout
+
+    # Apply fixed_overrides (including embed model) during scenario embedding AND each trial
+    cli_overrides = _parse_overrides(args.overrides) if hasattr(args, 'overrides') and args.overrides else {}
+    if cli_overrides:
+        config.fixed_overrides.update(cli_overrides)  # ensure per-trial runs also use correct embed model
+    embed_overrides = dict(config.fixed_overrides)
+
+    _embed_keys = {"RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM", "RAG_EMBED_QUERY_PREFIX"}
+    if embed_overrides and bool(_embed_keys & set(embed_overrides)):
+        RAGManager._fallback_handler = None
+        EmbeddingModelHandler._unload_shared()
+
+    ctx = SettingsOverride(embed_overrides) if embed_overrides else None
+    if ctx:
+        ctx.__enter__()
+    try:
+        svc = RagTesterService()
+        scenario = svc.load_scenario_file(args.scenario, fallback_character_id="RAG_TEST")
+        suite = TestSuite.from_json(open(args.suite, "r", encoding="utf-8").read())
+
+        # Load scenario into DB once (uses overridden model for embeddings)
+        print("Loading scenario into DB…", file=sys.stderr)
+        if embed_overrides:
+            print(f"  fixed_overrides: {embed_overrides}", file=sys.stderr)
+        stats = svc.apply_scenario_to_db(scenario, clear_before=True, embed_now=True)
+        print(f"  context={stats['context']} history={stats['history']} memories={stats['memories']}", file=sys.stderr)
+    finally:
+        if ctx:
+            ctx.__exit__(None, None, None)
 
     def progress(cur, total, val):
         print(f"  [{cur}/{total}] current {args.metric}={val:.4f}", file=sys.stderr)
@@ -475,6 +520,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_opt.add_argument("--n-trials", type=int, default=200, help="Number of Optuna trials")
     p_opt.add_argument("--timeout", type=int, default=None, help="Timeout in seconds")
     p_opt.add_argument("--optimize-config", default=None, help="Path to optimize config JSON")
+    p_opt.add_argument("--overrides", default=None, help="JSON string or path to overrides (e.g. embed model)")
     p_opt.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
     p_opt.add_argument("--output", default=None, help="Write output to file")
 
