@@ -226,7 +226,7 @@ class RAGConfig:
 # ── Default values for all SettingsManager RAG keys ──────────────────────
 # Used by the "Reset RAG defaults" button in the UI.
 RAG_DEFAULTS: dict[str, object] = {
-    "RAG_EMBED_MODEL": "BAAI/bge-m3",
+    "RAG_EMBED_MODEL": "GTE multilingual base (620M, 2024)",
     "RAG_EMBED_MODEL_CUSTOM": "",
     "RAG_EMBED_QUERY_PREFIX": "query: ",
     "HF_TOKEN": "",
