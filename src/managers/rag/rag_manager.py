@@ -645,9 +645,36 @@ class RAGManager:
         if cfg.detailed_logs:
             RagDebugLogger(rag=self, cfg=cfg).log(qs, buckets, cands)
 
+        # Enforce graph_min_results: guarantee at least N graph candidates in output
+        graph_min = int(cfg.graph_min_results or 0)
+        if graph_min > 0 and cfg.search_graph:
+            limit = int(cfg.limit)
+            top = cands[:limit]
+            graph_in_top = sum(1 for c in top if c.source == "graph")
+            if graph_in_top < graph_min:
+                needed = graph_min - graph_in_top
+                extra = [c for c in cands[limit:] if c.source == "graph"][:needed]
+                if extra:
+                    top = top[:limit - len(extra)] + extra
+                    logger.debug(
+                        f"[RAG][graph_min] bumped {len(extra)} graph triple(s) into top "
+                        f"(had {graph_in_top}/{graph_min} required): "
+                        + ", ".join(f'"{c.content}"' for c in extra)
+                    )
+                else:
+                    logger.debug(
+                        f"[RAG][graph_min] wanted {graph_min} graph results but only "
+                        f"{graph_in_top} available in total"
+                    )
+            else:
+                logger.debug(f"[RAG][graph_min] {graph_in_top} graph result(s) in top — requirement met")
+            cands_out = top
+        else:
+            cands_out = cands[: int(cfg.limit)]
+
         # convert to old output format
         out: list[dict] = []
-        for c in cands[: int(cfg.limit)]:
+        for c in cands_out:
             out.append(c.to_public_dict())
         return out
 

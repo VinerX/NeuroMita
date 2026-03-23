@@ -788,6 +788,15 @@ def setup_model_interaction_controls(self, parent):
          'tooltip': _('Включает поиск в графе сущностей при RAG-запросе.',
                        'Enables entity graph search during RAG queries.')},
 
+        {'label': _('Минимум результатов из графа', 'Min graph results'),
+         'key': 'RAG_GRAPH_MIN_RESULTS', 'type': 'entry', 'default': 0,
+         'validation': self.validate_positive_integer_or_zero,
+         'depends_on': 'RAG_SEARCH_GRAPH',
+         'tooltip': _('Минимальное количество граф-трипл в выдаче RAG (0 = без гарантий). '
+                       'Гарантирует присутствие знаний из графа даже если они проигрывают по score.',
+                       'Minimum number of graph triples guaranteed in RAG output (0 = no guarantee). '
+                       'Ensures graph knowledge appears even if outscored by history/memories.')},
+
         {'label': _('Авто-очистка графа (GC) после экстракции', 'Auto-clean graph (GC) after extraction'),
          'key': 'GRAPH_GC_AUTO', 'type': 'checkbutton', 'default_checkbutton': False,
          'depends_on': 'GRAPH_EXTRACTION_ENABLED',
@@ -799,6 +808,9 @@ def setup_model_interaction_controls(self, parent):
         {'type': 'button_group', 'buttons': [
             {'label': _('Извлечь сущности из истории', 'Extract entities from history'),
              'command': lambda: _extract_entities_all(self)},
+        ]},
+
+        {'type': 'button_group', 'buttons': [
             {'label': _('Очистить граф (GC)', 'Clean graph (GC)'),
              'command': lambda: _run_entity_gc(self)},
             {'label': _('Предпросмотр GC', 'Preview GC'),
