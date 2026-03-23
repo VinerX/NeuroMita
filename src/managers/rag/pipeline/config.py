@@ -7,9 +7,14 @@ from managers.settings_manager import SettingsManager
 # ── Cross-encoder presets ─────────────────────────────────────────────────
 # Maps display name → HuggingFace model ID
 CE_PRESETS: dict[str, str] = {
+    # English (MS MARCO)
     "MiniLM-L6 v2 (22M, fast)":      "cross-encoder/ms-marco-MiniLM-L-6-v2",
     "MiniLM-L12 v2 (33M, accurate)": "cross-encoder/ms-marco-MiniLM-L-12-v2",
     "MiniLM-L2 v2 (6M, tiny)":       "cross-encoder/ms-marco-MiniLM-L-2-v2",
+    # Multilingual (mMARCO — includes Russian)
+    "mMiniLM-L6 multilingual (66M)":  "cross-encoder/mmarco-mMiniLMv2-L6-H384-v1",
+    "mMiniLM-L12 multilingual (117M)": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+    "BGE Reranker v2-m3 (568M, best)": "BAAI/bge-reranker-v2-m3",
     "Custom": "",
 }
 

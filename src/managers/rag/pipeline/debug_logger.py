@@ -14,6 +14,29 @@ class RagDebugLogger:
         self.rag = rag
         self.cfg = cfg
 
+    def log_final_output(self, cands_out: List[Candidate]) -> None:
+        """Log the exact candidates returned to the model (after all filtering/reranking)."""
+        if not self.cfg.detailed_logs:
+            return
+        try:
+            def _clip(s, n: int = 220) -> str:
+                t = str(s or "").replace("\n", " ").replace("\r", " ").strip()
+                t = rag_clean_text(t)
+                return (t[:n] + "…") if len(t) > n else t
+
+            logger.info(f"[RAG] ==================== FINAL OUTPUT ({len(cands_out)}) ====================")
+            for i, c in enumerate(cands_out):
+                dbg = c.debug or {}
+                ce_score = dbg.get("cross_encoder")
+                ce_str = f" ce={float(ce_score):.3f}" if ce_score is not None else ""
+                logger.info(
+                    f"[RAG][OUT {i+1}/{len(cands_out)}] {c.source}:{c.id} "
+                    f"score={float(c.score):.4f}{ce_str} | \"{_clip(c.content)}\""
+                )
+            logger.info("[RAG] =======================================================")
+        except Exception:
+            pass
+
     def log(self, qs: QueryState, buckets: Dict[str, List[Candidate]], cands: List[Candidate]) -> None:
         if not self.cfg.detailed_logs:
             return

@@ -113,6 +113,8 @@ def _refresh_ce_status(gui) -> None:
             gui._ce_dl_label.setText(_("Модель:", "Model:") + " " + _get_ce_download_status())
         if hasattr(gui, '_ce_loaded_label'):
             gui._ce_loaded_label.setText(_("Статус:", "Status:") + " " + _get_ce_loaded_status())
+        if hasattr(gui, '_ce_dl_btn'):
+            gui._ce_dl_btn.setVisible(not _is_ce_model_downloaded())
     except Exception:
         pass
 
@@ -189,6 +191,106 @@ def _reindex_embeddings(gui) -> None:
     worker.start()
 
 
+def _is_embed_model_downloaded() -> bool:
+    try:
+        import sys
+        ms = resolve_model_settings()
+        hf_name = ms["hf_name"]
+        script_dir = os.path.dirname(sys.executable)
+        checkpoints_dir = os.path.join(script_dir, "checkpoints")
+        cache_dir_name = "models--" + hf_name.replace("/", "--")
+        return os.path.isdir(os.path.join(checkpoints_dir, cache_dir_name))
+    except Exception:
+        return True  # assume downloaded on error to avoid spurious button
+
+
+def _is_ce_model_downloaded() -> bool:
+    try:
+        import sys
+        from managers.rag.pipeline.config import resolve_ce_model
+        hf_name = resolve_ce_model()
+        if not hf_name:
+            return True
+        script_dir = os.path.dirname(sys.executable)
+        checkpoints_dir = os.path.join(script_dir, "checkpoints")
+        cache_dir_name = "models--" + hf_name.replace("/", "--")
+        return os.path.isdir(os.path.join(checkpoints_dir, cache_dir_name))
+    except Exception:
+        return True
+
+
+def _download_model_bg(gui, hf_name: str, on_done) -> None:
+    """Download *hf_name* in a background thread via HuggingFace Hub."""
+    from ui.task_worker import TaskWorker
+
+    def _do_download(*, progress_callback=None):
+        import sys
+        from huggingface_hub import snapshot_download
+        script_dir = os.path.dirname(sys.executable)
+        checkpoints_dir = os.path.join(script_dir, "checkpoints")
+        snapshot_download(repo_id=hf_name, cache_dir=checkpoints_dir)
+        return hf_name
+
+    worker = TaskWorker(_do_download)
+
+    def _on_finished(r):
+        on_done(success=True)
+
+    def _on_error(msg):
+        QMessageBox.critical(gui, _("Ошибка", "Error"),
+                             _("Не удалось скачать модель:\n{e}", "Failed to download model:\n{e}").format(e=msg))
+        on_done(success=False)
+
+    worker.finished_signal.connect(_on_finished)
+    worker.error_signal.connect(_on_error)
+    # keep reference
+    if not hasattr(gui, '_download_workers'):
+        gui._download_workers = []
+    gui._download_workers.append(worker)
+    worker.start()
+
+
+def _download_embed_model(gui) -> None:
+    ms = resolve_model_settings()
+    hf_name = ms["hf_name"]
+    if hasattr(gui, '_embed_dl_btn'):
+        gui._embed_dl_btn.setEnabled(False)
+        gui._embed_dl_btn.setText(_("Скачивание...", "Downloading..."))
+
+    def _done(*, success):
+        _refresh_embed_status(gui)
+        if hasattr(gui, '_embed_dl_btn'):
+            gui._embed_dl_btn.setEnabled(True)
+            if _is_embed_model_downloaded():
+                gui._embed_dl_btn.setVisible(False)
+            else:
+                gui._embed_dl_btn.setText(_("Скачать модель", "Download model"))
+
+    _download_model_bg(gui, hf_name, _done)
+
+
+def _download_ce_model(gui) -> None:
+    from managers.rag.pipeline.config import resolve_ce_model
+    hf_name = resolve_ce_model()
+    if not hf_name:
+        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Модель не выбрана.", "No model selected."))
+        return
+    if hasattr(gui, '_ce_dl_btn'):
+        gui._ce_dl_btn.setEnabled(False)
+        gui._ce_dl_btn.setText(_("Скачивание...", "Downloading..."))
+
+    def _done(*, success):
+        _refresh_ce_status(gui)
+        if hasattr(gui, '_ce_dl_btn'):
+            gui._ce_dl_btn.setEnabled(True)
+            if _is_ce_model_downloaded():
+                gui._ce_dl_btn.setVisible(False)
+            else:
+                gui._ce_dl_btn.setText(_("Скачать модель", "Download model"))
+
+    _download_model_bg(gui, hf_name, _done)
+
+
 def _refresh_embed_status(gui) -> None:
     """Refresh embedding status labels."""
     try:
@@ -196,6 +298,8 @@ def _refresh_embed_status(gui) -> None:
             gui._embed_dl_label.setText(_("Модель:", "Model:") + " " + _get_model_download_status())
         if hasattr(gui, '_embed_status_label'):
             gui._embed_status_label.setText(_("Индекс:", "Index:") + " " + _get_embed_status_text())
+        if hasattr(gui, '_embed_dl_btn'):
+            gui._embed_dl_btn.setVisible(not _is_embed_model_downloaded())
     except Exception:
         pass
 
@@ -1233,14 +1337,18 @@ def setup_model_interaction_controls(self, parent):
                            _("Настройки Памяти и RAG", "Memory & RAG Settings"),
                            rag_memory_config)
 
-    # --- Dynamic status labels for embedding model (injected into subsection) ---
+    # --- Dynamic status labels + download button for embedding model ---
     try:
         _dl_label = QLabel(_("Модель:", "Model:") + " " + _get_model_download_status())
         _dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
         _idx_label = QLabel(_("Индекс:", "Index:") + " " + _get_embed_status_text())
         _idx_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        _embed_dl_btn = QPushButton(_("Скачать модель", "Download model"))
+        _embed_dl_btn.setVisible(not _is_embed_model_downloaded())
+        _embed_dl_btn.clicked.connect(lambda: _download_embed_model(self))
         self._embed_status_label = _idx_label
         self._embed_dl_label = _dl_label
+        self._embed_dl_btn = _embed_dl_btn
 
         # Find the "Embedding Model" subsection inside the created section and inject labels
         _rag_section = parent.layout().itemAt(parent.layout().count() - 1)
@@ -1262,18 +1370,23 @@ def setup_model_interaction_controls(self, parent):
                                 if 'мбеддинг' in _title.lower() or 'mbedding' in _title.lower():
                                     _w.add_widget(_dl_label)
                                     _w.add_widget(_idx_label)
+                                    _w.add_widget(_embed_dl_btn)
                                     break
     except Exception:
         pass
 
-    # --- Dynamic status labels for cross-encoder model (injected into subsection) ---
+    # --- Dynamic status labels + download button for cross-encoder model ---
     try:
         _ce_dl_label = QLabel(_("Модель:", "Model:") + " " + _get_ce_download_status())
         _ce_dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
         _ce_ld_label = QLabel(_("Статус:", "Status:") + " " + _get_ce_loaded_status())
         _ce_ld_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        _ce_dl_btn = QPushButton(_("Скачать модель", "Download model"))
+        _ce_dl_btn.setVisible(not _is_ce_model_downloaded())
+        _ce_dl_btn.clicked.connect(lambda: _download_ce_model(self))
         self._ce_dl_label = _ce_dl_label
         self._ce_loaded_label = _ce_ld_label
+        self._ce_dl_btn = _ce_dl_btn
 
         _rag_section = parent.layout().itemAt(parent.layout().count() - 1)
         if _rag_section and _rag_section.widget():
@@ -1293,6 +1406,7 @@ def setup_model_interaction_controls(self, parent):
                                 if 'ross-encoder' in _title or 'реранкер' in _title.lower():
                                     _w.add_widget(_ce_dl_label)
                                     _w.add_widget(_ce_ld_label)
+                                    _w.add_widget(_ce_dl_btn)
                                     break
     except Exception:
         pass

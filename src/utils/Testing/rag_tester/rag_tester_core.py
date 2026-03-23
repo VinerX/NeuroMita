@@ -772,8 +772,78 @@ class RagTesterService:
             logging.getLogger(__name__).info(f"Memory insert: {inserted} rows, {embedded} embedded")
         return inserted
 
-    def apply_scenario_to_db(self, scenario: Scenario, *, clear_before: bool, embed_now: bool) -> dict[str, int]:
+    def _check_embeddings_up_to_date(self, cid: str, scenario: Scenario, model_name: str) -> bool:
+        """Return True if DB already has all scenario rows with embeddings for *model_name*."""
+        expected_hist = len(scenario.context) + len(scenario.history)
+        expected_mem = len(scenario.memories)
+        conn = self.db.get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM history WHERE character_id=?", (cid,))
+            row = cur.fetchone()
+            if not row or row[0] != expected_hist:
+                return False
+            cur.execute("SELECT COUNT(*) FROM memories WHERE character_id=?", (cid,))
+            row = cur.fetchone()
+            if not row or row[0] != expected_mem:
+                return False
+            cur.execute(
+                "SELECT COUNT(*) FROM embeddings WHERE source_table='history' "
+                "AND character_id=? AND model_name=?",
+                (cid, model_name),
+            )
+            row = cur.fetchone()
+            if not row or row[0] < expected_hist:
+                return False
+            cur.execute(
+                "SELECT COUNT(*) FROM embeddings WHERE source_table='memories' "
+                "AND character_id=? AND model_name=?",
+                (cid, model_name),
+            )
+            row = cur.fetchone()
+            if not row or row[0] < expected_mem:
+                return False
+            return True
+        except Exception:
+            return False
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def apply_scenario_to_db(
+        self,
+        scenario: Scenario,
+        *,
+        clear_before: bool,
+        embed_now: bool,
+        smart_embed: bool = False,
+    ) -> dict[str, int]:
+        """Insert scenario data into DB.
+
+        If *smart_embed* is True, the method first checks whether the DB already
+        contains the expected rows AND embeddings for the current model. If so,
+        it skips the expensive clear+insert+embed cycle and returns the cached
+        counts directly (logged as a cache hit).
+        """
         cid = scenario.character_id
+
+        if smart_embed and embed_now:
+            from handlers.embedding_presets import resolve_model_settings
+            model_name = resolve_model_settings()["hf_name"]
+            if self._check_embeddings_up_to_date(cid, scenario, model_name):
+                import logging as _log
+                _log.getLogger(__name__).info(
+                    f"[smart_embed] DB already up-to-date for model '{model_name}' — skipping re-index"
+                )
+                return {
+                    "context": len(scenario.context),
+                    "history": len(scenario.history),
+                    "memories": len(scenario.memories),
+                    "graph": len(scenario.graph_relations),
+                }
+
         if clear_before:
             self.clear_character_data(cid)
 

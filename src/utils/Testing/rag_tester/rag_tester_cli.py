@@ -106,7 +106,7 @@ def cmd_run(args):
         print("Loading scenario into DB…", file=sys.stderr)
         if overrides:
             print(f"  overrides: {overrides}", file=sys.stderr)
-        stats = svc.apply_scenario_to_db(scenario, clear_before=True, embed_now=True)
+        stats = svc.apply_scenario_to_db(scenario, clear_before=True, embed_now=True, smart_embed=True)
         print(f"  context={stats['context']} history={stats['history']} memories={stats['memories']}", file=sys.stderr)
 
         print(f"Running {len(suite.cases)} test cases…", file=sys.stderr)
@@ -139,7 +139,7 @@ def cmd_sweep(args):
 
     # Load scenario into DB once
     print("Loading scenario into DB…", file=sys.stderr)
-    stats = svc.apply_scenario_to_db(scenario, clear_before=True, embed_now=True)
+    stats = svc.apply_scenario_to_db(scenario, clear_before=True, embed_now=True, smart_embed=True)
     print(f"  context={stats['context']} history={stats['history']} memories={stats['memories']}", file=sys.stderr)
 
     # Count grid size
@@ -341,7 +341,7 @@ def cmd_optimize(args):
         print("Loading scenario into DB…", file=sys.stderr)
         if embed_overrides:
             print(f"  fixed_overrides: {embed_overrides}", file=sys.stderr)
-        stats = svc.apply_scenario_to_db(scenario, clear_before=True, embed_now=True)
+        stats = svc.apply_scenario_to_db(scenario, clear_before=True, embed_now=True, smart_embed=True)
         print(f"  context={stats['context']} history={stats['history']} memories={stats['memories']}", file=sys.stderr)
     finally:
         if ctx:

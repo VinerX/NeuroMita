@@ -682,6 +682,9 @@ class RAGManager:
         else:
             cands_out = cands[: int(cfg.limit)]
 
+        if cfg.detailed_logs:
+            RagDebugLogger(rag=self, cfg=cfg).log_final_output(cands_out)
+
         # convert to old output format
         out: list[dict] = []
         for c in cands_out:
