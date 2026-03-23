@@ -10,6 +10,7 @@ from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
 from core.events import get_event_bus, Events
 from managers.rag.pipeline.config import RAG_DEFAULTS
+from managers.rag.pipeline.config import list_ce_preset_names, CE_PRESETS
 from handlers.embedding_presets import list_preset_names, resolve_model_settings
 
 
@@ -71,6 +72,49 @@ def _get_model_download_status() -> str:
         return _("Не скачана", "Not downloaded")
     except Exception:
         return "?"
+
+
+def _get_ce_download_status() -> str:
+    """Check if the selected cross-encoder model is cached locally."""
+    try:
+        import sys
+        from managers.rag.pipeline.config import resolve_ce_model
+        hf_name = resolve_ce_model()
+        if not hf_name:
+            return _("Не выбрана", "Not selected")
+        script_dir = os.path.dirname(sys.executable)
+        checkpoints_dir = os.path.join(script_dir, "checkpoints")
+        cache_dir_name = "models--" + hf_name.replace("/", "--")
+        if os.path.isdir(os.path.join(checkpoints_dir, cache_dir_name)):
+            return _("Скачана", "Downloaded") + f" ({hf_name})"
+        return _("Не скачана", "Not downloaded") + f" ({hf_name})"
+    except Exception:
+        return "?"
+
+
+def _get_ce_loaded_status() -> str:
+    """Check if the cross-encoder is currently loaded in memory."""
+    try:
+        from managers.rag.pipeline.cross_encoder import CrossEncoderReranker
+        from managers.rag.pipeline.config import resolve_ce_model
+        hf_name = resolve_ce_model()
+        inst = CrossEncoderReranker._instances.get(hf_name)
+        if inst and inst._model is not None:
+            return _("Загружена в память", "Loaded in memory")
+        return _("Не загружена", "Not loaded")
+    except Exception:
+        return "?"
+
+
+def _refresh_ce_status(gui) -> None:
+    """Refresh cross-encoder status labels."""
+    try:
+        if hasattr(gui, '_ce_dl_label'):
+            gui._ce_dl_label.setText(_("Модель:", "Model:") + " " + _get_ce_download_status())
+        if hasattr(gui, '_ce_loaded_label'):
+            gui._ce_loaded_label.setText(_("Статус:", "Status:") + " " + _get_ce_loaded_status())
+    except Exception:
+        pass
 
 
 def _reindex_embeddings(gui) -> None:
@@ -1106,20 +1150,30 @@ def setup_model_interaction_controls(self, parent):
          'key': 'RAG_CROSS_ENCODER_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
          'depends_on': 'RAG_ENABLED',
          'tooltip': _(
-             'Второй проход реранкинга: модель scoring (query, passage) переоценивает топ-K кандидатов '
-             'после линейного ранжирования. Даёт заметный прирост точности за счёт скорости (~22M параметров).',
+             'Второй проход реранкинга: (query, passage) модель переоценивает топ-K кандидатов '
+             'после линейного ранжирования. Даёт прирост точности за счёт скорости (~22M параметров).',
              'Second reranking pass: a (query, passage) scoring model re-scores the top-K candidates '
-             'after linear ranking. Noticeably improves precision at the cost of latency (~22M params).')},
+             'after linear ranking. Improves precision at the cost of latency (~22M params).')},
 
-        {'label': _('Модель cross-encoder', 'Cross-encoder model'),
-         'key': 'RAG_CROSS_ENCODER_MODEL', 'type': 'entry',
-         'default': 'cross-encoder/ms-marco-MiniLM-L-6-v2',
+        {'label': _('Модель', 'Model'),
+         'key': 'RAG_CROSS_ENCODER_MODEL', 'type': 'combobox',
+         'options': list_ce_preset_names(),
+         'default': 'MiniLM-L6 v2 (22M, fast)',
          'depends_on': 'RAG_CROSS_ENCODER_ENABLED',
          'tooltip': _(
-             'HuggingFace-идентификатор модели cross-encoder для реранкинга. '
-             'Рекомендуется: cross-encoder/ms-marco-MiniLM-L-6-v2 (~22M, быстрая).',
-             'HuggingFace model ID for cross-encoder reranking. '
-             'Recommended: cross-encoder/ms-marco-MiniLM-L-6-v2 (~22M, fast).')},
+             'Пресет модели cross-encoder. MiniLM-L6 — быстрая ~22M, MiniLM-L12 — точнее ~33M, '
+             'MiniLM-L2 — минимальная ~6M. Custom — ввести HF имя вручную.',
+             'Cross-encoder model preset. MiniLM-L6 — fast ~22M, MiniLM-L12 — accurate ~33M, '
+             'MiniLM-L2 — tiny ~6M. Custom — enter HF name manually.')},
+
+        {'label': _('HF имя модели (Custom)', 'HF model name (Custom)'),
+         'key': 'RAG_CROSS_ENCODER_MODEL_CUSTOM', 'type': 'entry', 'default': '',
+         'depends_on': 'RAG_CROSS_ENCODER_MODEL',
+         'depends_on_value': 'Custom',
+         'hide_when_disabled': True,
+         'tooltip': _(
+             'Полное HuggingFace имя cross-encoder модели, напр. "cross-encoder/ms-marco-MiniLM-L-6-v2".',
+             'Full HuggingFace model name, e.g. "cross-encoder/ms-marco-MiniLM-L-6-v2".')},
 
         {'label': _('Топ-K кандидатов для реранкинга', 'Top-K candidates to rerank'),
          'key': 'RAG_CROSS_ENCODER_TOP_K', 'type': 'entry', 'default': 20,
@@ -1130,6 +1184,11 @@ def setup_model_interaction_controls(self, parent):
              'Больше — точнее, но медленнее. Рекомендуется 20.',
              'How many top candidates from the first pass to send to the cross-encoder. '
              'More = more accurate but slower. Recommended: 20.')},
+
+        {'type': 'button_group', 'buttons': [
+            {'label': _('Обновить статус', 'Refresh status'),
+             'command': lambda: _refresh_ce_status(self)},
+        ]},
 
         {'type': 'end'},
 
@@ -1203,6 +1262,37 @@ def setup_model_interaction_controls(self, parent):
                                 if 'мбеддинг' in _title.lower() or 'mbedding' in _title.lower():
                                     _w.add_widget(_dl_label)
                                     _w.add_widget(_idx_label)
+                                    break
+    except Exception:
+        pass
+
+    # --- Dynamic status labels for cross-encoder model (injected into subsection) ---
+    try:
+        _ce_dl_label = QLabel(_("Модель:", "Model:") + " " + _get_ce_download_status())
+        _ce_dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        _ce_ld_label = QLabel(_("Статус:", "Status:") + " " + _get_ce_loaded_status())
+        _ce_ld_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        self._ce_dl_label = _ce_dl_label
+        self._ce_loaded_label = _ce_ld_label
+
+        _rag_section = parent.layout().itemAt(parent.layout().count() - 1)
+        if _rag_section and _rag_section.widget():
+            _sec_widget = _rag_section.widget()
+            _content = getattr(_sec_widget, 'content', None)
+            if _content:
+                _content_layout = _content.layout()
+                if _content_layout:
+                    for i in range(_content_layout.count()):
+                        _item = _content_layout.itemAt(i)
+                        if _item and _item.widget():
+                            _w = _item.widget()
+                            from managers.settings_manager import InnerCollapsibleSection
+                            if isinstance(_w, InnerCollapsibleSection):
+                                _tl = getattr(_w, 'title_label', None)
+                                _title = _tl.text() if _tl else ''
+                                if 'ross-encoder' in _title or 'реранкер' in _title.lower():
+                                    _w.add_widget(_ce_dl_label)
+                                    _w.add_widget(_ce_ld_label)
                                     break
     except Exception:
         pass

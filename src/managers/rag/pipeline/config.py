@@ -4,6 +4,32 @@ from dataclasses import dataclass
 from managers.settings_manager import SettingsManager
 
 
+# ── Cross-encoder presets ─────────────────────────────────────────────────
+# Maps display name → HuggingFace model ID
+CE_PRESETS: dict[str, str] = {
+    "MiniLM-L6 v2 (22M, fast)":      "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "MiniLM-L12 v2 (33M, accurate)": "cross-encoder/ms-marco-MiniLM-L-12-v2",
+    "MiniLM-L2 v2 (6M, tiny)":       "cross-encoder/ms-marco-MiniLM-L-2-v2",
+    "Custom": "",
+}
+
+
+def list_ce_preset_names() -> list[str]:
+    return list(CE_PRESETS.keys())
+
+
+def resolve_ce_model() -> str:
+    """Return the actual HF model ID for the cross-encoder (resolves preset name)."""
+    model = str(SettingsManager.get("RAG_CROSS_ENCODER_MODEL", "MiniLM-L6 v2 (22M, fast)") or "").strip()
+    if model in CE_PRESETS:
+        hf_id = CE_PRESETS[model]
+        if not hf_id:  # "Custom"
+            hf_id = str(SettingsManager.get("RAG_CROSS_ENCODER_MODEL_CUSTOM", "") or "").strip()
+        return hf_id or "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    # Legacy: might already be a raw HF ID
+    return model or "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+
 def _b(v, default=False) -> bool:
     try:
         if isinstance(v, str):
@@ -159,10 +185,7 @@ class RAGConfig:
         cfg.two_stage_fallback_union = _b(SettingsManager.get("RAG_TWO_STAGE_FALLBACK_UNION", True), True)
 
         cfg.cross_encoder_enabled = _b(SettingsManager.get("RAG_CROSS_ENCODER_ENABLED", False), False)
-        cfg.cross_encoder_model = str(
-            SettingsManager.get("RAG_CROSS_ENCODER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
-            or "cross-encoder/ms-marco-MiniLM-L-6-v2"
-        ).strip()
+        cfg.cross_encoder_model = resolve_ce_model()
         cfg.cross_encoder_top_k = _i(SettingsManager.get("RAG_CROSS_ENCODER_TOP_K", 20), 20)
 
         cfg._validate()
@@ -237,7 +260,8 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_INTERSECT_FALLBACK_UNION": True,
     "RAG_TWO_STAGE_FALLBACK_UNION": True,
     "RAG_CROSS_ENCODER_ENABLED": False,
-    "RAG_CROSS_ENCODER_MODEL": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "RAG_CROSS_ENCODER_MODEL": "MiniLM-L6 v2 (22M, fast)",
+    "RAG_CROSS_ENCODER_MODEL_CUSTOM": "",
     "RAG_CROSS_ENCODER_TOP_K": 20,
     "RAG_DETAILED_LOGS": True,
     "RAG_LOG_LIST_TOP_N": 10,
