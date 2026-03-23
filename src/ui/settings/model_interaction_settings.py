@@ -1099,6 +1099,40 @@ def setup_model_interaction_controls(self, parent):
 
         {'type': 'end'},
 
+        {'label': _("Cross-encoder (реранкер)", "Cross-encoder (reranker)"), 'type': 'subsection',
+         'depends_on': 'RAG_ENABLED'},
+
+        {'label': _('Включить cross-encoder реранкер', 'Enable cross-encoder reranker'),
+         'key': 'RAG_CROSS_ENCODER_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
+         'depends_on': 'RAG_ENABLED',
+         'tooltip': _(
+             'Второй проход реранкинга: модель scoring (query, passage) переоценивает топ-K кандидатов '
+             'после линейного ранжирования. Даёт заметный прирост точности за счёт скорости (~22M параметров).',
+             'Second reranking pass: a (query, passage) scoring model re-scores the top-K candidates '
+             'after linear ranking. Noticeably improves precision at the cost of latency (~22M params).')},
+
+        {'label': _('Модель cross-encoder', 'Cross-encoder model'),
+         'key': 'RAG_CROSS_ENCODER_MODEL', 'type': 'entry',
+         'default': 'cross-encoder/ms-marco-MiniLM-L-6-v2',
+         'depends_on': 'RAG_CROSS_ENCODER_ENABLED',
+         'tooltip': _(
+             'HuggingFace-идентификатор модели cross-encoder для реранкинга. '
+             'Рекомендуется: cross-encoder/ms-marco-MiniLM-L-6-v2 (~22M, быстрая).',
+             'HuggingFace model ID for cross-encoder reranking. '
+             'Recommended: cross-encoder/ms-marco-MiniLM-L-6-v2 (~22M, fast).')},
+
+        {'label': _('Топ-K кандидатов для реранкинга', 'Top-K candidates to rerank'),
+         'key': 'RAG_CROSS_ENCODER_TOP_K', 'type': 'entry', 'default': 20,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'RAG_CROSS_ENCODER_ENABLED',
+         'tooltip': _(
+             'Сколько лучших кандидатов из первого прохода передать в cross-encoder. '
+             'Больше — точнее, но медленнее. Рекомендуется 20.',
+             'How many top candidates from the first pass to send to the cross-encoder. '
+             'More = more accurate but slower. Recommended: 20.')},
+
+        {'type': 'end'},
+
         {'label': _("Логирование RAG", "RAG Logging"), 'type': 'subsection',
          'depends_on': 'RAG_ENABLED'},
 

@@ -642,6 +642,16 @@ class RAGManager:
 
         cands.sort(key=lambda c: float(c.score or 0.0), reverse=True)
 
+        # --- optional cross-encoder second pass ---
+        if cfg.cross_encoder_enabled and cfg.cross_encoder_model:
+            try:
+                from managers.rag.pipeline.cross_encoder import CrossEncoderReranker
+                ce = CrossEncoderReranker.get(cfg.cross_encoder_model)
+                ce.rerank(qs.user_query, cands, top_k=cfg.cross_encoder_top_k)
+                cands.sort(key=lambda c: float(c.score or 0.0), reverse=True)
+            except Exception as _ce_err:
+                logger.debug(f"[RAG][cross_encoder] skipped: {_ce_err}", exc_info=True)
+
         if cfg.detailed_logs:
             RagDebugLogger(rag=self, cfg=cfg).log(qs, buckets, cands)
 

@@ -97,6 +97,11 @@ class RAGConfig:
     # two-stage fallback
     two_stage_fallback_union: bool = True
 
+    # cross-encoder reranker (optional second pass)
+    cross_encoder_enabled: bool = False
+    cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    cross_encoder_top_k: int = 20
+
     @classmethod
     def from_settings(cls, *, limit: int, threshold: float) -> "RAGConfig":
         cfg = cls()
@@ -153,6 +158,13 @@ class RAGConfig:
 
         cfg.two_stage_fallback_union = _b(SettingsManager.get("RAG_TWO_STAGE_FALLBACK_UNION", True), True)
 
+        cfg.cross_encoder_enabled = _b(SettingsManager.get("RAG_CROSS_ENCODER_ENABLED", False), False)
+        cfg.cross_encoder_model = str(
+            SettingsManager.get("RAG_CROSS_ENCODER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+            or "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        ).strip()
+        cfg.cross_encoder_top_k = _i(SettingsManager.get("RAG_CROSS_ENCODER_TOP_K", 20), 20)
+
         cfg._validate()
         return cfg
 
@@ -180,6 +192,7 @@ class RAGConfig:
         self.intersect_min_methods = max(1, self.intersect_min_methods)
         self.K7 = max(0.0, self.K7)
         self.graph_min_results = max(0, self.graph_min_results)
+        self.cross_encoder_top_k = max(1, self.cross_encoder_top_k)
 
 
 # ── Default values for all SettingsManager RAG keys ──────────────────────
@@ -223,6 +236,9 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_INTERSECT_REQUIRE_VECTOR": True,
     "RAG_INTERSECT_FALLBACK_UNION": True,
     "RAG_TWO_STAGE_FALLBACK_UNION": True,
+    "RAG_CROSS_ENCODER_ENABLED": False,
+    "RAG_CROSS_ENCODER_MODEL": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "RAG_CROSS_ENCODER_TOP_K": 20,
     "RAG_DETAILED_LOGS": True,
     "RAG_LOG_LIST_TOP_N": 10,
     "RAG_LOG_LIST_BOTTOM_N": 5,
