@@ -123,8 +123,13 @@ class CrossEncoderReranker:
 
             scores = raw.tolist()
 
-            # Record pre-CE order for move logging
-            pre_order = {c: i for i, c in enumerate(to_score)}
+            # Determine position changes before modifying scores
+            post_order = sorted(range(len(to_score)), key=lambda i: scores[i], reverse=True)
+            moves = []
+            for new_pos, old_pos in enumerate(post_order):
+                if old_pos != new_pos:
+                    c = to_score[old_pos]
+                    moves.append(f"{c.source}:{c.id} {old_pos+1}→{new_pos+1}")
 
             for c, s in zip(to_score, scores):
                 c.score = float(s)
@@ -132,13 +137,6 @@ class CrossEncoderReranker:
                     c.debug = {}
                 c.debug["cross_encoder"] = float(s)
 
-            # Log position changes after sort
-            post_order = sorted(range(len(to_score)), key=lambda i: scores[i], reverse=True)
-            moves = []
-            for new_pos, old_pos in enumerate(post_order):
-                if old_pos != new_pos:
-                    c = to_score[old_pos]
-                    moves.append(f"{c.source}:{c.id} {old_pos+1}→{new_pos+1}")
             if moves:
                 logger.info(
                     f"[CrossEncoder] Re-ranked {len(to_score)}/{len(cands)} | "
