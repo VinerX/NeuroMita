@@ -428,6 +428,14 @@ def _ndcg(retrieved_ids: list, expected_ids: set, k: int,
     return dcg / idcg
 
 
+def setup_test_db(db_path: str) -> None:
+    """Point DatabaseManager singleton at a custom DB file (call before RagTesterService())."""
+    from managers.database_manager import DatabaseManager
+    with DatabaseManager._lock:
+        DatabaseManager._path_override = db_path
+        DatabaseManager._instance = None  # force re-init with new path
+
+
 class RagTesterService:
     """
     Логика тестера (Model/Presenter):

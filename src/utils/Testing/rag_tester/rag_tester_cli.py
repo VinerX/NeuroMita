@@ -76,9 +76,12 @@ def _output(data, fmt: str, output_path: str | None):
 
 def cmd_run(args):
     """Run a test suite against a scenario and report metrics."""
-    from rag_tester_core import SettingsOverride
+    from rag_tester_core import SettingsOverride, setup_test_db
     from managers.rag.rag_manager import RAGManager
     from handlers.embedding_handler import EmbeddingModelHandler
+
+    if getattr(args, 'db', None):
+        setup_test_db(args.db)
 
     overrides = _parse_overrides(args.overrides)
 
@@ -126,6 +129,9 @@ def cmd_run(args):
 
 def cmd_sweep(args):
     """Grid-sweep over RAG parameters and rank by target metric."""
+    from rag_tester_core import setup_test_db
+    if getattr(args, 'db', None):
+        setup_test_db(args.db)
     svc = RagTesterService()
     scenario = svc.load_scenario_file(args.scenario, fallback_character_id="RAG_TEST")
     suite = TestSuite.from_json(open(args.suite, "r", encoding="utf-8").read())
@@ -294,7 +300,10 @@ def cmd_generate_suite(args):
 def cmd_optimize(args):
     """Bayesian optimization of RAG parameters via Optuna."""
     from optuna_sweep import OptimizeConfig, run_optuna_sweep
-    from rag_tester_core import SettingsOverride
+    from rag_tester_core import SettingsOverride, setup_test_db
+
+    if getattr(args, 'db', None):
+        setup_test_db(args.db)
     from managers.rag.rag_manager import RAGManager
     from handlers.embedding_handler import EmbeddingModelHandler
 
@@ -480,6 +489,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--limit", type=int, default=10, help="RAG max results (default: 10)")
     p_run.add_argument("--threshold", type=float, default=0.3, help="Similarity threshold (default: 0.3)")
     p_run.add_argument("--overrides", default=None, help="JSON string or path to overrides file")
+    p_run.add_argument("--db", default=None, help="Custom SQLite DB path (default: Histories/world.db)")
     p_run.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
     p_run.add_argument("--output", default=None, help="Write output to file instead of stdout")
 
@@ -492,6 +502,7 @@ def build_parser() -> argparse.ArgumentParser:
                          choices=["mean_precision", "mean_recall", "mrr", "mean_ndcg"],
                          help="Metric to optimise (default: mean_recall)")
     p_sweep.add_argument("--top-n", type=int, default=10, help="Show top N results (0=all)")
+    p_sweep.add_argument("--db", default=None, help="Custom SQLite DB path")
     p_sweep.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
     p_sweep.add_argument("--output", default=None, help="Write output to file")
 
@@ -533,6 +544,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_opt.add_argument("--timeout", type=int, default=None, help="Timeout in seconds")
     p_opt.add_argument("--optimize-config", default=None, help="Path to optimize config JSON")
     p_opt.add_argument("--overrides", default=None, help="JSON string or path to overrides (e.g. embed model)")
+    p_opt.add_argument("--db", default=None, help="Custom SQLite DB path")
     p_opt.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
     p_opt.add_argument("--output", default=None, help="Write output to file")
 

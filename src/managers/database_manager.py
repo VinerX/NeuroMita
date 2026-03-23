@@ -16,6 +16,7 @@ from typing import Iterable, Tuple, Set, Optional, List
 class DatabaseManager:
     _instance = None
     _lock = Lock()
+    _path_override: str | None = None  # set before first instantiation to use a custom DB path
 
     # FTS5 capability cache (per-process)
     _fts5_checked: bool = False
@@ -52,8 +53,12 @@ class DatabaseManager:
         if self._initialized:
             return
 
-        os.makedirs("Histories", exist_ok=True)
-        self.db_path = os.path.join("Histories", "world.db")
+        if DatabaseManager._path_override:
+            self.db_path = DatabaseManager._path_override
+            os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
+        else:
+            os.makedirs("Histories", exist_ok=True)
+            self.db_path = os.path.join("Histories", "world.db")
 
         # Ensure WAL + timeout are applied early
         self._init_db()
