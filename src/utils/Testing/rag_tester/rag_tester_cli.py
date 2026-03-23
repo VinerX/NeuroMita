@@ -311,6 +311,8 @@ def cmd_optimize(args):
         config.fixed_overrides.update(cli_overrides)  # ensure per-trial runs also use correct embed model
     # RAG_ENABLED must survive the embedding-phase SettingsOverride closing before trials start
     config.fixed_overrides.setdefault("RAG_ENABLED", True)
+    # Disable verbose candidate logging during sweeps — dramatically reduces output and speeds up trials
+    config.fixed_overrides.setdefault("RAG_DETAILED_LOGS", False)
     embed_overrides = dict(config.fixed_overrides)
 
     _embed_keys = {"RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM", "RAG_EMBED_QUERY_PREFIX"}
