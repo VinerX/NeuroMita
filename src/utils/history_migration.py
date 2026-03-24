@@ -101,9 +101,9 @@ def migrate_content(content: str) -> tuple[str, dict[str, Any]]:
     return clean_text, structured_data
 
 
-def _is_old_format(content: Any) -> bool:
-    """True если content — строка (старый формат), а не список (новый)."""
-    return isinstance(content, str)
+def _is_old_format(msg: dict) -> bool:
+    """True если сообщение в старом формате — строка без structured_data."""
+    return isinstance(msg.get("content"), str) and "structured_data" not in msg
 
 
 def migrate_history_file(history_path: str) -> tuple[bool, int]:
@@ -131,9 +131,9 @@ def migrate_history_file(history_path: str) -> tuple[bool, int]:
     for msg in messages:
         if msg.get("role") != "assistant":
             continue
-        content = msg.get("content")
-        if not _is_old_format(content):
+        if not _is_old_format(msg):
             continue
+        content = msg["content"]
 
         clean_text, structured_data = migrate_content(content)
         msg["content"] = clean_text
