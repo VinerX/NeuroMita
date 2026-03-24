@@ -19,6 +19,11 @@ class VectorRetriever:
 
     def retrieve(self, qs: QueryState) -> List[Candidate]:
         if qs.query_vec is None:
+            from main_logger import logger as _log
+            _log.warning(
+                "[VectorRetriever] query_vec is None — embedding model failed to load or "
+                "RAG_ENABLED=False. Vector search disabled; results will use FTS/keyword only."
+            )
             return []
 
         out: list[Candidate] = []

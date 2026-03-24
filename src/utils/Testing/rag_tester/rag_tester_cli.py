@@ -109,6 +109,31 @@ def cmd_run(args):
         stats = svc.apply_scenario_to_db(scenario, clear_before=True, embed_now=True, smart_embed=True)
         print(f"  context={stats['context']} history={stats['history']} memories={stats['memories']}", file=sys.stderr)
 
+        # Pre-flight: verify that embeddings were actually stored.
+        # If 0 embeddings → embedding model failed to load silently (wrong Python env, missing torch, etc.)
+        try:
+            from handlers.embedding_presets import resolve_model_settings
+            _model_hf = resolve_model_settings().get("hf_name", "")
+            from managers.database_manager import DatabaseManager
+            with DatabaseManager().connection() as _conn:
+                _emb_count = _conn.execute(
+                    "SELECT COUNT(*) FROM embeddings WHERE model_name=?", (_model_hf,)
+                ).fetchone()[0]
+            print(f"  embed_model={_model_hf}  stored_embeddings={_emb_count}", file=sys.stderr)
+            if _emb_count == 0:
+                print(
+                    "\n⚠ FATAL: 0 embeddings stored for this model.\n"
+                    "  Embedding model failed to load (missing torch/transformers?).\n"
+                    "  Vector search will be DISABLED — test results are INVALID.\n"
+                    "  Use a Python environment with the required ML libraries.\n",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        except SystemExit:
+            raise
+        except Exception as _pf_err:
+            print(f"  [pre-flight check failed: {_pf_err}]", file=sys.stderr)
+
         print(f"Running {len(suite.cases)} test cases…", file=sys.stderr)
         result = svc.run_batch(
             suite,
@@ -395,10 +420,10 @@ def cmd_optimize(args):
 
     print(f"Optimizing {args.metric} with {args.n_trials} trials…", file=sys.stderr)
 
-    # Progress file: same path as output but with _progress suffix
-    progress_file = None
+    # Progress file: strip any extension, append _progress.json
     if args.output:
-        progress_file = args.output.replace(".json", "_progress.json")
+        base = os.path.splitext(args.output)[0]
+        progress_file = base + "_progress.json"
     else:
         progress_file = os.path.join("results", "optuna_progress.json")
 

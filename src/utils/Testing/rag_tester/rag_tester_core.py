@@ -409,17 +409,27 @@ class BatchResult:
     mrr: float          # Mean Reciprocal Rank
     mean_ndcg: float
     total_elapsed_ms: float
+    # Sanity: how many retrieved docs came from the vector retriever.
+    # If 0 while vector search is enabled → embedding model likely failed to load.
+    vector_doc_count: int = 0
+    embed_model_name: str = ""
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "suite_name": self.suite_name,
             "mean_precision": self.mean_precision,
             "mean_recall": self.mean_recall,
             "mrr": self.mrr,
             "mean_ndcg": self.mean_ndcg,
             "total_elapsed_ms": self.total_elapsed_ms,
+            "vector_doc_count": self.vector_doc_count,
+            "embed_model_name": self.embed_model_name,
             "results": [r.to_dict() for r in self.results],
         }
+        if self.warnings:
+            d["warnings"] = self.warnings
+        return d
 
     def summary_text(self) -> str:
         lines = [
@@ -430,8 +440,14 @@ class BatchResult:
             f"MRR:              {self.mrr:.4f}",
             f"Mean nDCG:        {self.mean_ndcg:.4f}",
             f"Total time:       {self.total_elapsed_ms:.0f} ms",
-            "",
+            f"Vector docs:      {self.vector_doc_count}"
+            + (" ⚠ ZERO — embedding model may have failed!" if self.vector_doc_count == 0 else ""),
+            f"Embed model:      {self.embed_model_name or '(unknown)'}",
         ]
+        if self.warnings:
+            for w in self.warnings:
+                lines.append(f"⚠ WARNING: {w}")
+        lines.append("")
         for i, r in enumerate(self.results):
             status = "PASS" if r.recall >= 1.0 else ("PARTIAL" if r.recall > 0 else "MISS")
             lines.append(
@@ -1244,6 +1260,7 @@ class RagTesterService:
     ) -> BatchResult:
         results: list[SingleResult] = []
         total_start = time.perf_counter()
+        total_vector_docs = 0
 
         for idx, tc in enumerate(suite.cases):
             if progress_callback:
@@ -1265,6 +1282,8 @@ class RagTesterService:
                 retrieved_ids.append(str(rid))
                 retrieved_scores.append(safe_float(r.get("score"), 0.0))
                 retrieved_contents.append(str(r.get("content") or "")[:200])
+                if r.get("source") in ("history", "memory") and r.get("features", {}).get("sim", 0) > 0:
+                    total_vector_docs += 1
 
             expected_set = set(str(x) for x in tc.expected_ids)
             k = len(retrieved_ids)
@@ -1319,6 +1338,22 @@ class RagTesterService:
 
         total_elapsed = (time.perf_counter() - total_start) * 1000
 
+        # Collect embed model name for diagnostics
+        try:
+            from handlers.embedding_presets import resolve_model_settings
+            embed_model_name = resolve_model_settings().get("hf_name", "")
+        except Exception:
+            embed_model_name = ""
+
+        # Build warnings
+        batch_warnings: list[str] = []
+        if total_vector_docs == 0 and results:
+            batch_warnings.append(
+                "vector_doc_count=0: no results came from vector search. "
+                "Embedding model likely failed to load — results reflect FTS/keyword only. "
+                "Use a Python environment with torch/transformers installed."
+            )
+
         n = len(results) or 1
         return BatchResult(
             suite_name=suite.name,
@@ -1328,4 +1363,7 @@ class RagTesterService:
             mrr=sum(r.reciprocal_rank for r in results) / n,
             mean_ndcg=sum(r.ndcg for r in results) / n,
             total_elapsed_ms=total_elapsed,
+            vector_doc_count=total_vector_docs,
+            embed_model_name=embed_model_name,
+            warnings=batch_warnings,
         )
