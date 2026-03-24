@@ -134,25 +134,34 @@ class CrossEncoderReranker:
         "Given a web search query, retrieve relevant passages that answer the query"
     )
 
+    # Default mini-batch size for CE inference (prevents OOM on large top_k).
+    # Qwen3-Reranker (LM) needs ~200MB per 32 pairs; seqcls models are cheaper.
+    _BATCH_SIZE_LM: int = 16
+    _BATCH_SIZE_SEQCLS: int = 32
+
     def _score_seqcls(self, query: str, cands: list) -> list:
         """Score with AutoModelForSequenceClassification (standard cross-encoder)."""
         import torch
         pairs = [(query, str(c.content or "")) for c in cands]
-        enc = self._tokenizer(
-            [p[0] for p in pairs],
-            [p[1] for p in pairs],
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors="pt",
-        ).to(self._device)
-        with torch.no_grad():
-            logits = self._model(**enc).logits  # (N, num_labels)
-        if logits.shape[-1] == 1:
-            raw = logits.squeeze(-1)
-        else:
-            raw = logits[:, -1]
-        return raw.tolist()
+        all_scores: list[float] = []
+        for i in range(0, len(pairs), self._BATCH_SIZE_SEQCLS):
+            batch = pairs[i: i + self._BATCH_SIZE_SEQCLS]
+            enc = self._tokenizer(
+                [p[0] for p in batch],
+                [p[1] for p in batch],
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt",
+            ).to(self._device)
+            with torch.no_grad():
+                logits = self._model(**enc).logits  # (B, num_labels)
+            if logits.shape[-1] == 1:
+                raw = logits.squeeze(-1)
+            else:
+                raw = logits[:, -1]
+            all_scores.extend(raw.tolist())
+        return all_scores
 
     def _score_lm(self, query: str, cands: list) -> list:
         """Score with LM-based reranker (Qwen3-Reranker style yes/no tokens)."""
@@ -173,23 +182,27 @@ class CrossEncoderReranker:
             content = f"<Instruct>: {instruction}\n<Query>: {query}\n<Document>: {doc}"
             input_texts.append(prefix + content + suffix)
 
-        enc = self._tokenizer(
-            input_texts,
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors="pt",
-        ).to(self._device)
-        with torch.no_grad():
-            logits = self._model(**enc).logits  # (N, vocab_size)
-
-        # Extract yes/no logits at last token position
-        last_logits = logits[:, -1, :]  # (N, vocab_size)
         true_id = self._token_true_id
         false_id = self._token_false_id
-        pair = torch.stack([last_logits[:, false_id], last_logits[:, true_id]], dim=-1)
-        probs = torch.softmax(pair, dim=-1)  # (N, 2)
-        return probs[:, 1].tolist()  # P(yes)
+        all_probs: list[float] = []
+
+        for i in range(0, len(input_texts), self._BATCH_SIZE_LM):
+            batch = input_texts[i: i + self._BATCH_SIZE_LM]
+            enc = self._tokenizer(
+                batch,
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt",
+            ).to(self._device)
+            with torch.no_grad():
+                logits = self._model(**enc).logits  # (B, vocab_size)
+            last_logits = logits[:, -1, :]
+            pair = torch.stack([last_logits[:, false_id], last_logits[:, true_id]], dim=-1)
+            probs = torch.softmax(pair, dim=-1)
+            all_probs.extend(probs[:, 1].tolist())
+
+        return all_probs
 
     # ------------------------------------------------------------------ #
     def rerank(self, query: str, cands: list, top_k: int = 20, alpha: float = 1.0) -> None:
