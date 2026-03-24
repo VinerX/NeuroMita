@@ -7,6 +7,7 @@ from managers.rag.rag_utils import rag_clean_text, keyword_score
 from handlers.embedding_presets import resolve_model_settings
 from ..types import Candidate, QueryState
 from ..config import RAGConfig
+from .faiss_index import HAS_FAISS, faiss_retrieve
 
 
 class VectorRetriever:
@@ -53,10 +54,23 @@ class VectorRetriever:
     def _memories(self, cur, qs: QueryState) -> list[Candidate]:
         out: list[Candidate] = []
 
+        has_forgotten_col = ("is_forgotten" in self.rag._mem_cols)
+        thr = float(self.cfg.threshold or 0.0)
+
+        # ── FAISS fast-path ────────────────────────────────────────────────
+        if HAS_FAISS:
+            hits = faiss_retrieve(
+                cur.connection, self.rag.character_id,
+                self._model_name, "memories",
+                qs.query_vec, k=500,
+            )
+            if hits:
+                return self._memories_from_faiss(cur, qs, hits, has_forgotten_col, thr)
+        # ── fallback: full blob scan ───────────────────────────────────────
+
         mem_where = "m.character_id=? AND m.is_deleted=0"
         params: list = [self.rag.character_id]
 
-        has_forgotten_col = ("is_forgotten" in self.rag._mem_cols)
         if has_forgotten_col:
             if self.cfg.memory_mode == "forgotten":
                 mem_where += " AND m.is_forgotten=1"
@@ -87,8 +101,6 @@ class VectorRetriever:
             rows = cur.fetchall() or []
         except Exception:
             return out
-
-        thr = float(self.cfg.threshold or 0.0)
 
         for row in rows:
             rd = dict(zip(keys, row))
@@ -133,6 +145,84 @@ class VectorRetriever:
                 features={"sim": sim, "kw": kw, "lex": 0.0, "time": 0.0, "entity": 0.0, "prio": 0.0},
             )
             out.append(c)
+
+        return out
+
+    def _memories_from_faiss(
+        self, cur, qs: QueryState,
+        hits: list[tuple[int, float]],
+        has_forgotten_col: bool,
+        thr: float,
+    ) -> list[Candidate]:
+        """Build Candidates from FAISS hits: fetch only metadata (no blobs)."""
+        out: list[Candidate] = []
+
+        # Pre-filter by threshold (keep if sim>=thr; also keep if kw may rescue)
+        candidates = [(eid, sim) for eid, sim in hits if sim >= thr or self.cfg.kw_enabled]
+        if not candidates:
+            return out
+
+        sim_map = {eid: sim for eid, sim in candidates}
+        ids = list(sim_map.keys())
+        placeholders = ",".join("?" * len(ids))
+
+        mem_where = f"m.character_id=? AND m.is_deleted=0 AND m.eternal_id IN ({placeholders})"
+        params: list = [self.rag.character_id] + ids
+
+        if has_forgotten_col:
+            if self.cfg.memory_mode == "forgotten":
+                mem_where += " AND m.is_forgotten=1"
+            elif self.cfg.memory_mode == "active":
+                mem_where += " AND m.is_forgotten=0"
+        else:
+            if self.cfg.memory_mode == "forgotten":
+                return out
+
+        cols = ["m.eternal_id", "m.content", "m.type", "m.priority", "m.date_created", "m.participants"]
+        keys = ["eternal_id", "content", "type", "priority", "date_created", "participants"]
+        if has_forgotten_col:
+            cols.append("m.is_forgotten"); keys.append("is_forgotten")
+        if "entities" in self.rag._mem_cols:
+            cols.append("m.entities"); keys.append("entities")
+
+        try:
+            cur.execute(f"SELECT {', '.join(cols)} FROM memories m WHERE {mem_where}", tuple(params))
+            rows = cur.fetchall() or []
+        except Exception:
+            return out
+
+        for row in rows:
+            rd = dict(zip(keys, row))
+            eternal_id = int(rd.get("eternal_id") or 0)
+            if eternal_id <= 0:
+                continue
+
+            sim = sim_map.get(eternal_id, 0.0)
+
+            kw = 0.0
+            if self.cfg.kw_enabled and qs.keywords:
+                try:
+                    kw, _ = keyword_score(qs.keywords, rag_clean_text(str(rd.get("content") or "")))
+                except Exception:
+                    kw = 0.0
+
+            if sim < thr and (not self.cfg.kw_enabled or kw < float(self.cfg.kw_min_score or 0.0)):
+                continue
+
+            parts = self.rag._json_loads_list(rd.get("participants"))
+            out.append(Candidate(
+                source="memory",
+                id=eternal_id,
+                content=rd.get("content"),
+                meta={
+                    "type": rd.get("type"),
+                    "priority": rd.get("priority"),
+                    "date_created": rd.get("date_created"),
+                    "participants": parts,
+                    "entities": rd.get("entities"),
+                },
+                features={"sim": sim, "kw": kw, "lex": 0.0, "time": 0.0, "entity": 0.0, "prio": 0.0},
+            ))
 
         return out
 
@@ -420,6 +510,19 @@ class VectorRetriever:
 
         return out
     def _histories(self, cur, qs: QueryState) -> list[Candidate]:
+        thr = float(self.cfg.threshold or 0.0)
+
+        # ── FAISS fast-path ────────────────────────────────────────────────
+        if HAS_FAISS:
+            hits = faiss_retrieve(
+                cur.connection, self.rag.character_id,
+                self._model_name, "history",
+                qs.query_vec, k=500,
+            )
+            if hits:
+                return self._histories_from_faiss(cur, qs, hits, thr)
+        # ── fallback: full blob scan ───────────────────────────────────────
+
         out: list[Candidate] = []
 
         cols = ["h.id", "h.role", "h.content", "e.embedding", "h.timestamp"]
@@ -446,8 +549,6 @@ class VectorRetriever:
             rows = cur.fetchall() or []
         except Exception:
             return out
-
-        thr = float(self.cfg.threshold or 0.0)
 
         for row in rows:
             rd = dict(zip(keys, row))
@@ -494,5 +595,81 @@ class VectorRetriever:
                 features={"sim": sim, "kw": kw, "lex": 0.0, "time": 0.0, "entity": 0.0, "prio": 0.0},
             )
             out.append(c)
+
+        return out
+
+    def _histories_from_faiss(
+        self, cur, qs: QueryState,
+        hits: list[tuple[int, float]],
+        thr: float,
+    ) -> list[Candidate]:
+        """Build Candidates from FAISS hits: fetch only metadata (no blobs)."""
+        out: list[Candidate] = []
+
+        candidates = [(hid, sim) for hid, sim in hits if sim >= thr or self.cfg.kw_enabled]
+        if not candidates:
+            return out
+
+        sim_map = {hid: sim for hid, sim in candidates}
+        ids = list(sim_map.keys())
+        placeholders = ",".join("?" * len(ids))
+
+        opt_cols = []
+        opt_keys = []
+        for opt in ("message_id", "speaker", "target", "participants", "entities"):
+            if opt in self.rag._history_cols:
+                opt_cols.append(f"h.{opt}")
+                opt_keys.append(opt)
+
+        base_cols = ["h.id", "h.role", "h.content", "h.timestamp"]
+        base_keys = ["id", "role", "content", "timestamp"]
+        all_cols = base_cols + opt_cols
+        all_keys = base_keys + opt_keys
+
+        where = f"h.character_id=? AND h.is_active=0 AND h.id IN ({placeholders})"
+        params: list = [self.rag.character_id] + ids
+        if "is_deleted" in self.rag._history_cols:
+            where += " AND h.is_deleted=0"
+
+        try:
+            cur.execute(f"SELECT {', '.join(all_cols)} FROM history h WHERE {where}", tuple(params))
+            rows = cur.fetchall() or []
+        except Exception:
+            return out
+
+        for row in rows:
+            rd = dict(zip(all_keys, row))
+            hid = int(rd.get("id") or 0)
+            if hid <= 0:
+                continue
+
+            sim = sim_map.get(hid, 0.0)
+
+            kw = 0.0
+            if self.cfg.kw_enabled and qs.keywords:
+                try:
+                    kw, _ = keyword_score(qs.keywords, rag_clean_text(str(rd.get("content") or "")))
+                except Exception:
+                    kw = 0.0
+
+            if sim < thr and (not self.cfg.kw_enabled or kw < float(self.cfg.kw_min_score or 0.0)):
+                continue
+
+            parts = self.rag._json_loads_list(rd.get("participants"))
+            out.append(Candidate(
+                source="history",
+                id=hid,
+                content=rd.get("content"),
+                meta={
+                    "role": rd.get("role"),
+                    "date": rd.get("timestamp"),
+                    "message_id": rd.get("message_id"),
+                    "speaker": str(rd.get("speaker") or "").strip() or None,
+                    "target": str(rd.get("target") or "").strip() or None,
+                    "participants": parts,
+                    "entities": rd.get("entities"),
+                },
+                features={"sim": sim, "kw": kw, "lex": 0.0, "time": 0.0, "entity": 0.0, "prio": 0.0},
+            ))
 
         return out

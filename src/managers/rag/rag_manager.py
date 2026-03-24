@@ -12,6 +12,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from managers.database_manager import DatabaseManager
 from handlers.embedding_handler import EmbeddingModelHandler, QUERY_PREFIX
 from handlers.embedding_presets import resolve_model_settings
+from managers.rag.pipeline.retrievers.faiss_index import invalidate as _faiss_invalidate
 from core.events import get_event_bus, Events
 from main_logger import logger
 from ui.task_worker import TaskWorker
@@ -954,6 +955,11 @@ class RAGManager:
             # --- Sentence-level indexing pass (when RAG_SENTENCE_LEVEL=True) ---
             if SettingsManager.get("RAG_SENTENCE_LEVEL", False):
                 updated_count += self._index_sentences_missing(cursor, conn, model, batch_size)
+
+            # Invalidate FAISS cache so next query rebuilds from fresh embeddings
+            if updated_count > 0:
+                _faiss_invalidate(self.character_id, model, "history")
+                _faiss_invalidate(self.character_id, model, "memories")
 
             return updated_count
 
