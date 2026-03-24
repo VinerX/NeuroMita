@@ -669,6 +669,28 @@ class DatabaseManager:
             except Exception as e:
                 logging.warning(f"DB upgrade: failed to ensure embeddings table (ignored): {e}")
 
+            # --- Sentence-level embeddings table ---
+            try:
+                cursor.execute(
+                    """CREATE TABLE IF NOT EXISTS sentence_embeddings (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_table TEXT NOT NULL,
+                        source_id INTEGER NOT NULL,
+                        character_id TEXT NOT NULL,
+                        model_name TEXT NOT NULL,
+                        sentence_idx INTEGER NOT NULL DEFAULT 0,
+                        embedding BLOB NOT NULL,
+                        created_at TEXT,
+                        UNIQUE(source_table, source_id, character_id, model_name, sentence_idx)
+                    )"""
+                )
+                cursor.execute(
+                    """CREATE INDEX IF NOT EXISTS idx_sent_emb_lookup
+                       ON sentence_embeddings(source_table, character_id, model_name)"""
+                )
+            except Exception as e:
+                logging.warning(f"DB upgrade: failed to ensure sentence_embeddings table (ignored): {e}")
+
             # --- Migrate old BLOB embeddings into separate table ---
             self._migrate_embeddings_to_table(cursor)
 

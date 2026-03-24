@@ -444,6 +444,132 @@ class RAGManager:
             logger.error(f"RAGManager: ошибка fallback batch эмбеддингов: {e}", exc_info=True)
             return [None] * len(cleaned)
 
+    # ------------------------------------------------------------------ #
+    #  Sentence-level indexing helpers                                    #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _split_sentences(text: str, min_len: int = 20) -> list[str]:
+        """Split text into sentences on punctuation and newline boundaries."""
+        import re
+        text = str(text or "").strip()
+        if not text:
+            return []
+        # Split on sentence-ending punctuation followed by whitespace, or on newlines
+        parts = re.split(r'(?<=[.!?…])\s+|\n+', text)
+        return [p.strip() for p in parts if len(p.strip()) >= min_len]
+
+    def _index_sentences(
+        self,
+        conn,
+        source_table: str,
+        source_id: int,
+        content: str,
+        *,
+        model: str,
+        batch_size: int = 16,
+        min_len: int = 20,
+    ) -> int:
+        """Split content into sentences, embed each, store in sentence_embeddings.
+
+        Returns the number of sentences stored.
+        """
+        sentences = self._split_sentences(content, min_len=min_len)
+        if not sentences:
+            return 0
+
+        vecs = self._get_embeddings(sentences, batch_size=batch_size)
+        stored = 0
+        for idx, (sent, vec) in enumerate(zip(sentences, vecs)):
+            if vec is None:
+                continue
+            blob = self._array_to_blob(vec)
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO sentence_embeddings
+                       (source_table, source_id, character_id, model_name, sentence_idx, embedding, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+                    (source_table, source_id, self.character_id, model, idx, blob),
+                )
+                stored += 1
+            except Exception:
+                pass
+        return stored
+
+    def _index_sentences_missing(self, cursor, conn, model: str, batch_size: int = 16) -> int:
+        """Index sentence embeddings for rows that have whole-doc embeddings but no sentence embeddings yet."""
+        min_len = int(SettingsManager.get("RAG_SENTENCE_MIN_LEN", 20) or 20)
+        updated = 0
+
+        # History rows with whole-doc embedding but no sentence embeddings for current model
+        try:
+            hist_where = "h.character_id=? AND h.content != '' AND h.content IS NOT NULL"
+            if "is_deleted" in self._history_cols:
+                hist_where += " AND h.is_deleted=0"
+            cursor.execute(
+                f"""SELECT h.id, h.content FROM history h
+                    INNER JOIN embeddings e
+                      ON e.source_table='history' AND e.source_id=h.id
+                      AND e.character_id=h.character_id AND e.model_name=?
+                    LEFT JOIN sentence_embeddings se
+                      ON se.source_table='history' AND se.source_id=h.id
+                      AND se.character_id=h.character_id AND se.model_name=?
+                    WHERE {hist_where} AND se.id IS NULL""",
+                (model, model, self.character_id),
+            )
+            hist_rows = cursor.fetchall() or []
+        except Exception as e:
+            logger.warning(f"RAGManager: sentence index query failed (history): {e}")
+            hist_rows = []
+
+        for row_id, content in hist_rows:
+            try:
+                n = self._index_sentences(conn, "history", row_id, str(content or ""),
+                                          model=model, batch_size=batch_size, min_len=min_len)
+                updated += n
+            except Exception:
+                pass
+        if hist_rows:
+            try:
+                conn.commit()
+            except Exception:
+                pass
+
+        # Memory rows with whole-doc embedding but no sentence embeddings for current model
+        try:
+            cursor.execute(
+                """SELECT m.eternal_id, m.content FROM memories m
+                   INNER JOIN embeddings e
+                     ON e.source_table='memories' AND e.source_id=m.eternal_id
+                     AND e.character_id=m.character_id AND e.model_name=?
+                   LEFT JOIN sentence_embeddings se
+                     ON se.source_table='memories' AND se.source_id=m.eternal_id
+                     AND se.character_id=m.character_id AND se.model_name=?
+                   WHERE m.character_id=? AND m.is_deleted=0 AND se.id IS NULL""",
+                (model, model, self.character_id),
+            )
+            mem_rows = cursor.fetchall() or []
+        except Exception as e:
+            logger.warning(f"RAGManager: sentence index query failed (memories): {e}")
+            mem_rows = []
+
+        for eternal_id, content in mem_rows:
+            try:
+                n = self._index_sentences(conn, "memories", eternal_id, str(content or ""),
+                                          model=model, batch_size=batch_size, min_len=min_len)
+                updated += n
+            except Exception:
+                pass
+        if mem_rows:
+            try:
+                conn.commit()
+            except Exception:
+                pass
+
+        if updated:
+            logger.info(f"RAGManager: indexed {updated} sentence embeddings (model={model})")
+        return updated
+
     def update_memory_embedding(self, eternal_id: int, text: str):
         """Создает и сохраняет эмбеддинг для воспоминания (без падений, RAG опционален)."""
         try:
@@ -473,6 +599,10 @@ class RAGManager:
                    VALUES ('memories', ?, ?, ?, ?, ?, datetime('now'))""",
                 (eternal_id, self.character_id, model, dims, blob),
             )
+            # Sentence-level indexing (optional)
+            if SettingsManager.get("RAG_SENTENCE_LEVEL", False):
+                min_len = int(SettingsManager.get("RAG_SENTENCE_MIN_LEN", 20) or 20)
+                self._index_sentences(conn, "memories", eternal_id, text, model=model, min_len=min_len)
             conn.commit()
         except sqlite3.OperationalError as e:
             logger.warning(f"RAGManager: sqlite operational error while updating memory embedding (ignored): {e}")
@@ -514,6 +644,10 @@ class RAGManager:
                    VALUES ('history', ?, ?, ?, ?, ?, datetime('now'))""",
                 (msg_id, self.character_id, model, dims, blob),
             )
+            # Sentence-level indexing (optional)
+            if SettingsManager.get("RAG_SENTENCE_LEVEL", False):
+                min_len = int(SettingsManager.get("RAG_SENTENCE_MIN_LEN", 20) or 20)
+                self._index_sentences(conn, "history", msg_id, text, model=model, min_len=min_len)
             conn.commit()
         except sqlite3.OperationalError as e:
             logger.warning(f"RAGManager: sqlite operational error while updating history embedding (ignored): {e}")
@@ -816,6 +950,11 @@ class RAGManager:
                 conn.commit()
 
             prog.done(processed=processed, updated=updated_count)
+
+            # --- Sentence-level indexing pass (when RAG_SENTENCE_LEVEL=True) ---
+            if SettingsManager.get("RAG_SENTENCE_LEVEL", False):
+                updated_count += self._index_sentences_missing(cursor, conn, model, batch_size)
+
             return updated_count
 
         except TaskWorker.CancelledError:

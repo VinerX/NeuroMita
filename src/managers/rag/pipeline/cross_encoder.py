@@ -216,6 +216,20 @@ class CrossEncoderReranker:
             else:
                 scores = self._score_seqcls(query, to_score)
 
+            # Pre-compute normalized linear scores (MinMax → 0..1) for alpha-mixing.
+            # This ensures CE (0..1) and linear (arbitrary scale) are comparable.
+            if alpha < 1.0:
+                raw_linear = [float((c.debug or {}).get("final", c.score)) for c in to_score]
+                ls_min = min(raw_linear)
+                ls_max = max(raw_linear)
+                ls_range = ls_max - ls_min
+                norm_linear = [
+                    (s - ls_min) / ls_range if ls_range > 1e-9 else 0.5
+                    for s in raw_linear
+                ]
+            else:
+                norm_linear = None
+
             # Determine position changes before modifying scores
             post_order = sorted(range(len(to_score)), key=lambda i: scores[i], reverse=True)
             moves = []
@@ -224,11 +238,10 @@ class CrossEncoderReranker:
                     c = to_score[old_pos]
                     moves.append(f"{c.source}:{c.id} {old_pos+1}→{new_pos+1}")
 
-            for c, s in zip(to_score, scores):
+            for i, (c, s) in enumerate(zip(to_score, scores)):
                 ce_score = float(s)
                 if alpha < 1.0:
-                    linear_score = float((c.debug or {}).get("final", c.score))
-                    mixed = alpha * ce_score + (1.0 - alpha) * linear_score
+                    mixed = alpha * ce_score + (1.0 - alpha) * norm_linear[i]
                 else:
                     mixed = ce_score
                 c.score = mixed

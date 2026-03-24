@@ -146,6 +146,8 @@ class RagDebugLogger:
 
                 ce_score = dbg.get("cross_encoder")
                 ce_str = f" ce={float(ce_score):.3f}" if ce_score is not None else ""
+                sent_idx = dbg.get("matched_sentence")
+                sent_str = f" s{int(sent_idx)}" if sent_idx is not None else ""
                 if self.cfg.use_rrf:
                     score_parts = (
                         f"rrf={float(f.get('rrf',0.0)):.4f} time={float(f.get('time',0.0)):.3f} "
@@ -159,7 +161,7 @@ class RagDebugLogger:
                     )
                 logger.info(
                     f"[RAG][{i+1:03d}/{total:03d}] {c.source}:{c.id} score={float(c.score):.4f} "
-                    f"({score_parts}{ce_str}) "
+                    f"({score_parts}{ce_str}{sent_str}) "
                     f"| {meta_txt} | \"{_clip(c.content)}\""
                 )
 

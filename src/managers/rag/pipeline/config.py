@@ -153,6 +153,17 @@ class RAGConfig:
     use_rrf: bool = False
     rrf_k: int = 60  # smoothing constant (industry default)
 
+    # Pre-filtering by context actors (speaker/target of current dialogue).
+    # When True, an extra retrieval pass is run with speaker/target filter and
+    # threshold=0 to guarantee actor-relevant docs are in the candidate pool,
+    # even if their vector similarity falls below the main threshold.
+    prefilter_actors: bool = False
+
+    # Sentence-level retrieval: embed each sentence separately and retrieve
+    # the best-matching sentence per message.  Requires re-indexing after enabling.
+    sentence_level: bool = False
+    sentence_min_len: int = 20  # ignore sentences shorter than this (chars)
+
     @classmethod
     def from_settings(cls, *, limit: int, threshold: float) -> "RAGConfig":
         cfg = cls()
@@ -219,6 +230,11 @@ class RAGConfig:
         cfg.use_rrf = _b(SettingsManager.get("RAG_USE_RRF", False), False)
         cfg.rrf_k = _i(SettingsManager.get("RAG_RRF_K", 60), 60)
 
+        cfg.prefilter_actors = _b(SettingsManager.get("RAG_PREFILTER_ACTORS", False), False)
+
+        cfg.sentence_level = _b(SettingsManager.get("RAG_SENTENCE_LEVEL", False), False)
+        cfg.sentence_min_len = _i(SettingsManager.get("RAG_SENTENCE_MIN_LEN", 20), 20)
+
         cfg._validate()
         return cfg
 
@@ -250,6 +266,7 @@ class RAGConfig:
         self.cross_encoder_top_k = max(1, self.cross_encoder_top_k)
         self.cross_encoder_alpha = max(0.0, min(1.0, self.cross_encoder_alpha))
         self.rrf_k = max(1, self.rrf_k)
+        self.sentence_min_len = max(1, self.sentence_min_len)
 
 
 # ── Default values for all SettingsManager RAG keys ──────────────────────
@@ -302,6 +319,9 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_CROSS_ENCODER_ALPHA": 1.0,
     "RAG_USE_RRF": False,
     "RAG_RRF_K": 60,
+    "RAG_PREFILTER_ACTORS": False,
+    "RAG_SENTENCE_LEVEL": False,
+    "RAG_SENTENCE_MIN_LEN": 20,
     "RAG_DETAILED_LOGS": True,
     "RAG_LOG_LIST_TOP_N": 10,
     "RAG_LOG_LIST_BOTTOM_N": 5,
