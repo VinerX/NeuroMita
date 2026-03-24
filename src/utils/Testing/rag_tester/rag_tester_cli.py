@@ -116,6 +116,7 @@ def cmd_run(args):
             threshold=args.threshold,
             use_overrides=bool(overrides),
             overrides=overrides or None,
+            diagnose_miss=getattr(args, "diagnose_miss", False),
         )
     finally:
         if ctx:
@@ -487,11 +488,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--scenario", required=True, help="Path to scenario JSON file")
     p_run.add_argument("--suite", required=True, help="Path to test suite JSON file")
     p_run.add_argument("--limit", type=int, default=10, help="RAG max results (default: 10)")
-    p_run.add_argument("--threshold", type=float, default=0.3, help="Similarity threshold (default: 0.3)")
+    p_run.add_argument("--threshold", type=float, default=0.2, help="Similarity threshold (default: 0.2)")
     p_run.add_argument("--overrides", default=None, help="JSON string or path to overrides file")
     p_run.add_argument("--db", default=None, help="Custom SQLite DB path (default: Histories/world.db)")
     p_run.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
     p_run.add_argument("--output", default=None, help="Write output to file instead of stdout")
+    p_run.add_argument("--diagnose-miss", action="store_true",
+                       help="For MISS/PARTIAL cases run a wide search to diagnose why docs were not found")
 
     # --- sweep ---
     p_sweep = sub.add_parser("sweep", help="Grid-sweep over RAG parameters")

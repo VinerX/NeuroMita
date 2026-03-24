@@ -102,10 +102,18 @@ class RAGConfig:
 
     # fts
     use_fts: bool = True
-    fts_top_k_hist: int = 50
-    fts_top_k_mem: int = 50
+    fts_top_k_hist: int = 100
+    fts_top_k_mem: int = 100
     fts_max_terms: int = 10
     fts_min_len: int = 3
+    # Morphological expansion: expand each Cyrillic query token to all its word
+    # forms before passing to FTS5.  Dramatically improves Russian recall because
+    # FTS5 does no stemming/lemmatisation of its own.
+    fts_morph_expand: bool = True
+    # Prefix wildcard: append * to each term for partial prefix matching.
+    # Applied to non-Cyrillic tokens when morph_expand is True, or to all tokens
+    # when morph_expand is False.
+    fts_prefix_match: bool = False
 
     memory_mode: str = "all"  # forgotten|active|all
 
@@ -133,13 +141,13 @@ class RAGConfig:
     # cross-encoder reranker (optional second pass)
     cross_encoder_enabled: bool = True
     cross_encoder_model: str = "Alibaba-NLP/gte-multilingual-reranker-base"
-    cross_encoder_top_k: int = 20
+    cross_encoder_top_k: int = 30
 
     @classmethod
     def from_settings(cls, *, limit: int, threshold: float) -> "RAGConfig":
         cfg = cls()
         cfg.limit = _i(limit, 5)
-        cfg.threshold = _f(threshold, 0.4)
+        cfg.threshold = _f(threshold, 0.2)
 
         cfg.K1 = _f(SettingsManager.get("RAG_WEIGHT_SIMILARITY", 1.0), 1.0)
         cfg.K2 = _f(SettingsManager.get("RAG_WEIGHT_TIME", 0.3), 0.3)
@@ -169,10 +177,12 @@ class RAGConfig:
         cfg.lemmatization = _b(SettingsManager.get("RAG_LEMMATIZATION", True), True)
 
         cfg.use_fts = _b(SettingsManager.get("RAG_USE_FTS", True), True)
-        cfg.fts_top_k_hist = _i(SettingsManager.get("RAG_FTS_TOP_K_HISTORY", 50), 50)
-        cfg.fts_top_k_mem = _i(SettingsManager.get("RAG_FTS_TOP_K_MEMORIES", 50), 50)
+        cfg.fts_top_k_hist = _i(SettingsManager.get("RAG_FTS_TOP_K_HISTORY", 100), 100)
+        cfg.fts_top_k_mem = _i(SettingsManager.get("RAG_FTS_TOP_K_MEMORIES", 100), 100)
         cfg.fts_max_terms = _i(SettingsManager.get("RAG_FTS_MAX_TERMS", 10), 10)
         cfg.fts_min_len = _i(SettingsManager.get("RAG_FTS_MIN_LEN", 3), 3)
+        cfg.fts_morph_expand = _b(SettingsManager.get("RAG_FTS_MORPH_EXPAND", True), True)
+        cfg.fts_prefix_match = _b(SettingsManager.get("RAG_FTS_PREFIX_MATCH", False), False)
 
         cfg.memory_mode = str(SettingsManager.get("RAG_MEMORY_MODE", "all") or "all").strip().lower()
 
@@ -193,7 +203,7 @@ class RAGConfig:
 
         cfg.cross_encoder_enabled = _b(SettingsManager.get("RAG_CROSS_ENCODER_ENABLED", True), True)
         cfg.cross_encoder_model = resolve_ce_model()
-        cfg.cross_encoder_top_k = _i(SettingsManager.get("RAG_CROSS_ENCODER_TOP_K", 20), 20)
+        cfg.cross_encoder_top_k = _i(SettingsManager.get("RAG_CROSS_ENCODER_TOP_K", 30), 30)
 
         cfg._validate()
         return cfg
@@ -213,6 +223,7 @@ class RAGConfig:
         self.fts_top_k_mem = max(1, self.fts_top_k_mem)
         self.fts_max_terms = max(1, self.fts_max_terms)
         self.fts_min_len = max(1, self.fts_min_len)
+        # fts_morph_expand / fts_prefix_match are booleans — no clamping needed
         if self.memory_mode not in ("forgotten", "active", "all"):
             self.memory_mode = "forgotten"
         _VALID_MODES = ("union", "vector_only", "intersect", "intersect2", "intersect_n", "two_stage")
@@ -243,7 +254,7 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_TIME_DECAY_RATE": 0.05,
     "RAG_NOISE_MAX": 0.02,
     "RAG_MAX_RESULTS": 10,
-    "RAG_SIM_THRESHOLD": 0.30,
+    "RAG_SIM_THRESHOLD": 0.20,
     "RAG_QUERY_TAIL_MESSAGES": 2,
     "RAG_SEARCH_MEMORY": True,
     "RAG_SEARCH_HISTORY": True,
@@ -255,10 +266,12 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_KEYWORD_MIN_SCORE": 0.34,
     "RAG_KEYWORD_SQL_LIMIT": 250,
     "RAG_USE_FTS": True,
-    "RAG_FTS_TOP_K_HISTORY": 50,
-    "RAG_FTS_TOP_K_MEMORIES": 50,
+    "RAG_FTS_TOP_K_HISTORY": 100,
+    "RAG_FTS_TOP_K_MEMORIES": 100,
     "RAG_FTS_MAX_TERMS": 10,
     "RAG_FTS_MIN_LEN": 3,
+    "RAG_FTS_MORPH_EXPAND": True,
+    "RAG_FTS_PREFIX_MATCH": False,
     "RAG_MEMORY_MODE": "all",
     "RAG_COMBINE_MODE": "union",
     "RAG_VECTOR_TOP_K": 0,
@@ -269,7 +282,7 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_CROSS_ENCODER_ENABLED": True,
     "RAG_CROSS_ENCODER_MODEL": "GTE Reranker base multilingual (306M)",
     "RAG_CROSS_ENCODER_MODEL_CUSTOM": "",
-    "RAG_CROSS_ENCODER_TOP_K": 20,
+    "RAG_CROSS_ENCODER_TOP_K": 30,
     "RAG_DETAILED_LOGS": True,
     "RAG_LOG_LIST_TOP_N": 10,
     "RAG_LOG_LIST_BOTTOM_N": 5,

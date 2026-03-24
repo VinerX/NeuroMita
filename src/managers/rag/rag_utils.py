@@ -203,26 +203,91 @@ def keyword_score(
 
 # --- FTS Helpers (moved from RAGManager) ---
 
-def fts_build_match_query(text: str, *, max_terms: int, min_len: int) -> str:
+def fts_morph_expand_token(token: str, *, max_forms: int = 20) -> List[str]:
+    """Return all word forms for a Cyrillic token using pymorphy2.
+
+    Returns the original token (in a list) for non-Cyrillic input or on error.
+    Caps at *max_forms* entries to avoid excessively long FTS queries.
+    """
+    t = token.strip().lower()
+    if not t or not CYR_RE.search(t):
+        return [t] if t else []
+    try:
+        morph = _get_morph()
+        parses = morph.parse(t)
+        if not parses:
+            return [t]
+        forms: set[str] = {t}
+        for form in parses[0].lexeme:
+            w = form.word.strip().lower()
+            if w:
+                forms.add(w)
+        result = sorted(forms)
+        return result[:max_forms]
+    except Exception:
+        return [t]
+
+
+def fts_build_match_query(
+    text: str,
+    *,
+    max_terms: int,
+    min_len: int,
+    morph_expand: bool = False,
+    prefix_match: bool = False,
+) -> str:
+    """Build an FTS5 MATCH query string.
+
+    Parameters
+    ----------
+    text:          Source text to tokenize.
+    max_terms:     Maximum number of *original* tokens to include (each may
+                   expand to multiple forms when morph_expand is True).
+    min_len:       Minimum token length to include.
+    morph_expand:  If True, expand each Cyrillic token to all its word forms
+                   (declensions / conjugations) using pymorphy2.  This greatly
+                   improves Russian-language recall because FTS5 stores raw
+                   text and does not perform morphological normalisation.
+    prefix_match:  If True, append ``*`` wildcard to each term so that FTS5
+                   treats it as a prefix query.  Applied to non-Cyrillic tokens
+                   regardless of *morph_expand*, and to Cyrillic tokens when
+                   *morph_expand* is False.
+    """
     cleaned = rag_clean_text(str(text or ""))
     if not cleaned:
         return ""
     tokens = re.findall(r"[0-9A-Za-zА-Яа-я_]+", cleaned.lower())
-    out: List[str] = []
-    seen = set()
+
+    all_terms: List[str] = []   # final FTS terms joined by OR
+    base_count = 0
+    seen_base: Set[str] = set()
+
     for t in tokens:
         t = t.strip().strip('"').strip("'")
         if len(t) < int(min_len):
             continue
         if t in STOPWORDS:
             continue
-        if t in seen:
+        if t in seen_base:
             continue
-        seen.add(t)
-        out.append(f"\"{t}\"")
-        if len(out) >= int(max_terms):
+        seen_base.add(t)
+
+        is_cyr = bool(CYR_RE.search(t))
+
+        if morph_expand and is_cyr:
+            forms = fts_morph_expand_token(t)
+            for f in forms:
+                all_terms.append(f'"{f}"')
+        elif prefix_match:
+            all_terms.append(f'"{t}"*')
+        else:
+            all_terms.append(f'"{t}"')
+
+        base_count += 1
+        if base_count >= int(max_terms):
             break
-    return " OR ".join(out)
+
+    return " OR ".join(all_terms)
 
 
 def normalize_bm25_to_01(ranks: List[float]) -> List[float]:

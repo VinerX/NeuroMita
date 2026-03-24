@@ -30,17 +30,15 @@ class FTSRetriever:
                 return out
 
             # prefer user query; fallback to expanded
-            match_q = fts_build_match_query(
-                str(qs.user_query or ""),
+            _fts_kwargs = dict(
                 max_terms=int(self.cfg.fts_max_terms),
                 min_len=int(self.cfg.fts_min_len),
+                morph_expand=bool(self.cfg.fts_morph_expand),
+                prefix_match=bool(self.cfg.fts_prefix_match),
             )
+            match_q = fts_build_match_query(str(qs.user_query or ""), **_fts_kwargs)
             if not match_q:
-                match_q = fts_build_match_query(
-                    str(qs.expanded_query_text or ""),
-                    max_terms=int(self.cfg.fts_max_terms),
-                    min_len=int(self.cfg.fts_min_len),
-                )
+                match_q = fts_build_match_query(str(qs.expanded_query_text or ""), **_fts_kwargs)
             if not match_q:
                 return out
 

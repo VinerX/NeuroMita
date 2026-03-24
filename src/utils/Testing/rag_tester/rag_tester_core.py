@@ -328,9 +328,14 @@ class SingleResult:
     reciprocal_rank: float
     ndcg: float
     elapsed_ms: float
+    # Populated for MISS/PARTIAL cases when diagnose_miss=True in run_batch().
+    # Each entry describes why one expected document was not found:
+    #   "  <id>: found in wide search rank=12 score=0.241 → threshold/top_k issue"
+    #   "  <id>: NOT in wide search → FTS/vocabulary mismatch"
+    miss_diagnosis: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "query": self.test_case.query,
             "description": self.test_case.description,
             "expected_ids": self.test_case.expected_ids,
@@ -343,6 +348,9 @@ class SingleResult:
             "ndcg": self.ndcg,
             "elapsed_ms": self.elapsed_ms,
         }
+        if self.miss_diagnosis:
+            d["miss_diagnosis"] = self.miss_diagnosis
+        return d
 
 
 @dataclass
@@ -393,6 +401,9 @@ class BatchResult:
                 missing = expected - found
                 if missing:
                     lines.append(f"        Missing: {missing}")
+            if r.miss_diagnosis:
+                lines.append("        Diagnosis:")
+                lines.extend(f"          {d}" for d in r.miss_diagnosis)
         return "\n".join(lines)
 
 
@@ -1112,6 +1123,68 @@ class RagTesterService:
     # -------------------------
     # Batch testing
     # -------------------------
+
+    def _diagnose_miss(
+        self,
+        tc: "TestCase",
+        cid: str,
+        missing_ids: set[str],
+        base_overrides: dict[str, Any] | None,
+    ) -> list[str]:
+        """Run a second "wide" search with no threshold and a large FTS pool.
+
+        For each missing expected ID we report:
+        - Found in wide search at rank N with score S  →  threshold / top_k is the issue
+        - NOT found even in wide search                →  FTS vocabulary mismatch or content gap
+
+        The wide search uses threshold=0.0 and fts_top_k=300 with CE disabled so
+        that we see every candidate the retriever could possibly return.
+        """
+        _WIDE_LIMIT = 100
+        wide_overrides: dict[str, Any] = dict(base_overrides or {})
+        wide_overrides.update({
+            "RAG_SIM_THRESHOLD": 0.0,
+            "RAG_FTS_TOP_K_HISTORY": 300,
+            "RAG_FTS_TOP_K_MEMORIES": 300,
+            "RAG_CROSS_ENCODER_ENABLED": False,
+        })
+
+        try:
+            wide_raw = self.search(
+                cid=cid,
+                query=tc.query,
+                limit=_WIDE_LIMIT,
+                threshold=0.0,
+                use_overrides=True,
+                overrides=wide_overrides,
+            )
+        except Exception as e:
+            return [f"wide search failed: {e}"]
+
+        # Build rank/score map from wide results
+        wide_rank: dict[str, int] = {}
+        wide_score: dict[str, float] = {}
+        for rank, r in enumerate(wide_raw, 1):
+            rid = str(r.get("message_id") or r.get("id") or "")
+            if rid and rid not in wide_rank:
+                wide_rank[rid] = rank
+                wide_score[rid] = safe_float(r.get("score"), 0.0)
+
+        lines: list[str] = []
+        for eid in sorted(missing_ids):
+            if eid in wide_rank:
+                lines.append(
+                    f"{eid}: found wide rank={wide_rank[eid]}/{_WIDE_LIMIT}"
+                    f" score={wide_score[eid]:.3f}"
+                    f"  → threshold/top_k too tight"
+                )
+            else:
+                lines.append(
+                    f"{eid}: NOT in wide search ({_WIDE_LIMIT} results)"
+                    f"  → FTS/vocab mismatch or content gap"
+                )
+        return lines
+
     def run_batch(
         self,
         suite: TestSuite,
@@ -1121,6 +1194,7 @@ class RagTesterService:
         use_overrides: bool,
         overrides: dict[str, Any] | None,
         progress_callback=None,
+        diagnose_miss: bool = False,
     ) -> BatchResult:
         results: list[SingleResult] = []
         total_start = time.perf_counter()
@@ -1174,6 +1248,16 @@ class RagTesterService:
             ndcg = _ndcg(retrieved_ids, expected_set, max(k, 1),
                          relevance_grades=tc.relevance_grades or None)
 
+            # Optional: diagnose why expected docs were missing
+            diagnosis: list[str] = []
+            if diagnose_miss and recall < 1.0 and expected_set:
+                found_set = set(str(x) for x in retrieved_ids)
+                missing = expected_set - found_set
+                if missing:
+                    diagnosis = self._diagnose_miss(
+                        tc, suite.character_id, missing, overrides if use_overrides else None
+                    )
+
             results.append(SingleResult(
                 test_case=tc,
                 retrieved_ids=retrieved_ids,
@@ -1184,6 +1268,7 @@ class RagTesterService:
                 reciprocal_rank=rr,
                 ndcg=ndcg,
                 elapsed_ms=elapsed,
+                miss_diagnosis=diagnosis,
             ))
 
         total_elapsed = (time.perf_counter() - total_start) * 1000
