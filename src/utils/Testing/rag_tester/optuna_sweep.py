@@ -28,7 +28,7 @@ DEFAULT_PARAM_RANGES: Dict[str, tuple[float, float]] = {
     "RAG_WEIGHT_KEYWORDS":    (0.0, 2.0),
     "RAG_WEIGHT_LEXICAL":     (0.0, 1.0),
     "RAG_WEIGHT_GRAPH":       (0.0, 3.0),
-    "RAG_SIM_THRESHOLD":      (0.05, 0.5),
+    "RAG_SIM_THRESHOLD":      (0.0, 0.4),
     "RAG_KEYWORD_MIN_SCORE":  (0.1, 0.7),
     "RAG_TIME_DECAY_RATE":    (0.01, 0.2),
 }
@@ -37,12 +37,18 @@ DEFAULT_CATEGORICAL_PARAMS: Dict[str, list] = {
     "RAG_COMBINE_MODE": ["union", "two_stage", "intersect"],
 }
 
+# Integer parameter ranges: (low, high) inclusive
+DEFAULT_INT_PARAMS: Dict[str, tuple[int, int]] = {
+    "RAG_CROSS_ENCODER_TOP_K": (20, 150),
+}
+
 
 @dataclass
 class OptimizeConfig:
     """Configuration for Optuna-based optimization."""
     param_ranges: Dict[str, tuple[float, float]] = field(default_factory=lambda: dict(DEFAULT_PARAM_RANGES))
     categorical_params: Dict[str, list] = field(default_factory=lambda: dict(DEFAULT_CATEGORICAL_PARAMS))
+    int_params: Dict[str, tuple[int, int]] = field(default_factory=lambda: dict(DEFAULT_INT_PARAMS))
     fixed_overrides: Dict[str, Any] = field(default_factory=dict)
     limit: int = 10
     n_trials: int = 200
@@ -57,6 +63,8 @@ class OptimizeConfig:
             cfg.param_ranges = {k: tuple(v) for k, v in d["param_ranges"].items()}
         if "categorical_params" in d:
             cfg.categorical_params = d["categorical_params"]
+        if "int_params" in d:
+            cfg.int_params = {k: tuple(v) for k, v in d["int_params"].items()}
         if "fixed_overrides" in d:
             cfg.fixed_overrides = d["fixed_overrides"]
         if "limit" in d:
@@ -158,6 +166,10 @@ def run_optuna_sweep(
         # Continuous parameters
         for name, (lo, hi) in cfg.param_ranges.items():
             overrides[name] = trial.suggest_float(name, lo, hi)
+
+        # Integer parameters
+        for name, (lo, hi) in cfg.int_params.items():
+            overrides[name] = trial.suggest_int(name, lo, hi)
 
         # Categorical parameters
         for name, choices in cfg.categorical_params.items():
