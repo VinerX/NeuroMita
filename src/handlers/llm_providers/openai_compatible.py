@@ -77,6 +77,17 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                     return self._generate(req)
 
                 content = message.content
+                if not content:
+                    content = getattr(message, "reasoning_content", None)
+                if not content:
+                    content = (getattr(message, "model_extra", None) or {}).get("reasoning_content")
+                if not content:
+                    try:
+                        raw_dict = completion.model_dump()
+                        msg_dict = (raw_dict.get("choices") or [{}])[0].get("message") or {}
+                        content = msg_dict.get("reasoning_content")
+                    except Exception:
+                        pass
                 return content.strip() if content else None
 
             logger.warning(f"[{self.name}] No completion choices.")
@@ -98,6 +109,9 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
         if "top_k" in u and "deepseek" in m:
             out["top_k"] = u["top_k"]
 
+        if "enable_thinking" in u:
+            out["enable_thinking"] = bool(u["enable_thinking"])
+
         if "logprobs" in u:
             lp = u["logprobs"]
             out["logprobs"] = lp if isinstance(lp, bool) else bool(lp)
@@ -111,7 +125,13 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                 text = ""
                 try:
                     if chunk.choices and chunk.choices[0].delta:
-                        text = chunk.choices[0].delta.content or ""
+                        delta = chunk.choices[0].delta
+                        text = delta.content or ""
+                        # Qwen3 thinking-режим: контент идёт в reasoning_content
+                        if not text:
+                            text = getattr(delta, "reasoning_content", None) or ""
+                        if not text:
+                            text = (getattr(delta, "model_extra", None) or {}).get("reasoning_content", "")
                 except Exception:
                     continue
 

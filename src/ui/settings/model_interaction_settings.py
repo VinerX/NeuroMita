@@ -25,6 +25,13 @@ def setup_model_interaction_controls(self, parent):
         {'label': _('Включить стриминговую передачу', 'Enable Streaming'), 'key': 'ENABLE_STREAMING',
          'type': 'checkbutton',
          'default_checkbutton': False},
+        {'label': _('Режим размышлений (enable_thinking)', 'Enable thinking mode'), 'key': 'ENABLE_THINKING',
+         'type': 'checkbutton',
+         'default_checkbutton': True,
+         'tooltip': _('Для моделей Qwen3 и аналогичных: включает thinking-режим. '
+                      'Выключите если модель кладёт ответ в reasoning_content вместо content.',
+                      'For Qwen3 and similar models: enables thinking mode. '
+                      'Disable if the model puts the response into reasoning_content instead of content.')},
         {'label': _('Использовать gpt4free последней попыткой ', 'Use gpt4free as last attempt'),
          'key': 'GPT4FREE_LAST_ATTEMPT', 'type': 'checkbutton', 'default_checkbutton': False},
 

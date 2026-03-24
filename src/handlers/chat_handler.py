@@ -127,6 +127,7 @@ class ChatModel:
                 top_k=cfg.top_k,
                 top_p=cfg.top_p,
                 thinking_budget=cfg.thinking_budget,
+                enable_thinking=cfg.enable_thinking,
             )
 
             dialect = "gemini" if preset_settings.dialect_id == "gemini_generate_content" else "openai"

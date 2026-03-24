@@ -43,6 +43,7 @@ class ModelRuntimeConfig:
     top_p: float = 1.0
     thinking_budget: float = 0.0
     log_probability: float = 0.0
+    enable_thinking: bool | None = None  # None = не передавать параметр
 
     # costs/limits
     token_cost_input: float = 0.0432
@@ -85,6 +86,8 @@ class ModelRuntimeConfig:
                 self.top_p = _to_float(value, self.top_p)
             elif key == "MODEL_THOUGHT_PROCESS" or key == "MODEL_THINKING_BUDGET":
                 self.thinking_budget = _to_float(value, self.thinking_budget)
+            elif key == "ENABLE_THINKING":
+                self.enable_thinking = _to_bool(value, True) if value != "" and value is not None else None
 
             elif key == "MODEL_MESSAGE_LIMIT":
                 self.memory_limit = _to_int(value, self.memory_limit)
@@ -137,6 +140,7 @@ class ModelConfigLoader:
             top_p=_to_float(s.get("MODEL_TOP_P", 1.0), 1.0),
             thinking_budget=_to_float(s.get("MODEL_THINKING_BUDGET", 0.0), 0.0),
             log_probability=_to_float(s.get("MODEL_LOG_PROBABILITY", 0.0), 0.0),
+            enable_thinking=_to_bool(s.get("ENABLE_THINKING"), True) if s.get("ENABLE_THINKING") is not None else None,
 
             token_cost_input=_to_float(s.get("TOKEN_COST_INPUT", 0.0432), 0.0432),
             token_cost_output=_to_float(s.get("TOKEN_COST_OUTPUT", 0.1728), 0.1728),

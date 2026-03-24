@@ -30,6 +30,7 @@ def build_unified_generation_params(
     top_k: int | None,
     top_p: float | None,
     thinking_budget: float | None,
+    enable_thinking: bool | None = None,
 ) -> Dict[str, Any]:
     """
     Canonical/unified параметры. Никакого провайдер-специфичного маппинга здесь нет.
@@ -61,6 +62,9 @@ def build_unified_generation_params(
     # Canonical ключ
     if bool(settings.get("USE_MODEL_THINKING_BUDGET")) and thinking_budget is not None:
         params["thinking_budget"] = float(thinking_budget)
+
+    if enable_thinking is not None:
+        params["enable_thinking"] = enable_thinking
 
     params = filter_jsonable_params(params)
     params = _strip_nuls_in_strings(params)
