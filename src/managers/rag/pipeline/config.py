@@ -142,6 +142,16 @@ class RAGConfig:
     cross_encoder_enabled: bool = True
     cross_encoder_model: str = "Alibaba-NLP/gte-multilingual-reranker-base"
     cross_encoder_top_k: int = 30
+    # Alpha mixing: final_score = alpha*CE + (1-alpha)*linear.
+    # 1.0 = pure CE (old behaviour); 0.0 = ignore CE entirely.
+    # Values 0.5-0.9 protect high-linear-score docs from being killed by CE errors.
+    cross_encoder_alpha: float = 1.0
+
+    # Reciprocal Rank Fusion: replaces weighted-sum scoring with rank-based fusion.
+    # When enabled, each retriever bucket contributes 1/(rrf_k + rank) to the candidate score.
+    # Time/priority/entity bonuses are still added on top.
+    use_rrf: bool = False
+    rrf_k: int = 60  # smoothing constant (industry default)
 
     @classmethod
     def from_settings(cls, *, limit: int, threshold: float) -> "RAGConfig":
@@ -204,6 +214,10 @@ class RAGConfig:
         cfg.cross_encoder_enabled = _b(SettingsManager.get("RAG_CROSS_ENCODER_ENABLED", True), True)
         cfg.cross_encoder_model = resolve_ce_model()
         cfg.cross_encoder_top_k = _i(SettingsManager.get("RAG_CROSS_ENCODER_TOP_K", 30), 30)
+        cfg.cross_encoder_alpha = _f(SettingsManager.get("RAG_CROSS_ENCODER_ALPHA", 1.0), 1.0)
+
+        cfg.use_rrf = _b(SettingsManager.get("RAG_USE_RRF", False), False)
+        cfg.rrf_k = _i(SettingsManager.get("RAG_RRF_K", 60), 60)
 
         cfg._validate()
         return cfg
@@ -234,6 +248,8 @@ class RAGConfig:
         self.K7 = max(0.0, self.K7)
         self.graph_min_results = max(0, self.graph_min_results)
         self.cross_encoder_top_k = max(1, self.cross_encoder_top_k)
+        self.cross_encoder_alpha = max(0.0, min(1.0, self.cross_encoder_alpha))
+        self.rrf_k = max(1, self.rrf_k)
 
 
 # ── Default values for all SettingsManager RAG keys ──────────────────────
@@ -283,6 +299,9 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_CROSS_ENCODER_MODEL": "GTE Reranker base multilingual (306M)",
     "RAG_CROSS_ENCODER_MODEL_CUSTOM": "",
     "RAG_CROSS_ENCODER_TOP_K": 30,
+    "RAG_CROSS_ENCODER_ALPHA": 1.0,
+    "RAG_USE_RRF": False,
+    "RAG_RRF_K": 60,
     "RAG_DETAILED_LOGS": True,
     "RAG_LOG_LIST_TOP_N": 10,
     "RAG_LOG_LIST_BOTTOM_N": 5,

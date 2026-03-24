@@ -603,7 +603,10 @@ class RAGManager:
 
         # --- choose combiner ---
         mode = (cfg.combine_mode or "union").strip().lower()
-        if mode == "vector_only":
+        if cfg.use_rrf:
+            from managers.rag.pipeline.combiner import RRFCombiner
+            combiner = RRFCombiner(cfg=cfg)
+        elif mode == "vector_only":
             combiner = VectorOnlyCombiner(cfg=cfg)
         elif mode in ("intersect", "intersect2", "intersect_n"):
             combiner = IntersectCombiner(
@@ -647,7 +650,8 @@ class RAGManager:
             try:
                 from managers.rag.pipeline.cross_encoder import CrossEncoderReranker
                 ce = CrossEncoderReranker.get(cfg.cross_encoder_model)
-                ce.rerank(qs.user_query, cands, top_k=cfg.cross_encoder_top_k)
+                ce.rerank(qs.user_query, cands, top_k=cfg.cross_encoder_top_k,
+                          alpha=cfg.cross_encoder_alpha)
                 cands.sort(key=lambda c: float(c.score or 0.0), reverse=True)
             except Exception as _ce_err:
                 logger.debug(f"[RAG][cross_encoder] skipped: {_ce_err}", exc_info=True)

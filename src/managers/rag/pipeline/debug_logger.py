@@ -64,9 +64,13 @@ class RagDebugLogger:
                 ("threshold", float(self.cfg.threshold)),
                 ("limit", int(self.cfg.limit)),
                 ("reranker", (
-                    f"linear + cross-encoder [{self.cfg.cross_encoder_model}] top{self.cfg.cross_encoder_top_k}"
-                    if self.cfg.cross_encoder_enabled and self.cfg.cross_encoder_model
-                    else "linear"
+                    ("rrf" if self.cfg.use_rrf else "linear")
+                    + (
+                        f" + cross-encoder [{self.cfg.cross_encoder_model}] top{self.cfg.cross_encoder_top_k}"
+                        + (f" α={self.cfg.cross_encoder_alpha:.2f}" if self.cfg.cross_encoder_alpha < 1.0 else "")
+                        if self.cfg.cross_encoder_enabled and self.cfg.cross_encoder_model
+                        else ""
+                    )
                 )),
             ]
             max_k = max((len(k) for k, _ in items), default=0)
@@ -142,12 +146,20 @@ class RagDebugLogger:
 
                 ce_score = dbg.get("cross_encoder")
                 ce_str = f" ce={float(ce_score):.3f}" if ce_score is not None else ""
+                if self.cfg.use_rrf:
+                    score_parts = (
+                        f"rrf={float(f.get('rrf',0.0)):.4f} time={float(f.get('time',0.0)):.3f} "
+                        f"prio={float(f.get('prio',0.0)):.3f} ent={float(f.get('entity',0.0)):.3f}"
+                    )
+                else:
+                    score_parts = (
+                        f"sim={float(f.get('sim',0.0)):.3f} time={float(f.get('time',0.0)):.3f} "
+                        f"prio={float(f.get('prio',0.0)):.3f} ent={float(f.get('entity',0.0)):.3f} "
+                        f"kw={float(f.get('kw',0.0)):.3f} lex={float(f.get('lex',0.0)):.3f}"
+                    )
                 logger.info(
                     f"[RAG][{i+1:03d}/{total:03d}] {c.source}:{c.id} score={float(c.score):.4f} "
-                    f"(sim={float(f.get('sim',0.0)):.3f} time={float(f.get('time',0.0)):.3f} "
-                    f"prio={float(f.get('prio',0.0)):.3f} ent={float(f.get('entity',0.0)):.3f} "
-                    f"kw={float(f.get('kw',0.0)):.3f} lex={float(f.get('lex',0.0)):.3f}"
-                    f"{ce_str}) "
+                    f"({score_parts}{ce_str}) "
                     f"| {meta_txt} | \"{_clip(c.content)}\""
                 )
 

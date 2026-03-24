@@ -250,11 +250,19 @@ class TestCase:
     expected_ids: list[str | int] = field(default_factory=list)
     relevance_grades: dict[str, int] = field(default_factory=dict)  # id → grade (1-3), empty = binary
     description: str = ""
+    # "train" | "val" | "" (empty = belongs to all splits)
+    split: str = ""
+
+    @property
+    def is_negative(self) -> bool:
+        return len(self.expected_ids) == 0
 
     def to_dict(self) -> dict:
         d = {"query": self.query, "expected_ids": self.expected_ids, "description": self.description}
         if self.relevance_grades:
             d["relevance_grades"] = self.relevance_grades
+        if self.split:
+            d["split"] = self.split
         return d
 
     @staticmethod
@@ -264,6 +272,7 @@ class TestCase:
             expected_ids=list(d.get("expected_ids") or []),
             relevance_grades=dict(d.get("relevance_grades") or {}),
             description=str(d.get("description") or ""),
+            split=str(d.get("split") or ""),
         )
 
 
@@ -295,6 +304,43 @@ class TestSuite:
     @staticmethod
     def from_json(text: str) -> "TestSuite":
         return TestSuite.from_dict(json.loads(text))
+
+    def by_split(self, split: str) -> "TestSuite":
+        """Return a new TestSuite with only cases matching the given split.
+
+        Cases with split=="" are included in every split (backwards-compatible).
+        """
+        filtered = [c for c in self.cases if not c.split or c.split == split]
+        return TestSuite(
+            name=f"{self.name} [{split}]",
+            character_id=self.character_id,
+            cases=filtered,
+        )
+
+    def assign_splits(self, val_ratio: float = 0.25, seed: int = 42) -> "TestSuite":
+        """Return a copy of this suite with train/val split assigned in-place.
+
+        Stratified by positive/negative: each group is shuffled independently
+        so both splits preserve the original positive/negative ratio.
+        """
+        import random
+        rng = random.Random(seed)
+
+        positives = [c for c in self.cases if not c.is_negative]
+        negatives = [c for c in self.cases if c.is_negative]
+
+        def _assign(cases: list) -> list:
+            shuffled = list(cases)
+            rng.shuffle(shuffled)
+            n_val = max(1, round(len(shuffled) * val_ratio))
+            for c in shuffled[:n_val]:
+                c.split = "val"
+            for c in shuffled[n_val:]:
+                c.split = "train"
+            return shuffled
+
+        all_cases = _assign(positives) + _assign(negatives)
+        return TestSuite(name=self.name, character_id=self.character_id, cases=all_cases)
 
     @staticmethod
     def template() -> "TestSuite":

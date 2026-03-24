@@ -298,6 +298,32 @@ def cmd_generate_suite(args):
         print(text)
 
 
+def cmd_split_suite(args):
+    """Assign train/val splits to a test suite (stratified by positive/negative)."""
+    suite = TestSuite.from_json(open(args.suite, "r", encoding="utf-8").read())
+    split_suite = suite.assign_splits(val_ratio=args.val_ratio, seed=args.seed)
+
+    train = split_suite.by_split("train")
+    val   = split_suite.by_split("val")
+    print(
+        f"Split '{suite.name}': {len(suite.cases)} total → "
+        f"{len(train.cases)} train / {len(val.cases)} val  (val_ratio={args.val_ratio}, seed={args.seed})",
+        file=sys.stderr,
+    )
+    pos_train = sum(1 for c in train.cases if not c.is_negative)
+    pos_val   = sum(1 for c in val.cases   if not c.is_negative)
+    print(f"  train: {pos_train} positive, {len(train.cases)-pos_train} negative", file=sys.stderr)
+    print(f"  val:   {pos_val} positive,   {len(val.cases)-pos_val} negative", file=sys.stderr)
+
+    text = split_suite.to_json()
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(text)
+        print(f"Written to {args.output}", file=sys.stderr)
+    else:
+        print(text)
+
+
 def cmd_optimize(args):
     """Bayesian optimization of RAG parameters via Optuna."""
     from optuna_sweep import OptimizeConfig, run_optuna_sweep
@@ -348,6 +374,22 @@ def cmd_optimize(args):
         if ctx:
             ctx.__exit__(None, None, None)
 
+    # Resolve validation suite: explicit file > "val" split from train suite > None
+    val_suite = None
+    val_suite_path = getattr(args, "val_suite", None)
+    if val_suite_path:
+        val_suite = TestSuite.from_json(open(val_suite_path, "r", encoding="utf-8").read())
+        print(f"Val suite: {val_suite_path} ({len(val_suite.cases)} cases)", file=sys.stderr)
+    elif any(c.split == "val" for c in suite.cases):
+        # Suite already has split annotations — use them
+        train_suite = suite.by_split("train")
+        val_suite   = suite.by_split("val")
+        print(
+            f"Using embedded splits: {len(train_suite.cases)} train / {len(val_suite.cases)} val",
+            file=sys.stderr,
+        )
+        suite = train_suite  # optimize on train only
+
     def progress(cur, total, val):
         print(f"  [{cur}/{total}] current {args.metric}={val:.4f}", file=sys.stderr)
 
@@ -362,6 +404,7 @@ def cmd_optimize(args):
 
     result = run_optuna_sweep(
         svc, suite,
+        val_suite=val_suite,
         target_metric=args.metric,
         config=config,
         progress_callback=progress,
@@ -385,6 +428,19 @@ def cmd_optimize(args):
         lines.append("Top trials:")
         for t in result.top_trials[:5]:
             lines.append(f"  #{t['number']} value={t['value']:.4f}")
+        if result.val_metrics:
+            vm = result.val_metrics
+            lines.append("")
+            lines.append(f"Validation ({vm.get('n_cases',0)} cases):")
+            lines.append(
+                f"  P={vm.get('mean_precision',0):.4f}  "
+                f"R={vm.get('mean_recall',0):.4f}  "
+                f"MRR={vm.get('mrr',0):.4f}  "
+                f"nDCG={vm.get('mean_ndcg',0):.4f}"
+            )
+            train_val_gap = result.best_value - vm.get(args.metric, 0.0)
+            lines.append(f"  Train/Val gap ({args.metric}): {train_val_gap:+.4f}"
+                         + (" ⚠ overfit?" if train_val_gap > 0.05 else " ✓"))
         _output("\n".join(lines), "text", args.output)
 
 
@@ -547,9 +603,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_opt.add_argument("--timeout", type=int, default=None, help="Timeout in seconds")
     p_opt.add_argument("--optimize-config", default=None, help="Path to optimize config JSON")
     p_opt.add_argument("--overrides", default=None, help="JSON string or path to overrides (e.g. embed model)")
+    p_opt.add_argument("--val-suite", default=None,
+                       help="Path to validation suite JSON. If omitted and --suite has split annotations, "
+                            "val split is used automatically.")
     p_opt.add_argument("--db", default=None, help="Custom SQLite DB path")
     p_opt.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
     p_opt.add_argument("--output", default=None, help="Write output to file")
+
+    # --- split-suite ---
+    p_split = sub.add_parser("split-suite", help="Assign train/val splits to a test suite (stratified)")
+    p_split.add_argument("--suite", required=True, help="Path to input suite JSON file")
+    p_split.add_argument("--val-ratio", type=float, default=0.25,
+                         help="Fraction of cases to assign as val (default: 0.25)")
+    p_split.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
+    p_split.add_argument("--output", default=None, help="Write annotated suite to file (default: stdout)")
 
     # --- compare ---
     p_cmp = sub.add_parser("compare", help="Compare two batch results for regression")
@@ -583,6 +650,8 @@ def main():
             cmd_generate_suite(args)
         elif args.command == "optimize":
             cmd_optimize(args)
+        elif args.command == "split-suite":
+            cmd_split_suite(args)
         elif args.command == "compare":
             cmd_compare(args)
         elif args.command == "template":

@@ -136,6 +136,42 @@ class IntersectCombiner:
         return []
 
 
+class RRFCombiner:
+    """
+    Reciprocal Rank Fusion combiner.
+
+    Each retriever bucket is assumed pre-sorted by its own relevance signal.
+    For every candidate, sums up 1/(rrf_k + rank) across all buckets it appears in.
+    This score is stored as feature["rrf"] and replaces the weighted sim/lex/kw
+    signals in LinearReranker when use_rrf=True (time/prio/entity bonuses still apply).
+    """
+    name = "rrf"
+
+    def __init__(self, *, cfg: RAGConfig):
+        self.cfg = cfg
+        self.k = max(1, int(cfg.rrf_k))
+
+    def combine(self, buckets: Dict[str, List[Candidate]]) -> List[Candidate]:
+        merged: dict[tuple[str, int], Candidate] = {}
+        rrf_totals: dict[tuple[str, int], float] = {}
+
+        for _name, cands in (buckets or {}).items():
+            for rank, c in enumerate(cands or []):
+                key = c.key
+                if key[1] <= 0:
+                    continue
+                rrf_totals[key] = rrf_totals.get(key, 0.0) + 1.0 / (self.k + rank + 1)
+                if key not in merged:
+                    merged[key] = c
+                else:
+                    merged[key].merge_from(c)
+
+        for key, c in merged.items():
+            c.features["rrf"] = rrf_totals.get(key, 0.0)
+
+        return list(merged.values())
+
+
 class TwoStageCombiner:
     """
     Stage1: take vector candidates (optionally cap by vector_top_k).

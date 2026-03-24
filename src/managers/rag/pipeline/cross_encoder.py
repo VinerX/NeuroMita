@@ -192,8 +192,12 @@ class CrossEncoderReranker:
         return probs[:, 1].tolist()  # P(yes)
 
     # ------------------------------------------------------------------ #
-    def rerank(self, query: str, cands: list, top_k: int = 20) -> None:
+    def rerank(self, query: str, cands: list, top_k: int = 20, alpha: float = 1.0) -> None:
         """Re-score cands[:top_k] in-place with cross-encoder logits.
+
+        final_score = alpha * CE_score + (1 - alpha) * linear_score
+        alpha=1.0 → pure CE (old behaviour).
+        alpha<1.0 → protects high-linear-score docs from CE errors.
 
         After this call the caller should re-sort cands by score.
         Candidates beyond top_k are left untouched (their original linear
@@ -221,10 +225,16 @@ class CrossEncoderReranker:
                     moves.append(f"{c.source}:{c.id} {old_pos+1}→{new_pos+1}")
 
             for c, s in zip(to_score, scores):
-                c.score = float(s)
+                ce_score = float(s)
+                if alpha < 1.0:
+                    linear_score = float((c.debug or {}).get("final", c.score))
+                    mixed = alpha * ce_score + (1.0 - alpha) * linear_score
+                else:
+                    mixed = ce_score
+                c.score = mixed
                 if c.debug is None:
                     c.debug = {}
-                c.debug["cross_encoder"] = float(s)
+                c.debug["cross_encoder"] = ce_score
 
             if moves:
                 logger.info(

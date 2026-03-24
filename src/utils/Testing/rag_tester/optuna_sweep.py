@@ -77,9 +77,11 @@ class OptimizeResult:
     n_trials: int
     top_trials: List[Dict[str, Any]]  # top-N trial summaries
     convergence: List[Dict[str, Any]] = field(default_factory=list)  # per-trial best
+    # Validation result: metrics of best_params evaluated on the val split
+    val_metrics: Optional[Dict[str, float]] = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "best_params": self.best_params,
             "best_value": self.best_value,
             "target_metric": self.target_metric,
@@ -87,12 +89,16 @@ class OptimizeResult:
             "top_trials": self.top_trials,
             "convergence": self.convergence,
         }
+        if self.val_metrics is not None:
+            d["val_metrics"] = self.val_metrics
+        return d
 
 
 def run_optuna_sweep(
     svc,
     suite,
     *,
+    val_suite=None,
     target_metric: str = "mean_recall",
     config: Optional[OptimizeConfig] = None,
     progress_callback=None,
@@ -234,6 +240,38 @@ def run_optuna_sweep(
             "params": t.params,
         })
 
+    # Evaluate best params on validation suite (if provided)
+    val_metrics: Optional[Dict[str, float]] = None
+    if val_suite is not None and len(val_suite.cases) > 0:
+        try:
+            print(f"\nEvaluating best params on validation set ({len(val_suite.cases)} cases)...", flush=True)
+            val_overrides = dict(cfg.fixed_overrides)
+            val_overrides.update(study.best_params)
+            val_threshold = float(val_overrides.get("RAG_SIM_THRESHOLD", 0.3))
+            val_batch = svc.run_batch(
+                val_suite,
+                limit=cfg.limit,
+                threshold=val_threshold,
+                use_overrides=True,
+                overrides=val_overrides,
+            )
+            val_metrics = {
+                "mean_precision": round(val_batch.mean_precision, 4),
+                "mean_recall":    round(val_batch.mean_recall, 4),
+                "mrr":            round(val_batch.mrr, 4),
+                "mean_ndcg":      round(val_batch.mean_ndcg, 4),
+                "n_cases":        len(val_suite.cases),
+            }
+            print(
+                f"  VAL → P={val_metrics['mean_precision']:.4f}  "
+                f"R={val_metrics['mean_recall']:.4f}  "
+                f"MRR={val_metrics['mrr']:.4f}  "
+                f"nDCG={val_metrics['mean_ndcg']:.4f}",
+                flush=True,
+            )
+        except Exception as _val_err:
+            print(f"  VAL evaluation failed (ignored): {_val_err}", flush=True)
+
     return OptimizeResult(
         best_params=study.best_params,
         best_value=study.best_value,
@@ -241,4 +279,5 @@ def run_optuna_sweep(
         n_trials=len(study.trials),
         top_trials=top_trials,
         convergence=convergence_log,
+        val_metrics=val_metrics,
     )
