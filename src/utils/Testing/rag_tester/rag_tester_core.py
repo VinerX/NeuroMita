@@ -374,6 +374,9 @@ class SingleResult:
     reciprocal_rank: float
     ndcg: float
     elapsed_ms: float
+    # Per-component latency breakdown (ms). 0.0 if not measured.
+    embed_ms: float = 0.0    # query embedding (QueryBuilder.build)
+    rerank_ms: float = 0.0   # cross-encoder reranking
     # Populated for MISS/PARTIAL cases when diagnose_miss=True in run_batch().
     # Each entry describes why one expected document was not found:
     #   "  <id>: found in wide search rank=12 score=0.241 → threshold/top_k issue"
@@ -393,6 +396,8 @@ class SingleResult:
             "reciprocal_rank": self.reciprocal_rank,
             "ndcg": self.ndcg,
             "elapsed_ms": self.elapsed_ms,
+            "embed_ms": self.embed_ms,
+            "rerank_ms": self.rerank_ms,
         }
         if self.miss_diagnosis:
             d["miss_diagnosis"] = self.miss_diagnosis
@@ -410,6 +415,8 @@ class BatchResult:
     mean_ndcg: float
     total_elapsed_ms: float
     mean_elapsed_ms: float = 0.0   # average per-query RAG latency
+    mean_embed_ms: float = 0.0     # average query embedding time
+    mean_rerank_ms: float = 0.0    # average cross-encoder reranking time
     # Sanity: how many retrieved docs came from the vector retriever.
     # If 0 while vector search is enabled → embedding model likely failed to load.
     vector_doc_count: int = 0
@@ -425,6 +432,8 @@ class BatchResult:
             "mean_ndcg": self.mean_ndcg,
             "total_elapsed_ms": self.total_elapsed_ms,
             "mean_elapsed_ms": self.mean_elapsed_ms,
+            "mean_embed_ms": self.mean_embed_ms,
+            "mean_rerank_ms": self.mean_rerank_ms,
             "vector_doc_count": self.vector_doc_count,
             "embed_model_name": self.embed_model_name,
             "results": [r.to_dict() for r in self.results],
@@ -434,6 +443,7 @@ class BatchResult:
         return d
 
     def summary_text(self) -> str:
+        other_ms = max(0.0, self.mean_elapsed_ms - self.mean_embed_ms - self.mean_rerank_ms)
         lines = [
             f"=== Batch Results: {self.suite_name} ===",
             f"Queries:          {len(self.results)}",
@@ -443,6 +453,9 @@ class BatchResult:
             f"Mean nDCG:        {self.mean_ndcg:.4f}",
             f"Total time:       {self.total_elapsed_ms:.0f} ms",
             f"Mean RAG latency: {self.mean_elapsed_ms:.0f} ms/query",
+            f"  embed:          {self.mean_embed_ms:.0f} ms",
+            f"  rerank:         {self.mean_rerank_ms:.0f} ms",
+            f"  other:          {other_ms:.0f} ms  (retrieval + scoring)",
             f"Vector docs:      {self.vector_doc_count}"
             + (" ⚠ ZERO — embedding model may have failed!" if self.vector_doc_count == 0 else ""),
             f"Embed model:      {self.embed_model_name or '(unknown)'}",
@@ -1135,14 +1148,33 @@ class RagTesterService:
         use_overrides: bool,
         overrides: dict[str, Any] | None,
     ) -> list[dict]:
+        results, _ = self._search_timed(
+            cid=cid, query=query, limit=limit, threshold=threshold,
+            use_overrides=use_overrides, overrides=overrides,
+        )
+        return results
+
+    def _search_timed(
+        self,
+        *,
+        cid: str,
+        query: str,
+        limit: int,
+        threshold: float,
+        use_overrides: bool,
+        overrides: dict[str, Any] | None,
+    ) -> tuple[list[dict], dict]:
+        """Like search(), but also returns per-component timing dict (embed_ms, rerank_ms)."""
         if use_overrides and overrides:
             with SettingsOverride(overrides):
-                # RAGManager must be created INSIDE the context so that pipeline
-                # components (e.g. vector retriever) read the overridden model name.
                 rag = RAGManager(cid)
-                return rag.search_relevant(query=query, limit=int(limit), threshold=float(threshold))
+                results = rag.search_relevant(query=query, limit=int(limit), threshold=float(threshold))
+                timing = dict(getattr(rag, "_last_query_timing", {}))
+                return results, timing
         rag = RAGManager(cid)
-        return rag.search_relevant(query=query, limit=int(limit), threshold=float(threshold))
+        results = rag.search_relevant(query=query, limit=int(limit), threshold=float(threshold))
+        timing = dict(getattr(rag, "_last_query_timing", {}))
+        return results, timing
 
     def build_injection_preview(self, results: list[dict]) -> str:
         """
@@ -1270,12 +1302,14 @@ class RagTesterService:
                 progress_callback(idx, len(suite.cases), tc.query)
 
             t0 = time.perf_counter()
-            raw = self.search(
+            raw, _timing = self._search_timed(
                 cid=suite.character_id, query=tc.query,
                 limit=limit, threshold=threshold,
                 use_overrides=use_overrides, overrides=overrides,
             )
             elapsed = (time.perf_counter() - t0) * 1000
+            embed_ms = float(_timing.get("embed_ms", 0.0))
+            rerank_ms = float(_timing.get("rerank_ms", 0.0))
 
             retrieved_ids = []
             retrieved_scores = []
@@ -1336,6 +1370,8 @@ class RagTesterService:
                 reciprocal_rank=rr,
                 ndcg=ndcg,
                 elapsed_ms=elapsed,
+                embed_ms=embed_ms,
+                rerank_ms=rerank_ms,
                 miss_diagnosis=diagnosis,
             ))
 
@@ -1367,6 +1403,8 @@ class RagTesterService:
             mean_ndcg=sum(r.ndcg for r in results) / n,
             total_elapsed_ms=total_elapsed,
             mean_elapsed_ms=sum(r.elapsed_ms for r in results) / n,
+            mean_embed_ms=sum(r.embed_ms for r in results) / n,
+            mean_rerank_ms=sum(r.rerank_ms for r in results) / n,
             vector_doc_count=total_vector_docs,
             embed_model_name=embed_model_name,
             warnings=batch_warnings,

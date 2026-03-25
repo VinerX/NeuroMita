@@ -7,6 +7,7 @@ import json
 import struct
 import random
 import datetime
+import time as _time
 from typing import List, Dict, Any, Optional, Tuple
 
 from managers.database_manager import DatabaseManager
@@ -720,7 +721,9 @@ class RAGManager:
         cfg = RAGConfig.from_settings(limit=limit, threshold=threshold)
 
         qb = QueryBuilder(rag=self, cfg=cfg)
+        _t_embed0 = _time.perf_counter()
         qs = qb.build(query)
+        self._last_query_timing = {"embed_ms": (_time.perf_counter() - _t_embed0) * 1000, "rerank_ms": 0.0}
 
         # If no embedding AND no keywords AND no fts -> nothing to do
         if qs.query_vec is None and not qs.keywords and not cfg.use_fts:
@@ -824,9 +827,11 @@ class RAGManager:
                 effective_top_k = min(len(cands),
                                       max(cfg.cross_encoder_top_k,
                                           int(len(cands) * cfg.ce_top_k_ratio)))
+                _t_ce0 = _time.perf_counter()
                 ce.rerank(qs.user_query, cands, top_k=effective_top_k,
                           alpha=cfg.cross_encoder_alpha,
                           early_exit_score=cfg.ce_early_exit_score)
+                self._last_query_timing["rerank_ms"] = (_time.perf_counter() - _t_ce0) * 1000
                 cands.sort(key=lambda c: float(c.score or 0.0), reverse=True)
             except Exception as _ce_err:
                 logger.debug(f"[RAG][cross_encoder] skipped: {_ce_err}", exc_info=True)

@@ -275,12 +275,12 @@ class CrossEncoderReranker:
         """
         if not cands or not query:
             return
-        if not self._ensure_loaded():
-            return
 
         to_score = cands[:top_k]
 
         try:
+            if not self._ensure_loaded():
+                return
             if self._is_lm:
                 scores = self._score_lm(query, to_score, early_exit_score=early_exit_score)
             else:
