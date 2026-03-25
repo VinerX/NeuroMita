@@ -409,6 +409,7 @@ class BatchResult:
     mrr: float          # Mean Reciprocal Rank
     mean_ndcg: float
     total_elapsed_ms: float
+    mean_elapsed_ms: float = 0.0   # average per-query RAG latency
     # Sanity: how many retrieved docs came from the vector retriever.
     # If 0 while vector search is enabled → embedding model likely failed to load.
     vector_doc_count: int = 0
@@ -423,6 +424,7 @@ class BatchResult:
             "mrr": self.mrr,
             "mean_ndcg": self.mean_ndcg,
             "total_elapsed_ms": self.total_elapsed_ms,
+            "mean_elapsed_ms": self.mean_elapsed_ms,
             "vector_doc_count": self.vector_doc_count,
             "embed_model_name": self.embed_model_name,
             "results": [r.to_dict() for r in self.results],
@@ -440,6 +442,7 @@ class BatchResult:
             f"MRR:              {self.mrr:.4f}",
             f"Mean nDCG:        {self.mean_ndcg:.4f}",
             f"Total time:       {self.total_elapsed_ms:.0f} ms",
+            f"Mean RAG latency: {self.mean_elapsed_ms:.0f} ms/query",
             f"Vector docs:      {self.vector_doc_count}"
             + (" ⚠ ZERO — embedding model may have failed!" if self.vector_doc_count == 0 else ""),
             f"Embed model:      {self.embed_model_name or '(unknown)'}",
@@ -1363,6 +1366,7 @@ class RagTesterService:
             mrr=sum(r.reciprocal_rank for r in results) / n,
             mean_ndcg=sum(r.ndcg for r in results) / n,
             total_elapsed_ms=total_elapsed,
+            mean_elapsed_ms=sum(r.elapsed_ms for r in results) / n,
             vector_doc_count=total_vector_docs,
             embed_model_name=embed_model_name,
             warnings=batch_warnings,

@@ -814,10 +814,16 @@ class RAGManager:
             try:
                 from managers.rag.pipeline.cross_encoder import CrossEncoderReranker
                 ce = CrossEncoderReranker.get(cfg.cross_encoder_model)
-                # Adaptive top_k: cover a fraction of the actual pool, bounded by config max.
-                # With ratio=0.4: pool=60 → 24 pairs; pool=300 → 120 pairs (up to max).
-                effective_top_k = max(10, min(cfg.cross_encoder_top_k,
-                                              int(len(cands) * cfg.ce_top_k_ratio)))
+                # Adaptive top_k: for large pools cover more than fixed top_k;
+                # for small pools never score FEWER than configured top_k.
+                # Formula: max(top_k, n*ratio), capped at actual pool size.
+                # Examples (top_k=75, ratio=0.4):
+                #   pool=62  → max(75,25)=75  → min(62,75)=62   (all, unchanged)
+                #   pool=300 → max(75,120)=120 → 120 (+60% coverage)
+                #   pool=400 → max(75,160)=160 → 160 (better recall on large history)
+                effective_top_k = min(len(cands),
+                                      max(cfg.cross_encoder_top_k,
+                                          int(len(cands) * cfg.ce_top_k_ratio)))
                 ce.rerank(qs.user_query, cands, top_k=effective_top_k,
                           alpha=cfg.cross_encoder_alpha,
                           early_exit_score=cfg.ce_early_exit_score)
