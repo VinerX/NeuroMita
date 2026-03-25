@@ -2,7 +2,7 @@
 
 **Purpose:** Context document for AI assistants in future sessions. Summarizes the full history of RAG pipeline development, bugs found, fixes applied, and current state.
 
-**Last updated:** 2026-03-25 (Session 2)
+**Last updated:** 2026-03-26 (Session 3)
 
 **Branch:** `RAG-embedding-providers`
 
@@ -626,14 +626,13 @@ Not yet implemented, but viable:
 
 4. **Duplicate deduplication** — write-time cosine similarity check (sim > 0.92 → update, not insert)
 5. **Graph entity extraction upgrade** — Gemma 1B → Qwen3.5-0.6B
-6. **CE top_k A/B test** — compare top_k=40 vs 75 for latency/recall trade-off
 
 #### Low Priority
 
-7. Sentence-level + CE A/B test
-8. Query rewriting with small LLM
-9. Predicate search in graph
-10. FAISS GPU index (needed only at >10k messages)
+6. Sentence-level + CE A/B test
+7. Query rewriting with small LLM
+8. Predicate search in graph
+9. FAISS GPU index (needed only at >10k messages)
 
 ### 12.6 Run Commands (Updated)
 
@@ -662,4 +661,157 @@ cd src/utils/Testing/rag_tester
 
 # Check Optuna progress
 cat src/utils/Testing/rag_tester/results/optuna_qwen3_v5_progress.json
+```
+
+---
+
+## 13. Session 3 Findings (2026-03-26)
+
+### 13.1 Per-Component Latency Timing (IMPLEMENTED)
+
+Added per-component latency breakdown to the test framework.
+
+**Changes:**
+- `rag_manager.py`: `_last_query_timing` dict populated after each `search_relevant()` call with `embed_ms` (QueryBuilder.build) and `rerank_ms` (CE rerank)
+- `rag_tester_core.py`: `SingleResult` gets `embed_ms`/`rerank_ms` fields; `BatchResult` gets `mean_embed_ms`/`mean_rerank_ms`; `summary_text()` shows breakdown
+- New `_search_timed()` method returns `(results, timing_dict)` alongside normal results
+
+**Baseline latency breakdown (Qwen3x2, 100 cases, top_k=75):**
+
+```
+Mean RAG latency: 1027 ms/query
+  embed:           100 ms   (10%)
+  rerank:          883 ms   (86%)
+  other:            44 ms    (4%)  ← retrieval + scoring
+```
+
+Reranker is 86% of total time. Embedding and retrieval are negligible.
+
+---
+
+### 13.2 RAG_DEFAULTS Updated to Optimal Settings
+
+The "Reset RAG defaults" button in the UI was pointing to stale pre-optimization values.
+Updated `RAG_DEFAULTS` in `config.py` to reflect current best settings:
+
+| Key | Old | New |
+|---|---|---|
+| `RAG_EMBED_MODEL` | GTE multilingual base (620M) | Qwen3-Embedding-0.6B (600M, 2025) |
+| `RAG_CROSS_ENCODER_MODEL` | GTE Reranker base multilingual | Qwen3-Reranker-0.6B (600M, 2025) |
+| `RAG_CROSS_ENCODER_TOP_K` | 30 | 75 |
+| `RAG_CROSS_ENCODER_ALPHA` | 1.0 | 0.68 |
+| `RAG_SIM_THRESHOLD` | 0.20 | 0.13 |
+| `RAG_WEIGHT_SIMILARITY` | 1.0 | 1.27 |
+| `RAG_WEIGHT_TIME` | 0.3 | 0.001 |
+| `RAG_WEIGHT_PRIORITY` | 0.5 | 0.92 |
+| `RAG_WEIGHT_ENTITY` | 0.5 | 0.52 |
+| `RAG_WEIGHT_KEYWORDS` | 0.6 | 1.01 |
+| `RAG_COMBINE_MODE` | "union" | "two_stage" |
+| `RAG_SEARCH_GRAPH` | False | True |
+
+---
+
+### 13.3 Jina Reranker v2 A/B Test (TESTED — NOT VIABLE FOR PRIMARY)
+
+**Model:** `jinaai/jina-reranker-v2-base-multilingual` (278M, SeqCls)
+
+| Metric | Qwen3-Reranker 0.6B | Jina v2 (278M) | Δ |
+|---|---|---|---|
+| Recall | **0.759** | 0.601 | -21% |
+| MRR | **0.554** | 0.403 | -27% |
+| nDCG | **0.570** | 0.434 | -24% |
+| Latency | 1027 ms | **198 ms** | -81% |
+| rerank only | 883 ms | **43 ms** | -95% |
+
+**Conclusion:** Jina is 5× faster but loses -21% recall. Not viable as primary reranker given the 0.8 recall target. Could be used as a fast pre-filter in a two-stage CE pipeline (Jina → Qwen3 on top-N), but not tested.
+
+---
+
+### 13.4 CE top_k=40 A/B Test (TESTED — NOT VIABLE)
+
+**Hypothesis:** Reducing top_k from 75 to 40 would cut latency ~45%.
+
+| Metric | top_k=75 | top_k=40 | Δ |
+|---|---|---|---|
+| Recall | **0.759** | 0.656 | **-13%** |
+| MRR | **0.554** | 0.527 | -5% |
+| Latency | **1027 ms** | 1167 ms | **+14% slower** |
+
+**Conclusion:** Both worse on recall AND slower. The adaptive formula explains the latency paradox: with pool≈62 candidates, top_k=75 makes the formula score all 62 candidates (same cost), while top_k=40 scores 40 — but GPU batching makes 40 pairs nearly as slow as 62. No benefit in either dimension.
+
+**Rule:** Do not lower `RAG_CROSS_ENCODER_TOP_K` below 75 for current pool sizes.
+
+---
+
+### 13.5 LM Studio HTTP Reranker (INVESTIGATED — NOT VIABLE FOR Qwen3)
+
+**Idea:** Use LM Studio's OpenAI-compatible API (`/v1/completions`, `/v1/chat/completions`) to offload Qwen3-Reranker inference. This would free VRAM and allow GGUF Q8_0 quantization.
+
+**Root cause of failure:** Qwen3-Reranker requires two things the API cannot provide:
+1. **Direct logit access** — the model scores by reading `P(yes)` vs `P(no)` at position -1 without generating. HTTP APIs generate text; logprobs returned as `null` by LM Studio.
+2. **Special token handling** — `<|im_start|>` tokens must be tokenized as special tokens, not text. `/v1/completions` passes them as raw text → model behavior degrades. The skip-think prefix `<think>\n\n</think>\n\n` in chat messages is stripped by LM Studio.
+
+**Symptoms observed:**
+- `logprobs: null` from both `/v1/completions` and `/v1/chat/completions`
+- Without skip-think: model generates Chinese thinking text instead of yes/no
+- With skip-think via assistant prefill: LM Studio strips think tags → model loses reasoning → strong yes-bias (cats document classified as relevant to chess query)
+- Russian text in chat completions rendered as `���` (encoding issue)
+
+**What would work instead:**
+- `llama-cpp-python` directly in-process: full control over tokenization and logit access, same GGUF model. ~2× speedup + -600 MB VRAM vs float16. Requires matching prebuilt CUDA wheel.
+- A SeqCls reranker (BGE/GTE) via HTTP: these output a single relevance logit, no special token tricks needed. But quality is lower (Jina at 278M gives -21% recall).
+
+**Infrastructure note:** The HTTP reranker code was added then removed in this session. Not committed.
+
+---
+
+### 13.6 Latency Status & Remaining Options
+
+**Goal:** ≤500 ms per query. Current: 1027 ms. Gap: ~2× reduction needed.
+
+All "easy" options tested and ruled out:
+- ✗ Early exit (session 2): -11% recall at best
+- ✗ CE top_k=40: -13% recall, no speedup
+- ✗ LM Studio HTTP: model incompatibility
+- ✗ INT8 (bitsandbytes): not applicable to CausalLM
+
+**Remaining viable options (not yet tested):**
+
+| Option | Expected speedup | Risk |
+|---|---|---|
+| `llama-cpp-python` GGUF Q8_0 | ~2× reranker | Integration complexity; two GPU backends |
+| `torch.compile()` on reranker | ~10–20% | Warmup time; PyTorch 2.x only |
+| `max_length=256` (truncation) | ~15–20% | May hurt long documents; needs A/B test |
+| Two-stage CE: Jina pre-filter → Qwen3 top-20 | potentially fast + quality | Complex; needs testing |
+
+**Two-stage idea:** Run Jina (43 ms) on all 62 candidates, keep top-20 with highest Jina score, then run Qwen3 (883 ms → ~240 ms for 20 pairs) only on those. Total ~283 ms. But Jina may miss relevant docs in the tail → same problem as CE early exit.
+
+### 13.7 Updated Priority Roadmap
+
+#### Immediate (next session)
+
+1. **Run full Optuna v5 (200 trials) without interruption** — ~2–3 hours GPU, standalone. Ignore time weight recommendation (artifact).
+2. **Add time-diverse memories to test DB** — unblocks reliable Optuna for `RAG_WEIGHT_TIME`.
+3. **Duplicate memory deduplication** — write-time cosine similarity (sim > 0.92 → update, not insert).
+
+#### Medium Term
+
+4. **`torch.compile()` on Qwen3-Reranker** — low-risk ~10–20% speedup, 2 lines of code.
+5. **`max_length=256` A/B test** — measure recall impact before committing.
+6. **`llama-cpp-python` GGUF** — largest speedup but most integration work.
+
+### 13.8 Run Commands (Updated)
+
+```bash
+cd src/utils/Testing/rag_tester
+
+# Standard baseline (Qwen3x2, 100 cases, all optimal settings)
+"C:/Games/NeuroMita/Venv/Scripts/python.exe" rag_tester_cli.py run \
+  --db Histories/test_qwen3_gpu.db \
+  --scenario fixtures/crazy_scenario_full.json \
+  --suite fixtures/crazy_suite_v4.json \
+  --threshold 0.13 \
+  --overrides '{"RAG_ENABLED":true,"RAG_EMBED_MODEL":"Qwen3-Embedding-0.6B (600M, 2025)","RAG_CROSS_ENCODER_MODEL":"Qwen3-Reranker-0.6B (600M, 2025)","RAG_CROSS_ENCODER_ENABLED":true,"RAG_CROSS_ENCODER_TOP_K":75,"RAG_CROSS_ENCODER_ALPHA":0.68,"RAG_SIM_THRESHOLD":0.13,"RAG_WEIGHT_SIMILARITY":1.27,"RAG_WEIGHT_TIME":0.001,"RAG_WEIGHT_PRIORITY":0.92,"RAG_WEIGHT_ENTITY":0.52,"RAG_WEIGHT_KEYWORDS":1.01,"RAG_COMBINE_MODE":"two_stage","RAG_SEARCH_GRAPH":true}' \
+  --format text \
+  --output results/result_qwen3x2_vN.txt
 ```
