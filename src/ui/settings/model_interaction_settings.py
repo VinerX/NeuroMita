@@ -328,6 +328,39 @@ def _extract_entities_all(gui) -> None:
         eb = get_event_bus()
         from managers.settings_manager import SettingsManager
 
+        # Resolve GRAPH_PROVIDER preset (mirrors GraphController._resolve_preset logic)
+        def _resolve_graph_preset() -> "Optional[int]":
+            try:
+                res = eb.emit_and_wait(
+                    Events.Settings.GET_SETTING,
+                    {"key": "GRAPH_PROVIDER", "default": "Current"},
+                    timeout=1.0,
+                )
+                label = str(res[0] if res else "Current")
+            except Exception:
+                label = "Current"
+            if not label or label in ("Current", "Текущий"):
+                return None
+            try:
+                return int(label)
+            except ValueError:
+                pass
+            try:
+                meta_res = eb.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
+                meta = meta_res[0] if meta_res else None
+                if meta:
+                    for bucket in ("custom", "builtin"):
+                        for pm in (meta.get(bucket) or []):
+                            if getattr(pm, "name", None) == label:
+                                pid = getattr(pm, "id", None)
+                                if isinstance(pid, int):
+                                    return pid
+            except Exception:
+                pass
+            return None
+
+        graph_preset_id = _resolve_graph_preset()
+
         total_processed = 0
         grand_total = 0
 
@@ -402,6 +435,7 @@ Message:
                                 "stream_callback": None,
                                 "message_id": None,
                                 "event_type": "graph_extract",
+                                "preset_id": graph_preset_id,
                             },
                             timeout=30.0,
                         )
