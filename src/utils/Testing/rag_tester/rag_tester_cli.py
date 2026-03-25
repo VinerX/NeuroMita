@@ -134,6 +134,16 @@ def cmd_run(args):
         except Exception as _pf_err:
             print(f"  [pre-flight check failed: {_pf_err}]", file=sys.stderr)
 
+        # Index graph entity embeddings when vector graph search is enabled.
+        if overrides and overrides.get("RAG_GRAPH_VECTOR_SEARCH"):
+            try:
+                from managers.rag.rag_manager import RAGManager
+                _rag_mgr = RAGManager(character_id=scenario.character_id or "RAG_TEST")
+                _n_ge = _rag_mgr.index_graph_entity_embeddings()
+                print(f"  graph entity embeddings indexed: {_n_ge}", file=sys.stderr)
+            except Exception as _ge_err:
+                print(f"  [graph entity embed failed: {_ge_err}]", file=sys.stderr)
+
         print(f"Running {len(suite.cases)} test cases…", file=sys.stderr)
         result = svc.run_batch(
             suite,
