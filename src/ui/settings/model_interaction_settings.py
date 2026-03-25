@@ -324,7 +324,7 @@ def _extract_entities_all(gui) -> None:
         QMessageBox.information(gui, _("Готово", "Done"), _("Нет персонажей.", "No characters."))
         return
 
-    def _do_extract(*, progress_callback=None):
+    def _do_extract(*, progress_callback=None, status_callback=None):
         eb = get_event_bus()
         from managers.settings_manager import SettingsManager
 
@@ -409,6 +409,21 @@ def _extract_entities_all(gui) -> None:
                 if assistant_text:
                     text += f"Character: {assistant_text}\n"
 
+                remaining = grand_total - total_processed
+                if status_callback:
+                    try:
+                        status_callback(_(
+                            f"[{cid}] История • {total_processed + 1}/{grand_total} | Осталось: {remaining}",
+                            f"[{cid}] History • {total_processed + 1}/{grand_total} | Remaining: {remaining}",
+                        ))
+                    except Exception:
+                        pass
+                if progress_callback:
+                    try:
+                        progress_callback(total_processed, grand_total)
+                    except Exception:
+                        pass
+
                 if text.strip():
                     # Use LLM for extraction via event
                     prompt = f"""Extract entities and relations from this dialogue message.
@@ -448,15 +463,11 @@ Message:
 
                 total_processed += 1
                 i += 1
-                if progress_callback and total_processed % 5 == 0:
-                    try:
-                        progress_callback(total_processed, grand_total)
-                    except Exception:
-                        pass
 
         return total_processed
 
     worker = TaskWorker(_do_extract, use_progress=True)
+    worker._kwargs["status_callback"] = worker.status_signal.emit
 
     progress = QProgressDialog(
         _("Извлечение сущностей...", "Extracting entities..."),
@@ -489,6 +500,7 @@ Message:
         QMessageBox.critical(gui, _("Ошибка", "Error"), str(msg))
 
     worker.progress_signal.connect(on_progress)
+    worker.status_signal.connect(progress.setLabelText)
     worker.finished_signal.connect(on_finished)
     worker.error_signal.connect(on_error)
     progress.canceled.connect(lambda: worker.requestInterruption())
