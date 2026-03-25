@@ -111,7 +111,11 @@ def cmd_run(args):
 
         # Pre-flight: verify that embeddings were actually stored.
         # If 0 embeddings → embedding model failed to load silently (wrong Python env, missing torch, etc.)
+        # Skip check when vector search is explicitly disabled.
+        _vector_disabled = overrides.get("RAG_VECTOR_SEARCH_ENABLED") is False if overrides else False
         try:
+            if _vector_disabled:
+                raise RuntimeError("vector search disabled — skipping preflight")  # caught below
             from handlers.embedding_presets import resolve_model_settings
             _model_hf = resolve_model_settings().get("hf_name", "")
             from managers.database_manager import DatabaseManager

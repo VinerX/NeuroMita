@@ -62,6 +62,7 @@ class RAGManager:
         self.event_bus = get_event_bus()
         self._history_cols = self.db.get_table_columns("history")
         self._mem_cols = self.db.get_table_columns("memories")
+        self._embed_failed_warned: bool = False  # warn once when embed model unavailable
 
     def _current_model_name(self) -> str:
         """Возвращает HF-имя текущей модели эмбеддингов (разрешает пресет)."""
@@ -733,8 +734,15 @@ class RAGManager:
         retrievers = []
 
         # vector recall (always useful if query_vec exists)
-        if qs.query_vec is not None:
+        if qs.query_vec is not None and cfg.vector_search_enabled:
             retrievers.append(VectorRetriever(rag=self, cfg=cfg))
+        elif cfg.vector_search_enabled and qs.query_vec is None and not self._embed_failed_warned:
+            self._embed_failed_warned = True
+            logger.warning(
+                "[RAG] Embedding model unavailable — falling back to FTS+keyword only. "
+                "Vector search disabled for this session. "
+                "Install torch/transformers or ensure the embedding model is loaded to restore full recall."
+            )
 
         # keyword-only recall (embedding IS NULL candidates)
         # In two_stage we still allow it for fallback-to-union when vector set is empty.

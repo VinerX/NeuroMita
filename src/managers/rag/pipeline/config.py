@@ -128,6 +128,9 @@ class RAGConfig:
     # union|vector_only|intersect|two_stage
     combine_mode: str = "union"
 
+    # Disable vector retrieval entirely (FTS+keyword-only mode)
+    vector_search_enabled: bool = True
+
     # vector candidate cap used by some combiners (vector_only/two_stage)
     vector_top_k: int = 0  # 0 = no cap
 
@@ -226,6 +229,7 @@ class RAGConfig:
 
         # --- NEW settings (safe defaults) ---
         cfg.combine_mode = str(SettingsManager.get("RAG_COMBINE_MODE", "union") or "union").strip().lower()
+        cfg.vector_search_enabled = _b(SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", True), True)
         cfg.vector_top_k = _i(SettingsManager.get("RAG_VECTOR_TOP_K", 0), 0)
 
         cfg.intersect_min_methods = _i(SettingsManager.get("RAG_INTERSECT_MIN_METHODS", 2), 2)
