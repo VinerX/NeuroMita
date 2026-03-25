@@ -26,8 +26,19 @@ class GraphRetriever:
         if self.gs is None:
             return []
 
-        # Match keywords against entity names.
-        matched_names = self._match_entities(qs.keywords)
+        # Vector search: embed query vs entity name embeddings.
+        vec_names: List[str] = []
+        if self.cfg.graph_vector_search and qs.query_vec is not None:
+            try:
+                vec_names = self.gs.find_by_embedding(qs.query_vec, threshold=0.55, top_k=10)
+            except Exception as e:
+                logger.debug(f"GraphRetriever: vector search failed: {e}")
+
+        # Keyword match (always active as fallback / additive).
+        kw_names = self._match_entities(qs.keywords)
+
+        matched_names = list(set(vec_names) | set(kw_names))
+
         # Store matched entities in QueryState for EntityEnricher to use.
         if matched_names:
             qs.matched_entities = qs.matched_entities | set(matched_names)

@@ -571,6 +571,35 @@ class RAGManager:
             logger.info(f"RAGManager: indexed {updated} sentence embeddings (model={model})")
         return updated
 
+    def index_graph_entity_embeddings(self) -> int:
+        """Embed entity names that have no vector yet. Returns count embedded."""
+        try:
+            from managers.rag.graph.graph_store import GraphStore
+            gs = GraphStore(self.db, self.character_id)
+            entities = gs.get_entities_without_embeddings()
+            if not entities:
+                return 0
+            model = self._current_model_name()
+            names = [e["name"] for e in entities]
+            vecs = self._get_embeddings(names)
+            if not vecs:
+                return 0
+            count = 0
+            for ent, vec in zip(entities, vecs):
+                if vec is not None:
+                    gs.store_entity_embedding(
+                        ent["id"],
+                        vec.astype(np.float32).tobytes(),
+                        model_name=model,
+                    )
+                    count += 1
+            if count:
+                logger.info(f"RAGManager: embedded {count} graph entities (model={model})")
+            return count
+        except Exception as e:
+            logger.warning(f"RAGManager: index_graph_entity_embeddings failed: {e}")
+            return 0
+
     def update_memory_embedding(self, eternal_id: int, text: str):
         """Создает и сохраняет эмбеддинг для воспоминания (без падений, RAG опционален)."""
         try:
@@ -955,6 +984,10 @@ class RAGManager:
             # --- Sentence-level indexing pass (when RAG_SENTENCE_LEVEL=True) ---
             if SettingsManager.get("RAG_SENTENCE_LEVEL", False):
                 updated_count += self._index_sentences_missing(cursor, conn, model, batch_size)
+
+            # --- Graph entity embedding pass (when graph vector search enabled) ---
+            if SettingsManager.get("RAG_GRAPH_VECTOR_SEARCH", False):
+                self.index_graph_entity_embeddings()
 
             # Invalidate FAISS cache so next query rebuilds from fresh embeddings
             if updated_count > 0:

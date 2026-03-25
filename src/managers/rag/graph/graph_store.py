@@ -2,16 +2,21 @@
 SQLite-backed graph storage for entity-relation triples.
 
 Tables:
-    graph_entities  — distinct entities (person, place, thing, concept)
-    graph_relations — subject → predicate → object triples
+    graph_entities          — distinct entities (person, place, thing, concept)
+    graph_relations         — subject → predicate → object triples
+    graph_entity_aliases    — surface forms / synonyms for deduplication
+    graph_entity_embeddings — float32 embeddings for vector entity search
 
 All writes use the shared DatabaseManager singleton (WAL, busy_timeout).
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+
+import numpy as np
 
 from main_logger import logger
 
@@ -54,6 +59,21 @@ class GraphStore:
                     created_at        TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS graph_entity_aliases (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_id   INTEGER NOT NULL REFERENCES graph_entities(id) ON DELETE CASCADE,
+                    surface     TEXT    NOT NULL,
+                    language    TEXT    DEFAULT 'auto',
+                    UNIQUE(entity_id, surface)
+                );
+
+                CREATE TABLE IF NOT EXISTS graph_entity_embeddings (
+                    entity_id   INTEGER PRIMARY KEY REFERENCES graph_entities(id) ON DELETE CASCADE,
+                    model_name  TEXT    NOT NULL DEFAULT '',
+                    embedding   BLOB    NOT NULL,
+                    updated_at  TEXT
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_ge_char_name
                     ON graph_entities(character_id, name);
                 CREATE INDEX IF NOT EXISTS idx_gr_char
@@ -62,9 +82,22 @@ class GraphStore:
                     ON graph_relations(subject_id);
                 CREATE INDEX IF NOT EXISTS idx_gr_object
                     ON graph_relations(object_id);
+                CREATE INDEX IF NOT EXISTS idx_gea_surface
+                    ON graph_entity_aliases(surface);
                 """
             )
             conn.commit()
+
+    # ------------------------------------------------------------------
+    # Normalization
+    # ------------------------------------------------------------------
+    @staticmethod
+    def normalize_name(name: str) -> str:
+        """Lowercase, strip whitespace and punctuation (keep hyphens/apostrophes)."""
+        name = name.strip().lower()
+        name = re.sub(r"[^\w\s\-']", " ", name)
+        name = re.sub(r"\s+", " ", name).strip()
+        return name
 
     # ------------------------------------------------------------------
     # Entities
@@ -78,7 +111,7 @@ class GraphStore:
     ) -> int:
         """Insert or update an entity.  Returns the entity id."""
         now = datetime.now().isoformat(timespec="seconds")
-        normalized = name.strip().lower()
+        normalized = self.normalize_name(name)
         if not normalized:
             raise ValueError("Entity name must not be empty")
 
@@ -116,6 +149,86 @@ class GraphStore:
                     conn.close()
                 except Exception:
                     pass
+
+    def add_alias(self, entity_id: int, surface: str, language: str = "auto") -> None:
+        """Register a surface form as alias for an existing entity."""
+        surface = self.normalize_name(surface)
+        if not surface:
+            return
+        with self.db.connection() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO graph_entity_aliases (entity_id, surface, language) VALUES (?,?,?)",
+                (entity_id, surface, language),
+            )
+            conn.commit()
+
+    def find_by_alias(self, surface: str) -> Optional[int]:
+        """Return entity_id if surface form is a known alias, else None."""
+        surface = self.normalize_name(surface)
+        with self.db.connection() as conn:
+            row = conn.execute(
+                """SELECT e.id FROM graph_entity_aliases a
+                   JOIN graph_entities e ON a.entity_id = e.id
+                   WHERE a.surface = ? AND e.character_id = ?""",
+                (surface, self.character_id),
+            ).fetchone()
+        return int(row[0]) if row else None
+
+    def store_entity_embedding(
+        self, entity_id: int, embedding: bytes, model_name: str = ""
+    ) -> None:
+        """Store or replace embedding for an entity."""
+        now = datetime.now().isoformat(timespec="seconds")
+        with self.db.connection() as conn:
+            conn.execute(
+                """INSERT INTO graph_entity_embeddings (entity_id, model_name, embedding, updated_at)
+                   VALUES (?,?,?,?)
+                   ON CONFLICT(entity_id) DO UPDATE SET
+                       embedding=excluded.embedding,
+                       model_name=excluded.model_name,
+                       updated_at=excluded.updated_at""",
+                (entity_id, model_name, embedding, now),
+            )
+            conn.commit()
+
+    def get_entities_without_embeddings(self) -> List[Dict]:
+        """Return entities that have no embedding yet."""
+        with self.db.connection() as conn:
+            cur = conn.execute(
+                """SELECT ge.id, ge.name FROM graph_entities ge
+                   LEFT JOIN graph_entity_embeddings gee ON gee.entity_id = ge.id
+                   WHERE ge.character_id = ? AND gee.entity_id IS NULL""",
+                (self.character_id,),
+            )
+            return [{"id": r[0], "name": r[1]} for r in cur.fetchall()]
+
+    def find_by_embedding(
+        self, query_vec, threshold: float = 0.6, top_k: int = 10
+    ) -> List[str]:
+        """Vector search: return entity names with cosine similarity >= threshold."""
+        with self.db.connection() as conn:
+            rows = conn.execute(
+                """SELECT ge.name, gee.embedding
+                   FROM graph_entity_embeddings gee
+                   JOIN graph_entities ge ON gee.entity_id = ge.id
+                   WHERE ge.character_id = ?""",
+                (self.character_id,),
+            ).fetchall()
+        if not rows:
+            return []
+
+        results: List[Tuple[str, float]] = []
+        for name, emb_bytes in rows:
+            try:
+                emb = np.frombuffer(emb_bytes, dtype=np.float32)
+                sim = float(np.dot(query_vec, emb))
+                if sim >= threshold:
+                    results.append((name, sim))
+            except Exception:
+                continue
+
+        results.sort(key=lambda x: -x[1])
+        return [n for n, _ in results[:top_k]]
 
     # ------------------------------------------------------------------
     # Relations

@@ -88,6 +88,7 @@ class RAGConfig:
     search_memory: bool = True
     search_history: bool = True
     search_graph: bool = False
+    graph_vector_search: bool = False
     # guaranteed graph slots: at least N graph triples are included regardless
     # of their rank (0 = disabled, compete on equal terms).
     graph_min_results: int = 0
@@ -188,6 +189,7 @@ class RAGConfig:
         cfg.search_memory = _b(SettingsManager.get("RAG_SEARCH_MEMORY", True), True)
         cfg.search_history = _b(SettingsManager.get("RAG_SEARCH_HISTORY", True), True)
         cfg.search_graph = _b(SettingsManager.get("RAG_SEARCH_GRAPH", False), False)
+        cfg.graph_vector_search = _b(SettingsManager.get("RAG_GRAPH_VECTOR_SEARCH", False), False)
         cfg.graph_min_results = _i(SettingsManager.get("RAG_GRAPH_MIN_RESULTS", 0), 0)
 
         cfg.kw_enabled = _b(SettingsManager.get("RAG_KEYWORD_SEARCH", True), True)
@@ -292,6 +294,7 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_SEARCH_MEMORY": True,
     "RAG_SEARCH_HISTORY": True,
     "RAG_SEARCH_GRAPH": False,
+    "RAG_GRAPH_VECTOR_SEARCH": False,
     "RAG_KEYWORD_SEARCH": True,
     "RAG_LEMMATIZATION": True,
     "RAG_KEYWORDS_MAX_TERMS": 8,
