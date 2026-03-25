@@ -306,32 +306,46 @@ def _refresh_embed_status(gui) -> None:
         pass
 
 
-def _extract_entities_all(gui) -> None:
-    """Run entity extraction for all history messages via GraphController."""
+def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> None:
+    """Run entity extraction. mode='current'|'all'. skip_existing skips already-processed messages."""
     from managers.database_manager import DatabaseManager
     from managers.rag.graph.graph_store import GraphStore
     from managers.rag.graph.entity_extractor import parse_extraction_response, store_extraction
     from ui.task_worker import TaskWorker
 
     db = DatabaseManager()
-    conn = db.get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT DISTINCT character_id FROM history")
-    cids = [r[0] for r in cur.fetchall() if r[0]]
-    conn.close()
+    eb = get_event_bus()
 
-    if not cids:
-        QMessageBox.information(gui, _("Готово", "Done"), _("Нет персонажей.", "No characters."))
-        return
+    # Resolve character IDs on the main thread
+    if mode == "current":
+        try:
+            res = eb.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+            profile = res[0] if res else {}
+            current_cid = (profile or {}).get("character_id", "")
+        except Exception:
+            current_cid = ""
+        if not current_cid:
+            QMessageBox.warning(gui, _("Нет персонажа", "No character"),
+                                _("Текущий персонаж не выбран.", "No current character selected."))
+            return
+        cids = [current_cid]
+    else:
+        conn = db.get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT character_id FROM history")
+        cids = [r[0] for r in cur.fetchall() if r[0]]
+        conn.close()
+        if not cids:
+            QMessageBox.information(gui, _("Готово", "Done"), _("Нет персонажей.", "No characters."))
+            return
 
     def _do_extract(*, progress_callback=None, status_callback=None):
-        eb = get_event_bus()
-        from managers.settings_manager import SettingsManager
+        eb2 = get_event_bus()
 
         # Resolve GRAPH_PROVIDER preset (mirrors GraphController._resolve_preset logic)
-        def _resolve_graph_preset() -> "Optional[int]":
+        def _resolve_graph_preset():
             try:
-                res = eb.emit_and_wait(
+                res = eb2.emit_and_wait(
                     Events.Settings.GET_SETTING,
                     {"key": "GRAPH_PROVIDER", "default": "Current"},
                     timeout=1.0,
@@ -346,7 +360,7 @@ def _extract_entities_all(gui) -> None:
             except ValueError:
                 pass
             try:
-                meta_res = eb.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
+                meta_res = eb2.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
                 meta = meta_res[0] if meta_res else None
                 if meta:
                     for bucket in ("custom", "builtin"):
@@ -362,6 +376,7 @@ def _extract_entities_all(gui) -> None:
         graph_preset_id = _resolve_graph_preset()
 
         total_processed = 0
+        total_skipped = 0
         grand_total = 0
 
         # Count total messages
@@ -409,23 +424,42 @@ def _extract_entities_all(gui) -> None:
                 if assistant_text:
                     text += f"Character: {assistant_text}\n"
 
-                remaining = grand_total - total_processed
+                done_so_far = total_processed + total_skipped
+                remaining = grand_total - done_so_far
+                skip_label = f" (пропущено: {total_skipped})" if total_skipped else ""
                 if status_callback:
                     try:
                         status_callback(_(
-                            f"[{cid}] История • {total_processed + 1}/{grand_total} | Осталось: {remaining}",
-                            f"[{cid}] History • {total_processed + 1}/{grand_total} | Remaining: {remaining}",
+                            f"[{cid}] История • {done_so_far + 1}/{grand_total}{skip_label} | Осталось: {remaining}",
+                            f"[{cid}] History • {done_so_far + 1}/{grand_total}{skip_label} | Remaining: {remaining}",
                         ))
                     except Exception:
                         pass
                 if progress_callback:
                     try:
-                        progress_callback(total_processed, grand_total)
+                        progress_callback(done_so_far, grand_total)
                     except Exception:
                         pass
 
                 if text.strip():
-                    # Use LLM for extraction via event
+                    # Skip if already processed
+                    if skip_existing:
+                        try:
+                            c2 = db.get_connection()
+                            cur3 = c2.cursor()
+                            cur3.execute(
+                                "SELECT COUNT(*) FROM graph_relations WHERE source_message_id=? AND character_id=?",
+                                (hid, cid),
+                            )
+                            already_done = (cur3.fetchone()[0] or 0) > 0
+                            c2.close()
+                        except Exception:
+                            already_done = False
+                        if already_done:
+                            total_skipped += 1
+                            i += 1
+                            continue
+
                     prompt = f"""Extract entities and relations from this dialogue message.
 Output ONLY valid JSON (no commentary):
 {{"entities":[{{"name":"...","type":"person|place|thing|concept"}}],
@@ -441,7 +475,7 @@ Message:
 {text.strip()}"""
 
                     try:
-                        res = eb.emit_and_wait(
+                        res = eb2.emit_and_wait(
                             Events.Model.GENERATE_RESPONSE,
                             {
                                 "user_input": "",
@@ -464,7 +498,7 @@ Message:
                 total_processed += 1
                 i += 1
 
-        return total_processed
+        return total_processed, total_skipped
 
     worker = TaskWorker(_do_extract, use_progress=True)
     worker._kwargs["status_callback"] = worker.status_signal.emit
@@ -473,7 +507,7 @@ Message:
         _("Извлечение сущностей...", "Extracting entities..."),
         _("Отмена", "Cancel"), 0, 100, gui,
     )
-    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setWindowModality(Qt.WindowModality.NonModal)
     progress.setMinimumDuration(0)
     progress.setValue(0)
 
@@ -484,15 +518,18 @@ Message:
         except Exception:
             pass
 
-    def on_finished(count):
+    def on_finished(result):
         progress.close()
+        processed, skipped = result if isinstance(result, tuple) else (result or 0, 0)
         from managers.settings_manager import SettingsManager
         if SettingsManager.get("GRAPH_GC_AUTO", False):
             _run_entity_gc(gui)
         else:
             QMessageBox.information(
                 gui, _("Готово", "Done"),
-                _("Обработано сообщений: {n}", "Messages processed: {n}").format(n=int(count or 0)),
+                _("Обработано: {n}, пропущено: {s}", "Processed: {n}, skipped: {s}").format(
+                    n=int(processed or 0), s=int(skipped or 0),
+                ),
             )
 
     def on_error(msg):
@@ -1002,8 +1039,16 @@ def setup_model_interaction_controls(self, parent):
                        'Removes garbage entities, duplicates, merges synonyms.')},
 
         {'type': 'button_group', 'buttons': [
-            {'label': _('Извлечь сущности из истории', 'Extract entities from history'),
-             'command': lambda: _extract_entities_all(self)},
+            {'label': _('Текущий (только новые)', 'Current char (new only)'),
+             'command': lambda: _extract_entities(self, mode='current', skip_existing=True)},
+            {'label': _('Все (только новые)', 'All chars (new only)'),
+             'command': lambda: _extract_entities(self, mode='all', skip_existing=True)},
+        ]},
+        {'type': 'button_group', 'buttons': [
+            {'label': _('Текущий (заново)', 'Current char (redo all)'),
+             'command': lambda: _extract_entities(self, mode='current', skip_existing=False)},
+            {'label': _('Все (заново)', 'All chars (redo all)'),
+             'command': lambda: _extract_entities(self, mode='all', skip_existing=False)},
         ]},
 
         {'type': 'button_group', 'buttons': [
