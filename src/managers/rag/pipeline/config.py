@@ -147,6 +147,16 @@ class RAGConfig:
     # 1.0 = pure CE (old behaviour); 0.0 = ignore CE entirely.
     # Values 0.5-0.9 protect high-linear-score docs from being killed by CE errors.
     cross_encoder_alpha: float = 1.0
+    # CE performance optimizations
+    # Adaptive top_k: effective_top_k = max(10, min(top_k, n_candidates * ratio))
+    # Ensures CE never sees more than a fraction of the pool (faster for large pools)
+    # and fewer pairs for small pools (no waste).  Set to 1.0 to disable.
+    ce_top_k_ratio: float = 0.4
+    # Early exit: stop scoring mini-batches once best CE score exceeds this threshold.
+    # Unscored candidates keep their linear scores.  Set > 1.0 to disable (default).
+    ce_early_exit_score: float = 1.1
+    # INT8 quantization via bitsandbytes (seqcls models only, requires GPU + bitsandbytes).
+    ce_int8: bool = False
 
     # Reciprocal Rank Fusion: replaces weighted-sum scoring with rank-based fusion.
     # When enabled, each retriever bucket contributes 1/(rrf_k + rank) to the candidate score.
@@ -228,6 +238,9 @@ class RAGConfig:
         cfg.cross_encoder_model = resolve_ce_model()
         cfg.cross_encoder_top_k = _i(SettingsManager.get("RAG_CROSS_ENCODER_TOP_K", 30), 30)
         cfg.cross_encoder_alpha = _f(SettingsManager.get("RAG_CROSS_ENCODER_ALPHA", 1.0), 1.0)
+        cfg.ce_top_k_ratio = _f(SettingsManager.get("RAG_CE_TOP_K_RATIO", 0.4), 0.4)
+        cfg.ce_early_exit_score = _f(SettingsManager.get("RAG_CE_EARLY_EXIT_SCORE", 1.1), 1.1)
+        cfg.ce_int8 = _b(SettingsManager.get("RAG_CE_INT8", False), False)
 
         cfg.use_rrf = _b(SettingsManager.get("RAG_USE_RRF", False), False)
         cfg.rrf_k = _i(SettingsManager.get("RAG_RRF_K", 60), 60)
@@ -267,6 +280,8 @@ class RAGConfig:
         self.graph_min_results = max(0, self.graph_min_results)
         self.cross_encoder_top_k = max(1, self.cross_encoder_top_k)
         self.cross_encoder_alpha = max(0.0, min(1.0, self.cross_encoder_alpha))
+        self.ce_top_k_ratio = max(0.05, min(1.0, self.ce_top_k_ratio))
+        self.ce_early_exit_score = max(0.5, self.ce_early_exit_score)
         self.rrf_k = max(1, self.rrf_k)
         self.sentence_min_len = max(1, self.sentence_min_len)
 
@@ -320,6 +335,9 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_CROSS_ENCODER_MODEL_CUSTOM": "",
     "RAG_CROSS_ENCODER_TOP_K": 30,
     "RAG_CROSS_ENCODER_ALPHA": 1.0,
+    "RAG_CE_TOP_K_RATIO": 0.4,
+    "RAG_CE_EARLY_EXIT_SCORE": 1.1,
+    "RAG_CE_INT8": False,
     "RAG_USE_RRF": False,
     "RAG_RRF_K": 60,
     "RAG_PREFILTER_ACTORS": False,

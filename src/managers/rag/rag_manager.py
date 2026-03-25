@@ -814,8 +814,13 @@ class RAGManager:
             try:
                 from managers.rag.pipeline.cross_encoder import CrossEncoderReranker
                 ce = CrossEncoderReranker.get(cfg.cross_encoder_model)
-                ce.rerank(qs.user_query, cands, top_k=cfg.cross_encoder_top_k,
-                          alpha=cfg.cross_encoder_alpha)
+                # Adaptive top_k: cover a fraction of the actual pool, bounded by config max.
+                # With ratio=0.4: pool=60 → 24 pairs; pool=300 → 120 pairs (up to max).
+                effective_top_k = max(10, min(cfg.cross_encoder_top_k,
+                                              int(len(cands) * cfg.ce_top_k_ratio)))
+                ce.rerank(qs.user_query, cands, top_k=effective_top_k,
+                          alpha=cfg.cross_encoder_alpha,
+                          early_exit_score=cfg.ce_early_exit_score)
                 cands.sort(key=lambda c: float(c.score or 0.0), reverse=True)
             except Exception as _ce_err:
                 logger.debug(f"[RAG][cross_encoder] skipped: {_ce_err}", exc_info=True)

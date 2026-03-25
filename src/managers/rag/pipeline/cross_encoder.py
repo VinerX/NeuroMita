@@ -86,8 +86,16 @@ class CrossEncoderReranker:
                     f"(lm_mode={self._is_lm}, cache: {cache_dir}) ..."
                 )
                 dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-
                 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+                # Check if INT8 quantization is requested (seqcls only, requires GPU).
+                use_int8 = False
+                if not self._is_lm and torch.cuda.is_available():
+                    try:
+                        _int8_val = str(SettingsManager.get("RAG_CE_INT8", False) or "")
+                        use_int8 = _int8_val.strip().lower() in ("1", "true", "yes", "on")
+                    except Exception:
+                        pass
 
                 if self._is_lm:
                     from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -105,6 +113,30 @@ class CrossEncoderReranker:
                         f"[CrossEncoder] LM reranker ready: "
                         f"yes={self._token_true_id}, no={self._token_false_id}"
                     )
+                    self._model.to(device)
+                    self._device = device
+                elif use_int8:
+                    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+                    self._tokenizer = AutoTokenizer.from_pretrained(
+                        self.model_name, cache_dir=cache_dir, token=token,
+                        trust_remote_code=True,
+                    )
+                    try:
+                        import bitsandbytes  # noqa: F401
+                        self._model = AutoModelForSequenceClassification.from_pretrained(
+                            self.model_name, cache_dir=cache_dir, token=token,
+                            trust_remote_code=True, load_in_8bit=True, device_map="auto",
+                        )
+                        self._device = torch.device("cuda")
+                        logger.info("[CrossEncoder] INT8 quantization active (bitsandbytes).")
+                    except ImportError:
+                        logger.warning("[CrossEncoder] bitsandbytes not installed, falling back to float16.")
+                        self._model = AutoModelForSequenceClassification.from_pretrained(
+                            self.model_name, cache_dir=cache_dir, token=token,
+                            trust_remote_code=True, torch_dtype=dtype,
+                        )
+                        self._model.to(device)
+                        self._device = device
                 else:
                     from transformers import AutoTokenizer, AutoModelForSequenceClassification
                     self._tokenizer = AutoTokenizer.from_pretrained(
@@ -115,9 +147,9 @@ class CrossEncoderReranker:
                         self.model_name, cache_dir=cache_dir, token=token,
                         trust_remote_code=True, torch_dtype=dtype,
                     )
+                    self._model.to(device)
+                    self._device = device
 
-                self._model.to(device)
-                self._device = device
                 self._model.eval()
                 logger.info(f"[CrossEncoder] Model '{self.model_name}' ready (device={device}).")
                 return True
@@ -139,7 +171,7 @@ class CrossEncoderReranker:
     _BATCH_SIZE_LM: int = 16
     _BATCH_SIZE_SEQCLS: int = 32
 
-    def _score_seqcls(self, query: str, cands: list) -> list:
+    def _score_seqcls(self, query: str, cands: list, early_exit_score: float = 1.1) -> list:
         """Score with AutoModelForSequenceClassification (standard cross-encoder)."""
         import torch
         pairs = [(query, str(c.content or "")) for c in cands]
@@ -161,9 +193,19 @@ class CrossEncoderReranker:
             else:
                 raw = logits[:, -1]
             all_scores.extend(raw.tolist())
+            if (early_exit_score <= 1.0
+                    and len(all_scores) >= self._BATCH_SIZE_SEQCLS
+                    and max(all_scores) >= early_exit_score):
+                skipped = len(pairs) - len(all_scores)
+                if skipped > 0:
+                    logger.debug(
+                        f"[CrossEncoder] Early exit (seqcls): best={max(all_scores):.3f}"
+                        f" >= {early_exit_score}, skipped {skipped} pairs"
+                    )
+                break
         return all_scores
 
-    def _score_lm(self, query: str, cands: list) -> list:
+    def _score_lm(self, query: str, cands: list, early_exit_score: float = 1.1) -> list:
         """Score with LM-based reranker (Qwen3-Reranker style yes/no tokens)."""
         import torch
 
@@ -201,16 +243,31 @@ class CrossEncoderReranker:
             pair = torch.stack([last_logits[:, false_id], last_logits[:, true_id]], dim=-1)
             probs = torch.softmax(pair, dim=-1)
             all_probs.extend(probs[:, 1].tolist())
+            if (early_exit_score <= 1.0
+                    and len(all_probs) >= self._BATCH_SIZE_LM
+                    and max(all_probs) >= early_exit_score):
+                skipped = len(input_texts) - len(all_probs)
+                if skipped > 0:
+                    logger.debug(
+                        f"[CrossEncoder] Early exit (lm): best={max(all_probs):.3f}"
+                        f" >= {early_exit_score}, skipped {skipped} pairs"
+                    )
+                break
 
         return all_probs
 
     # ------------------------------------------------------------------ #
-    def rerank(self, query: str, cands: list, top_k: int = 20, alpha: float = 1.0) -> None:
+    def rerank(self, query: str, cands: list, top_k: int = 20, alpha: float = 1.0,
+               early_exit_score: float = 1.1) -> None:
         """Re-score cands[:top_k] in-place with cross-encoder logits.
 
         final_score = alpha * CE_score + (1 - alpha) * linear_score
         alpha=1.0 → pure CE (old behaviour).
         alpha<1.0 → protects high-linear-score docs from CE errors.
+
+        early_exit_score: stop scoring mini-batches once best CE score exceeds
+        this value.  Candidates not yet scored keep their original linear scores.
+        Set > 1.0 (default 1.1) to disable.
 
         After this call the caller should re-sort cands by score.
         Candidates beyond top_k are left untouched (their original linear
@@ -225,14 +282,19 @@ class CrossEncoderReranker:
 
         try:
             if self._is_lm:
-                scores = self._score_lm(query, to_score)
+                scores = self._score_lm(query, to_score, early_exit_score=early_exit_score)
             else:
-                scores = self._score_seqcls(query, to_score)
+                scores = self._score_seqcls(query, to_score, early_exit_score=early_exit_score)
+
+            # scores may be shorter than to_score when early exit fired.
+            # Candidates not covered keep their original linear scores (untouched).
+            n_scored = len(scores)
+            scored_cands = to_score[:n_scored]
 
             # Pre-compute normalized linear scores (MinMax → 0..1) for alpha-mixing.
             # This ensures CE (0..1) and linear (arbitrary scale) are comparable.
             if alpha < 1.0:
-                raw_linear = [float((c.debug or {}).get("final", c.score)) for c in to_score]
+                raw_linear = [float((c.debug or {}).get("final", c.score)) for c in scored_cands]
                 ls_min = min(raw_linear)
                 ls_max = max(raw_linear)
                 ls_range = ls_max - ls_min
@@ -244,14 +306,14 @@ class CrossEncoderReranker:
                 norm_linear = None
 
             # Determine position changes before modifying scores
-            post_order = sorted(range(len(to_score)), key=lambda i: scores[i], reverse=True)
+            post_order = sorted(range(n_scored), key=lambda i: scores[i], reverse=True)
             moves = []
             for new_pos, old_pos in enumerate(post_order):
                 if old_pos != new_pos:
-                    c = to_score[old_pos]
+                    c = scored_cands[old_pos]
                     moves.append(f"{c.source}:{c.id} {old_pos+1}→{new_pos+1}")
 
-            for i, (c, s) in enumerate(zip(to_score, scores)):
+            for i, (c, s) in enumerate(zip(scored_cands, scores)):
                 ce_score = float(s)
                 if alpha < 1.0:
                     mixed = alpha * ce_score + (1.0 - alpha) * norm_linear[i]
@@ -262,15 +324,19 @@ class CrossEncoderReranker:
                     c.debug = {}
                 c.debug["cross_encoder"] = ce_score
 
+            early_exit_note = (
+                f" [early_exit: scored {n_scored}/{len(to_score)}]"
+                if n_scored < len(to_score) else ""
+            )
             if moves:
                 logger.info(
-                    f"[CrossEncoder] Re-ranked {len(to_score)}/{len(cands)} | "
+                    f"[CrossEncoder] Re-ranked {n_scored}/{len(cands)}{early_exit_note} | "
                     f"top={max(scores):.3f} | moves: " + ", ".join(moves[:10])
                     + (f" (+{len(moves)-10} more)" if len(moves) > 10 else "")
                 )
             else:
                 logger.info(
-                    f"[CrossEncoder] Re-ranked {len(to_score)}/{len(cands)} | "
+                    f"[CrossEncoder] Re-ranked {n_scored}/{len(cands)}{early_exit_note} | "
                     f"top={max(scores):.3f} | no position changes"
                 )
         except Exception as exc:
