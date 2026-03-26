@@ -25,7 +25,7 @@ def _load_graph_inline_instruction(character) -> str:
 
     Resolution order:
     1. Character's Structural/graph_inline_instruction.txt
-    2. Prompts/Common/graph_inline_instruction.txt
+    2. Prompts/System/graph_inline_instruction.txt
     3. Hardcoded default.
     """
     base_path = getattr(character, "base_data_path", None)
@@ -44,7 +44,7 @@ def _load_graph_inline_instruction(character) -> str:
         if tmpl:
             return tmpl
         prompts_root = os.path.normpath(os.path.join(base_path, "..", ".."))
-        tmpl = _try(os.path.join(prompts_root, "Common", "graph_inline_instruction.txt"))
+        tmpl = _try(os.path.join(prompts_root, "System", "graph_inline_instruction.txt"))
         if tmpl:
             return tmpl
 

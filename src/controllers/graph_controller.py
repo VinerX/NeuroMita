@@ -427,7 +427,7 @@ class GraphController:
         Resolution order:
         1. GRAPH_EXTRACTION_PROMPT setting (custom override).
         2. Character's prompt-set Structural/graph_extraction_prompt.txt.
-        3. Prompts/Common/graph_extraction_prompt.txt (shared base for prompters).
+        3. Prompts/System/graph_extraction_prompt.txt (shared base for prompters).
         4. Hardcoded _DEFAULT_EXTRACTION_PROMPT.
         """
         # 1. Custom setting override.
@@ -451,13 +451,13 @@ class GraphController:
             if tmpl:
                 return tmpl.replace("{text}", text)
 
-        # 3. Shared Common folder (resolved relative to Prompts root).
+        # 3. Shared System folder (resolved relative to Prompts root).
         prompts_root = None
         if base_path:
             # base_data_path is like  .../Prompts/Kind/Default  → go up 2 levels
             prompts_root = os.path.normpath(os.path.join(base_path, "..", ".."))
         if prompts_root:
-            tmpl = _try_load(os.path.join(prompts_root, "Common", "graph_extraction_prompt.txt"))
+            tmpl = _try_load(os.path.join(prompts_root, "System", "graph_extraction_prompt.txt"))
             if tmpl:
                 return tmpl.replace("{text}", text)
 

@@ -1,4 +1,5 @@
 import os
+import threading
 
 from PyQt6.QtWidgets import (
     QLineEdit, QCheckBox, QComboBox, QMessageBox,
@@ -12,6 +13,9 @@ from core.events import get_event_bus, Events
 from managers.rag.pipeline.config import RAG_DEFAULTS
 from managers.rag.pipeline.config import list_ce_preset_names, CE_PRESETS
 from handlers.embedding_presets import list_preset_names, resolve_model_settings
+
+# Module-level state for the running extraction (survives dialog close).
+_extr_state: dict = {'worker': None, 'stop': None, 'total': 0, 'last_status': ''}
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +347,9 @@ def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> 
             QMessageBox.information(gui, _("Готово", "Done"), _("Нет персонажей.", "No characters."))
             return
 
-    def _do_extract(*, progress_callback=None, status_callback=None):
+    def _do_extract(*, progress_callback=None, status_callback=None, stop_event=None):
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         eb2 = get_event_bus()
 
         def _resolve_graph_preset():
@@ -376,13 +382,41 @@ def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> 
                 pass
             return None
 
+        def _get_workers() -> int:
+            try:
+                res = eb2.emit_and_wait(
+                    Events.Settings.GET_SETTING,
+                    {"key": "GRAPH_EXTRACTION_WORKERS", "default": 1},
+                    timeout=1.0,
+                )
+                return max(1, int(res[0] if res else 1))
+            except Exception:
+                return 1
+
+        def _load_prompt_template() -> str:
+            """Load extraction prompt from Prompts/Common or return hardcoded default."""
+            import os
+            try:
+                # Try Prompts/Common relative to current working dir.
+                for base in ("Prompts", os.path.join("..", "Prompts")):
+                    path = os.path.join(base, "System", "graph_extraction_prompt.txt")
+                    if os.path.isfile(path):
+                        with open(path, "r", encoding="utf-8") as f:
+                            return f.read().strip()
+            except Exception:
+                pass
+            from controllers.graph_controller import _DEFAULT_EXTRACTION_PROMPT
+            return _DEFAULT_EXTRACTION_PROMPT
+
         graph_preset_id = _resolve_graph_preset()
+        n_workers = _get_workers()
+        prompt_template = _load_prompt_template()
 
-        total_processed = 0
         grand_total = 0
+        counter_lock = threading.Lock()
+        total_processed = 0
 
-        # When skip_existing: filter out messages already in graph_processed_messages
-        # OR that already have graph_relations (backward compat with old runs).
+        # When skip_existing: filter out messages already processed.
         _skip_sql = """
             AND h.id NOT IN (
                 SELECT message_id FROM graph_processed_messages WHERE character_id = ?
@@ -392,6 +426,7 @@ def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> 
             )
         """ if skip_existing else ""
 
+        # Count total work.
         for cid in cids:
             params_extra = (cid, cid) if skip_existing else ()
             with db.connection() as c:
@@ -401,6 +436,8 @@ def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> 
                     (cid,) + params_extra,
                 ).fetchone()[0] or 0
 
+        # Build flat list of work items: (cid, gs, hid, text)
+        work_items = []
         for cid in cids:
             gs = GraphStore(db, cid)
             params_extra = (cid, cid) if skip_existing else ()
@@ -415,9 +452,7 @@ def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> 
             i = 0
             while i < len(rows):
                 hid, role, content = rows[i]
-                user_text = ""
-                assistant_text = ""
-
+                user_text = assistant_text = ""
                 if role == "user":
                     user_text = content.strip()
                     if i + 1 < len(rows) and rows[i + 1][1] != "user":
@@ -425,85 +460,150 @@ def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> 
                         i += 1
                 else:
                     assistant_text = content.strip()
-
                 text = ""
                 if user_text:
                     text += f"Player: {user_text}\n"
                 if assistant_text:
                     text += f"Character: {assistant_text}\n"
+                work_items.append((cid, gs, hid, text.strip()))
+                i += 1
 
-                remaining = grand_total - total_processed
+        def _process_item(cid, gs, hid, text):
+            if not text:
+                return
+            if stop_event and stop_event.is_set():
+                return
+            prompt = prompt_template.replace("{text}", text)
+            try:
+                res = eb2.emit_and_wait(
+                    Events.Model.GENERATE_RESPONSE,
+                    {
+                        "user_input": "",
+                        "system_input": prompt,
+                        "image_data": [],
+                        "stream_callback": None,
+                        "message_id": None,
+                        "event_type": "graph_extract",
+                        "preset_id": graph_preset_id,
+                    },
+                    timeout=60.0,
+                )
+                if res and res[0]:
+                    parsed = parse_extraction_response(str(res[0]))
+                    if parsed:
+                        store_extraction(gs, parsed, hid)
+            except Exception:
+                pass
+            try:
+                gs.mark_messages_processed([hid])
+            except Exception:
+                pass
+
+        if n_workers <= 1:
+            for cid, gs, hid, text in work_items:
+                with counter_lock:
+                    idx = total_processed
+                    total_processed += 1
+                remaining = grand_total - idx
                 if status_callback:
                     try:
                         status_callback(_(
-                            f"[{cid}] История • {total_processed + 1}/{grand_total} | Осталось: {remaining}",
-                            f"[{cid}] History • {total_processed + 1}/{grand_total} | Remaining: {remaining}",
+                            f"[{cid}] История • {idx + 1}/{grand_total} | Осталось: {remaining}",
+                            f"[{cid}] History • {idx + 1}/{grand_total} | Remaining: {remaining}",
                         ))
                     except Exception:
                         pass
                 if progress_callback:
                     try:
-                        progress_callback(total_processed, grand_total)
+                        progress_callback(idx, grand_total)
                     except Exception:
                         pass
-
-                if text.strip():
-                    prompt = f"""Extract entities and relations from this dialogue message.
-Output ONLY valid JSON (no commentary):
-{{"entities":[{{"name":"...","type":"person|place|thing|concept"}}],
- "relations":[{{"s":"subject","p":"predicate","o":"object"}}]}}
-
-Rules:
-- Keep entity names short (1-3 words).
-- Use lowercase for names and predicates.
-- Only extract clearly stated facts, not speculation.
-- If nothing meaningful, return {{"entities":[],"relations":[]}}
-
-Message:
-{text.strip()}"""
-
-                    try:
-                        res = eb2.emit_and_wait(
-                            Events.Model.GENERATE_RESPONSE,
-                            {
-                                "user_input": "",
-                                "system_input": prompt,
-                                "image_data": [],
-                                "stream_callback": None,
-                                "message_id": None,
-                                "event_type": "graph_extract",
-                                "preset_id": graph_preset_id,
-                            },
-                            timeout=30.0,
-                        )
-                        if res and res[0]:
-                            parsed = parse_extraction_response(str(res[0]))
-                            if parsed:
-                                store_extraction(gs, parsed, hid)
-                    except Exception:
-                        pass
-
-                    # Mark as processed regardless of result (prevents re-processing empty-result messages)
-                    try:
-                        gs.mark_messages_processed([hid])
-                    except Exception:
-                        pass
-
-                total_processed += 1
-                i += 1
+                _process_item(cid, gs, hid, text)
+        else:
+            futures = {}
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                for item in work_items:
+                    cid, gs, hid, text = item
+                    f = pool.submit(_process_item, cid, gs, hid, text)
+                    futures[f] = cid
+                for f in as_completed(futures):
+                    cid = futures[f]
+                    with counter_lock:
+                        total_processed += 1
+                        idx = total_processed
+                    remaining = grand_total - idx
+                    if status_callback:
+                        try:
+                            status_callback(_(
+                                f"[{cid}] История • {idx}/{grand_total} | Осталось: {remaining} | Воркеры: {n_workers}",
+                                f"[{cid}] History • {idx}/{grand_total} | Remaining: {remaining} | Workers: {n_workers}",
+                            ))
+                        except Exception:
+                            pass
+                    if progress_callback:
+                        try:
+                            progress_callback(idx, grand_total)
+                        except Exception:
+                            pass
 
         return total_processed, 0
 
+    global _extr_state
+
+    # If already running — re-open the progress dialog, do NOT start a second worker.
+    existing_worker = _extr_state.get('worker')
+    if existing_worker and existing_worker.isRunning():
+        _attach_extraction_dialog(gui, existing_worker, _extr_state)
+        return
+
+    stop_event = threading.Event()
     worker = TaskWorker(_do_extract, use_progress=True)
     worker._kwargs["status_callback"] = worker.status_signal.emit
+    worker._kwargs["stop_event"] = stop_event
 
+    _extr_state = {'worker': worker, 'stop': stop_event, 'total': 0, 'last_status': ''}
+
+    def on_status(s):
+        _extr_state['last_status'] = s
+
+    def on_finished(result):
+        _extr_state['worker'] = None
+        processed, skipped = result if isinstance(result, tuple) else (result or 0, 0)
+        from managers.settings_manager import SettingsManager
+        if SettingsManager.get("GRAPH_GC_AUTO", False):
+            _run_entity_gc(gui)
+        else:
+            QMessageBox.information(
+                gui, _("Готово", "Done"),
+                _("Обработано: {n}", "Processed: {n}").format(n=int(processed or 0)),
+            )
+
+    def on_error(msg):
+        _extr_state['worker'] = None
+        QMessageBox.critical(gui, _("Ошибка", "Error"), str(msg))
+
+    worker.status_signal.connect(on_status)
+    worker.finished_signal.connect(on_finished)
+    worker.error_signal.connect(on_error)
+
+    _attach_extraction_dialog(gui, worker, _extr_state)
+    worker.start()
+
+
+def _attach_extraction_dialog(gui, worker, state: dict) -> None:
+    """Create (or re-create) a non-modal progress dialog connected to *worker*."""
     progress = QProgressDialog(
         _("Извлечение сущностей...", "Extracting entities..."),
-        _("Отмена", "Cancel"), 0, 100, gui,
+        _("Остановить", "Stop"), 0, 100, gui,
     )
     progress.setWindowModality(Qt.WindowModality.NonModal)
     progress.setMinimumDuration(0)
-    progress.setValue(0)
+    progress.setWindowTitle(_("Граф: извлечение", "Graph: extraction"))
+
+    # Restore last known status.
+    last = state.get('last_status', '')
+    if last:
+        progress.setLabelText(last)
 
     def on_progress(curr, total):
         try:
@@ -512,33 +612,32 @@ Message:
         except Exception:
             pass
 
-    def on_finished(result):
-        progress.close()
-        processed, skipped = result if isinstance(result, tuple) else (result or 0, 0)
-        from managers.settings_manager import SettingsManager
-        if SettingsManager.get("GRAPH_GC_AUTO", False):
-            _run_entity_gc(gui)
-        else:
-            QMessageBox.information(
-                gui, _("Готово", "Done"),
-                _("Обработано: {n}, пропущено: {s}", "Processed: {n}, skipped: {s}").format(
-                    n=int(processed or 0), s=int(skipped or 0),
-                ),
-            )
+    def on_finished(_result):
+        try:
+            progress.close()
+        except Exception:
+            pass
 
-    def on_error(msg):
+    def on_cancelled():
+        try:
+            progress.close()
+        except Exception:
+            pass
+
+    def on_stop():
+        stop = state.get('stop')
+        if stop:
+            stop.set()
+        worker.requestInterruption()
         progress.close()
-        QMessageBox.critical(gui, _("Ошибка", "Error"), str(msg))
 
     worker.progress_signal.connect(on_progress)
     worker.status_signal.connect(progress.setLabelText)
     worker.finished_signal.connect(on_finished)
-    worker.error_signal.connect(on_error)
-    progress.canceled.connect(lambda: worker.requestInterruption())
+    worker.cancelled_signal.connect(on_cancelled)
+    progress.canceled.connect(on_stop)
 
-    gui._entity_extract_worker = worker
     progress.show()
-    worker.start()
 
 
 def _run_ttl_cleanup(gui) -> None:
@@ -654,6 +753,65 @@ def _run_entity_gc(gui, dry_run: bool = False) -> None:
     gui._entity_gc_worker = worker
     progress.show()
     worker.start()
+
+
+def _delete_all_graph_data(gui) -> None:
+    """Delete all graph entities and relations for all characters after confirmation."""
+    from managers.database_manager import DatabaseManager
+
+    db = DatabaseManager()
+    with db.connection() as conn:
+        entity_count = 0
+        relation_count = 0
+        for tbl, col in (("graph_entities", None), ("graph_relations", None)):
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (tbl,)
+            ).fetchone()
+            if exists:
+                cnt = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+                if tbl == "graph_entities":
+                    entity_count = cnt
+                else:
+                    relation_count = cnt
+
+    if entity_count == 0 and relation_count == 0:
+        QMessageBox.information(
+            gui, _("Граф", "Graph"),
+            _("Граф пуст, удалять нечего.", "Graph is already empty.")
+        )
+        return
+
+    answer = QMessageBox.question(
+        gui,
+        _("Удалить весь граф?", "Delete all graph data?"),
+        _(
+            f"Будет удалено {entity_count} сущностей и {relation_count} связей для всех персонажей.\n"
+            "Это действие необратимо. Продолжить?",
+            f"This will delete {entity_count} entities and {relation_count} relations for all characters.\n"
+            "This action cannot be undone. Continue?"
+        ),
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    if answer != QMessageBox.StandardButton.Yes:
+        return
+
+    with db.connection() as conn:
+        for tbl in ("graph_relations", "graph_entity_aliases", "graph_entities"):
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (tbl,)
+            ).fetchone()
+            if exists:
+                conn.execute(f"DELETE FROM {tbl}")
+        conn.commit()
+
+    QMessageBox.information(
+        gui, _("Готово", "Done"),
+        _(
+            f"Удалено {entity_count} сущностей и {relation_count} связей.",
+            f"Deleted {entity_count} entities and {relation_count} relations."
+        )
+    )
 
 
 def _reset_rag_defaults(gui) -> None:
@@ -880,6 +1038,16 @@ def _build_graph_config(self, hc_provider_names) -> list:
                       'Удаляет мусор, дубли, объединяет синонимы.',
                       'Automatically run entity graph GC after each extraction. '
                       'Removes garbage entities, duplicates, merges synonyms.')},
+        {'label': _('Параллельных воркеров (batch-экстракция)', 'Parallel workers (batch extraction)'),
+         'key': 'GRAPH_EXTRACTION_WORKERS', 'type': 'entry', 'default': 1,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'GRAPH_EXTRACTION_ENABLED',
+         'tooltip': _('Сколько потоков одновременно отправляют запросы при batch-извлечении сущностей. '
+                      '1 = последовательно (по умолчанию). '
+                      'Увеличивай если LM Studio настроен на Parallel Requests > 1 и есть запас VRAM.',
+                      'How many threads send requests concurrently during batch entity extraction. '
+                      '1 = sequential (default). '
+                      'Increase if LM Studio is configured with Parallel Requests > 1 and you have spare VRAM.')},
         {'type': 'button_group', 'buttons': [
             {'label': _('Текущий (только новые)', 'Current char (new only)'),
              'command': lambda: _extract_entities(self, mode='current', skip_existing=True)},
@@ -897,6 +1065,10 @@ def _build_graph_config(self, hc_provider_names) -> list:
              'command': lambda: _run_entity_gc(self)},
             {'label': _('Предпросмотр GC', 'Preview GC'),
              'command': lambda: _run_entity_gc(self, dry_run=True)},
+        ]},
+        {'type': 'button_group', 'buttons': [
+            {'label': _('Удалить весь граф', 'Delete all graph data'),
+             'command': lambda: _delete_all_graph_data(self)},
         ]},
 
         {'label': _('Дедупликация памяти (векторная)', 'Memory deduplication (vector)'), 'type': 'subsection'},
