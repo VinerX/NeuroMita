@@ -1,0 +1,17 @@
+LOG "GetAvailableEmotions: Script started. attitude=" + attitude
+
+SET base_emotions = "none\noff\nsleep\nhalfsleep\ndeactiveEmotion"
+
+IF attitude <= 20 THEN
+    LOG "GetAvailableEmotions: Low attitude. Aggressive/cold emotions."
+    SET specific_emotions = "angry\nsmilestrange\nemptiness\ndiscontent\narrogance\nsuspicion"
+    RETURN base_emotions + specific_emotions
+ELSEIF attitude > 20 AND attitude <= 50 THEN
+    LOG "GetAvailableEmotions: Medium attitude. Neutral/playful emotions."
+    SET specific_emotions = "quest\nsmileteeth\ntrytoque\najar\ncatchQuest\nsmilecringe\nsuspicion"
+    RETURN base_emotions + specific_emotions
+ELSE 
+    LOG "GetAvailableEmotions: High attitude. Friendly/positive emotions."
+    SET specific_emotions = "smile\nsad\nshy\nsmileobvi\nsmiletonque\nsurprise\nsurpriseo"
+    RETURN base_emotions + specific_emotions
+ENDIF
