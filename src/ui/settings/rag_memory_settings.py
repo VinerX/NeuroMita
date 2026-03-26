@@ -1010,6 +1010,15 @@ def _build_graph_config(self, hc_provider_names) -> list:
                       'Если выключено, используется отдельный провайдер ниже.',
                       'Main model embeds <graph>JSON</graph> in its response — no extra API call. '
                       'If disabled, a separate provider call is used instead.')},
+        {'label': _('Реал-тайм экстракция (после каждого ответа)', 'Real-time extraction (after each reply)'),
+         'key': 'GRAPH_EXTRACTION_REALTIME', 'type': 'checkbutton', 'default_checkbutton': False,
+         'depends_on': 'GRAPH_EXTRACTION_ENABLED',
+         'tooltip': _('Автоматически извлекать сущности после каждого ответа модели. '
+                      'Если выключено — только ручная batch-экстракция кнопками ниже. '
+                      'По умолчанию выключено, чтобы не конкурировать с основной моделью за LLM.',
+                      'Automatically extract entities after every model reply. '
+                      'If disabled — only manual batch extraction via buttons below. '
+                      'Off by default to avoid competing with the main model for the LLM slot.')},
         {'label': _('Провайдер для экстракции графа', 'Provider for graph extraction'),
          'key': 'GRAPH_PROVIDER', 'type': 'combobox',
          'options': hc_provider_names, 'default': _('Текущий', 'Current'),

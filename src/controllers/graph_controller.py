@@ -144,6 +144,7 @@ class GraphController:
             text += f"Character: {assistant_output}\n"
 
         # Inline mode: model already embedded the graph JSON in its response.
+        # Inline store always runs (no extra LLM call needed).
         if inline_graph_json and self._is_inline_mode():
             logger.info(f"[GraphController] Inline graph JSON received for '{char_id}', storing directly")
             try:
@@ -153,6 +154,11 @@ class GraphController:
                 )
             except Exception as e:
                 logger.warning(f"[GraphController] Failed to schedule inline store: {e}")
+            return
+
+        # Real-time extraction (separate LLM call) — only if explicitly enabled.
+        if not bool(self._get_setting("GRAPH_EXTRACTION_REALTIME", False)):
+            logger.debug(f"[GraphController] Skipped real-time extraction for '{char_id}': GRAPH_EXTRACTION_REALTIME is False")
             return
 
         # Schedule extraction via separate provider call.
