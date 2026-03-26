@@ -177,6 +177,50 @@ def _validate(data: Any) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# Blocklists — reject LLM hallucinations before storing
+# ---------------------------------------------------------------------------
+
+# Entity names that are JSON template artifacts, grammar roles, pronouns,
+# ultra-generic words, or Unity game-action tags — never real knowledge.
+_ENTITY_BLOCKLIST: frozenset[str] = frozenset({
+    # JSON template artifacts (model copies the example literally)
+    "subject", "object", "predicate", "verb", "action",
+    # Grammar / generic
+    "character", "person", "thing", "concept", "place",
+    "it", "they", "he", "she", "we", "you", "i", "this", "that",
+    "at", "to", "is", "pc", "tv", "not",
+    # Unity emotion / animation tags
+    "trytoque", "smileteeth", "magiceye", "smilestrange",
+    "discontent", "continue",
+    # Russian interjections / fillers
+    "ау", "эм", "эх", "хм", "ай", "ой", "эй", "во", "го",
+    "бы", "не", "бд",
+})
+
+# Predicates that are clearly JSON field names or animation codes.
+_PREDICATE_BLOCKLIST: frozenset[str] = frozenset({
+    "subject", "verb", "predicate", "object", "action",
+    "trytoque", "smileteeth", "magiceye", "smilestrange",
+})
+
+
+def _is_blocked_entity(name: str) -> bool:
+    """Return True if the entity name should be discarded."""
+    n = name.strip().lower()
+    if not n or len(n) <= 1:
+        return True
+    return n in _ENTITY_BLOCKLIST
+
+
+def _is_blocked_predicate(pred: str) -> bool:
+    """Return True if the predicate should be discarded."""
+    p = pred.strip().lower()
+    if not p:
+        return True
+    return p in _PREDICATE_BLOCKLIST
+
+
 def _normalize_entity_name(raw: str) -> str:
     return raw.strip().lower()
 
@@ -207,6 +251,9 @@ def store_extraction(
             etype = "thing"
 
         name = _normalize_entity_name(raw_name)
+        if _is_blocked_entity(name):
+            logger.debug(f"entity_extractor: skipping blocked entity {name!r}")
+            continue
         try:
             eid = graph_store.upsert_entity(name, etype)
             name_to_id[name] = eid
@@ -222,6 +269,9 @@ def store_extraction(
         pred = str(rel.get("p") or "").strip().lower()
         obj_ = _normalize_entity_name(str(rel.get("o") or ""))
         if not (subj and pred and obj_):
+            continue
+        if _is_blocked_entity(subj) or _is_blocked_entity(obj_) or _is_blocked_predicate(pred):
+            logger.debug(f"entity_extractor: skipping blocked relation {subj!r}-{pred!r}->{obj_!r}")
             continue
 
         # Ensure both endpoints exist.

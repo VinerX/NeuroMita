@@ -20,18 +20,24 @@ from main_logger import logger
 # Default extraction prompt (can be overridden via GRAPH_EXTRACTION_PROMPT setting
 # or via Structural/graph_extraction_prompt.txt in the prompt set).
 _DEFAULT_EXTRACTION_PROMPT = """\
-Extract entities and relations from this dialogue message.
-Output ONLY valid JSON (no commentary):
-{"entities":[{"name":"...","type":"person|place|thing|concept"}],
- "relations":[{"s":"subject","p":"predicate","o":"object"}]}
+Extract named entities and their relationships from this conversation snippet.
+Output ONLY valid JSON, no commentary or markdown:
+{"entities":[{"name":"alice","type":"person"},{"name":"chess","type":"concept"}],
+ "relations":[{"s":"alice","p":"likes","o":"chess"}]}
 
 Rules:
-- Keep entity names short (1-3 words).
-- Use lowercase for names and predicates.
-- Only extract clearly stated facts, not speculation.
-- If nothing meaningful, return {"entities":[],"relations":[]}
+- Entity names: 1-3 words, lowercase, real nouns only (people, places, objects, topics).
+- Predicates: short verb phrases — "likes", "lives in", "is afraid of", "owns".
+- The AI character is referred to as "mita" (or their actual name if stated).
+- The human player is referred to as "player" (or their real name if stated).
+- DO NOT extract grammar roles: do not use "subject", "verb", "object", "predicate", "action" as names or predicates.
+- DO NOT extract emotion/animation tags: angry, sad, smile, smileteeth, magiceye, trytoque, discontent, etc.
+- DO NOT extract pronouns or generic words: it, they, he, she, we, you, i, thing, person, character.
+- DO NOT extract interjections or filler words.
+- Only extract clearly stated facts, not speculation or hypotheticals.
+- If nothing meaningful to extract, return {{"entities":[],"relations":[]}}
 
-Message:
+Conversation:
 {text}"""
 
 
@@ -75,6 +81,9 @@ class GraphController:
 
     def _is_enabled(self) -> bool:
         return bool(self._get_setting("GRAPH_EXTRACTION_ENABLED", False))
+
+    def _is_inline_mode(self) -> bool:
+        return bool(self._get_setting("GRAPH_EXTRACTION_INLINE", False))
 
     def _get_preset_description(self, preset_id: Optional[int]) -> str:
         """Return a human-readable 'Name (model)' string for logging."""
@@ -124,6 +133,7 @@ class GraphController:
         user_input = str(data.get("user_input") or "").strip()
         assistant_output = str(data.get("assistant_output") or data.get("response_text") or "").strip()
         created_memory_ids: List[int] = data.get("created_memory_ids") or []
+        inline_graph_json: Optional[str] = data.get("inline_graph_json")
         if not user_input and not assistant_output:
             return
 
@@ -133,7 +143,19 @@ class GraphController:
         if assistant_output:
             text += f"Character: {assistant_output}\n"
 
-        # Schedule extraction in background.
+        # Inline mode: model already embedded the graph JSON in its response.
+        if inline_graph_json and self._is_inline_mode():
+            logger.info(f"[GraphController] Inline graph JSON received for '{char_id}', storing directly")
+            try:
+                self._get_executor().submit(
+                    self._store_inline, character, char_id, inline_graph_json,
+                    user_input, assistant_output, created_memory_ids,
+                )
+            except Exception as e:
+                logger.warning(f"[GraphController] Failed to schedule inline store: {e}")
+            return
+
+        # Schedule extraction via separate provider call.
         logger.info(f"[GraphController] Scheduling extraction for '{char_id}' ({len(text)} chars)")
         try:
             self._get_executor().submit(
@@ -269,6 +291,54 @@ class GraphController:
         except Exception as e:
             logger.warning(f"[GraphController] Extraction failed (ignored): {e}", exc_info=True)
 
+    def _store_inline(
+        self,
+        character,
+        char_id: str,
+        json_str: str,
+        user_input: str = "",
+        assistant_output: str = "",
+        created_memory_ids: Optional[List[int]] = None,
+    ) -> None:
+        """Store graph JSON that was already extracted inline by the main model."""
+        try:
+            from managers.rag.graph.entity_extractor import (
+                parse_extraction_response,
+                store_extraction,
+            )
+            from managers.rag.graph.graph_store import GraphStore
+            from managers.database_manager import DatabaseManager
+
+            extraction = parse_extraction_response(json_str)
+            if extraction is None:
+                logger.warning(f"[GraphController] Inline graph JSON unparseable: {json_str[:200]}")
+                return
+
+            entities = extraction.get("entities", [])
+            entities = [
+                e if isinstance(e, dict) else {"name": str(e), "type": "thing"}
+                for e in entities if e
+            ]
+            logger.info(
+                f"[GraphController] Inline: {len(entities)} entities, "
+                f"{len(extraction.get('relations', []))} relations for '{char_id}'"
+            )
+
+            db = DatabaseManager()
+            gs = GraphStore(db, char_id)
+            n_ent, n_rel = store_extraction(gs, extraction)
+            logger.info(f"[GraphController] Inline stored {n_ent} entities, {n_rel} relations")
+
+            if entities:
+                entity_names = [e.get("name", "") for e in entities if e.get("name")]
+                self._tag_history_messages(db, char_id, entity_names, user_input, assistant_output)
+                if created_memory_ids and hasattr(character, "memory_system"):
+                    for eid in created_memory_ids:
+                        character.memory_system.tag_with_entities(eid, entity_names)
+
+        except Exception as e:
+            logger.warning(f"[GraphController] Inline store failed (ignored): {e}", exc_info=True)
+
     @staticmethod
     def _tag_history_messages(
         db,
@@ -352,28 +422,47 @@ class GraphController:
             logger.warning(f"[GraphController] Failed to tag history messages (ignored): {e}", exc_info=True)
 
     def _build_extraction_prompt(self, character, text: str) -> Optional[str]:
-        """Load extraction prompt template, format with message text."""
-        # Try custom template from settings.
+        """Load extraction prompt template, format with message text.
+
+        Resolution order:
+        1. GRAPH_EXTRACTION_PROMPT setting (custom override).
+        2. Character's prompt-set Structural/graph_extraction_prompt.txt.
+        3. Prompts/Common/graph_extraction_prompt.txt (shared base for prompters).
+        4. Hardcoded _DEFAULT_EXTRACTION_PROMPT.
+        """
+        # 1. Custom setting override.
         custom = self._get_setting("GRAPH_EXTRACTION_PROMPT", None)
         if custom and str(custom).strip():
-            template = str(custom).strip()
-        else:
-            # Try character's prompt set Structural directory.
-            base_path = getattr(character, "base_data_path", None)
-            if base_path:
-                template_file = os.path.join(base_path, "Structural", "graph_extraction_prompt.txt")
-                if os.path.isfile(template_file):
-                    try:
-                        with open(template_file, "r", encoding="utf-8") as f:
-                            template = f.read().strip()
-                    except Exception:
-                        template = _DEFAULT_EXTRACTION_PROMPT
-                else:
-                    template = _DEFAULT_EXTRACTION_PROMPT
-            else:
-                template = _DEFAULT_EXTRACTION_PROMPT
+            return str(custom).strip().replace("{text}", text)
 
-        return template.replace("{text}", text)
+        def _try_load(path: str) -> Optional[str]:
+            if os.path.isfile(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        return f.read().strip()
+                except Exception:
+                    pass
+            return None
+
+        # 2. Character's own Structural folder.
+        base_path = getattr(character, "base_data_path", None)
+        if base_path:
+            tmpl = _try_load(os.path.join(base_path, "Structural", "graph_extraction_prompt.txt"))
+            if tmpl:
+                return tmpl.replace("{text}", text)
+
+        # 3. Shared Common folder (resolved relative to Prompts root).
+        prompts_root = None
+        if base_path:
+            # base_data_path is like  .../Prompts/Kind/Default  → go up 2 levels
+            prompts_root = os.path.normpath(os.path.join(base_path, "..", ".."))
+        if prompts_root:
+            tmpl = _try_load(os.path.join(prompts_root, "Common", "graph_extraction_prompt.txt"))
+            if tmpl:
+                return tmpl.replace("{text}", text)
+
+        # 4. Hardcoded default.
+        return _DEFAULT_EXTRACTION_PROMPT.replace("{text}", text)
 
     def _resolve_preset(self, label: str) -> Optional[int]:
         """Resolve provider label (preset name or numeric ID) to preset_id."""

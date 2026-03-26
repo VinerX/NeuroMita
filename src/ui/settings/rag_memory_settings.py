@@ -581,11 +581,15 @@ def _run_entity_gc(gui, dry_run: bool = False) -> None:
     from ui.task_worker import TaskWorker
 
     db = DatabaseManager()
-    conn = db.get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT DISTINCT character_id FROM graph_entities")
-    cids = [r[0] for r in cur.fetchall() if r[0]]
-    conn.close()
+    with db.connection() as conn:
+        table_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='graph_entities'"
+        ).fetchone()
+        if not table_exists:
+            QMessageBox.information(gui, _("Готово", "Done"),
+                                    _("Нет персонажей с сущностями в графе.", "No characters with entities in graph."))
+            return
+        cids = [r[0] for r in conn.execute("SELECT DISTINCT character_id FROM graph_entities").fetchall() if r[0]]
 
     if not cids:
         QMessageBox.information(gui, _("Готово", "Done"),
@@ -841,12 +845,21 @@ def _build_graph_config(self, hc_provider_names) -> list:
          'key': 'GRAPH_EXTRACTION_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
          'tooltip': _('Извлекать сущности и связи из диалога через LLM-провайдер и сохранять в граф.',
                       'Extract entities and relations from dialogue via LLM provider and store in graph.')},
+        {'label': _('Inline-режим (основная модель, без доп. запроса)', 'Inline mode (main model, no extra call)'),
+         'key': 'GRAPH_EXTRACTION_INLINE', 'type': 'checkbutton', 'default_checkbutton': False,
+         'depends_on': 'GRAPH_EXTRACTION_ENABLED',
+         'tooltip': _('Основная модель сама пишет <graph>JSON</graph> в ответе — отдельный API-вызов не нужен. '
+                      'Если выключено, используется отдельный провайдер ниже.',
+                      'Main model embeds <graph>JSON</graph> in its response — no extra API call. '
+                      'If disabled, a separate provider call is used instead.')},
         {'label': _('Провайдер для экстракции графа', 'Provider for graph extraction'),
          'key': 'GRAPH_PROVIDER', 'type': 'combobox',
          'options': hc_provider_names, 'default': _('Текущий', 'Current'),
          'depends_on': 'GRAPH_EXTRACTION_ENABLED',
-         'tooltip': _('Какой LLM-провайдер использовать для экстракции сущностей (рекомендуется лёгкая модель).',
-                      'Which LLM provider to use for entity extraction (lightweight model recommended).')},
+         'tooltip': _('Провайдер для экстракции (используется только если inline-режим выключен). '
+                      'Текущий = та же модель, но отдельным запросом после ответа.',
+                      'Provider for extraction (only used when inline mode is off). '
+                      'Current = same model, but as a separate request after the response.')},
         {'label': _('Искать в графе знаний при RAG', 'Search knowledge graph in RAG'),
          'key': 'RAG_SEARCH_GRAPH', 'type': 'checkbutton', 'default_checkbutton': False,
          'depends_on': 'GRAPH_EXTRACTION_ENABLED',

@@ -1,0 +1,3 @@
+If this message contains notable named facts (people's names, places, objects, preferences, relationships), append at the very end of your response:
+<graph>{"entities":[{"name":"...","type":"person|place|thing|concept"}],"relations":[{"s":"...","p":"...","o":"..."}]}</graph>
+Rules: entity names 1-3 words lowercase; predicates are short verb phrases; do NOT use grammar role names (subject/verb/object/predicate) or emotion tags; if nothing notable, omit the tag entirely.

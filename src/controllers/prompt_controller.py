@@ -9,6 +9,47 @@ from main_logger import logger
 from utils.prompt_builder import build_system_prompts
 from core.request_policy import RequestPolicy, resolve_policy
 
+_DEFAULT_GRAPH_INLINE_INSTRUCTION = (
+    "If this message contains notable named facts (people's names, places, "
+    "objects, preferences, relationships), append at the very end of your response:\n"
+    "<graph>{\"entities\":[{\"name\":\"...\",\"type\":\"person|place|thing|concept\"}],"
+    "\"relations\":[{\"s\":\"...\",\"p\":\"...\",\"o\":\"...\"}]}</graph>\n"
+    "Rules: entity names 1-3 words lowercase; predicates are short verb phrases; "
+    "do NOT use grammar role names (subject/verb/object/predicate) or emotion tags; "
+    "if nothing notable, omit the tag entirely."
+)
+
+
+def _load_graph_inline_instruction(character) -> str:
+    """Load inline graph instruction.
+
+    Resolution order:
+    1. Character's Structural/graph_inline_instruction.txt
+    2. Prompts/Common/graph_inline_instruction.txt
+    3. Hardcoded default.
+    """
+    base_path = getattr(character, "base_data_path", None)
+
+    def _try(path: str) -> Optional[str]:
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return f.read().strip()
+            except Exception:
+                pass
+        return None
+
+    if base_path:
+        tmpl = _try(os.path.join(base_path, "Structural", "graph_inline_instruction.txt"))
+        if tmpl:
+            return tmpl
+        prompts_root = os.path.normpath(os.path.join(base_path, "..", ".."))
+        tmpl = _try(os.path.join(prompts_root, "Common", "graph_inline_instruction.txt"))
+        if tmpl:
+            return tmpl
+
+    return _DEFAULT_GRAPH_INLINE_INSTRUCTION
+
 
 class PromptController:
     def __init__(self):
@@ -100,6 +141,29 @@ class PromptController:
 
         if memory_message_content and memory_message_content.strip():
             system_messages.append({"role": "system", "content": memory_message_content})
+
+        # Inline graph extraction: append a brief instruction so the main model
+        # knows to embed entity/relation JSON in its response.
+        if event_type not in ("react", "graph_extract"):
+            try:
+                results = self.event_bus.emit_and_wait(
+                    Events.Settings.GET_SETTING,
+                    {"key": "GRAPH_EXTRACTION_ENABLED", "default": False},
+                    timeout=0.5,
+                )
+                graph_enabled = bool(results[0] if results else False)
+                results2 = self.event_bus.emit_and_wait(
+                    Events.Settings.GET_SETTING,
+                    {"key": "GRAPH_EXTRACTION_INLINE", "default": False},
+                    timeout=0.5,
+                )
+                graph_inline = bool(results2[0] if results2 else False)
+            except Exception:
+                graph_enabled = graph_inline = False
+
+            if graph_enabled and graph_inline:
+                inline_instr = _load_graph_inline_instruction(character)
+                system_messages.append({"role": "system", "content": inline_instr})
 
         return system_messages, dsl_system_infos
 

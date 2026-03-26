@@ -2,14 +2,15 @@
 Interactive knowledge-graph visualisation widget (PyQt6, no external deps).
 
 Renders entities as circles and relations as directed edges with arrowheads.
-Supports pan, zoom (mouse wheel), drag nodes, and hover tooltips.
+Supports pan, zoom (mouse wheel), drag nodes, hover tooltips, Ctrl+F search,
+double-click neighbour-only view, and labels drawn above circles.
 """
 from __future__ import annotations
 
 import math
 import random
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from PyQt6.QtCore import Qt, QPointF, QRectF, QTimer, QLineF
 from PyQt6.QtGui import (
@@ -25,11 +26,14 @@ from PyQt6.QtGui import (
     QMouseEvent,
     QPaintEvent,
     QResizeEvent,
+    QKeySequence,
+    QShortcut,
 )
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -49,6 +53,7 @@ class GNode:
     entity_type: str
     mention_count: int
     relation_count: int = 0
+    aliases: List[str] = field(default_factory=list)
     # Layout position (world coords).
     x: float = 0.0
     y: float = 0.0
@@ -95,6 +100,8 @@ class _GraphCanvas(QWidget):
     DAMPING = 0.85
     MIN_VELOCITY = 0.1
     IDEAL_EDGE_LEN = 160.0
+    # Skip repulsion between nodes farther than this (world units squared).
+    REPULSION_CUTOFF_SQ = 600.0 * 600.0
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -113,11 +120,20 @@ class _GraphCanvas(QWidget):
         self._panning = False
         self._hovered_node: Optional[GNode] = None
 
+        # Neighbour-only view.
+        self._neighbour_mode = False
+        self._focal_node_id: Optional[int] = None
+        self._visible_ids: Optional[Set[int]] = None  # None = show all
+
+        # Search.
+        self._search_matches: Set[int] = set()  # node ids matching search
+
         # Force-directed layout timer.
         self._layout_timer = QTimer(self)
         self._layout_timer.setInterval(30)
         self._layout_timer.timeout.connect(self._layout_step)
         self._layout_iterations = 0
+        self._max_iterations = 300
 
         # Font.
         self._font = QFont("Segoe UI", 9)
@@ -129,8 +145,14 @@ class _GraphCanvas(QWidget):
     def set_data(self, nodes: Dict[int, GNode], edges: List[GEdge]):
         self.nodes = nodes
         self.edges = edges
+        self._neighbour_mode = False
+        self._focal_node_id = None
+        self._visible_ids = None
+        self._search_matches = set()
         self._randomise_positions()
         self._layout_iterations = 0
+        n = len(nodes)
+        self._max_iterations = min(300, max(30, 9000 // max(n, 1)))
         self._layout_timer.start()
         self.update()
 
@@ -147,10 +169,63 @@ class _GraphCanvas(QWidget):
             node.vx = 0
             node.vy = 0
 
+    # ----- neighbour view -----
+
+    def enter_neighbour_mode(self, node: GNode):
+        """Show only node + its direct neighbours."""
+        neighbour_ids = {node.id}
+        for e in self.edges:
+            if e.src_id == node.id:
+                neighbour_ids.add(e.dst_id)
+            elif e.dst_id == node.id:
+                neighbour_ids.add(e.src_id)
+        self._visible_ids = neighbour_ids
+        self._focal_node_id = node.id
+        self._neighbour_mode = True
+        self.update()
+        # Notify parent to show "Show all" button.
+        p = self.parent()
+        if hasattr(p, "_on_neighbour_mode_changed"):
+            p._on_neighbour_mode_changed(True)
+
+    def exit_neighbour_mode(self):
+        self._visible_ids = None
+        self._focal_node_id = None
+        self._neighbour_mode = False
+        self.update()
+        p = self.parent()
+        if hasattr(p, "_on_neighbour_mode_changed"):
+            p._on_neighbour_mode_changed(False)
+
+    # ----- search -----
+
+    def apply_search(self, term: str):
+        term = term.strip().lower()
+        if not term:
+            self._search_matches = set()
+            self.update()
+            return
+
+        matches = {
+            nid for nid, n in self.nodes.items()
+            if term in n.name.lower() or any(term in a.lower() for a in n.aliases)
+        }
+        self._search_matches = matches
+
+        # Pan to first match.
+        if matches:
+            first = next(iter(matches))
+            node = self.nodes[first]
+            cx = self.width() / 2
+            cy = self.height() / 2
+            self._pan = QPointF(cx - node.x * self._zoom, cy - node.y * self._zoom)
+
+        self.update()
+
     # ----- force-directed layout -----
 
     def _layout_step(self):
-        if self._layout_iterations > 300:
+        if self._layout_iterations > self._max_iterations:
             self._layout_timer.stop()
             return
 
@@ -160,14 +235,17 @@ class _GraphCanvas(QWidget):
             self._layout_timer.stop()
             return
 
-        # Repulsion (all pairs).
+        # Repulsion (all pairs, distance-culled).
         for i in range(n):
             a = nodes_list[i]
             for j in range(i + 1, n):
                 b = nodes_list[j]
                 dx = a.x - b.x
                 dy = a.y - b.y
-                dist = max(math.hypot(dx, dy), 1.0)
+                dist_sq = dx * dx + dy * dy
+                if dist_sq > self.REPULSION_CUTOFF_SQ:
+                    continue
+                dist = max(math.sqrt(dist_sq), 1.0)
                 force = self.REPULSION / (dist * dist)
                 fx = force * dx / dist
                 fy = force * dy / dist
@@ -240,11 +318,21 @@ class _GraphCanvas(QWidget):
 
     def _node_at(self, screen_pos: QPointF) -> Optional[GNode]:
         wp = self._screen_to_world(screen_pos.x(), screen_pos.y())
-        for node in self.nodes.values():
+        for node in self._iter_visible():
             r = self._node_radius(node)
             if math.hypot(wp.x() - node.x, wp.y() - node.y) <= r:
                 return node
         return None
+
+    def _iter_visible(self):
+        """Iterate over currently visible nodes."""
+        if self._visible_ids is None:
+            yield from self.nodes.values()
+        else:
+            for nid in self._visible_ids:
+                n = self.nodes.get(nid)
+                if n:
+                    yield n
 
     # ----- painting -----
 
@@ -272,10 +360,14 @@ class _GraphCanvas(QWidget):
         p.end()
 
     def _draw_edges(self, p: QPainter):
+        visible = self._visible_ids
         pen = QPen(QColor(100, 105, 115, 160), 1.5)
         p.setFont(self._font_small)
 
         for edge in self.edges:
+            if visible is not None:
+                if edge.src_id not in visible or edge.dst_id not in visible:
+                    continue
             src = self.nodes.get(edge.src_id)
             dst = self.nodes.get(edge.dst_id)
             if not src or not dst:
@@ -332,52 +424,61 @@ class _GraphCanvas(QWidget):
         p.drawPolygon(poly)
 
     def _draw_nodes(self, p: QPainter):
-        for node in self.nodes.values():
+        focal = self._focal_node_id
+        for node in self._iter_visible():
             sp = self._world_to_screen(node.x, node.y)
             r = self._node_radius(node) * self._zoom
 
             color = _color_for_type(node.entity_type)
             is_hovered = node is self._hovered_node
+            is_focal = node.id == focal
 
             # Shadow.
-            shadow_color = QColor(0, 0, 0, 60)
-            p.setBrush(QBrush(shadow_color))
+            p.setBrush(QBrush(QColor(0, 0, 0, 60)))
             p.setPen(Qt.PenStyle.NoPen)
             p.drawEllipse(QPointF(sp.x() + 3, sp.y() + 3), r, r)
+
+            # Search match ring (yellow, drawn behind circle).
+            if node.id in self._search_matches:
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setPen(QPen(QColor(255, 220, 50), 3.0))
+                p.drawEllipse(sp, r + 5, r + 5)
+
+            # Focal node ring (bright white).
+            if is_focal:
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setPen(QPen(QColor(255, 255, 255, 200), 2.5))
+                p.drawEllipse(sp, r + 3, r + 3)
 
             # Fill.
             fill = color.lighter(120) if is_hovered else color
             p.setBrush(QBrush(fill))
-
-            # Border.
             border_pen = QPen(color.darker(140), 2.0 if is_hovered else 1.5)
             p.setPen(border_pen)
             p.drawEllipse(sp, r, r)
 
-            # Inner highlight (subtle gradient effect).
-            highlight = QColor(255, 255, 255, 50)
-            p.setBrush(QBrush(highlight))
+            # Inner highlight.
+            p.setBrush(QBrush(QColor(255, 255, 255, 50)))
             p.setPen(Qt.PenStyle.NoPen)
             p.drawEllipse(QPointF(sp.x() - r * 0.2, sp.y() - r * 0.25), r * 0.45, r * 0.35)
 
-            # Node label (name).
+            # Node label — drawn ABOVE the circle.
             p.setFont(self._font_bold if is_hovered else self._font)
             p.setPen(QColor(240, 240, 245))
             label = node.name
             fm = QFontMetrics(p.font())
-            max_text_w = r * 1.6
-            if fm.horizontalAdvance(label) > max_text_w:
-                while len(label) > 2 and fm.horizontalAdvance(label + "…") > max_text_w:
-                    label = label[:-1]
-                label += "…"
-            text_rect = QRectF(sp.x() - r, sp.y() - r * 0.3, r * 2, r * 0.6)
+            th = fm.height()
+            label_y_top = sp.y() - r - 4  # top of label rect, 4px above circle
+            text_rect = QRectF(sp.x() - 80, label_y_top - th, 160, th + 2)
+            # Semi-transparent backing so text is readable over edges.
+            p.fillRect(text_rect.adjusted(-2, -1, 2, 1), QColor(32, 34, 40, 160))
             p.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, label)
 
-            # Stats line below name.
+            # Stats line just below label (still above circle).
             p.setFont(self._font_small)
             p.setPen(QColor(200, 200, 210, 200))
             stats = f"×{node.mention_count}  ↔{node.relation_count}"
-            stats_rect = QRectF(sp.x() - r, sp.y() + r * 0.15, r * 2, r * 0.5)
+            stats_rect = QRectF(sp.x() - 60, label_y_top - th - 14, 120, 13)
             p.drawText(stats_rect, Qt.AlignmentFlag.AlignCenter, stats)
 
     def _draw_tooltip(self, p: QPainter):
@@ -393,6 +494,12 @@ class _GraphCanvas(QWidget):
             f"Mentions: {node.mention_count}",
             f"Relations: {node.relation_count}",
         ]
+        if node.aliases:
+            alias_str = ", ".join(node.aliases[:6])
+            if len(node.aliases) > 6:
+                alias_str += f" (+{len(node.aliases) - 6})"
+            lines.append(f"Aliases: {alias_str}")
+
         p.setFont(self._font)
         fm = QFontMetrics(self._font)
         line_h = fm.height() + 2
@@ -412,19 +519,14 @@ class _GraphCanvas(QWidget):
         if ty + th > self.height():
             ty = self.height() - th - 4
 
-        # Background.
         bg = QRectF(tx, ty, tw, th)
         p.setBrush(QBrush(QColor(50, 52, 58, 230)))
         p.setPen(QPen(QColor(100, 105, 115), 1))
         p.drawRoundedRect(bg, 6, 6)
 
-        # Text.
         p.setPen(QColor(220, 220, 230))
         for i, line in enumerate(lines):
-            if i == 0:
-                p.setFont(self._font_bold)
-            else:
-                p.setFont(self._font)
+            p.setFont(self._font_bold if i == 0 else self._font)
             p.drawText(QPointF(tx + pad, ty + pad + (i + 1) * line_h - 3), line)
 
     # ----- mouse events -----
@@ -438,6 +540,16 @@ class _GraphCanvas(QWidget):
                 self._panning = True
             self._last_mouse = event.position()
         super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            node = self._node_at(event.position())
+            if node:
+                if self._neighbour_mode and self._focal_node_id == node.id:
+                    self.exit_neighbour_mode()
+                else:
+                    self.enter_neighbour_mode(node)
+        super().mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent):
         pos = event.position()
@@ -457,7 +569,6 @@ class _GraphCanvas(QWidget):
 
         self._last_mouse = pos
 
-        # Hover detection.
         new_hovered = self._node_at(pos)
         if new_hovered is not self._hovered_node:
             self._hovered_node = new_hovered
@@ -477,7 +588,6 @@ class _GraphCanvas(QWidget):
 
     def wheelEvent(self, event: QWheelEvent):
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-        # Zoom toward cursor position.
         old_zoom = self._zoom
         self._zoom = max(0.1, min(5.0, self._zoom * factor))
         real_factor = self._zoom / old_zoom
@@ -513,7 +623,7 @@ class GraphViewPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # Toolbar.
+        # Toolbar row 1: type filter + stats + buttons.
         toolbar = QHBoxLayout()
 
         toolbar.addWidget(QLabel("Filter type:"))
@@ -526,6 +636,11 @@ class GraphViewPage(QWidget):
 
         self.lbl_stats = QLabel("", self)
         toolbar.addWidget(self.lbl_stats)
+
+        self.btn_show_all = QPushButton("Show all", self)
+        self.btn_show_all.setVisible(False)
+        self.btn_show_all.clicked.connect(self._show_all)
+        toolbar.addWidget(self.btn_show_all)
 
         btn_refresh = QPushButton("Refresh", self)
         btn_refresh.clicked.connect(self._reload)
@@ -541,6 +656,23 @@ class GraphViewPage(QWidget):
 
         layout.addLayout(toolbar)
 
+        # Toolbar row 2: search bar (hidden until Ctrl+F).
+        self._search_bar = QWidget(self)
+        search_layout = QHBoxLayout(self._search_bar)
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_layout.addWidget(QLabel("Search:"))
+        self._search_edit = QLineEdit(self._search_bar)
+        self._search_edit.setPlaceholderText("Entity name or alias…")
+        self._search_edit.textChanged.connect(self._on_search_changed)
+        self._search_edit.returnPressed.connect(self._on_search_changed)
+        search_layout.addWidget(self._search_edit)
+        btn_close_search = QPushButton("✕", self._search_bar)
+        btn_close_search.setFixedWidth(26)
+        btn_close_search.clicked.connect(self._close_search)
+        search_layout.addWidget(btn_close_search)
+        self._search_bar.setVisible(False)
+        layout.addWidget(self._search_bar)
+
         # Canvas.
         self.canvas = _GraphCanvas(self)
         layout.addWidget(self.canvas, 1)
@@ -552,22 +684,54 @@ class GraphViewPage(QWidget):
             dot = QLabel(f"● {type_name}", self)
             dot.setStyleSheet(f"color: {color.name()}; font-size: 11px; margin-right: 12px;")
             legend.addWidget(dot)
+        lbl_hint = QLabel("  Double-click: neighbour view", self)
+        lbl_hint.setStyleSheet("color: #888; font-size: 10px;")
+        legend.addWidget(lbl_hint)
         legend.addStretch(1)
         layout.addLayout(legend)
+
+        # Ctrl+F shortcut.
+        sc = QShortcut(QKeySequence("Ctrl+F"), self)
+        sc.activated.connect(self._open_search)
 
         # Initial load.
         self._reload()
 
+    # ----- search UI -----
+
+    def _open_search(self):
+        self._search_bar.setVisible(True)
+        self._search_edit.setFocus()
+        self._search_edit.selectAll()
+
+    def _close_search(self):
+        self._search_edit.clear()
+        self._search_bar.setVisible(False)
+        self.canvas.apply_search("")
+
+    def _on_search_changed(self):
+        self.canvas.apply_search(self._search_edit.text())
+
+    # ----- neighbour mode callback (called by canvas) -----
+
+    def _on_neighbour_mode_changed(self, active: bool):
+        self.btn_show_all.setVisible(active)
+
+    def _show_all(self):
+        self.canvas.exit_neighbour_mode()
+
+    # ----- reload / relayout / reset -----
+
     def _reload(self):
         nodes, edges = self._load_from_db()
         self.canvas.set_data(nodes, edges)
-        n_nodes = len(nodes)
-        n_edges = len(edges)
-        self.lbl_stats.setText(f"Entities: {n_nodes}  |  Relations: {n_edges}")
+        self.lbl_stats.setText(f"Entities: {len(nodes)}  |  Relations: {len(edges)}")
 
     def _relayout(self):
         self.canvas._randomise_positions()
         self.canvas._layout_iterations = 0
+        n = len(self.canvas.nodes)
+        self.canvas._max_iterations = min(300, max(30, 9000 // max(n, 1)))
         self.canvas._layout_timer.start()
         self.canvas.update()
 
@@ -616,6 +780,19 @@ class GraphViewPage(QWidget):
 
         if not nodes:
             return nodes, edges
+
+        # Load aliases (if table exists).
+        alias_check = QSqlQuery(self.db)
+        alias_check.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='graph_entity_aliases'")
+        if alias_check.exec() and alias_check.next():
+            sql_alias = "SELECT entity_id, surface FROM graph_entity_aliases"
+            q_alias = QSqlQuery(self.db)
+            if q_alias.exec(sql_alias):
+                while q_alias.next():
+                    eid = q_alias.value(0)
+                    surface = str(q_alias.value(1) or "")
+                    if eid in nodes and surface:
+                        nodes[eid].aliases.append(surface)
 
         node_ids = set(nodes.keys())
 

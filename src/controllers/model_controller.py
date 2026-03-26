@@ -23,6 +23,19 @@ from managers.history_ui_projector import HistoryUiProjector
 from core.request_policy import RequestPolicy, resolve_policy
 
 
+_GRAPH_TAG_RE = re.compile(r"<graph>([\s\S]*?)</graph>", re.IGNORECASE)
+
+
+def _strip_graph_tag(text: str) -> tuple[str, Optional[str]]:
+    """Remove <graph>...</graph> from response, return (clean_text, json_str|None)."""
+    m = _GRAPH_TAG_RE.search(text)
+    if not m:
+        return text, None
+    json_str = m.group(1).strip()
+    clean = _GRAPH_TAG_RE.sub("", text).strip()
+    return clean, json_str
+
+
 class ModelController:
     """
     ModelController:
@@ -833,6 +846,12 @@ class ModelController:
 
             processed = char.process_response_nlp_commands(raw_text, self.settings.get("SAVE_MISSED_MEMORY", False))
 
+            # Extract inline graph tags <graph>JSON</graph> if inline mode is active.
+            inline_graph_json: Optional[str] = None
+            if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
+                    and bool(self.settings.get("GRAPH_EXTRACTION_INLINE", False))):
+                processed, inline_graph_json = _strip_graph_tag(processed)
+
             target = None
             if hasattr(char, "consume_pending_target"):
                 try:
@@ -876,6 +895,7 @@ class ModelController:
                 "user_input": user_input,
                 "assistant_output": final_text,
                 "created_memory_ids": created_memory_ids,
+                "inline_graph_json": inline_graph_json,
             })
 
             voice_profile = None
