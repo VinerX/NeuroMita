@@ -2,7 +2,7 @@
 
 **Purpose:** Context document for AI assistants in future sessions. Summarizes the full history of RAG pipeline development, bugs found, fixes applied, and current state.
 
-**Last updated:** 2026-03-26 (Session 3)
+**Last updated:** 2026-03-26 (Session 4)
 
 **Branch:** `RAG-embedding-providers`
 
@@ -228,6 +228,70 @@ The scores are nearly identical for large numbers of candidates. CE top_k=75 out
 
 ---
 
+### 2.10 Vector Memory Deduplication (Session 4)
+
+**New feature:** `src/managers/memory_dedup.py` — `MemoryDeduplicator` class.
+
+**Algorithm:**
+1. Load all active memories with embeddings (JOIN `memories` + `embeddings`, fallback to legacy BLOB column)
+2. Build normalized matrix, compute cosine similarity `O(N²)` vectorized via numpy
+3. For each pair above threshold: select canonical (higher priority > newer > longer content)
+4. Resolve chains A→B and B→C → A→C to avoid double-merging
+5. `apply()` calls `merge_memories()` for each pair
+
+**Threshold with age decay:**
+- < 7 days: `base + 0.03` (stricter — fresh duplicates are obvious)
+- 7–30 days: `base` (default `MEMORY_DEDUP_THRESHOLD=0.94`)
+- > 30 days: `base - 0.04` (looser — old memories may be legitimately related)
+
+**UI:** Settings → Knowledge Graph section → "Find duplicates (preview)" + "Merge duplicates" buttons.
+
+**Settings:** `MEMORY_DEDUP_THRESHOLD` (float, default 0.94), `MEMORY_DEDUP_AGE_DECAY` (bool, default True).
+
+---
+
+### 2.11 LLM Merge Command `<~memory>` (Session 4)
+
+**New feature:** LLM can now merge two memories in a single command.
+
+**Syntax:** `<~memory>SOURCE_ID→TARGET_ID:new_content</~memory>` (content is optional; if omitted, target's content is kept)
+
+**What it does:**
+- Updates target content (if new_content provided)
+- Merges entity tags from source into target (union of entity sets)
+- Re-embeds target in background
+- Soft-deletes source (`is_deleted=1`)
+
+**Files:**
+- `src/managers/memory_manager.py` — `merge_memories(source_id, target_id, new_content=None)`
+- `src/characters/character.py` — regex extended to `[+#~-]`, new `elif operation == "~":` branch
+
+**Prompt example shown to LLM:**
+```
+<~memory>3→7:merged content</~memory>  (merge #3 into #7, content optional)
+```
+
+---
+
+### 2.12 TTL / Soft-Forget for Low-Priority Memories (Session 4)
+
+**New feature:** `apply_ttl_cleanup()` in `MemoryManager` — marks old low/normal-priority memories as `is_forgotten=1`.
+
+**Logic:**
+- `Low` priority: forgotten after `MEMORY_TTL_LOW_DAYS` days (default 30)
+- `Normal` priority: forgotten after `MEMORY_TTL_NORMAL_DAYS` days (default 0 = disabled)
+- `High` / `Critical`: never touched by TTL
+
+**Important:** Uses `is_forgotten=1`, not `is_deleted=1`. Forgotten memories are excluded from the prompt but still findable via RAG if the query matches.
+
+**Triggers:**
+- Automatic: called at the end of `_forget_over_limit_memories()` on every `add_memory()` (if `MEMORY_TTL_ENABLED=True`)
+- Manual: "Apply TTL cleanup now" button in Settings → Memory Limits section
+
+**Settings:** `MEMORY_TTL_ENABLED` (bool, default False — opt-in), `MEMORY_TTL_LOW_DAYS` (int, default 30), `MEMORY_TTL_NORMAL_DAYS` (int, default 0).
+
+---
+
 ## 3. Architecture Changes (Key Files)
 
 ### `src/managers/rag/pipeline/cross_encoder.py`
@@ -276,6 +340,28 @@ The scores are nearly identical for large numbers of candidates. CE top_k=75 out
 ### `src/utils/Testing/rag_tester/rag_tester_cli.py`
 - Pre-flight embedding check before running test suite
 - Auto-indexes graph entity embeddings when `RAG_GRAPH_VECTOR_SEARCH=true`
+
+### `src/managers/memory_manager.py` *(session 4)*
+- `merge_memories(source_id, target_id, new_content=None)` — merge entity sets, re-embed target, soft-delete source
+- `apply_ttl_cleanup()` — mark old low/normal memories as `is_forgotten=1` based on TTL settings
+- `_forget_over_limit_memories()` — now calls `apply_ttl_cleanup()` at the end if TTL enabled
+- `get_memories_formatted()` — added `<~memory>` example in prompt
+
+### `src/managers/memory_dedup.py` *(session 4, new file)*
+- `MemoryDeduplicator` — batch cosine similarity deduplication
+- `analyze()` → `DedupPlan` — dry-run, returns list of (source, target, similarity) pairs
+- `apply(plan, mm)` — executes merges via `mm.merge_memories()`
+- Fallback: tries `embeddings` table JOIN first, falls back to BLOB column on `memories`
+
+### `src/characters/character.py` *(session 4)*
+- `extract_and_process_memory_data()` regex: `[+#-]` → `[+#~-]`
+- New branch `elif operation == "~":` — parses `SOURCE→TARGET:content`, calls `merge_memories()`
+
+### `src/ui/settings/rag_memory_settings.py` *(session 4)*
+- `_build_memory_limits_config()` — added TTL settings section: `MEMORY_TTL_ENABLED`, `MEMORY_TTL_LOW_DAYS`, `MEMORY_TTL_NORMAL_DAYS`, "Apply TTL cleanup now" button
+- `_build_graph_config()` — added dedup settings: `MEMORY_DEDUP_THRESHOLD`, `MEMORY_DEDUP_AGE_DECAY`, "Find duplicates (preview)" + "Merge duplicates" buttons
+- `_run_ttl_cleanup()` — UI handler for manual TTL cleanup
+- `_run_memory_dedup(dry_run)` — UI handler for dedup preview and apply
 
 ---
 
@@ -391,11 +477,15 @@ Test cases reference messages by MD5-based IDs:
 
 ### 7.3 Duplicate Memories
 
+**Status: ADDRESSED** — post-hoc deduplication implemented (see 2.10). Write-time dedup still not done.
+
 **Symptom:** The same memory appears 5+ times with slight wording variation (e.g., "The basement holds secrets" extracted repeatedly).
 
 **Cause:** No write-time deduplication. Each extraction pass re-inserts without checking for near-duplicates.
 
-**Proposed fix:** At insert time, compute cosine similarity against existing memories. If `similarity > 0.92`, update the existing record instead of inserting a new one.
+**Current fix:** `MemoryDeduplicator.analyze()` + `apply()` — batch cosine similarity over all existing memories. Run manually via UI or script to clean up accumulated duplicates.
+
+**Remaining:** Write-time check at `add_memory()` is not yet implemented. Dedup is reactive, not preventive.
 
 **Impact:** Wastes CE slots, artificially boosts some topics in retrieval.
 
@@ -427,10 +517,11 @@ Test cases reference messages by MD5-based IDs:
 
 ### High Priority
 
-1. **Duplicate memory deduplication**
-   - Write-time cosine similarity check against existing memories
-   - If `similarity > 0.92` with any existing memory → update, not insert
-   - Prevents CE slot waste and retrieval bias
+1. **Duplicate memory deduplication** ✅ **(partially done — session 4)**
+   - Post-hoc batch dedup: `MemoryDeduplicator` + UI buttons (preview / apply)
+   - Age-based threshold decay: fresh <7d → 0.97, 7–30d → 0.94, old >30d → 0.90
+   - LLM merge command `<~memory>SOURCE→TARGET:content</~memory>` for manual merges
+   - **Remaining:** write-time check at `add_memory()` not yet implemented
 
 2. **Dynamic CE top_k**
    - Replace fixed `top_k=75` with `min(150, n_candidates * 0.4)`
