@@ -84,7 +84,31 @@ class GraphStore:
                     ON graph_relations(object_id);
                 CREATE INDEX IF NOT EXISTS idx_gea_surface
                     ON graph_entity_aliases(surface);
+
+                CREATE TABLE IF NOT EXISTS graph_processed_messages (
+                    character_id TEXT    NOT NULL,
+                    message_id   INTEGER NOT NULL,
+                    processed_at TEXT,
+                    PRIMARY KEY (character_id, message_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_gpm_char
+                    ON graph_processed_messages(character_id);
                 """
+            )
+            conn.commit()
+
+    # ------------------------------------------------------------------
+    # Processed-message tracking
+    # ------------------------------------------------------------------
+    def mark_messages_processed(self, message_ids: List[int]) -> None:
+        """Mark history message IDs as processed (regardless of whether entities were found)."""
+        if not message_ids:
+            return
+        now = datetime.utcnow().isoformat()
+        with self.db.connection() as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO graph_processed_messages (character_id, message_id, processed_at) VALUES (?, ?, ?)",
+                [(self.character_id, mid, now) for mid in message_ids],
             )
             conn.commit()
 

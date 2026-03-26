@@ -379,31 +379,38 @@ def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> 
         graph_preset_id = _resolve_graph_preset()
 
         total_processed = 0
-        total_skipped = 0
         grand_total = 0
 
-        for cid in cids:
-            c = db.get_connection()
-            cur2 = c.cursor()
-            cur2.execute(
-                "SELECT COUNT(*) FROM history WHERE character_id=? AND content IS NOT NULL AND content != ''",
-                (cid,),
+        # When skip_existing: filter out messages already in graph_processed_messages
+        # OR that already have graph_relations (backward compat with old runs).
+        _skip_sql = """
+            AND h.id NOT IN (
+                SELECT message_id FROM graph_processed_messages WHERE character_id = ?
+                UNION
+                SELECT source_message_id FROM graph_relations
+                WHERE character_id = ? AND source_message_id IS NOT NULL
             )
-            grand_total += cur2.fetchone()[0] or 0
-            c.close()
+        """ if skip_existing else ""
+
+        for cid in cids:
+            params_extra = (cid, cid) if skip_existing else ()
+            with db.connection() as c:
+                grand_total += c.execute(
+                    f"SELECT COUNT(*) FROM history h WHERE h.character_id=?"
+                    f" AND h.content IS NOT NULL AND h.content != '' {_skip_sql}",
+                    (cid,) + params_extra,
+                ).fetchone()[0] or 0
 
         for cid in cids:
             gs = GraphStore(db, cid)
-            c = db.get_connection()
-            cur2 = c.cursor()
-            cur2.execute(
-                """SELECT id, role, content FROM history
-                   WHERE character_id=? AND content IS NOT NULL AND content != ''
-                   ORDER BY id""",
-                (cid,),
-            )
-            rows = cur2.fetchall() or []
-            c.close()
+            params_extra = (cid, cid) if skip_existing else ()
+            with db.connection() as c:
+                rows = c.execute(
+                    f"SELECT h.id, h.role, h.content FROM history h"
+                    f" WHERE h.character_id=? AND h.content IS NOT NULL AND h.content != ''"
+                    f" {_skip_sql} ORDER BY h.id",
+                    (cid,) + params_extra,
+                ).fetchall() or []
 
             i = 0
             while i < len(rows):
@@ -425,41 +432,22 @@ def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> 
                 if assistant_text:
                     text += f"Character: {assistant_text}\n"
 
-                done_so_far = total_processed + total_skipped
-                remaining = grand_total - done_so_far
-                skip_label = f" (пропущено: {total_skipped})" if total_skipped else ""
+                remaining = grand_total - total_processed
                 if status_callback:
                     try:
                         status_callback(_(
-                            f"[{cid}] История • {done_so_far + 1}/{grand_total}{skip_label} | Осталось: {remaining}",
-                            f"[{cid}] History • {done_so_far + 1}/{grand_total}{skip_label} | Remaining: {remaining}",
+                            f"[{cid}] История • {total_processed + 1}/{grand_total} | Осталось: {remaining}",
+                            f"[{cid}] History • {total_processed + 1}/{grand_total} | Remaining: {remaining}",
                         ))
                     except Exception:
                         pass
                 if progress_callback:
                     try:
-                        progress_callback(done_so_far, grand_total)
+                        progress_callback(total_processed, grand_total)
                     except Exception:
                         pass
 
                 if text.strip():
-                    if skip_existing:
-                        try:
-                            c2 = db.get_connection()
-                            cur3 = c2.cursor()
-                            cur3.execute(
-                                "SELECT COUNT(*) FROM graph_relations WHERE source_message_id=? AND character_id=?",
-                                (hid, cid),
-                            )
-                            already_done = (cur3.fetchone()[0] or 0) > 0
-                            c2.close()
-                        except Exception:
-                            already_done = False
-                        if already_done:
-                            total_skipped += 1
-                            i += 1
-                            continue
-
                     prompt = f"""Extract entities and relations from this dialogue message.
 Output ONLY valid JSON (no commentary):
 {{"entities":[{{"name":"...","type":"person|place|thing|concept"}}],
@@ -495,10 +483,16 @@ Message:
                     except Exception:
                         pass
 
+                    # Mark as processed regardless of result (prevents re-processing empty-result messages)
+                    try:
+                        gs.mark_messages_processed([hid])
+                    except Exception:
+                        pass
+
                 total_processed += 1
                 i += 1
 
-        return total_processed, total_skipped
+        return total_processed, 0
 
     worker = TaskWorker(_do_extract, use_progress=True)
     worker._kwargs["status_callback"] = worker.status_signal.emit
