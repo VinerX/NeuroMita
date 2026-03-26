@@ -647,8 +647,11 @@ def _run_ttl_cleanup(gui) -> None:
         bus = get_event_bus()
         char_id = getattr(gui, 'current_character_id', None) or getattr(gui, '_current_char_id', None)
         if not char_id:
-            # Try to get from active character via event bus
-            char_id = getattr(bus, '_current_char_id', None)
+            try:
+                res = bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+                char_id = ((res[0] if res else None) or {}).get("character_id", "")
+            except Exception:
+                char_id = ""
         if not char_id:
             QMessageBox.warning(
                 gui,
@@ -1109,6 +1112,12 @@ def _run_memory_dedup(gui, dry_run: bool = True) -> None:
     """Analyze or apply vector-based memory deduplication for the current character."""
     try:
         char_id = getattr(gui, 'current_character_id', None) or getattr(gui, '_current_char_id', None)
+        if not char_id:
+            try:
+                res = get_event_bus().emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+                char_id = ((res[0] if res else None) or {}).get("character_id", "")
+            except Exception:
+                char_id = ""
         if not char_id:
             QMessageBox.warning(
                 gui,
