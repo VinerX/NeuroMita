@@ -583,7 +583,7 @@ class Character:
         from the LLM response, processes them, and removes them from the response string.
         """
         self._last_created_memory_ids: list[int] = []
-        memory_pattern = r"<([+#-])memory(?:_([a-zA-Z]+))?>(.*?)</\1?memory>"
+        memory_pattern = r"<([+#~-])memory(?:_([a-zA-Z]+))?>(.*?)</\1?memory>"
 
         def memory_processor(match_obj):
             operation, tag_priority, content = match_obj.groups()
@@ -646,6 +646,43 @@ class Character:
                         logger.warning(
                             f"[{self.char_id}] Invalid format for memory update: {content}"
                         )
+
+                elif operation == "~":
+                    # Format: <~memory>SOURCE→TARGET:new_content</~memory>
+                    # Arrow can be → (U+2192) or ->; new_content is optional
+                    arrow = "→" if "→" in content else "->"
+                    arrow_parts = content.split(arrow, 1)
+                    if len(arrow_parts) != 2:
+                        logger.warning(
+                            f"[{self.char_id}] Invalid format for memory merge (expected SOURCE→TARGET[:content]): {content}"
+                        )
+                    else:
+                        source_str = arrow_parts[0].strip()
+                        rest = arrow_parts[1].strip()
+                        colon_idx = rest.find(":")
+                        if colon_idx >= 0:
+                            target_str = rest[:colon_idx].strip()
+                            new_content = rest[colon_idx + 1:].strip() or None
+                        else:
+                            target_str = rest.strip()
+                            new_content = None
+
+                        if source_str.isdigit() and target_str.isdigit():
+                            source_id = int(source_str)
+                            target_id = int(target_str)
+                            ok = self.memory_system.merge_memories(source_id, target_id, new_content)
+                            if ok:
+                                logger.info(
+                                    f"[{self.char_id}] Merged memory #{source_id} into #{target_id}"
+                                )
+                            else:
+                                logger.warning(
+                                    f"[{self.char_id}] Failed to merge memory #{source_id} into #{target_id}"
+                                )
+                        else:
+                            logger.warning(
+                                f"[{self.char_id}] Invalid IDs for memory merge: source='{source_str}', target='{target_str}'"
+                            )
 
                 elif operation == "-":
 

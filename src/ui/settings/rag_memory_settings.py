@@ -547,6 +547,39 @@ Message:
     worker.start()
 
 
+def _run_ttl_cleanup(gui) -> None:
+    """Apply TTL cleanup for the current character's memories."""
+    try:
+        from core.events import get_event_bus, Events
+        bus = get_event_bus()
+        char_id = getattr(gui, 'current_character_id', None) or getattr(gui, '_current_char_id', None)
+        if not char_id:
+            # Try to get from active character via event bus
+            char_id = getattr(bus, '_current_char_id', None)
+        if not char_id:
+            QMessageBox.warning(
+                gui,
+                _("TTL очистка", "TTL Cleanup"),
+                _("Не удалось определить текущего персонажа.", "Could not determine the current character."),
+            )
+            return
+        from managers.memory_manager import MemoryManager
+        mm = MemoryManager(char_id)
+        count = mm.apply_ttl_cleanup()
+        QMessageBox.information(
+            gui,
+            _("TTL очистка", "TTL Cleanup"),
+            _( f"Забыто {count} воспоминаний (is_forgotten=1).",
+               f"Forgotten {count} memories (is_forgotten=1)."),
+        )
+    except Exception as e:
+        QMessageBox.critical(
+            gui,
+            _("Ошибка TTL", "TTL Error"),
+            str(e),
+        )
+
+
 def _run_entity_gc(gui, dry_run: bool = False) -> None:
     """Run entity GC for all characters (dry-run shows plan, apply executes it)."""
     from managers.database_manager import DatabaseManager
@@ -661,6 +694,34 @@ def _build_memory_limits_config(self) -> list:
          'tooltip': _(
              'Максимум активных воспоминаний (не удалённых и не забытых). При превышении система помечает одно как is_forgotten=1.',
              'Maximum number of active memories (not deleted and not forgotten). When exceeded, the system marks one as is_forgotten=1.')},
+
+        {'label': _('TTL-забывание памяти', 'Memory TTL (auto-forget)'), 'type': 'subsection'},
+        {'label': _('Включить TTL-забывание', 'Enable memory TTL'),
+         'key': 'MEMORY_TTL_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _(
+             'Автоматически помечать старые воспоминания низкого/обычного приоритета как забытые (is_forgotten=1). '
+             'Они не попадают в промпт, но всё ещё доступны через RAG.',
+             'Automatically mark old low/normal-priority memories as forgotten (is_forgotten=1). '
+             'They are excluded from the prompt but still searchable via RAG.')},
+        {'label': _('TTL для Low-приоритета (дней)', 'TTL for Low priority (days)'),
+         'key': 'MEMORY_TTL_LOW_DAYS', 'type': 'entry', 'default': 30,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'MEMORY_TTL_ENABLED',
+         'tooltip': _(
+             'Через сколько дней Low-приоритетные воспоминания автоматически забываются. 0 = выключено.',
+             'Days after which Low-priority memories are auto-forgotten. 0 = disabled.')},
+        {'label': _('TTL для Normal-приоритета (дней)', 'TTL for Normal priority (days)'),
+         'key': 'MEMORY_TTL_NORMAL_DAYS', 'type': 'entry', 'default': 0,
+         'validation': self.validate_positive_integer_or_zero,
+         'depends_on': 'MEMORY_TTL_ENABLED',
+         'tooltip': _(
+             'Через сколько дней Normal-приоритетные воспоминания автоматически забываются. 0 = выключено.',
+             'Days after which Normal-priority memories are auto-forgotten. 0 = disabled.')},
+        {'type': 'button_group', 'buttons': [
+            {'label': _('Применить TTL сейчас', 'Apply TTL cleanup now'),
+             'command': lambda: _run_ttl_cleanup(self)},
+        ]},
+
         {'type': 'end'},
     ]
 
@@ -831,8 +892,109 @@ def _build_graph_config(self, hc_provider_names) -> list:
              'command': lambda: _run_entity_gc(self, dry_run=True)},
         ]},
 
+        {'label': _('Дедупликация памяти (векторная)', 'Memory deduplication (vector)'), 'type': 'subsection'},
+        {'label': _('Порог косинусного сходства', 'Cosine similarity threshold'),
+         'key': 'MEMORY_DEDUP_THRESHOLD', 'type': 'entry', 'default': 0.94,
+         'validation': self.validate_float_0_to_1,
+         'tooltip': _(
+             'Порог сходства эмбеддингов для считывания двух воспоминаний дублями (0–1). '
+             'Чем выше — тем строже. Возрастной decay корректирует порог автоматически.',
+             'Embedding similarity threshold for treating two memories as duplicates (0–1). '
+             'Higher = stricter. Age-based decay adjusts the threshold automatically.')},
+        {'label': _('Возрастной decay порога', 'Age-based threshold decay'),
+         'key': 'MEMORY_DEDUP_AGE_DECAY', 'type': 'checkbutton', 'default_checkbutton': True,
+         'tooltip': _(
+             'Строже для свежих (<7 дн: +0.03) и мягче для старых (>30 дн: −0.04) воспоминаний.',
+             'Stricter for fresh (<7d: +0.03) and looser for old (>30d: −0.04) memories.')},
+        {'type': 'button_group', 'buttons': [
+            {'label': _('Найти дубли (превью)', 'Find duplicates (preview)'),
+             'command': lambda: _run_memory_dedup(self, dry_run=True)},
+            {'label': _('Слить дубли', 'Merge duplicates'),
+             'command': lambda: _run_memory_dedup(self, dry_run=False)},
+        ]},
+
         {'type': 'end'},
     ]
+
+
+def _run_memory_dedup(gui, dry_run: bool = True) -> None:
+    """Analyze or apply vector-based memory deduplication for the current character."""
+    try:
+        char_id = getattr(gui, 'current_character_id', None) or getattr(gui, '_current_char_id', None)
+        if not char_id:
+            QMessageBox.warning(
+                gui,
+                _("Дедупликация", "Deduplication"),
+                _("Не удалось определить текущего персонажа.", "Could not determine the current character."),
+            )
+            return
+
+        from managers.memory_dedup import MemoryDeduplicator
+        dedup = MemoryDeduplicator(char_id)
+
+        try:
+            plan = dedup.analyze()
+        except ImportError:
+            QMessageBox.warning(
+                gui,
+                _("Дедупликация", "Deduplication"),
+                _("numpy не установлен — векторная дедупликация недоступна.",
+                  "numpy is not installed — vector deduplication is unavailable."),
+            )
+            return
+
+        if len(plan) == 0:
+            QMessageBox.information(
+                gui,
+                _("Дедупликация", "Deduplication"),
+                _("Дублей не найдено (или эмбеддинги ещё не посчитаны).",
+                  "No duplicates found (or embeddings are not yet computed)."),
+            )
+            return
+
+        if dry_run:
+            lines = [_("Найдены потенциальные дубли:", "Potential duplicates found:")]
+            for p in plan.pairs:
+                sim_pct = f"{p.similarity * 100:.1f}%"
+                src_preview = p.source_content[:60].replace("\n", " ")
+                tgt_preview = p.target_content[:60].replace("\n", " ")
+                lines.append(
+                    f"  #{p.source_id} → #{p.target_id}  [{sim_pct}]\n"
+                    f"    src: {src_preview}\n"
+                    f"    tgt: {tgt_preview}"
+                )
+            QMessageBox.information(
+                gui,
+                _("Дедупликация — предпросмотр", "Deduplication — preview"),
+                "\n\n".join(lines),
+            )
+        else:
+            confirm = QMessageBox.question(
+                gui,
+                _("Слить дубли?", "Merge duplicates?"),
+                _( f"Будет слито {len(plan)} пар воспоминаний. Продолжить?",
+                   f"Will merge {len(plan)} memory pairs. Continue?"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+
+            from managers.memory_manager import MemoryManager
+            mm = MemoryManager(char_id)
+            result = dedup.apply(plan, mm)
+            QMessageBox.information(
+                gui,
+                _("Дедупликация завершена", "Deduplication complete"),
+                _( f"Слито: {result['merged']}, ошибок: {result['failed']}.",
+                   f"Merged: {result['merged']}, failed: {result['failed']}."),
+            )
+
+    except Exception as e:
+        QMessageBox.critical(
+            gui,
+            _("Ошибка дедупликации", "Deduplication error"),
+            str(e),
+        )
 
 
 def _build_query_tail_config(self) -> list:

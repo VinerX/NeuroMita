@@ -271,6 +271,12 @@ class MemoryManager:
             except Exception:
                 pass
 
+        # TTL-очистка (опционально, если включена)
+        try:
+            self.apply_ttl_cleanup()
+        except Exception as e:
+            logging.warning(f"[MemoryManager] TTL cleanup in prune failed (ignored): {e}", exc_info=True)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -529,6 +535,176 @@ class MemoryManager:
             except Exception:
                 pass
 
+    def merge_memories(self, source_id: int, target_id: int, new_content: Optional[str] = None) -> bool:
+        """
+        Merge source memory into target:
+        - Update target content (if new_content provided, otherwise keep target's)
+        - Transfer entities from source to target
+        - Re-embed target in background
+        - Soft-delete source (is_deleted=1)
+        Returns True on success.
+        """
+        if source_id == target_id:
+            logging.warning(f"[MemoryManager] merge_memories: source == target ({source_id}), skipped.")
+            return False
+
+        cols = self._mem_cols()
+        final_content = None
+
+        try:
+            with self.db.connection() as conn:
+                cur = conn.cursor()
+
+                # Fetch source
+                cur.execute(
+                    "SELECT content, entities FROM memories WHERE character_id=? AND eternal_id=? AND is_deleted=0",
+                    (self.character_name, source_id),
+                )
+                src = cur.fetchone()
+                if not src:
+                    logging.warning(f"[MemoryManager] merge_memories: source #{source_id} not found or deleted.")
+                    return False
+
+                # Fetch target
+                cur.execute(
+                    "SELECT content, entities FROM memories WHERE character_id=? AND eternal_id=? AND is_deleted=0",
+                    (self.character_name, target_id),
+                )
+                tgt = cur.fetchone()
+                if not tgt:
+                    logging.warning(f"[MemoryManager] merge_memories: target #{target_id} not found or deleted.")
+                    return False
+
+                # Merge entity sets
+                try:
+                    src_ents = set(json.loads(src[1] or "[]"))
+                except (json.JSONDecodeError, TypeError):
+                    src_ents = set()
+                try:
+                    tgt_ents = set(json.loads(tgt[1] or "[]"))
+                except (json.JSONDecodeError, TypeError):
+                    tgt_ents = set()
+                merged_ents_json = json.dumps(sorted(src_ents | tgt_ents), ensure_ascii=False)
+
+                final_content = new_content if new_content is not None else tgt[0]
+                now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+
+                if "entities" in cols:
+                    cur.execute(
+                        "UPDATE memories SET content=?, entities=?, date_created=? WHERE character_id=? AND eternal_id=?",
+                        (final_content, merged_ents_json, now, self.character_name, target_id),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE memories SET content=?, date_created=? WHERE character_id=? AND eternal_id=?",
+                        (final_content, now, self.character_name, target_id),
+                    )
+
+                # Soft-delete source
+                cur.execute(
+                    "UPDATE memories SET is_deleted=1 WHERE character_id=? AND eternal_id=?",
+                    (self.character_name, source_id),
+                )
+                conn.commit()
+
+        except Exception as e:
+            logging.warning(f"[MemoryManager] merge_memories failed: {e}", exc_info=True)
+            return False
+
+        # Recalculate since source was deleted and target content may have changed
+        self._calculate_total_characters()
+
+        # Re-embed target in background
+        if self.rag and final_content is not None:
+            try:
+                rag = self.rag
+                eid = int(target_id)
+                txt = str(final_content)
+
+                def _embed_job():
+                    try:
+                        rag.update_memory_embedding(eid, txt)
+                    except Exception as e:
+                        logging.warning(f"RAG failed to update memory embedding (ignored): {e}", exc_info=True)
+
+                self._get_embed_executor().submit(_embed_job)
+            except Exception as e:
+                logging.warning(f"RAG failed to schedule memory embedding (ignored): {e}", exc_info=True)
+
+        logging.info(f"[MemoryManager] Merged memory #{source_id} into #{target_id}")
+        return True
+
+    def apply_ttl_cleanup(self) -> int:
+        """
+        Mark old low/normal-priority memories as forgotten (is_forgotten=1) based on TTL settings.
+        Controlled by MEMORY_TTL_ENABLED, MEMORY_TTL_LOW_DAYS, MEMORY_TTL_NORMAL_DAYS.
+        Returns count of newly forgotten memories.
+        """
+        try:
+            enabled = SettingsManager.get("MEMORY_TTL_ENABLED", False)
+            if str(enabled).lower() in ("false", "0", "", "none"):
+                return 0
+        except Exception:
+            return 0
+
+        cols = self._mem_cols()
+        if "is_forgotten" not in cols:
+            return 0
+
+        try:
+            ttl_low = int(SettingsManager.get("MEMORY_TTL_LOW_DAYS", 30))
+            ttl_normal = int(SettingsManager.get("MEMORY_TTL_NORMAL_DAYS", 0))
+        except Exception:
+            ttl_low, ttl_normal = 30, 0
+
+        # SQLite stores dates as "dd.mm.yyyy HH:MM:SS" — convert for julianday()
+        _date_expr = (
+            "CASE "
+            "WHEN date_created LIKE '__.__.____ __:__:__' "
+            "THEN substr(date_created,7,4)||'-'||substr(date_created,4,2)||'-'||substr(date_created,1,2)||' '||substr(date_created,12) "
+            "ELSE date_created END"
+        )
+
+        total = 0
+        try:
+            with self.db.connection() as conn:
+                cur = conn.cursor()
+
+                if ttl_low > 0:
+                    cur.execute(
+                        f"""
+                        UPDATE memories SET is_forgotten=1
+                        WHERE character_id=? AND is_deleted=0 AND is_forgotten=0
+                          AND LOWER(priority)='low'
+                          AND julianday('now') - julianday({_date_expr}) > ?
+                        """,
+                        (self.character_name, ttl_low),
+                    )
+                    total += cur.rowcount
+
+                if ttl_normal > 0:
+                    cur.execute(
+                        f"""
+                        UPDATE memories SET is_forgotten=1
+                        WHERE character_id=? AND is_deleted=0 AND is_forgotten=0
+                          AND LOWER(priority)='normal'
+                          AND julianday('now') - julianday({_date_expr}) > ?
+                        """,
+                        (self.character_name, ttl_normal),
+                    )
+                    total += cur.rowcount
+
+                if total > 0:
+                    conn.commit()
+        except Exception as e:
+            logging.warning(f"[MemoryManager] apply_ttl_cleanup failed: {e}", exc_info=True)
+
+        if total > 0:
+            self._calculate_total_characters()
+            logging.info(f"[MemoryManager] TTL cleanup: forgot {total} memories for '{self.character_name}'")
+
+        return total
+
     def clear_memories(self):
         conn = self.db.get_connection()
         try:
@@ -650,7 +826,8 @@ class MemoryManager:
             "Example of memory commands:",
             "<-memory>2</memory>",
             "<+memory>high|content</memory>",
-            "<#memory>4|low|content</memory>"
+            "<#memory>4|low|content</memory>",
+            "<~memory>3→7:merged content</~memory>  (merge #3 into #7, content optional)",
             "Prioritize English in memories to save tokens."
         ]
 
