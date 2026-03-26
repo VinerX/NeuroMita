@@ -137,6 +137,16 @@ class MemoryDeduplicator:
         if len(vecs) < 2:
             return DedupPlan()
 
+        # Filter to the most common embedding dimension (mixed models in DB cause inhomogeneous shapes).
+        from collections import Counter
+        dim_counts = Counter(v.shape[0] for v in vecs)
+        dominant_dim = dim_counts.most_common(1)[0][0]
+        filtered = [(e, c, p, a, v) for e, c, p, a, v in zip(eids, contents, priorities, ages, vecs)
+                    if v.shape[0] == dominant_dim]
+        if len(filtered) < 2:
+            return DedupPlan()
+        eids, contents, priorities, ages, vecs = map(list, zip(*filtered))
+
         # Cosine similarity matrix
         matrix = np.array(vecs, dtype=np.float32)
         norms = np.linalg.norm(matrix, axis=1, keepdims=True)
