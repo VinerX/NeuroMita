@@ -1454,15 +1454,17 @@ def _build_cross_encoder_config(self) -> list:
          'tooltip': _(
              'Полное HuggingFace имя cross-encoder модели, напр. "cross-encoder/ms-marco-MiniLM-L-6-v2".',
              'Full HuggingFace model name, e.g. "cross-encoder/ms-marco-MiniLM-L-6-v2".')},
-        {'label': _('Топ-K кандидатов для реранкинга', 'Top-K candidates to rerank'),
+        {'label': _('Мин. кандидатов для реранкинга (Top-K мин.)', 'Min candidates to rerank (Top-K min)'),
          'key': 'RAG_CROSS_ENCODER_TOP_K', 'type': 'entry', 'default': 20,
          'validation': self.validate_positive_integer,
          'depends_on': 'RAG_CROSS_ENCODER_ENABLED',
          'tooltip': _(
-             'Сколько лучших кандидатов из первого прохода передать в cross-encoder. '
-             'Больше — точнее, но медленнее. Рекомендуется 20.',
-             'How many top candidates from the first pass to send to the cross-encoder. '
-             'More = more accurate but slower. Recommended: 20.')},
+             'Минимум кандидатов, передаваемых в cross-encoder. '
+             'Итоговое число = max(это, пул × ratio), но не больше жёсткого лимита CE. '
+             'Гарантирует что CE получает хотя бы N элементов даже при маленьком пуле.',
+             'Minimum candidates sent to the cross-encoder. '
+             'Effective count = max(this, pool × ratio), capped by CE hard limit. '
+             'Ensures CE always sees at least N items even with a small pool.')},
         {'label': _('Жёсткий лимит кандидатов CE (0 = выкл.)', 'CE hard item cap (0 = off)'),
          'key': 'RAG_CE_MAX_ITEMS', 'type': 'entry', 'default': 0,
          'validation': self.validate_positive_integer_or_zero,

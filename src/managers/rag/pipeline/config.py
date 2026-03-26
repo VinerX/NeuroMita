@@ -159,7 +159,7 @@ class RAGConfig:
     # Prevents GPU saturation on large histories (e.g. pool=1512 → ratio gives 604,
     # cap at 150 → 4× faster without meaningful recall loss since pool is cosine-sorted).
     # Set to 0 to disable the cap.
-    ce_max_items: int = 0
+    ce_max_items: int = 150
     # Early exit: stop scoring mini-batches once best CE score exceeds this threshold.
     # Unscored candidates keep their linear scores.  Set > 1.0 to disable (default).
     ce_early_exit_score: float = 1.1
