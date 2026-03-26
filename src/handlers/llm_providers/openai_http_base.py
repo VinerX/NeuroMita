@@ -193,7 +193,8 @@ class OpenAIHTTPProviderBase(BaseProvider):
             req.depth += 1
             return self.generate(req)
 
-        return (message.get("content") or "").strip()
+        content = message.get("content") or message.get("reasoning_content") or ""
+        return content.strip()
 
     def _handle_stream(self, resp: requests.Response, stream_callback: Optional[callable] = None) -> str:
         parts: List[str] = []
@@ -216,7 +217,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 try:
                     obj = json.loads(chunk)
                     delta = obj.get("choices", [{}])[0].get("delta", {}) or {}
-                    text = delta.get("content", "") or ""
+                    text = delta.get("content", "") or delta.get("reasoning_content", "") or ""
                     if text:
                         if stream_callback:
                             stream_callback(text)
