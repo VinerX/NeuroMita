@@ -155,6 +155,11 @@ class RAGConfig:
     # Ensures CE never sees more than a fraction of the pool (faster for large pools)
     # and fewer pairs for small pools (no waste).  Set to 1.0 to disable.
     ce_top_k_ratio: float = 0.4
+    # Hard cap on items sent to CE regardless of pool size or ratio.
+    # Prevents GPU saturation on large histories (e.g. pool=1512 → ratio gives 604,
+    # cap at 150 → 4× faster without meaningful recall loss since pool is cosine-sorted).
+    # Set to 0 to disable the cap.
+    ce_max_items: int = 0
     # Early exit: stop scoring mini-batches once best CE score exceeds this threshold.
     # Unscored candidates keep their linear scores.  Set > 1.0 to disable (default).
     ce_early_exit_score: float = 1.1
@@ -243,6 +248,7 @@ class RAGConfig:
         cfg.cross_encoder_top_k = _i(SettingsManager.get("RAG_CROSS_ENCODER_TOP_K", 30), 30)
         cfg.cross_encoder_alpha = _f(SettingsManager.get("RAG_CROSS_ENCODER_ALPHA", 1.0), 1.0)
         cfg.ce_top_k_ratio = _f(SettingsManager.get("RAG_CE_TOP_K_RATIO", 0.4), 0.4)
+        cfg.ce_max_items = _i(SettingsManager.get("RAG_CE_MAX_ITEMS", 0), 0)
         cfg.ce_early_exit_score = _f(SettingsManager.get("RAG_CE_EARLY_EXIT_SCORE", 1.1), 1.1)
         cfg.ce_int8 = _b(SettingsManager.get("RAG_CE_INT8", False), False)
 
@@ -285,6 +291,7 @@ class RAGConfig:
         self.cross_encoder_top_k = max(1, self.cross_encoder_top_k)
         self.cross_encoder_alpha = max(0.0, min(1.0, self.cross_encoder_alpha))
         self.ce_top_k_ratio = max(0.05, min(1.0, self.ce_top_k_ratio))
+        self.ce_max_items = max(0, self.ce_max_items)
         self.ce_early_exit_score = max(0.5, self.ce_early_exit_score)
         self.rrf_k = max(1, self.rrf_k)
         self.sentence_min_len = max(1, self.sentence_min_len)
@@ -340,6 +347,7 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_CROSS_ENCODER_TOP_K": 75,
     "RAG_CROSS_ENCODER_ALPHA": 0.68,
     "RAG_CE_TOP_K_RATIO": 0.4,
+    "RAG_CE_MAX_ITEMS": 150,
     "RAG_CE_EARLY_EXIT_SCORE": 1.1,
     "RAG_CE_INT8": False,
     "RAG_USE_RRF": False,

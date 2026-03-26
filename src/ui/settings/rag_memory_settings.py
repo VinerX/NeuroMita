@@ -1463,6 +1463,17 @@ def _build_cross_encoder_config(self) -> list:
              'Больше — точнее, но медленнее. Рекомендуется 20.',
              'How many top candidates from the first pass to send to the cross-encoder. '
              'More = more accurate but slower. Recommended: 20.')},
+        {'label': _('Жёсткий лимит кандидатов CE (0 = выкл.)', 'CE hard item cap (0 = off)'),
+         'key': 'RAG_CE_MAX_ITEMS', 'type': 'entry', 'default': 0,
+         'validation': self.validate_positive_integer_or_zero,
+         'depends_on': 'RAG_CROSS_ENCODER_ENABLED',
+         'tooltip': _(
+             'Максимум элементов, отправляемых в cross-encoder независимо от Top-K и ratio. '
+             'Предотвращает зависание при большой истории (напр. пул 1500 → ratio даёт 600 → с лимитом 150 = 4× быстрее). '
+             '0 = лимит выключен (старое поведение). Рекомендуется 150.',
+             'Hard cap on items sent to the cross-encoder regardless of Top-K and ratio. '
+             'Prevents slowdowns with large histories (e.g. pool 1500 → ratio gives 600 → cap 150 = 4× faster). '
+             '0 = disabled (old behaviour). Recommended: 150.')},
         {'type': 'button_group', 'buttons': [
             {'label': _('Обновить статус', 'Refresh status'),
              'command': lambda: _refresh_ce_status(self)},
