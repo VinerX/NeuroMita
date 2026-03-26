@@ -459,8 +459,15 @@ def cmd_optimize(args):
             f"Best value: {result.best_value:.4f}",
             f"Trials: {result.n_trials}",
             f"",
-            f"Best parameters:",
         ]
+        fixed = {k: v for k, v in sorted(config.fixed_overrides.items())
+                 if k not in ("RAG_ENABLED", "RAG_DETAILED_LOGS")}
+        if fixed:
+            lines.append("Fixed overrides (not optimized):")
+            for k, v in fixed.items():
+                lines.append(f"  {k}: {v}")
+            lines.append("")
+        lines.append("Best parameters (optimized):")
         for k, v in sorted(result.best_params.items()):
             lines.append(f"  {k}: {v}")
         lines.append("")
