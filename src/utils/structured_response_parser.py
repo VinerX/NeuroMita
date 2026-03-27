@@ -106,8 +106,14 @@ def _try_convert_legacy_flat_json(data: dict) -> "Optional[StructuredResponse]":
         text=text.strip(),
         emotions=_to_list(data.get("e")),
         animations=_to_list(data.get("a")),
-        face_params=_to_list(data.get("f") or data.get("fp")),
+        commands=_to_list(data.get("c")),
         idle_animations=_to_list(data.get("ia")),
+        face_params=_to_list(data.get("f") or data.get("fp")),
+        music=_to_list(data.get("music")),
+        visual_effects=_to_list(data.get("v")),
+        movement_modes=_to_list(data.get("move")),
+        clothes=_to_list(data.get("cloth")),
+        interactions=_to_list(data.get("inter")),
     )
 
     # Parse "p" field: "attitude,boredom,stress"

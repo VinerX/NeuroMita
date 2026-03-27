@@ -38,6 +38,7 @@ Schema:
 Rules:
 - "text" is REQUIRED in every segment. All other segment fields are optional — omit them if not needed.
 - attitude_change, boredom_change, stress_change: ALWAYS include. Use decimal values in range -5.00 to 5.00. Values above 4 only in emotional moments. Avoid zero unless completely neutral.
+- memory_add/memory_update/memory_delete: omit entirely if no memory operations needed (do NOT output empty arrays).
 - memory_add format: "priority|content" where priority is one of: low, normal, high, critical
 - memory_update format: "number|new_content"
 - memory_delete format: single number "5", comma-separated "5,6,7", or range "5-9"
@@ -53,8 +54,6 @@ Example response:
   "boredom_change": -0.3,
   "stress_change": 0,
   "memory_add": ["normal|The player asked about cats"],
-  "memory_update": [],
-  "memory_delete": [],
   "segments": [
     {
       "text": "Oh, you like cats too?",

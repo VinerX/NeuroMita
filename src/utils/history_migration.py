@@ -64,6 +64,53 @@ def _make_empty_segment() -> dict[str, Any]:
     }
 
 
+def _try_migrate_flat_json(content: str) -> "tuple[str, dict[str, Any]] | None":
+    """
+    Если content — это сохранённый flat JSON (p/love/e/a/c/text...),
+    конвертируем его в (clean_text, structured_data).
+    Возвращает None, если content не похож на flat JSON.
+    """
+    stripped = content.strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        data = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("text"), str):
+        return None
+
+    def _lst(val: Any) -> list:
+        if val is None:
+            return []
+        return [str(val)] if isinstance(val, (str, int, float)) else [str(v) for v in val]
+
+    seg: dict[str, Any] = {"text": data["text"].strip()}
+    for src_key, dst_key in (
+        ("e",     "emotions"),
+        ("a",     "animations"),
+        ("c",     "commands"),
+        ("ia",    "idle_animations"),
+        ("f",     "face_params"),
+        ("fp",    "face_params"),
+        ("music", "music"),
+        ("v",     "visual_effects"),
+        ("move",  "movement_modes"),
+        ("cloth", "clothes"),
+        ("inter", "interactions"),
+    ):
+        values = _lst(data.get(src_key))
+        if values:
+            existing = seg.get(dst_key, [])
+            for v in values:
+                if v not in existing:
+                    existing.append(v)
+            seg[dst_key] = existing
+
+    clean_text = seg["text"]
+    return clean_text, {"segments": [seg]}
+
+
 def migrate_content(content: str) -> tuple[str, dict[str, Any]]:
     """
     Конвертирует строку старого формата в (clean_text, structured_data).
@@ -72,6 +119,11 @@ def migrate_content(content: str) -> tuple[str, dict[str, Any]]:
         clean_text    — строка без тегов (идёт в msg["content"])
         structured_data — dict с полем "segments" (идёт в msg["structured_data"])
     """
+    # Если сообщение было сохранено как flat JSON — обрабатываем отдельно
+    flat_result = _try_migrate_flat_json(content)
+    if flat_result is not None:
+        return flat_result
+
     seg = _make_empty_segment()
 
     # Сначала вырезаем теги памяти (у них несимметричный open/close: <+memory>...</memory>)
