@@ -63,6 +63,12 @@ def parse_structured_response(raw_text: str) -> StructuredResponse:
         ) from e
 
     if not response.segments:
+        converted = _try_convert_legacy_flat_json(data)
+        if converted is not None:
+            logger.warning(
+                "[StructuredResponseParser] Segments missing — used legacy flat-JSON fallback"
+            )
+            return converted
         raise StructuredResponseParseError(
             "StructuredResponse has no segments (segments list is empty)"
         )
@@ -75,6 +81,71 @@ def parse_structured_response(raw_text: str) -> StructuredResponse:
     )
 
     return response
+
+
+def _try_convert_legacy_flat_json(data: dict) -> "Optional[StructuredResponse]":
+    """
+    Silently convert old flat-JSON format to StructuredResponse.
+
+    Old format used top-level fields like p/love/e/a/f/text instead of segments.
+    Returns None if data doesn't look like old format.
+    Not mentioned in any prompt — hidden safety net only.
+    """
+    from schemas.structured_response import ResponseSegment
+
+    text = data.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None
+
+    def _to_list(val):
+        if val is None:
+            return []
+        return [str(val)] if isinstance(val, str) else [str(v) for v in val]
+
+    seg = ResponseSegment(
+        text=text.strip(),
+        emotions=_to_list(data.get("e")),
+        animations=_to_list(data.get("a")),
+        face_params=_to_list(data.get("f") or data.get("fp")),
+        idle_animations=_to_list(data.get("ia")),
+    )
+
+    # Parse "p" field: "attitude,boredom,stress"
+    attitude, boredom, stress = 0.0, 0.0, 0.0
+    p_val = data.get("p")
+    if isinstance(p_val, str):
+        parts = p_val.split(",")
+        try:
+            if len(parts) >= 1:
+                attitude = float(parts[0])
+            if len(parts) >= 2:
+                boredom = float(parts[1])
+            if len(parts) >= 3:
+                stress = float(parts[2])
+        except ValueError:
+            pass
+
+    # "love" overrides attitude_change if present
+    love_val = data.get("love")
+    if love_val is not None:
+        try:
+            attitude = float(love_val)
+        except (TypeError, ValueError):
+            pass
+
+    # Convert memory list: [{id, operation}] → memory_delete ids
+    mem_delete = []
+    for m in (data.get("memory") or []):
+        if isinstance(m, dict) and str(m.get("operation", "")).lower() == "delete":
+            mem_delete.append(str(m.get("id", "")))
+
+    return StructuredResponse(
+        segments=[seg],
+        attitude_change=attitude,
+        boredom_change=boredom,
+        stress_change=stress,
+        memory_delete=mem_delete,
+    )
 
 
 def _extract_json_string(text: str) -> str:

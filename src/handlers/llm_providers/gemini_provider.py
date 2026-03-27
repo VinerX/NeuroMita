@@ -181,12 +181,19 @@ class GeminiProvider(BaseProvider):
         gen_cfg = self._map_unified_params_to_generation_config(req.extra, req.model)
 
         # Add structured output for Gemini when capability is enabled.
-        # Use prompt-guided JSON mode (responseMimeType only, no responseSchema).
-        # responseSchema triggers constrained decoding which hangs on complex schemas.
+        # Default mode "gemini_schema": pass responseSchema for strict enforcement.
+        # Escape hatch: set structured_output_mode="gemini_prompt" in preset to use
+        # prompt-guided JSON only (old behavior, no schema constraint).
         caps = req.capabilities or {}
         if caps.get("structured_output", False):
             gen_cfg["responseMimeType"] = "application/json"
-            logger.debug("[GeminiProvider] Structured output enabled: responseMimeType=application/json (prompt-guided)")
+            mode = caps.get("structured_output_mode", "gemini_schema")
+            if mode != "gemini_prompt":
+                from schemas.structured_response import StructuredResponse as _SR
+                gen_cfg["responseSchema"] = _SR.gemini_schema_dict()
+                logger.debug("[GeminiProvider] Structured output: responseSchema passed (gemini_schema mode)")
+            else:
+                logger.debug("[GeminiProvider] Structured output: prompt-guided only (gemini_prompt mode)")
 
         if gen_cfg:
             data["generationConfig"] = gen_cfg
