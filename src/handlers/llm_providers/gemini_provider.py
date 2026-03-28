@@ -141,6 +141,15 @@ class GeminiProvider(BaseProvider):
         if model in ("gemini-2.5-pro-exp-03-25", "gemini-2.5-flash-preview-04-17"):
             cfg.pop("presencePenalty", None)
 
+        # Thinking support (Gemini 2.5+)
+        if u.get("enable_thinking"):
+            budget = u.get("gemini_thinking_budget")
+            thinking_cfg: dict = {"includeThoughts": True}
+            if budget is not None:
+                thinking_cfg["thinkingBudget"] = int(budget)
+            cfg["thinkingConfig"] = thinking_cfg
+            logger.debug(f"[GeminiProvider] thinkingConfig enabled: {thinking_cfg}")
+
         return filter_jsonable_params(cfg)
 
     def generate_request_gemini(self, req: LLMRequest) -> str:
@@ -236,25 +245,44 @@ class GeminiProvider(BaseProvider):
 
         try:
             response_data = response.json()
-            first_part = response_data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0]
+            parts = response_data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])
 
-            func_call = first_part.get("functionCall")
+            think_texts = []
+            text_parts_list = []
+            func_call = None
+
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("functionCall"):
+                    func_call = part.get("functionCall")
+                elif part.get("thought"):
+                    t = part.get("text", "")
+                    if t:
+                        think_texts.append(t)
+                else:
+                    t = part.get("text", "")
+                    if t:
+                        text_parts_list.append(t)
+
             if func_call:
                 name = func_call.get("name")
                 args = func_call.get("args", {})
                 tm = req.tool_manager
                 if tm:
                     tool_result = tm.run(name, args)
-
                     new_messages = copy.deepcopy(req.messages)
                     new_messages.append(tm.mk_tool_call_msg(self.tools_dialect_id, name, args))
                     new_messages.append(tm.mk_tool_resp_msg(self.tools_dialect_id, name, tool_result))
-
                     req.messages = new_messages
                     req.depth += 1
                     return self.generate_request_gemini(req)
 
-            return first_part.get("text", "") or "…"
+            response_text = "".join(text_parts_list) or "…"
+            if think_texts:
+                think_block = "<think>" + "\n".join(think_texts) + "</think>"
+                response_text = think_block + "\n" + response_text
+            return response_text
         except Exception as e:
             logger.error(f"Ошибка парсинга Gemini response: {e}", exc_info=True)
             return None
@@ -269,16 +297,27 @@ class GeminiProvider(BaseProvider):
                 while json_buffer.strip():
                     try:
                         result, index = decoder.raw_decode(json_buffer)
-                        generated_text = (
+                        parts = (
                             result.get("candidates", [{}])[0]
                             .get("content", {})
-                            .get("parts", [{}])[0]
-                            .get("text", "")
+                            .get("parts", [])
                         )
-                        if generated_text:
+                        for part in (parts if isinstance(parts, list) else []):
+                            if not isinstance(part, dict):
+                                continue
+                            text = part.get("text", "")
+                            if not text:
+                                continue
+                            is_thought = bool(part.get("thought"))
                             if stream_callback:
-                                stream_callback(generated_text)
-                            full_response_parts.append(generated_text)
+                                # Wrap thinking parts in <think> tags so the existing
+                                # ThinkTagStreamFilter in chat_controller routes them correctly
+                                if is_thought:
+                                    stream_callback(f"<think>{text}</think>")
+                                else:
+                                    stream_callback(text)
+                            if not is_thought:
+                                full_response_parts.append(text)
                         json_buffer = json_buffer[index:].lstrip()
                     except json.JSONDecodeError:
                         break
