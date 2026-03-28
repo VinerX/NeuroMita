@@ -44,6 +44,7 @@ class ModelRuntimeConfig:
     thinking_budget: float = 0.0
     log_probability: float = 0.0
     enable_thinking: bool | None = None  # None = не передавать параметр
+    gemini_thinking_budget: int | None = None  # -1=dynamic, 0=off, >0=token limit
 
     # costs/limits
     token_cost_input: float = 0.0432
@@ -63,6 +64,9 @@ class ModelRuntimeConfig:
     image_quality_reduction_use_percentage: bool = False
     image_quality_reduction_min_quality: int = 30
     image_quality_reduction_decrease_rate: int = 5
+
+    # tracks which params were forced by a preset override (bypasses USE_MODEL_* global flags)
+    preset_forced_params: frozenset = frozenset()
 
     def apply_setting(self, key: str, value: Any) -> None:
         """
@@ -88,6 +92,8 @@ class ModelRuntimeConfig:
                 self.thinking_budget = _to_float(value, self.thinking_budget)
             elif key == "ENABLE_THINKING":
                 self.enable_thinking = _to_bool(value, True) if value != "" and value is not None else None
+            elif key == "GEMINI_THINKING_BUDGET":
+                self.gemini_thinking_budget = _to_int(value, 8192) if value != "" and value is not None else None
 
             elif key == "MODEL_MESSAGE_LIMIT":
                 self.memory_limit = _to_int(value, self.memory_limit)
@@ -141,6 +147,7 @@ class ModelConfigLoader:
             thinking_budget=_to_float(s.get("MODEL_THINKING_BUDGET", 0.0), 0.0),
             log_probability=_to_float(s.get("MODEL_LOG_PROBABILITY", 0.0), 0.0),
             enable_thinking=_to_bool(s.get("ENABLE_THINKING"), True) if s.get("ENABLE_THINKING") is not None else None,
+            gemini_thinking_budget=_to_int(s.get("GEMINI_THINKING_BUDGET", 8192), 8192) if s.get("GEMINI_THINKING_BUDGET") is not None else None,
 
             token_cost_input=_to_float(s.get("TOKEN_COST_INPUT", 0.0432), 0.0432),
             token_cost_output=_to_float(s.get("TOKEN_COST_OUTPUT", 0.1728), 0.1728),
@@ -161,8 +168,54 @@ class ModelConfigLoader:
 
     def effective_for_preset(self, base: ModelRuntimeConfig, preset_settings: Any, model: str) -> ModelRuntimeConfig:
         """
-        Заготовка под будущее:
-        здесь можно будет применить overrides параметров из пресета (или профиля модели).
+        Apply per-preset generation parameter overrides on top of the global config.
+        Each override entry: {param: {"enabled": bool, "value": Any}}
         """
-        _ = (preset_settings, model)
-        return base
+        import copy
+        overrides = getattr(preset_settings, "generation_overrides", None) or {}
+        if not overrides:
+            return base
+
+        cfg = copy.copy(base)
+        forced = set()
+        mapping = {
+            "temperature":      ("temperature",        _to_float),
+            "max_tokens":       ("max_response_tokens", _to_int),
+            "top_p":            ("top_p",              _to_float),
+            "top_k":            ("top_k",              _to_int),
+            "presence_penalty": ("presence_penalty",   _to_float),
+            "frequency_penalty":("frequency_penalty",  _to_float),
+            "thinking_budget":  ("thinking_budget",    _to_float),
+        }
+        applied = []
+        for key, (attr, cast) in mapping.items():
+            spec = overrides.get(key) or {}
+            if spec.get("enabled") and "value" in spec:
+                try:
+                    new_val = cast(spec["value"], getattr(cfg, attr))
+                    setattr(cfg, attr, new_val)
+                    forced.add(key)
+                    applied.append(f"{key}={new_val}")
+                except Exception as e:
+                    logger.warning(f"[ModelConfigLoader] Failed to apply preset override {key}={spec['value']}: {e}")
+
+        # enable_thinking: boolean or None (None = don't send the param)
+        et_spec = overrides.get("enable_thinking") or {}
+        if et_spec.get("enabled"):
+            val = et_spec.get("value")
+            cfg.enable_thinking = _to_bool(val, True) if val is not None else None
+            forced.add("enable_thinking")
+            applied.append(f"enable_thinking={cfg.enable_thinking}")
+
+        if applied:
+            preset_name = getattr(preset_settings, "preset_name", "?")
+            logger.info(f"[ModelConfigLoader] Preset '{preset_name}' overrides applied: {', '.join(applied)}")
+            logger.info(
+                f"[ModelConfigLoader] Effective config — temperature={cfg.temperature}, "
+                f"max_response_tokens={cfg.max_response_tokens}, top_p={cfg.top_p}, "
+                f"top_k={cfg.top_k}, presence_penalty={cfg.presence_penalty}, "
+                f"frequency_penalty={cfg.frequency_penalty}, enable_thinking={cfg.enable_thinking}"
+            )
+
+        cfg.preset_forced_params = frozenset(forced)
+        return cfg

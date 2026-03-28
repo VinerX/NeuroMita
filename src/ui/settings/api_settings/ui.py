@@ -3,7 +3,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, QSize, QStringListModel
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton,
-    QToolButton, QComboBox, QSizePolicy, QCompleter, QTextEdit
+    QToolButton, QComboBox, QSizePolicy, QCompleter, QTextEdit, QCheckBox, QLineEdit
 )
 import qtawesome as qta
 
@@ -179,6 +179,72 @@ def build_api_settings_ui(self, parent_layout):
     self.configure_pipeline_btn = QPushButton(_("Настроить pipeline", "Configure pipeline"))
     self.configure_pipeline_btn.setIcon(qta.icon('fa5s.sliders-h', color='#3498db'))
     self.protocol_section.add_widget(self.configure_pipeline_btn)
+
+    # --- Collapsible generation overrides section ---
+    self.gen_overrides_section = CollapsibleSection(
+        _("Параметры генерации (переопределение)", "Generation overrides"), self, icon_name="fa5s.sliders-h"
+    )
+    api_container_layout.addWidget(self.gen_overrides_section)
+
+    gen_note = QLabel(_("Переопределяют глобальные настройки только для этого пресета.",
+                        "Override global generation settings for this preset only."))
+    gen_note.setWordWrap(True)
+    gen_note.setStyleSheet("color: #bfbfbf; font-size: 11px;")
+    self.gen_overrides_section.add_widget(gen_note)
+
+    # Numeric generation params: (key, display_label, default_value)
+    _gen_params = [
+        ("temperature",       _("Температура",       "Temperature"),       "1.0"),
+        ("max_tokens",        _("Макс. токенов",      "Max tokens"),        "2500"),
+        ("top_p",             "Top-P",                                      "1.0"),
+        ("top_k",             "Top-K",                                      "0"),
+        ("presence_penalty",  _("Штраф присутствия", "Presence penalty"),   "0.0"),
+        ("frequency_penalty", _("Штраф частоты",     "Frequency penalty"),  "0.0"),
+        ("thinking_budget",   _("Бюджет мышления",   "Thinking budget"),    "0.0"),
+    ]
+    self.gen_override_widgets = {}
+    for param_key, param_label, default_val in _gen_params:
+        row = QWidget()
+        row_lay = QHBoxLayout(row)
+        row_lay.setContentsMargins(0, 1, 0, 1)
+        row_lay.setSpacing(6)
+        chk = QCheckBox()
+        chk.setFixedWidth(18)
+        chk.setToolTip(_("Включить переопределение", "Enable override"))
+        lbl = QLabel(param_label)
+        lbl.setMinimumWidth(130)
+        lbl.setMaximumWidth(130)
+        val_edit = QLineEdit(default_val)
+        val_edit.setEnabled(False)
+        val_edit.setMaximumWidth(80)
+        chk.toggled.connect(val_edit.setEnabled)
+        row_lay.addWidget(chk)
+        row_lay.addWidget(lbl)
+        row_lay.addWidget(val_edit)
+        row_lay.addStretch()
+        self.gen_overrides_section.add_widget(row)
+        self.gen_override_widgets[param_key] = (chk, val_edit)
+
+    # enable_thinking override (boolean value)
+    et_row = QWidget()
+    et_lay = QHBoxLayout(et_row)
+    et_lay.setContentsMargins(0, 1, 0, 1)
+    et_lay.setSpacing(6)
+    et_enable_chk = QCheckBox()
+    et_enable_chk.setFixedWidth(18)
+    et_enable_chk.setToolTip(_("Включить переопределение", "Enable override"))
+    et_lbl = QLabel(_("Режим мышления", "Enable thinking"))
+    et_lbl.setMinimumWidth(130)
+    et_lbl.setMaximumWidth(130)
+    et_val_chk = QCheckBox(_("Вкл", "On"))
+    et_val_chk.setEnabled(False)
+    et_enable_chk.toggled.connect(et_val_chk.setEnabled)
+    et_lay.addWidget(et_enable_chk)
+    et_lay.addWidget(et_lbl)
+    et_lay.addWidget(et_val_chk)
+    et_lay.addStretch()
+    self.gen_overrides_section.add_widget(et_row)
+    self.gen_override_widgets["enable_thinking"] = (et_enable_chk, et_val_chk)
 
     # buttons
     self.test_button = QPushButton(_("Тест подключения", "Test connection"))

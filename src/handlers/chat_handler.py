@@ -128,6 +128,8 @@ class ChatModel:
                 top_p=cfg.top_p,
                 thinking_budget=cfg.thinking_budget,
                 enable_thinking=cfg.enable_thinking,
+                gemini_thinking_budget=getattr(cfg, "gemini_thinking_budget", None),
+                force_params=getattr(cfg, "preset_forced_params", frozenset()),
             )
 
             dialect = "gemini" if preset_settings.dialect_id == "gemini_generate_content" else "openai"
@@ -199,7 +201,7 @@ class ChatModel:
         logger.info(f"Using preset: {preset_settings.preset_name}")
         logger.info(f"Protocol: {preset_settings.protocol_id} | Dialect: {preset_settings.dialect_id} | Provider: {preset_settings.provider_name}")
         logger.info(f"Capabilities: {preset_settings.capabilities}")
-        logger.info(f"Max Response Tokens: {self.cfg.max_response_tokens}, Temperature: {self.cfg.temperature}")
+        logger.info(f"Max Response Tokens: {self.cfg.max_response_tokens}, Temperature: {self.cfg.temperature} (base; preset overrides applied separately)")
         logger.info(
             f"Presence Penalty: {self.cfg.presence_penalty} (Used: {bool(self.settings.get('USE_MODEL_PRESENCE_PENALTY'))})"
         )

@@ -54,6 +54,7 @@ class UserPreset:
     reserve_keys: List[str] = field(default_factory=list)
     protocol_id: str = ""
     protocol_overrides: Dict[str, Any] = field(default_factory=dict)
+    generation_overrides: Dict[str, Any] = field(default_factory=dict)
 
 
 class ApiPresetsController:
@@ -371,6 +372,10 @@ class ApiPresetsController:
         if not isinstance(po, dict):
             po = {}
 
+        go = raw.get("generation_overrides", {}) or {}
+        if not isinstance(go, dict):
+            go = {}
+
         return UserPreset(
             id=pid,
             name=name,
@@ -382,6 +387,7 @@ class ApiPresetsController:
             reserve_keys=reserve_keys,
             protocol_id=protocol_id,
             protocol_overrides=dict(po),
+            generation_overrides=dict(go),
         )
 
     def _load_presets_only(self):
@@ -649,6 +655,8 @@ class ApiPresetsController:
 
             "key": p.key,
             "reserve_keys": p.reserve_keys or [],
+            "protocol_overrides": p.protocol_overrides or {},
+            "generation_overrides": p.generation_overrides or {},
         }
         return result
 
@@ -743,6 +751,12 @@ class ApiPresetsController:
             if not isinstance(po, dict):
                 po = {}
             up.protocol_overrides = dict(po)
+
+        if "generation_overrides" in data:
+            go = data.get("generation_overrides") or {}
+            if not isinstance(go, dict):
+                go = {}
+            up.generation_overrides = dict(go)
 
         if "reserve_keys" in data:
             rk = data.get("reserve_keys") or []

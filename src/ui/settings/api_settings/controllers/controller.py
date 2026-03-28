@@ -152,6 +152,15 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
         v.api_key_row.edit.textChanged.connect(self._safe(self._on_field_changed, "key_changed"))
         v.reserve_keys_row.edit.textChanged.connect(self._safe(self._on_field_changed, "reserve_keys_changed"))
 
+        # Wire generation override widgets
+        for key, (chk, val_widget) in getattr(v, 'gen_override_widgets', {}).items():
+            chk.toggled.connect(self._safe(self._on_field_changed, f"gen_override_enable_{key}"))
+            from PyQt6.QtWidgets import QCheckBox, QLineEdit
+            if isinstance(val_widget, QCheckBox):
+                val_widget.toggled.connect(self._safe(self._on_field_changed, f"gen_override_value_{key}"))
+            elif isinstance(val_widget, QLineEdit):
+                val_widget.textChanged.connect(self._safe(self._on_field_changed, f"gen_override_value_{key}"))
+
         # IMPORTANT: pipeline button
         if hasattr(v, "configure_pipeline_btn"):
             v.configure_pipeline_btn.clicked.connect(self._safe(self._on_configure_pipeline_clicked, "configure_pipeline_clicked"))

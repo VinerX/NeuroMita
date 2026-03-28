@@ -21,6 +21,36 @@ class EditorMixin:
         except Exception:
             return None
 
+    def _read_generation_overrides(self) -> dict:
+        """Read current generation overrides state from the UI widgets."""
+        from PyQt6.QtWidgets import QCheckBox
+        widgets = getattr(self.view, 'gen_override_widgets', {})
+        overrides = {}
+        for key, (chk, val_widget) in widgets.items():
+            enabled = chk.isChecked()
+            if isinstance(val_widget, QCheckBox):
+                value = val_widget.isChecked()
+            else:
+                value = val_widget.text() if hasattr(val_widget, 'text') else ""
+            overrides[key] = {"enabled": enabled, "value": value}
+        return overrides
+
+    def _write_generation_overrides(self, overrides: dict) -> None:
+        """Populate generation overrides UI widgets from a dict."""
+        from PyQt6.QtWidgets import QCheckBox
+        widgets = getattr(self.view, 'gen_override_widgets', {})
+        for key, (chk, val_widget) in widgets.items():
+            spec = (overrides or {}).get(key) or {}
+            enabled = bool(spec.get("enabled", False))
+            chk.setChecked(enabled)
+            if isinstance(val_widget, QCheckBox):
+                val_widget.setEnabled(enabled)
+                val_widget.setChecked(bool(spec.get("value", False)))
+            else:
+                val_widget.setEnabled(enabled)
+                raw = spec.get("value")
+                val_widget.setText(str(raw) if raw is not None else "")
+
     def _get_snapshot(self) -> PresetSnapshot:
         v = self.view
         base = self._parse_base(v.template_combo.currentData())
@@ -31,6 +61,7 @@ class EditorMixin:
             base=base,
             reserve_keys_text=str(v.reserve_keys_row.text() or "").strip(),
             protocol_id=self._current_protocol_id_ui(),
+            generation_overrides=self._read_generation_overrides(),
         )
 
     def _set_dirty(self, dirty: bool) -> None:
@@ -266,6 +297,8 @@ class EditorMixin:
         v.protocol_row.set_current_by_data(self._snapshot.protocol_id or self._protocol_default_id)
         self._apply_protocol_details(self._current_protocol_id_ui())
 
+        self._write_generation_overrides(self._snapshot.generation_overrides)
+
         self._is_loading_ui = False
         self._set_dirty(False)
 
@@ -295,6 +328,8 @@ class EditorMixin:
             if "protocol_overrides" in data:
                 del data["protocol_overrides"]
             data["url"] = ""
+
+        data["generation_overrides"] = self._read_generation_overrides()
 
         def _call():
             res = self.event_bus.emit_and_wait(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": data}, timeout=2.0)

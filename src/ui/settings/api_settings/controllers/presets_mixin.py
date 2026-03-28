@@ -205,6 +205,10 @@ class PresetsMixin:
             v.api_key_row.set_text(key)
             v.reserve_keys_row.set_text("\n".join([str(k).strip() for k in reserve_keys if str(k).strip()]))
 
+            gen_overrides = preset.get("generation_overrides") or {}
+            if isinstance(gen_overrides, dict):
+                self._write_generation_overrides(gen_overrides)
+
             v.api_url_row.set_enabled(base is None)
 
             self._apply_help_links(preset)
