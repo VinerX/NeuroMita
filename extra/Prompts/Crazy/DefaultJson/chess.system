@@ -32,10 +32,10 @@ ELSE
         SET prompt_text = prompt_text + "ЭТО ТВОЙ ХОД.\n"
         IF GAME_STATE_HAS_LEGAL_MOVES == True THEN
             SET prompt_text = prompt_text + f"ТВОИ ЛЕГАЛЬНЫЕ ХОДЫ (UCI, первые 15): {GAME_STATE_LEGAL_MOVES_STRING}.\n"
-            SET prompt_text = prompt_text + "Используй тег <MakeChessMoveAsLLM>uci_ход</MakeChessMoveAsLLM> чтобы сделать ход.\n"
-            SET prompt_text = prompt_text + "Пример: <MakeChessMoveAsLLM>e2e4</MakeChessMoveAsLLM>\n"
+            SET prompt_text = prompt_text + "Чтобы сделать ход, добавь в поле commands строку 'MakeChessMoveAsLLM,e2e4'.\n"
+            SET prompt_text = prompt_text + "Пример: commands = ['MakeChessMoveAsLLM,e2e4']\n"
             IF GAME_STATE_HAS_PROMOTION_MOVE == True THEN
-                SET prompt_text = prompt_text + "Для превращения пешки добавь букву фигуры, напр.: e7e8q.\n"
+                SET prompt_text = prompt_text + "Для превращения пешки добавь букву фигуры в ту же строку команды, напр.: MakeChessMoveAsLLM,e7e8q.\n"
             ENDIF
         ELSE
             SET prompt_text = prompt_text + "У ТЕБЯ НЕТ ДОСТУПНЫХ ХОДОВ.\n"

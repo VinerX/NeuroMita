@@ -1,4 +1,4 @@
-**[FORMAT NOTE: This prompt uses JSON structured output. Tag references like <e>smile</e> mean "emotions": ["smile"], <a>Обнять</a> means "animations": ["Обнять"], <f>Смущаться</f> means "face_params": ["Смущаться"], <p>att,bore,str</p> maps to attitude_change/boredom_change/stress_change. Use JSON fields, not tags.]**
+**[FORMAT NOTE: This prompt uses JSON structured output. Emotions go to segments[].emotions, one-shot animations to segments[].animations, face parameters to segments[].face_params, and variable changes go to top-level attitude_change / boredom_change / stress_change. Use JSON fields, not XML-like tags.]**
 
 Relationship Levels and Their Impact on Behavior:
 [#RelationLow]

@@ -36,7 +36,7 @@ Schema:
 Field descriptions:
 - "animations": play animation once, "idle_animations": set as idle/loop
 - "text" must contain ONLY spoken words. NEVER put XML tags in text.
-- "secret_exposed": set to true ONCE when the player discovers your secret identity. Replaces the old <Secret!> tag trigger.
+- "secret_exposed": set to true ONCE when the player discovers your secret identity. Replaces the old secret_exposed: true tag trigger.
 
 Rules:
 - "text" is REQUIRED in every segment. All other segment fields are optional — omit if not needed.

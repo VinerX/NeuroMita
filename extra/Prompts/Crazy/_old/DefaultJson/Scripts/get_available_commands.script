@@ -1,0 +1,14 @@
+LOG "GetAvailableCommands: Script started. available_action_level=" + available_action_level
+
+SET base_commands = "<c>Подойти к игроку вплотную</c><c>Подойти к игроку близко</c><c>Подойти к игроку далеко</c><c>Подойти к случайной точке</c><c>Телепортироваться к игроку</c><c>Телепортироваться к случайной точке</c>"
+
+SET level_1_commands = base_commands 
+SET level_2_commands = base_commands + """<c>Начать охоту с ножом</c><c>Закончить охоту с ножом</c><c>Зарезать игрока</c><c>Заспавнить манекен</c><c>Отключить все манекены</c><c>Включить все манекены</c><c>Удалить все манекены</c><c>Вернуться к норме</c>"""
+
+IF available_action_level == 2 THEN
+    LOG "GetAvailableCommands: Level 2 (Crazy) commands selected."
+    RETURN level_2_commands
+ELSE 
+    LOG "GetAvailableCommands: Level 1 (Normal/Playing) commands selected."
+    RETURN level_1_commands
+ENDIF

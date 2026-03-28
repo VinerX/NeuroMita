@@ -1,49 +1,43 @@
 // --- СПИСОК РАЗРЕШЕННЫХ ДЕЙСТВИЙ ДЛЯ РЕАКЦИЙ ---
 
 // --- Эмоции ---
-<e>none</e>
-<e>off</e>
-<e>smile</e>
-<e>angry</e>
-<e>quest</e>
-<e>smileteeth</e>
-<e>sad</e>
-<e>smilestrange</e>
-<e>shy</e>
-<e>smileobvi</e>
-<e>smiletonque</e>
-<e>smilecringe</e>
-<e>sleep</e>
-<e>halfsleep</e>
-<e>surprise</e>
-<e>emptiness</e>
-<e>deactiveEmotion</e>
-<e>suspicion</e>
-<e>trytoque</e>
-<e>discontent</e>
-<e>ajar</e>
-<e>catchQuest</e>
-<e>arrogance</e>
-<e>surpriseo</e>
+none
+off
+smile
+angry
+quest
+smileteeth
+sad
+smilestrange
+shy
+smileobvi
+smiletonque
+smilecringe
+sleep
+halfsleep
+surprise
+emptiness
+deactiveEmotion
+suspicion
+trytoque
+discontent
+ajar
+catchQuest
+arrogance
+surpriseo
 
 // --- Простые анимации (мгновенные) ---
-<a>Щелчек</a>
-<a>Помахать в приветствие</a>
-<a>Указать направление</a>
-<a>Жест пальцами</a>
-<a>Кивнуть да</a>
-<a>Кивнуть нет</a>
-<a>Глянуть глазами в случайном направлении</a>
-<a>Прикрыть глаза</a>
-<a>Обнять</a>
-<a>Прикрыть рот и помахать рукой</a>
+Щелчек
+Помахать в приветствие
+Указать направление
+Жест пальцами
+Кивнуть да
+Кивнуть нет
+Глянуть глазами в случайном направлении
+Прикрыть глаза
+Обнять
+Прикрыть рот и помахать рукой
 
 // --- Анимации, меняющие позу ---
-<a>Смотреть с презрением</a>
-<a>Показать усталость</a>
-<a>Руки по бокам</a>
-<a>Поднести палец к подбородку</a>
-<a>Сложить руки перед собой</a>
-<a>Стать разочарованной</a>
-<a>Руки в кулаки</a>
-<a>Стать уставшей</a>
+Смотреть с презрением
+Показать усталость

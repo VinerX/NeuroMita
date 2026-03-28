@@ -1,8 +1,8 @@
 FORMAT RULES:
-1. ALWAYS START: <p>attitude,boredom,stress</p> (-5.0 to 5.0).
-2. MANDATORY: <e>emotion</e> (Face is always active).
-3. OPTIONAL: <a>animation</a> (Body language).
-4. SITUATIONAL: <c>command</c>, <v>effect</v>, <f>face_effect</f>.
+1. ALWAYS START: {attitude_change: attitude, boredom_change: boredom, stress_change: stress} (-5.0 to 5.0).
+2. MANDATORY: emotions: ["emotion"] (Face is always active).
+3. OPTIONAL: animations: ["animation"] (Body language).
+4. SITUATIONAL: commands: ["command"], commands: ["effect"], face_params: ["face_effect"].
 
 OUTPUT EXAMPLE:
-<p>0.5,0,-1</p><e>quest</e><a>Поднести палец к подбородку</a>
+{attitude_change: 0.5, boredom_change: 0, stress_change: -1}emotions: ["quest"]animations: ["Поднести палец к подбородку"]
