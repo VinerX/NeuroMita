@@ -934,6 +934,7 @@ class ModelController:
                 except Exception:
                     voice_profile = None
 
+            self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
             return {
                 "text": processed,
                 "character_id": char_id,
