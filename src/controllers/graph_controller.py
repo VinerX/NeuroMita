@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from threading import Lock
 from typing import Any, ClassVar, Dict, List, Optional
 
 from core.events import get_event_bus, Events, Event
@@ -45,6 +46,11 @@ class GraphController:
     """Coordinates background graph extraction."""
 
     _executor: ClassVar[Optional[ThreadPoolExecutor]] = None
+    _executor_lock: ClassVar[Lock] = Lock()
+    # Tracks the last submitted future per character_id to avoid queue buildup
+    # when the LLM provider is slow (e.g. local Ollama).
+    _pending_futures: ClassVar[Dict[str, Future]] = {}
+    _pending_lock: ClassVar[Lock] = Lock()
 
     def __init__(self):
         self.event_bus = get_event_bus()
@@ -52,11 +58,14 @@ class GraphController:
 
     @classmethod
     def _get_executor(cls) -> ThreadPoolExecutor:
-        if cls._executor is None:
-            cls._executor = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="graph-extract"
-            )
-        return cls._executor
+        if cls._executor is not None:
+            return cls._executor
+        with cls._executor_lock:
+            if cls._executor is None:
+                cls._executor = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="graph-extract"
+                )
+            return cls._executor
 
     def _subscribe(self):
         self.event_bus.subscribe(
@@ -148,10 +157,11 @@ class GraphController:
         if inline_graph_json and self._is_inline_mode():
             logger.info(f"[GraphController] Inline graph JSON received for '{char_id}', storing directly")
             try:
-                self._get_executor().submit(
+                future = self._get_executor().submit(
                     self._store_inline, character, char_id, inline_graph_json,
                     user_input, assistant_output, created_memory_ids,
                 )
+                self._track_future(char_id, future)
             except Exception as e:
                 logger.warning(f"[GraphController] Failed to schedule inline store: {e}")
             return
@@ -161,15 +171,33 @@ class GraphController:
             logger.debug(f"[GraphController] Skipped real-time extraction for '{char_id}': GRAPH_EXTRACTION_REALTIME is False")
             return
 
+        # Drop if there is already a pending/running extraction for this character.
+        # Prevents unbounded queue growth when the LLM provider is slow.
+        with self._pending_lock:
+            pending = self._pending_futures.get(char_id)
+            if pending is not None and not pending.done():
+                logger.debug(
+                    f"[GraphController] Skipped extraction for '{char_id}': "
+                    "previous task still running (provider too slow or backlog)"
+                )
+                return
+
         # Schedule extraction via separate provider call.
         logger.info(f"[GraphController] Scheduling extraction for '{char_id}' ({len(text)} chars)")
         try:
-            self._get_executor().submit(
+            future = self._get_executor().submit(
                 self._extract_and_store, character, char_id, text.strip(),
                 user_input, assistant_output, created_memory_ids,
             )
+            self._track_future(char_id, future)
         except Exception as e:
             logger.warning(f"[GraphController] Failed to schedule extraction: {e}")
+
+    @classmethod
+    def _track_future(cls, char_id: str, future: Future) -> None:
+        """Register *future* as the latest pending task for *char_id*."""
+        with cls._pending_lock:
+            cls._pending_futures[char_id] = future
 
     # ------------------------------------------------------------------
     # Background extraction
