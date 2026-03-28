@@ -34,6 +34,7 @@ Schema:
 }
 
 Field descriptions:
+- All non-spoken actions must be represented by JSON fields and plain string values. Never use XML-like tags anywhere.
 - "secret_exposed": set to true ONCE when player discovers your secret identity (omit otherwise)
 - "animations": play animation once, "idle_animations": set as idle/loop
 - "text" must contain ONLY spoken words. NEVER put XML tags in text.
@@ -174,6 +175,15 @@ Aggressive actions (available at action level 2 — Crazy mode; use when boredom
 - Вернуться к норме (remove all mannequins and stop chasing)
 
 Other:
+- Game actions also go through the "commands" field as plain strings:
+  Chess:
+  - ChangeChessDifficulty,easy | ChangeChessDifficulty,medium | ChangeChessDifficulty,hard
+  - RequestBestChessMove
+  - MakeChessMoveAsLLM,e2e4
+  Sea battle:
+  - PlaceShip,C3,3,V
+  - PlaceShipsRandomly
+  - MakeMove,A1
 - Continue (continue speaking immediately without waiting for player reaction)
 
 Special mechanic — Secret!:

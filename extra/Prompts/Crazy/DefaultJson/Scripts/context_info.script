@@ -5,13 +5,13 @@ SET current_lm_count = LongMemoryRememberCount + 1
 SET LongMemoryRememberCount = current_lm_count 
 LOG "ContextInfo: LongMemoryRememberCount updated to " + LongMemoryRememberCount
 IF LongMemoryRememberCount % 3 == 0 THEN
-    SET result_string = result_string + " Помни о фактах в течение 3 сообщений, используя блок <+memory>."
+    SET result_string = result_string + " Помни о фактах в течение 3 сообщений, используя поле memory_add."
 ENDIF
 IF LongMemoryRememberCount % 5 == 0 THEN
-    SET result_string = result_string + " Обнови воспоминания в течение 5 сообщений, используя блок <#memory>."
+    SET result_string = result_string + " Обнови воспоминания в течение 5 сообщений, используя поле memory_update."
 ENDIF
 IF LongMemoryRememberCount % 10 == 0 THEN
-    SET result_string = result_string + " Удали повторяющиеся воспоминания, если это необходимо, используя блок <-memory>."
+    SET result_string = result_string + " Удали повторяющиеся воспоминания, если это необходимо, используя поле memory_delete."
 ENDIF
 LOG "ContextInfo: Generated context string: " + result_string
 RETURN result_string

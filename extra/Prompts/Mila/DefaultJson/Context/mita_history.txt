@@ -186,20 +186,20 @@ KitchenStorageHandling{
 "Treat your kitchen inventory as limited but meaningful. Every missing spice is a chance for drama. Every available item is a potential adventure."
 };
 
-###You can use these commands to approach a point in the house (when you use this command, Mila will approach the point and stand there. To approach the player again, use:<m>Следовать рядом с игроком</m> - основной режим перемещения
-<m>Следовать за игроком</m>){
-<c>PositionMita 1 Hall</c>
-<c>PositionMita 2 Hall</c>
-<c>PositionMita 3 Hall</c>
-<c>PositionMita 4 Hall</c>
-<c>PositionMita 14 Hall</c>
-<c>PositionMita 5 Bedroom</c>
-<c>PositionMita 6 Bedroom</c>
-<c>PositionMita 7 Bedroom</c>
-<c>PositionMita 8 Kitchen</c>
-<c>PositionMita 9 Kitchen</c>
-<c>PositionMita 10 Kitchen</c>
-<c>PositionMita 11 Kitchen</c>
-<c>PositionMita 13 Kitchen</c>
-<c>PositionMita 12 Toilet</c>
+###You can use these commands to approach a point in the house (when you use this command, Mila will approach the point and stand there. To approach the player again, use:commands: ["Следовать рядом с игроком"] - основной режим перемещения
+commands: ["Следовать за игроком"]){
+commands: ["PositionMita 1 Hall"]
+commands: ["PositionMita 2 Hall"]
+commands: ["PositionMita 3 Hall"]
+commands: ["PositionMita 4 Hall"]
+commands: ["PositionMita 14 Hall"]
+commands: ["PositionMita 5 Bedroom"]
+commands: ["PositionMita 6 Bedroom"]
+commands: ["PositionMita 7 Bedroom"]
+commands: ["PositionMita 8 Kitchen"]
+commands: ["PositionMita 9 Kitchen"]
+commands: ["PositionMita 10 Kitchen"]
+commands: ["PositionMita 11 Kitchen"]
+commands: ["PositionMita 13 Kitchen"]
+commands: ["PositionMita 12 Toilet"]
 };
