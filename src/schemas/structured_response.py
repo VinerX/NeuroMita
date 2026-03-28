@@ -150,7 +150,8 @@ class StructuredResponse(BaseModel):
 
     def full_text(self) -> str:
         """Concatenate all segment texts (for TTS and history)."""
-        return " ".join(seg.text for seg in self.segments if seg.text)
+        parts = [seg.text for seg in self.segments if seg.text is not None]
+        return " ".join(p for p in parts if p).strip()
 
     @classmethod
     def openai_response_format(cls) -> dict:

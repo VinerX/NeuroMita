@@ -23,9 +23,9 @@ from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget,
 from ui.chat.structured_panel import StructuredOutputPanel
 
 
-def _wrap_panel_aligned(panel, role="assistant"):
+def _wrap_panel_aligned(panel, role="assistant", parent=None):
     """Wrap a structured panel in a container with left margin to align under message bubble."""
-    wrapper = QWidget()
+    wrapper = QWidget(parent)  # parent set immediately to avoid HWND flash on Windows
     wrapper.setStyleSheet("background: transparent; border: none;")
     lay = QHBoxLayout(wrapper)
     lay.setContentsMargins(AVATAR_SIZE + 4, 0, 0, 0)  # offset past avatar
@@ -188,6 +188,8 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         full_text = re.sub(pattern, "", full_text, flags=re.DOTALL)
         full_text = re.sub(r' +', ' ', full_text).strip()
 
+    show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
+    max_bw = int(gui._get_setting("CHAT_MAX_BUBBLE_WIDTH", 600))
     msg_widget = MessageWidget(
         role=role,
         speaker_name=speaker_name,
@@ -195,6 +197,8 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         show_avatar=(role in ("user", "assistant")),
         font_size=font_size,
         message_time=message_time,
+        show_timestamp=show_ts,
+        max_bubble_width=max_bw,
     )
 
     # Attach structured output panel if available
@@ -222,7 +226,8 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
 
     # Add structured panel as separate widget right after the message, aligned under bubble
     if _pending_struct_panel is not None:
-        wrapped = _wrap_panel_aligned(_pending_struct_panel, role)
+        wrapped = _wrap_panel_aligned(_pending_struct_panel, role,
+                                       parent=gui.chat_window.get_layout_parent())
         gui.chat_window.add_message_widget(wrapped, at_start=insert_at_start)
 
     # Add images as separate widgets
@@ -265,12 +270,16 @@ def prepare_stream_slot(gui, role="assistant"):
         elif not speaker_name and role == "user":
             speaker_name = _("Вы", "You")
 
+        show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
+        max_bw = int(gui._get_setting("CHAT_MAX_BUBBLE_WIDTH", 600))
         msg = MessageWidget(
             role=role,
             speaker_name=speaker_name,
             content_text="",
             show_avatar=(role in ("user", "assistant")),
             font_size=font_size,
+            show_timestamp=show_ts,
+            max_bubble_width=max_bw,
         )
         gui._current_stream_message = msg
         gui.chat_window.add_message_widget(msg)
@@ -329,7 +338,8 @@ def attach_structured_to_stream(gui, structured_data: dict):
     blocks[block_id] = panel
 
     msg.set_structured_ref(panel)
-    wrapped = _wrap_panel_aligned(panel, "assistant")
+    wrapped = _wrap_panel_aligned(panel, "assistant",
+                                   parent=gui.chat_window.get_layout_parent())
     gui.chat_window.add_message_widget(wrapped)
     gui.chat_window.scroll_to_bottom()
 

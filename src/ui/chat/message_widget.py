@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QSize, QRectF, QPointF
 from PyQt6.QtGui import (
     QPixmap, QPainter, QPainterPath, QColor, QFont, QBrush, QPen,
+    QTextLayout, QTextOption,
 )
 from main_logger import logger
 
@@ -150,7 +151,7 @@ class BubbleFrame(QFrame):
         self._tail_side = tail_side
         left_margin = TAIL_W if tail_side == "left" else 0
         right_margin = TAIL_W if tail_side == "right" else 0
-        self.setContentsMargins(left_margin + 10, 6, right_margin + 10, 8)
+        self.setContentsMargins(left_margin + 10, 6, right_margin + 10, 6)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -204,6 +205,160 @@ class BubbleFrame(QFrame):
         painter.end()
 
 
+# ── Text body with smart timestamp overlay ──────────────────────────────────
+
+class _TextBodyWidget(QWidget):
+    """
+    Message text area with timestamp pinned to the bottom-right corner.
+
+    When the last text line is short enough for the timestamp to fit beside it,
+    no extra height is added (timestamp overlays the empty space next to the
+    last line).  When the last line is too long, a spacer equal to the timestamp
+    height is inserted below the text so the timestamp never covers any text.
+    """
+
+    def __init__(self, text_color: str, time_color: str, font_size: int,
+                 ts_text: str, show_ts: bool, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background: transparent; border: none;")
+        self._show_ts = show_ts
+        self._needs_row: bool | None = None  # tracks current row state
+
+        # Text label in layout — auto-adjusts to content height
+        self._text_label = QLabel()
+        self._text_label.setWordWrap(True)
+        self._text_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._text_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse |
+            Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        self._text_label.setCursor(Qt.CursorShape.IBeamCursor)
+        self._text_label.setStyleSheet(
+            f"color: {text_color}; font-size: {font_size}pt; "
+            f"background: transparent; border: none; padding: 0px;"
+        )
+        self._text_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+
+        # Spacer that expands to ts_h when timestamp needs its own row
+        self._ts_spacer = QWidget()
+        self._ts_spacer.setStyleSheet("background: transparent;")
+        self._ts_spacer.setMaximumHeight(0)
+        self._ts_spacer.setMinimumHeight(0)
+
+        lyt = QVBoxLayout(self)
+        lyt.setContentsMargins(0, 0, 0, 0)
+        lyt.setSpacing(0)
+        lyt.addWidget(self._text_label)
+        lyt.addWidget(self._ts_spacer)
+
+        # Timestamp: absolute overlay, NOT in layout
+        self._time_label = QLabel(ts_text, self)
+        self._time_label.setStyleSheet(
+            f"color: {time_color}; font-size: {max(font_size - 3, 7)}pt; "
+            f"background: transparent; border: none; padding: 0px;"
+        )
+        self._time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._time_label.setVisible(show_ts)
+        if not show_ts:
+            self._time_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self._ts_hint = self._time_label.sizeHint()
+
+    # ── Public API ───────────────────────────────────────────────────────────
+
+    def set_text(self, text: str):
+        self._text_label.setText(text)
+        self._recheck()
+
+    def append_text(self, chunk: str):
+        self._text_label.setText(self._text_label.text() + chunk)
+        if self.width() > 0:
+            self._recheck()
+
+    def get_text(self) -> str:
+        return self._text_label.text()
+
+    def set_time(self, ts: str):
+        self._time_label.setText(ts)
+        self._ts_hint = self._time_label.sizeHint()
+        self._recheck()
+
+    # ── Qt layout protocol ───────────────────────────────────────────────────
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, w: int) -> int:
+        text_h = (self._text_label.heightForWidth(w)
+                  if self._text_label.hasHeightForWidth()
+                  else self._text_label.sizeHint().height())
+        text_h = max(text_h, 1)
+        if not self._show_ts:
+            return text_h
+        ts_h = self._ts_hint.height()
+        ts_w = self._ts_hint.width() + 6
+        if self._ts_needs_row(self._text_label.text(), w, ts_w):
+            return text_h + ts_h
+        return text_h
+
+    def sizeHint(self) -> QSize:
+        w = self.width() or 300
+        return QSize(w, self.heightForWidth(w))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._recheck()
+
+    # ── Internal ─────────────────────────────────────────────────────────────
+
+    def _recheck(self):
+        """Recompute whether timestamp needs its own row and update layout/overlay."""
+        if not self._show_ts or not self.width():
+            return
+        ts_h = self._ts_hint.height()
+        ts_w = self._ts_hint.width() + 6
+        new_needs = self._ts_needs_row(self._text_label.text(), self.width(), ts_w)
+        if new_needs != self._needs_row:
+            self._needs_row = new_needs
+            h = ts_h if new_needs else 0
+            self._ts_spacer.setMinimumHeight(h)
+            self._ts_spacer.setMaximumHeight(h)
+            self.updateGeometry()
+        self._place_ts()
+
+    def _place_ts(self):
+        if not self._show_ts:
+            return
+        ts_h = self._ts_hint.height()
+        ts_w = self._ts_hint.width() + 6
+        ts_x = max(0, self.width() - ts_w)
+        ts_y = max(0, self.height() - ts_h)
+        self._time_label.setGeometry(ts_x, ts_y, ts_w, ts_h)
+        self._time_label.raise_()
+
+    def _ts_needs_row(self, text: str, avail_w: int, ts_w: int) -> bool:
+        """True if the last text line is too wide to share a row with the timestamp."""
+        if not text or avail_w <= 0:
+            return False
+        try:
+            tl = QTextLayout(text, self._text_label.font())
+            opt = QTextOption(Qt.AlignmentFlag.AlignLeft)
+            opt.setWrapMode(QTextOption.WrapMode.WordWrap)
+            tl.setTextOption(opt)
+            tl.beginLayout()
+            last_w = 0.0
+            while True:
+                line = tl.createLine()
+                if not line.isValid():
+                    break
+                line.setLineWidth(avail_w)
+                line.setPosition(QPointF(0, 0))
+                last_w = line.naturalTextWidth()
+            tl.endLayout()
+            return (last_w + ts_w + 4) > avail_w
+        except Exception:
+            return True  # safe fallback
+
+
 # ── Main message widget ─────────────────────────────────────────────────────
 
 class MessageWidget(QWidget):
@@ -221,6 +376,8 @@ class MessageWidget(QWidget):
         show_avatar: bool = True,
         font_size: int = 12,
         message_time: str = "",
+        show_timestamp: bool = True,
+        max_bubble_width: int = 600,
         parent=None,
     ):
         super().__init__(parent)
@@ -265,17 +422,17 @@ class MessageWidget(QWidget):
 
         # ── Bubble ──────────────────────────────────────────────────────────
         self._card = BubbleFrame(role, tail_side)
-        max_w = MAX_BUBBLE_WIDTH_USER if is_user else MAX_BUBBLE_WIDTH_ASSISTANT
-        self._card.setMaximumWidth(max_w)
+        if max_bubble_width > 0:
+            self._card.setMaximumWidth(max_bubble_width)
         self._card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
 
         card_layout = QVBoxLayout()
         card_layout.setContentsMargins(0, 0, 0, 0)
-        card_layout.setSpacing(3)
+        card_layout.setSpacing(1)
         self._card.setLayout(card_layout)
         self._card_layout = card_layout  # Store for adding structured widgets later
 
-        # Name row: [name] [stretch] [toggle btn]
+        # Name row: [name] [stretch]
         name_row = QHBoxLayout()
         name_row.setContentsMargins(0, 0, 0, 0)
         name_row.setSpacing(6)
@@ -288,36 +445,17 @@ class MessageWidget(QWidget):
         self._name_label.setText(speaker_name or "")
         name_row.addWidget(self._name_label)
         name_row.addStretch()
+
         card_layout.addLayout(name_row)
 
-        # Text label — SELECTABLE
-        self._text_label = QLabel()
-        self._text_label.setWordWrap(True)
-        self._text_label.setTextFormat(Qt.TextFormat.PlainText)
-        self._text_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-            | Qt.TextInteractionFlag.TextSelectableByKeyboard
-        )
-        self._text_label.setCursor(Qt.CursorShape.IBeamCursor)
-        self._text_label.setStyleSheet(
-            f"color: {text_color}; font-size: {font_size}pt; "
-            f"background: transparent; border: none; padding: 0px;"
-        )
-        self._text_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-        if content_text:
-            self._text_label.setText(content_text)
-        card_layout.addWidget(self._text_label)
-
-        # Timestamp (bottom-right, semi-transparent)
-        self._time_label = QLabel()
-        self._time_label.setStyleSheet(
-            f"color: {time_color}; font-size: {max(font_size - 3, 7)}pt; "
-            f"background: transparent; border: none; padding: 0px;"
-        )
-        self._time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        # Text body with smart bottom-right timestamp overlay
         ts = message_time or _time.strftime("%H:%M")
-        self._time_label.setText(ts)
-        card_layout.addWidget(self._time_label)
+        self._body = _TextBodyWidget(text_color, time_color, font_size, ts, show_timestamp)
+        self._text_label = self._body._text_label   # compat ref
+        self._time_label = self._body._time_label   # compat ref
+        if content_text:
+            self._body.set_text(content_text)
+        card_layout.addWidget(self._body)
 
         outer.addWidget(self._card, 0)  # stretch=0 so it doesn't expand
 
@@ -332,13 +470,13 @@ class MessageWidget(QWidget):
     # ── Public API ──────────────────────────────────────────────────────────
 
     def set_text(self, text: str):
-        self._text_label.setText(text)
+        self._body.set_text(text)
 
     def append_text(self, text: str):
-        self._text_label.setText(self._text_label.text() + text)
+        self._body.append_text(text)
 
     def get_text(self) -> str:
-        return self._text_label.text()
+        return self._body.get_text()
 
     def set_speaker_name(self, name: str):
         self._speaker_name = name
@@ -348,7 +486,7 @@ class MessageWidget(QWidget):
             self._avatar_label.setPixmap(pm)
 
     def set_time(self, ts: str):
-        self._time_label.setText(ts)
+        self._body.set_time(ts)
 
     def set_structured_ref(self, panel):
         """Store a reference to an external structured panel."""

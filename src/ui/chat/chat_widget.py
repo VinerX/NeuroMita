@@ -230,6 +230,10 @@ class ChatWidget(QFrame):
         p.end()
         self.setMask(QRegion(bmp))
 
+    def get_layout_parent(self) -> QWidget:
+        """Return the widget that owns the message layout (for proper parenting of child widgets)."""
+        return self._container
+
     def viewport(self):
         """Compat: return the scroll area viewport."""
         return self._scroll.viewport()

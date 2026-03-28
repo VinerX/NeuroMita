@@ -505,6 +505,7 @@ class ChatGUI(QMainWindow):
         return super().eventFilter(obj, event)
 
     def load_chat_history(self):
+        self.chat_window.setUpdatesEnabled(False)
         self.clear_chat_display()
         self.event_bus.emit(Events.Model.LOAD_HISTORY)
 
@@ -522,6 +523,8 @@ class ChatGUI(QMainWindow):
                 logger.error(f"_on_history_loaded: НУ Я ПОНЯЛ: {str(ex)}")
         self.update_debug_info()
         self.chat_window.scroll_to_bottom()
+        self.chat_window.setUpdatesEnabled(True)
+        self.chat_window.update()
 
     def validate_number_0_60(self, new_value):
         if not new_value.isdigit():
@@ -555,6 +558,14 @@ class ChatGUI(QMainWindow):
         try:
             value = int(new_value)
             return value > 0
+        except ValueError:
+            return False
+
+    def validate_non_negative_integer(self, new_value):
+        if new_value == "": return True
+        try:
+            value = int(new_value)
+            return value >= 0
         except ValueError:
             return False
 
