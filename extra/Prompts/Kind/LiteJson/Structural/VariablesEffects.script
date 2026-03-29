@@ -1,0 +1,55 @@
+// Инициализация переменной для вывода
+SET LOCAL behavior_context = "### CURRENT PSYCHOLOGICAL STATE:\n"
+
+// --- 1. ATTITUDE LOGIC (Отношение) ---
+// Определяем блок поведения в зависимости от уровня отношений
+IF attitude <= 29 THEN
+    SET behavior_context = behavior_context + LOAD AttDistrust FROM "Structural/VariablesEffects.txt"
+ELSEIF attitude <= 59 THEN
+    SET behavior_context = behavior_context + LOAD AttNeutral FROM "Structural/VariablesEffects.txt"
+ELSEIF attitude <= 89 THEN
+    SET behavior_context = behavior_context + LOAD AttFriendship FROM "Structural/VariablesEffects.txt"
+ELSE
+    // 90-100
+    SET behavior_context = behavior_context + LOAD AttPartner FROM "Structural/VariablesEffects.txt"
+ENDIF
+
+// --- 2. BOREDOM LOGIC (Скука) ---
+IF boredom <= 29 THEN
+    SET behavior_context = behavior_context + LOAD BorActive FROM "Structural/VariablesEffects.txt"
+ELSEIF boredom <= 59 THEN
+    SET behavior_context = behavior_context + LOAD BorMedium FROM "Structural/VariablesEffects.txt"
+ELSE
+    // 60+
+    SET behavior_context = behavior_context + LOAD BorHigh FROM "Structural/VariablesEffects.txt"
+ENDIF
+
+// --- 3. STRESS LOGIC (Стресс) ---
+IF stress <= 50 THEN
+    SET behavior_context = behavior_context + LOAD StrCalm FROM "Structural/VariablesEffects.txt"
+ELSEIF stress <= 80 THEN
+    SET behavior_context = behavior_context + LOAD StrIrritated FROM "Structural/VariablesEffects.txt"
+ELSE
+    // 81+
+    SET behavior_context = behavior_context + LOAD StrAgitated FROM "Structural/VariablesEffects.txt"
+ENDIF
+
+// --- 4. INTIMACY / LOVE LOGIC (Дополнительная переменная) ---
+// Если переменная Love не определена, ставим 0, иначе выводим статус
+IF Love == None THEN
+    SET Love = 0
+ENDIF
+
+// Логика близости активируется только при высоком отношении
+IF attitude >= 90 THEN
+    SET behavior_context = behavior_context + "\n[Intimacy Module Active]\n"
+    IF Love >= 5 THEN
+         SET behavior_context = behavior_context + "Love Level: High (" + str(Love) + "). Proactive affection allowed.\n"
+    ELSE
+         SET behavior_context = behavior_context + "Love Level: Forming (" + str(Love) + "). Reciprocal affection only.\n"
+    ENDIF
+ENDIF
+
+LOG "GENERATED BEHAVIOR CONTEXT:\n" + behavior_context
+
+RETURN behavior_context

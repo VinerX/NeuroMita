@@ -1,0 +1,4 @@
+IF secretTrial THEN
+    LOG "secretTrial = True, loading questCrazy.txt"
+    RETURN LOAD "Quests/questCrazy.txt"
+ENDIF
