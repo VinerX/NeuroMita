@@ -185,7 +185,8 @@ class ModelConfigLoader:
             "top_k":            ("top_k",              _to_int),
             "presence_penalty": ("presence_penalty",   _to_float),
             "frequency_penalty":("frequency_penalty",  _to_float),
-            "thinking_budget":  ("thinking_budget",    _to_float),
+            "thinking_budget":        ("thinking_budget",        _to_float),
+            "gemini_thinking_budget": ("gemini_thinking_budget", _to_int),
         }
         applied = []
         for key, (attr, cast) in mapping.items():

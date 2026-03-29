@@ -200,7 +200,8 @@ def build_api_settings_ui(self, parent_layout):
         ("top_k",             "Top-K",                                      "0"),
         ("presence_penalty",  _("Штраф присутствия", "Presence penalty"),   "0.0"),
         ("frequency_penalty", _("Штраф частоты",     "Frequency penalty"),  "0.0"),
-        ("thinking_budget",   _("Бюджет мышления",   "Thinking budget"),    "0.0"),
+        ("thinking_budget",        _("Бюджет мышления",          "Thinking budget"),         "0.0"),
+        ("gemini_thinking_budget", _("Бюджет мышления Gemini",   "Gemini thinking budget"),  "8192"),
     ]
     self.gen_override_widgets = {}
     for param_key, param_label, default_val in _gen_params:
