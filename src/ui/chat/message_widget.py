@@ -458,13 +458,21 @@ class MessageWidget(QWidget):
         name_row.addWidget(self._name_label)
         name_row.addStretch()
 
+        # Timestamp in name row, right-aligned
+        ts = message_time or _time.strftime("%H:%M")
+        self._time_label = QLabel(ts)
+        self._time_label.setStyleSheet(
+            f"color: {time_color}; font-size: {max(font_size - 3, 7)}pt; "
+            f"background: transparent; border: none; padding: 0px;"
+        )
+        self._time_label.setVisible(show_timestamp)
+        name_row.addWidget(self._time_label)
+
         card_layout.addLayout(name_row)
 
-        # Text body with smart bottom-right timestamp overlay
-        ts = message_time or _time.strftime("%H:%M")
-        self._body = _TextBodyWidget(text_color, time_color, font_size, ts, show_timestamp)
+        # Text body (no timestamp overlay)
+        self._body = _TextBodyWidget(text_color, time_color, font_size, ts, False)
         self._text_label = self._body._text_label   # compat ref
-        self._time_label = self._body._time_label   # compat ref
         if content_text:
             self._body.set_text(content_text)
         card_layout.addWidget(self._body)
@@ -498,7 +506,7 @@ class MessageWidget(QWidget):
             self._avatar_label.setPixmap(pm)
 
     def set_time(self, ts: str):
-        self._body.set_time(ts)
+        self._time_label.setText(ts)
 
     def set_structured_ref(self, panel):
         """Store a reference to an external structured panel."""
