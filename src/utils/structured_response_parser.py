@@ -5,6 +5,15 @@ Parser for structured JSON responses from LLMs.
 Parses the raw JSON string into a StructuredResponse model,
 validates the structure, and raises on invalid JSON
 (no silent fallbacks).
+
+Repair cascade (each step tried only if the previous fails):
+  1. json.loads directly
+  2. _simple_text_repair   — trailing commas, unescaped newlines
+  3. json_repair library   — handles most malformed JSON
+  4. _close_truncated_json — bracket-counting closer for cut-off responses
+  5. _schema_aware_coerce  — applied after any successful json.loads when
+                             Pydantic validation fails (type coercions)
+  6. _extract_partial      — regex text extraction as last resort
 """
 from __future__ import annotations
 
@@ -26,7 +35,8 @@ def parse_structured_response(raw_text: str) -> StructuredResponse:
     Parse a raw LLM response string as a StructuredResponse.
 
     Attempts to extract valid JSON from the text (handles markdown fences,
-    leading/trailing whitespace, etc.), then validates against the schema.
+    leading/trailing whitespace, BOM, etc.), then validates against the schema.
+    If direct parsing fails, a multi-level repair cascade is attempted.
 
     Args:
         raw_text: The raw text returned by the LLM.
@@ -35,33 +45,53 @@ def parse_structured_response(raw_text: str) -> StructuredResponse:
         A validated StructuredResponse instance.
 
     Raises:
-        StructuredResponseParseError: If parsing or validation fails.
+        StructuredResponseParseError: If all repair attempts fail.
     """
     if not raw_text or not isinstance(raw_text, str):
         raise StructuredResponseParseError("Empty or non-string response")
 
     cleaned = _extract_json_string(raw_text)
 
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError as e:
+    # --- Level 1: direct parse ---
+    data, parse_level = _try_json_loads(cleaned, level="direct")
+
+    # --- Level 2: simple text repair ---
+    if data is None:
+        repaired = _simple_text_repair(cleaned)
+        data, parse_level = _try_json_loads(repaired, level="simple_repair")
+
+    # --- Level 3: json_repair library ---
+    if data is None:
+        data, parse_level = _try_json_repair_lib(cleaned)
+
+    # --- Level 4: close truncated JSON ---
+    if data is None:
+        closed = _close_truncated_json(cleaned)
+        data, parse_level = _try_json_loads(closed, level="truncation_close")
+
+    if data is None:
+        # Try json_repair on the closed version too
+        data, parse_level = _try_json_repair_lib(_close_truncated_json(cleaned),
+                                                  level="truncation_close+json_repair")
+
+    if data is None:
         raise StructuredResponseParseError(
-            f"Invalid JSON in LLM response: {e}. "
-            f"First 200 chars: {cleaned[:200]}"
-        ) from e
+            f"All JSON repair attempts failed. "
+            f"First 300 chars: {cleaned[:300]}"
+        )
 
     if not isinstance(data, dict):
         raise StructuredResponseParseError(
             f"Expected JSON object at top level, got {type(data).__name__}"
         )
 
-    try:
-        response = StructuredResponse.model_validate(data)
-    except Exception as e:
-        raise StructuredResponseParseError(
-            f"JSON does not match StructuredResponse schema: {e}"
-        ) from e
+    if parse_level != "direct":
+        logger.warning(f"[StructuredResponseParser] JSON repaired via: {parse_level}")
 
+    # --- Pydantic validation (with schema-aware coerce on failure) ---
+    response = _validate_with_coerce(data)
+
+    # --- Legacy flat-JSON fallback (empty segments) ---
     if not response.segments:
         converted = _try_convert_legacy_flat_json(data)
         if converted is not None:
@@ -69,6 +99,15 @@ def parse_structured_response(raw_text: str) -> StructuredResponse:
                 "[StructuredResponseParser] Segments missing — used legacy flat-JSON fallback"
             )
             return converted
+
+        # --- Level 5: partial extraction ---
+        partial = _extract_partial_response(raw_text)
+        if partial is not None:
+            logger.warning(
+                "[StructuredResponseParser] Segments missing — used partial text extraction"
+            )
+            return partial
+
         raise StructuredResponseParseError(
             "StructuredResponse has no segments (segments list is empty)"
         )
@@ -81,6 +120,165 @@ def parse_structured_response(raw_text: str) -> StructuredResponse:
     )
 
     return response
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _try_json_loads(text: str, level: str = "direct") -> tuple[Optional[dict], str]:
+    """Try json.loads; return (data, level) or (None, '')."""
+    try:
+        return json.loads(text), level
+    except (json.JSONDecodeError, ValueError):
+        return None, ""
+
+
+def _try_json_repair_lib(text: str, level: str = "json_repair") -> tuple[Optional[dict], str]:
+    """Try the json_repair library; return (data, level) or (None, '')."""
+    try:
+        from json_repair import repair_json  # type: ignore
+        result = repair_json(text, return_objects=True)
+        if isinstance(result, dict):
+            return result, level
+        return None, ""
+    except ImportError:
+        logger.debug("[StructuredResponseParser] json_repair not installed, skipping")
+        return None, ""
+    except Exception:
+        return None, ""
+
+
+def _simple_text_repair(text: str) -> str:
+    """
+    Level-2 text repairs:
+    - Remove trailing commas before } or ]
+    - Escape literal newlines inside JSON strings
+    """
+    # Trailing commas before closing bracket/brace
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+    # Unescaped literal newlines inside string values (rough heuristic)
+    # Replace \n that are inside strings (between quotes) with \\n
+    def fix_newlines_in_string(m: re.Match) -> str:
+        return m.group(0).replace('\n', '\\n').replace('\r', '\\r')
+    text = re.sub(r'"(?:[^"\\]|\\.)*"', fix_newlines_in_string, text, flags=re.DOTALL)
+    return text
+
+
+def _close_truncated_json(text: str) -> str:
+    """
+    Level-4 repair: close unclosed brackets/braces and strings.
+
+    Walks the string tracking bracket depth and string state, then
+    appends whatever is needed to make the JSON structurally complete.
+    """
+    stack = []
+    in_string = False
+    escape_next = False
+
+    for ch in text:
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if not in_string:
+            if ch in '{[':
+                stack.append('}' if ch == '{' else ']')
+            elif ch in '}]':
+                if stack and stack[-1] == ch:
+                    stack.pop()
+
+    suffix = ""
+    if in_string:
+        suffix += '"'
+    suffix += ''.join(reversed(stack))
+    return text + suffix
+
+
+def _validate_with_coerce(data: dict) -> StructuredResponse:
+    """
+    Validate data against StructuredResponse schema.
+    On ValidationError, attempt schema-aware type coercions and retry once.
+
+    Raises:
+        StructuredResponseParseError: If validation fails even after coercion.
+    """
+    try:
+        return StructuredResponse.model_validate(data)
+    except Exception as first_error:
+        # --- schema-aware coerce ---
+        try:
+            data = _schema_aware_coerce(data)
+            return StructuredResponse.model_validate(data)
+        except Exception as second_error:
+            raise StructuredResponseParseError(
+                f"JSON does not match StructuredResponse schema "
+                f"(even after coercion): {second_error}"
+            ) from first_error
+
+
+def _schema_aware_coerce(data: dict) -> dict:
+    """
+    Attempt common type fixups that LLMs frequently produce:
+    - Numeric fields sent as strings
+    - List fields sent as null
+    - segments missing but top-level 'text' present
+    """
+    import copy
+    data = copy.deepcopy(data)
+
+    # Numeric fields as strings
+    for field in ("attitude_change", "boredom_change", "stress_change"):
+        val = data.get(field)
+        if isinstance(val, str):
+            try:
+                data[field] = float(val)
+            except ValueError:
+                data[field] = 0.0
+
+    # List fields as null → empty list
+    for field in ("memory_add", "memory_update", "memory_delete", "segments"):
+        if data.get(field) is None:
+            data[field] = []
+
+    # segments is a list but items may lack 'text' — inject empty string
+    if isinstance(data.get("segments"), list):
+        for seg in data["segments"]:
+            if isinstance(seg, dict) and "text" not in seg:
+                seg["text"] = ""
+
+    # No segments but top-level 'text' exists
+    if not data.get("segments") and isinstance(data.get("text"), str):
+        data["segments"] = [{"text": data["text"]}]
+
+    return data
+
+
+def _extract_partial_response(raw_text: str) -> Optional[StructuredResponse]:
+    """
+    Level-5 last resort: pull "text" values out of the raw string via regex
+    and build a minimal StructuredResponse from them.
+
+    Returns None if nothing useful is found.
+    """
+    from schemas.structured_response import ResponseSegment
+
+    texts = re.findall(r'"text"\s*:\s*"((?:[^"\\]|\\.)*)"', raw_text)
+    texts = [t for t in texts if t.strip()]
+    if not texts:
+        return None
+
+    return StructuredResponse(
+        segments=[ResponseSegment(text=t) for t in texts],
+        attitude_change=0.0,
+        boredom_change=0.0,
+        stress_change=0.0,
+    )
 
 
 def _try_convert_legacy_flat_json(data: dict) -> "Optional[StructuredResponse]":
@@ -182,7 +380,7 @@ def _extract_json_string(text: str) -> str:
     if not text.startswith("{"):
         brace_start = text.find("{")
         if brace_start == -1:
-            return text  # let json.loads fail with a proper error
+            return text  # let repair cascade fail with a proper error
         text = text[brace_start:]
 
     if not text.endswith("}"):
