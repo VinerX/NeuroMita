@@ -294,8 +294,12 @@ class _TextBodyWidget(QWidget):
         text_h = max(text_h, 1)
         if not self._show_ts:
             return text_h
-        ts_h = self._ts_hint.height()
-        ts_w = self._ts_hint.width() + 6
+        # Always query fresh hint — stylesheet may not have been applied at init
+        hint = self._time_label.sizeHint()
+        ts_h = hint.height()
+        ts_w = hint.width() + 6
+        if ts_h <= 0:
+            return text_h
         if self._ts_needs_row(self._text_label.text(), w, ts_w):
             return text_h + ts_h
         return text_h
@@ -314,8 +318,12 @@ class _TextBodyWidget(QWidget):
         """Recompute whether timestamp needs its own row and update layout/overlay."""
         if not self._show_ts or not self.width():
             return
+        # Refresh hint every time — stylesheet polish happens after widget construction
+        self._ts_hint = self._time_label.sizeHint()
         ts_h = self._ts_hint.height()
         ts_w = self._ts_hint.width() + 6
+        if ts_h <= 0:
+            return
         new_needs = self._ts_needs_row(self._text_label.text(), self.width(), ts_w)
         if new_needs != self._needs_row:
             self._needs_row = new_needs
@@ -345,16 +353,19 @@ class _TextBodyWidget(QWidget):
             opt.setWrapMode(QTextOption.WrapMode.WordWrap)
             tl.setTextOption(opt)
             tl.beginLayout()
+            y = 0.0
             last_w = 0.0
             while True:
                 line = tl.createLine()
                 if not line.isValid():
                     break
                 line.setLineWidth(avail_w)
-                line.setPosition(QPointF(0, 0))
+                line.setPosition(QPointF(0, y))
+                y += line.height()
                 last_w = line.naturalTextWidth()
             tl.endLayout()
-            return (last_w + ts_w + 4) > avail_w
+            # +8 safety margin: QTextLayout vs QLabel rendering can differ by a few px
+            return (last_w + ts_w + 8) > avail_w
         except Exception:
             return True  # safe fallback
 
