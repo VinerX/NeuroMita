@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QSize, QRectF, QPointF
 from PyQt6.QtGui import (
     QPixmap, QPainter, QPainterPath, QColor, QFont, QBrush, QPen,
-    QTextLayout, QTextOption,
+    QTextLayout, QTextOption, QFontMetrics,
 )
 from main_logger import logger
 
@@ -153,6 +153,18 @@ class BubbleFrame(QFrame):
         right_margin = TAIL_W if tail_side == "right" else 0
         self.setContentsMargins(left_margin + 10, 6, right_margin + 10, 6)
 
+    def hasHeightForWidth(self) -> bool:
+        lyt = self.layout()
+        return lyt.hasHeightForWidth() if lyt else False
+
+    def heightForWidth(self, w: int) -> int:
+        lyt = self.layout()
+        if lyt and lyt.hasHeightForWidth():
+            m = self.contentsMargins()
+            inner_w = max(0, w - m.left() - m.right())
+            return lyt.heightForWidth(inner_w) + m.top() + m.bottom()
+        return super().heightForWidth(w)
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -238,6 +250,11 @@ class _TextBodyWidget(QWidget):
             f"color: {text_color}; font-size: {font_size}pt; "
             f"background: transparent; border: none; padding: 0px;"
         )
+        # Explicitly set font so heightForWidth() uses correct metrics immediately,
+        # before Qt's stylesheet polishing cycle (which is asynchronous).
+        _tf = self._text_label.font()
+        _tf.setPointSize(font_size)
+        self._text_label.setFont(_tf)
         self._text_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         # Spacer that expands to ts_h when timestamp needs its own row
@@ -293,6 +310,10 @@ class _TextBodyWidget(QWidget):
                   if self._text_label.hasHeightForWidth()
                   else self._text_label.sizeHint().height())
         text_h = max(text_h, 1)
+        # Virtual padding: QLabel.heightForWidth() with wordWrap can undercount
+        # descent + leading of the last line, causing visual clipping.
+        # Add one lineSpacing() as guaranteed safety margin regardless of font size.
+        text_h += QFontMetrics(self._text_label.font()).lineSpacing()
         if not self._show_ts:
             return text_h
         # Always query fresh hint — stylesheet may not have been applied at init
@@ -316,8 +337,19 @@ class _TextBodyWidget(QWidget):
     # ── Internal ─────────────────────────────────────────────────────────────
 
     def _recheck(self):
-        """Recompute whether timestamp needs its own row and update layout/overlay."""
-        if not self._show_ts or not self.width():
+        """Recompute layout: force correct minimum height + timestamp placement."""
+        w = self.width()
+        if not w:
+            return
+
+        # Always force minimum height so parent layouts can't clip the last line.
+        # heightForWidth() already includes lineSpacing() virtual padding.
+        needed_h = self.heightForWidth(w)
+        if self.minimumHeight() != needed_h:
+            self.setMinimumHeight(needed_h)
+            self.updateGeometry()
+
+        if not self._show_ts:
             return
         # Refresh hint every time — stylesheet polish happens after widget construction
         self._ts_hint = self._time_label.sizeHint()
@@ -325,7 +357,7 @@ class _TextBodyWidget(QWidget):
         ts_w = self._ts_hint.width() + 6
         if ts_h <= 0:
             return
-        new_needs = self._ts_needs_row(self._text_label.text(), self.width(), ts_w)
+        new_needs = self._ts_needs_row(self._text_label.text(), w, ts_w)
         if new_needs != self._needs_row:
             self._needs_row = new_needs
             h = ts_h if new_needs else 0
@@ -454,6 +486,10 @@ class MessageWidget(QWidget):
             f"color: {label_color}; font-weight: bold; font-size: {font_size}pt; "
             f"background: transparent; border: none; padding: 0px;"
         )
+        _nf = self._name_label.font()
+        _nf.setPointSize(font_size)
+        _nf.setBold(True)
+        self._name_label.setFont(_nf)
         self._name_label.setText(speaker_name or "")
         name_row.addWidget(self._name_label)
         name_row.addStretch()
@@ -486,6 +522,18 @@ class MessageWidget(QWidget):
         # Non-user: push remaining space right
         if not is_user:
             outer.addStretch()
+
+    def hasHeightForWidth(self) -> bool:
+        lyt = self.layout()
+        return lyt.hasHeightForWidth() if lyt else False
+
+    def heightForWidth(self, w: int) -> int:
+        lyt = self.layout()
+        if lyt and lyt.hasHeightForWidth():
+            m = self.contentsMargins()
+            inner_w = max(0, w - m.left() - m.right())
+            return lyt.heightForWidth(inner_w) + m.top() + m.bottom()
+        return super().heightForWidth(w)
 
     # ── Public API ──────────────────────────────────────────────────────────
 
