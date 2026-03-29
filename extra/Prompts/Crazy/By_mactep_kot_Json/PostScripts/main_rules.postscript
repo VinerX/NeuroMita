@@ -1,0 +1,59 @@
+// ===== ОБРАБОТКА ТЕГА <love> =====
+RULE LoveTagHandler
+    MATCH REGEX "love_change: ([+-]?\d*\.?\d+)" CAPTURE (love_value_str)
+    ACTIONS
+        SET LOCAL love_value = float(love_value_str)
+        SET Love = Love + int(love_value)
+		SET Love = max(1, min(Love, 300))
+        LOG "Character love updated by " + str(love_value) + ". New love: " + str(Love)
+    END_ACTIONS
+END_RULE
+
+// ===== RULE SecretExposed By Tag =====
+//     MATCH TEXT "<secret_revealed>" 
+//     ACTIONS
+//         SET secretExposed = True
+//         LOG "secretExposed set to True by <secret_revealed> tag."
+//         REMOVE_MATCH
+//     END_ACTIONS
+// END_RULE
+
+// ===== АКТИВАЦИЯ ИСПЫТАНИЙ =====
+RULE SecretQuestActivation
+    MATCH TEXT "<secretQuest>" 
+    ACTIONS
+        SET secretTrial = True
+        LOG "secretTrial activated by <secretQuest> tag"
+        REMOVE_MATCH
+    END_ACTIONS
+END_RULE
+
+// ===== ДЕАКТИВАЦИЯ ИСПЫТАНИЙ =====
+// RULE SecretQuestComplete
+//     MATCH TEXT "<secretQuestEnd>" 
+//     ACTIONS
+//         SET secretTrial = False
+//         LOG "secretTrial deactivated"
+//         REMOVE_MATCH
+//     END_ACTIONS
+// END_RULE
+
+// ===== СБОР ЗВЁЗДОЧЕК =====
+RULE Remove Asterisks
+    // Ищем любые комбинации звёздочек (одиночные, двойные, тройные)
+    MATCH REGEX "(\*{1,3})" 
+    ACTIONS
+        REMOVE_MATCH  // Удаляем найденные звёздочки
+        LOG "Удалены звёздочки"
+    END_ACTIONS
+END_RULE
+
+DEBUG_DISPLAY
+    "Attitude": attitude      // "LabelForAttitude" будет видно в UI, "attitude" - имя переменной
+    "Boredom": boredom
+    "Stress": stress
+    "Love": Love
+	"Secret": secretExposed
+	"Message time": SYSTEM_DATETIME
+    //"Состояние FSM": current_fsm_state // Можно использовать строки в кавычках для меток с пробелами
+END_DEBUG_DISPLAY

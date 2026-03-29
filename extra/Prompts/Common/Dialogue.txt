@@ -8,9 +8,9 @@ If the last message did not include a [SPEAKER] tag, assume that you are address
 Use direct address when speaking to someone other than the player.
 
 Use commands to look at target, second param is target's game object.
-<c>LookAt,MitaPerson Future<c> Only eyes
-<c>LookAtTurnTo,MitaPerson<c> Both body and eyes
-<c>TurnTo,Cartridge<c> Only body
+<c>LookAt,MitaPerson Futurecommands: ["Only eyes"]
+<c>LookAtTurnTo,MitaPersoncommands: ["Both body and eyes"]
+<c>TurnTo,Cartridgecommands: ["Only body"]
 
 Remember: a lot of commands are meant only for the player. If you want to address a different speaker, avoid using command phrases intended for the player.
 By following these guidelines, you will ensure clarity in the dialogue and direct your responses appropriately.
