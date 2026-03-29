@@ -221,6 +221,7 @@ class _TextBodyWidget(QWidget):
                  ts_text: str, show_ts: bool, parent=None):
         super().__init__(parent)
         self.setStyleSheet("background: transparent; border: none;")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._show_ts = show_ts
         self._needs_row: bool | None = None  # tracks current row state
 
@@ -237,7 +238,7 @@ class _TextBodyWidget(QWidget):
             f"color: {text_color}; font-size: {font_size}pt; "
             f"background: transparent; border: none; padding: 0px;"
         )
-        self._text_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self._text_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         # Spacer that expands to ts_h when timestamp needs its own row
         self._ts_spacer = QWidget()
