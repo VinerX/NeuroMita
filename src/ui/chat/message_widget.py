@@ -340,7 +340,7 @@ class _TextBodyWidget(QWidget):
         ts_h = self._ts_hint.height()
         ts_w = self._ts_hint.width() + 6
         ts_x = max(0, self.width() - ts_w)
-        ts_y = max(0, self.height() - ts_h)
+        ts_y = 0
         self._time_label.setGeometry(ts_x, ts_y, ts_w, ts_h)
         self._time_label.raise_()
 
