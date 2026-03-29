@@ -96,12 +96,18 @@ class StructuredJsonStreamFilter:
                         out += "\t"
                     elif c in ('"', "\\", "/"):
                         out += c
-                    elif c == "u" and len(self._buf) >= 4:
-                        try:
-                            out += chr(int(self._buf[:4], 16))
-                        except ValueError:
-                            pass
-                        self._buf = self._buf[4:]
+                    elif c == "u":
+                        if len(self._buf) >= 4:
+                            try:
+                                out += chr(int(self._buf[:4], 16))
+                            except ValueError:
+                                pass
+                            self._buf = self._buf[4:]
+                        else:
+                            # Not enough chars yet — restore state and wait for next chunk
+                            self._buf = "u" + self._buf
+                            self._escape_next = True
+                            break
                 elif c == "\\":
                     self._escape_next = True
                 elif c == '"':

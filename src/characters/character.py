@@ -622,6 +622,11 @@ class Character:
                         num_str = num_str.strip()
                         if num_str.isdigit():
                             self.memory_system.delete_memory(int(num_str), save_as_missed)
+                        elif "-" in num_str:
+                            sub = [s.strip() for s in num_str.split("-")]
+                            if len(sub) == 2 and sub[0].isdigit() and sub[1].isdigit():
+                                for n in range(int(sub[0]), int(sub[1]) + 1):
+                                    self.memory_system.delete_memory(n, save_as_missed)
                 elif "-" in delete_str:
                     parts = [s.strip() for s in delete_str.split("-")]
                     if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
