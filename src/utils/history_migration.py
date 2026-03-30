@@ -49,11 +49,15 @@ _TAG_TO_SCALAR_FIELD: dict[str, str] = {
     "target":     "target",
 }
 
-# Обычные теги: <tag>value</tag>
-_TAG_RE = re.compile(r"<([\w]+)>(.*?)</\1>", re.DOTALL)
+# Обычные теги: <tag>value</tag> и теги с двоеточием: <light:disco>on</light:disco>
+_TAG_RE = re.compile(r"<([\w][\w:]*[\w]|[\w]+)>(.*?)</\1>", re.DOTALL)
 
 # Память: <+memory>...</memory> или <-memory>...</memory> (закрывается без +/-)
 _MEMORY_RE = re.compile(r"<[+\-#]memory>.*?</memory>", re.DOTALL)
+
+# Теги с префиксом-командой (light:*, music:*, eye:* ...) → поле commands
+# Значение хранится как "{tag_name} {value}"
+_COMMAND_PREFIX_RE = re.compile(r"^(light|music|eye):")
 
 
 def _make_empty_segment() -> dict[str, Any]:
@@ -143,6 +147,10 @@ def migrate_content(content: str) -> tuple[str, dict[str, Any]]:
             field = _TAG_TO_SCALAR_FIELD[tag_name]
             if tag_value:
                 seg[field] = tag_value
+        elif _COMMAND_PREFIX_RE.match(tag_name):
+            # <light:disco>on</light:disco> → commands: ["light:disco on"]
+            cmd = f"{tag_name} {tag_value}".strip() if tag_value else tag_name
+            seg.setdefault("commands", []).append(cmd)
 
     # Убираем все теги из текста
     text_clean = _TAG_RE.sub(" ", remainder)
@@ -156,6 +164,11 @@ def migrate_content(content: str) -> tuple[str, dict[str, Any]]:
 def _is_old_format(msg: dict) -> bool:
     """True если сообщение в старом формате — строка без structured_data."""
     return isinstance(msg.get("content"), str) and "structured_data" not in msg
+
+
+def _content_has_legacy_tags(content: str) -> bool:
+    """True если строка содержит хотя бы один старый тег <tag>...</tag>."""
+    return bool(_TAG_RE.search(content) or _MEMORY_RE.search(content))
 
 
 def migrate_history_file(history_path: str) -> tuple[bool, int]:
@@ -181,7 +194,25 @@ def migrate_history_file(history_path: str) -> tuple[bool, int]:
     migrated = 0
 
     for msg in messages:
-        if msg.get("role") != "assistant":
+        role = msg.get("role")
+        if role == "assistant":
+            pass  # always migrate assistant messages
+        elif role == "user":
+            # Migrate user-role messages that are fanned-out Mita responses.
+            # Don't rely on speaker field (may be absent in old records);
+            # instead check the content itself for legacy tags.
+            if not _is_old_format(msg):
+                continue
+            if not _content_has_legacy_tags(str(msg.get("content", ""))):
+                continue
+            # Already know it's old format with tags — fall through to migrate
+            msg_content = msg["content"]
+            clean_text, structured_data = migrate_content(msg_content)
+            msg["content"] = clean_text
+            msg["structured_data"] = structured_data
+            migrated += 1
+            continue
+        else:
             continue
         if not _is_old_format(msg):
             continue
