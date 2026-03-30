@@ -49,8 +49,9 @@ _TAG_TO_SCALAR_FIELD: dict[str, str] = {
     "target":     "target",
 }
 
-# Обычные теги: <tag>value</tag> и теги с двоеточием: <light:disco>on</light:disco>
-_TAG_RE = re.compile(r"<([\w][\w:]*[\w]|[\w]+)>(.*?)</\1>", re.DOTALL)
+# Теги: простые <tag>value</tag>, с двоеточием <light:disco>on</light:disco>,
+# с запятыми/параметрами <light:disco,speed=0.8>on</light:disco,speed=0.8>
+_TAG_RE = re.compile(r"<([\w][\w:,.\-=]*[\w]|[\w]+)>(.*?)</\1>", re.DOTALL)
 
 # Память: <+memory>...</memory> или <-memory>...</memory> (закрывается без +/-)
 _MEMORY_RE = re.compile(r"<[+\-#]memory>.*?</memory>", re.DOTALL)
