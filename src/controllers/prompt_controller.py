@@ -273,7 +273,7 @@ class PromptController:
 
         if user_input:
             if sender and sender != "Player":
-                prefix = f"[{sender} is talking to you]: "
+                prefix = f"[{sender} is talking to you ({char_id})]: "
             else:
                 prefix = ""
             user_content_chunks.append({"type": "text", "text": prefix + user_input})
