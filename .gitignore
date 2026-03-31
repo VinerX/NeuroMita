@@ -26,3 +26,4 @@ vec-768-layer-12.onnx
 /checkpoints
 /src/.claude
 /.claude
+extra/Prompts/CLAUDE.md
