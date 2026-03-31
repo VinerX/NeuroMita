@@ -110,7 +110,7 @@ class Character:
             ),
         )
 
-        self._pending_target: str | None = None
+        self._pending_targets: list[str] = []
 
         self.history_manager = HistoryManager(character_name=self.name, character_id=self.char_id)
         self.memory_system = MemoryManager(self.char_id)
@@ -296,10 +296,10 @@ class Character:
         self.variables[name] = value
         # logger.debug(f"Variable '{name}' set to: {value} (type: {type(value)}) for char '{self.char_id}'")
 
-    def consume_pending_target(self) -> str | None:
-        t = getattr(self, "_pending_target", None)
-        self._pending_target = None
-        return t
+    def consume_pending_targets(self) -> list[str]:
+        targets = getattr(self, "_pending_targets", [])
+        self._pending_targets = []
+        return targets
 
     def _extract_to_tag(self, response: str) -> tuple[str, str | None]:
         if not isinstance(response, str) or not response:
@@ -489,7 +489,7 @@ class Character:
             )
 
         response, target = self._extract_to_tag(response)
-        self._pending_target = target
+        self._pending_targets = [target] if target else []
 
         final_response_for_log = (
             response[:200] + "..." if len(response) > 200 else response
@@ -568,13 +568,14 @@ class Character:
                 exc_info=True,
             )
 
-        # Extract target from first segment that has one
-        target = None
+        # Collect all unique targets from all segments (preserving order)
+        seen: set[str] = set()
+        targets: list[str] = []
         for seg in structured.segments:
-            if seg.target:
-                target = seg.target
-                break
-        self._pending_target = target
+            if seg.target and seg.target not in seen:
+                seen.add(seg.target)
+                targets.append(seg.target)
+        self._pending_targets = targets
 
         return structured
 
