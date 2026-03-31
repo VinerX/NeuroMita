@@ -86,6 +86,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
     """Insert a complete message into the chat as a widget."""
 
     font_size = _get_font_size(gui)
+    chat_parent = gui.chat_window.get_layout_parent()
 
     # ── Legacy structured role ──────────────────────────────────────────────
     if role == "structured":
@@ -102,7 +103,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         if sd:
             mode = _struct_mode(gui)
             display_mode = "json" if mode in (STRUCTURED_MODE_JSON, "JSON") else "brief"
-            panel = StructuredOutputPanel(sd, font_size, start_expanded=True, mode=display_mode)
+            panel = StructuredOutputPanel(sd, font_size, start_expanded=True, mode=display_mode, parent=chat_parent)
             gui.chat_window.add_message_widget(panel, at_start=insert_at_start)
         return
 
@@ -131,7 +132,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             speaker_name = gui._get_character_name()
 
         block = ThinkBlockWidget(speaker_name, think_text, is_streaming=False,
-                                  font_size=font_size)
+                                  font_size=font_size, parent=chat_parent)
         blocks = _get_think_blocks(gui)
         block_id = gui._think_block_counter
         gui._think_block_counter += 1
@@ -199,6 +200,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         message_time=message_time,
         show_timestamp=show_ts,
         max_bubble_width=max_bw,
+        parent=chat_parent
     )
 
     # Attach structured output panel if available
@@ -208,7 +210,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         start_expanded = bool(gui._get_setting("STRUCTURED_EXPANDED_DEFAULT", False))
         panel = StructuredOutputPanel(
             structured_data, font_size, start_expanded=start_expanded, mode=display_mode,
-            attached_to_message=True
+            attached_to_message=True, parent=chat_parent
         )
 
         # Register for toggle compat
@@ -232,7 +234,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
 
     # Add images as separate widgets
     for image_data in images:
-        img_widget = ImageWidget(image_data, role=role)
+        img_widget = ImageWidget(image_data, role=role, parent=chat_parent)
         gui.chat_window.add_message_widget(img_widget, at_start=insert_at_start)
 
 
@@ -242,6 +244,7 @@ def prepare_stream_slot(gui, role="assistant"):
     """Create a new message widget for the incoming stream."""
     prev_role = getattr(gui, "_stream_current_render_role", None)
     font_size = _get_font_size(gui)
+    chat_parent = gui.chat_window.get_layout_parent()
 
     if prev_role is not None and prev_role != role:
         if prev_role == "think":
@@ -255,7 +258,7 @@ def prepare_stream_slot(gui, role="assistant"):
         if not name and hasattr(gui, "_get_character_name"):
             name = gui._get_character_name()
 
-        block = ThinkBlockWidget(name, "", is_streaming=True, font_size=font_size)
+        block = ThinkBlockWidget(name, "", is_streaming=True, font_size=font_size, parent=chat_parent)
         blocks = _get_think_blocks(gui)
         block_id = gui._think_block_counter
         gui._think_block_counter += 1
@@ -280,6 +283,7 @@ def prepare_stream_slot(gui, role="assistant"):
             font_size=font_size,
             show_timestamp=show_ts,
             max_bubble_width=max_bw,
+            parent=chat_parent
         )
         gui._current_stream_message = msg
         gui.chat_window.add_message_widget(msg)
@@ -326,10 +330,11 @@ def attach_structured_to_stream(gui, structured_data: dict):
     font_size = _get_font_size(gui)
     display_mode = "json" if mode in (STRUCTURED_MODE_JSON, "JSON") else "brief"
     start_expanded = bool(gui._get_setting("STRUCTURED_EXPANDED_DEFAULT", False))
+    chat_parent = gui.chat_window.get_layout_parent()
 
     panel = StructuredOutputPanel(
         structured_data, font_size, start_expanded=start_expanded, mode=display_mode,
-        attached_to_message=True
+        attached_to_message=True, parent=chat_parent
     )
 
     blocks = _get_think_blocks(gui)

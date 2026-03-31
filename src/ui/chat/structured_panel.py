@@ -56,8 +56,8 @@ def _val_color(v: float) -> str:
     return CLR_NEUTRAL
 
 
-def _make_badge(label: str, value: float, label_color: str) -> QFrame:
-    badge = QFrame()
+def _make_badge(label: str, value: float, label_color: str, parent=None) -> QFrame:
+    badge = QFrame(parent)
     badge.setObjectName("StatBadge")
     badge.setStyleSheet(f"""
         QFrame#StatBadge {{
@@ -71,10 +71,10 @@ def _make_badge(label: str, value: float, label_color: str) -> QFrame:
     lay.setContentsMargins(0, 0, 0, 0)
     lay.setSpacing(3)
 
-    lbl = QLabel(label)
+    lbl = QLabel(label, badge)
     lbl.setStyleSheet(f"color: {label_color}; font-weight: bold; font-size: {_COMPACT_FONT}pt; "
                        "background: transparent; border: none;")
-    val_lbl = QLabel(_fmt_val(value))
+    val_lbl = QLabel(_fmt_val(value), badge)
     val_color = _val_color(value)
     val_lbl.setStyleSheet(f"color: {val_color}; font-weight: bold; font-size: {_COMPACT_FONT}pt; "
                            "background: transparent; border: none;")
@@ -122,7 +122,7 @@ class SegmentCard(QFrame):
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(1)
 
-        header = QLabel(f"seg {index}")
+        header = QLabel(f"seg {index}", self)
         header.setStyleSheet(
             f"color: {CLR_SEG_HEADER}; font-weight: bold; font-size: {fs}pt; "
             f"background: transparent; border: none;"
@@ -132,7 +132,7 @@ class SegmentCard(QFrame):
         text = (segment_data.get("text") or "").strip()
         if text:
             display_text = text if len(text) <= 120 else text[:117] + "..."
-            text_label = QLabel(f'"{display_text}"')
+            text_label = QLabel(f'"{display_text}"', self)
             text_label.setWordWrap(True)
             text_label.setCursor(Qt.CursorShape.IBeamCursor)
             text_label.setTextInteractionFlags(
@@ -148,7 +148,7 @@ class SegmentCard(QFrame):
         for field_key, display_label, emoji in self.FIELDS:
             vals = segment_data.get(field_key) or []
             if vals:
-                line = QLabel(f"{emoji} {display_label}: {', '.join(str(v) for v in vals)}")
+                line = QLabel(f"{emoji} {display_label}: {', '.join(str(v) for v in vals)}", self)
                 line.setWordWrap(True)
                 line.setCursor(Qt.CursorShape.IBeamCursor)
                 line.setTextInteractionFlags(
@@ -164,7 +164,7 @@ class SegmentCard(QFrame):
         for field_key, display_label in self.SCALAR_FIELDS:
             val = segment_data.get(field_key)
             if val:
-                line = QLabel(f"{display_label}: {val}")
+                line = QLabel(f"{display_label}: {val}", self)
                 line.setCursor(Qt.CursorShape.IBeamCursor)
                 line.setTextInteractionFlags(
                     Qt.TextInteractionFlag.TextSelectableByMouse
@@ -177,7 +177,7 @@ class SegmentCard(QFrame):
                 layout.addWidget(line)
 
         if segment_data.get("allow_sleep") is not None:
-            line = QLabel(f"sleep: {segment_data['allow_sleep']}")
+            line = QLabel(f"sleep: {segment_data['allow_sleep']}", self)
             line.setCursor(Qt.CursorShape.IBeamCursor)
             line.setTextInteractionFlags(
                 Qt.TextInteractionFlag.TextSelectableByMouse
@@ -211,7 +211,7 @@ class MemoryBlock(QFrame):
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(1)
 
-        header = QLabel("memory")
+        header = QLabel("memory", self)
         header.setStyleSheet(
             f"color: {CLR_MEMORY_HEADER}; font-weight: bold; font-size: {fs}pt; "
             f"background: transparent; border: none;"
@@ -225,7 +225,7 @@ class MemoryBlock(QFrame):
                 display = f"+ [{priority.strip()}] {content.strip()}"
             else:
                 display = f"+ {text}"
-            lbl = QLabel(display)
+            lbl = QLabel(display, self)
             lbl.setWordWrap(True)
             lbl.setCursor(Qt.CursorShape.IBeamCursor)
             lbl.setTextInteractionFlags(
@@ -239,7 +239,7 @@ class MemoryBlock(QFrame):
             layout.addWidget(lbl)
 
         for entry in mem_update:
-            lbl = QLabel(f"~ {entry}")
+            lbl = QLabel(f"~ {entry}", self)
             lbl.setWordWrap(True)
             lbl.setCursor(Qt.CursorShape.IBeamCursor)
             lbl.setTextInteractionFlags(
@@ -253,7 +253,7 @@ class MemoryBlock(QFrame):
             layout.addWidget(lbl)
 
         for entry in mem_delete:
-            lbl = QLabel(f"- #{entry}")
+            lbl = QLabel(f"- #{entry}", self)
             lbl.setWordWrap(True)
             lbl.setCursor(Qt.CursorShape.IBeamCursor)
             lbl.setTextInteractionFlags(
@@ -299,14 +299,14 @@ class StructuredOutputPanel(QFrame):
         outer_layout.setSpacing(2)
 
         # ── Header row (always visible, clickable) — no "debug" label ────────
-        self._header_widget = QWidget()
+        self._header_widget = QWidget(self)
         self._header_widget.setStyleSheet("background: transparent; border: none;")
         self._header_widget.setCursor(Qt.CursorShape.PointingHandCursor)
         header_layout = QHBoxLayout(self._header_widget)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(4)
 
-        self._arrow = QLabel("▼" if start_expanded else "▶")
+        self._arrow = QLabel("▼" if start_expanded else "▶", self._header_widget)
         self._arrow.setStyleSheet(
             f"color: rgba(255,255,255,0.25); font-size: {_COMPACT_FONT}pt; font-weight: bold; "
             f"background: transparent; border: none;"
@@ -317,16 +317,16 @@ class StructuredOutputPanel(QFrame):
         att    = structured_data.get("attitude_change", 0) or 0
         bore   = structured_data.get("boredom_change",  0) or 0
         stress = structured_data.get("stress_change",   0) or 0
-        header_layout.addWidget(_make_badge("Attitude", att, CLR_ATT))
-        header_layout.addWidget(_make_badge("Boredom", bore, CLR_BORE))
-        header_layout.addWidget(_make_badge("Stress", stress, CLR_STRESS))
+        header_layout.addWidget(_make_badge("Attitude", att, CLR_ATT, self._header_widget))
+        header_layout.addWidget(_make_badge("Boredom", bore, CLR_BORE, self._header_widget))
+        header_layout.addWidget(_make_badge("Stress", stress, CLR_STRESS, self._header_widget))
         header_layout.addStretch()
 
         self._header_widget.mousePressEvent = lambda e: self.toggle()
         outer_layout.addWidget(self._header_widget)
 
         # ── Content area (collapsible) ───────────────────────────────────────
-        self._content = QWidget()
+        self._content = QWidget(self)
         self._content.setStyleSheet("background: transparent; border: none;")
         content_layout = QVBoxLayout(self._content)
         content_layout.setContentsMargins(0, 2, 0, 0)
@@ -343,19 +343,19 @@ class StructuredOutputPanel(QFrame):
     def _build_brief_view(self, layout: QVBoxLayout, data: dict, font_size: int):
         segments = data.get("segments") or []
         for i, seg in enumerate(segments, 1):
-            card = SegmentCard(i, seg, _COMPACT_FONT)
+            card = SegmentCard(i, seg, _COMPACT_FONT, layout.parentWidget())
             layout.addWidget(card)
 
         mem_add    = data.get("memory_add") or []
         mem_update = data.get("memory_update") or []
         mem_delete = data.get("memory_delete") or []
         if mem_add or mem_update or mem_delete:
-            mem_block = MemoryBlock(mem_add, mem_update, mem_delete, _COMPACT_FONT)
+            mem_block = MemoryBlock(mem_add, mem_update, mem_delete, _COMPACT_FONT, layout.parentWidget())
             layout.addWidget(mem_block)
 
     def _build_json_view(self, layout: QVBoxLayout, data: dict, font_size: int):
         json_text = json.dumps(data, ensure_ascii=False, indent=2)
-        lbl = QLabel(json_text)
+        lbl = QLabel(json_text, layout.parentWidget())
         lbl.setWordWrap(True)
         lbl.setTextFormat(Qt.TextFormat.PlainText)
         lbl.setCursor(Qt.CursorShape.IBeamCursor)

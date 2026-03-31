@@ -7,6 +7,7 @@ Structured output is a SEPARATE widget added after the message in the scroll are
 """
 
 import os
+import math
 import time as _time
 import base64
 import io
@@ -15,8 +16,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSize, QRectF, QPointF
 from PyQt6.QtGui import (
-    QPixmap, QPainter, QPainterPath, QColor, QFont, QBrush, QPen,
-    QTextLayout, QTextOption, QFontMetrics,
+    QPixmap, QPainter, QPainterPath, QColor, QFont, QBrush, QPen, QTextDocument,
+    QTextLayout, QTextOption, QFontMetrics
 )
 from main_logger import logger
 
@@ -238,7 +239,7 @@ class _TextBodyWidget(QWidget):
         self._needs_row: bool | None = None  # tracks current row state
 
         # Text label in layout — auto-adjusts to content height
-        self._text_label = QLabel()
+        self._text_label = QLabel(self)
         self._text_label.setWordWrap(True)
         self._text_label.setTextFormat(Qt.TextFormat.PlainText)
         self._text_label.setTextInteractionFlags(
@@ -258,7 +259,7 @@ class _TextBodyWidget(QWidget):
         self._text_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         # Spacer that expands to ts_h when timestamp needs its own row
-        self._ts_spacer = QWidget()
+        self._ts_spacer = QWidget(self)
         self._ts_spacer.setStyleSheet("background: transparent;")
         self._ts_spacer.setMaximumHeight(0)
         self._ts_spacer.setMinimumHeight(0)
@@ -306,14 +307,13 @@ class _TextBodyWidget(QWidget):
         return True
 
     def heightForWidth(self, w: int) -> int:
-        text_h = (self._text_label.heightForWidth(w)
-                  if self._text_label.hasHeightForWidth()
-                  else self._text_label.sizeHint().height())
-        text_h = max(text_h, 1)
-        # Virtual padding: QLabel.heightForWidth() with wordWrap can undercount
-        # descent + leading of the last line, causing visual clipping.
-        # Add one lineSpacing() as guaranteed safety margin regardless of font size.
-        text_h += QFontMetrics(self._text_label.font()).lineSpacing()
+        doc = QTextDocument()
+        doc.setDocumentMargin(0)
+        doc.setDefaultFont(self._text_label.font())
+        doc.setPlainText(self._text_label.text())
+        doc.setTextWidth(w)
+        text_h = max(math.ceil(doc.size().height()), 1)
+
         if not self._show_ts:
             return text_h
         # Always query fresh hint — stylesheet may not have been applied at init
@@ -450,7 +450,7 @@ class MessageWidget(QWidget):
         # ── Avatar ──────────────────────────────────────────────────────────
         self._avatar_label = None
         if show_avatar and role in ("assistant", "user"):
-            self._avatar_label = QLabel()
+            self._avatar_label = QLabel(self)
             self._avatar_label.setFixedSize(AVATAR_SIZE, AVATAR_SIZE)
             self._avatar_label.setStyleSheet("background: transparent; border: none;")
             pm = _get_avatar_pixmap(speaker_name, role)
@@ -465,7 +465,7 @@ class MessageWidget(QWidget):
             outer.addStretch()
 
         # ── Bubble ──────────────────────────────────────────────────────────
-        self._card = BubbleFrame(role, tail_side)
+        self._card = BubbleFrame(role, tail_side, self)
         if max_bubble_width > 0:
             self._card.setMaximumWidth(max_bubble_width)
         self._card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
@@ -481,7 +481,7 @@ class MessageWidget(QWidget):
         name_row.setContentsMargins(0, 0, 0, 0)
         name_row.setSpacing(6)
 
-        self._name_label = QLabel()
+        self._name_label = QLabel(self._card)
         self._name_label.setStyleSheet(
             f"color: {label_color}; font-weight: bold; font-size: {font_size}pt; "
             f"background: transparent; border: none; padding: 0px;"
@@ -496,7 +496,7 @@ class MessageWidget(QWidget):
 
         # Timestamp in name row, right-aligned
         ts = message_time or _time.strftime("%H:%M")
-        self._time_label = QLabel(ts)
+        self._time_label = QLabel(ts, self._card)
         self._time_label.setStyleSheet(
             f"color: {time_color}; font-size: {max(font_size - 3, 7)}pt; "
             f"background: transparent; border: none; padding: 0px;"
@@ -507,7 +507,7 @@ class MessageWidget(QWidget):
         card_layout.addLayout(name_row)
 
         # Text body (no timestamp overlay)
-        self._body = _TextBodyWidget(text_color, time_color, font_size, ts, False)
+        self._body = _TextBodyWidget(text_color, time_color, font_size, ts, False, self._card)
         self._text_label = self._body._text_label   # compat ref
         if content_text:
             self._body.set_text(content_text)
@@ -597,7 +597,7 @@ class ImageWidget(QWidget):
             layout.addStretch()
 
         # Image frame
-        frame = QFrame()
+        frame = QFrame(self)
         frame.setStyleSheet("""
             QFrame {
                 background-color: rgba(255,255,255,0.08);
@@ -624,7 +624,7 @@ class ImageWidget(QWidget):
                     Qt.TransformationMode.SmoothTransformation
                 )
 
-            img_label = QLabel()
+            img_label = QLabel(frame)
             img_label.setPixmap(scaled)
             img_label.setStyleSheet("background: transparent; border: none; padding: 0px;")
             frame_layout.addWidget(img_label)
@@ -697,7 +697,7 @@ class ThinkBlockWidget(QFrame):
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(2)
 
-        self._header = QLabel()
+        self._header = QLabel(self)
         self._header.setStyleSheet(
             f"color: rgba(180,180,190,0.5); font-weight: bold; font-size: {fs}pt; "
             f"background: transparent; border: none;"
@@ -711,7 +711,7 @@ class ThinkBlockWidget(QFrame):
             self._header.setText(f"{arrow} {speaker_name} думала...")
         layout.addWidget(self._header)
 
-        self._content_label = QLabel()
+        self._content_label = QLabel(self)
         self._content_label.setWordWrap(True)
         self._content_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
