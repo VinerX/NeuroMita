@@ -272,7 +272,10 @@ class PromptController:
         user_content_chunks: List[Dict[str, Any]] = []
 
         if user_input:
-            prefix = f"[Собеседник: {sender}] " if sender and sender != "Player" else ""
+            if sender and sender != "Player":
+                prefix = f"[Собеседник: {sender} -> {char_id}] "
+            else:
+                prefix = ""
             user_content_chunks.append({"type": "text", "text": prefix + user_input})
 
         for img in image_data:

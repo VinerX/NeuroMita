@@ -833,13 +833,13 @@ class ModelController:
             # --- Legacy (tag-based) path ---
             processed = char.process_response_nlp_commands(visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False))
 
-            target = None
-            if hasattr(char, "consume_pending_target"):
+            targets: list[str] = []
+            if hasattr(char, "consume_pending_targets"):
                 try:
-                    target = char.consume_pending_target()
+                    targets = char.consume_pending_targets()
                 except Exception:
-                    target = None
-            target = str(target or "Player")
+                    targets = []
+            target = targets[-1] if targets else "Player"
 
             final_text = processed
             if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
@@ -880,6 +880,7 @@ class ModelController:
                 "character_id": char_id,
                 "voice_profile": voice_profile,
                 "target": target,
+                "targets": targets,
                 "think": think_text or None,
             }
 
@@ -925,7 +926,13 @@ class ModelController:
             processed = char.process_response_nlp_commands(
                 visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False)
             )
-            target = str((char.consume_pending_target() if hasattr(char, "consume_pending_target") else None) or "Player")
+            fallback_targets: list[str] = []
+            if hasattr(char, "consume_pending_targets"):
+                try:
+                    fallback_targets = char.consume_pending_targets()
+                except Exception:
+                    fallback_targets = []
+            fallback_target = fallback_targets[-1] if fallback_targets else "Player"
 
             voice_profile = None
             if hasattr(char, "to_voice_profile"):
@@ -939,7 +946,8 @@ class ModelController:
                 "text": processed,
                 "character_id": char_id,
                 "voice_profile": voice_profile,
-                "target": target,
+                "target": fallback_target,
+                "targets": fallback_targets,
                 "think": think_text or None,
             }
 
@@ -964,13 +972,13 @@ class ModelController:
         result_dict.pop("reasoning", None)
         final_text = result_dict["response"]
 
-        target = None
-        if hasattr(char, "consume_pending_target"):
+        targets: list[str] = []
+        if hasattr(char, "consume_pending_targets"):
             try:
-                target = char.consume_pending_target()
+                targets = char.consume_pending_targets()
             except Exception:
-                target = None
-        target = str(target or "Player")
+                targets = []
+        target = targets[-1] if targets else "Player"
 
         if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
             final_text = re.sub(
@@ -1010,6 +1018,7 @@ class ModelController:
             "character_id": char_id,
             "voice_profile": voice_profile,
             "target": target,
+            "targets": targets,
             "think": think_text or None,
             "structured": result_dict,
         }

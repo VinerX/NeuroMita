@@ -130,6 +130,12 @@ def _placeholder_avatar(size: int, color: str, name: str = "M") -> QPixmap:
 
 def _get_avatar_pixmap(character_name: str, role: str) -> QPixmap:
     filename = AVATAR_MAP.get(character_name)
+    if not filename and character_name:
+        for key, val in AVATAR_MAP.items():
+            if character_name.startswith(key):
+                filename = val
+                break
+
     if filename:
         path = os.path.join(AVATAR_DIR, filename)
         if os.path.isfile(path):
@@ -444,12 +450,12 @@ class MessageWidget(QWidget):
         outer.setAlignment(Qt.AlignmentFlag.AlignBottom)
 
         tail_side = None
-        if show_avatar and role in ("assistant", "user"):
+        if show_avatar and role not in ("system", "think", "structured"):
             tail_side = "right" if is_user else "left"
 
         # ── Avatar ──────────────────────────────────────────────────────────
         self._avatar_label = None
-        if show_avatar and role in ("assistant", "user"):
+        if show_avatar and role not in ("system", "think", "structured"):
             self._avatar_label = QLabel(self)
             self._avatar_label.setFixedSize(AVATAR_SIZE, AVATAR_SIZE)
             self._avatar_label.setStyleSheet("background: transparent; border: none;")
