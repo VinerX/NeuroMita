@@ -19,6 +19,7 @@ API_PROTOCOLS_DATA = [
         "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False, "structured_output": True},
         "transforms": [
             {"id": "merge_system_messages"},
+            {"id": "ensure_alternating_roles"},
             {"id": "ensure_last_message_user", "params": {"fallback_user_text": "."}},
         ],
     },

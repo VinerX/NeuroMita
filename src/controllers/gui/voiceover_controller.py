@@ -33,6 +33,9 @@ class VoiceoverGuiController(BaseController):
         self._tg_poll_thread: threading.Thread | None = None
         self._tg_poll_active: bool = False
 
+        self._installed_models_cache: set[str] | None = None
+        self._installed_models_cache_ts: float = 0.0
+
         super().__init__(main_controller, view)
 
     def subscribe_to_events(self):
@@ -54,6 +57,25 @@ class VoiceoverGuiController(BaseController):
         eb.subscribe(Events.Telegram.SET_SILERO_CONNECTED, self._on_tg_connected_event, weak=False)
         eb.subscribe(Events.Telegram.START_SILERO, self._on_tg_start_requested, weak=False)
         eb.subscribe(Events.Telegram.STOP_SILERO, self._on_tg_stop_requested, weak=False)
+        eb.subscribe(Events.AI.SERVICE_RESTARTED, self._on_ai_service_restarted, weak=False)
+
+    def _get_installed_models_set(self) -> set[str]:
+        now = time.time()
+        if self._installed_models_cache is not None and (now - self._installed_models_cache_ts) < 1.0:
+            return set(self._installed_models_cache)
+
+        installed = set()
+        try:
+            res = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.6)
+            got = res[0] if res else None
+            if isinstance(got, (set, list, tuple)):
+                installed = set(str(x) for x in got)
+        except Exception:
+            installed = set()
+
+        self._installed_models_cache = installed
+        self._installed_models_cache_ts = now
+        return set(installed)
 
     def autoload_last_model_on_startup(self):
         if self._autoload_done:
@@ -110,6 +132,32 @@ class VoiceoverGuiController(BaseController):
         self._tg_connecting = False
         self._tg_connected = False
         self._ui(lambda: self._sync_everything(allow_autoload=False))
+
+    def _on_ai_service_restarted(self, event: Event):
+        data = event.data if isinstance(event.data, dict) else {}
+        service = str(data.get("service") or "").strip().lower()
+        if service != "tts":
+            return
+
+        ok = bool(data.get("ok", False))
+        err = str(data.get("error") or "").strip()
+
+        def apply():
+            self._sync_everything(allow_autoload=False)
+
+            if ok:
+                self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
+                    "title": _("Готово", "Done"),
+                    "message": _("Нейро-ядро озвучки перезапущено.", "Voice AI engine restarted."),
+                })
+            else:
+                self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
+                    "title": _("Ошибка", "Error"),
+                    "message": _("Не удалось перезапустить нейро-ядро озвучки.", "Failed to restart voice AI engine.")
+                            + (f"\n\n{err}" if err else "")
+                })
+
+        self._ui(apply)
 
     def _ensure_tg_polling(self, active: bool):
         self._tg_poll_active = bool(active)
@@ -597,11 +645,10 @@ class VoiceoverGuiController(BaseController):
 
     # ---------- backend checks ----------
     def _check_installed(self, model_id: str) -> bool:
-        try:
-            res = self.event_bus.emit_and_wait(Events.Audio.CHECK_MODEL_INSTALLED, {"model_id": model_id}, timeout=0.7)
-            return bool(res and res[0])
-        except Exception:
+        model_id = str(model_id or "").strip()
+        if not model_id:
             return False
+        return model_id in self._get_installed_models_set()
 
     def _check_initialized(self, model_id: str) -> bool:
         try:

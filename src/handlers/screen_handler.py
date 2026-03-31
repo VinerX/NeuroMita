@@ -45,8 +45,6 @@ class ScreenCapture:
         # Инициализация PipInstaller
         try:
             self._pip_installer = PipInstaller(
-                script_path=r"libs\python\python.exe",
-                libs_path="Lib",
                 update_log=logger.info
             )
             logger.debug("PipInstaller успешно инициализирован для ScreenCapture.")

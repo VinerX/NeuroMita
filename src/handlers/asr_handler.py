@@ -93,6 +93,31 @@ def _on_install_asr_model_event(event: Event):
     eb.emit(Events.Install.RUN_WITH_UI if with_ui else Events.Install.RUN_HEADLESS, payload)
 
 
+def _on_ai_engine_event(event: Event):
+    data = event.data if isinstance(event.data, dict) else {}
+    if data.get("service") != "asr":
+        return
+    ev = str(data.get("event") or "")
+    if ev != "text":
+        return
+    payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+    text = str(payload.get("text") or "").strip()
+    if text:
+        get_event_bus().emit(Events.Speech.SPEECH_TEXT_RECOGNIZED, {"text": text})
+
+
+_ASR_ENGINE_BRIDGE_REGISTERED = False
+
+
+def register_asr_engine_bridge():
+    global _ASR_ENGINE_BRIDGE_REGISTERED
+    if _ASR_ENGINE_BRIDGE_REGISTERED:
+        return
+    eb = get_event_bus()
+    eb.subscribe(Events.AI.ENGINE_EVENT, _on_ai_engine_event, weak=False)
+    _ASR_ENGINE_BRIDGE_REGISTERED = True
+
+
 _ASR_INSTALL_EVENTS_REGISTERED = False
 
 
@@ -104,11 +129,14 @@ def register_asr_install_events() -> None:
     eb.subscribe(Events.Speech.INSTALL_ASR_MODEL, _on_install_asr_model_event, weak=False)
     _ASR_INSTALL_EVENTS_REGISTERED = True
 
+register_asr_engine_bridge()
 
 class SpeechRecognition:
     microphone_index = 0
     active = True
     _recognizer_type = "google"
+    _engine_settings: Dict[str, dict] = {}
+    _remote_asr_mode: bool = True
 
     VOSK_SAMPLE_RATE = 16000
     CHUNK_SIZE = 512
@@ -145,11 +173,7 @@ class SpeechRecognition:
     @staticmethod
     def _init_pip():
         if SpeechRecognition._pip_installer is None:
-            SpeechRecognition._pip_installer = PipInstaller(
-                script_path=r"libs\python\python.exe",
-                libs_path="Lib",
-                update_log=logger.info
-            )
+            SpeechRecognition._pip_installer = PipInstaller(update_log=logger.info)
 
     @staticmethod
     def _new_instance(engine: str) -> Optional[SpeechRecognizerInterface]:
@@ -330,6 +354,9 @@ class SpeechRecognition:
 
     @staticmethod
     def apply_settings(engine: str, settings: dict):
+        settings = settings or {}
+        SpeechRecognition._engine_settings[str(engine or "").strip()] = dict(settings)
+
         inst = SpeechRecognition._get_recognizer_snapshot()
         if inst and engine == SpeechRecognition._recognizer_type and hasattr(inst, "apply_settings"):
             try:
@@ -492,27 +519,87 @@ class SpeechRecognition:
             get_event_bus().emit(Events.Speech.SPEECH_TEXT_RECOGNIZED, {'text': text.strip()})
 
     @staticmethod
-    async def speech_recognition_start_async():
-        await SpeechRecognition.live_recognition()
+    def _get_ai_engine():
+        try:
+            res = get_event_bus().emit_and_wait(Events.AI.GET_ENGINE, timeout=0.8)
+            return res[0] if res else None
+        except Exception:
+            return None
 
     @staticmethod
     def speech_recognition_start(device_id: int, loop):
         if SpeechRecognition._is_running:
             SpeechRecognition.speech_recognition_stop()
             time.sleep(0.2)
+
         SpeechRecognition._is_running = True
         SpeechRecognition.active = True
         SpeechRecognition.microphone_index = device_id or 0
+
+        engine_id = SpeechRecognition._recognizer_type
+        use_remote = SpeechRecognition._remote_asr_mode and engine_id != "google"
+
+        if use_remote:
+            eng = SpeechRecognition._get_ai_engine()
+            if not eng:
+                logger.error("ASR engine not available, fallback to local mode")
+            else:
+                vad = {
+                    "sample_rate": SpeechRecognition.VOSK_SAMPLE_RATE,
+                    "chunk_size": SpeechRecognition.CHUNK_SIZE,
+                    "vad_threshold": SpeechRecognition.VAD_THRESHOLD,
+                    "silence_timeout": SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC,
+                    "pre_buffer_duration": SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC,
+                }
+                settings = SpeechRecognition._engine_settings.get(engine_id, {}) or {}
+                fut = eng.call("asr", "start_live", {
+                    "engine_id": engine_id,
+                    "microphone_index": int(device_id or 0),
+                    "engine_settings": settings,
+                    "vad": vad,
+                })
+                try:
+                    ok = bool(fut.result(timeout=10.0))
+                    if ok:
+                        logger.info(f"Запущено ASR (engine:{engine_id}) на устройстве {device_id}")
+                        return
+                    logger.error("ASR engine start failed, fallback to local mode")
+                except Exception as e:
+                    logger.error(f"ASR engine start exception: {e}")
+
+        # fallback: старый local режим
         SpeechRecognition._recognition_task = asyncio.run_coroutine_threadsafe(
             SpeechRecognition.speech_recognition_start_async(), loop
         )
-        logger.info(f"Запущено распознавание речи на устройстве {device_id}")
+        logger.info(f"Запущено распознавание речи (local) на устройстве {device_id}")
+
+    @staticmethod
+    async def speech_recognition_start_async():
+        await SpeechRecognition.live_recognition()
 
     @staticmethod
     def speech_recognition_stop():
         if not SpeechRecognition._is_running:
             return
+
         SpeechRecognition.active = False
+
+        # stop remote if used
+        engine_id = SpeechRecognition._recognizer_type
+        use_remote = SpeechRecognition._remote_asr_mode and engine_id != "google"
+        if use_remote:
+            eng = SpeechRecognition._get_ai_engine()
+            if eng:
+                try:
+                    f = eng.call("asr", "stop_live", {})
+                    try:
+                        f.result(timeout=3.0)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+        # stop local
         try:
             inst = SpeechRecognition._get_recognizer_snapshot()
             if inst:

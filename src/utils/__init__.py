@@ -82,20 +82,9 @@ def get_character_voice_paths(character=None, provider=None):
 
 
 def load_text_from_file(filename):
-    """
-    Загружает текст из файла.
-
-    :param filename: Имя файла или относительный путь к файлу.
-    :return: Содержимое файла в виде строки. Если файл не найден, возвращает пустую строку.
-    """
     logger.info(f"Загружаю {filename}")
     try:
-        # Определяем базовый путь в зависимости от того, собрано ли приложение
-        if getattr(sys, 'frozen', False):
-            base_path = os.path.dirname(sys.executable)  # PyInstaller
-        else:
-            base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
+        base_path = os.environ.get("NEUROMITA_BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
         filepath = os.path.join(base_path, filename)
         filepath = os.path.normpath(filepath)
 
@@ -111,18 +100,8 @@ def load_text_from_file(filename):
 
 
 def get_resource_path(filename):
-    """
-    Возвращает полный путь к файлу рядом с текущим модулем.
-
-    :param filename: Имя файла или относительный путь к файлу.
-    :return: Полный путь к файлу или None, если базовая папка не найдена.
-    """
-    if getattr(sys, 'frozen', False):
-        base_path = os.path.dirname(sys.executable)
-    else:
-        base_path = os.path.dirname(__file__)
-
-    promts_path = os.path.join(base_path)
+    base_path = os.environ.get("NEUROMITA_BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
+    promts_path = base_path
 
     if not os.path.isdir(promts_path):
         logger.info(f"Ошибка: Папка не найдена по пути: {promts_path}")

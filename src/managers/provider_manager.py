@@ -68,14 +68,18 @@ class ProviderManager:
             "transform_trace": [],
         }
 
+        req.extra["_protocol_trace"] = trace
+
+        logger.info(f"Using provider: {provider.name} | protocol={req.protocol_id} | dialect={req.dialect_id}")
+
+        # Preprocessing must run before transforms so that event→user
+        # conversion is visible to transforms like ensure_alternating_roles.
+        preprocess_messages_for_provider(req, provider)
+
         if req.transforms:
             req.messages, ttrace = apply_transforms(req.messages, req.transforms)
             trace["transform_trace"] = ttrace
 
-        req.extra["_protocol_trace"] = trace
-
-        logger.info(f"Using provider: {provider.name} | protocol={req.protocol_id} | dialect={req.dialect_id}")
         logger.debug(f"Protocol trace: {trace}")
 
-        preprocess_messages_for_provider(req, provider)
         return provider.generate(req)
