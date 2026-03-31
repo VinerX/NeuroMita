@@ -324,7 +324,7 @@ class _TextBodyWidget(QWidget):
             return text_h
         if self._ts_needs_row(self._text_label.text(), w, ts_w):
             return text_h + ts_h
-        return text_h
+        return text_h + 4
 
     def sizeHint(self) -> QSize:
         w = self.width() or 300
@@ -358,11 +358,11 @@ class _TextBodyWidget(QWidget):
         if ts_h <= 0:
             return
         new_needs = self._ts_needs_row(self._text_label.text(), w, ts_w)
-        if new_needs != self._needs_row:
+        target_spacer_h = ts_h if new_needs else 4
+        if new_needs != self._needs_row or self._ts_spacer.maximumHeight() != target_spacer_h:
             self._needs_row = new_needs
-            h = ts_h if new_needs else 0
-            self._ts_spacer.setMinimumHeight(h)
-            self._ts_spacer.setMaximumHeight(h)
+            self._ts_spacer.setMinimumHeight(target_spacer_h)
+            self._ts_spacer.setMaximumHeight(target_spacer_h)
             self.updateGeometry()
         self._place_ts()
 
