@@ -83,8 +83,6 @@ class ChatController(BaseController):
         target = str(data.get("target") or "")
 
         speaker_label = speaker_name
-        if role == "assistant" and speaker_name and target and target != "Player":
-            speaker_label = f"{speaker_name} → {target}"
 
         # Attach structured_data to the view for the next insert_message call
         if self.view and structured_data:
