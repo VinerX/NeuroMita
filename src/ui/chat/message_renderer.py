@@ -80,6 +80,27 @@ def toggle_think_block(gui, block_id: int):
         widget.toggle()
 
 
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def _group_segments_by_target(segments: list) -> list:
+    """Group consecutive segments by target. Returns list of (target, [text, ...]) tuples."""
+    if not segments:
+        return []
+    groups = []
+    cur_target = segments[0].get("target") or "Player"
+    cur_texts = [segments[0].get("text", "")]
+    for seg in segments[1:]:
+        t = seg.get("target") or "Player"
+        if t == cur_target:
+            cur_texts.append(seg.get("text", ""))
+        else:
+            groups.append((cur_target, list(cur_texts)))
+            cur_target = t
+            cur_texts = [seg.get("text", "")]
+    groups.append((cur_target, cur_texts))
+    return groups
+
+
 # ─── Public message renderer API ─────────────────────────────────────────────
 
 def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None):
@@ -191,42 +212,68 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
 
     show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
     max_bw = int(gui._get_setting("CHAT_MAX_BUBBLE_WIDTH", 600))
-    msg_widget = MessageWidget(
-        role=role,
-        speaker_name=speaker_name,
-        content_text=full_text,
-        show_avatar=(role not in ("system", "think", "structured")),
-        font_size=font_size,
-        message_time=message_time,
-        show_timestamp=show_ts,
-        max_bubble_width=max_bw,
-        parent=chat_parent
-    )
 
-    # Attach structured output panel if available
+    # Build structured panel once (attached to last bubble)
     mode = _struct_mode(gui)
+    _pending_struct_panel = None
     if role == "assistant" and structured_data and not _is_struct_off(mode):
         display_mode = "json" if mode in (STRUCTURED_MODE_JSON, "JSON") else "brief"
         start_expanded = bool(gui._get_setting("STRUCTURED_EXPANDED_DEFAULT", False))
-        panel = StructuredOutputPanel(
+        _pending_struct_panel = StructuredOutputPanel(
             structured_data, font_size, start_expanded=start_expanded, mode=display_mode,
             attached_to_message=True, parent=chat_parent
         )
-
-        # Register for toggle compat
         blocks = _get_think_blocks(gui)
         block_id = gui._think_block_counter
         gui._think_block_counter += 1
-        blocks[block_id] = panel
+        blocks[block_id] = _pending_struct_panel
 
-        msg_widget.set_structured_ref(panel)
-        _pending_struct_panel = panel
+    # Split into multiple bubbles when segments have different consecutive targets
+    segments = (structured_data.get("segments") or []) if isinstance(structured_data, dict) else []
+    target_groups = _group_segments_by_target(segments) if role == "assistant" and len(segments) > 0 else []
+
+    if len(target_groups) > 1:
+        for i, (target, texts) in enumerate(target_groups):
+            group_text = " ".join(t.strip() for t in texts).strip()
+            if hide_tags:
+                import re
+                pattern = r'(<([^>]+)>)(.*?)(</\2>)|(<([^>]+)>)'
+                group_text = re.sub(pattern, "", group_text, flags=re.DOTALL)
+                group_text = re.sub(r' +', ' ', group_text).strip()
+            is_last = (i == len(target_groups) - 1)
+            is_self = target and target.lower() == speaker_name.lower()
+            display_name = f"{speaker_name} → {target}" if target and target.lower() != "player" and not is_self else speaker_name
+            w = MessageWidget(
+                role=role,
+                speaker_name=display_name,
+                content_text=group_text,
+                show_avatar=(role not in ("system", "think", "structured")),
+                font_size=font_size,
+                message_time=message_time if is_last else "",
+                show_timestamp=show_ts and is_last,
+                max_bubble_width=max_bw,
+                parent=chat_parent
+            )
+            if is_last and _pending_struct_panel is not None:
+                w.set_structured_ref(_pending_struct_panel)
+            gui.chat_window.add_message_widget(w, at_start=insert_at_start)
     else:
-        _pending_struct_panel = None
+        msg_widget = MessageWidget(
+            role=role,
+            speaker_name=speaker_name,
+            content_text=full_text,
+            show_avatar=(role not in ("system", "think", "structured")),
+            font_size=font_size,
+            message_time=message_time,
+            show_timestamp=show_ts,
+            max_bubble_width=max_bw,
+            parent=chat_parent
+        )
+        if _pending_struct_panel is not None:
+            msg_widget.set_structured_ref(_pending_struct_panel)
+        gui.chat_window.add_message_widget(msg_widget, at_start=insert_at_start)
 
-    gui.chat_window.add_message_widget(msg_widget, at_start=insert_at_start)
-
-    # Add structured panel as separate widget right after the message, aligned under bubble
+    # Add structured panel as separate widget right after the last bubble
     if _pending_struct_panel is not None:
         wrapped = _wrap_panel_aligned(_pending_struct_panel, role,
                                        parent=gui.chat_window.get_layout_parent())
