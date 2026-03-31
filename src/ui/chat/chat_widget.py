@@ -16,6 +16,8 @@ import qtawesome as qta
 _PANEL_BG = "rgba(18,18,22,0.92)"
 _PANEL_BG_COLOR = QColor(18, 18, 22, 234)  # 0.92 * 255 ≈ 234
 
+MAX_DISPLAYED_MESSAGES = 100  # older widgets are deleted when this limit is exceeded
+
 
 class RoundedScrollArea(QScrollArea):
     """QScrollArea — background painted normally; outer clipping handled by ChatWidget mask."""
@@ -115,6 +117,12 @@ class ChatWidget(QFrame):
         # Message list
         self._messages = []
 
+        # Debounce timer for _apply_mask — avoids bitmap + region alloc on every resize pixel
+        self._mask_timer = QTimer(self)
+        self._mask_timer.setSingleShot(True)
+        self._mask_timer.setInterval(30)
+        self._mask_timer.timeout.connect(self._apply_mask)
+
     # ── Public API ──────────────────────────────────────────────────────────
 
     def add_message_widget(self, widget: QWidget, at_start: bool = False):
@@ -127,6 +135,12 @@ class ChatWidget(QFrame):
             idx = self._layout.count() - 1
             self._layout.insertWidget(idx, widget)
             self._messages.append(widget)
+
+        # Remove oldest widgets when limit is exceeded to prevent layout slowdown
+        while len(self._messages) > MAX_DISPLAYED_MESSAGES:
+            old = self._messages.pop(0)
+            self._layout.removeWidget(old)
+            old.deleteLater()
 
         if self._auto_scroll and not at_start:
             QTimer.singleShot(10, self.scroll_to_bottom)
@@ -216,7 +230,7 @@ class ChatWidget(QFrame):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._apply_mask()
+        self._mask_timer.start()
         self._reposition_scroll_button()
 
     def _apply_mask(self):

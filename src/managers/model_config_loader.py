@@ -26,6 +26,12 @@ def _to_float(v: Any, default: float) -> float:
 
 
 def _to_bool(v: Any, default: bool) -> bool:
+    if isinstance(v, str):
+        if v.strip().lower() in ("false", "0", "no", "off", ""):
+            return False
+        if v.strip().lower() in ("true", "1", "yes", "on"):
+            return True
+        return bool(default)
     try:
         return bool(v)
     except Exception:

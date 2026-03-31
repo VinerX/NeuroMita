@@ -39,12 +39,25 @@ class StructuredJsonStreamFilter:
         """Return text to display; returns raw chunk unchanged if not in JSON mode."""
         self._buf += str(chunk)
 
-        # Detect JSON mode on the very first non-empty feed
+        # Detect JSON mode on the very first non-empty feed.
+        # Some models wrap JSON in a markdown code fence (```json\n{...}\n```).
+        # Strip that prefix before checking for the leading '{'.
         if not self._json_mode:
-            first_char = self._buf.lstrip()
-            if not first_char:
+            stripped = self._buf.lstrip()
+            if not stripped:
                 return ""
-            if first_char[0] == "{":
+            # Skip optional ```json / ``` fence header
+            if stripped.startswith("```"):
+                newline = stripped.find("\n")
+                if newline == -1:
+                    # Haven't received the newline yet — wait for more data
+                    return ""
+                stripped = stripped[newline + 1:].lstrip()
+                if not stripped:
+                    return ""
+            if stripped[0] == "{":
+                # Advance _buf to the actual '{' so the parser starts correctly
+                self._buf = stripped
                 self._json_mode = True
             else:
                 # Not JSON — pass through unchanged
@@ -101,7 +114,7 @@ class StructuredJsonStreamFilter:
                             try:
                                 out += chr(int(self._buf[:4], 16))
                             except ValueError:
-                                pass
+                                out += "\\u" + self._buf[:4]
                             self._buf = self._buf[4:]
                         else:
                             # Not enough chars yet — restore state and wait for next chunk
