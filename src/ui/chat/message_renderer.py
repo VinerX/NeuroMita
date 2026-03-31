@@ -241,7 +241,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
                 group_text = re.sub(pattern, "", group_text, flags=re.DOTALL)
                 group_text = re.sub(r' +', ' ', group_text).strip()
             is_last = (i == len(target_groups) - 1)
-            is_self = target and target.lower() == speaker_name.lower()
+            is_self = target and speaker_name.lower().startswith(target.lower())
             display_name = f"{speaker_name} → {target}" if target and target.lower() != "player" and not is_self else speaker_name
             w = MessageWidget(
                 role=role,
