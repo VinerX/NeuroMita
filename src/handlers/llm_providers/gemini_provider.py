@@ -149,6 +149,10 @@ class GeminiProvider(BaseProvider):
                 thinking_cfg["thinkingBudget"] = int(budget)
             cfg["thinkingConfig"] = thinking_cfg
             logger.debug(f"[GeminiProvider] thinkingConfig enabled: {thinking_cfg}")
+        elif "enable_thinking" in u:
+            # Явно отключаем thinking, иначе модели Gemini 2.5+ думают по умолчанию
+            cfg["thinkingConfig"] = {"thinkingBudget": 0}
+            logger.debug("[GeminiProvider] thinkingConfig explicitly disabled (thinkingBudget=0)")
 
         return filter_jsonable_params(cfg)
 
