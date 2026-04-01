@@ -23,12 +23,12 @@ from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget,
 from ui.chat.structured_panel import StructuredOutputPanel
 
 
-def _wrap_panel_aligned(panel, role="assistant", parent=None):
+def _wrap_panel_aligned(panel, role="assistant", parent=None, extra_left=0):
     """Wrap a structured panel in a container with left margin to align under message bubble."""
     wrapper = QWidget(parent)  # parent set immediately to avoid HWND flash on Windows
     wrapper.setStyleSheet("background: transparent; border: none;")
     lay = QHBoxLayout(wrapper)
-    lay.setContentsMargins(AVATAR_SIZE + 4, 0, 0, 0)  # offset past avatar
+    lay.setContentsMargins(AVATAR_SIZE + 4 + extra_left, 0, 0, 0)  # offset past avatar
     lay.setSpacing(0)
     lay.addWidget(panel)
     lay.addStretch()
@@ -152,14 +152,17 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         if not speaker_name and hasattr(gui, "_get_character_name"):
             speaker_name = gui._get_character_name()
 
+        max_bw = int(gui._get_setting("CHAT_MAX_BUBBLE_WIDTH", 600))
         block = ThinkBlockWidget(speaker_name, think_text, is_streaming=False,
-                                  font_size=font_size, parent=chat_parent)
+                                 font_size=font_size, max_bubble_width=max_bw, parent=chat_parent)
         blocks = _get_think_blocks(gui)
         block_id = gui._think_block_counter
         gui._think_block_counter += 1
         blocks[block_id] = block
 
-        gui.chat_window.add_message_widget(block, at_start=insert_at_start)
+        # Отступ слева (10px от края аватарки — чтобы визуально ровнялось с текстом пузыря)
+        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent, extra_left=10)
+        gui.chat_window.add_message_widget(wrapped, at_start=insert_at_start)
         return
 
     # ── Other roles (user, assistant, system) ───────────────────────────────
@@ -305,14 +308,17 @@ def prepare_stream_slot(gui, role="assistant"):
         if not name and hasattr(gui, "_get_character_name"):
             name = gui._get_character_name()
 
-        block = ThinkBlockWidget(name, "", is_streaming=True, font_size=font_size, parent=chat_parent)
+        max_bw = int(gui._get_setting("CHAT_MAX_BUBBLE_WIDTH", 600))
+        block = ThinkBlockWidget(name, "", is_streaming=True, font_size=font_size, max_bubble_width=max_bw, parent=chat_parent)
         blocks = _get_think_blocks(gui)
         block_id = gui._think_block_counter
         gui._think_block_counter += 1
         blocks[block_id] = block
         gui._current_streaming_think_block = block
 
-        gui.chat_window.add_message_widget(block)
+        # Сдвигаем блок размышлений при стриминге еще на 20px правее
+        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent, extra_left=10)
+        gui.chat_window.add_message_widget(wrapped)
     else:
         speaker_name = str(getattr(gui, "_stream_speaker_name", "") or "")
         if not speaker_name and role == "assistant" and hasattr(gui, "_get_character_name"):

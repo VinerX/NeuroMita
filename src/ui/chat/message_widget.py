@@ -670,6 +670,7 @@ class ThinkBlockWidget(QFrame):
         content_text: str = "",
         is_streaming: bool = False,
         font_size: int = 12,
+        max_bubble_width: int = 600,
         parent=None,
     ):
         super().__init__(parent)
@@ -679,34 +680,37 @@ class ThinkBlockWidget(QFrame):
         self._anim_phase = 0
         self._anim_timer = None
         self.setObjectName("ThinkBlock")
-        self.setMaximumWidth(MAX_BUBBLE_WIDTH_ASSISTANT)
+        
+        # Вычитаем больше пикселей (например, 60), чтобы правый край сдвинулся левее
+        self.setMaximumWidth(max(100,max_bubble_width - 80))
+        # Заставляем блок растягиваться в ширину, даже если текста мало
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.setStyleSheet("""
             QFrame#ThinkBlock {
-                background-color: rgba(255, 255, 255, 0.03);
-                border: 1px solid rgba(255,255,255,0.06);
-                border-left: 2px solid rgba(170, 170, 170, 0.4);
-                border-radius: 6px;
-                margin: 1px 0px;
+                background-color: rgba(43, 53, 89, 0.6);
+                border: none;
+                border-radius: 10px;
+                margin: 2px 0px;
             }
         """)
 
-        fs = max(font_size - 2, 8)
+        fs = max(font_size - 3, 8)  # Чуть мельче шрифт для компактности
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(2)
 
         self._header = QLabel(self)
         self._header.setStyleSheet(
-            f"color: rgba(180,180,190,0.5); font-weight: bold; font-size: {fs}pt; "
+            f"color: rgba(230,230,235,0.7); font-weight: bold; font-size: {fs}pt; "
             f"background: transparent; border: none;"
         )
         self._header.setCursor(Qt.CursorShape.PointingHandCursor)
         self._header.mousePressEvent = lambda e: self.toggle()
         if is_streaming:
-            self._header.setText(f"▼ {speaker_name} думает.")
+            self._header.setText(f"▼ 💭 {speaker_name} думает.")
         else:
             arrow = "▶" if self._collapsed else "▼"
-            self._header.setText(f"{arrow} {speaker_name} думала...")
+            self._header.setText(f"{arrow} 💭 {speaker_name} думала...")
         layout.addWidget(self._header)
 
         self._content_label = QLabel(self)
@@ -716,7 +720,7 @@ class ThinkBlockWidget(QFrame):
         )
         self._content_label.setCursor(Qt.CursorShape.IBeamCursor)
         self._content_label.setStyleSheet(
-            f"color: rgba(180,180,190,0.45); font-size: {fs}pt; font-style: italic; "
+            f"color: rgba(230,230,235,0.8); font-size: {fs}pt; font-style: italic; "
             f"background: transparent; border: none;"
         )
         self._content_label.setText(content_text)
@@ -733,7 +737,7 @@ class ThinkBlockWidget(QFrame):
         self._collapsed = not self._collapsed
         self._content_label.setVisible(not self._collapsed)
         arrow = "▶" if self._collapsed else "▼"
-        self._header.setText(f"{arrow} {self._speaker_name} думала...")
+        self._header.setText(f"{arrow} 💭 {self._speaker_name} думала...")
 
     def append_content(self, text: str):
         self._content_text += text
@@ -742,7 +746,7 @@ class ThinkBlockWidget(QFrame):
     def finalize(self):
         self._is_streaming = False
         self._stop_animation()
-        self._header.setText(f"▼ {self._speaker_name} думала...")
+        self._header.setText(f"▼ 💭 {self._speaker_name} думала...")
 
     def _start_animation(self):
         from PyQt6.QtCore import QTimer
@@ -759,4 +763,4 @@ class ThinkBlockWidget(QFrame):
         phases = [".  ", ".. ", "..."]
         self._anim_phase = (self._anim_phase + 1) % 3
         dots = phases[self._anim_phase]
-        self._header.setText(f"▼ {self._speaker_name} думает{dots}")
+        self._header.setText(f"▼ 💭 {self._speaker_name} думает{dots}")
