@@ -84,7 +84,12 @@ class ChatController(BaseController):
 
         speaker_label = speaker_name
         if role == "assistant" and speaker_name and target and target != "Player":
-            speaker_label = f"{speaker_name} → {target}"
+            # Don't add → when there are multiple distinct segment targets:
+            # message_renderer splits those into separate bubbles and adds arrows itself.
+            segments = (structured_data.get("segments") or []) if isinstance(structured_data, dict) else []
+            distinct_targets = {str(s.get("target") or "") for s in segments if isinstance(s, dict)}
+            if len(distinct_targets) <= 1:
+                speaker_label = f"{speaker_name} → {target}"
 
         # Attach structured_data to the view for the next insert_message call
         if self.view and structured_data:

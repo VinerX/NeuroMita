@@ -365,7 +365,11 @@ def _finalize_streaming_think_block(gui):
 
 
 def attach_structured_to_stream(gui, structured_data: dict):
-    """Retroactively attach structured output panel to the just-finished stream message."""
+    """Retroactively attach structured output panel to the just-finished stream message.
+
+    Also handles per-target bubble splitting: if structured_data has segments with multiple
+    distinct targets, replaces the single stream bubble with per-target MessageWidgets.
+    """
     mode = _struct_mode(gui)
     if _is_struct_off(mode):
         return
@@ -378,6 +382,9 @@ def attach_structured_to_stream(gui, structured_data: dict):
     display_mode = "json" if mode in (STRUCTURED_MODE_JSON, "JSON") else "brief"
     start_expanded = bool(gui._get_setting("STRUCTURED_EXPANDED_DEFAULT", False))
     chat_parent = gui.chat_window.get_layout_parent()
+    show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
+    max_bw = int(gui._get_setting("CHAT_MAX_BUBBLE_WIDTH", 600))
+    hide_tags = gui._get_setting("HIDE_CHAT_TAGS", False)
 
     panel = StructuredOutputPanel(
         structured_data, font_size, start_expanded=start_expanded, mode=display_mode,
@@ -389,7 +396,47 @@ def attach_structured_to_stream(gui, structured_data: dict):
     gui._think_block_counter += 1
     blocks[block_id] = panel
 
-    msg.set_structured_ref(panel)
+    # Check if we need to split into multiple per-target bubbles
+    segments = (structured_data.get("segments") or []) if isinstance(structured_data, dict) else []
+    target_groups = _group_segments_by_target(segments) if segments else []
+    speaker_name = getattr(msg, '_speaker_name', '') or ''
+
+    if len(target_groups) > 1:
+        # Replace the single stream bubble with per-target bubbles
+        gui.chat_window.remove_widget(msg)
+        for i, (target, texts) in enumerate(target_groups):
+            group_text = " ".join(t.strip() for t in texts).strip()
+            if hide_tags:
+                import re
+                pattern = r'(<([^>]+)>)(.*?)(</\2>)|(<([^>]+)>)'
+                group_text = re.sub(pattern, "", group_text, flags=re.DOTALL)
+                group_text = re.sub(r' +', ' ', group_text).strip()
+            is_last = (i == len(target_groups) - 1)
+            is_self = target and speaker_name.lower().startswith(target.lower())
+            display_name = f"{speaker_name} → {target}" if target and target.lower() != "player" and not is_self else speaker_name
+            w = MessageWidget(
+                role="assistant",
+                speaker_name=display_name,
+                content_text=group_text,
+                show_avatar=True,
+                font_size=font_size,
+                show_timestamp=show_ts and is_last,
+                max_bubble_width=max_bw,
+                parent=chat_parent
+            )
+            if is_last:
+                w.set_structured_ref(panel)
+            gui.chat_window.add_message_widget(w)
+    elif len(target_groups) == 1:
+        target, _ = target_groups[0]
+        if target and target.lower() != "player":
+            is_self = speaker_name.lower().startswith(target.lower())
+            if not is_self:
+                msg.set_speaker_name(f"{speaker_name} → {target}")
+        msg.set_structured_ref(panel)
+    else:
+        msg.set_structured_ref(panel)
+
     wrapped = _wrap_panel_aligned(panel, "assistant",
                                    parent=gui.chat_window.get_layout_parent())
     gui.chat_window.add_message_widget(wrapped)

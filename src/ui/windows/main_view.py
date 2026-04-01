@@ -1061,8 +1061,12 @@ class ChatGUI(QMainWindow):
     # ===== Совместимость: рендер сообщений (обёртки к message_renderer) =====
     def _on_update_chat_signal(self, role, content, insert_at_start, message_time):
         """Slot for update_chat_signal — picks up pending structured_data if available."""
-        structured_data = getattr(self, '_pending_structured_data', None)
-        self._pending_structured_data = None
+        # Only assistant messages consume _pending_structured_data.
+        # Think/system messages must not steal it from the following assistant message.
+        structured_data = None
+        if role == "assistant":
+            structured_data = getattr(self, '_pending_structured_data', None)
+            self._pending_structured_data = None
         from ui.chat import message_renderer
         message_renderer.insert_message(self, role, content, insert_at_start, message_time,
                                         structured_data=structured_data)
@@ -1107,12 +1111,12 @@ class ChatGUI(QMainWindow):
         from ui.chat import message_renderer
         # Сбрасываем имя спикера после завершения стрима
         self._stream_speaker_name = ""
-        message_renderer.finish_stream_slot(self)
-        # Attach structured diamond if structured_data arrived with stream finish
+        # Attach structured panel BEFORE finish (finish clears _current_stream_message)
         pending = getattr(self, '_pending_structured_data', None)
         if pending:
             self._pending_structured_data = None
             message_renderer.attach_structured_to_stream(self, pending)
+        message_renderer.finish_stream_slot(self)
 
     def process_image_for_chat(self, has_image_content, item, processed_content_parts):
         from ui.chat import message_renderer

@@ -145,6 +145,13 @@ class ChatWidget(QFrame):
         if self._auto_scroll and not at_start:
             QTimer.singleShot(10, self.scroll_to_bottom)
 
+    def remove_widget(self, widget: QWidget):
+        """Remove a specific widget from the chat."""
+        if widget in self._messages:
+            self._messages.remove(widget)
+        self._layout.removeWidget(widget)
+        widget.deleteLater()
+
     def get_last_message(self) -> QWidget | None:
         return self._messages[-1] if self._messages else None
 
