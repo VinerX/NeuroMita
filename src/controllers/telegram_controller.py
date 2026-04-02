@@ -114,8 +114,7 @@ class TelegramController:
         self._loop = (event.data or {}).get("loop")
         logger.info("TelegramController получил уведомление о готовности loop")
 
-        self._voice_queue = asyncio.Queue()
-        asyncio.run_coroutine_threadsafe(self._queue_worker(), self._loop)
+        self.event_bus.emit(Events.Core.RUN_IN_LOOP, {'coroutine': self._init_queue_and_start_worker()})
 
         if self._waiting_for_loop:
             self._waiting_for_loop = False
@@ -334,6 +333,11 @@ class TelegramController:
         }
         self._loop.call_soon_threadsafe(self._voice_queue.put_nowait, item)
         logger.debug(f"TG voice request добавлен в очередь (размер: {self._voice_queue.qsize() + 1})")
+
+    async def _init_queue_and_start_worker(self):
+        self._voice_queue = asyncio.Queue()
+        logger.info("TG voice queue создана, запускаем worker")
+        asyncio.ensure_future(self._queue_worker())
 
     async def _queue_worker(self):
         logger.info("TG voice queue worker запущен")
