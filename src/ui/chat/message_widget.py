@@ -616,15 +616,24 @@ class MessageWidget(QWidget):
             if fc:
                 fc.update_rating(sample_id, rating)
 
-            # Visual feedback: highlight chosen, grey out other
+            # Visual feedback: highlight the chosen button, dim the other
+            _ACTIVE_UP   = "QPushButton { background: #1b5e20; border-radius: 3px; border: none; padding: 0px; }"
+            _ACTIVE_DOWN = "QPushButton { background: #b71c1c; border-radius: 3px; border: none; padding: 0px; }"
+            _INACTIVE    = "QPushButton { background: transparent; border: none; padding: 0px; }"
+
             if rating > 0:
-                self._rate_up_btn.setIcon(qta.icon("fa5s.thumbs-up", color="#4caf50"))
-                self._rate_down_btn.setIcon(qta.icon("fa5s.thumbs-down", color="#555555"))
+                self._rate_up_btn.setIcon(qta.icon("fa5s.thumbs-up", color="#66bb6a"))
+                self._rate_up_btn.setStyleSheet(_ACTIVE_UP)
+                self._rate_down_btn.setIcon(qta.icon("fa5s.thumbs-down", color="#444444"))
+                self._rate_down_btn.setStyleSheet(_INACTIVE)
                 self._rate_up_btn.setToolTip("👍 Оценено!")
             else:
-                self._rate_down_btn.setIcon(qta.icon("fa5s.thumbs-down", color="#e53935"))
-                self._rate_up_btn.setIcon(qta.icon("fa5s.thumbs-up", color="#555555"))
+                self._rate_down_btn.setIcon(qta.icon("fa5s.thumbs-down", color="#ef5350"))
+                self._rate_down_btn.setStyleSheet(_ACTIVE_DOWN)
+                self._rate_up_btn.setIcon(qta.icon("fa5s.thumbs-up", color="#444444"))
+                self._rate_up_btn.setStyleSheet(_INACTIVE)
                 self._rate_down_btn.setToolTip("👎 Оценено!")
+
             self._rate_up_btn.setEnabled(False)
             self._rate_down_btn.setEnabled(False)
         except Exception:

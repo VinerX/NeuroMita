@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import os
-from PyQt6.QtWidgets import QPushButton, QLabel
+from PyQt6.QtWidgets import QLabel, QWidget, QVBoxLayout
 from PyQt6.QtCore import Qt
 
 from ui.gui_templates import create_settings_section, create_section_header
@@ -14,6 +14,53 @@ from utils import getTranslationVariant as _
 
 def setup_data_settings_controls(self, parent):
     create_section_header(parent, _("Данные для дообучения", "Finetune Data"))
+
+    # ── Explanatory info block ────────────────────────────────────────────────
+    info_widget = QWidget()
+    info_widget.setStyleSheet(
+        "QWidget { background: #1e2a1e; border: 1px solid #2d5a2d; border-radius: 6px; }"
+    )
+    info_layout = QVBoxLayout(info_widget)
+    info_layout.setContentsMargins(10, 8, 10, 8)
+    info_layout.setSpacing(4)
+
+    desc_label = QLabel(_(
+        "При включённом сборе каждый диалог с моделью сохраняется локально "
+        "вместе с метаданными (модель, провайдер, температура, персонаж). "
+        "Накопленные данные можно выгрузить и использовать для дообучения "
+        "через Unsloth или другие инструменты.\n\n"
+        "⚠ Файлы могут занять значительное место: каждый запрос включает "
+        "полный системный промт и историю (~20 сообщений).",
+
+        "When collection is enabled, every model dialogue is saved locally "
+        "with metadata (model, provider, temperature, character). "
+        "Collected data can be exported and used for fine-tuning "
+        "via Unsloth or other tools.\n\n"
+        "⚠ Files can take significant space: each request includes "
+        "the full system prompt and history (~20 messages)."
+    ))
+    desc_label.setWordWrap(True)
+    desc_label.setStyleSheet(
+        "QLabel { background: transparent; border: none; color: #b0c4b0; font-size: 11px; }"
+    )
+    info_layout.addWidget(desc_label)
+
+    # Clickable link to upload destination
+    link_label = QLabel(_(
+        '📤 Загружать данные сюда: <a href="https://drive.google.com/drive/folders/1yiF5QSS4YHBNrKTHnFnelxHtSgtS6-GL" '
+        'style="color:#7ecf7e;">Google Drive — NeuroMita Finetune</a>',
+
+        '📤 Upload data here: <a href="https://drive.google.com/drive/folders/1yiF5QSS4YHBNrKTHnFnelxHtSgtS6-GL" '
+        'style="color:#7ecf7e;">Google Drive — NeuroMita Finetune</a>'
+    ))
+    link_label.setOpenExternalLinks(True)
+    link_label.setWordWrap(True)
+    link_label.setStyleSheet(
+        "QLabel { background: transparent; border: none; color: #b0c4b0; font-size: 11px; }"
+    )
+    info_layout.addWidget(link_label)
+
+    parent.addWidget(info_widget)
 
     # ── Collection toggle ─────────────────────────────────────────────────────
     collection_config = [
@@ -87,8 +134,7 @@ def setup_data_settings_controls(self, parent):
 def _get_data_dir_label() -> str:
     try:
         base = os.environ.get("NEUROMITA_BASE_DIR", os.getcwd())
-        path = os.path.join(base, "FineTuneData")
-        return path
+        return os.path.join(base, "FineTuneData")
     except Exception:
         return "FineTuneData/"
 
@@ -112,7 +158,7 @@ def _build_stats_config() -> list:
                 "type": "text",
             },
             {
-                "label": _("С рейтингом: ", "Rated: ") + f"{rated} (👍 {positive} / 👎 {negative})",
+                "label": _("С рейтингом: ", "Rated: ") + f"{rated}  (👍 {positive} / 👎 {negative})",
                 "type": "text",
             },
         ]
