@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import os
-from PyQt6.QtWidgets import QLabel, QWidget, QVBoxLayout
+from PyQt6.QtWidgets import QLabel, QWidget, QVBoxLayout, QFrame
 from PyQt6.QtCore import Qt
 
 from ui.gui_templates import create_settings_section, create_section_header
@@ -98,15 +98,8 @@ def setup_data_settings_controls(self, parent):
         icon_name="fa5s.folder-open",
     )
 
-    # ── Stats section ─────────────────────────────────────────────────────────
-    stats_config = _build_stats_config()
-    create_settings_section(
-        self,
-        parent,
-        _("Статистика", "Statistics"),
-        stats_config,
-        icon_name="fa5s.chart-bar",
-    )
+    # ── Stats section (live widget, refreshes on showEvent) ──────────────────
+    parent.addWidget(_LiveStatsWidget())
 
     # ── Export + Clear buttons ────────────────────────────────────────────────
     export_config = [
@@ -138,6 +131,86 @@ def setup_data_settings_controls(self, parent):
     )
 
 
+# ── Live stats widget ─────────────────────────────────────────────────────────
+
+class _LiveStatsWidget(QFrame):
+    """Виджет статистики, пересчитывающийся при каждом показе панели."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(
+            "QFrame { background: transparent; border: none; }"
+            "QLabel { background: transparent; border: none; color: #c8c8c8; font-size: 11px; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+
+        # Header row
+        header = QLabel()
+        header.setStyleSheet(
+            "font-size: 12px; font-weight: bold; color: #dcdcdc; "
+            "padding: 4px 0; background: transparent; border: none;"
+        )
+        header.setText(_("Статистика", "Statistics"))
+        layout.addWidget(header)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("border: none; border-top: 1px solid #444;")
+        layout.addWidget(sep)
+
+        self._stats_layout = layout  # we'll append labels here on refresh
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        self._refresh()
+
+    def _refresh(self):
+        # Remove old stat labels (keep header + separator = first 2 items)
+        while self._stats_layout.count() > 2:
+            item = self._stats_layout.takeAt(2)
+            if item and item.widget():
+                item.widget().deleteLater()
+
+        for text in self._build_lines():
+            lbl = QLabel(text)
+            lbl.setStyleSheet(
+                "background: transparent; border: none; color: #c8c8c8; font-size: 11px;"
+            )
+            lbl.setWordWrap(True)
+            self._stats_layout.addWidget(lbl)
+
+    @staticmethod
+    def _build_lines() -> list:
+        try:
+            from managers.finetune_collector import FineTuneCollector
+            fc = FineTuneCollector.instance
+            if fc is None:
+                return [_("Сборщик не инициализирован", "Collector not initialized")]
+
+            stats = fc.get_stats()
+            total    = stats.get("total", 0)
+            rated    = stats.get("rated", 0)
+            positive = stats.get("positive", 0)
+            negative = stats.get("negative", 0)
+
+            lines = [
+                _("Всего записей: ", "Total records: ") + str(total),
+                _("С рейтингом: ", "Rated: ") + f"{rated}  (👍 {positive} / 👎 {negative})",
+            ]
+
+            by_char = stats.get("by_character", {})
+            if by_char:
+                lines.append(_("По персонажам:", "By character:"))
+                for char_id, cnt in sorted(by_char.items()):
+                    lines.append(f"   {char_id}: {cnt}")
+
+            return lines
+        except Exception as e:
+            return [f"Error: {e}"]
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _get_data_dir_label() -> str:
@@ -147,41 +220,6 @@ def _get_data_dir_label() -> str:
     except Exception:
         return "FineTuneData/"
 
-
-def _build_stats_config() -> list:
-    try:
-        from managers.finetune_collector import FineTuneCollector
-        fc = FineTuneCollector.instance
-        if fc is None:
-            return [{"label": _("Сборщик не инициализирован", "Collector not initialized"), "type": "text"}]
-
-        stats = fc.get_stats()
-        total = stats.get("total", 0)
-        rated = stats.get("rated", 0)
-        positive = stats.get("positive", 0)
-        negative = stats.get("negative", 0)
-
-        lines = [
-            {
-                "label": _("Всего записей: ", "Total records: ") + str(total),
-                "type": "text",
-            },
-            {
-                "label": _("С рейтингом: ", "Rated: ") + f"{rated}  (👍 {positive} / 👎 {negative})",
-                "type": "text",
-            },
-        ]
-
-        by_char = stats.get("by_character", {})
-        if by_char:
-            lines.append({"label": _("По персонажам:", "By character:"), "type": "text"})
-            for char_id, cnt in sorted(by_char.items()):
-                lines.append({"label": f"  {char_id}: {cnt}", "type": "text"})
-
-        return lines
-
-    except Exception as e:
-        return [{"label": f"Error: {e}", "type": "text"}]
 
 
 def _clear_all_data(gui):
