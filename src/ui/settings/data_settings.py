@@ -108,7 +108,7 @@ def setup_data_settings_controls(self, parent):
         icon_name="fa5s.chart-bar",
     )
 
-    # ── Export button ─────────────────────────────────────────────────────────
+    # ── Export + Clear buttons ────────────────────────────────────────────────
     export_config = [
         {
             "label": _("Экспортировать данные...", "Export data..."),
@@ -119,11 +119,20 @@ def setup_data_settings_controls(self, parent):
                 "Open export dialog with filtering and format selection."
             ),
         },
+        {
+            "label": _("Очистить все данные...", "Clear all data..."),
+            "type": "button",
+            "command": lambda: _clear_all_data(self),
+            "tooltip": _(
+                "Удалить все накопленные файлы данных дообучения. Действие необратимо.",
+                "Delete all accumulated fine-tuning data files. This action is irreversible."
+            ),
+        },
     ]
     create_settings_section(
         self,
         parent,
-        _("Экспорт", "Export"),
+        _("Экспорт / Очистка", "Export / Clear"),
         export_config,
         icon_name="fa5s.download",
     )
@@ -173,6 +182,35 @@ def _build_stats_config() -> list:
 
     except Exception as e:
         return [{"label": f"Error: {e}", "type": "text"}]
+
+
+def _clear_all_data(gui):
+    try:
+        from PyQt6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            None,
+            _("Подтверждение", "Confirmation"),
+            _(
+                "Удалить все файлы данных дообучения?\nЭто действие необратимо.",
+                "Delete all fine-tuning data files?\nThis action is irreversible."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        from managers.finetune_collector import FineTuneCollector
+        fc = FineTuneCollector.instance
+        if fc:
+            count = fc.clear_all()
+            QMessageBox.information(
+                None,
+                _("Готово", "Done"),
+                _("Удалено файлов: ", "Files deleted: ") + str(count),
+            )
+    except Exception as e:
+        from main_logger import logger
+        logger.error(f"Failed to clear finetune data: {e}", exc_info=True)
 
 
 def _open_export_dialog(gui):

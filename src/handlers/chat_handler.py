@@ -186,11 +186,22 @@ class ChatModel:
                 fc = FineTuneCollector.instance
                 if fc and fc.is_enabled():
                     char = self.current_character
+                    # Query game connection status (non-blocking)
+                    game_connected = False
+                    try:
+                        from core.events import Events
+                        res = self.event_bus.emit_and_wait(
+                            Events.Server.GET_GAME_CONNECTION, timeout=0.3
+                        )
+                        game_connected = bool(res[0]) if res else False
+                    except Exception:
+                        game_connected = False
                     fc.save_sample(
                         req=_last_req[0],
                         response_text=response_text,
                         character_id=char.char_id if char else "unknown",
                         character_name=char.name if char else "unknown",
+                        game_connected=game_connected,
                     )
             except Exception as _ft_err:
                 logger.debug(f"[FinetuneCollector] save_sample skipped: {_ft_err}")

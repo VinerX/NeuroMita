@@ -48,6 +48,7 @@ class FineTuneCollector:
         response_text: str,
         character_id: str,
         character_name: str,
+        game_connected: bool = False,
     ) -> Optional[str]:
         """
         Сохраняет пару запрос-ответ в JSONL.
@@ -77,6 +78,7 @@ class FineTuneCollector:
                 "presence_penalty": extra.get("presence_penalty"),
                 "frequency_penalty": extra.get("frequency_penalty"),
                 "max_tokens": extra.get("max_tokens"),
+                "game_connected": game_connected,
                 "messages": getattr(req, "messages", []),
                 "response": response_text,
                 "rating": None,
@@ -303,6 +305,19 @@ class FineTuneCollector:
                         count += 1
         except Exception as e:
             logger.error(f"[FineTuneCollector] export_sharegpt error: {e}", exc_info=True)
+        return count
+
+    def clear_all(self) -> int:
+        """Удаляет все JSONL-файлы из FineTuneData/. Возвращает кол-во удалённых файлов."""
+        count = 0
+        try:
+            with self._lock:
+                for file_path in list(self.data_dir.glob("samples_*.jsonl")):
+                    file_path.unlink()
+                    count += 1
+                self._pending_sample_id = None
+        except Exception as e:
+            logger.error(f"[FineTuneCollector] clear_all error: {e}", exc_info=True)
         return count
 
     def export_raw_jsonl(self, samples: List[Dict], output_path: str) -> int:
