@@ -428,6 +428,7 @@ class MessageWidget(QWidget):
         message_time: str = "",
         show_timestamp: bool = True,
         max_bubble_width: int = 600,
+        sample_id: str = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -435,6 +436,7 @@ class MessageWidget(QWidget):
         self._speaker_name = speaker_name
         self._font_size = font_size
         self._structured_panel = None  # external widget ref
+        self._sample_id = sample_id
 
         self.setStyleSheet("background: transparent; border: none;")
 
@@ -500,6 +502,10 @@ class MessageWidget(QWidget):
         name_row.addWidget(self._name_label)
         name_row.addStretch()
 
+        # ── Finetune rating buttons (only for assistant with a collected sample_id) ──
+        if role == "assistant" and sample_id:
+            self._add_rating_buttons(name_row, sample_id, font_size)
+
         ts = message_time or _time.strftime("%H:%M")
 
         card_layout.addLayout(name_row)
@@ -557,6 +563,72 @@ class MessageWidget(QWidget):
     def set_structured_ref(self, panel):
         """Store a reference to an external structured panel."""
         self._structured_panel = panel
+
+    # ── Finetune rating buttons ───────────────────────────────────────────────
+
+    def _add_rating_buttons(self, name_row, sample_id: str, font_size: int):
+        """Добавляет кнопки 👍/👎 в строку имени для оценки ответа."""
+        try:
+            import qtawesome as qta
+            from PyQt6.QtWidgets import QPushButton, QWidget, QHBoxLayout
+
+            btn_container = QWidget(self._card)
+            btn_container.setStyleSheet("background: transparent; border: none;")
+            btn_layout = QHBoxLayout(btn_container)
+            btn_layout.setContentsMargins(0, 0, 0, 0)
+            btn_layout.setSpacing(2)
+
+            self._rate_up_btn = QPushButton(btn_container)
+            self._rate_up_btn.setIcon(qta.icon("fa5s.thumbs-up", color="#888888"))
+            self._rate_up_btn.setFixedSize(20, 20)
+            self._rate_up_btn.setFlat(True)
+            self._rate_up_btn.setToolTip("👍 Хороший ответ")
+            self._rate_up_btn.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0px; }")
+            self._rate_up_btn.setCursor(
+                __import__("PyQt6.QtCore", fromlist=["Qt"]).Qt.CursorShape.PointingHandCursor
+            )
+
+            self._rate_down_btn = QPushButton(btn_container)
+            self._rate_down_btn.setIcon(qta.icon("fa5s.thumbs-down", color="#888888"))
+            self._rate_down_btn.setFixedSize(20, 20)
+            self._rate_down_btn.setFlat(True)
+            self._rate_down_btn.setToolTip("👎 Плохой ответ")
+            self._rate_down_btn.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0px; }")
+            self._rate_down_btn.setCursor(
+                __import__("PyQt6.QtCore", fromlist=["Qt"]).Qt.CursorShape.PointingHandCursor
+            )
+
+            self._rate_up_btn.clicked.connect(lambda: self._on_rate(sample_id, 1))
+            self._rate_down_btn.clicked.connect(lambda: self._on_rate(sample_id, -1))
+
+            btn_layout.addWidget(self._rate_up_btn)
+            btn_layout.addWidget(self._rate_down_btn)
+            name_row.addWidget(btn_container)
+
+        except Exception:
+            pass  # Rating buttons are optional; never crash the message widget
+
+    def _on_rate(self, sample_id: str, rating: int):
+        try:
+            from managers.finetune_collector import FineTuneCollector
+            import qtawesome as qta
+            fc = FineTuneCollector.instance
+            if fc:
+                fc.update_rating(sample_id, rating)
+
+            # Visual feedback: highlight chosen, grey out other
+            if rating > 0:
+                self._rate_up_btn.setIcon(qta.icon("fa5s.thumbs-up", color="#4caf50"))
+                self._rate_down_btn.setIcon(qta.icon("fa5s.thumbs-down", color="#555555"))
+                self._rate_up_btn.setToolTip("👍 Оценено!")
+            else:
+                self._rate_down_btn.setIcon(qta.icon("fa5s.thumbs-down", color="#e53935"))
+                self._rate_up_btn.setIcon(qta.icon("fa5s.thumbs-up", color="#555555"))
+                self._rate_down_btn.setToolTip("👎 Оценено!")
+            self._rate_up_btn.setEnabled(False)
+            self._rate_down_btn.setEnabled(False)
+        except Exception:
+            pass
 
     def add_structured_widget(self, widget: QWidget):
         """Compat: same as set_structured_ref."""

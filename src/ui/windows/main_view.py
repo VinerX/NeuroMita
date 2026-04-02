@@ -24,9 +24,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap
 
 from ui.settings import (
-    api_settings, character_settings, game_settings, 
-    microphone_settings, screen_analysis_settings, voiceover_settings, 
-    model_interaction_settings, general_settings
+    api_settings, character_settings, game_settings,
+    microphone_settings, screen_analysis_settings, voiceover_settings,
+    model_interaction_settings, general_settings, data_settings
 )
 
 from ui.widgets import (status_indicators_widget)
@@ -379,6 +379,7 @@ class ChatGUI(QMainWindow):
             "game":        game_settings.setup_game_controls,
             "debug":       self._debug_wrapper,
             "news":        self._news_wrapper,
+            "data":        data_settings.setup_data_settings_controls,
         }
 
         for key, fn in callbacks.items():

@@ -32,6 +32,7 @@ def setup_settings_panel(gui, main_layout):
         ("fa5s.gamepad", _("Игра", "Game"), "game"),
         ("fa6s.bug", _("Отладка", "Debug"), "debug"),
         ("fa6s.newspaper", _("Новости", "News"), "news"),
+        ("fa5s.database", _("Данные", "Data"), "data"),
     ]
 
     for icon_name, tooltip, category in settings_categories:

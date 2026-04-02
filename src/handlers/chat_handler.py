@@ -114,6 +114,9 @@ class ChatModel:
                 combined_messages.insert(0, {"role": "system", "content": legacy_prompt})
 
 
+        # Capture the last built LLMRequest so we can save it for finetune data collection
+        _last_req: list = [None]
+
         def build_request(preset_settings, effective_model: str) -> LLMRequest:
             cfg = self.cfg_loader.effective_for_preset(self.cfg, preset_settings, effective_model)
 
@@ -159,6 +162,7 @@ class ChatModel:
             )
 
             req.extra["tool_manager"] = self.tool_manager
+            _last_req[0] = req
             return req
 
         try:
@@ -174,6 +178,22 @@ class ChatModel:
         except Exception as e:
             logger.error(f"Runner failed unexpectedly: {e}", exc_info=True)
             return None, False
+
+        # ── Finetune data collection hook ─────────────────────────────────────
+        if response_text and _last_req[0]:
+            try:
+                from managers.finetune_collector import FineTuneCollector
+                fc = FineTuneCollector.instance
+                if fc and fc.is_enabled():
+                    char = self.current_character
+                    fc.save_sample(
+                        req=_last_req[0],
+                        response_text=response_text,
+                        character_id=char.char_id if char else "unknown",
+                        character_name=char.name if char else "unknown",
+                    )
+            except Exception as _ft_err:
+                logger.debug(f"[FinetuneCollector] save_sample skipped: {_ft_err}")
 
         if response_text and tools_on and tools_mode == "legacy":
             response_text = self.legacy_tools.process(
