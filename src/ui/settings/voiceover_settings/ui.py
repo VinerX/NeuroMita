@@ -73,7 +73,7 @@ def build_voiceover_settings_ui(self, parent_layout):
 
         {'label': _('Мин. интервал запросов (сек)', 'Min request interval (sec)'),
          'key': 'TG_MIN_REQUEST_INTERVAL',
-         'type': 'entry', 'default': '0', 'validation': getattr(self, 'validate_number_0_60', None)},
+         'type': 'entry', 'default': '2', 'validation': getattr(self, 'validate_number_0_60', None)},
 
         {'label': _('Настройки Telegram API', 'Telegram API Settings'), 'type': 'text'},
         {'label': _('Будет скрыто после перезапуска', 'Will be hidden after restart'), 'type': 'text'},
