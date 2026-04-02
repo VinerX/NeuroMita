@@ -1,7 +1,7 @@
 ﻿# src/managers/api_preset_resolver.py
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from core.events import Events
@@ -24,6 +24,7 @@ class PresetSettings:
 
     preset_name: str
     reserve_keys: List[str]
+    generation_overrides: Dict[str, Any] = field(default_factory=dict)
 
     def to_safe_dict(self) -> Dict[str, Any]:
         return {
@@ -120,6 +121,10 @@ class ApiPresetResolver:
             extra_headers=extra_headers,
         )
 
+        generation_overrides = (preset or {}).get("generation_overrides") if isinstance(preset, dict) else None
+        if not isinstance(generation_overrides, dict):
+            generation_overrides = {}
+
         return PresetSettings(
             protocol_id=protocol_id,
             dialect_id=dialect_id,
@@ -132,6 +137,7 @@ class ApiPresetResolver:
             api_model=api_model,
             preset_name=preset_name,
             reserve_keys=reserve_keys,
+            generation_overrides=generation_overrides,
         )
 
     def resolve_preset_id_by_name(self, display_name: str) -> Optional[int]:

@@ -8,6 +8,7 @@ import requests
 
 from main_logger import logger
 from handlers.llm_providers.base import BaseProvider, LLMRequest
+from schemas.structured_response import StructuredResponse
 
 
 class OpenAIHTTPProviderBase(BaseProvider):
@@ -81,7 +82,22 @@ class OpenAIHTTPProviderBase(BaseProvider):
             lp = u["logprobs"]
             out["logprobs"] = lp if isinstance(lp, bool) else bool(lp)
 
+        # Thinking / reasoning support (OpenRouter unified format)
+        if "enable_thinking" in u:
+            if u["enable_thinking"]:
+                budget = int(u.get("gemini_thinking_budget") or u.get("thinking_budget") or 0)
+                thinking_obj: Dict[str, Any] = {"type": "enabled"}
+                if budget > 0:
+                    thinking_obj["budget_tokens"] = budget
+                out["thinking"] = thinking_obj
+            else:
+                out["thinking"] = {"type": "disabled"}
+
         return out
+
+    def _supports_structured_output(self, req: LLMRequest) -> bool:
+        caps = req.capabilities or {}
+        return bool(caps.get("structured_output", False))
 
     def _build_payload(self, req: LLMRequest, model_to_use: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -96,6 +112,17 @@ class OpenAIHTTPProviderBase(BaseProvider):
             if tools_payload:
                 payload["tools"] = tools_payload
                 payload["stream"] = False
+
+        # Add structured output response_format when capability is enabled.
+        # Use json_schema (strict) by default; json_object is a softer fallback
+        # for providers that don't support json_schema (OpenRouter/StepFun, etc.)
+        if self._supports_structured_output(req):
+            rf_mode = (req.capabilities or {}).get("structured_output_mode", "json_schema")
+            if rf_mode == "json_object":
+                payload["response_format"] = {"type": "json_object"}
+            else:
+                payload["response_format"] = StructuredResponse.openai_response_format()
+            logger.debug(f"[{self.name}] Structured output enabled: response_format={rf_mode}")
 
         return payload
 
@@ -122,6 +149,23 @@ class OpenAIHTTPProviderBase(BaseProvider):
         payload = self._build_payload(req, model_to_use, msgs)
 
         resp = self._request(req, payload)
+
+        # If json_schema was rejected (HTTP 400), retry once with json_object
+        if resp.status_code == 400 and self._supports_structured_output(req):
+            rf_mode = (req.capabilities or {}).get("structured_output_mode", "json_schema")
+            if rf_mode != "json_object" and "response_format" in payload:
+                try:
+                    err_body = resp.json()
+                except Exception:
+                    err_body = {}
+                err_msg = str(err_body)
+                if "response_format" in err_msg or "json_schema" in err_msg or "json_object" in err_msg:
+                    logger.warning(
+                        f"[{self.name}] json_schema rejected by provider, retrying with json_object. "
+                        f"Error: {err_msg[:200]}"
+                    )
+                    payload["response_format"] = {"type": "json_object"}
+                    resp = self._request(req, payload)
 
         if resp.status_code != 200:
             try:
@@ -160,7 +204,8 @@ class OpenAIHTTPProviderBase(BaseProvider):
             req.depth += 1
             return self.generate(req)
 
-        return (message.get("content") or "").strip()
+        content = message.get("content") or message.get("reasoning_content") or ""
+        return content.strip()
 
     def _handle_stream(self, resp: requests.Response, stream_callback: Optional[callable] = None) -> str:
         parts: List[str] = []
@@ -183,7 +228,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 try:
                     obj = json.loads(chunk)
                     delta = obj.get("choices", [{}])[0].get("delta", {}) or {}
-                    text = delta.get("content", "") or ""
+                    text = delta.get("content", "") or delta.get("reasoning_content", "") or ""
                     if text:
                         if stream_callback:
                             stream_callback(text)

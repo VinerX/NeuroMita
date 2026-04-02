@@ -11,6 +11,136 @@ from managers.task_manager import TaskStatus
 from core.request_policy import RequestPolicy, resolve_policy
 
 
+class StructuredJsonStreamFilter:
+    """
+    Streaming-time filter for structured JSON responses.
+
+    When the model returns a JSON object (structured output), the raw stream
+    contains JSON syntax rather than readable text.  This filter extracts the
+    values of every ``"text"`` key found in the stream (i.e. segment texts)
+    and emits them in order, discarding all JSON scaffolding.
+
+    Activated lazily: call feed() with the first chunk; if it starts with ``{``
+    the filter enters JSON mode automatically.
+    """
+
+    KEY = '"text"'
+
+    def __init__(self):
+        self._buf = ""
+        self._state = "SCANNING"   # SCANNING | EXPECT_COLON | EXPECT_QUOTE | IN_VALUE
+        self._escape_next = False
+        self._json_mode = False    # set True once we see the leading {
+
+    def is_json_mode(self) -> bool:
+        return self._json_mode
+
+    def feed(self, chunk: str) -> str:
+        """Return text to display; returns raw chunk unchanged if not in JSON mode."""
+        self._buf += str(chunk)
+
+        # Detect JSON mode on the very first non-empty feed.
+        # Some models wrap JSON in a markdown code fence (```json\n{...}\n```).
+        # Strip that prefix before checking for the leading '{'.
+        if not self._json_mode:
+            stripped = self._buf.lstrip()
+            if not stripped:
+                return ""
+            # Skip optional ```json / ``` fence header
+            if stripped.startswith("```"):
+                newline = stripped.find("\n")
+                if newline == -1:
+                    # Haven't received the newline yet — wait for more data
+                    return ""
+                stripped = stripped[newline + 1:].lstrip()
+                if not stripped:
+                    return ""
+            if stripped[0] == "{":
+                # Advance _buf to the actual '{' so the parser starts correctly
+                self._buf = stripped
+                self._json_mode = True
+            else:
+                # Not JSON — pass through unchanged
+                out = self._buf
+                self._buf = ""
+                return out
+
+        out = ""
+        while self._buf:
+            if self._state == "SCANNING":
+                pos = self._buf.find(self.KEY)
+                if pos == -1:
+                    keep = len(self.KEY) - 1
+                    if len(self._buf) > keep:
+                        self._buf = self._buf[-keep:]
+                    break
+                self._buf = self._buf[pos + len(self.KEY):]
+                self._state = "EXPECT_COLON"
+
+            elif self._state == "EXPECT_COLON":
+                c = self._buf[0]
+                if c in " \t\n\r":
+                    self._buf = self._buf[1:]
+                elif c == ":":
+                    self._buf = self._buf[1:]
+                    self._state = "EXPECT_QUOTE"
+                else:
+                    self._state = "SCANNING"
+
+            elif self._state == "EXPECT_QUOTE":
+                c = self._buf[0]
+                if c in " \t\n\r":
+                    self._buf = self._buf[1:]
+                elif c == '"':
+                    self._buf = self._buf[1:]
+                    self._state = "IN_VALUE"
+                    self._escape_next = False
+                else:
+                    self._state = "SCANNING"
+
+            elif self._state == "IN_VALUE":
+                c = self._buf[0]
+                self._buf = self._buf[1:]
+                if self._escape_next:
+                    self._escape_next = False
+                    if c == "n":
+                        out += "\n"
+                    elif c == "t":
+                        out += "\t"
+                    elif c in ('"', "\\", "/"):
+                        out += c
+                    elif c == "u":
+                        if len(self._buf) >= 4:
+                            try:
+                                out += chr(int(self._buf[:4], 16))
+                            except ValueError:
+                                out += "\\u" + self._buf[:4]
+                            self._buf = self._buf[4:]
+                        else:
+                            # Not enough chars yet — restore state and wait for next chunk
+                            self._buf = "u" + self._buf
+                            self._escape_next = True
+                            break
+                elif c == "\\":
+                    self._escape_next = True
+                elif c == '"':
+                    self._state = "SCANNING"
+                    if out and not out.endswith(" "):
+                        out += " "
+                else:
+                    out += c
+        return out
+
+    def flush_visible(self) -> str:
+        if self._state == "IN_VALUE":
+            tail = self._buf
+            self._buf = ""
+            self._state = "SCANNING"
+            return tail
+        self._buf = ""
+        return ""
+
+
 class ThinkTagStreamFilter:
     """
     Streaming-time filter that prevents <think>...</think> from being echoed
@@ -200,39 +330,36 @@ class ChatController:
                 self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": think_chunk, "role": "think"}, sync=True)
 
             stream_think_filter = ThinkTagStreamFilter(on_think_chunk=on_think_chunk if show_think_in_gui else None) if is_streaming else None
+            stream_json_filter  = StructuredJsonStreamFilter() if is_streaming else None
+
+            def _emit_visible_assistant(text: str):
+                if not text:
+                    return
+                if self._stream_current_role != "assistant":
+                    self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                        "character_id": character_id or "",
+                        "character_name": effective_character_name,
+                        "speaker_name": effective_character_name,
+                        "role": "assistant"
+                    }, sync=True)
+                    self._stream_current_role = "assistant"
+                self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": text, "role": "assistant"}, sync=True)
 
             def stream_callback_handler(chunk: str):
                 if not eff_policy.echo_to_ui:
                     return
-                
                 chunk_str = str(chunk or "")
                 if not chunk_str:
                     return
 
-                if stream_think_filter is None:
-                    if self._stream_current_role != "assistant":
-                        self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
-                            "character_id": character_id or "",
-                            "character_name": effective_character_name,
-                            "speaker_name": effective_character_name,
-                            "role": "assistant"
-                        }, sync=True)
-                        self._stream_current_role = "assistant"
-                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": chunk_str, "role": "assistant"}, sync=True)
-                    return
+                # 1. Filter out <think> blocks (emits them separately)
+                visible = stream_think_filter.feed(chunk_str) if stream_think_filter else chunk_str
 
-                visible = stream_think_filter.feed(chunk_str)
-                if visible:
-                    if self._stream_current_role != "assistant":
-                        self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
-                            "character_id": character_id or "",
-                            "character_name": effective_character_name,
-                            "speaker_name": effective_character_name,
-                            "role": "assistant"
-                        }, sync=True)
-                        self._stream_current_role = "assistant"
+                # 2. Filter JSON structured output → emit only segment text
+                if visible and stream_json_filter is not None:
+                    visible = stream_json_filter.feed(visible)
 
-                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": visible, "role": "assistant"}, sync=True)
+                _emit_visible_assistant(visible)
 
             if image_data:
                 prepared: list[bytes] = []
@@ -281,12 +408,15 @@ class ChatController:
 
             target = "Player"
             think_text = None
+            structured_data = None
             if isinstance(payload, dict):
                 response_text = payload.get("text")
                 voice_profile = payload.get("voice_profile")
                 effective_character_id = payload.get("character_id") or character_id
                 target = str(payload.get("target") or "Player")
+                targets: list[str] = payload.get("targets") or []
                 think_text = payload.get("think")
+                structured_data = payload.get("structured")  # segments + global fields
             else:
                 response_text = payload
                 voice_profile = None
@@ -312,20 +442,15 @@ class ChatController:
                 # (либо для think, либо для assistant).
                 pass
 
-            # If we filtered streaming output, we may have a small tail held back
-            if is_streaming and eff_policy.echo_to_ui and stream_think_filter is not None:
-                tail = stream_think_filter.flush_visible()
+            # Flush any held-back tail from stream filters
+            if is_streaming and eff_policy.echo_to_ui:
+                tail = stream_think_filter.flush_visible() if stream_think_filter else ""
+                if tail and stream_json_filter is not None:
+                    tail = stream_json_filter.feed(tail)
+                if stream_json_filter is not None:
+                    tail = (tail or "") + stream_json_filter.flush_visible()
                 if tail:
-                    # Если блок ассистента ещё не открыт — открываем его
-                    if self._stream_current_role != "assistant":
-                        self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
-                            "character_id": effective_character_id or "",
-                            "character_name": effective_character_name,
-                            "speaker_name": effective_character_name,
-                            "role": "assistant"
-                        }, sync=True)
-                        self._stream_current_role = "assistant"
-                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": tail, "role": "assistant"}, sync=True)
+                    _emit_visible_assistant(tail)
 
             if response_text and self.settings.get("USE_VOICEOVER") and eff_policy.allow_voiceover:
                 if isinstance(voice_profile, dict):
@@ -335,7 +460,7 @@ class ChatController:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.VOICING,
-                                "result": {"response": response_text, "target": target}
+                                "result": self._build_task_result(response_text, target, structured_data, targets)
                             })
 
                         speaker = voice_profile.get("silero_command", "")
@@ -355,25 +480,27 @@ class ChatController:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.SUCCESS,
-                                "result": {"response": response_text, "target": target}
+                                "result": self._build_task_result(response_text, target, structured_data, targets)
                             })
                 else:
                     if task_uid:
                         self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                             "uid": task_uid,
                             "status": TaskStatus.SUCCESS,
-                            "result": {"response": response_text, "target": target}
+                            "result": self._build_task_result(response_text, target, structured_data, targets)
                         })
             else:
                 if task_uid:
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                         "uid": task_uid,
                         "status": TaskStatus.SUCCESS,
-                        "result": {"response": response_text, "target": target}
+                        "result": self._build_task_result(response_text, target, structured_data, targets)
                     })
 
             if is_streaming and eff_policy.echo_to_ui:
-                self.event_bus.emit(Events.GUI.FINISH_STREAM_UI, sync=True)
+                self.event_bus.emit(Events.GUI.FINISH_STREAM_UI,
+                                    {"structured_data": structured_data} if structured_data else {},
+                                    sync=True)
                 # При стриминге весь текст (think и assistant) уже выведен
                 # в UI в реальном времени. Повторный UPDATE_CHAT_UI не нужен.
             elif (not is_streaming) and eff_policy.echo_to_ui:
@@ -400,6 +527,8 @@ class ChatController:
                     "character_name": effective_character_name or "",
                     "speaker_name": effective_character_name or "",
                     "target": target,
+                    "targets": targets,
+                    "structured_data": structured_data,
                 }, sync=True)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)
@@ -491,6 +620,20 @@ class ChatController:
                     policy=policy,
                 )
             )
+
+    @staticmethod
+    def _build_task_result(response_text: str, target: str, structured_data: dict | None = None, targets: list[str] | None = None) -> dict:
+        """Build the result dict for task_update, optionally including structured segments."""
+        result = {"response": response_text, "target": target, "targets": targets or []}
+        if structured_data:
+            result["segments"] = structured_data.get("segments", [])
+            result["attitude_change"] = structured_data.get("attitude_change", 0)
+            result["boredom_change"] = structured_data.get("boredom_change", 0)
+            result["stress_change"] = structured_data.get("stress_change", 0)
+            result["memory_add"] = structured_data.get("memory_add", [])
+            result["memory_update"] = structured_data.get("memory_update", [])
+            result["memory_delete"] = structured_data.get("memory_delete", [])
+        return result
 
     def _on_get_llm_processing_status(self, event: Event):
         return self.llm_processing

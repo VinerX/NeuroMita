@@ -10,6 +10,7 @@ from utils import getTranslationVariant as _
 from main_logger import logger
 from core.events import get_event_bus, Events
 from managers.prompt_catalogue_manager import list_prompt_sets, read_info_json
+from utils.history_migration import migrate_character_history
 
 
 def _prompt_set_key(character_id: str) -> str:
@@ -114,6 +115,8 @@ def wire_character_settings_logic(self):
         self.btn_clear_history.clicked.connect(lambda: clear_history(self))
     if hasattr(self, 'btn_clear_all_histories'):
         self.btn_clear_all_histories.clicked.connect(lambda: clear_history_all(self))
+    if hasattr(self, 'btn_migrate_history'):
+        self.btn_migrate_history.clicked.connect(lambda: migrate_history(self))
 
     update_prompt_set_info(self)
 
@@ -366,6 +369,44 @@ def clear_history_all(gui):
         gui.clear_chat_display()
     if hasattr(gui, 'update_debug_info'):
         gui.update_debug_info()
+
+
+def migrate_history(gui):
+    event_bus = get_event_bus()
+    current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+    profile = current_profile_res[0] if current_profile_res else {}
+    char_id = profile.get("character_id") if isinstance(profile, dict) else None
+    char_name_for_text = char_id or _("(не выбран)", "(not selected)")
+
+    if not char_id:
+        QMessageBox.information(gui, _("Информация", "Information"),
+                                _("Персонаж не выбран.", "No character selected."))
+        return
+
+    title = _("Миграция истории", "History migration")
+    text = _("Мигрировать историю персонажа '{name}' в structured формат?\nБудет создана резервная копия файла.",
+             "Migrate history for '{name}' to structured format?\nA backup of the file will be created.").format(name=char_name_for_text)
+    reply = QMessageBox.question(gui, title, text,
+                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+
+    success, count = migrate_character_history(char_id)
+
+    if not success:
+        QMessageBox.critical(gui, _("Ошибка", "Error"),
+                             _("Не удалось выполнить миграцию. Проверьте лог.",
+                               "Migration failed. Check the log."))
+        return
+
+    if count == 0:
+        QMessageBox.information(gui, title,
+                                _("Нечего мигрировать — история уже в новом формате.",
+                                  "Nothing to migrate — history is already in the new format."))
+    else:
+        QMessageBox.information(gui, title,
+                                _("Готово! Смигрировано сообщений: {n}. Резервная копия сохранена рядом с файлом истории.",
+                                  "Done! Messages migrated: {n}. Backup saved next to the history file.").format(n=count))
 
 
 def save_character_provider(gui, provider: str):

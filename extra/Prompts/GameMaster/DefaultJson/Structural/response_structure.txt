@@ -1,0 +1,35 @@
+Response Format (Structured JSON):
+
+You MUST respond with a single JSON object. No extra text before or after the JSON.
+
+Schema:
+{
+  "segments": [
+    {
+      "text": "narration or instruction text (optional)",
+      "commands": ["Speaker,CharacterName"]
+    }
+  ]
+}
+
+Field descriptions:
+- "commands": ["Speaker,CharacterName"] — selects the next speaker.
+  Replaces the old <c>Speaker,CharacterName</c> syntax.
+- "text": narrator text in asterisk style (*...*), or an instruction line for the selected character.
+  Omit if nothing to narrate.
+
+Rules:
+- Keep each "text" entry short (≤15 words, no commas inside narrator text).
+- Do NOT use XML tags anywhere in the response.
+- To both narrate AND select a speaker, put both in the same segment.
+- If no action is needed, return: {"segments": [{"text": " "}]}
+
+Example:
+{
+  "segments": [
+    {
+      "text": "*Crazy Mita hesitated, reflecting on her behavior.*",
+      "commands": ["Speaker,Crazy"]
+    }
+  ]
+}

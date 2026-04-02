@@ -200,5 +200,11 @@ def build_character_settings_ui(self, parent_layout):
 
     self.history_section.add_widget(history_row)
 
+    self.btn_migrate_history = QPushButton(_("Мигрировать историю", "Migrate history"))
+    self.btn_migrate_history.setObjectName("SecondaryButton")
+    self.btn_migrate_history.setIcon(qta.icon('fa5s.exchange-alt', color='#ffffff'))
+    self.btn_migrate_history.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    self.history_section.add_widget(self.btn_migrate_history)
+
     container_lay.addWidget(root)
     parent_layout.addWidget(container)

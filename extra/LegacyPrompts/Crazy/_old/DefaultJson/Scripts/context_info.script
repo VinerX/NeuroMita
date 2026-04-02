@@ -1,0 +1,17 @@
+LOG "ContextInfo: Script started."
+SET formatted_time = SYSTEM_DATETIME 
+SET result_string = "Время: " + formatted_time + "."
+SET current_lm_count = LongMemoryRememberCount + 1
+SET LongMemoryRememberCount = current_lm_count 
+LOG "ContextInfo: LongMemoryRememberCount updated to " + LongMemoryRememberCount
+IF LongMemoryRememberCount % 3 == 0 THEN
+    SET result_string = result_string + " Помни о фактах в течение 3 сообщений, используя блок <+memory>."
+ENDIF
+IF LongMemoryRememberCount % 5 == 0 THEN
+    SET result_string = result_string + " Обнови воспоминания в течение 5 сообщений, используя блок <#memory>."
+ENDIF
+IF LongMemoryRememberCount % 10 == 0 THEN
+    SET result_string = result_string + " Удали повторяющиеся воспоминания, если это необходимо, используя блок <-memory>."
+ENDIF
+LOG "ContextInfo: Generated context string: " + result_string
+RETURN result_string

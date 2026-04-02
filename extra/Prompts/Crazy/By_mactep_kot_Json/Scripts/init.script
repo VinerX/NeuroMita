@@ -1,0 +1,5 @@
+// ===== ИНИЦИАЛИЗАЦИЯ secretTrial =====
+IF secretTrial == None THEN
+    SET secretTrial = False
+    LOG "secretTrial initialized to False"
+ENDIF

@@ -19,9 +19,9 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
     QMessageBox, QDialog, QProgressBar, QStackedWidget,
-    QTextBrowser, QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy
+    QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy
 )
-from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor, QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap
+from PyQt6.QtGui import QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap
 
 from ui.settings import (
     api_settings, character_settings, game_settings, 
@@ -144,8 +144,7 @@ class ChatGUI(QMainWindow):
         self._voice_model_controller_callback = None
         self._voice_model_init_in_progress_model_id = None
 
-        self.update_chat_signal.connect(lambda role, content, insert_at_start, message_time:
-                                        message_renderer.insert_message(self, role, content, insert_at_start, message_time))
+        self.update_chat_signal.connect(self._on_update_chat_signal)
         self.update_status_signal.connect(self.update_status_colors)
         self.update_debug_signal.connect(self.update_debug_info)
 
@@ -166,7 +165,6 @@ class ChatGUI(QMainWindow):
         self.settings_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
 
         self.chat_window.installEventFilter(self)
-        self.chat_window.anchorClicked.connect(self._on_chat_anchor_clicked)
 
         self.overlay = OverlayWidget(self)
         self.image_preview_bar = None
@@ -507,6 +505,7 @@ class ChatGUI(QMainWindow):
         return super().eventFilter(obj, event)
 
     def load_chat_history(self):
+        self.chat_window.setUpdatesEnabled(False)
         self.clear_chat_display()
         self.event_bus.emit(Events.Model.LOAD_HISTORY)
 
@@ -516,12 +515,16 @@ class ChatGUI(QMainWindow):
             role = entry["role"]
             content = entry["content"]
             message_time = entry.get("time", "???")
+            structured_data = entry.get("structured_data")
             try:
-                message_renderer.insert_message(self, role, content, message_time=message_time)
+                message_renderer.insert_message(self, role, content, message_time=message_time,
+                                                structured_data=structured_data)
             except Exception as ex:
                 logger.error(f"_on_history_loaded: НУ Я ПОНЯЛ: {str(ex)}")
         self.update_debug_info()
-        self.chat_window.verticalScrollBar().setValue(self.chat_window.verticalScrollBar().maximum())
+        self.chat_window.scroll_to_bottom()
+        self.chat_window.setUpdatesEnabled(True)
+        self.chat_window.update()
 
     def validate_number_0_60(self, new_value):
         if not new_value.isdigit():
@@ -555,6 +558,14 @@ class ChatGUI(QMainWindow):
         try:
             value = int(new_value)
             return value > 0
+        except ValueError:
+            return False
+
+    def validate_non_negative_integer(self, new_value):
+        if new_value == "": return True
+        try:
+            value = int(new_value)
+            return value >= 0
         except ValueError:
             return False
 
@@ -618,11 +629,10 @@ class ChatGUI(QMainWindow):
         self.update_debug_info()
 
     def update_chat_font_size(self, font_size):
-        base_font = QFont("Arial", font_size)
-        self.chat_window.setFont(base_font)
+        self._chat_font_size = font_size
 
     def clear_chat_display(self):
-        self.chat_window.clear()
+        self.chat_window.clear_messages()
         self.event_bus.emit(Events.Chat.CLEAR_CHAT)
 
     def send_message(self, system_input: str = "", image_data: list[bytes] = None):
@@ -709,7 +719,9 @@ class ChatGUI(QMainWindow):
             role = entry["role"]
             content = entry["content"]
             message_time = entry.get("time", "???")
-            message_renderer.insert_message(self, role, content, insert_at_start=True, message_time=message_time)
+            structured_data = entry.get("structured_data")
+            message_renderer.insert_message(self, role, content, insert_at_start=True,
+                                            message_time=message_time, structured_data=structured_data)
         QTimer.singleShot(0, lambda: scrollbar.setValue(scrollbar.maximum() - old_max + old_value))
         logger.info(f"Загружено еще {len(messages_to_prepend)} сообщений.")
 
@@ -1047,12 +1059,25 @@ class ChatGUI(QMainWindow):
                   "Failed to save settings for the update. Please check the logs."))
 
     # ===== Совместимость: рендер сообщений (обёртки к message_renderer) =====
+    def _on_update_chat_signal(self, role, content, insert_at_start, message_time):
+        """Slot for update_chat_signal — picks up pending structured_data if available."""
+        # Only assistant messages consume _pending_structured_data.
+        # Think/system messages must not steal it from the following assistant message.
+        structured_data = None
+        if role == "assistant":
+            structured_data = getattr(self, '_pending_structured_data', None)
+            self._pending_structured_data = None
+        from ui.chat import message_renderer
+        message_renderer.insert_message(self, role, content, insert_at_start, message_time,
+                                        structured_data=structured_data)
+
     def _insert_message_slot(self, role, content, insert_at_start, message_time):
         return self.insert_message(role, content, insert_at_start, message_time)
 
-    def insert_message(self, role, content, insert_at_start=False, message_time=""):
+    def insert_message(self, role, content, insert_at_start=False, message_time="", structured_data=None):
         from ui.chat import message_renderer
-        return message_renderer.insert_message(self, role, content, insert_at_start, message_time)
+        return message_renderer.insert_message(self, role, content, insert_at_start, message_time,
+                                               structured_data=structured_data)
 
     def insert_message_end(self, cursor=None, role="assistant"):
         from ui.chat import message_renderer
@@ -1086,7 +1111,12 @@ class ChatGUI(QMainWindow):
         from ui.chat import message_renderer
         # Сбрасываем имя спикера после завершения стрима
         self._stream_speaker_name = ""
-        return message_renderer.finish_stream_slot(self)
+        # Attach structured panel BEFORE finish (finish clears _current_stream_message)
+        pending = getattr(self, '_pending_structured_data', None)
+        if pending:
+            self._pending_structured_data = None
+            message_renderer.attach_structured_to_stream(self, pending)
+        message_renderer.finish_stream_slot(self)
 
     def process_image_for_chat(self, has_image_content, item, processed_content_parts):
         from ui.chat import message_renderer
@@ -1164,17 +1194,12 @@ class ChatGUI(QMainWindow):
     # ===== Совместимость: упрощённая вставка диалога =====
     def insert_dialog(self, input_text="", response="", system_text=""):
         MitaName = self._get_character_name()
-        cursor = self.chat_window.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        if input_text != "":
-            self._insert_formatted_text(cursor, "Вы: ", QColor("gold"), bold=True)
-            cursor.insertText(f"{input_text}\n")
-        if system_text != "":
-            self._insert_formatted_text(cursor, f"System to {MitaName}: ", QColor("white"), bold=True)
-            cursor.insertText(f"{system_text}\n\n")
-        if response != "":
-            self._insert_formatted_text(cursor, f"{MitaName}: ", QColor("hot pink"), bold=True)
-            cursor.insertText(f"{response}\n\n")
+        if input_text:
+            self.insert_message("user", input_text)
+        if system_text:
+            self.insert_message("system", system_text)
+        if response:
+            self.insert_message("assistant", response)
 
     def set_settings_icon_indicator(self, category: str, state: str | None, tooltip: str | None = None) -> None:
         btn = getattr(self, "settings_buttons", {}).get(category)

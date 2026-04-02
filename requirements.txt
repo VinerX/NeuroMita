@@ -89,3 +89,4 @@ pillow
 portalocker
 pywinpty
 soxr
+json-repair
