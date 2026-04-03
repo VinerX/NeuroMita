@@ -1,19 +1,23 @@
 # Файл с моделью для эмбеддингов
 from __future__ import annotations
 
+import gc
+import importlib.util
+import os
+import sys
+import time
 from threading import Lock
+from typing import ClassVar, List, Optional, Tuple
+
+import numpy as np
+
+from main_logger import logger
+from managers.settings_manager import SettingsManager
 from utils.gpu_utils import check_gpu_provider
 from utils.pip_installer import PipInstaller
-import sys, os
-import importlib.util
+
 
 current_gpu = check_gpu_provider()
-
-from managers.settings_manager import SettingsManager
-
-script_dir = os.path.dirname(sys.executable)
-checkpoints_dir = os.path.join(script_dir, "checkpoints")
-os.makedirs(checkpoints_dir, exist_ok=True)
 
 
 def getTranslationVariant(ru_str, en_str=""):
@@ -25,60 +29,10 @@ def getTranslationVariant(ru_str, en_str=""):
 
 _ = getTranslationVariant
 
-from main_logger import logger
 
 def _module_available(name: str) -> bool:
     """Проверка наличия модуля без тяжёлого импорта."""
     return importlib.util.find_spec(name) is not None
-
-try:
-    pip_installer = PipInstaller(
-        script_path=r"libs\python\python.exe",
-        libs_path="Lib",
-        update_log=logger.info
-    )
-    logger.info("PipInstaller успешно инициализирован.")
-except Exception as e:
-    logger.error(f"Не удалось инициализировать PipInstaller: {e}", exc_info=True)
-    pip_installer = None
-
-if not _module_available("torch"):
-    if pip_installer == None:
-        raise Exception("PipInstaller не инициализирован - установку нельзя осуществить")
-    if current_gpu in ["NVIDIA"]:
-        success = pip_installer.install_package(
-            ["torch==2.7.1", "torchaudio==2.7.1"],
-            description=_("Установка PyTorch с поддержкой CUDA 12.8...",
-                          "Installing PyTorch with CUDA 12.8 support..."),
-            extra_args=["--index-url", "https://download.pytorch.org/whl/cu128"]
-        )
-    else:
-        success = pip_installer.install_package(
-            ["torch==2.7.1", "torchaudio==2.7.1"],
-            description=_("Установка PyTorch CPU", "Installing PyTorch CPU"),
-        )
-    if not success:
-        raise Exception("Не удалось установить torch+cuda12.8")
-
-if not _module_available("transformers"):
-    if pip_installer == None:
-        raise Exception("PipInstaller не инициализирован - установку нельзя осуществить")
-    success = pip_installer.install_package("transformers>=4.45.2", "Установка transformers>=4.45.2")
-    if not success:
-        raise Exception("Не удалось установить transformers>=4.45.2")
-
-from main_logger import logger
-import numpy as np
-import time
-import os
-from typing import Tuple, Optional, List
-from typing import ClassVar
-
-import numpy as np
-
-from main_logger import logger
-from utils.gpu_utils import check_gpu_provider
-from utils.pip_installer import PipInstaller
 
 
 # --- Константы модели ---

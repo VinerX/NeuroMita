@@ -172,6 +172,13 @@ def _content_has_legacy_tags(content: str) -> bool:
     return bool(_TAG_RE.search(content) or _MEMORY_RE.search(content))
 
 
+def has_old_tags(content: str) -> bool:
+    """Public alias: проверяет наличие старых тегов в строке."""
+    if not isinstance(content, str):
+        return False
+    return _content_has_legacy_tags(content)
+
+
 def migrate_history_file(history_path: str) -> tuple[bool, int]:
     """
     Мигрирует один файл истории на месте.
