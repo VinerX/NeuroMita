@@ -937,12 +937,15 @@ class ChatController:
             logger.warning(f"[ChatController] INSERT_SYSTEM_MESSAGE: персонаж '{character_id}' не найден")
             return
         as_user = bool(data.get("as_user", False))
+        logger.info(f"[ChatController] INSERT_SYSTEM_MESSAGE: as_user={as_user}, text={text[:50]}")
         if as_user:
             role = "user"
             content = f"[Системное]: {text}"
+            logger.info(f"[ChatController] Сохраняем как role='user' с префиксом: {content[:60]}")
         else:
             role = "system"
             content = text
+            logger.info(f"[ChatController] Сохраняем как role='system': {content[:60]}")
         message = {
             "role": role,
             "content": content,
@@ -950,6 +953,7 @@ class ChatController:
             "time": datetime.datetime.now().strftime("%H:%M"),
         }
         character.history_manager.append_message(message)
+        logger.info(f"[ChatController] Сообщение сохранено, эмитим RELOAD_CHAT_HISTORY")
         self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
         # Trigger generation so Mita responds to the system message.
         # A single space is used instead of "" so that:

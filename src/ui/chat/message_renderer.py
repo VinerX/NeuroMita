@@ -255,11 +255,13 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
                 if isinstance(_item, dict) and _item.get("type") == "text":
                     raw = _item.get("text") or _item.get("content", "")
                     break
-        if raw.lstrip().startswith(_SYS_PREFIX):
+        if isinstance(raw, str) and raw.lstrip().startswith(_SYS_PREFIX):
+            logger.debug(f"[MessageRenderer] Detected system-as-user message: {raw[:50]}...")
             role = "system"
             # Strip the prefix from content for display
             stripped = raw.lstrip()[len(_SYS_PREFIX):].strip()
             content = stripped
+            logger.debug(f"[MessageRenderer] Changed role to 'system', stripped content: {stripped[:50]}...")
 
     text_parts = []
     speaker_name = ""

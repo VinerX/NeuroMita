@@ -508,9 +508,14 @@ class ChatGUI(QMainWindow):
         return super().eventFilter(obj, event)
 
     def load_chat_history(self):
+        logger.debug("[Load] load_chat_history: начало")
+        logger.debug("[Load] Отключаем updates в chat_window")
         self.chat_window.setUpdatesEnabled(False)
+        logger.debug("[Load] Вызываем clear_chat_display()")
         self.clear_chat_display()
+        logger.debug("[Load] Эмитим LOAD_HISTORY")
         self.event_bus.emit(Events.Model.LOAD_HISTORY)
+        logger.debug("[Load] load_chat_history: конец")
 
     def _on_history_loaded(self, data: dict):
         messages = data.get('messages', [])
@@ -638,8 +643,12 @@ class ChatGUI(QMainWindow):
         self._chat_font_size = font_size
 
     def clear_chat_display(self):
+        logger.debug("[Clear] clear_chat_display: начало")
+        logger.debug(f"[Clear] chat_window.message_count: {self.chat_window.message_count()}")
         self.chat_window.clear_messages()
+        logger.debug("[Clear] Сообщения очищены")
         self.event_bus.emit(Events.Chat.CLEAR_CHAT)
+        logger.debug("[Clear] clear_chat_display: конец")
 
     def send_message(self, system_input: str = "", image_data: list[bytes] = None):
         user_input = self.user_entry.toPlainText().strip()
@@ -979,7 +988,9 @@ class ChatGUI(QMainWindow):
 
     def _on_debug_load_snapshot(self):
         import os
+        logger.info("[Debug] _on_debug_load_snapshot: начинаем загрузку")
         character_id = self._get_current_character_id_for_debug()
+        logger.info(f"[Debug] character_id: {character_id}")
         # Try to resolve the actual history dir via the character ref
         start_dir = "Histories"
         try:
@@ -991,12 +1002,15 @@ class ChatGUI(QMainWindow):
                     candidate = os.path.join("Histories", cid, "Saved")
                     if os.path.isdir(candidate):
                         start_dir = candidate
-        except Exception:
+                        logger.info(f"[Debug] Найдена папка: {start_dir}")
+        except Exception as e:
+            logger.warning(f"[Debug] Ошибка при поиске папки: {e}")
             pass
 
         if not os.path.isdir(start_dir):
             start_dir = "."
 
+        logger.info(f"[Debug] Открываем диалог выбора файла из {start_dir}")
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             _("Загрузить snapshot", "Load snapshot"),
@@ -1004,33 +1018,46 @@ class ChatGUI(QMainWindow):
             "JSON files (*.json)",
             options=QFileDialog.Option.DontUseNativeDialog,
         )
+        logger.info(f"[Debug] Выбран файл: {file_path}")
         if not file_path:
+            logger.info("[Debug] Файл не выбран, отменяем")
             return
 
         # Load entirely in the main thread — no async event bus, avoids C-runtime
         # stack-overrun (0xC0000409) that occurs when Qt calls happen in background threads.
+        logger.info("[Debug] Читаем JSON файл")
         try:
             import json as _json
             with open(file_path, "r", encoding="utf-8") as f:
                 snapshot_data = _json.load(f)
+            logger.info(f"[Debug] JSON загружен, сообщений: {len(snapshot_data.get('messages', []))}")
         except Exception as e:
-            logger.error(f"Ошибка чтения snapshot-файла: {e}", exc_info=True)
+            logger.error(f"[Debug] Ошибка чтения snapshot-файла: {e}", exc_info=True)
             QMessageBox.critical(self, _("Ошибка", "Error"),
                                  _("Не удалось прочитать файл:\n", "Failed to read file:\n") + str(e))
             return
 
+        logger.info("[Debug] Сохраняем в HistoryManager")
         try:
             from managers.history_manager import HistoryManager
             hm = HistoryManager(character_id=character_id)
+            logger.info(f"[Debug] HistoryManager создан для {character_id}")
             hm.save_history(snapshot_data)
+            logger.info("[Debug] История сохранена в HistoryManager")
         except Exception as e:
-            logger.error(f"Ошибка сохранения snapshot в историю: {e}", exc_info=True)
+            logger.error(f"[Debug] Ошибка сохранения snapshot в историю: {e}", exc_info=True)
             QMessageBox.critical(self, _("Ошибка", "Error"), str(e))
             return
 
         # Call directly in the main thread — event bus dispatches async (background thread),
         # which crashes Qt when GUI widgets are touched from a non-main thread.
-        self.load_chat_history()
+        logger.info("[Debug] Вызываем load_chat_history() в main thread")
+        try:
+            self.load_chat_history()
+            logger.info("[Debug] load_chat_history() завершена успешно")
+        except Exception as e:
+            logger.error(f"[Debug] Ошибка в load_chat_history(): {e}", exc_info=True)
+            raise
         logger.info(f"[Debug] Snapshot загружен из {file_path}")
 
     def _get_current_character_id_for_debug(self) -> str:
