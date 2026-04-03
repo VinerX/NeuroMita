@@ -931,7 +931,7 @@ class ChatGUI(QMainWindow):
         self._debug_system_input.setFixedHeight(70)
         parent_layout.addWidget(self._debug_system_input)
 
-        sys_btn = QPushButton(_('Добавить в историю', 'Add to history'))
+        sys_btn = QPushButton(_('Отправить системное', 'Send as system'))
         sys_btn.clicked.connect(self._on_debug_insert_system_message)
         parent_layout.addWidget(sys_btn)
 
@@ -1012,15 +1012,9 @@ class ChatGUI(QMainWindow):
             return
 
         try:
-            res = self.event_bus.emit_and_wait(
-                Events.Character.GET, {"character_id": character_id}, timeout=1.0
-            )
-            character = res[0] if res else None
-            if character is None:
-                QMessageBox.warning(self, _("Предупреждение", "Warning"),
-                                    _("Персонаж не найден.", "Character not found."))
-                return
-            character.history_manager.save_history(snapshot_data)
+            from managers.history_manager import HistoryManager
+            hm = HistoryManager(character_id=character_id)
+            hm.save_history(snapshot_data)
         except Exception as e:
             logger.error(f"Ошибка сохранения snapshot в историю: {e}", exc_info=True)
             QMessageBox.critical(self, _("Ошибка", "Error"), str(e))

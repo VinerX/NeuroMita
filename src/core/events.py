@@ -464,6 +464,7 @@ class Events:
         DELETE_MESSAGE = "chat_delete_message"
         DELETE_MESSAGES_FROM = "chat_delete_messages_from"
         REGENERATE = "chat_regenerate"
+        REGENERATE_FROM = "chat_regenerate_from"
         INSERT_SYSTEM_MESSAGE = "chat_insert_system_message"
         SAVE_SNAPSHOT = "chat_save_snapshot"
         LOAD_SNAPSHOT = "chat_load_snapshot"

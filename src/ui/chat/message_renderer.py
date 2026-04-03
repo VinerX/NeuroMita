@@ -129,9 +129,22 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
     def on_regenerate(mid):
         bus.emit(Events.Chat.REGENERATE, {"character_id": character_id})
 
+    def on_regenerate_from(mid):
+        from PyQt6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            None,
+            "Регенерировать отсюда",
+            "Все сообщения после этого будут удалены, и Мита ответит заново. Продолжить?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            bus.emit(Events.Chat.REGENERATE_FROM, {"message_id": mid, "character_id": character_id})
+
     widget.delete_requested.connect(on_delete)
     widget.edit_requested.connect(on_edit)
     widget.regenerate_requested.connect(on_regenerate)
+    widget.regenerate_from_requested.connect(on_regenerate_from)
 
 
 def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None,

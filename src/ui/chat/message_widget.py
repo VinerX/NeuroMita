@@ -426,10 +426,11 @@ class MessageWidget(QWidget):
     The toggle button in the name row controls the external panel.
     """
 
-    delete_requested = pyqtSignal(str)      # message_id
-    edit_requested = pyqtSignal(str)        # message_id
-    regenerate_requested = pyqtSignal(str)  # message_id
-    copy_requested = pyqtSignal(str)        # text
+    delete_requested = pyqtSignal(str)           # message_id
+    edit_requested = pyqtSignal(str)             # message_id
+    regenerate_requested = pyqtSignal(str)       # message_id
+    regenerate_from_requested = pyqtSignal(str)  # message_id
+    copy_requested = pyqtSignal(str)             # text
 
     def __init__(
         self,
@@ -694,10 +695,19 @@ class MessageWidget(QWidget):
             edit_action = QAction("Редактировать", self)
             edit_action.triggered.connect(lambda: self.edit_requested.emit(self._message_id or ""))
             menu.addAction(edit_action)
+            if self._message_id:
+                regen_from_action = QAction("Регенерировать отсюда", self)
+                regen_from_action.triggered.connect(lambda: self.regenerate_from_requested.emit(self._message_id))
+                menu.addAction(regen_from_action)
         elif self._role == "assistant":
             regen_action = QAction("Regenerate", self)
             regen_action.triggered.connect(lambda: self.regenerate_requested.emit(self._message_id or ""))
             menu.addAction(regen_action)
+        elif self._role == "system":
+            if self._message_id:
+                regen_from_action = QAction("Регенерировать отсюда", self)
+                regen_from_action.triggered.connect(lambda: self.regenerate_from_requested.emit(self._message_id))
+                menu.addAction(regen_from_action)
 
         # Copy selected text if any, otherwise copy full message
         selected = self._body._text_label.selectedText() if hasattr(self, '_body') else ""

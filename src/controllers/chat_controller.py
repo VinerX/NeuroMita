@@ -233,6 +233,7 @@ class ChatController:
         self.event_bus.subscribe(Events.Chat.DELETE_MESSAGE, self._on_delete_message, weak=False)
         self.event_bus.subscribe(Events.Chat.DELETE_MESSAGES_FROM, self._on_delete_messages_from, weak=False)
         self.event_bus.subscribe(Events.Chat.REGENERATE, self._on_regenerate, weak=False)
+        self.event_bus.subscribe(Events.Chat.REGENERATE_FROM, self._on_regenerate_from, weak=False)
         self.event_bus.subscribe(Events.Chat.INSERT_SYSTEM_MESSAGE, self._on_insert_system_message, weak=False)
         self.event_bus.subscribe(Events.Chat.SAVE_SNAPSHOT, self._on_save_snapshot, weak=False)
         self.event_bus.subscribe(Events.Chat.LOAD_SNAPSHOT, self._on_load_snapshot, weak=False)
@@ -820,6 +821,71 @@ class ChatController:
         if last_user_text:
             self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
                 "user_input": last_user_text,
+                "character_id": character_id,
+            })
+
+    def _on_regenerate_from(self, event: Event):
+        """Delete everything after (and including) the message after the target, then re-send it."""
+        data = event.data or {}
+        message_id = data.get("message_id", "")
+        character_id = data.get("character_id", "") or self._get_current_character_id()
+        if not message_id:
+            return
+        character = self._get_character_ref(character_id)
+        if character is None:
+            logger.warning(f"[ChatController] REGENERATE_FROM: персонаж '{character_id}' не найден")
+            return
+
+        history_data = character.history_manager.load_history()
+        messages = history_data.get("messages", [])
+
+        # Find the target message index
+        target_idx = next((i for i, m in enumerate(messages) if m.get("message_id") == message_id), None)
+        if target_idx is None:
+            logger.warning(f"[ChatController] REGENERATE_FROM: сообщение {message_id} не найдено")
+            return
+
+        target_msg = messages[target_idx]
+        target_role = target_msg.get("role", "user")
+
+        if target_role == "user":
+            # Extract user text, cut history before this message, re-send
+            content = target_msg.get("content", "")
+            if isinstance(content, str):
+                user_text = content
+            else:
+                user_text = ""
+                if isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            user_text = item.get("text") or item.get("content", "")
+                            break
+
+            # Cut history: remove user message + everything after
+            history_data["messages"] = messages[:target_idx]
+            character.history_manager.save_history(history_data)
+
+            # Widgets removed = everything from target_idx to end of current display
+            widgets_to_remove = len(messages) - target_idx
+            self.event_bus.emit(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, {"count": widgets_to_remove})
+
+            if user_text:
+                self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
+                    "user_input": user_text,
+                    "character_id": character_id,
+                })
+
+        elif target_role == "system":
+            # Keep the system message, delete everything after, trigger generation
+            history_data["messages"] = messages[:target_idx + 1]
+            character.history_manager.save_history(history_data)
+
+            widgets_to_remove = len(messages) - target_idx - 1
+            if widgets_to_remove > 0:
+                self.event_bus.emit(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, {"count": widgets_to_remove})
+
+            self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
+                "user_input": " ",
                 "character_id": character_id,
             })
 
