@@ -332,6 +332,17 @@ class HistoryManager:
         if not isinstance(msg, dict):
             return {k: None for k in self._HISTORY_DESIRED_COLUMNS.keys()}
 
+        sd = msg.get("structured_data")
+        structured_data_str = None
+        if sd is not None:
+            if isinstance(sd, str):
+                structured_data_str = sd
+            else:
+                try:
+                    structured_data_str = json.dumps(sd, ensure_ascii=False)
+                except Exception:
+                    structured_data_str = None
+
         return {
             "target": self._coerce_text(msg.get("target")),
             "participants": self._json_dumps_list(msg.get("participants")),
@@ -343,6 +354,7 @@ class HistoryManager:
             "event_type": self._coerce_text(msg.get("event_type")),
             "req_id": self._coerce_text(msg.get("req_id")),
             "task_uid": self._coerce_text(msg.get("task_uid")),
+            "structured_data": structured_data_str,
         }
 
     def _normalize_loaded_message(self, msg: dict) -> dict:
@@ -357,6 +369,11 @@ class HistoryManager:
             msg["participants"] = self._json_loads_list(msg.get("participants"))
         if "tags" in msg:
             msg["tags"] = self._json_loads_list(msg.get("tags"))
+        if "structured_data" in msg and isinstance(msg["structured_data"], str):
+            try:
+                msg["structured_data"] = json.loads(msg["structured_data"])
+            except Exception:
+                pass
         return msg
 
     def _build_extra_meta_for_db(self, msg: dict) -> dict:

@@ -40,6 +40,7 @@ class DatabaseManager:
         "req_id": "TEXT",
         "task_uid": "TEXT",
         "is_deleted": "INTEGER DEFAULT 0",
+        "structured_data": "TEXT",
     }
 
     def __new__(cls):

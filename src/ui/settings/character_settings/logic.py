@@ -12,6 +12,7 @@ from main_logger import logger
 from core.events import get_event_bus, Events
 from managers.prompt_catalogue_manager import list_prompt_sets, read_info_json
 from utils.migrate_json_to_sqlite import migrate as run_json_migration
+from utils.migrate_tags_to_structured_in_db import migrate as run_tags_to_structured_migration
 from ui.dialogs.db_viewer import DbViewerDialog
 from PyQt6.QtWidgets import QProgressDialog,QFileDialog
 from ui.dialogs.db_export_dialog import DbExportDialog
@@ -285,6 +286,10 @@ def wire_character_settings_logic(self):
         self.btn_import_db_global.clicked.connect(lambda: import_db_for_all(self))
     if hasattr(self, 'btn_migrate_history'):
         self.btn_migrate_history.clicked.connect(lambda: migrate_history(self))
+    if hasattr(self, 'btn_migrate_to_structured'):
+        self.btn_migrate_to_structured.clicked.connect(lambda: migrate_db_to_structured(self, "current"))
+    if hasattr(self, 'btn_migrate_to_structured_all'):
+        self.btn_migrate_to_structured_all.clicked.connect(lambda: migrate_db_to_structured(self, None))
 
     update_prompt_set_info(self)
 
@@ -766,6 +771,109 @@ def _start_migration_worker(gui, character_id: str | None):
     progress.show()
     # Let dialog paint before heavy work starts
     QTimer.singleShot(0, gui._migration_worker.start)
+
+
+def migrate_db_to_structured(gui, character_id: str | None = "current"):
+    """
+    Мигрирует историю в БД: теги/meta_data.structured_data → колонка structured_data.
+    character_id='current' — текущий персонаж, None — все персонажи.
+    """
+    event_bus = get_event_bus()
+
+    if character_id == "current":
+        current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+        profile = current_profile_res[0] if current_profile_res else {}
+        character_id = profile.get("character_id") if isinstance(profile, dict) else None
+        if not character_id:
+            QMessageBox.information(gui, _("Информация", "Information"),
+                                    _("Персонаж не выбран.", "No character selected."))
+            return
+
+    title = _("Миграция в structured формат", "Migrate to structured format")
+    if character_id:
+        text = _(
+            "Перенести историю персонажа '{cid}' в structured_data колонку?\n"
+            "(теги из content будут вынесены в отдельное поле, текст очистится)",
+            "Migrate history for '{cid}' to structured_data column?\n"
+            "(tags from content will be moved to a separate field, text will be cleaned)"
+        ).format(cid=character_id)
+    else:
+        text = _(
+            "Перенести историю ВСЕХ персонажей в structured_data колонку?\n"
+            "(теги из content будут вынесены в отдельное поле, текст очистится)",
+            "Migrate history for ALL characters to structured_data column?\n"
+            "(tags from content will be moved to a separate field, text will be cleaned)"
+        )
+
+    reply = QMessageBox.question(gui, title, text,
+                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+
+    progress = QProgressDialog(
+        _("Миграция structured данных...", "Migrating structured data..."),
+        _("Отмена", "Cancel"),
+        0, 100,
+        gui
+    )
+    from PyQt6.QtCore import Qt
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setValue(0)
+    progress.setAutoClose(False)
+    progress.setAutoReset(False)
+
+    kwargs = {"character_id": character_id}
+    gui._struct_migration_worker = TaskWorker(run_tags_to_structured_migration, kwargs=kwargs, use_progress=True)
+
+    def on_progress(curr, total):
+        try:
+            t = int(total or 0)
+            c = int(curr or 0)
+            if t <= 0:
+                progress.setRange(0, 0)
+            else:
+                progress.setRange(0, t)
+                progress.setValue(min(c, t))
+                progress.setLabelText(
+                    _("Обработано: {c} / {t}", "Processed: {c} / {t}").format(c=c, t=t)
+                )
+        except Exception:
+            pass
+
+    def on_finished(result):
+        progress.close()
+        gui._struct_migration_worker = None
+        res = result if isinstance(result, dict) else {}
+        updated = res.get("rows_updated", "?")
+        skipped = res.get("rows_skipped", "?")
+        errors = len(res.get("errors") or [])
+        msg = _(
+            "Готово!\nОбновлено строк: {u}\nПропущено: {s}\nОшибок: {e}",
+            "Done!\nRows updated: {u}\nSkipped: {s}\nErrors: {e}"
+        ).format(u=updated, s=skipped, e=errors)
+        QMessageBox.information(gui, title, msg)
+
+    def on_error(err):
+        progress.close()
+        gui._struct_migration_worker = None
+        QMessageBox.critical(gui, _("Ошибка", "Error"), str(err))
+
+    def on_cancel():
+        try:
+            gui._struct_migration_worker.requestInterruption()
+        except Exception:
+            pass
+        progress.close()
+
+    gui._struct_migration_worker.progress_signal.connect(on_progress)
+    gui._struct_migration_worker.finished_signal.connect(on_finished)
+    gui._struct_migration_worker.error_signal.connect(on_error)
+    progress.canceled.connect(on_cancel)
+
+    progress.show()
+    from PyQt6.QtCore import QTimer
+    QTimer.singleShot(0, gui._struct_migration_worker.start)
 
 
 def open_db_viewer(gui):
