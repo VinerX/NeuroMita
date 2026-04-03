@@ -295,6 +295,17 @@ def build_character_settings_ui(self, parent_layout):
     row_char_3_l.addWidget(self.btn_dedupe_history, 1)
     self.history_section.add_widget(row_char_3)
 
+    # --- Ряд 4: → Structured ---
+    self.btn_migrate_to_structured = QPushButton(_("→ Structured", "→ Structured"))
+    self.btn_migrate_to_structured.setToolTip(
+        _("Перенести теги из content в structured_data колонку",
+          "Move tags from content into structured_data column")
+    )
+    self.btn_migrate_to_structured.setIcon(qta.icon('fa5s.exchange-alt', color='#ffffff'))
+    self.btn_migrate_to_structured.setObjectName("SecondaryButton")
+    self.btn_migrate_to_structured.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    _make_compact(self.btn_migrate_to_structured)
+    self.history_section.add_widget(self.btn_migrate_to_structured)
 
     # -------- Разделитель --------
     sep = QWidget()
@@ -405,6 +416,17 @@ def build_character_settings_ui(self, parent_layout):
     self.btn_migrate_history.setIcon(qta.icon('fa5s.exchange-alt', color='#ffffff'))
     self.btn_migrate_history.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     self.history_section.add_widget(self.btn_migrate_history)
+
+    # --- → Structured (все персонажи) ---
+    self.btn_migrate_to_structured_all = QPushButton(_("→ Structured (все)", "→ Structured (all)"))
+    self.btn_migrate_to_structured_all.setToolTip(
+        _("Перенести теги из content в structured_data для ВСЕХ персонажей",
+          "Move tags from content into structured_data for ALL characters")
+    )
+    self.btn_migrate_to_structured_all.setIcon(qta.icon('fa5s.exchange-alt', color='#ffffff'))
+    self.btn_migrate_to_structured_all.setObjectName("SecondaryButton")
+    self.btn_migrate_to_structured_all.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    self.history_section.add_widget(self.btn_migrate_to_structured_all)
 
     container_lay.addWidget(root)
     parent_layout.addWidget(container)
