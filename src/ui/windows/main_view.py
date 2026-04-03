@@ -958,18 +958,19 @@ class ChatGUI(QMainWindow):
         parent_layout.addWidget(sys_btn)
 
         # ── Snapshot save / load ─────────────────────────────────────────────
-        snap_label = QLabel(_('Snapshot истории', 'History snapshot'))
-        snap_label.setObjectName('SeparatorLabel')
-        parent_layout.addWidget(snap_label)
-
-        snap_row = QHBoxLayout()
-        save_snap_btn = QPushButton(_('Сохранить snapshot', 'Save snapshot'))
-        save_snap_btn.clicked.connect(self._on_debug_save_snapshot)
-        load_snap_btn = QPushButton(_('Загрузить snapshot', 'Load snapshot'))
-        load_snap_btn.clicked.connect(self._on_debug_load_snapshot)
-        snap_row.addWidget(save_snap_btn)
-        snap_row.addWidget(load_snap_btn)
-        parent_layout.addLayout(snap_row)
+        # TODO: Fix 0xC0000409 crash on snapshot load before enabling
+        # snap_label = QLabel(_('Snapshot истории', 'History snapshot'))
+        # snap_label.setObjectName('SeparatorLabel')
+        # parent_layout.addWidget(snap_label)
+        #
+        # snap_row = QHBoxLayout()
+        # save_snap_btn = QPushButton(_('Сохранить snapshot', 'Save snapshot'))
+        # save_snap_btn.clicked.connect(self._on_debug_save_snapshot)
+        # load_snap_btn = QPushButton(_('Загрузить snapshot', 'Load snapshot'))
+        # load_snap_btn.clicked.connect(self._on_debug_load_snapshot)
+        # snap_row.addWidget(save_snap_btn)
+        # snap_row.addWidget(load_snap_btn)
+        # parent_layout.addLayout(snap_row)
 
     def _on_debug_insert_system_message(self):
         text = self._debug_system_input.toPlainText().strip()
