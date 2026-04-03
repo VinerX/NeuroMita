@@ -1016,7 +1016,6 @@ class ChatGUI(QMainWindow):
             _("Загрузить snapshot", "Load snapshot"),
             start_dir,
             "JSON files (*.json)",
-            options=QFileDialog.Option.DontUseNativeDialog,
         )
         logger.info(f"[Debug] Выбран файл: {file_path}")
         if not file_path:
