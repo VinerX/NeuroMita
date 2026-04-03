@@ -28,3 +28,4 @@ vec-768-layer-12.onnx
 /.claude
 extra/Prompts/CLAUDE.md
 CLAUDE.md
+/FineTuneData

@@ -294,6 +294,14 @@ if __name__ == "__main__":
         logger.info("Создаю MainController...")
         controller = MainController(None)
         logger.info("MainController создан")
+
+        # Инициализация сборщика данных для дообучения
+        try:
+            from managers.finetune_collector import FineTuneCollector
+            FineTuneCollector.instance = FineTuneCollector()
+            logger.info("FineTuneCollector инициализирован")
+        except Exception as _ft_init_err:
+            logger.warning(f"FineTuneCollector не инициализирован: {_ft_init_err}")
     
         logger.info("Создаю ChatGUI...")
         main_win = ChatGUI(controller.settings)  # Передаем controller  settings

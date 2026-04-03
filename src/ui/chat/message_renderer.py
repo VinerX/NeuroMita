@@ -43,6 +43,18 @@ _STRUCTURED_MODE_OFF_EN   = "Off"
 _STRUCTURED_MODE_BRIEF_EN = "Brief"
 
 
+def _pop_sample_id_if_collecting() -> str | None:
+    """Returns the pending sample_id if finetune collection is active, else None."""
+    try:
+        from managers.finetune_collector import FineTuneCollector
+        fc = FineTuneCollector.instance
+        if fc and fc.is_enabled():
+            return fc.pop_pending_sample_id()
+    except Exception:
+        pass
+    return None
+
+
 def _get_delegate(gui) -> ChatMessageDelegate:
     if hasattr(gui, "chat_delegate") and gui.chat_delegate:
         return gui.chat_delegate
@@ -231,6 +243,9 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         gui._think_block_counter += 1
         blocks[block_id] = _pending_struct_panel
 
+    # Pop finetune sample_id once per assistant message (only when collection is on)
+    _ft_sample_id = _pop_sample_id_if_collecting() if role == "assistant" else None
+
     # Split into multiple bubbles when segments have different consecutive targets
     segments = (structured_data.get("segments") or []) if isinstance(structured_data, dict) else []
     target_groups = _group_segments_by_target(segments) if role == "assistant" and len(segments) > 0 else []
@@ -255,6 +270,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
                 message_time=message_time if is_last else "",
                 show_timestamp=show_ts and is_last,
                 max_bubble_width=max_bw,
+                sample_id=_ft_sample_id if is_last else None,
                 parent=chat_parent
             )
             if is_last and _pending_struct_panel is not None:
@@ -270,6 +286,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             message_time=message_time,
             show_timestamp=show_ts,
             max_bubble_width=max_bw,
+            sample_id=_ft_sample_id,
             parent=chat_parent
         )
         if _pending_struct_panel is not None:
@@ -328,6 +345,7 @@ def prepare_stream_slot(gui, role="assistant"):
 
         show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
         max_bw = int(gui._get_setting("CHAT_MAX_BUBBLE_WIDTH", 600))
+        _ft_stream_sample_id = _pop_sample_id_if_collecting() if role == "assistant" else None
         msg = MessageWidget(
             role=role,
             speaker_name=speaker_name,
@@ -336,6 +354,7 @@ def prepare_stream_slot(gui, role="assistant"):
             font_size=font_size,
             show_timestamp=show_ts,
             max_bubble_width=max_bw,
+            sample_id=_ft_stream_sample_id,
             parent=chat_parent
         )
         gui._current_stream_message = msg
@@ -407,6 +426,9 @@ def attach_structured_to_stream(gui, structured_data: dict):
     target_groups = _group_segments_by_target(segments) if segments else []
     speaker_name = getattr(msg, '_speaker_name', '') or ''
 
+    # Carry over the finetune sample_id from the original stream widget
+    _stream_sample_id = getattr(msg, '_sample_id', None)
+
     if len(target_groups) > 1:
         # Replace the single stream bubble with per-target bubbles
         gui.chat_window.remove_widget(msg)
@@ -428,6 +450,7 @@ def attach_structured_to_stream(gui, structured_data: dict):
                 font_size=font_size,
                 show_timestamp=show_ts and is_last,
                 max_bubble_width=max_bw,
+                sample_id=_stream_sample_id if is_last else None,
                 parent=chat_parent
             )
             if is_last:
