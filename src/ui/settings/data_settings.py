@@ -198,16 +198,7 @@ def setup_data_settings_controls(self, parent):
     parent.addWidget(btn_container)
 
     # ── Motivation image ──────────────────────────────────────────────────────
-    image_label = QLabel()
-    pixmap = QPixmap(os.path.join("assets", "finetune_motivation.png"))
-    if not pixmap.isNull():
-        pixmap = pixmap.scaledToWidth(360, Qt.TransformationMode.SmoothTransformation)
-        image_label.setPixmap(pixmap)
-        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        image_label.setStyleSheet(
-            "background: transparent; border: none; margin-top: 8px;"
-        )
-        parent.addWidget(image_label)
+    parent.addWidget(_MotivationImage())
 
 
 # ── Live stats widget ─────────────────────────────────────────────────────────
@@ -297,6 +288,43 @@ class _LiveStatsWidget(QFrame):
             return lines
         except Exception as e:
             return [f"Error: {e}"]
+
+
+# ── Motivation image widget ───────────────────────────────────────────────────
+
+class _MotivationImage(QLabel):
+    """Картинка внизу панели. При 100+ записях показывает пасхалку."""
+
+    _IMG_NORMAL = os.path.join("assets", "finetune_motivation.png")
+    _IMG_100    = os.path.join("assets", "finetune_motivation_100.png")
+    _WIDTH      = 360
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet("background: transparent; border: none; margin-top: 8px;")
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        self._update_image()
+
+    def _update_image(self):
+        total = 0
+        try:
+            from managers.finetune_collector import FineTuneCollector
+            fc = FineTuneCollector.instance
+            if fc:
+                total = fc.get_stats().get("total", 0)
+        except Exception:
+            pass
+
+        path = self._IMG_100 if total >= 100 else self._IMG_NORMAL
+        pixmap = QPixmap(path)
+        if not pixmap.isNull():
+            pixmap = pixmap.scaledToWidth(self._WIDTH, Qt.TransformationMode.SmoothTransformation)
+            self.setPixmap(pixmap)
+        else:
+            self.clear()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
