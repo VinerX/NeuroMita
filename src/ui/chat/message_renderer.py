@@ -186,7 +186,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
 
     # Debug logging
     content_preview = content[:60] if isinstance(content, str) else f"list({len(content)})" if isinstance(content, list) else f"{type(content).__name__}"
-    logger.debug(f"[insert_message] role='{role}', content_type={type(content).__name__}, preview={content_preview}")
+    logger.info(f"[insert_message] role='{role}', content_type={type(content).__name__}, preview={content_preview}")
 
     font_size = _get_font_size(gui)
     chat_parent = gui.chat_window.get_layout_parent()
@@ -254,24 +254,24 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
     _SYS_PREFIX = "[Системное]:"
     if role == "user":
         raw = content if isinstance(content, str) else ""
-        logger.debug(f"[SysDetect] role=user, checking content. raw_str_len={len(raw) if raw else 0}")
+        logger.info(f"[SysDetect] role=user, checking. raw_is_str={isinstance(raw, str)}, len={len(raw) if raw else 0}")
         if not raw and isinstance(content, list):
-            logger.debug(f"[SysDetect] Content is list, extracting text...")
+            logger.info(f"[SysDetect] Content is list, extracting text...")
             for _item in content:
                 if isinstance(_item, dict) and _item.get("type") == "text":
                     raw = _item.get("text") or _item.get("content", "")
-                    logger.debug(f"[SysDetect] Extracted from list: {raw[:50] if raw else 'EMPTY'}")
+                    logger.info(f"[SysDetect] Extracted from list: {raw[:50] if raw else 'EMPTY'}")
                     break
         if isinstance(raw, str):
-            logger.debug(f"[SysDetect] raw is str, checking prefix. Starts with prefix? {raw.lstrip().startswith(_SYS_PREFIX)}, raw={raw[:60]}")
-            if raw.lstrip().startswith(_SYS_PREFIX):
-                logger.info(f"[SysDetect] ✓ DETECTED system-as-user: {raw[:50]}...")
+            has_prefix = raw.lstrip().startswith(_SYS_PREFIX)
+            logger.info(f"[SysDetect] Checking prefix. has_prefix={has_prefix}, raw={raw[:70]}")
+            if has_prefix:
+                logger.info(f"[SysDetect] ✓✓✓ DETECTED system-as-user message! Changing role user→system")
                 role = "system"
-                logger.info(f"[SysDetect] ✓ Changed role to 'system'")
             else:
-                logger.debug(f"[SysDetect] ✗ No prefix found in: {raw[:60]}")
+                logger.info(f"[SysDetect] No prefix found")
         else:
-            logger.debug(f"[SysDetect] raw is not str: {type(raw).__name__}")
+            logger.info(f"[SysDetect] raw is not str: {type(raw).__name__}")
 
     text_parts = []
     speaker_name = ""

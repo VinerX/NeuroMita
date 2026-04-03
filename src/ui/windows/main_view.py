@@ -520,12 +520,13 @@ class ChatGUI(QMainWindow):
     def _on_history_loaded(self, data: dict):
         messages = data.get('messages', [])
         character_id = data.get('character_id', '')
-        logger.debug(f"[HistoryLoaded] Загружено {len(messages)} сообщений")
-        for i, entry in enumerate(messages):
+        logger.info(f"[HistoryLoaded] Загружено {len(messages)} сообщений для отображения")
+        # Показываем последние 3 сообщения
+        for i, entry in enumerate(messages[-3:]):
             msg_role = entry.get("role", "?")
             msg_content = entry.get("content", "")
             content_preview = msg_content[:50] if isinstance(msg_content, str) else f"list({len(msg_content)})"
-            logger.debug(f"[HistoryLoaded] [{i}] role='{msg_role}', preview='{content_preview}'")
+            logger.info(f"[HistoryLoaded] msg[{i}] role='{msg_role}', preview='{content_preview}'")
             role = entry["role"]
             content = entry["content"]
             message_time = entry.get("time", "???")
