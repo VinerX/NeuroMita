@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPlainTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
     QMessageBox, QDialog, QProgressBar, QStackedWidget,
-    QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy
+    QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy, QCheckBox
 )
 from PyQt6.QtGui import QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap
 
@@ -931,6 +931,13 @@ class ChatGUI(QMainWindow):
         self._debug_system_input.setFixedHeight(70)
         parent_layout.addWidget(self._debug_system_input)
 
+        self._debug_as_user_cb = QCheckBox(_('Как пользователь [Системное]: (видно Gemini)', 'As user [System]: (visible to Gemini)'))
+        self._debug_as_user_cb.setToolTip(
+            _('Сохранить как role=user с префиксом [Системное]:, чтобы Gemini видел сообщение в контексте',
+              'Save as role=user with [System]: prefix so Gemini sees it in context')
+        )
+        parent_layout.addWidget(self._debug_as_user_cb)
+
         sys_btn = QPushButton(_('Отправить системное', 'Send as system'))
         sys_btn.clicked.connect(self._on_debug_insert_system_message)
         parent_layout.addWidget(sys_btn)
@@ -957,6 +964,7 @@ class ChatGUI(QMainWindow):
         self.event_bus.emit(Events.Chat.INSERT_SYSTEM_MESSAGE, {
             "text": text,
             "character_id": character_id,
+            "as_user": self._debug_as_user_cb.isChecked(),
         })
         self._debug_system_input.clear()
 

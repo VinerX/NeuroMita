@@ -901,9 +901,16 @@ class ChatController:
         if character is None:
             logger.warning(f"[ChatController] INSERT_SYSTEM_MESSAGE: персонаж '{character_id}' не найден")
             return
+        as_user = bool(data.get("as_user", False))
+        if as_user:
+            role = "user"
+            content = f"[Системное]: {text}"
+        else:
+            role = "system"
+            content = text
         message = {
-            "role": "system",
-            "content": text,
+            "role": role,
+            "content": content,
             "message_id": f"sys:{uuid.uuid4().hex}",
             "time": datetime.datetime.now().strftime("%H:%M"),
         }
