@@ -130,15 +130,48 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
         bus.emit(Events.Chat.REGENERATE, {"character_id": character_id})
 
     def on_regenerate_from(mid):
-        from PyQt6.QtWidgets import QMessageBox
-        reply = QMessageBox.question(
-            None,
-            "Регенерировать отсюда",
-            "Все сообщения после этого будут удалены, и Мита ответит заново. Продолжить?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+        dlg = QDialog()
+        dlg.setWindowTitle(_("Регенерировать", "Regenerate"))
+        dlg.setModal(True)
+        dlg.setFixedWidth(360)
+        dlg.setStyleSheet("""
+            QDialog { background-color: #1e1e1e; }
+            QLabel { color: #e0e0e0; background: transparent; border: none; }
+            QPushButton {
+                background-color: #2a2a2a;
+                color: #e0e0e0;
+                border: 1px solid #444;
+                border-radius: 4px;
+                padding: 6px 16px;
+                font-size: 12px;
+            }
+            QPushButton:hover { background-color: #383838; }
+            QPushButton#AcceptBtn {
+                background-color: #2a4a2a;
+                border-color: #4a8a4a;
+                color: #90ee90;
+            }
+            QPushButton#AcceptBtn:hover { background-color: #3a5a3a; }
+        """)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(16, 16, 16, 12)
+        lay.setSpacing(12)
+        lbl = QLabel(_("Все сообщения после этого будут удалены, и Мита ответит заново. Продолжить?",
+                       "All messages after this will be deleted and Mita will respond again. Continue?"))
+        lbl.setWordWrap(True)
+        lay.addWidget(lbl)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        no_btn = QPushButton(_("Отмена", "Cancel"))
+        no_btn.clicked.connect(dlg.reject)
+        btn_row.addWidget(no_btn)
+        yes_btn = QPushButton(_("Продолжить", "Continue"))
+        yes_btn.setObjectName("AcceptBtn")
+        yes_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(yes_btn)
+        lay.addLayout(btn_row)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             bus.emit(Events.Chat.REGENERATE_FROM, {"message_id": mid, "character_id": character_id})
 
     widget.delete_requested.connect(on_delete)
@@ -211,6 +244,23 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         return
 
     # ── Other roles (user, assistant, system) ───────────────────────────────
+
+    # Detect user messages sent with [Системное]: prefix (as_user mode) and
+    # render them visually as system bubbles so they look distinct in the chat.
+    _SYS_PREFIX = "[Системное]:"
+    if role == "user":
+        raw = content if isinstance(content, str) else ""
+        if not raw and isinstance(content, list):
+            for _item in content:
+                if isinstance(_item, dict) and _item.get("type") == "text":
+                    raw = _item.get("text") or _item.get("content", "")
+                    break
+        if raw.lstrip().startswith(_SYS_PREFIX):
+            role = "system"
+            # Strip the prefix from content for display
+            stripped = raw.lstrip()[len(_SYS_PREFIX):].strip()
+            content = stripped
+
     text_parts = []
     speaker_name = ""
     images = []

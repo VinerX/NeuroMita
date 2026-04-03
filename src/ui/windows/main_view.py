@@ -1028,7 +1028,9 @@ class ChatGUI(QMainWindow):
             QMessageBox.critical(self, _("Ошибка", "Error"), str(e))
             return
 
-        self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
+        # Call directly in the main thread — event bus dispatches async (background thread),
+        # which crashes Qt when GUI widgets are touched from a non-main thread.
+        self.load_chat_history()
         logger.info(f"[Debug] Snapshot загружен из {file_path}")
 
     def _get_current_character_id_for_debug(self) -> str:

@@ -809,6 +809,28 @@ class ChatController:
                             break
                 break
 
+        # Detect if the preceding user message is actually a system-as-user message
+        # (stored with [Системное]: prefix). In that case keep it and just regenerate.
+        _SYS_PREFIX = "[Системное]:"
+        _is_sys_as_user = False
+        if last_user_idx is not None:
+            _raw = last_user_text
+            if isinstance(_raw, str) and _raw.lstrip().startswith(_SYS_PREFIX):
+                _is_sys_as_user = True
+
+        if _is_sys_as_user:
+            # Keep the system-as-user message, only remove the assistant response
+            history_data["messages"] = messages[:last_assistant_idx]
+            character.history_manager.save_history(history_data)
+            # Remove assistant bubble(s) + possible structured panel
+            widgets_to_remove = (last_assistant_idx - last_user_idx) + 1
+            self.event_bus.emit(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, {"count": widgets_to_remove})
+            self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
+                "user_input": " ",
+                "character_id": character_id,
+            })
+            return
+
         # Remove both the user and assistant messages to avoid duplication on re-send
         cut_idx = last_user_idx if last_user_idx is not None else last_assistant_idx
         history_data["messages"] = messages[:cut_idx]
@@ -847,6 +869,19 @@ class ChatController:
 
         target_msg = messages[target_idx]
         target_role = target_msg.get("role", "user")
+
+        # Detect user messages stored with [Системное]: prefix (as_user mode)
+        # and treat them like system messages for regeneration purposes.
+        _SYS_PREFIX = "[Системное]:"
+        if target_role == "user":
+            _raw = target_msg.get("content", "")
+            if isinstance(_raw, list):
+                for _it in _raw:
+                    if isinstance(_it, dict) and _it.get("type") == "text":
+                        _raw = _it.get("text") or _it.get("content", "")
+                        break
+            if isinstance(_raw, str) and _raw.lstrip().startswith(_SYS_PREFIX):
+                target_role = "system"
 
         if target_role == "user":
             # Extract user text, cut history before this message, re-send
