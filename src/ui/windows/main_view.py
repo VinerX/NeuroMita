@@ -986,22 +986,48 @@ class ChatGUI(QMainWindow):
         except Exception:
             pass
 
+        if not os.path.isdir(start_dir):
+            start_dir = "."
+
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             _("Загрузить snapshot", "Load snapshot"),
             start_dir,
-            "JSON files (*.json)"
+            "JSON files (*.json)",
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if not file_path:
             return
+
+        # Load entirely in the main thread — no async event bus, avoids C-runtime
+        # stack-overrun (0xC0000409) that occurs when Qt calls happen in background threads.
         try:
-            self.event_bus.emit(Events.Chat.LOAD_SNAPSHOT, {
-                "file_path": file_path,
-                "character_id": character_id,
-            })
+            import json as _json
+            with open(file_path, "r", encoding="utf-8") as f:
+                snapshot_data = _json.load(f)
         except Exception as e:
-            logger.error(f"Ошибка при загрузке snapshot: {e}", exc_info=True)
+            logger.error(f"Ошибка чтения snapshot-файла: {e}", exc_info=True)
+            QMessageBox.critical(self, _("Ошибка", "Error"),
+                                 _("Не удалось прочитать файл:\n", "Failed to read file:\n") + str(e))
+            return
+
+        try:
+            res = self.event_bus.emit_and_wait(
+                Events.Character.GET, {"character_id": character_id}, timeout=1.0
+            )
+            character = res[0] if res else None
+            if character is None:
+                QMessageBox.warning(self, _("Предупреждение", "Warning"),
+                                    _("Персонаж не найден.", "Character not found."))
+                return
+            character.history_manager.save_history(snapshot_data)
+        except Exception as e:
+            logger.error(f"Ошибка сохранения snapshot в историю: {e}", exc_info=True)
             QMessageBox.critical(self, _("Ошибка", "Error"), str(e))
+            return
+
+        self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
+        logger.info(f"[Debug] Snapshot загружен из {file_path}")
 
     def _get_current_character_id_for_debug(self) -> str:
         try:

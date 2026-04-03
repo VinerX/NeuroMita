@@ -843,9 +843,13 @@ class ChatController:
         }
         character.history_manager.append_message(message)
         self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
-        # Trigger generation so Mita responds to the system message
+        # Trigger generation so Mita responds to the system message.
+        # A single space is used instead of "" so that:
+        # 1. prompt_controller adds a proper user turn (required by Gemini API)
+        # 2. Gemini provider doesn't corrupt the last assistant message
+        # The space is filtered from future history by _has_visible_user_text().
         self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
-            "user_input": "",
+            "user_input": " ",
             "character_id": character_id,
         })
 
