@@ -53,7 +53,8 @@ class SettingsController(BaseController):
             except Exception as e:
                 logger.error(f"Ошибка при изменении размера шрифта: {e}")
 
-        elif key in ["SHOW_CHAT_TIMESTAMPS", "MAX_CHAT_HISTORY_DISPLAY", "HIDE_CHAT_TAGS"]:
+        elif key in ["SHOW_CHAT_TIMESTAMPS", "MAX_CHAT_HISTORY_DISPLAY", "HIDE_CHAT_TAGS",
+                     "SHOW_STRUCTURED_IN_GUI", "STRUCTURED_EXPANDED_DEFAULT", "CHAT_MAX_BUBBLE_WIDTH"]:
             self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
             logger.info(f"Настройка '{key}' изменена на: {value}. История чата перезагружена.")
 

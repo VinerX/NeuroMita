@@ -71,6 +71,10 @@ def build_voiceover_settings_ui(self, parent_layout):
         {'label': _('Макс. ожидание (сек)', 'Max wait (sec)'), 'key': 'SILERO_TIME',
          'type': 'entry', 'default': '12', 'validation': getattr(self, 'validate_number_0_60', None)},
 
+        {'label': _('Мин. интервал запросов (сек)', 'Min request interval (sec)'),
+         'key': 'TG_MIN_REQUEST_INTERVAL',
+         'type': 'entry', 'default': '2', 'validation': getattr(self, 'validate_number_0_60', None)},
+
         {'label': _('Настройки Telegram API', 'Telegram API Settings'), 'type': 'text'},
         {'label': _('Будет скрыто после перезапуска', 'Will be hidden after restart'), 'type': 'text'},
 
@@ -153,11 +157,14 @@ def build_voiceover_settings_ui(self, parent_layout):
          'key': 'VOICEOVER_LOCAL_CHAT', 'type': 'checkbutton',
          'default_checkbutton': True},
 
+        {'label': _('Перезапустить нейро-ядро озвучки', 'Restart Voice AI Engine'),
+         'type': 'button',
+         'command': (lambda: get_event_bus().emit(Events.AI.RESTART_SERVICE, {"service": "tts"}))},
+
         {'label': _('Управление моделями', 'Manage Models'),
          'type': 'button',
          'command': (lambda: get_event_bus().emit(Events.GUI.SHOW_WINDOW, {"window_id": "voice_models", "payload": {}}))}
     ]
-
     if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1":
         local_config.insert(2, {
             'label': _('Удалять аудио', 'Delete audio'),

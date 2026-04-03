@@ -16,7 +16,15 @@ def setup_model_interaction_controls(self, parent):
         {'label': _('Время между попытками', 'time between attempts'),
          'key': 'MODEL_MESSAGE_ATTEMPTS_TIME', 'type': 'entry', 'default': 0.20},
         {'label': _('Включить стриминговую передачу', 'Enable Streaming'), 'key': 'ENABLE_STREAMING',
-         'type': 'checkbutton', 'default_checkbutton': False},
+         'type': 'checkbutton',
+         'default_checkbutton': False},
+        {'label': _('Режим размышлений (enable_thinking)', 'Enable thinking mode'), 'key': 'ENABLE_THINKING',
+         'type': 'checkbutton',
+         'default_checkbutton': True,
+         'tooltip': _('Для моделей Qwen3 и аналогичных: включает thinking-режим. '
+                      'Выключите если модель кладёт ответ в reasoning_content вместо content.',
+                      'For Qwen3 and similar models: enables thinking mode. '
+                      'Disable if the model puts the response into reasoning_content instead of content.')},
         {'label': _('Использовать gpt4free последней попыткой ', 'Use gpt4free as last attempt'),
          'key': 'GPT4FREE_LAST_ATTEMPT', 'type': 'checkbutton', 'default_checkbutton': False},
 
@@ -78,6 +86,20 @@ def setup_model_interaction_controls(self, parent):
         'validation': self.validate_float_minus2_to_2,
         'tooltip': _('Параметр, влияющий на глубину "размышлений" модели (зависит от модели)',
                     'Parameter influencing the depth of model "thoughts" (model-dependent)')},
+
+        {'label': _('Бюджет размышлений Gemini (токены)', 'Gemini thinking budget (tokens)'),
+        'key': 'GEMINI_THINKING_BUDGET',
+        'type': 'entry',
+        'toggle_key': 'USE_GEMINI_THINKING_BUDGET',
+        'toggle_default': self.settings.get('USE_GEMINI_THINKING_BUDGET', False),
+        'default': 8192,
+        'validation': self.validate_positive_integer_or_zero,
+        'tooltip': _('Бюджет токенов для размышлений Gemini 2.5+. 0 = отключить. '
+                     'Если переключатель выключен — бюджет динамический (по умолчанию). '
+                     'Работает только при включённом "Режиме размышлений".',
+                     'Token budget for Gemini 2.5+ thinking. 0 = disable. '
+                     'If toggle is off — budget is dynamic (default). '
+                     'Requires "Enable thinking mode" to be enabled.')},
 
         {'label': _('Штраф присутствия', 'Presence penalty'),
         'key': 'MODEL_PRESENCE_PENALTY',

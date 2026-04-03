@@ -12,6 +12,7 @@ class InstallGuiController(BaseController):
     def subscribe_to_events(self):
         self.event_bus.subscribe(Events.Install.RUN_WITH_UI, self._on_run_with_ui, weak=False)
         self.event_bus.subscribe(Events.Install.RUN_HEADLESS, self._on_run_headless, weak=False)
+        self.event_bus.subscribe(Events.Install.TASK_LOG, self._on_install_task_log, weak=False)
 
     def _get_backend(self):
         backend = getattr(self.main_controller, "install_controller", None)
@@ -66,6 +67,24 @@ class InstallGuiController(BaseController):
 
         return win, progress_cb, status_cb, log_cb
 
+    def _on_install_task_log(self, event: Event):
+        data = event.data if isinstance(event.data, dict) else {}
+
+        msg = data.get("message")
+        if msg is None:
+            msg = data.get("log")
+        if msg is None:
+            msg = data.get("text")
+        msg = "" if msg is None else str(msg)
+
+        level = str(data.get("level") or "").strip().lower()
+        low = msg.lower()
+
+        if level in ("error", "exception", "critical") or any(k in low for k in ("error", "ошибка", "failed", "exception", "traceback")):
+            logger.error(f"[INSTALL] {msg}")
+        elif level in ("warn", "warning") or any(k in low for k in ("warning", "предупреж")):
+            logger.warning(f"[INSTALL] {msg}")
+
     def _on_run_with_ui(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
 
@@ -106,6 +125,10 @@ class InstallGuiController(BaseController):
                 else:
                     status_cb("Failed")
                     log_cb("Installation failed (see logs above).")
+                    self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
+                        "title": "Installation failed",
+                        "message": f"Task '{task_id}' failed. See install window logs."
+                    })
 
             except Exception as e:
                 logger.error(f"Install worker failed: {e}", exc_info=True)
@@ -114,6 +137,10 @@ class InstallGuiController(BaseController):
                     log_cb(f"Critical error: {str(e)}")
                 except Exception:
                     pass
+                self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
+                    "title": "Installation error",
+                    "message": f"Task '{task_id}' failed with exception:\n{e}"
+                })
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -145,7 +172,15 @@ class InstallGuiController(BaseController):
                 )
                 if not ok:
                     logger.error(f"Headless install failed for task_id={task_id}")
+                    self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
+                        "title": "Installation failed",
+                        "message": f"Headless task '{task_id}' failed."
+                    })
             except Exception as e:
                 logger.error(f"Headless install exception for task_id={task_id}: {e}", exc_info=True)
+                self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
+                    "title": "Installation error",
+                    "message": f"Headless task '{task_id}' failed with exception:\n{e}"
+                })
 
         threading.Thread(target=worker, daemon=True).start()

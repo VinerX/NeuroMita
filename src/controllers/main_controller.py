@@ -23,6 +23,7 @@ from controllers.voice_model_controller import VoiceModelController
 from controllers.install_controller import InstallController
 from controllers.protocols_controller import ProtocolsController
 from controllers.embedding_controller import EmbeddingController
+from controllers.ai_engine_controller import AIEngineController
 
 from main_logger import logger
 from utils.ffmpeg_installer import install_ffmpeg
@@ -61,8 +62,6 @@ class MainController:
 
         try:
             self.pip_installer = PipInstaller(
-                script_path=r"libs\python\python.exe",
-                libs_path="Lib",
                 update_log=logger.info
             )
             logger.notify("PipInstaller успешно инициализирован.")
@@ -72,8 +71,11 @@ class MainController:
 
         self._check_and_perform_pending_update()
 
-        self.install_controller = InstallController(script_path=r"libs\python\python.exe", libs_path="Lib")
+        self.install_controller = InstallController()
         logger.notify("InstallController успешно инициализирован.")
+
+        self.ai_engine_controller = AIEngineController()
+        logger.notify("AIEngineController успешно инициализирован (separate process).")
 
         self.local_voice_controller = LocalVoiceController()
         logger.notify("LocalVoiceController успешно инициализирован.")
@@ -199,6 +201,12 @@ class MainController:
         self.capture_controller.stop_camera_capture_thread()
 
         self.audio_controller.delete_all_sound_files()
+
+        try:
+            if getattr(self, "ai_engine_controller", None):
+                self.ai_engine_controller.shutdown(timeout=5.0)
+        except Exception as e:
+            logger.error(f"Ошибка при остановке AI engine: {e}", exc_info=True)
 
         self.loop_controller.stop_loop()
 

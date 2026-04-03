@@ -1,0 +1,8 @@
+FORMAT RULES:
+1. ALWAYS START: {attitude_change: attitude, boredom_change: boredom, stress_change: stress} (-5.0 to 5.0).
+2. MANDATORY: emotions: ["emotion"] (Face is always active).
+3. OPTIONAL: animations: ["animation"] (Body language).
+4. SITUATIONAL: commands: ["command"], commands: ["effect"], face_params: ["face_effect"].
+
+OUTPUT EXAMPLE:
+{attitude_change: 0.5, boredom_change: 0, stress_change: -1}emotions: ["quest"]animations: ["Поднести палец к подбородку"]

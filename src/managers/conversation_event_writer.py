@@ -145,8 +145,9 @@ class ConversationEventWriter:
         final_text: str,
         event_type: str,
         task_uid: str | None,
+        structured_data: dict | None = None,
     ) -> dict:
-        return {
+        msg = {
             "message_id": self._make_message_id("out", task_uid),
             "role": "assistant",
             "speaker": speaker,
@@ -157,6 +158,9 @@ class ConversationEventWriter:
             "time": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
             "content": final_text,
         }
+        if structured_data:
+            msg["structured_data"] = structured_data
+        return msg
 
     def write_turn(
         self,
@@ -172,6 +176,7 @@ class ConversationEventWriter:
         assistant_target: str,
         event_type: str,
         task_uid: str | None,
+        structured_data: dict | None = None,
     ) -> None:
         sender = str(sender or "Player")
         responder_character_id = str(responder_character_id or "").strip()
@@ -201,6 +206,7 @@ class ConversationEventWriter:
             final_text=str(assistant_text or ""),
             event_type=event_type,
             task_uid=task_uid,
+            structured_data=structured_data,
         )
 
         if user_event is not None:

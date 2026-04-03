@@ -22,14 +22,31 @@ def setup_general_settings_controls(self, parent):
         {'label': _('Размер шрифта чата', 'Chat Font Size'), 'key': 'CHAT_FONT_SIZE', 'type': 'entry',
          'default': 12, 'validation': self.validate_positive_integer,
          'tooltip': _('Размер шрифта в окне чата.', 'Font size in the chat window.')},
+        {'label': _('Макс. ширина пузыря', 'Max bubble width'), 'key': 'CHAT_MAX_BUBBLE_WIDTH', 'type': 'entry',
+         'default': 600, 'validation': self.validate_non_negative_integer,
+         'tooltip': _('Максимальная ширина пузыря сообщения в пикселях. 0 = без ограничения.',
+                      'Max message bubble width in pixels. 0 = no limit.')},
         {'label': _('Показывать метки времени', 'Show Timestamps'), 'key': 'SHOW_CHAT_TIMESTAMPS',
-         'type': 'checkbutton', 'default_checkbutton': False,
+         'type': 'checkbutton', 'default_checkbutton': True,
          'tooltip': _('Показывать метки времени рядом с сообщениями в чате.',
                       'Show timestamps next to messages in chat.')},
         {'label': _('Скрывать теги', 'Hide Tags'), 'key': 'HIDE_CHAT_TAGS',
          'type': 'checkbutton', 'default_checkbutton': True,
          'tooltip': _('Скрывать теги (<e>, <c>, <a>, [b], [i], [color]) в отображаемом тексте чата.',
                       'Hide tags (<e>, <c>, <a>, [b], [i], [color]) in the displayed chat text.')},
+
+        {'label': _('Выводить мышление', 'Show thinking'), 'key': 'SHOW_THINK_IN_GUI',
+         'type': 'checkbutton', 'default_checkbutton': True},
+        {'label': _('Structured output (дебаг)', 'Structured output (debug)'), 'key': 'SHOW_STRUCTURED_IN_GUI',
+         'type': 'combobox',
+         'options': [_('Выкл', 'Off'), _('Кратко', 'Brief'), 'JSON'],
+         'default': _('Выкл', 'Off'),
+         'tooltip': _('Выкл — не показывать; Кратко — сегменты с командами; JSON — сырой ответ.',
+                      'Off — hidden; Brief — segments with commands; JSON — raw response.')},
+        {'label': _('Развёрнуто по умолчанию', 'Expanded by default'), 'key': 'STRUCTURED_EXPANDED_DEFAULT',
+         'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _('Если включено — блок с данными открыт сразу, иначе свёрнут.',
+                      'If enabled — the data block is open immediately, otherwise collapsed.')}
     ]
 
     create_settings_section(

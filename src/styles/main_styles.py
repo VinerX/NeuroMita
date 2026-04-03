@@ -532,6 +532,19 @@ QTabBar::tab:disabled {
     border: 1px solid {outline};
 }
 
+/* ========= Chat scroll area (widget-based) ========= */
+QScrollArea#ChatScrollArea {
+    background-color: {panel_bg};
+    border: none;
+    border-radius: 10px;
+}
+QScrollArea#ChatScrollArea::viewport {
+    background-color: {panel_bg};
+    border: none;
+}
+QWidget#ChatContainer {
+    background-color: {panel_bg};
+}
 """
 
 def get_stylesheet(overrides: dict | None = None) -> str:

@@ -114,6 +114,9 @@ class ChatModel:
                 combined_messages.insert(0, {"role": "system", "content": legacy_prompt})
 
 
+        # Capture the last built LLMRequest so we can save it for finetune data collection
+        _last_req: list = [None]
+
         def build_request(preset_settings, effective_model: str) -> LLMRequest:
             cfg = self.cfg_loader.effective_for_preset(self.cfg, preset_settings, effective_model)
 
@@ -127,6 +130,9 @@ class ChatModel:
                 top_k=cfg.top_k,
                 top_p=cfg.top_p,
                 thinking_budget=cfg.thinking_budget,
+                enable_thinking=cfg.enable_thinking,
+                gemini_thinking_budget=getattr(cfg, "gemini_thinking_budget", None),
+                force_params=getattr(cfg, "preset_forced_params", frozenset()),
             )
 
             dialect = "gemini" if preset_settings.dialect_id == "gemini_generate_content" else "openai"
@@ -156,6 +162,7 @@ class ChatModel:
             )
 
             req.extra["tool_manager"] = self.tool_manager
+            _last_req[0] = req
             return req
 
         try:
@@ -171,6 +178,33 @@ class ChatModel:
         except Exception as e:
             logger.error(f"Runner failed unexpectedly: {e}", exc_info=True)
             return None, False
+
+        # ── Finetune data collection hook ─────────────────────────────────────
+        if response_text and _last_req[0]:
+            try:
+                from managers.finetune_collector import FineTuneCollector
+                fc = FineTuneCollector.instance
+                if fc and fc.is_enabled():
+                    char = self.current_character
+                    # Query game connection status (non-blocking)
+                    game_connected = False
+                    try:
+                        from core.events import Events
+                        res = self.event_bus.emit_and_wait(
+                            Events.Server.GET_GAME_CONNECTION, timeout=0.3
+                        )
+                        game_connected = bool(res[0]) if res else False
+                    except Exception:
+                        game_connected = False
+                    fc.save_sample(
+                        req=_last_req[0],
+                        response_text=response_text,
+                        character_id=char.char_id if char else "unknown",
+                        character_name=char.name if char else "unknown",
+                        game_connected=game_connected,
+                    )
+            except Exception as _ft_err:
+                logger.debug(f"[FinetuneCollector] save_sample skipped: {_ft_err}")
 
         if response_text and tools_on and tools_mode == "legacy":
             response_text = self.legacy_tools.process(
@@ -198,7 +232,7 @@ class ChatModel:
         logger.info(f"Using preset: {preset_settings.preset_name}")
         logger.info(f"Protocol: {preset_settings.protocol_id} | Dialect: {preset_settings.dialect_id} | Provider: {preset_settings.provider_name}")
         logger.info(f"Capabilities: {preset_settings.capabilities}")
-        logger.info(f"Max Response Tokens: {self.cfg.max_response_tokens}, Temperature: {self.cfg.temperature}")
+        logger.info(f"Max Response Tokens: {self.cfg.max_response_tokens}, Temperature: {self.cfg.temperature} (base; preset overrides applied separately)")
         logger.info(
             f"Presence Penalty: {self.cfg.presence_penalty} (Used: {bool(self.settings.get('USE_MODEL_PRESENCE_PENALTY'))})"
         )

@@ -74,9 +74,87 @@ import os
 from typing import Tuple, Optional, List
 from typing import ClassVar
 
+import numpy as np
+
+from main_logger import logger
+from utils.gpu_utils import check_gpu_provider
+from utils.pip_installer import PipInstaller
+
+
 # --- Константы модели ---
-MODEL_NAME = 'Snowflake/snowflake-arctic-embed-m-v2.0'
-QUERY_PREFIX = 'query: '
+MODEL_NAME = "Snowflake/snowflake-arctic-embed-m-v2.0"
+QUERY_PREFIX = "query: "
+
+
+def _ensure_checkpoints_dir() -> str:
+    base_dir = os.environ.get("NEUROMITA_BASE_DIR", os.path.dirname(sys.executable))
+    checkpoints_dir = os.path.join(base_dir, "checkpoints")
+    os.makedirs(checkpoints_dir, exist_ok=True)
+    return checkpoints_dir
+
+
+checkpoints_dir = _ensure_checkpoints_dir()
+
+
+def _get_default_pip_installer() -> Optional[PipInstaller]:
+    try:
+        return PipInstaller(
+            update_log=logger.info
+        )
+    except Exception:
+        return None
+
+
+def _ensure_lib_on_path():
+    lib_path = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
+    if lib_path not in sys.path:
+        sys.path.insert(0, lib_path)
+
+
+def _ensure_torch_and_transformers(pip_installer: Optional[PipInstaller] = None) -> None:
+    """
+    Гарантирует, что torch/transformers доступны.
+    НЕ вызывается на import-time, только когда реально нужен EmbeddingModelHandler.
+    """
+    _ensure_lib_on_path()
+
+    try:
+        import torch  # noqa: F401
+    except Exception:
+        pip_installer = pip_installer or _get_default_pip_installer()
+        if pip_installer is None:
+            raise
+
+        try:
+            current_gpu = check_gpu_provider() or "CPU"
+        except Exception:
+            current_gpu = "CPU"
+
+        if current_gpu == "NVIDIA":
+            ok = pip_installer.install_package(
+                ["torch==2.7.1", "torchaudio==2.7.1"],
+                description="Installing PyTorch with CUDA (cu128)...",
+                extra_args=["--index-url", "https://download.pytorch.org/whl/cu128"]
+            )
+        else:
+            ok = pip_installer.install_package(
+                ["torch==2.7.1", "torchaudio==2.7.1"],
+                description="Installing PyTorch CPU...",
+            )
+        if not ok:
+            raise RuntimeError("Failed to install torch/torchaudio")
+
+    try:
+        from transformers import AutoModel, AutoTokenizer  # noqa: F401
+    except Exception:
+        pip_installer = pip_installer or _get_default_pip_installer()
+        if pip_installer is None:
+            raise
+
+        ok = pip_installer.install_package("transformers>=4.45.2", "Installing transformers>=4.45.2")
+        if not ok:
+            raise RuntimeError("Failed to install transformers")
+
 
 
 class EmbeddingModelHandler:
@@ -232,9 +310,10 @@ class EmbeddingModelHandler:
 
         model.eval()
         model.to(self.device)
+
         end_time = time.time()
         logger.info(f"Токенизатор и модель загружены за {end_time - start_time:.2f} секунд.")
-        actual_attn_impl = getattr(model.config, '_attn_implementation', 'Не удалось определить')
+        actual_attn_impl = getattr(model.config, "_attn_implementation", "unknown")
         logger.info(f"Фактическая реализация внимания: {actual_attn_impl}")
         return tokenizer, model
 

@@ -38,17 +38,10 @@ class TelegramBotHandler:
         if not hasattr(self, "silero_time_limit") or self.silero_time_limit is None:
             self.silero_time_limit = 10
 
-        if getattr(sys, "frozen", False):
-            base_dir = os.path.dirname(sys.executable)
-            alt_base_dir = getattr(sys, "_MEIPASS", base_dir)
-        else:
-            base_dir = os.path.dirname(__file__)
-            alt_base_dir = base_dir
+        base_dir = os.environ.get("NEUROMITA_BASE_DIR", getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)))
 
         ffmpeg_rel_path = os.path.join("ffmpeg-7.1-essentials_build", "bin", "ffmpeg.exe")
         ffmpeg_path = os.path.join(base_dir, ffmpeg_rel_path)
-        if not os.path.exists(ffmpeg_path):
-            ffmpeg_path = os.path.join(alt_base_dir, ffmpeg_rel_path)
         self.ffmpeg_path = ffmpeg_path
 
         device_model = platform.node()

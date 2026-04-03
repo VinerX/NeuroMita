@@ -25,17 +25,17 @@ class ChatController(BaseController):
         else:
             logger.error("ChatController: view или user_entry не найден!")
 
-    def stream_callback_handler(self, chunk: str):
-        logger.debug(f"ChatController: stream_callback_handler: {chunk[:50]}...")
+    def stream_callback_handler(self, chunk: str, role: str = "assistant"):
+        logger.debug(f"ChatController: stream_callback_handler [{role}]: {chunk[:50]}...")
         if self.view:
-            self.view.append_stream_chunk_signal.emit(chunk)
+            self.view.append_stream_chunk_signal.emit({"chunk": chunk, "role": role})
         else:
             logger.error("ChatController: view не найден!")
 
-    def prepare_stream(self):
-        logger.info("ChatController: prepare_stream")
+    def prepare_stream(self, data: dict = None):
+        logger.info(f"ChatController: prepare_stream, data={data}")
         if self.view:
-            self.view.prepare_stream_signal.emit()
+            self.view.prepare_stream_signal.emit(data if data is not None else {})
         else:
             logger.error("ChatController: view не найден!")
 
@@ -77,27 +77,42 @@ class ChatController(BaseController):
         response = data.get('response', '')
         is_initial = data.get('is_initial', False)
         emotion = data.get('emotion', '')
+        structured_data = data.get('structured_data')
 
         speaker_name = str(data.get("speaker_name") or data.get("character_name") or "")
         target = str(data.get("target") or "")
 
         speaker_label = speaker_name
         if role == "assistant" and speaker_name and target and target != "Player":
-            speaker_label = f"{speaker_name} → {target}"
+            # Don't add → when there are multiple distinct segment targets:
+            # message_renderer splits those into separate bubbles and adds arrows itself.
+            segments = (structured_data.get("segments") or []) if isinstance(structured_data, dict) else []
+            distinct_targets = {str(s.get("target") or "") for s in segments if isinstance(s, dict)}
+            if len(distinct_targets) <= 1:
+                speaker_label = f"{speaker_name} → {target}"
 
+        # Attach structured_data to the view for the next insert_message call
+        if self.view and structured_data:
+            self.view._pending_structured_data = structured_data
         self.update_chat(role, response, is_initial, emotion, speaker_label=speaker_label)
 
     def _on_prepare_stream_ui(self, event: Event):
         data = event.data or {}
+        role = data.get("role", "assistant")
         if self.view is not None:
             self.view._stream_speaker_name = str(data.get("speaker_name") or data.get("character_name") or "")
-        self.prepare_stream()
+        self.prepare_stream(data)
 
     def _on_append_stream_chunk_ui(self, event: Event):
-        chunk = (event.data or {}).get('chunk', '')
-        self.stream_callback_handler(chunk)
+        data = event.data or {}
+        chunk = data.get('chunk', '')
+        role = data.get('role', 'assistant')
+        self.stream_callback_handler(chunk, role)
 
     def _on_finish_stream_ui(self, event: Event):
+        structured_data = (event.data or {}).get("structured_data")
+        if self.view and structured_data:
+            self.view._pending_structured_data = structured_data
         self.finish_stream()
         if self.view is not None and hasattr(self.view, "_stream_speaker_name"):
             self.view._stream_speaker_name = ""

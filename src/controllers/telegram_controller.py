@@ -29,6 +29,10 @@ class TelegramController:
         self._last_start_attempt_ts: float = 0.0
         self._start_cooldown_sec: float = 20.0
 
+        self._voice_queue: asyncio.Queue | None = None
+        self._last_tg_request_ts: float = 0.0
+        self._min_request_interval: float = 0.0
+
         self._subscribe_to_events()
 
     def _subscribe_to_events(self):
@@ -55,6 +59,12 @@ class TelegramController:
         self.phone = data.get("phone", "") or ""
         self.settings = data.get("settings", None)
 
+        if self.settings:
+            try:
+                self._min_request_interval = float(self.settings.get("TG_MIN_REQUEST_INTERVAL", 0) or 0)
+            except Exception:
+                self._min_request_interval = 0.0
+
         logger.info(
             f"Telegram настройки загружены: api_id={SH(self.api_id)}, api_hash={SH(self.api_hash)}, phone={SH(self.phone)}"
         )
@@ -70,6 +80,12 @@ class TelegramController:
         if key == "SILERO_TIME" and self.bot_handler:
             try:
                 self.bot_handler.silero_time_limit = int(value)
+            except Exception:
+                pass
+
+        elif key == "TG_MIN_REQUEST_INTERVAL":
+            try:
+                self._min_request_interval = float(value)
             except Exception:
                 pass
 
@@ -97,6 +113,8 @@ class TelegramController:
     def _on_loop_ready(self, event: Event):
         self._loop = (event.data or {}).get("loop")
         logger.info("TelegramController получил уведомление о готовности loop")
+
+        self.event_bus.emit(Events.Core.RUN_IN_LOOP, {'coroutine': self._init_queue_and_start_worker()})
 
         if self._waiting_for_loop:
             self._waiting_for_loop = False
@@ -301,19 +319,54 @@ class TelegramController:
         mid = data.get('id', 0)
         future = data.get('future')
 
-        if not self.bot_handler or not self.bot_handler_ready:
-            logger.error("Bot handler не готов для отправки голосового запроса")
+        if not self._voice_queue or not self._loop:
+            logger.error("Очередь голосовых запросов не инициализирована")
             if future and not future.done():
-                future.set_exception(Exception("Bot handler not ready"))
+                future.set_exception(Exception("Voice queue not initialized"))
             return
 
-        coro = self._async_send_and_receive(text, speaker_command, mid, future)
+        item = {
+            'text': text,
+            'speaker_command': speaker_command,
+            'mid': mid,
+            'future': future,
+        }
+        self._loop.call_soon_threadsafe(self._voice_queue.put_nowait, item)
+        logger.debug(f"TG voice request добавлен в очередь (размер: {self._voice_queue.qsize() + 1})")
 
-        def handle_result(result, error):
-            if error and future and not future.done():
-                future.set_exception(error)
+    async def _init_queue_and_start_worker(self):
+        self._voice_queue = asyncio.Queue()
+        logger.info("TG voice queue создана, запускаем worker")
+        asyncio.ensure_future(self._queue_worker())
 
-        self.event_bus.emit(Events.Core.RUN_IN_LOOP, {'coroutine': coro, 'callback': handle_result})
+    async def _queue_worker(self):
+        logger.info("TG voice queue worker запущен")
+        while True:
+            item = await self._voice_queue.get()
+            future = item.get('future')
+            try:
+                if not self.bot_handler or not self.bot_handler_ready:
+                    logger.warning("TG queue worker: bot handler не готов, пропускаем запрос")
+                    if future and not future.done():
+                        future.set_exception(Exception("Bot handler not ready"))
+                    continue
+
+                # Enforce minimum interval between requests
+                if self._last_tg_request_ts > 0 and self._min_request_interval > 0:
+                    elapsed = time.time() - self._last_tg_request_ts
+                    if elapsed < self._min_request_interval:
+                        await asyncio.sleep(self._min_request_interval - elapsed)
+
+                self._last_tg_request_ts = time.time()
+                await self._async_send_and_receive(
+                    item['text'], item['speaker_command'], item['mid'], future
+                )
+            except Exception as e:
+                logger.error(f"TG queue worker: ошибка при обработке запроса: {e}")
+                if future and not future.done():
+                    future.set_exception(e)
+            finally:
+                self._voice_queue.task_done()
 
     async def _async_send_and_receive(self, text, speaker_command, mid, future):
         try:

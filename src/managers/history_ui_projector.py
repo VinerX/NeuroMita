@@ -81,7 +81,13 @@ class HistoryUiProjector:
                     ui_role = "assistant"
                     speaker_label = self._name(speaker)
                     if target and target != "Player":
-                        speaker_label = f"{speaker_label} → {self._name(target)}"
+                        # Don't add → target when there are multiple distinct segment targets:
+                        # message_renderer splits those into separate bubbles and adds arrows itself.
+                        structured = m.get("structured_data") or {}
+                        segments = structured.get("segments") or []
+                        distinct_targets = {str(s.get("target") or "") for s in segments if isinstance(s, dict)}
+                        if len(distinct_targets) <= 1:
+                            speaker_label = f"{speaker_label} → {self._name(target)}"
 
             mm = dict(m)
             mm["role"] = ui_role

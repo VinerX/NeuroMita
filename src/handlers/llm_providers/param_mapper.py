@@ -30,37 +30,47 @@ def build_unified_generation_params(
     top_k: int | None,
     top_p: float | None,
     thinking_budget: float | None,
+    enable_thinking: bool | None = None,
+    gemini_thinking_budget: int | None = None,
+    force_params: frozenset = frozenset(),
 ) -> Dict[str, Any]:
     """
     Canonical/unified параметры. Никакого провайдер-специфичного маппинга здесь нет.
+    force_params: set of param keys that bypass USE_MODEL_* global flags (preset overrides).
     """
     params: Dict[str, Any] = {}
 
     if temperature is not None:
         params["temperature"] = float(temperature)
 
-    if bool(settings.get("USE_MODEL_MAX_RESPONSE_TOKENS")) and max_response_tokens is not None:
+    if (bool(settings.get("USE_MODEL_MAX_RESPONSE_TOKENS")) or "max_tokens" in force_params) and max_response_tokens is not None:
         params["max_tokens"] = int(max_response_tokens)
 
-    if bool(settings.get("USE_MODEL_PRESENCE_PENALTY")) and presence_penalty is not None:
+    if (bool(settings.get("USE_MODEL_PRESENCE_PENALTY")) or "presence_penalty" in force_params) and presence_penalty is not None:
         params["presence_penalty"] = float(presence_penalty)
 
-    if bool(settings.get("USE_MODEL_FREQUENCY_PENALTY")) and frequency_penalty is not None:
+    if (bool(settings.get("USE_MODEL_FREQUENCY_PENALTY")) or "frequency_penalty" in force_params) and frequency_penalty is not None:
         params["frequency_penalty"] = float(frequency_penalty)
 
     # Canonical ключ (как OpenAI-style), провайдер сам решит, поддерживает ли.
     if bool(settings.get("USE_MODEL_LOG_PROBABILITY")) and log_probability is not None:
         params["logprobs"] = log_probability
 
-    if bool(settings.get("USE_MODEL_TOP_K")) and top_k is not None and int(top_k) > 0:
+    if (bool(settings.get("USE_MODEL_TOP_K")) or "top_k" in force_params) and top_k is not None and int(top_k) > 0:
         params["top_k"] = int(top_k)
 
-    if bool(settings.get("USE_MODEL_TOP_P")) and top_p is not None:
+    if (bool(settings.get("USE_MODEL_TOP_P")) or "top_p" in force_params) and top_p is not None:
         params["top_p"] = float(top_p)
 
     # Canonical ключ
-    if bool(settings.get("USE_MODEL_THINKING_BUDGET")) and thinking_budget is not None:
+    if (bool(settings.get("USE_MODEL_THINKING_BUDGET")) or "thinking_budget" in force_params) and thinking_budget is not None:
         params["thinking_budget"] = float(thinking_budget)
+
+    if enable_thinking is not None:
+        params["enable_thinking"] = enable_thinking
+
+    if (bool(settings.get("USE_GEMINI_THINKING_BUDGET")) or "gemini_thinking_budget" in force_params) and gemini_thinking_budget is not None:
+        params["gemini_thinking_budget"] = int(gemini_thinking_budget)
 
     params = filter_jsonable_params(params)
     params = _strip_nuls_in_strings(params)

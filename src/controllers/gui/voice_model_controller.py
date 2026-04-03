@@ -145,7 +145,11 @@ class VoiceModelGuiController(BaseController):
             model_name = model_id
 
         try:
-            res = self.event_bus.emit_and_wait(Events.Audio.CHECK_MODEL_INITIALIZED, {"model_id": model_id}, timeout=1.0)
+            res = self.event_bus.emit_and_wait(
+                Events.Audio.CHECK_MODEL_INITIALIZED,
+                {"model_id": model_id, "strict": True},
+                timeout=1.2
+            )
             is_initialized = bool(res and res[0])
         except Exception:
             is_initialized = False

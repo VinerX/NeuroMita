@@ -19,14 +19,14 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
     QMessageBox, QDialog, QProgressBar, QStackedWidget,
-    QTextBrowser, QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy
+    QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy
 )
-from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor, QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap
+from PyQt6.QtGui import QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap
 
 from ui.settings import (
-    api_settings, character_settings, game_settings, 
-    microphone_settings, screen_analysis_settings, voiceover_settings, 
-    model_interaction_settings, general_settings
+    api_settings, character_settings, game_settings,
+    microphone_settings, screen_analysis_settings, voiceover_settings,
+    model_interaction_settings, general_settings, data_settings
 )
 
 from ui.widgets import (status_indicators_widget)
@@ -59,8 +59,8 @@ class ChatGUI(QMainWindow):
     update_status_signal = pyqtSignal()
     update_debug_signal = pyqtSignal()
 
-    prepare_stream_signal = pyqtSignal()
-    append_stream_chunk_signal = pyqtSignal(str)
+    prepare_stream_signal = pyqtSignal(object)
+    append_stream_chunk_signal = pyqtSignal(object)
     finish_stream_signal = pyqtSignal()
 
     show_thinking_signal = pyqtSignal(str)
@@ -144,14 +144,13 @@ class ChatGUI(QMainWindow):
         self._voice_model_controller_callback = None
         self._voice_model_init_in_progress_model_id = None
 
-        self.update_chat_signal.connect(lambda role, content, insert_at_start, message_time:
-                                        message_renderer.insert_message(self, role, content, insert_at_start, message_time))
+        self.update_chat_signal.connect(self._on_update_chat_signal)
         self.update_status_signal.connect(self.update_status_colors)
         self.update_debug_signal.connect(self.update_debug_info)
 
-        self.prepare_stream_signal.connect(lambda: message_renderer.prepare_stream_slot(self))
-        self.append_stream_chunk_signal.connect(lambda chunk: message_renderer.append_stream_chunk_slot(self, chunk))
-        self.finish_stream_signal.connect(lambda: message_renderer.finish_stream_slot(self))
+        self.prepare_stream_signal.connect(self._on_prepare_stream_signal)
+        self.append_stream_chunk_signal.connect(self._append_stream_chunk_slot)
+        self.finish_stream_signal.connect(self._finish_stream_slot)
 
         self.show_thinking_signal.connect(self._show_thinking_slot)
         self.show_error_signal.connect(self._show_error_slot)
@@ -380,6 +379,7 @@ class ChatGUI(QMainWindow):
             "game":        game_settings.setup_game_controls,
             "debug":       self._debug_wrapper,
             "news":        self._news_wrapper,
+            "data":        data_settings.setup_data_settings_controls,
         }
 
         for key, fn in callbacks.items():
@@ -506,6 +506,7 @@ class ChatGUI(QMainWindow):
         return super().eventFilter(obj, event)
 
     def load_chat_history(self):
+        self.chat_window.setUpdatesEnabled(False)
         self.clear_chat_display()
         self.event_bus.emit(Events.Model.LOAD_HISTORY)
 
@@ -515,12 +516,16 @@ class ChatGUI(QMainWindow):
             role = entry["role"]
             content = entry["content"]
             message_time = entry.get("time", "???")
+            structured_data = entry.get("structured_data")
             try:
-                message_renderer.insert_message(self, role, content, message_time=message_time)
+                message_renderer.insert_message(self, role, content, message_time=message_time,
+                                                structured_data=structured_data)
             except Exception as ex:
                 logger.error(f"_on_history_loaded: НУ Я ПОНЯЛ: {str(ex)}")
         self.update_debug_info()
-        self.chat_window.verticalScrollBar().setValue(self.chat_window.verticalScrollBar().maximum())
+        self.chat_window.scroll_to_bottom()
+        self.chat_window.setUpdatesEnabled(True)
+        self.chat_window.update()
 
     def validate_number_0_60(self, new_value):
         if not new_value.isdigit():
@@ -554,6 +559,14 @@ class ChatGUI(QMainWindow):
         try:
             value = int(new_value)
             return value > 0
+        except ValueError:
+            return False
+
+    def validate_non_negative_integer(self, new_value):
+        if new_value == "": return True
+        try:
+            value = int(new_value)
+            return value >= 0
         except ValueError:
             return False
 
@@ -617,11 +630,10 @@ class ChatGUI(QMainWindow):
         self.update_debug_info()
 
     def update_chat_font_size(self, font_size):
-        base_font = QFont("Arial", font_size)
-        self.chat_window.setFont(base_font)
+        self._chat_font_size = font_size
 
     def clear_chat_display(self):
-        self.chat_window.clear()
+        self.chat_window.clear_messages()
         self.event_bus.emit(Events.Chat.CLEAR_CHAT)
 
     def send_message(self, system_input: str = "", image_data: list[bytes] = None):
@@ -708,7 +720,9 @@ class ChatGUI(QMainWindow):
             role = entry["role"]
             content = entry["content"]
             message_time = entry.get("time", "???")
-            message_renderer.insert_message(self, role, content, insert_at_start=True, message_time=message_time)
+            structured_data = entry.get("structured_data")
+            message_renderer.insert_message(self, role, content, insert_at_start=True,
+                                            message_time=message_time, structured_data=structured_data)
         QTimer.singleShot(0, lambda: scrollbar.setValue(scrollbar.maximum() - old_max + old_value))
         logger.info(f"Загружено еще {len(messages_to_prepend)} сообщений.")
 
@@ -789,6 +803,15 @@ class ChatGUI(QMainWindow):
     def _on_show_tg_password_dialog(self, data: dict):
         password_future = data.get('future')
         show_tg_password_dialog(self, password_future, self.event_bus)
+
+    def _on_chat_anchor_clicked(self, url):
+        href = url.toString()
+        if href.startswith("think://toggle/"):
+            try:
+                block_id = int(href.split("/")[-1])
+                message_renderer.toggle_think_block(self, block_id)
+            except Exception as e:
+                logger.error(f"Error toggling think block {block_id}: {e}")
 
     def _show_thinking_slot(self, character_name: str):
         if hasattr(self, 'mita_status') and self.mita_status:
@@ -1037,12 +1060,25 @@ class ChatGUI(QMainWindow):
                   "Failed to save settings for the update. Please check the logs."))
 
     # ===== Совместимость: рендер сообщений (обёртки к message_renderer) =====
+    def _on_update_chat_signal(self, role, content, insert_at_start, message_time):
+        """Slot for update_chat_signal — picks up pending structured_data if available."""
+        # Only assistant messages consume _pending_structured_data.
+        # Think/system messages must not steal it from the following assistant message.
+        structured_data = None
+        if role == "assistant":
+            structured_data = getattr(self, '_pending_structured_data', None)
+            self._pending_structured_data = None
+        from ui.chat import message_renderer
+        message_renderer.insert_message(self, role, content, insert_at_start, message_time,
+                                        structured_data=structured_data)
+
     def _insert_message_slot(self, role, content, insert_at_start, message_time):
         return self.insert_message(role, content, insert_at_start, message_time)
 
-    def insert_message(self, role, content, insert_at_start=False, message_time=""):
+    def insert_message(self, role, content, insert_at_start=False, message_time="", structured_data=None):
         from ui.chat import message_renderer
-        return message_renderer.insert_message(self, role, content, insert_at_start, message_time)
+        return message_renderer.insert_message(self, role, content, insert_at_start, message_time,
+                                               structured_data=structured_data)
 
     def insert_message_end(self, cursor=None, role="assistant"):
         from ui.chat import message_renderer
@@ -1056,17 +1092,32 @@ class ChatGUI(QMainWindow):
         from ui.chat import message_renderer
         return message_renderer._insert_formatted_text(self, cursor, text, color, bold, italic)
 
-    def _prepare_stream_slot(self):
+    def _on_prepare_stream_signal(self, data=None):
         from ui.chat import message_renderer
-        return message_renderer.prepare_stream_slot(self)
+        role = data.get("role", "assistant") if isinstance(data, dict) else "assistant"
+        
+        # Сохраняем имя спикера, если оно пришло
+        if isinstance(data, dict) and "speaker_name" in data:
+            self._stream_speaker_name = data["speaker_name"]
+            
+        return message_renderer.prepare_stream_slot(self, role=role)
 
-    def _append_stream_chunk_slot(self, chunk):
+    def _append_stream_chunk_slot(self, data):
         from ui.chat import message_renderer
-        return message_renderer.append_stream_chunk_slot(self, chunk)
+        chunk = data.get("chunk") if isinstance(data, dict) else data
+        role = data.get("role", "assistant") if isinstance(data, dict) else "assistant"
+        return message_renderer.append_stream_chunk_slot(self, chunk, role=role)
 
     def _finish_stream_slot(self):
         from ui.chat import message_renderer
-        return message_renderer.finish_stream_slot(self)
+        # Сбрасываем имя спикера после завершения стрима
+        self._stream_speaker_name = ""
+        # Attach structured panel BEFORE finish (finish clears _current_stream_message)
+        pending = getattr(self, '_pending_structured_data', None)
+        if pending:
+            self._pending_structured_data = None
+            message_renderer.attach_structured_to_stream(self, pending)
+        message_renderer.finish_stream_slot(self)
 
     def process_image_for_chat(self, has_image_content, item, processed_content_parts):
         from ui.chat import message_renderer
@@ -1144,17 +1195,12 @@ class ChatGUI(QMainWindow):
     # ===== Совместимость: упрощённая вставка диалога =====
     def insert_dialog(self, input_text="", response="", system_text=""):
         MitaName = self._get_character_name()
-        cursor = self.chat_window.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        if input_text != "":
-            self._insert_formatted_text(cursor, "Вы: ", QColor("gold"), bold=True)
-            cursor.insertText(f"{input_text}\n")
-        if system_text != "":
-            self._insert_formatted_text(cursor, f"System to {MitaName}: ", QColor("white"), bold=True)
-            cursor.insertText(f"{system_text}\n\n")
-        if response != "":
-            self._insert_formatted_text(cursor, f"{MitaName}: ", QColor("hot pink"), bold=True)
-            cursor.insertText(f"{response}\n\n")
+        if input_text:
+            self.insert_message("user", input_text)
+        if system_text:
+            self.insert_message("system", system_text)
+        if response:
+            self.insert_message("assistant", response)
 
     def set_settings_icon_indicator(self, category: str, state: str | None, tooltip: str | None = None) -> None:
         btn = getattr(self, "settings_buttons", {}).get(category)

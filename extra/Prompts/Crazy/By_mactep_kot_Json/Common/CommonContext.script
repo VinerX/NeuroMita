@@ -1,0 +1,27 @@
+LOG "Context start"
+
+SET LOCAL output = """Current context:
+"""
+IF GAME_DISTANCE != None THEN
+	SET output = output + f"Distance to player: {GAME_DISTANCE} m, "
+ENDIF
+
+IF GAME_ROOM_PLAYER != None THEN
+	SET output = output + f"Player in room: {GAME_ROOM_PLAYER}, "
+ENDIF
+
+IF GAME_ROOM_MITA != None THEN
+	SET output = output + f"You are in room: {GAME_ROOM_MITA}, "
+ENDIF
+
+IF GAME_NEAR_OBJECTS != None THEN
+	SET output = output + f"Near objects: {GAME_NEAR_OBJECTS}, "
+ENDIF
+
+IF GAME_ACTUAL_INFO != None THEN
+	SET output = output + f"Other info: {GAME_ACTUAL_INFO}, "
+ENDIF
+
+LOG "Context end"
+
+RETURN output

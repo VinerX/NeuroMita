@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional, Any, Iterable
 import os
+import sys
 import time
 import urllib.request
 import urllib.error
@@ -26,14 +27,13 @@ class InstallController:
     - NEW: supports blocking event-driven installs via Events.Install.RUN_BLOCKING
     """
 
-    def __init__(self, script_path: str = r"libs\python\python.exe", libs_path: str = "Lib"):
-        self.script_path = script_path
-        self.libs_path = libs_path
+    def __init__(self):
+        self.script_path = os.environ.get("NEUROMITA_PYTHON", sys.executable)
+        self.libs_path = os.environ.get("NEUROMITA_LIB_DIR", "Lib")
         self.event_bus = get_event_bus()
         self._subscribe_to_events()
 
     def _subscribe_to_events(self) -> None:
-        # This enables providers to do eb.emit_and_wait(Events.Install.RUN_BLOCKING, ...)
         self.event_bus.subscribe(Events.Install.RUN_BLOCKING, self._on_run_blocking, weak=False)
 
     def _on_run_blocking(self, event: Event) -> bool:
@@ -51,7 +51,6 @@ class InstallController:
 
         timeout_sec = float(data.get("timeout_sec", 3600.0) or 3600.0)
 
-        # Blocking run, no UI callbacks (but InstallController will still emit TASK_* events)
         return bool(self.run_task(
             task_id=str(task_id),
             runner=runner,
@@ -62,8 +61,8 @@ class InstallController:
 
     def _make_pip_installer(self, cb: InstallCallbacks) -> PipInstaller:
         return PipInstaller(
-            script_path=self.script_path,
-            libs_path=self.libs_path,
+            # script_path=self.script_path,
+            # libs_path=self.libs_path,
             update_status=cb.status,
             update_log=cb.log,
             update_progress=cb.progress,

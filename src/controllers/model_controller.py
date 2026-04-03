@@ -21,6 +21,11 @@ from managers.context_counter import ContextCounter
 from managers.conversation_event_writer import ConversationEventWriter
 from managers.history_ui_projector import HistoryUiProjector
 from core.request_policy import RequestPolicy, resolve_policy
+from utils.structured_response_parser import (
+    parse_structured_response,
+    structured_response_to_result_dict,
+    StructuredResponseParseError,
+)
 
 
 _GRAPH_TAG_RE = re.compile(r"<graph>([\s\S]*?)</graph>", re.IGNORECASE)
@@ -633,6 +638,38 @@ class ModelController:
     # Generation
     # ---------------------------------------------------------------------
 
+    def _extract_think_blocks(self, text: str) -> tuple[str, str]:
+        """
+        Extracts <think>...</think> blocks.
+        Returns: (visible_text_without_think, think_text_joined)
+
+        - Think blocks SHOULD NOT be stored in history.
+        - Think blocks SHOULD NOT be sent to voiceover.
+        """
+        if not isinstance(text, str) or not text:
+            return ("" if text is None else str(text), "")
+
+        # Capture content inside <think ...>...</think>
+        # Keep it permissive (attrs allowed), DOTALL for multiline.
+        pattern = re.compile(r"<think\b[^>]*>(.*?)</think\s*>", flags=re.IGNORECASE | re.DOTALL)
+        think_parts: list[str] = []
+        for m in pattern.finditer(text):
+            part = m.group(1)
+            if part is None:
+                continue
+            part_s = str(part).strip()
+            if part_s:
+                think_parts.append(part_s)
+
+        visible = pattern.sub("", text)
+        # Also drop any stray <think> or </think> tags (unbalanced)
+        visible = re.sub(r"</?think\b[^>]*>", "", visible, flags=re.IGNORECASE)
+
+        # Light cleanup (avoid accidental extra blank lines)
+        visible = re.sub(r"\n{3,}", "\n\n", visible).strip()
+        think_text = "\n\n".join(think_parts).strip()
+        return visible, think_text
+
     def _on_generate_response(self, event: Event):
         data = event.data or {}
 
@@ -675,6 +712,7 @@ class ModelController:
 
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
+        preset_id = preset_id_override  # Initialize early for capability resolution
 
 
         # [RAG INTEGRATION] Внедрение контекста из памяти
@@ -744,6 +782,19 @@ class ModelController:
         is_game_master = (char_id == "GameMaster")
         disable_history_compression = bool(data.get("disable_history_compression", False))
 
+        # Resolve capabilities from the effective preset for this request
+        effective_capabilities = {}
+        try:
+            effective_preset = self.preset_resolver.resolve(preset_id)
+            effective_capabilities = dict(getattr(effective_preset, "capabilities", {}) or {})
+            logger.info(
+                f"[ModelController] preset_id={preset_id!r} → "
+                f"structured_output={effective_capabilities.get('structured_output')} "
+                f"mode={effective_capabilities.get('structured_output_mode', 'json_schema')}"
+            )
+        except Exception as e:
+            logger.warning(f"[ModelController] Failed to resolve preset capabilities: {e}")
+
         try:
             prompt_res = self.event_bus.emit_and_wait(
                 Events.Prompt.BUILD_PROMPT,
@@ -765,6 +816,7 @@ class ModelController:
                     "sender": sender,
                     "participants": participants,
                     "policy": policy.to_dict(),
+                    "capabilities": effective_capabilities,
                 },
                 timeout=10.0
             )
@@ -834,6 +886,8 @@ class ModelController:
             "character_name": char_name or char_id or "Мита",
         })
 
+        is_structured_output = effective_capabilities.get("structured_output", False)
+
         try:
             use_stream_cb = stream_callback if policy.allow_streaming else None
             raw_text = self.model.generate(combined_messages, stream_callback=use_stream_cb, preset_id=preset_id)
@@ -844,21 +898,44 @@ class ModelController:
                 })
                 return None
 
-            processed = char.process_response_nlp_commands(raw_text, self.settings.get("SAVE_MISSED_MEMORY", False))
+            # Strip <think> blocks BEFORE any downstream processing (commands, voiceover, history)
+            visible_raw, think_text = self._extract_think_blocks(str(raw_text))
 
+            # --- Structured Output path ---
+            if is_structured_output:
+                return self._process_structured_output(
+                    visible_raw=visible_raw,
+                    think_text=think_text,
+                    char=char,
+                    char_id=char_id,
+                    char_name=char_name,
+                    data=data,
+                    policy=policy,
+                    sender=sender,
+                    participants=participants,
+                    user_input=user_input,
+                    image_data=image_data,
+                    req_id=req_id,
+                    task_uid=task_uid,
+                    event_type=event_type,
+                )
+
+            # --- Legacy (tag-based) path ---
             # Extract inline graph tags <graph>JSON</graph> if inline mode is active.
             inline_graph_json: Optional[str] = None
             if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
                     and bool(self.settings.get("GRAPH_EXTRACTION_INLINE", False))):
-                processed, inline_graph_json = _strip_graph_tag(processed)
+                visible_raw, inline_graph_json = _strip_graph_tag(visible_raw)
 
-            target = None
-            if hasattr(char, "consume_pending_target"):
+            processed = char.process_response_nlp_commands(visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False))
+
+            targets: list[str] = []
+            if hasattr(char, "consume_pending_targets"):
                 try:
-                    target = char.consume_pending_target()
+                    targets = char.consume_pending_targets()
                 except Exception:
-                    target = None
-            target = str(target or "Player")
+                    targets = []
+            target = targets[-1] if targets else "Player"
 
             final_text = processed
             if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
@@ -910,6 +987,8 @@ class ModelController:
                 "character_id": char_id,
                 "voice_profile": voice_profile,
                 "target": target,
+                "targets": targets,
+                "think": think_text or None,
             }
 
         except Exception as e:
@@ -1028,6 +1107,140 @@ class ModelController:
             except Exception as e:
                 logger.warning(f"[{char_id}] Failed to run RAG (ignored): {e}", exc_info=True)
         return system_input
+
+    # ---------------------------------------------------------------------
+    # Structured Output processing
+    # ---------------------------------------------------------------------
+
+    def _process_structured_output(
+        self,
+        visible_raw: str,
+        think_text: str,
+        char,
+        char_id: str,
+        char_name: str,
+        data: dict,
+        policy,
+        sender: str,
+        participants: list,
+        user_input: str,
+        image_data: list,
+        req_id: str | None,
+        task_uid: str | None,
+        event_type: str,
+    ) -> dict | None:
+        """
+        Process a structured JSON response from the LLM.
+        Parses the JSON, applies global fields (behavior, memory),
+        processes game tags, and returns the result dict with segments.
+        """
+        try:
+            structured = parse_structured_response(visible_raw)
+        except StructuredResponseParseError as e:
+            logger.error(
+                f"[ModelController] Failed to parse structured response for {char_id}: {e}. "
+                f"Falling back to legacy processing."
+            )
+            # Fallback to legacy tag-based processing
+            processed = char.process_response_nlp_commands(
+                visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False)
+            )
+            fallback_targets: list[str] = []
+            if hasattr(char, "consume_pending_targets"):
+                try:
+                    fallback_targets = char.consume_pending_targets()
+                except Exception:
+                    fallback_targets = []
+            fallback_target = fallback_targets[-1] if fallback_targets else "Player"
+
+            voice_profile = None
+            if hasattr(char, "to_voice_profile"):
+                try:
+                    voice_profile = char.to_voice_profile()
+                except Exception:
+                    voice_profile = None
+
+            self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
+            return {
+                "text": processed,
+                "character_id": char_id,
+                "voice_profile": voice_profile,
+                "target": fallback_target,
+                "targets": fallback_targets,
+                "think": think_text or None,
+            }
+
+        # Apply structured response processing (behavior changes, memory, game tags)
+        char.process_structured_response(
+            structured,
+            save_as_missed=self.settings.get("SAVE_MISSED_MEMORY", False),
+        )
+
+        # Extract reasoning from structured response (if model used the reasoning field)
+        if structured.reasoning:
+            schema_reasoning = structured.reasoning.strip()
+            if schema_reasoning:
+                if think_text:
+                    think_text = think_text + "\n\n" + schema_reasoning
+                else:
+                    think_text = schema_reasoning
+
+        # Build the result dict with segments
+        result_dict = structured_response_to_result_dict(structured)
+        # Remove reasoning from debug display — it's shown as a think block
+        result_dict.pop("reasoning", None)
+        final_text = result_dict["response"]
+
+        targets: list[str] = []
+        if hasattr(char, "consume_pending_targets"):
+            try:
+                targets = char.consume_pending_targets()
+            except Exception:
+                targets = []
+        target = targets[-1] if targets else "Player"
+
+        if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
+            final_text = re.sub(
+                r'https?://\S+\.(?:png|jpg|jpeg|gif|bmp)|data:image/\S+;base64,\S+',
+                "[Изображение]",
+                final_text,
+            )
+
+        if policy.write_to_history:
+            origin_message_id = str(data.get("origin_message_id") or "") or None
+            self.event_writer.write_turn(
+                responder_character_id=char_id,
+                sender=sender,
+                participants=participants,
+                user_input=user_input,
+                image_data=image_data,
+                req_id=req_id,
+                origin_message_id=origin_message_id,
+                assistant_text=final_text,
+                assistant_target=target,
+                event_type=event_type,
+                task_uid=task_uid,
+                structured_data=result_dict,
+            )
+
+        self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
+
+        voice_profile = None
+        if hasattr(char, "to_voice_profile"):
+            try:
+                voice_profile = char.to_voice_profile()
+            except Exception:
+                voice_profile = None
+
+        return {
+            "text": final_text,
+            "character_id": char_id,
+            "voice_profile": voice_profile,
+            "target": target,
+            "targets": targets,
+            "think": think_text or None,
+            "structured": result_dict,
+        }
 
     # ---------------------------------------------------------------------
     # Reload prompts
