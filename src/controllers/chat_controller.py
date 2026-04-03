@@ -781,7 +781,7 @@ class ChatController:
         history_data = character.history_manager.load_history()
         messages = history_data.get("messages", [])
 
-        # Find last assistant message and last user message before it
+        # Find last assistant message
         last_assistant_idx = None
         for i in range(len(messages) - 1, -1, -1):
             if messages[i].get("role") == "assistant":
@@ -792,9 +792,12 @@ class ChatController:
             logger.warning("[ChatController] REGENERATE: нет assistant-сообщения в истории")
             return
 
+        # Find the preceding user message
+        last_user_idx = None
         last_user_text = ""
         for i in range(last_assistant_idx - 1, -1, -1):
             if messages[i].get("role") == "user":
+                last_user_idx = i
                 content = messages[i].get("content", "")
                 if isinstance(content, str):
                     last_user_text = content
@@ -805,11 +808,14 @@ class ChatController:
                             break
                 break
 
-        # Remove the last assistant message
-        history_data["messages"] = messages[:last_assistant_idx]
+        # Remove both the user and assistant messages to avoid duplication on re-send
+        cut_idx = last_user_idx if last_user_idx is not None else last_assistant_idx
+        history_data["messages"] = messages[:cut_idx]
         character.history_manager.save_history(history_data)
 
-        self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
+        # Count widgets to remove: user bubble + assistant bubble + possible structured panel
+        widgets_to_remove = (last_assistant_idx - cut_idx + 1) + 1  # pair + structured
+        self.event_bus.emit(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, {"count": widgets_to_remove})
 
         if last_user_text:
             self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
@@ -837,6 +843,11 @@ class ChatController:
         }
         character.history_manager.append_message(message)
         self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
+        # Trigger generation so Mita responds to the system message
+        self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
+            "user_input": "",
+            "character_id": character_id,
+        })
 
     def _on_save_snapshot(self, event: Event):
         data = event.data or {}

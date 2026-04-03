@@ -7,6 +7,7 @@ class SettingsController(BaseController):
         self.event_bus.subscribe(Events.GUI.SWITCH_VOICEOVER_SETTINGS, self._on_switch_voiceover_settings, weak=False)
         self.event_bus.subscribe(Events.GUI.UPDATE_CHAT_FONT_SIZE, self._on_update_chat_font_size, weak=False)
         self.event_bus.subscribe(Events.GUI.RELOAD_CHAT_HISTORY, self._on_reload_chat_history, weak=False)
+        self.event_bus.subscribe(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, self._on_remove_last_chat_widgets, weak=False)
         self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
         
     def _on_switch_voiceover_settings(self, event: Event):
@@ -27,6 +28,13 @@ class SettingsController(BaseController):
             self.view.load_chat_history_signal.emit()
         elif self.view and hasattr(self.view, 'load_chat_history'):
             self.view.load_chat_history()
+
+    def _on_remove_last_chat_widgets(self, event: Event):
+        count = int((event.data or {}).get("count", 1))
+        if self.view and hasattr(self.view, 'remove_last_chat_widgets_signal'):
+            self.view.remove_last_chat_widgets_signal.emit(count)
+        elif self.view and hasattr(self.view, '_on_remove_last_chat_widgets'):
+            self.view._on_remove_last_chat_widgets(count)
 
     def _on_setting_changed(self, event: Event):
         key = event.data.get('key')

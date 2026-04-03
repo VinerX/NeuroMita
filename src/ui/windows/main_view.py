@@ -85,6 +85,7 @@ class ChatGUI(QMainWindow):
     update_chat_font_size_signal = pyqtSignal(int)
     switch_voiceover_settings_signal = pyqtSignal()
     load_chat_history_signal = pyqtSignal()
+    remove_last_chat_widgets_signal = pyqtSignal(int)
     check_triton_dependencies_signal = pyqtSignal()
     show_info_message_signal = pyqtSignal(dict)
     show_error_message_signal = pyqtSignal(dict)
@@ -229,6 +230,7 @@ class ChatGUI(QMainWindow):
         self.hide_loading_popup_signal.connect(self._on_hide_loading_popup)
         self.update_chat_font_size_signal.connect(self.update_chat_font_size)
         self.load_chat_history_signal.connect(self.load_chat_history)
+        self.remove_last_chat_widgets_signal.connect(self._on_remove_last_chat_widgets)
         self.clear_user_input_signal.connect(self._on_clear_user_input)
         self.insert_user_input_signal.connect(self._on_insert_user_input)
         self.show_info_message_signal.connect(self._on_show_info_message)
@@ -901,6 +903,9 @@ class ChatGUI(QMainWindow):
         message = data.get('message', '')
         QMessageBox.critical(self, title, message)
 
+    def _on_remove_last_chat_widgets(self, n: int):
+        self.chat_window.remove_last_n_widgets(n)
+
     def _on_update_model_loading_status(self, status: str):
         if hasattr(self, 'loading_status_label'):
             self.loading_status_label.setText(status)
@@ -958,23 +963,45 @@ class ChatGUI(QMainWindow):
     def _on_debug_save_snapshot(self):
         character_id = self._get_current_character_id_for_debug()
         self.event_bus.emit(Events.Chat.SAVE_SNAPSHOT, {"character_id": character_id})
+        self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
+            "title": _("Snapshot", "Snapshot"),
+            "message": _("Snapshot сохранён в папку Histories/.../Saved/",
+                         "Snapshot saved to Histories/.../Saved/"),
+        })
 
     def _on_debug_load_snapshot(self):
-        from PyQt6.QtWidgets import QFileDialog
         import os
         character_id = self._get_current_character_id_for_debug()
-        start_dir = os.path.join("Histories", character_id, "Saved") if character_id else "Histories"
+        # Try to resolve the actual history dir via the character ref
+        start_dir = "Histories"
+        try:
+            res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
+            prof = res[0] if res else {}
+            if isinstance(prof, dict):
+                cid = str(prof.get("character_id") or "")
+                if cid:
+                    candidate = os.path.join("Histories", cid, "Saved")
+                    if os.path.isdir(candidate):
+                        start_dir = candidate
+        except Exception:
+            pass
+
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             _("Загрузить snapshot", "Load snapshot"),
             start_dir,
             "JSON files (*.json)"
         )
-        if file_path:
+        if not file_path:
+            return
+        try:
             self.event_bus.emit(Events.Chat.LOAD_SNAPSHOT, {
                 "file_path": file_path,
                 "character_id": character_id,
             })
+        except Exception as e:
+            logger.error(f"Ошибка при загрузке snapshot: {e}", exc_info=True)
+            QMessageBox.critical(self, _("Ошибка", "Error"), str(e))
 
     def _get_current_character_id_for_debug(self) -> str:
         try:

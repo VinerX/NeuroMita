@@ -254,6 +254,9 @@ class _TextBodyWidget(QWidget):
             Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
         self._text_label.setCursor(Qt.CursorShape.IBeamCursor)
+        # Suppress the default QLabel context menu so right-click bubbles
+        # up to MessageWidget.contextMenuEvent (our custom menu).
+        self._text_label.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self._text_label.setStyleSheet(
             f"color: {text_color}; font-size: {font_size}pt; "
             f"background: transparent; border: none; padding: 0px;"
@@ -288,6 +291,10 @@ class _TextBodyWidget(QWidget):
         if not show_ts:
             self._time_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self._ts_hint = self._time_label.sizeHint()
+
+    def contextMenuEvent(self, event):
+        # Propagate to parent (BubbleFrame → MessageWidget)
+        event.ignore()
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -476,8 +483,8 @@ class MessageWidget(QWidget):
         if not is_user and self._avatar_label:
             outer.addWidget(self._avatar_label, 0, Qt.AlignmentFlag.AlignBottom)
 
-        # User: push to right
-        if is_user:
+        # User: push to right; System: center (stretch both sides)
+        if is_user or role == "system":
             outer.addStretch()
 
         # ── Bubble ──────────────────────────────────────────────────────────
@@ -692,7 +699,13 @@ class MessageWidget(QWidget):
             regen_action.triggered.connect(lambda: self.regenerate_requested.emit(self._message_id or ""))
             menu.addAction(regen_action)
 
-        copy_action = QAction("Копировать", self)
+        # Copy selected text if any, otherwise copy full message
+        selected = self._body._text_label.selectedText() if hasattr(self, '_body') else ""
+        if selected:
+            copy_sel_action = QAction("Копировать выделенное", self)
+            copy_sel_action.triggered.connect(lambda: QApplication.clipboard().setText(selected))
+            menu.addAction(copy_sel_action)
+        copy_action = QAction("Копировать всё", self)
         copy_action.triggered.connect(lambda: self._on_copy())
         menu.addAction(copy_action)
 

@@ -416,6 +416,7 @@ class Events:
         SHOW_INFO_MESSAGE = "show_info_message"
         UPDATE_CHAT_FONT_SIZE = "update_chat_font_size"
         RELOAD_CHAT_HISTORY = "reload_chat_history"
+        REMOVE_LAST_CHAT_WIDGETS = "remove_last_chat_widgets"
         UPDATE_TOKEN_COUNT_UI = "update_token_count_ui"
         GET_GUI_WINDOW_ID = "get_gui_window_id"
         CHECK_TRITON_DEPENDENCIES = "check_triton_dependencies"
