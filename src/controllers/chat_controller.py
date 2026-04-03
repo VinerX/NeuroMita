@@ -230,6 +230,13 @@ class ChatController:
         self.event_bus.subscribe(Events.Chat.STAGE_IMAGE, self._on_stage_image, weak=False)
         self.event_bus.subscribe(Events.Chat.CLEAR_STAGED_IMAGES, self._on_clear_staged_images, weak=False)
 
+        self.event_bus.subscribe(Events.Chat.DELETE_MESSAGE, self._on_delete_message, weak=False)
+        self.event_bus.subscribe(Events.Chat.DELETE_MESSAGES_FROM, self._on_delete_messages_from, weak=False)
+        self.event_bus.subscribe(Events.Chat.REGENERATE, self._on_regenerate, weak=False)
+        self.event_bus.subscribe(Events.Chat.INSERT_SYSTEM_MESSAGE, self._on_insert_system_message, weak=False)
+        self.event_bus.subscribe(Events.Chat.SAVE_SNAPSHOT, self._on_save_snapshot, weak=False)
+        self.event_bus.subscribe(Events.Chat.LOAD_SNAPSHOT, self._on_load_snapshot, weak=False)
+
     def _normalize_character_id(self, data: dict) -> str | None:
         if not isinstance(data, dict):
             return None
@@ -691,3 +698,172 @@ class ChatController:
 
     def _on_clear_staged_images(self, event: Event):
         self.clear_staged_images()
+
+    # ── Debug panel helpers ──────────────────────────────────────────────────
+
+    def _get_character_ref(self, character_id: str):
+        if not character_id:
+            return None
+        res = self.event_bus.emit_and_wait(
+            Events.Character.GET,
+            {"character_id": str(character_id)},
+            timeout=1.0
+        )
+        return res[0] if res else None
+
+    def _get_current_character_id(self) -> str:
+        try:
+            res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
+            profile = res[0] if res else {}
+            if isinstance(profile, dict):
+                return str(profile.get("character_id") or "")
+        except Exception:
+            pass
+        return ""
+
+    def _on_delete_message(self, event: Event):
+        data = event.data or {}
+        message_id = data.get("message_id", "")
+        character_id = data.get("character_id", "") or self._get_current_character_id()
+        if not message_id:
+            return
+        character = self._get_character_ref(character_id)
+        if character is None:
+            logger.warning(f"[ChatController] DELETE_MESSAGE: персонаж '{character_id}' не найден")
+            return
+        deleted = character.history_manager.delete_message(message_id)
+        if deleted:
+            self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
+            logger.info(f"[ChatController] Удалено сообщение {message_id}")
+        else:
+            logger.warning(f"[ChatController] Сообщение {message_id} не найдено")
+
+    def _on_delete_messages_from(self, event: Event):
+        data = event.data or {}
+        message_id = data.get("message_id", "")
+        character_id = data.get("character_id", "") or self._get_current_character_id()
+        edit_mode = bool(data.get("edit_mode", False))
+        if not message_id:
+            return
+        character = self._get_character_ref(character_id)
+        if character is None:
+            logger.warning(f"[ChatController] DELETE_MESSAGES_FROM: персонаж '{character_id}' не найден")
+            return
+
+        if edit_mode:
+            # Find the message text before deleting
+            history_data = character.history_manager.load_history()
+            messages = history_data.get("messages", [])
+            target_msg = next((m for m in messages if m.get("message_id") == message_id), None)
+            if target_msg:
+                content = target_msg.get("content", "")
+                text = content if isinstance(content, str) else ""
+                if isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            text = item.get("text") or item.get("content", "")
+                            break
+                character.history_manager.delete_messages_from(message_id)
+                self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
+                self.event_bus.emit(Events.GUI.INSERT_TEXT_TO_INPUT, text)
+        else:
+            character.history_manager.delete_messages_from(message_id)
+            self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
+
+    def _on_regenerate(self, event: Event):
+        data = event.data or {}
+        character_id = data.get("character_id", "") or self._get_current_character_id()
+        character = self._get_character_ref(character_id)
+        if character is None:
+            logger.warning(f"[ChatController] REGENERATE: персонаж '{character_id}' не найден")
+            return
+
+        history_data = character.history_manager.load_history()
+        messages = history_data.get("messages", [])
+
+        # Find last assistant message and last user message before it
+        last_assistant_idx = None
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "assistant":
+                last_assistant_idx = i
+                break
+
+        if last_assistant_idx is None:
+            logger.warning("[ChatController] REGENERATE: нет assistant-сообщения в истории")
+            return
+
+        last_user_text = ""
+        for i in range(last_assistant_idx - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                content = messages[i].get("content", "")
+                if isinstance(content, str):
+                    last_user_text = content
+                elif isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            last_user_text = item.get("text") or item.get("content", "")
+                            break
+                break
+
+        # Remove the last assistant message
+        history_data["messages"] = messages[:last_assistant_idx]
+        character.history_manager.save_history(history_data)
+
+        self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
+
+        if last_user_text:
+            self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
+                "user_input": last_user_text,
+                "character_id": character_id,
+            })
+
+    def _on_insert_system_message(self, event: Event):
+        import uuid
+        import datetime
+        data = event.data or {}
+        text = str(data.get("text", "")).strip()
+        character_id = data.get("character_id", "") or self._get_current_character_id()
+        if not text:
+            return
+        character = self._get_character_ref(character_id)
+        if character is None:
+            logger.warning(f"[ChatController] INSERT_SYSTEM_MESSAGE: персонаж '{character_id}' не найден")
+            return
+        message = {
+            "role": "system",
+            "content": text,
+            "message_id": f"sys:{uuid.uuid4().hex}",
+            "time": datetime.datetime.now().strftime("%H:%M"),
+        }
+        character.history_manager.append_message(message)
+        self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
+
+    def _on_save_snapshot(self, event: Event):
+        data = event.data or {}
+        character_id = data.get("character_id", "") or self._get_current_character_id()
+        character = self._get_character_ref(character_id)
+        if character is None:
+            logger.warning(f"[ChatController] SAVE_SNAPSHOT: персонаж '{character_id}' не найден")
+            return
+        character.history_manager.save_history_separate()
+        logger.info(f"[ChatController] Snapshot сохранён для {character_id}")
+
+    def _on_load_snapshot(self, event: Event):
+        import json
+        data = event.data or {}
+        file_path = data.get("file_path", "")
+        character_id = data.get("character_id", "") or self._get_current_character_id()
+        if not file_path:
+            return
+        character = self._get_character_ref(character_id)
+        if character is None:
+            logger.warning(f"[ChatController] LOAD_SNAPSHOT: персонаж '{character_id}' не найден")
+            return
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                snapshot_data = json.load(f)
+            character.history_manager.save_history(snapshot_data)
+            self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
+            logger.info(f"[ChatController] Snapshot загружен из {file_path}")
+        except Exception as e:
+            logger.error(f"[ChatController] Ошибка загрузки snapshot: {e}", exc_info=True)

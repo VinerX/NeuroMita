@@ -21,6 +21,7 @@ from main_logger import logger
 from ui.chat.chat_delegate import ChatMessageDelegate
 from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget, AVATAR_SIZE
 from ui.chat.structured_panel import StructuredOutputPanel
+from core.events import get_event_bus, Events
 
 
 def _wrap_panel_aligned(panel, role="assistant", parent=None, extra_left=0):
@@ -115,7 +116,26 @@ def _group_segments_by_target(segments: list) -> list:
 
 # ─── Public message renderer API ─────────────────────────────────────────────
 
-def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None):
+def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id: str):
+    """Connect context menu signals to the event bus."""
+    bus = get_event_bus()
+
+    def on_delete(mid):
+        bus.emit(Events.Chat.DELETE_MESSAGE, {"message_id": mid, "character_id": character_id})
+
+    def on_edit(mid):
+        bus.emit(Events.Chat.DELETE_MESSAGES_FROM, {"message_id": mid, "character_id": character_id, "edit_mode": True})
+
+    def on_regenerate(mid):
+        bus.emit(Events.Chat.REGENERATE, {"character_id": character_id})
+
+    widget.delete_requested.connect(on_delete)
+    widget.edit_requested.connect(on_edit)
+    widget.regenerate_requested.connect(on_regenerate)
+
+
+def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None,
+                   message_id=None, character_id=None):
     """Insert a complete message into the chat as a widget."""
 
     font_size = _get_font_size(gui)
@@ -271,8 +291,11 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
                 show_timestamp=show_ts and is_last,
                 max_bubble_width=max_bw,
                 sample_id=_ft_sample_id if is_last else None,
+                message_id=message_id if is_last else None,
                 parent=chat_parent
             )
+            if message_id and is_last:
+                _connect_widget_signals(w, message_id, character_id or "")
             if is_last and _pending_struct_panel is not None:
                 w.set_structured_ref(_pending_struct_panel)
             gui.chat_window.add_message_widget(w, at_start=insert_at_start)
@@ -287,8 +310,11 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             show_timestamp=show_ts,
             max_bubble_width=max_bw,
             sample_id=_ft_sample_id,
+            message_id=message_id,
             parent=chat_parent
         )
+        if message_id:
+            _connect_widget_signals(msg_widget, message_id, character_id or "")
         if _pending_struct_panel is not None:
             msg_widget.set_structured_ref(_pending_struct_panel)
         gui.chat_window.add_message_widget(msg_widget, at_start=insert_at_start)

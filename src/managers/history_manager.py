@@ -168,3 +168,31 @@ class HistoryManager:
         history_data = self.load_history()
         history_data["messages"].insert(0, summary_message)
         self.save_history(history_data)
+
+    def delete_message(self, message_id: str) -> bool:
+        """Удаляет сообщение по message_id. Возвращает True если удалено."""
+        history_data = self.load_history()
+        messages = history_data.get("messages", [])
+        new_messages = [m for m in messages if m.get("message_id") != message_id]
+        if len(new_messages) == len(messages):
+            return False
+        history_data["messages"] = new_messages
+        self.save_history(history_data)
+        return True
+
+    def delete_messages_from(self, message_id: str) -> bool:
+        """Удаляет сообщение с message_id и все последующие."""
+        history_data = self.load_history()
+        messages = history_data.get("messages", [])
+        idx = next((i for i, m in enumerate(messages) if m.get("message_id") == message_id), None)
+        if idx is None:
+            return False
+        history_data["messages"] = messages[:idx]
+        self.save_history(history_data)
+        return True
+
+    def append_message(self, message: dict):
+        """Добавляет сообщение в конец истории."""
+        history_data = self.load_history()
+        history_data.setdefault("messages", []).append(message)
+        self.save_history(history_data)

@@ -460,6 +460,12 @@ class Events:
         ATTACH_IMAGES = "attach_images"
         STAGE_IMAGE = "stage_image"
         CLEAR_STAGED_IMAGES = "clear_staged_images"
+        DELETE_MESSAGE = "chat_delete_message"
+        DELETE_MESSAGES_FROM = "chat_delete_messages_from"
+        REGENERATE = "chat_regenerate"
+        INSERT_SYSTEM_MESSAGE = "chat_insert_system_message"
+        SAVE_SNAPSHOT = "chat_save_snapshot"
+        LOAD_SNAPSHOT = "chat_load_snapshot"
 
     class Audio:
         """События для управления озвучкой и аудиофайлами"""

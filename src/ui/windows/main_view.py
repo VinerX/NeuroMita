@@ -17,7 +17,7 @@ import json
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QPropertyAnimation, QBuffer, QIODevice, QEvent, QEasingCurve
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
+    QTextEdit, QPlainTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
     QMessageBox, QDialog, QProgressBar, QStackedWidget,
     QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy
 )
@@ -512,14 +512,17 @@ class ChatGUI(QMainWindow):
 
     def _on_history_loaded(self, data: dict):
         messages = data.get('messages', [])
+        character_id = data.get('character_id', '')
         for entry in messages:
             role = entry["role"]
             content = entry["content"]
             message_time = entry.get("time", "???")
             structured_data = entry.get("structured_data")
+            message_id = entry.get("message_id")
             try:
                 message_renderer.insert_message(self, role, content, message_time=message_time,
-                                                structured_data=structured_data)
+                                                structured_data=structured_data,
+                                                message_id=message_id, character_id=character_id)
             except Exception as ex:
                 logger.error(f"_on_history_loaded: НУ Я ПОНЯЛ: {str(ex)}")
         self.update_debug_info()
@@ -713,6 +716,7 @@ class ChatGUI(QMainWindow):
         messages_to_prepend = data.get('messages', [])
         if not messages_to_prepend:
             return
+        character_id = data.get('character_id', '')
         scrollbar = self.chat_window.verticalScrollBar()
         old_value = scrollbar.value()
         old_max = scrollbar.maximum()
@@ -721,8 +725,10 @@ class ChatGUI(QMainWindow):
             content = entry["content"]
             message_time = entry.get("time", "???")
             structured_data = entry.get("structured_data")
+            message_id = entry.get("message_id")
             message_renderer.insert_message(self, role, content, insert_at_start=True,
-                                            message_time=message_time, structured_data=structured_data)
+                                            message_time=message_time, structured_data=structured_data,
+                                            message_id=message_id, character_id=character_id)
         QTimer.singleShot(0, lambda: scrollbar.setValue(scrollbar.maximum() - old_max + old_value))
         logger.info(f"Загружено еще {len(messages_to_prepend)} сообщений.")
 
@@ -909,6 +915,76 @@ class ChatGUI(QMainWindow):
         self.debug_window.setMinimumHeight(200)
         parent_layout.addWidget(self.debug_window)
         self.update_debug_info()
+
+        # ── System message insertion ─────────────────────────────────────────
+        sys_label = QLabel(_('Вставить system-сообщение в историю', 'Insert system message into history'))
+        sys_label.setObjectName('SeparatorLabel')
+        parent_layout.addWidget(sys_label)
+
+        self._debug_system_input = QPlainTextEdit()
+        self._debug_system_input.setPlaceholderText(_('Текст system-сообщения...', 'System message text...'))
+        self._debug_system_input.setFixedHeight(70)
+        parent_layout.addWidget(self._debug_system_input)
+
+        sys_btn = QPushButton(_('Добавить в историю', 'Add to history'))
+        sys_btn.clicked.connect(self._on_debug_insert_system_message)
+        parent_layout.addWidget(sys_btn)
+
+        # ── Snapshot save / load ─────────────────────────────────────────────
+        snap_label = QLabel(_('Snapshot истории', 'History snapshot'))
+        snap_label.setObjectName('SeparatorLabel')
+        parent_layout.addWidget(snap_label)
+
+        snap_row = QHBoxLayout()
+        save_snap_btn = QPushButton(_('Сохранить snapshot', 'Save snapshot'))
+        save_snap_btn.clicked.connect(self._on_debug_save_snapshot)
+        load_snap_btn = QPushButton(_('Загрузить snapshot', 'Load snapshot'))
+        load_snap_btn.clicked.connect(self._on_debug_load_snapshot)
+        snap_row.addWidget(save_snap_btn)
+        snap_row.addWidget(load_snap_btn)
+        parent_layout.addLayout(snap_row)
+
+    def _on_debug_insert_system_message(self):
+        text = self._debug_system_input.toPlainText().strip()
+        if not text:
+            return
+        character_id = self._get_current_character_id_for_debug()
+        self.event_bus.emit(Events.Chat.INSERT_SYSTEM_MESSAGE, {
+            "text": text,
+            "character_id": character_id,
+        })
+        self._debug_system_input.clear()
+
+    def _on_debug_save_snapshot(self):
+        character_id = self._get_current_character_id_for_debug()
+        self.event_bus.emit(Events.Chat.SAVE_SNAPSHOT, {"character_id": character_id})
+
+    def _on_debug_load_snapshot(self):
+        from PyQt6.QtWidgets import QFileDialog
+        import os
+        character_id = self._get_current_character_id_for_debug()
+        start_dir = os.path.join("Histories", character_id, "Saved") if character_id else "Histories"
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            _("Загрузить snapshot", "Load snapshot"),
+            start_dir,
+            "JSON files (*.json)"
+        )
+        if file_path:
+            self.event_bus.emit(Events.Chat.LOAD_SNAPSHOT, {
+                "file_path": file_path,
+                "character_id": character_id,
+            })
+
+    def _get_current_character_id_for_debug(self) -> str:
+        try:
+            res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
+            profile = res[0] if res else {}
+            if isinstance(profile, dict):
+                return str(profile.get("character_id") or "")
+        except Exception:
+            pass
+        return ""
 
     def _news_wrapper(self, parent_layout):
         self.setup_news_control(parent_layout)
