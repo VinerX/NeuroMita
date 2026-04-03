@@ -5,8 +5,13 @@
 from __future__ import annotations
 
 import os
-from PyQt6.QtWidgets import QLabel, QWidget, QVBoxLayout, QFrame
+from pathlib import Path
+from PyQt6.QtWidgets import (
+    QLabel, QWidget, QVBoxLayout, QHBoxLayout, QFrame,
+    QPushButton, QLineEdit, QFileDialog,
+)
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap
 
 from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
@@ -47,10 +52,10 @@ def setup_data_settings_controls(self, parent):
 
     # Clickable link to upload destination
     link_label = QLabel(_(
-        '📤 Загружать данные сюда: <a href="https://drive.google.com/drive/folders/1yiF5QSS4YHBNrKTHnFnelxHtSgtS6-GL" '
+        '📤 Загружать данные сюда: <a href="https://drive.google.com/drive/folders/1_RZPS7nTrHI60ZCLTglKNKc1ijG_Wg7X?usp=drive_link" '
         'style="color:#7ecf7e;">Google Drive — NeuroMita Finetune</a>',
 
-        '📤 Upload data here: <a href="https://drive.google.com/drive/folders/1yiF5QSS4YHBNrKTHnFnelxHtSgtS6-GL" '
+        '📤 Upload data here: <a href="https://drive.google.com/drive/folders/1_RZPS7nTrHI60ZCLTglKNKc1ijG_Wg7X?usp=drive_link" '
         'style="color:#7ecf7e;">Google Drive — NeuroMita Finetune</a>'
     ))
     link_label.setOpenExternalLinks(True)
@@ -85,18 +90,8 @@ def setup_data_settings_controls(self, parent):
         icon_name="fa5s.database",
     )
 
-    # ── Storage path info ─────────────────────────────────────────────────────
-    path_info_config = [
-        {"label": _("Путь хранения:", "Storage path:"), "type": "text"},
-        {"label": _get_data_dir_label(), "type": "text"},
-    ]
-    create_settings_section(
-        self,
-        parent,
-        _("Расположение файлов", "File location"),
-        path_info_config,
-        icon_name="fa5s.folder-open",
-    )
+    # ── Storage path with folder picker ──────────────────────────────────────
+    parent.addWidget(_build_path_widget(self))
 
     # ── Stats section (live widget, refreshes on showEvent) ──────────────────
     parent.addWidget(_LiveStatsWidget())
@@ -130,6 +125,87 @@ def setup_data_settings_controls(self, parent):
         icon_name="fa5s.download",
     )
 
+    # ── Motivation image ──────────────────────────────────────────────────────
+    image_label = QLabel()
+    pixmap = QPixmap(os.path.join("assets", "finetune_motivation.png"))
+    if not pixmap.isNull():
+        pixmap = pixmap.scaledToWidth(360, Qt.TransformationMode.SmoothTransformation)
+        image_label.setPixmap(pixmap)
+        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        image_label.setStyleSheet(
+            "background: transparent; border: none; margin-top: 8px;"
+        )
+        parent.addWidget(image_label)
+
+
+# ── Path widget with folder picker ───────────────────────────────────────────
+
+def _build_path_widget(gui) -> QWidget:
+    """Секция выбора папки хранения данных."""
+    container = QWidget()
+    container.setStyleSheet("QWidget { background: transparent; border: none; }")
+    outer = QVBoxLayout(container)
+    outer.setContentsMargins(0, 4, 0, 4)
+    outer.setSpacing(4)
+
+    header = QLabel(_("📁 Расположение файлов", "📁 File location"))
+    header.setStyleSheet(
+        "font-size: 11px; font-weight: bold; color: #c8c8c8; background: transparent; border: none;"
+    )
+    outer.addWidget(header)
+
+    row = QHBoxLayout()
+    row.setSpacing(6)
+    row.setContentsMargins(0, 0, 0, 0)
+
+    path_edit = QLineEdit(_get_current_data_dir())
+    path_edit.setReadOnly(True)
+    path_edit.setStyleSheet(
+        "QLineEdit { background: #2a2a2a; border: 1px solid #555; border-radius: 4px; "
+        "color: #b0b0b0; font-size: 11px; padding: 3px 6px; }"
+    )
+    row.addWidget(path_edit, stretch=1)
+
+    browse_btn = QPushButton(_("Обзор...", "Browse..."))
+    browse_btn.setFixedWidth(80)
+    browse_btn.setStyleSheet(
+        "QPushButton { background: #2a3a2a; border: 1px solid #3a5a3a; border-radius: 4px; "
+        "color: #7ecf7e; font-size: 11px; padding: 3px 8px; }"
+        "QPushButton:hover { background: #334a33; }"
+    )
+
+    def _on_browse():
+        chosen = QFileDialog.getExistingDirectory(
+            None,
+            _("Выберите папку для хранения данных", "Choose data storage folder"),
+            path_edit.text(),
+        )
+        if not chosen:
+            return
+        new_data_dir = str(Path(chosen) / "FineTuneData")
+        path_edit.setText(new_data_dir)
+        # Persist choice
+        try:
+            from managers.settings_manager import SettingsManager
+            SettingsManager.set("FINETUNE_DATA_DIR", chosen)
+        except Exception:
+            pass
+        # Update running collector
+        try:
+            from managers.finetune_collector import FineTuneCollector
+            fc = FineTuneCollector.instance
+            if fc is not None:
+                fc.data_dir = Path(new_data_dir)
+                fc.data_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+    browse_btn.clicked.connect(_on_browse)
+    row.addWidget(browse_btn)
+
+    outer.addLayout(row)
+    return container
+
 
 # ── Live stats widget ─────────────────────────────────────────────────────────
 
@@ -146,14 +222,30 @@ class _LiveStatsWidget(QFrame):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(2)
 
-        # Header row
+        # Header row with refresh button
+        header_row = QHBoxLayout()
+        header_row.setSpacing(6)
+
         header = QLabel()
         header.setStyleSheet(
             "font-size: 12px; font-weight: bold; color: #dcdcdc; "
             "padding: 4px 0; background: transparent; border: none;"
         )
         header.setText(_("Статистика", "Statistics"))
-        layout.addWidget(header)
+        header_row.addWidget(header)
+        header_row.addStretch()
+
+        refresh_btn = QPushButton(_("↻ Обновить", "↻ Refresh"))
+        refresh_btn.setFixedHeight(22)
+        refresh_btn.setStyleSheet(
+            "QPushButton { background: #2a3a2a; border: 1px solid #3a5a3a; border-radius: 4px; "
+            "color: #7ecf7e; font-size: 10px; padding: 1px 8px; }"
+            "QPushButton:hover { background: #334a33; }"
+        )
+        refresh_btn.clicked.connect(self._refresh)
+        header_row.addWidget(refresh_btn)
+
+        layout.addLayout(header_row)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
@@ -167,11 +259,14 @@ class _LiveStatsWidget(QFrame):
         self._refresh()
 
     def _refresh(self):
-        # Remove old stat labels (keep header + separator = first 2 items)
+        # Remove old stat labels (keep header row + separator = first 2 items)
         while self._stats_layout.count() > 2:
             item = self._stats_layout.takeAt(2)
             if item and item.widget():
                 item.widget().deleteLater()
+            elif item and item.layout():
+                # clean up nested layouts if any
+                pass
 
         for text in self._build_lines():
             lbl = QLabel(text)
@@ -213,13 +308,17 @@ class _LiveStatsWidget(QFrame):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _get_data_dir_label() -> str:
+def _get_current_data_dir() -> str:
+    """Возвращает текущий путь к папке FineTuneData с учётом сохранённой настройки."""
     try:
-        base = os.environ.get("NEUROMITA_BASE_DIR", os.getcwd())
-        return os.path.join(base, "FineTuneData")
+        from managers.settings_manager import SettingsManager
+        saved = SettingsManager.get("FINETUNE_DATA_DIR")
+        if saved:
+            return str(Path(saved) / "FineTuneData")
     except Exception:
-        return "FineTuneData/"
-
+        pass
+    base = os.environ.get("NEUROMITA_BASE_DIR", os.getcwd())
+    return os.path.join(base, "FineTuneData")
 
 
 def _clear_all_data(gui):

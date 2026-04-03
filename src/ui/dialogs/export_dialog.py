@@ -53,7 +53,7 @@ class ExportDialog(QDialog):
         date_layout.addWidget(QLabel(tr("С:", "From:")))
         self._date_from = QDateEdit()
         self._date_from.setCalendarPopup(True)
-        self._date_from.setDate(QDate.currentDate().addMonths(-3))
+        self._date_from.setDate(QDate(2000, 1, 1))
         self._date_from.dateChanged.connect(self._update_count)
         self._date_from.setFixedWidth(110)
         date_layout.addWidget(self._date_from)
@@ -115,8 +115,8 @@ class ExportDialog(QDialog):
         self._fmt_sharegpt = QRadioButton(
             tr("ShareGPT / ChatML (для Unsloth — рекомендуется)", "ShareGPT / ChatML (for Unsloth — recommended)")
         )
-        self._fmt_sharegpt.setChecked(True)
         self._fmt_raw = QRadioButton(tr("Сырой JSONL (со всеми метаданными)", "Raw JSONL (with all metadata)"))
+        self._fmt_raw.setChecked(True)
 
         self._fmt_group = QButtonGroup(self)
         self._fmt_group.addButton(self._fmt_sharegpt, 0)
