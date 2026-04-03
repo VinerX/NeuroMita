@@ -184,6 +184,10 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
                    message_id=None, character_id=None):
     """Insert a complete message into the chat as a widget."""
 
+    # Debug logging
+    content_preview = content[:60] if isinstance(content, str) else f"list({len(content)})" if isinstance(content, list) else f"{type(content).__name__}"
+    logger.debug(f"[insert_message] role='{role}', content_type={type(content).__name__}, preview={content_preview}")
+
     font_size = _get_font_size(gui)
     chat_parent = gui.chat_window.get_layout_parent()
 
@@ -250,17 +254,24 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
     _SYS_PREFIX = "[Системное]:"
     if role == "user":
         raw = content if isinstance(content, str) else ""
+        logger.debug(f"[SysDetect] role=user, checking content. raw_str_len={len(raw) if raw else 0}")
         if not raw and isinstance(content, list):
+            logger.debug(f"[SysDetect] Content is list, extracting text...")
             for _item in content:
                 if isinstance(_item, dict) and _item.get("type") == "text":
                     raw = _item.get("text") or _item.get("content", "")
+                    logger.debug(f"[SysDetect] Extracted from list: {raw[:50] if raw else 'EMPTY'}")
                     break
-        if isinstance(raw, str) and raw.lstrip().startswith(_SYS_PREFIX):
-            logger.debug(f"[MessageRenderer] Detected system-as-user message: {raw[:50]}...")
-            role = "system"
-            # Keep the prefix visible in content, just change role for display
-            # (prefix helps understand it's a system message)
-            logger.debug(f"[MessageRenderer] Changed role to 'system', content kept as-is: {raw[:50]}...")
+        if isinstance(raw, str):
+            logger.debug(f"[SysDetect] raw is str, checking prefix. Starts with prefix? {raw.lstrip().startswith(_SYS_PREFIX)}, raw={raw[:60]}")
+            if raw.lstrip().startswith(_SYS_PREFIX):
+                logger.info(f"[SysDetect] ✓ DETECTED system-as-user: {raw[:50]}...")
+                role = "system"
+                logger.info(f"[SysDetect] ✓ Changed role to 'system'")
+            else:
+                logger.debug(f"[SysDetect] ✗ No prefix found in: {raw[:60]}")
+        else:
+            logger.debug(f"[SysDetect] raw is not str: {type(raw).__name__}")
 
     text_parts = []
     speaker_name = ""
