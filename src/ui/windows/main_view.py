@@ -521,8 +521,7 @@ class ChatGUI(QMainWindow):
         messages = data.get('messages', [])
         character_id = data.get('character_id', '')
         logger.info(f"[HistoryLoaded] Загружено {len(messages)} сообщений для отображения")
-        # Показываем последние 3 сообщения
-        for i, entry in enumerate(messages[-3:]):
+        for i, entry in enumerate(messages):
             msg_role = entry.get("role", "?")
             msg_content = entry.get("content", "")
             content_preview = msg_content[:50] if isinstance(msg_content, str) else f"list({len(msg_content)})"
@@ -958,19 +957,18 @@ class ChatGUI(QMainWindow):
         parent_layout.addWidget(sys_btn)
 
         # ── Snapshot save / load ─────────────────────────────────────────────
-        # TODO: Fix 0xC0000409 crash on snapshot load before enabling
-        # snap_label = QLabel(_('Snapshot истории', 'History snapshot'))
-        # snap_label.setObjectName('SeparatorLabel')
-        # parent_layout.addWidget(snap_label)
-        #
-        # snap_row = QHBoxLayout()
-        # save_snap_btn = QPushButton(_('Сохранить snapshot', 'Save snapshot'))
-        # save_snap_btn.clicked.connect(self._on_debug_save_snapshot)
-        # load_snap_btn = QPushButton(_('Загрузить snapshot', 'Load snapshot'))
-        # load_snap_btn.clicked.connect(self._on_debug_load_snapshot)
-        # snap_row.addWidget(save_snap_btn)
-        # snap_row.addWidget(load_snap_btn)
-        # parent_layout.addLayout(snap_row)
+        snap_label = QLabel(_('Snapshot истории', 'History snapshot'))
+        snap_label.setObjectName('SeparatorLabel')
+        parent_layout.addWidget(snap_label)
+
+        snap_row = QHBoxLayout()
+        save_snap_btn = QPushButton(_('Сохранить snapshot', 'Save snapshot'))
+        save_snap_btn.clicked.connect(self._on_debug_save_snapshot)
+        load_snap_btn = QPushButton(_('Загрузить snapshot', 'Load snapshot'))
+        load_snap_btn.clicked.connect(self._on_debug_load_snapshot)
+        snap_row.addWidget(save_snap_btn)
+        snap_row.addWidget(load_snap_btn)
+        parent_layout.addLayout(snap_row)
 
     def _on_debug_insert_system_message(self):
         text = self._debug_system_input.toPlainText().strip()
@@ -995,76 +993,34 @@ class ChatGUI(QMainWindow):
 
     def _on_debug_load_snapshot(self):
         import os
-        logger.info("[Debug] _on_debug_load_snapshot: начинаем загрузку")
         character_id = self._get_current_character_id_for_debug()
-        logger.info(f"[Debug] character_id: {character_id}")
-        # Try to resolve the actual history dir via the character ref
-        start_dir = "Histories"
-        try:
-            res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
-            prof = res[0] if res else {}
-            if isinstance(prof, dict):
-                cid = str(prof.get("character_id") or "")
-                if cid:
-                    candidate = os.path.join("Histories", cid, "Saved")
-                    if os.path.isdir(candidate):
-                        start_dir = candidate
-                        logger.info(f"[Debug] Найдена папка: {start_dir}")
-        except Exception as e:
-            logger.warning(f"[Debug] Ошибка при поиске папки: {e}")
-            pass
 
+        start_dir = "Histories"
+        if character_id:
+            candidate = os.path.join("Histories", character_id, "Saved")
+            if os.path.isdir(candidate):
+                start_dir = candidate
         if not os.path.isdir(start_dir):
             start_dir = "."
 
-        logger.info(f"[Debug] Открываем диалог выбора файла из {start_dir}")
+        # QFileDialog must run in the main thread — do it here in the View
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             _("Загрузить snapshot", "Load snapshot"),
             start_dir,
             "JSON files (*.json)",
         )
-        logger.info(f"[Debug] Выбран файл: {file_path}")
         if not file_path:
-            logger.info("[Debug] Файл не выбран, отменяем")
             return
 
-        # Load entirely in the main thread — no async event bus, avoids C-runtime
-        # stack-overrun (0xC0000409) that occurs when Qt calls happen in background threads.
-        logger.info("[Debug] Читаем JSON файл")
-        try:
-            import json as _json
-            with open(file_path, "r", encoding="utf-8") as f:
-                snapshot_data = _json.load(f)
-            logger.info(f"[Debug] JSON загружен, сообщений: {len(snapshot_data.get('messages', []))}")
-        except Exception as e:
-            logger.error(f"[Debug] Ошибка чтения snapshot-файла: {e}", exc_info=True)
-            QMessageBox.critical(self, _("Ошибка", "Error"),
-                                 _("Не удалось прочитать файл:\n", "Failed to read file:\n") + str(e))
-            return
-
-        logger.info("[Debug] Сохраняем в HistoryManager")
-        try:
-            from managers.history_manager import HistoryManager
-            hm = HistoryManager(character_id=character_id)
-            logger.info(f"[Debug] HistoryManager создан для {character_id}")
-            hm.save_history(snapshot_data)
-            logger.info("[Debug] История сохранена в HistoryManager")
-        except Exception as e:
-            logger.error(f"[Debug] Ошибка сохранения snapshot в историю: {e}", exc_info=True)
-            QMessageBox.critical(self, _("Ошибка", "Error"), str(e))
-            return
-
-        # Call directly in the main thread — event bus dispatches async (background thread),
-        # which crashes Qt when GUI widgets are touched from a non-main thread.
-        logger.info("[Debug] Вызываем load_chat_history() в main thread")
-        try:
-            self.load_chat_history()
-            logger.info("[Debug] load_chat_history() завершена успешно")
-        except Exception as e:
-            logger.error(f"[Debug] Ошибка в load_chat_history(): {e}", exc_info=True)
-            raise
-        logger.info(f"[Debug] Snapshot загружен из {file_path}")
+        logger.info(f"[Debug] Отправляем Event LOAD_SNAPSHOT для {file_path}")
+        # ChatController reads the JSON and saves history, then emits RELOAD_CHAT_HISTORY.
+        # SettingsController catches that and calls load_chat_history_signal.emit(),
+        # which safely returns execution to the main thread — no 0xC0000409 crashes.
+        self.event_bus.emit(Events.Chat.LOAD_SNAPSHOT, {
+            "file_path": file_path,
+            "character_id": character_id,
+        })
 
     def _get_current_character_id_for_debug(self) -> str:
         try:

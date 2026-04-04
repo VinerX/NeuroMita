@@ -822,8 +822,7 @@ class ChatController:
             # Keep the system-as-user message, only remove the assistant response
             history_data["messages"] = messages[:last_assistant_idx]
             character.history_manager.save_history(history_data)
-            # Remove assistant bubble(s) + possible structured panel
-            widgets_to_remove = (last_assistant_idx - last_user_idx) + 1
+            widgets_to_remove = len(messages) - last_assistant_idx
             self.event_bus.emit(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, {"count": widgets_to_remove})
             self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
                 "user_input": " ",
@@ -836,8 +835,7 @@ class ChatController:
         history_data["messages"] = messages[:cut_idx]
         character.history_manager.save_history(history_data)
 
-        # Count widgets to remove: user bubble + assistant bubble + possible structured panel
-        widgets_to_remove = (last_assistant_idx - cut_idx + 1) + 1  # pair + structured
+        widgets_to_remove = len(messages) - cut_idx
         self.event_bus.emit(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, {"count": widgets_to_remove})
 
         if last_user_text:
@@ -907,6 +905,36 @@ class ChatController:
             if user_text:
                 self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
                     "user_input": user_text,
+                    "character_id": character_id,
+                })
+
+        elif target_role == "assistant":
+            # Find the preceding user message and re-send from there
+            preceding_user_idx = None
+            preceding_user_text = ""
+            for i in range(target_idx - 1, -1, -1):
+                if messages[i].get("role") == "user":
+                    preceding_user_idx = i
+                    content = messages[i].get("content", "")
+                    if isinstance(content, str):
+                        preceding_user_text = content
+                    elif isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                preceding_user_text = item.get("text") or item.get("content", "")
+                                break
+                    break
+
+            cut_idx = preceding_user_idx if preceding_user_idx is not None else target_idx
+            history_data["messages"] = messages[:cut_idx]
+            character.history_manager.save_history(history_data)
+
+            widgets_to_remove = len(messages) - cut_idx
+            self.event_bus.emit(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, {"count": widgets_to_remove})
+
+            if preceding_user_text:
+                self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
+                    "user_input": preceding_user_text,
                     "character_id": character_id,
                 })
 
