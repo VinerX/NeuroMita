@@ -33,10 +33,14 @@ CLR_SEG_HEADER    = "#8fb0cc"
 CLR_TEXT_QUOTE     = "#c8c8c8"
 CLR_FIELD_LABEL   = "#8aa0b8"
 CLR_FIELD_VALUE   = "#c8c8c8"
-CLR_MEMORY_BORDER = "rgba(122,184,112,0.18)"
-CLR_MEMORY_BG     = "rgba(122,184,112,0.05)"
-CLR_MEMORY_HEADER = "#7ab870"
-CLR_MEMORY_TEXT   = "#8aa0b8"
+CLR_MEMORY_BORDER   = "rgba(122,184,112,0.18)"
+CLR_MEMORY_BG       = "rgba(122,184,112,0.05)"
+CLR_MEMORY_HEADER   = "#7ab870"
+CLR_MEMORY_TEXT     = "#8aa0b8"
+CLR_REMIND_BORDER   = "rgba(255,180,80,0.20)"
+CLR_REMIND_BG       = "rgba(255,180,80,0.05)"
+CLR_REMIND_HEADER   = "#e8a040"
+CLR_REMIND_TEXT     = "#c8b080"
 CLR_HEADER_TEXT   = "rgba(255,255,255,0.35)"
 
 MAX_PANEL_WIDTH = 520
@@ -267,6 +271,68 @@ class MemoryBlock(QFrame):
             layout.addWidget(lbl)
 
 
+class ReminderBlock(QFrame):
+    """Compact reminder operations block."""
+
+    def __init__(self, rem_add: list, rem_delete: list, font_size: int = 8, parent=None):
+        super().__init__(parent)
+        fs = _COMPACT_FONT
+        self.setObjectName("ReminderBlock")
+        self.setStyleSheet(f"""
+            QFrame#ReminderBlock {{
+                background-color: {CLR_REMIND_BG};
+                border: 1px solid {CLR_REMIND_BORDER};
+                border-radius: 6px;
+                margin: 1px 0px;
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(1)
+
+        header = QLabel("\u23f0 reminder", self)
+        header.setStyleSheet(
+            f"color: {CLR_REMIND_HEADER}; font-weight: bold; font-size: {fs}pt; "
+            f"background: transparent; border: none;"
+        )
+        layout.addWidget(header)
+
+        for entry in rem_add:
+            text = str(entry)
+            if "|" in text:
+                when, content = text.split("|", 1)
+                display = f"+ [{when.strip()}] {content.strip()}"
+            else:
+                display = f"+ {text}"
+            lbl = QLabel(display, self)
+            lbl.setWordWrap(True)
+            lbl.setCursor(Qt.CursorShape.IBeamCursor)
+            lbl.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+                | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            )
+            lbl.setStyleSheet(
+                f"color: {CLR_REMIND_TEXT}; font-size: {fs}pt; "
+                f"background: transparent; border: none; padding-left: 4px;"
+            )
+            layout.addWidget(lbl)
+
+        for entry in rem_delete:
+            lbl = QLabel(f"- #{entry}", self)
+            lbl.setWordWrap(True)
+            lbl.setCursor(Qt.CursorShape.IBeamCursor)
+            lbl.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+                | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            )
+            lbl.setStyleSheet(
+                f"color: {CLR_REMIND_TEXT}; font-size: {fs}pt; "
+                f"background: transparent; border: none; padding-left: 4px;"
+            )
+            layout.addWidget(lbl)
+
+
 class StructuredOutputPanel(QFrame):
     """
     Compact collapsible structured output panel.
@@ -352,6 +418,12 @@ class StructuredOutputPanel(QFrame):
         if mem_add or mem_update or mem_delete:
             mem_block = MemoryBlock(mem_add, mem_update, mem_delete, _COMPACT_FONT, layout.parentWidget())
             layout.addWidget(mem_block)
+
+        rem_add    = data.get("reminder_add") or []
+        rem_delete = data.get("reminder_delete") or []
+        if rem_add or rem_delete:
+            rem_block = ReminderBlock(rem_add, rem_delete, _COMPACT_FONT, layout.parentWidget())
+            layout.addWidget(rem_block)
 
     def _build_json_view(self, layout: QVBoxLayout, data: dict, font_size: int):
         json_text = json.dumps(data, ensure_ascii=False, indent=2)

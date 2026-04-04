@@ -449,4 +449,6 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
         "memory_add": list(response.memory_add),
         "memory_update": list(response.memory_update),
         "memory_delete": list(response.memory_delete),
+        "reminder_add": list(response.reminder_add),
+        "reminder_delete": list(response.reminder_delete),
     }
