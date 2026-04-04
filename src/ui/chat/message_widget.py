@@ -21,6 +21,7 @@ from PyQt6.QtGui import (
     QTextLayout, QTextOption, QFontMetrics, QAction,
 )
 from main_logger import logger
+from utils import _
 
 
 # ── Avatar paths ────────────────────────────────────────────────────────────
@@ -692,36 +693,40 @@ class MessageWidget(QWidget):
         """)
 
         if self._role == "user":
-            edit_action = QAction("Редактировать", self)
+            edit_action = QAction(_("Редактировать", "Edit"), self)
             edit_action.triggered.connect(lambda: self.edit_requested.emit(self._message_id or ""))
             menu.addAction(edit_action)
             if self._message_id:
-                regen_from_action = QAction("Регенерировать отсюда", self)
+                regen_from_action = QAction(_("Регенерировать отсюда", "Regenerate from here"), self)
                 regen_from_action.triggered.connect(lambda: self.regenerate_from_requested.emit(self._message_id))
                 menu.addAction(regen_from_action)
         elif self._role == "assistant":
-            regen_action = QAction("Regenerate", self)
+            regen_action = QAction(_("Регенерировать", "Regenerate"), self)
             regen_action.triggered.connect(lambda: self.regenerate_requested.emit(self._message_id or ""))
             menu.addAction(regen_action)
+            if self._message_id:
+                regen_from_action = QAction(_("Регенерировать отсюда", "Regenerate from here"), self)
+                regen_from_action.triggered.connect(lambda: self.regenerate_from_requested.emit(self._message_id))
+                menu.addAction(regen_from_action)
         elif self._role == "system":
             if self._message_id:
-                regen_from_action = QAction("Регенерировать отсюда", self)
+                regen_from_action = QAction(_("Регенерировать отсюда", "Regenerate from here"), self)
                 regen_from_action.triggered.connect(lambda: self.regenerate_from_requested.emit(self._message_id))
                 menu.addAction(regen_from_action)
 
         # Copy selected text if any, otherwise copy full message
         selected = self._body._text_label.selectedText() if hasattr(self, '_body') else ""
         if selected:
-            copy_sel_action = QAction("Копировать выделенное", self)
+            copy_sel_action = QAction(_("Копировать выделенное", "Copy selected"), self)
             copy_sel_action.triggered.connect(lambda: QApplication.clipboard().setText(selected))
             menu.addAction(copy_sel_action)
-        copy_action = QAction("Копировать всё", self)
+        copy_action = QAction(_("Копировать всё", "Copy all"), self)
         copy_action.triggered.connect(lambda: self._on_copy())
         menu.addAction(copy_action)
 
         if self._message_id:
             menu.addSeparator()
-            del_action = QAction("Удалить", self)
+            del_action = QAction(_("Удалить", "Delete"), self)
             del_action.triggered.connect(lambda: self.delete_requested.emit(self._message_id))
             menu.addAction(del_action)
 
