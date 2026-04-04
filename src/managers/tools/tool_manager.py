@@ -31,8 +31,8 @@ class ToolManager:
         return self.dialects.list_meta()
 
     def _filtered_schema(self, enabled_names: Optional[List[str]]) -> List[dict]:
-        """Return json_schema filtered to enabled_names. None or empty = all tools."""
-        if not enabled_names:
+        """Return json_schema filtered to enabled_names. None = all tools, [] = no tools."""
+        if enabled_names is None:
             return self.json_schema()
         return [s for s in self.json_schema() if s["name"] in enabled_names]
 

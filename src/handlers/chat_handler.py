@@ -103,6 +103,9 @@ class ChatModel:
         _ALL_TOOLS = ["calculator", "web_search", "google_search", "web_reader"]
         enabled_tools = [n for n in _ALL_TOOLS if self.settings.get(f"TOOL_ENABLED_{n}", True)]
 
+        if not enabled_tools:
+            tools_on = False
+
         if tools_on and tools_mode == "legacy":
             tools_desc = json.dumps(self.tool_manager._filtered_schema(enabled_tools))
             legacy_prompt = self.tool_manager.tools_prompt().format(tools_json=tools_desc)
