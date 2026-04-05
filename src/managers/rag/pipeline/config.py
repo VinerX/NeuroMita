@@ -376,7 +376,7 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_QUERY_TAIL_MESSAGES": 2,
     "RAG_SEARCH_MEMORY": True,
     "RAG_SEARCH_HISTORY": True,
-    "RAG_SEARCH_GRAPH": True,
+    "RAG_SEARCH_GRAPH": False,
     "RAG_GRAPH_VECTOR_SEARCH": False,
     "RAG_KEYWORD_SEARCH": True,
     "RAG_VECTOR_SEARCH_ENABLED": False,

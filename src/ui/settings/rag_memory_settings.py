@@ -821,27 +821,6 @@ def _delete_all_graph_data(gui) -> None:
     )
 
 
-def _reset_rag_defaults(gui) -> None:
-    """Reset all RAG settings to optimal defaults and update UI widgets."""
-    for key, val in RAG_DEFAULTS.items():
-        gui._save_setting(key, val)
-        widget = getattr(gui, key, None)
-        if widget is None:
-            continue
-        if isinstance(widget, QCheckBox):
-            widget.setChecked(bool(val))
-        elif isinstance(widget, QComboBox):
-            widget.setCurrentText(str(val))
-        elif isinstance(widget, QLineEdit):
-            widget.setText(str(val))
-    QMessageBox.information(
-        gui,
-        _("Сброс RAG", "RAG Reset"),
-        _("Все настройки RAG сброшены к оптимальным значениям.",
-          "All RAG settings have been reset to optimal defaults."),
-    )
-
-
 # ---------------------------------------------------------------------------
 # Config builders — each returns a list of setting descriptors
 # ---------------------------------------------------------------------------
@@ -1726,10 +1705,7 @@ def build_rag_memory_section(self, parent, hc_provider_names) -> None:
         _build_combine_config(self) +
         _build_cross_encoder_config(self) +
         _build_rag_logging_config(self) +
-        [{'type': 'button_group', 'buttons': [
-            {'label': _('Сбросить RAG к базовым', 'Reset RAG defaults'),
-             'command': lambda: _reset_rag_defaults(self)},
-        ]}]
+        []
     )
 
     create_settings_section(self, parent,
