@@ -300,7 +300,7 @@ class RAGConfig:
 # ── Default values for all SettingsManager RAG keys ──────────────────────
 # Used by the "Reset RAG defaults" button in the UI.
 RAG_DEFAULTS: dict[str, object] = {
-    "RAG_ENABLED": False,
+    "RAG_ENABLED": True,
     "RAG_EMBED_MODEL": "Qwen3-Embedding-0.6B (600M, 2025)",
     "RAG_EMBED_MODEL_CUSTOM": "",
     "RAG_EMBED_QUERY_PREFIX": "query: ",
