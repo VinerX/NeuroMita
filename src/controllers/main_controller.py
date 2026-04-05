@@ -108,6 +108,10 @@ class MainController:
         self.capture_controller = CaptureController(self.settings)
         logger.notify("CaptureController успешно инициализирован.")
 
+        from controllers.reminder_controller import ReminderController
+        self.reminder_controller = ReminderController(self.settings)
+        logger.notify("ReminderController успешно инициализирован.")
+
         self.speech_controller = SpeechController()
         logger.notify("SpeechController успешно инициализирован.")
 

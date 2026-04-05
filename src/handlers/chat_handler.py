@@ -100,8 +100,14 @@ class ChatModel:
         if tools_mode == "off":
             tools_on = False
 
+        _ALL_TOOLS = ["calculator", "web_search", "google_search", "web_reader"]
+        enabled_tools = [n for n in _ALL_TOOLS if self.settings.get(f"TOOL_ENABLED_{n}", True)]
+
+        if not enabled_tools:
+            tools_on = False
+
         if tools_on and tools_mode == "legacy":
-            tools_desc = json.dumps(self.tool_manager.json_schema())
+            tools_desc = json.dumps(self.tool_manager._filtered_schema(enabled_tools))
             legacy_prompt = self.tool_manager.tools_prompt().format(tools_json=tools_desc)
 
             already = False
@@ -137,6 +143,11 @@ class ChatModel:
 
             dialect = "gemini" if preset_settings.dialect_id == "gemini_generate_content" else "openai"
 
+            prebuilt_payload = (
+                self.tool_manager.get_tools_payload(dialect, enabled_tools)
+                if tools_on and tools_mode == "native" else None
+            )
+
             req = LLMRequest(
                 model=effective_model,
                 messages=combined_messages,
@@ -154,7 +165,7 @@ class ChatModel:
                 stream_cb=stream_callback,
                 tools_on=tools_on,
                 tools_mode=tools_mode,
-                tools_payload=None,
+                tools_payload=prebuilt_payload,
                 tools_dialect=dialect,
                 extra=params,
                 tool_manager=self.tool_manager,

@@ -143,6 +143,15 @@ class StructuredResponse(BaseModel):
     memory_update: List[str] = Field(default_factory=list, description="Memories to update (format: 'number|new_text')")
     memory_delete: List[str] = Field(default_factory=list, description="Memories to delete (format: 'number' or 'start-end')")
 
+    reminder_add: List[str] = Field(
+        default_factory=list,
+        description="Reminders to set. Format: 'YYYY-MM-DDTHH:MM:SS|reminder text'. Example: '2026-04-03T15:00:00|Remind player about the meeting'."
+    )
+    reminder_delete: List[str] = Field(
+        default_factory=list,
+        description="Reminder IDs to delete. Format: 'N' (number). Example: '3'."
+    )
+
     segments: List[ResponseSegment] = Field(
         default_factory=list,
         description="Ordered list of response segments with positional commands",
