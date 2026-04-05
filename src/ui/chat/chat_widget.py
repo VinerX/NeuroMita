@@ -152,6 +152,13 @@ class ChatWidget(QFrame):
         self._layout.removeWidget(widget)
         widget.deleteLater()
 
+    def remove_last_n_widgets(self, n: int):
+        """Remove the last N widgets from the chat (instantly, no full reload)."""
+        for _ in range(min(n, len(self._messages))):
+            w = self._messages.pop()
+            self._layout.removeWidget(w)
+            w.deleteLater()
+
     def get_last_message(self) -> QWidget | None:
         return self._messages[-1] if self._messages else None
 

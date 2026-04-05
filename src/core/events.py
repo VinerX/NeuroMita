@@ -416,6 +416,7 @@ class Events:
         SHOW_INFO_MESSAGE = "show_info_message"
         UPDATE_CHAT_FONT_SIZE = "update_chat_font_size"
         RELOAD_CHAT_HISTORY = "reload_chat_history"
+        REMOVE_LAST_CHAT_WIDGETS = "remove_last_chat_widgets"
         UPDATE_TOKEN_COUNT_UI = "update_token_count_ui"
         GET_GUI_WINDOW_ID = "get_gui_window_id"
         CHECK_TRITON_DEPENDENCIES = "check_triton_dependencies"
@@ -460,6 +461,13 @@ class Events:
         ATTACH_IMAGES = "attach_images"
         STAGE_IMAGE = "stage_image"
         CLEAR_STAGED_IMAGES = "clear_staged_images"
+        DELETE_MESSAGE = "chat_delete_message"
+        DELETE_MESSAGES_FROM = "chat_delete_messages_from"
+        REGENERATE = "chat_regenerate"
+        REGENERATE_FROM = "chat_regenerate_from"
+        INSERT_SYSTEM_MESSAGE = "chat_insert_system_message"
+        SAVE_SNAPSHOT = "chat_save_snapshot"
+        LOAD_SNAPSHOT = "chat_load_snapshot"
 
     class Audio:
         """События для управления озвучкой и аудиофайлами"""

@@ -30,11 +30,17 @@ class ToolManager:
     def available_dialects(self) -> List[dict]:
         return self.dialects.list_meta()
 
-    def get_tools_payload(self, dialect_id: str) -> Any:
+    def _filtered_schema(self, enabled_names: Optional[List[str]]) -> List[dict]:
+        """Return json_schema filtered to enabled_names. None = all tools, [] = no tools."""
+        if enabled_names is None:
+            return self.json_schema()
+        return [s for s in self.json_schema() if s["name"] in enabled_names]
+
+    def get_tools_payload(self, dialect_id: str, enabled_names: Optional[List[str]] = None) -> Any:
         d = self.dialects.get(dialect_id)
         if not d:
             return []
-        return d.build_tools_payload(self.json_schema())
+        return d.build_tools_payload(self._filtered_schema(enabled_names))
 
     def mk_tool_call_msg(self, dialect_id: str, name: str, args: dict, tool_call_id: Optional[str] = None) -> dict:
         d = self.dialects.get(dialect_id)

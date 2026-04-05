@@ -99,6 +99,8 @@ class SettingsController:
             "ALLOW_GAMES_WHEN_CONNECTED",
             "ENABLE_GAME_CHESS",
             "ENABLE_GAME_SEABATTLE",
+
+            "REMINDERS_ENABLED",
         ]
 
         custom_vars: Dict[str, Any] = {

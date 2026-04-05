@@ -1106,6 +1106,52 @@ class HistoryManager:
     def add_summarized_history_to_messages(self, summary_message: dict):
         self.add_message(summary_message)
 
+    def delete_message(self, message_id: str) -> bool:
+        """Удаляет сообщение по message_id. Возвращает True если удалено."""
+        conn = self.db.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE history SET is_deleted = 1 WHERE message_id = ? AND character_id = ?",
+                (message_id, self.storage_key),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def delete_messages_from(self, message_id: str) -> bool:
+        """Удаляет сообщение с message_id и все последующие."""
+        conn = self.db.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT timestamp FROM history WHERE message_id = ? AND character_id = ?",
+                (message_id, self.storage_key),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return False
+            ts = row[0]
+            cursor.execute(
+                "UPDATE history SET is_deleted = 1 WHERE character_id = ? AND timestamp >= ?",
+                (self.storage_key, ts),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def append_message(self, message: dict):
+        """Добавляет сообщение в конец истории."""
+        self.add_message(message)
+
     # ---------------------------------------------------------------------
     # RAG helpers
     # ---------------------------------------------------------------------

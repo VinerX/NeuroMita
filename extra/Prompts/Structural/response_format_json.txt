@@ -14,6 +14,8 @@ Schema:
   "memory_add": ["priority|content", ...],
   "memory_update": ["number|content", ...],
   "memory_delete": ["number" or "start-end", ...],
+  "reminder_add": ["YYYY-MM-DDTHH:MM:SS|reminder text", ...],
+  "reminder_delete": ["N", ...],
   "segments": [
     {
       "text": "Your text here (REQUIRED)",
@@ -42,6 +44,10 @@ Rules:
 - memory_add format: "priority|content" where priority is one of: low, normal, high, critical
 - memory_update format: "number|new_content"
 - memory_delete format: single number "5", comma-separated "5,6,7", or range "5-9"
+- reminder_add/reminder_delete: omit entirely if no reminder operations needed (do NOT output empty arrays).
+- reminder_add format: "YYYY-MM-DDTHH:MM:SS|text", e.g. "2026-04-05T18:00:00|Remind player about dinner"
+- reminder_delete format: reminder ID number as string, e.g. "3"
+- [Pending Reminders] block in system context shows scheduled reminders. Fire them when due time arrives.
 - Split your response into segments when different parts need different emotions, animations, or commands.
 - Each segment's commands (emotions, animations, etc.) trigger when that segment's text is displayed.
 - Text limit per response: 25-60 words total across all segments. Maximum 700 characters.

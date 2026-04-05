@@ -117,6 +117,9 @@ class Character:
         self.memory_system = MemoryManager(self.char_id)
         self.memory_system.prompt_set_path = self.base_data_path
 
+        from managers.reminder_manager import ReminderManager
+        self.reminder_system = ReminderManager(self.char_id)
+
         self.load_history()
 
         from managers.dsl_manager import create_dsl_interpreter
@@ -567,6 +570,15 @@ class Character:
                 exc_info=True,
             )
 
+        # Apply reminder operations from global fields
+        try:
+            self._apply_structured_reminder_ops(structured)
+        except Exception as e:
+            logger.error(
+                f"[{self.char_id}] Error applying reminder ops from structured response: {e}",
+                exc_info=True,
+            )
+
         # Process game tags from segments (start_game / end_game)
         try:
             self._process_structured_game_tags(structured)
@@ -646,6 +658,33 @@ class Character:
                 logger.info(f"[{self.char_id}] Structured: deleted memory(ies): {delete_str}")
             except Exception as e:
                 logger.error(f"[{self.char_id}] Structured: error deleting memory '{delete_str}': {e}")
+
+    def _apply_structured_reminder_ops(self, structured: StructuredResponse):
+        """Apply reminder add/delete operations from a StructuredResponse."""
+        for entry in structured.reminder_add:
+            entry = (entry or "").strip()
+            if not entry:
+                continue
+            if "|" not in entry:
+                logger.warning(f"[{self.char_id}] Structured: reminder_add bad format (missing '|'): {entry!r}")
+                continue
+            due_iso, text = entry.split("|", 1)
+            try:
+                self.reminder_system.add_reminder(text.strip(), due_iso.strip())
+                logger.info(f"[{self.char_id}] Structured: added reminder due={due_iso.strip()}: {text.strip()[:50]}")
+            except Exception as e:
+                logger.error(f"[{self.char_id}] Structured: error adding reminder: {e}")
+
+        for delete_str in structured.reminder_delete:
+            delete_str = (delete_str or "").strip()
+            if delete_str.isdigit():
+                try:
+                    self.reminder_system.delete_reminder(int(delete_str))
+                    logger.info(f"[{self.char_id}] Structured: deleted reminder #{delete_str}")
+                except Exception as e:
+                    logger.error(f"[{self.char_id}] Structured: error deleting reminder #{delete_str}: {e}")
+            elif delete_str:
+                logger.warning(f"[{self.char_id}] Structured: reminder_delete bad format: {delete_str!r}")
 
     def _process_structured_game_tags(self, structured: StructuredResponse):
         """Process start_game / end_game from segments."""

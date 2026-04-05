@@ -178,6 +178,17 @@ class PromptController:
                 inline_instr = _load_graph_inline_instruction(character)
                 system_messages.append({"role": "system", "content": inline_instr})
 
+        try:
+            if hasattr(character, "reminder_system") and character.reminder_system:
+                reminder_content = character.reminder_system.get_reminders_formatted()
+                if reminder_content and reminder_content.strip():
+                    system_messages.append({"role": "system", "content": reminder_content})
+        except Exception as e:
+            logger.warning(
+                f"[PromptController] Ошибка получения напоминаний для персонажа "
+                f"{getattr(character, 'char_id', '')}: {e}"
+            )
+
         return system_messages, dsl_system_infos
 
     def _load_structured_output_prompt(self) -> str:
@@ -319,7 +330,7 @@ class PromptController:
             )
         })
 
-        event_types_as_event_role = {"idle_timeout", "idle", "timer"}
+        event_types_as_event_role = {"idle_timeout", "idle", "timer", "reminder"}
 
         if system_input:
             role = "system"

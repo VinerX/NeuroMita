@@ -73,11 +73,26 @@ class HistoryUiProjector:
             ui_role = role
             speaker_label = ""
 
+            # Detect system-as-user messages (stored as role='user' with [Системное]: prefix)
+            # Don't convert them to assistant based on speaker
+            _SYS_PREFIX = "[Системное]:"
+            is_system_as_user = False
+            if role == "user":
+                _raw = content if isinstance(content, str) else ""
+                if not _raw and isinstance(content, list):
+                    for _item in content:
+                        if isinstance(_item, dict) and _item.get("type") == "text":
+                            _raw = _item.get("text") or _item.get("content", "")
+                            break
+                if isinstance(_raw, str) and _raw.lstrip().startswith(_SYS_PREFIX):
+                    is_system_as_user = True
+
             if role in ("user", "assistant"):
                 if speaker == "Player":
                     ui_role = "user"
                     speaker_label = ""
-                else:
+                elif not is_system_as_user:
+                    # Only convert non-system-as-user to assistant
                     ui_role = "assistant"
                     speaker_label = self._name(speaker)
                     if target and target != "Player":
