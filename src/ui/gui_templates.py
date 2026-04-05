@@ -191,6 +191,8 @@ def create_button_group(gui, parent, buttons_config):
         button = QPushButton(btn_config['label'])
         if 'command' in btn_config:
             button.clicked.connect(btn_config['command'])
+        if 'widget_name' in btn_config:
+            setattr(gui, btn_config['widget_name'], button)
         layout.addWidget(button)
         
     return frame

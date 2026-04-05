@@ -1,8 +1,9 @@
+import json
 import os
 import threading
 
 from PyQt6.QtWidgets import (
-    QLineEdit, QCheckBox, QComboBox, QMessageBox,
+    QLineEdit, QCheckBox, QComboBox, QInputDialog, QMessageBox,
     QProgressDialog, QLabel, QHBoxLayout, QWidget, QPushButton,
 )
 from PyQt6.QtCore import Qt
@@ -12,6 +13,9 @@ from utils import getTranslationVariant as _
 from core.events import get_event_bus, Events
 from managers.rag.pipeline.config import RAG_DEFAULTS
 from managers.rag.pipeline.config import list_ce_preset_names, CE_PRESETS
+from managers.rag.pipeline.config import (
+    RAG_PIPELINE_PRESETS, list_pipeline_preset_names, get_pipeline_preset_settings,
+)
 from handlers.embedding_presets import list_preset_names, resolve_model_settings
 
 # Module-level state for the running extraction (survives dialog close).
@@ -842,6 +846,183 @@ def _reset_rag_defaults(gui) -> None:
 # Config builders — each returns a list of setting descriptors
 # ---------------------------------------------------------------------------
 
+# ─────────────────────────────────────────────────────────────────
+# Pipeline preset helpers
+# ─────────────────────────────────────────────────────────────────
+
+def _load_user_presets() -> dict:
+    from managers.settings_manager import SettingsManager
+    try:
+        raw = SettingsManager.get("RAG_PIPELINE_USER_PRESETS", "{}") or "{}"
+        return json.loads(raw)
+    except Exception:
+        return {}
+
+
+def _save_user_presets(presets: dict) -> None:
+    from managers.settings_manager import SettingsManager
+    SettingsManager.set("RAG_PIPELINE_USER_PRESETS", json.dumps(presets, ensure_ascii=False))
+
+
+def _update_preset_delete_btn(gui, name: str) -> None:
+    btn = getattr(gui, '_preset_delete_btn', None)
+    if btn is not None:
+        btn.setEnabled(name not in RAG_PIPELINE_PRESETS and name != "Custom")
+
+
+def _refresh_preset_combo(gui) -> None:
+    combo = getattr(gui, 'RAG_PIPELINE_PRESET', None)
+    if combo is None:
+        return
+    user_presets = _load_user_presets()
+    current = combo.currentText()
+    combo.blockSignals(True)
+    combo.clear()
+    combo.addItems(list_pipeline_preset_names(user_presets))
+    if combo.findText(current) >= 0:
+        combo.setCurrentText(current)
+    else:
+        combo.setCurrentText("Custom")
+    combo.blockSignals(False)
+    _update_preset_delete_btn(gui, combo.currentText())
+
+
+def _on_apply_preset(gui) -> None:
+    combo = getattr(gui, 'RAG_PIPELINE_PRESET', None)
+    if combo is None:
+        return
+    name = combo.currentText()
+    if name == "Custom":
+        return
+
+    msg = QMessageBox(gui)
+    msg.setWindowTitle(_("Применить пресет", "Apply preset"))
+    msg.setText(
+        _("Применить пресет «{n}»?\nТекущие настройки RAG будут заменены.",
+          "Apply preset «{n}»?\nCurrent RAG settings will be replaced.").format(n=name)
+    )
+    save_btn   = msg.addButton(
+        _("Сохранить текущие и применить", "Save current & Apply"),
+        QMessageBox.ButtonRole.AcceptRole,
+    )
+    apply_btn  = msg.addButton(_("Применить", "Apply"), QMessageBox.ButtonRole.DestructiveRole)
+    cancel_btn = msg.addButton(_("Отмена", "Cancel"), QMessageBox.ButtonRole.RejectRole)
+    msg.setDefaultButton(cancel_btn)
+    msg.exec()
+
+    clicked = msg.clickedButton()
+    if clicked is cancel_btn:
+        return
+    if clicked is save_btn:
+        if not _on_save_preset(gui):
+            return  # user cancelled save
+
+    user_presets = _load_user_presets()
+    settings = get_pipeline_preset_settings(name, user_presets)
+    if settings is None:
+        return
+    for k, v in settings.items():
+        gui._save_setting(k, v)
+        widget = getattr(gui, k, None)
+        if widget is None:
+            continue
+        if isinstance(widget, QCheckBox):
+            widget.setChecked(bool(v))
+        elif isinstance(widget, QComboBox):
+            widget.setCurrentText(str(v))
+        elif isinstance(widget, QLineEdit):
+            widget.setText(str(v))
+
+
+def _on_save_preset(gui) -> bool:
+    """Save current RAG settings as a named preset. Returns True if saved."""
+    name, ok = QInputDialog.getText(
+        gui,
+        _("Сохранить пресет", "Save preset"),
+        _("Название пресета:", "Preset name:"),
+    )
+    if not ok or not str(name or "").strip():
+        return False
+    name = str(name).strip()
+
+    if name in RAG_PIPELINE_PRESETS:
+        QMessageBox.warning(
+            gui,
+            _("Ошибка", "Error"),
+            _("Нельзя перезаписать встроенный пресет «{n}».",
+              "Cannot overwrite built-in preset «{n}».").format(n=name),
+        )
+        return False
+
+    snapshot = {k: gui.settings.get(k, RAG_DEFAULTS[k]) for k in RAG_DEFAULTS}
+    user_presets = _load_user_presets()
+    user_presets[name] = snapshot
+    _save_user_presets(user_presets)
+    gui._save_setting("RAG_PIPELINE_PRESET", name)
+    _refresh_preset_combo(gui)
+    combo = getattr(gui, 'RAG_PIPELINE_PRESET', None)
+    if combo is not None:
+        combo.blockSignals(True)
+        combo.setCurrentText(name)
+        combo.blockSignals(False)
+    return True
+
+
+def _on_delete_preset(gui) -> None:
+    combo = getattr(gui, 'RAG_PIPELINE_PRESET', None)
+    if combo is None:
+        return
+    name = combo.currentText()
+    if name in RAG_PIPELINE_PRESETS or name == "Custom":
+        return
+
+    reply = QMessageBox.question(
+        gui,
+        _("Удалить пресет", "Delete preset"),
+        _("Удалить пресет «{n}»?", "Delete preset «{n}»?").format(n=name),
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+    )
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+
+    user_presets = _load_user_presets()
+    user_presets.pop(name, None)
+    _save_user_presets(user_presets)
+    gui._save_setting("RAG_PIPELINE_PRESET", "Custom")
+    _refresh_preset_combo(gui)
+    combo = getattr(gui, 'RAG_PIPELINE_PRESET', None)
+    if combo is not None:
+        combo.blockSignals(True)
+        combo.setCurrentText("Custom")
+        combo.blockSignals(False)
+
+
+def _build_pipeline_preset_config(gui) -> list:
+    user_presets = _load_user_presets()
+    return [
+        {'label': _('Пресет пайплайна', 'Pipeline Preset'), 'type': 'subsection'},
+        {'label': _('Пресет', 'Preset'),
+         'key': 'RAG_PIPELINE_PRESET', 'type': 'combobox',
+         'options': list_pipeline_preset_names(user_presets),
+         'default': 'Custom',
+         'command': lambda text: _update_preset_delete_btn(gui, text),
+         'tooltip': _(
+             'Выберите пресет и нажмите «Применить». Custom — ручная настройка.',
+             'Select a preset and click «Apply». Custom — manual configuration.',
+         )},
+        {'type': 'button_group', 'buttons': [
+            {'label': _('Применить', 'Apply'),
+             'command': lambda: _on_apply_preset(gui)},
+            {'label': _('Сохранить как...', 'Save as...'),
+             'command': lambda: _on_save_preset(gui)},
+            {'label': _('Удалить', 'Delete'),
+             'command': lambda: _on_delete_preset(gui),
+             'widget_name': '_preset_delete_btn'},
+        ]},
+        {'type': 'end'},
+    ]
+
+
 def _build_memory_limits_config(self) -> list:
     return [
         {'label': _('Лимит сообщений', 'Message limit'), 'key': 'MODEL_MESSAGE_LIMIT',
@@ -1532,6 +1713,7 @@ def build_rag_memory_section(self, parent, hc_provider_names) -> None:
     """Build and inject the Memory & RAG settings section into *parent*."""
 
     config = (
+        _build_pipeline_preset_config(self) +
         _build_memory_limits_config(self) +
         _build_history_compression_config(self, hc_provider_names) +
         _build_rag_core_config(self) +
@@ -1623,5 +1805,14 @@ def build_rag_memory_section(self, parent, hc_provider_names) -> None:
                                     _w.add_widget(_ce_ld_label)
                                     _w.add_widget(_ce_dl_btn)
                                     break
+    except Exception:
+        pass
+
+    # Init delete button state (disabled for built-in presets / Custom)
+    try:
+        _update_preset_delete_btn(
+            self,
+            self.settings.get("RAG_PIPELINE_PRESET", "Custom") or "Custom",
+        )
     except Exception:
         pass

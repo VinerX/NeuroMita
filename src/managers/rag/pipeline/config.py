@@ -25,6 +25,62 @@ def list_ce_preset_names() -> list[str]:
     return list(CE_PRESETS.keys())
 
 
+# ── Pipeline presets (built-in) ───────────────────────────────────────────
+# Each preset is a partial dict of SettingsManager keys to apply.
+# User-saved presets are stored separately in RAG_PIPELINE_USER_PRESETS (JSON).
+RAG_PIPELINE_PRESETS: dict[str, dict[str, object]] = {
+    "Keyword+FTS only": {
+        "RAG_VECTOR_SEARCH_ENABLED": False,
+        "RAG_CROSS_ENCODER_ENABLED": False,
+        "RAG_KEYWORD_SEARCH": True,
+        "RAG_USE_FTS": True,
+        "RAG_COMBINE_MODE": "union",
+        "RAG_USE_RRF": False,
+        "RAG_SEARCH_GRAPH": False,
+    },
+    "Vector+FTS (Qwen3 0.6B)": {
+        "RAG_VECTOR_SEARCH_ENABLED": True,
+        "RAG_CROSS_ENCODER_ENABLED": False,
+        "RAG_KEYWORD_SEARCH": True,
+        "RAG_USE_FTS": True,
+        "RAG_COMBINE_MODE": "union",
+        "RAG_EMBED_MODEL": "Qwen3-Embedding-0.6B (600M, 2025)",
+        "RAG_USE_RRF": False,
+        "RAG_SEARCH_GRAPH": False,
+    },
+    "Vector+FTS+Reranker (Qwen3)": {
+        "RAG_VECTOR_SEARCH_ENABLED": True,
+        "RAG_CROSS_ENCODER_ENABLED": True,
+        "RAG_KEYWORD_SEARCH": True,
+        "RAG_USE_FTS": True,
+        "RAG_COMBINE_MODE": "two_stage",
+        "RAG_EMBED_MODEL": "Qwen3-Embedding-0.6B (600M, 2025)",
+        "RAG_CROSS_ENCODER_MODEL": "Qwen3-Reranker-0.6B (600M, 2025)",
+        "RAG_CROSS_ENCODER_TOP_K": 75,
+        "RAG_CROSS_ENCODER_ALPHA": 0.68,
+        "RAG_USE_RRF": False,
+        "RAG_SEARCH_GRAPH": False,
+    },
+}
+
+
+def list_pipeline_preset_names(user_presets: dict | None = None) -> list[str]:
+    names = list(RAG_PIPELINE_PRESETS.keys())
+    if user_presets:
+        names.extend(user_presets.keys())
+    names.append("Custom")
+    return names
+
+
+def get_pipeline_preset_settings(name: str, user_presets: dict | None = None) -> dict | None:
+    """Return settings dict for preset name, or None for 'Custom'."""
+    if name in RAG_PIPELINE_PRESETS:
+        return RAG_PIPELINE_PRESETS[name].copy()
+    if user_presets and name in user_presets:
+        return user_presets[name].copy()
+    return None
+
+
 def resolve_ce_model() -> str:
     """Return the actual HF model ID for the cross-encoder (resolves preset name)."""
     model = str(SettingsManager.get("RAG_CROSS_ENCODER_MODEL", "GTE Reranker base multilingual (306M)") or "").strip()
