@@ -188,6 +188,7 @@ class EmbeddingModelHandler:
     })
 
     def __init__(self, model_name: str = MODEL_NAME, query_prefix: str = ""):
+        _ensure_torch_and_transformers()
         import torch  # локальный импорт (ускоряет import модуля)
         self.model_name = model_name
         self.query_prefix = query_prefix if query_prefix else QUERY_PREFIX
