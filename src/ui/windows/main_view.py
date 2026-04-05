@@ -6,7 +6,8 @@ from pathlib import Path
 import os
 from PyQt6.QtCore import QSize
 from styles.main_styles import get_stylesheet
-from utils import _, process_text_to_voice
+from utils import process_text_to_voice
+from utils import getTranslationVariant as _
 from main_logger import logger
 import ui.gui_templates as gui_templates
 from managers.settings_manager import CollapsibleSection
@@ -1004,7 +1005,7 @@ class ChatGUI(QMainWindow):
             start_dir = "."
 
         # QFileDialog must run in the main thread — do it here in the View
-        file_path, _ = QFileDialog.getOpenFileName(
+        file_path, __ = QFileDialog.getOpenFileName(
             self,
             _("Загрузить snapshot", "Load snapshot"),
             start_dir,
