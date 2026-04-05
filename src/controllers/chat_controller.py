@@ -822,7 +822,7 @@ class ChatController:
             # Keep the system-as-user message, only remove the assistant response
             history_data["messages"] = messages[:last_assistant_idx]
             character.history_manager.save_history(history_data)
-            widgets_to_remove = len(messages) - last_assistant_idx
+            widgets_to_remove = self._count_widgets_for_slice(messages[last_assistant_idx:])
             self.event_bus.emit(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, {"count": widgets_to_remove})
             self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
                 "user_input": " ",
@@ -835,7 +835,7 @@ class ChatController:
         history_data["messages"] = messages[:cut_idx]
         character.history_manager.save_history(history_data)
 
-        widgets_to_remove = len(messages) - cut_idx
+        widgets_to_remove = self._count_widgets_for_slice(messages[cut_idx:])
         self.event_bus.emit(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, {"count": widgets_to_remove})
 
         if last_user_text:
@@ -843,6 +843,64 @@ class ChatController:
                 "user_input": last_user_text,
                 "character_id": character_id,
             })
+
+    def _count_widgets_for_slice(self, messages_slice: list) -> int:
+        """Count how many chat display widgets will be rendered for a list of history messages.
+
+        This accounts for extra widgets created per message:
+        - StructuredOutputPanel (+1) when an assistant message has structured_data and
+          SHOW_STRUCTURED_IN_GUI is not off.
+        - Multiple target-group bubbles when segments have consecutive different targets.
+        - ImageWidget (+1 each) for image_url items in message content.
+        """
+        show_structured = self.settings.get("SHOW_STRUCTURED_IN_GUI", "Выкл")
+        struct_on = show_structured not in ("Выкл", "Off", "", False, None)
+
+        count = 0
+        for msg in messages_slice:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            structured_data = msg.get("structured_data")
+
+            if role == "structured":
+                # Separate "structured" role entries in history (legacy)
+                if struct_on:
+                    count += 1
+                continue
+
+            # Count main message bubbles
+            if role == "assistant" and isinstance(structured_data, dict):
+                segments = structured_data.get("segments") or []
+                if segments:
+                    # Replicate _group_segments_by_target logic to count target groups
+                    n_groups = 1
+                    cur_target = segments[0].get("target") or "Player"
+                    for seg in segments[1:]:
+                        t = seg.get("target") or "Player"
+                        if t != cur_target:
+                            n_groups += 1
+                            cur_target = t
+                    if n_groups > 1:
+                        count += n_groups
+                    else:
+                        count += 1
+                else:
+                    count += 1
+            else:
+                count += 1
+
+            # Structured panel is an extra widget after the last bubble
+            if role == "assistant" and structured_data and struct_on:
+                count += 1
+
+            # Image widgets
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "image_url":
+                        if item.get("image_url", {}).get("url", ""):
+                            count += 1
+
+        return count
 
     def _on_regenerate_from(self, event: Event):
         """Delete everything after (and including) the message after the target, then re-send it."""
@@ -899,7 +957,7 @@ class ChatController:
             character.history_manager.save_history(history_data)
 
             # Widgets removed = everything from target_idx to end of current display
-            widgets_to_remove = len(messages) - target_idx
+            widgets_to_remove = self._count_widgets_for_slice(messages[target_idx:])
             self.event_bus.emit(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, {"count": widgets_to_remove})
 
             if user_text:
@@ -929,7 +987,7 @@ class ChatController:
             history_data["messages"] = messages[:cut_idx]
             character.history_manager.save_history(history_data)
 
-            widgets_to_remove = len(messages) - cut_idx
+            widgets_to_remove = self._count_widgets_for_slice(messages[cut_idx:])
             self.event_bus.emit(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, {"count": widgets_to_remove})
 
             if preceding_user_text:
@@ -943,12 +1001,18 @@ class ChatController:
             history_data["messages"] = messages[:target_idx + 1]
             character.history_manager.save_history(history_data)
 
-            widgets_to_remove = len(messages) - target_idx - 1
+            widgets_to_remove = self._count_widgets_for_slice(messages[target_idx + 1:])
             if widgets_to_remove > 0:
                 self.event_bus.emit(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, {"count": widgets_to_remove})
 
+            # If the system message is stored as role=user (as_user / [Системное]: mode),
+            # the conversation already ends on a user turn — sending " " would create a
+            # second consecutive user message which confuses Gemini.  Use empty string so
+            # prompt_controller skips adding an extra user turn and the LLM responds
+            # directly to the [Системное] message.
+            trigger_input = "" if target_msg.get("role") == "user" else " "
             self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
-                "user_input": " ",
+                "user_input": trigger_input,
                 "character_id": character_id,
             })
 

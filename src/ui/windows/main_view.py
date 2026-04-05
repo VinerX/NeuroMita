@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPlainTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
     QMessageBox, QDialog, QProgressBar, QStackedWidget,
-    QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy, QCheckBox
+    QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy, QCheckBox, QComboBox
 )
 from PyQt6.QtGui import QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap
 
@@ -936,6 +936,41 @@ class ChatGUI(QMainWindow):
         parent_layout.addWidget(self.debug_window)
         self.update_debug_info()
 
+        # ── Structured output display ────────────────────────────────────────
+        struct_label = QLabel(_('Structured output (дебаг)', 'Structured output (debug)'))
+        struct_label.setObjectName('SeparatorLabel')
+        parent_layout.addWidget(struct_label)
+
+        _struct_options = [_('Выкл', 'Off'), _('Кратко', 'Brief'), 'JSON']
+        struct_row = QHBoxLayout()
+        struct_combo = QComboBox()
+        struct_combo.addItems(_struct_options)
+        _cur_struct = self._get_setting("SHOW_STRUCTURED_IN_GUI", _('Выкл', 'Off'))
+        _idx = struct_combo.findText(str(_cur_struct))
+        if _idx >= 0:
+            struct_combo.setCurrentIndex(_idx)
+        struct_combo.setToolTip(
+            _('Выкл — не показывать; Кратко — сегменты с командами; JSON — сырой ответ.',
+              'Off — hidden; Brief — segments with commands; JSON — raw response.')
+        )
+        struct_combo.currentTextChanged.connect(
+            lambda text: self._save_setting("SHOW_STRUCTURED_IN_GUI", text)
+        )
+        struct_row.addWidget(struct_combo)
+        struct_row.addStretch()
+        parent_layout.addLayout(struct_row)
+
+        struct_expanded_cb = QCheckBox(_('Развёрнуто по умолчанию', 'Expanded by default'))
+        struct_expanded_cb.setToolTip(
+            _('Если включено — блок с данными открыт сразу, иначе свёрнут.',
+              'If enabled — the data block is open immediately, otherwise collapsed.')
+        )
+        struct_expanded_cb.setChecked(bool(self._get_setting("STRUCTURED_EXPANDED_DEFAULT", False)))
+        struct_expanded_cb.toggled.connect(
+            lambda checked: self._save_setting("STRUCTURED_EXPANDED_DEFAULT", checked)
+        )
+        parent_layout.addWidget(struct_expanded_cb)
+
         # ── System message insertion ─────────────────────────────────────────
         sys_label = QLabel(_('Вставить system-сообщение в историю', 'Insert system message into history'))
         sys_label.setObjectName('SeparatorLabel')
@@ -951,6 +986,8 @@ class ChatGUI(QMainWindow):
             _('Сохранить как role=user с префиксом [Системное]:, чтобы Gemini видел сообщение в контексте',
               'Save as role=user with [System]: prefix so Gemini sees it in context')
         )
+        self._debug_as_user_cb.setChecked(bool(self._get_setting("DEBUG_INSERT_AS_USER", False)))
+        self._debug_as_user_cb.toggled.connect(lambda checked: self._save_setting("DEBUG_INSERT_AS_USER", checked))
         parent_layout.addWidget(self._debug_as_user_cb)
 
         sys_btn = QPushButton(_('Отправить системное', 'Send as system'))
