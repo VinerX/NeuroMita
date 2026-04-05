@@ -300,6 +300,7 @@ class RAGConfig:
 # ── Default values for all SettingsManager RAG keys ──────────────────────
 # Used by the "Reset RAG defaults" button in the UI.
 RAG_DEFAULTS: dict[str, object] = {
+    "RAG_ENABLED": False,
     "RAG_EMBED_MODEL": "Qwen3-Embedding-0.6B (600M, 2025)",
     "RAG_EMBED_MODEL_CUSTOM": "",
     "RAG_EMBED_QUERY_PREFIX": "query: ",
@@ -314,7 +315,7 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_GRAPH_MIN_RESULTS": 0,
     "RAG_TIME_DECAY_RATE": 0.05,
     "RAG_NOISE_MAX": 0.02,
-    "RAG_MAX_RESULTS": 10,
+    "RAG_MAX_RESULTS": 5,
     "RAG_SIM_THRESHOLD": 0.13,
     "RAG_QUERY_TAIL_MESSAGES": 2,
     "RAG_SEARCH_MEMORY": True,
@@ -322,6 +323,7 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_SEARCH_GRAPH": True,
     "RAG_GRAPH_VECTOR_SEARCH": False,
     "RAG_KEYWORD_SEARCH": True,
+    "RAG_VECTOR_SEARCH_ENABLED": False,
     "RAG_LEMMATIZATION": True,
     "RAG_KEYWORDS_MAX_TERMS": 8,
     "RAG_KEYWORDS_MIN_LEN": 3,
