@@ -1124,6 +1124,14 @@ def _build_embed_config(self) -> list:
         {'label': _('Модель эмбеддингов', 'Embedding Model'), 'type': 'subsection',
          'depends_on': 'RAG_ENABLED'},
 
+        {'label': _('Векторный поиск (локальная модель)', 'Vector search (local model)'),
+         'key': 'RAG_VECTOR_SEARCH_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _('Включает векторный поиск через локальную модель эмбеддингов (torch/transformers). '
+                      'Выключите, если torch недоступен — RAG продолжит работать только на FTS/keyword.',
+                      'Enables vector search via a local embedding model (torch/transformers). '
+                      'Disable if torch is unavailable — RAG will fall back to FTS/keyword only.'),
+         'depends_on': 'RAG_ENABLED'},
+
         {'label': _('Модель', 'Model'),
          'key': 'RAG_EMBED_MODEL', 'type': 'combobox',
          'options': list_preset_names(), 'default': 'Snowflake Arctic M v2.0',

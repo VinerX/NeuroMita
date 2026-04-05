@@ -43,6 +43,7 @@ class EmbeddingController:
         # ВАЖНО: сначала подписываемся на события, и только потом (опционально) прогреваем модель.
         # Иначе во время долгой загрузки модели подписчиков ещё нет -> RAGManager уходит в fallback и грузит вторую копию.
         self.handler: Optional[EmbeddingModelHandler] = None
+        self._handler_failed: bool = False  # avoid retrying after permanent load failure
 
         # Разделяем блокировку инициализации и блокировку инференса,
         # чтобы не словить deadlock при ленивой загрузке.
@@ -64,6 +65,7 @@ class EmbeddingController:
 
     _EMBED_SETTING_KEYS = frozenset({
         "RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM", "RAG_EMBED_QUERY_PREFIX", "HF_TOKEN",
+        "RAG_VECTOR_SEARCH_ENABLED",
     })
 
     def _subscribe_to_events(self) -> None:
@@ -88,6 +90,7 @@ class EmbeddingController:
         logger.info(f"EmbeddingController: настройка '{key}' изменилась, сбрасываю handler")
         with self._init_lock:
             self.handler = None
+            self._handler_failed = False  # allow retry after settings change
         if key in ("RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM"):
             self.event_bus.emit(Events.RAG.MODEL_CHANGED, {
                 "key": key,
@@ -101,18 +104,27 @@ class EmbeddingController:
         даже если где-то сработал fallback.
         Читает модель из настроек через пресеты.
         """
+        if self._handler_failed:
+            return None
         if self.handler is not None:
             return self.handler
         if not SettingsManager.get("RAG_ENABLED", False):
             return None
+        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", True):
+            return None
 
         with self._init_lock:
-            if self.handler is None:
-                ms = resolve_model_settings()
-                self.handler = EmbeddingModelHandler.shared(
-                    model_name=ms["hf_name"],
-                    query_prefix=ms["query_prefix"],
-                )
+            if self.handler is None and not self._handler_failed:
+                try:
+                    ms = resolve_model_settings()
+                    self.handler = EmbeddingModelHandler.shared(
+                        model_name=ms["hf_name"],
+                        query_prefix=ms["query_prefix"],
+                    )
+                except Exception as e:
+                    logger.error(f"EmbeddingController: не удалось загрузить модель эмбеддингов: {e}", exc_info=True)
+                    self._handler_failed = True
+                    return None
         return self.handler
 
     def _on_get_embedding(self, event: Event) -> Optional[np.ndarray]:

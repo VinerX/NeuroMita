@@ -38,6 +38,7 @@ DEFAULT_RECENT_TAIL_MAX_CHARS = 1200
 class RAGManager:
     _fallback_handler: Optional[EmbeddingModelHandler] = None
     _fallback_lock: Lock = Lock()
+    _fallback_failed: bool = False  # avoid retrying after permanent load failure
 
     @classmethod
     def _get_fallback_handler(cls) -> EmbeddingModelHandler:
@@ -45,14 +46,20 @@ class RAGManager:
         Fallback handler создаём лениво и один раз на процесс.
         ВАЖНО: используем EmbeddingModelHandler.shared(), чтобы не грузить модель второй раз.
         """
+        if cls._fallback_failed:
+            raise RuntimeError("Embedding model unavailable (failed to load; restart required)")
         if cls._fallback_handler is None:
             with cls._fallback_lock:
-                if cls._fallback_handler is None:
-                    ms = resolve_model_settings()
-                    cls._fallback_handler = EmbeddingModelHandler.shared(
-                        model_name=ms["hf_name"],
-                        query_prefix=ms["query_prefix"],
-                    )
+                if cls._fallback_handler is None and not cls._fallback_failed:
+                    try:
+                        ms = resolve_model_settings()
+                        cls._fallback_handler = EmbeddingModelHandler.shared(
+                            model_name=ms["hf_name"],
+                            query_prefix=ms["query_prefix"],
+                        )
+                    except Exception:
+                        cls._fallback_failed = True
+                        raise
         return cls._fallback_handler
 
     def __init__(self, character_id: str):
@@ -352,6 +359,8 @@ class RAGManager:
         """
         if not text or not SettingsManager.get("RAG_ENABLED", False):
             return None
+        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", True):
+            return None
 
         # Очистка от тегов
         text = rag_clean_text(text)
@@ -387,6 +396,8 @@ class RAGManager:
         2) Fallback на ленивый singleton EmbeddingModelHandler, если EventBus недоступен.
         """
         if not texts or not SettingsManager.get("RAG_ENABLED", False):
+            return []
+        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", True):
             return []
 
         cleaned: List[str] = []
