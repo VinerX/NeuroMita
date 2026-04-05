@@ -6,7 +6,8 @@ from pathlib import Path
 import os
 from PyQt6.QtCore import QSize
 from styles.main_styles import get_stylesheet
-from utils import _, process_text_to_voice
+from utils import process_text_to_voice
+from utils import getTranslationVariant as _
 from main_logger import logger
 import ui.gui_templates as gui_templates
 from managers.settings_manager import CollapsibleSection
@@ -17,9 +18,9 @@ import json
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QPropertyAnimation, QBuffer, QIODevice, QEvent, QEasingCurve
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
+    QTextEdit, QPlainTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
     QMessageBox, QDialog, QProgressBar, QStackedWidget,
-    QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy
+    QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy, QCheckBox
 )
 from PyQt6.QtGui import QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap
 
@@ -85,6 +86,7 @@ class ChatGUI(QMainWindow):
     update_chat_font_size_signal = pyqtSignal(int)
     switch_voiceover_settings_signal = pyqtSignal()
     load_chat_history_signal = pyqtSignal()
+    remove_last_chat_widgets_signal = pyqtSignal(int)
     check_triton_dependencies_signal = pyqtSignal()
     show_info_message_signal = pyqtSignal(dict)
     show_error_message_signal = pyqtSignal(dict)
@@ -229,6 +231,7 @@ class ChatGUI(QMainWindow):
         self.hide_loading_popup_signal.connect(self._on_hide_loading_popup)
         self.update_chat_font_size_signal.connect(self.update_chat_font_size)
         self.load_chat_history_signal.connect(self.load_chat_history)
+        self.remove_last_chat_widgets_signal.connect(self._on_remove_last_chat_widgets)
         self.clear_user_input_signal.connect(self._on_clear_user_input)
         self.insert_user_input_signal.connect(self._on_insert_user_input)
         self.show_info_message_signal.connect(self._on_show_info_message)
@@ -506,20 +509,33 @@ class ChatGUI(QMainWindow):
         return super().eventFilter(obj, event)
 
     def load_chat_history(self):
+        logger.debug("[Load] load_chat_history: начало")
+        logger.debug("[Load] Отключаем updates в chat_window")
         self.chat_window.setUpdatesEnabled(False)
+        logger.debug("[Load] Вызываем clear_chat_display()")
         self.clear_chat_display()
+        logger.debug("[Load] Эмитим LOAD_HISTORY")
         self.event_bus.emit(Events.Model.LOAD_HISTORY)
+        logger.debug("[Load] load_chat_history: конец")
 
     def _on_history_loaded(self, data: dict):
         messages = data.get('messages', [])
-        for entry in messages:
+        character_id = data.get('character_id', '')
+        logger.info(f"[HistoryLoaded] Загружено {len(messages)} сообщений для отображения")
+        for i, entry in enumerate(messages):
+            msg_role = entry.get("role", "?")
+            msg_content = entry.get("content", "")
+            content_preview = msg_content[:50] if isinstance(msg_content, str) else f"list({len(msg_content)})"
+            logger.info(f"[HistoryLoaded] msg[{i}] role='{msg_role}', preview='{content_preview}'")
             role = entry["role"]
             content = entry["content"]
             message_time = entry.get("time", "???")
             structured_data = entry.get("structured_data")
+            message_id = entry.get("message_id")
             try:
                 message_renderer.insert_message(self, role, content, message_time=message_time,
-                                                structured_data=structured_data)
+                                                structured_data=structured_data,
+                                                message_id=message_id, character_id=character_id)
             except Exception as ex:
                 logger.error(f"_on_history_loaded: НУ Я ПОНЯЛ: {str(ex)}")
         self.update_debug_info()
@@ -633,8 +649,12 @@ class ChatGUI(QMainWindow):
         self._chat_font_size = font_size
 
     def clear_chat_display(self):
+        logger.debug("[Clear] clear_chat_display: начало")
+        logger.debug(f"[Clear] chat_window.message_count: {self.chat_window.message_count()}")
         self.chat_window.clear_messages()
+        logger.debug("[Clear] Сообщения очищены")
         self.event_bus.emit(Events.Chat.CLEAR_CHAT)
+        logger.debug("[Clear] clear_chat_display: конец")
 
     def send_message(self, system_input: str = "", image_data: list[bytes] = None):
         user_input = self.user_entry.toPlainText().strip()
@@ -713,6 +733,7 @@ class ChatGUI(QMainWindow):
         messages_to_prepend = data.get('messages', [])
         if not messages_to_prepend:
             return
+        character_id = data.get('character_id', '')
         scrollbar = self.chat_window.verticalScrollBar()
         old_value = scrollbar.value()
         old_max = scrollbar.maximum()
@@ -721,8 +742,10 @@ class ChatGUI(QMainWindow):
             content = entry["content"]
             message_time = entry.get("time", "???")
             structured_data = entry.get("structured_data")
+            message_id = entry.get("message_id")
             message_renderer.insert_message(self, role, content, insert_at_start=True,
-                                            message_time=message_time, structured_data=structured_data)
+                                            message_time=message_time, structured_data=structured_data,
+                                            message_id=message_id, character_id=character_id)
         QTimer.singleShot(0, lambda: scrollbar.setValue(scrollbar.maximum() - old_max + old_value))
         logger.info(f"Загружено еще {len(messages_to_prepend)} сообщений.")
 
@@ -895,6 +918,9 @@ class ChatGUI(QMainWindow):
         message = data.get('message', '')
         QMessageBox.critical(self, title, message)
 
+    def _on_remove_last_chat_widgets(self, n: int):
+        self.chat_window.remove_last_n_widgets(n)
+
     def _on_update_model_loading_status(self, status: str):
         if hasattr(self, 'loading_status_label'):
             self.loading_status_label.setText(status)
@@ -909,6 +935,71 @@ class ChatGUI(QMainWindow):
         self.debug_window.setMinimumHeight(200)
         parent_layout.addWidget(self.debug_window)
         self.update_debug_info()
+
+        from ui.settings.debug_settings import setup_debug_panel_controls
+        setup_debug_panel_controls(self, parent_layout)
+
+    def _on_debug_insert_system_message(self):
+        text = self._debug_system_input.toPlainText().strip()
+        if not text:
+            return
+        character_id = self._get_current_character_id_for_debug()
+        self.event_bus.emit(Events.Chat.INSERT_SYSTEM_MESSAGE, {
+            "text": text,
+            "character_id": character_id,
+            "as_user": self._debug_as_user_cb.isChecked(),
+        })
+        self._debug_system_input.clear()
+
+    def _on_debug_save_snapshot(self):
+        character_id = self._get_current_character_id_for_debug()
+        self.event_bus.emit(Events.Chat.SAVE_SNAPSHOT, {"character_id": character_id})
+        self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
+            "title": _("Snapshot", "Snapshot"),
+            "message": _("Snapshot сохранён в папку Histories/.../Saved/",
+                         "Snapshot saved to Histories/.../Saved/"),
+        })
+
+    def _on_debug_load_snapshot(self):
+        import os
+        character_id = self._get_current_character_id_for_debug()
+
+        start_dir = "Histories"
+        if character_id:
+            candidate = os.path.join("Histories", character_id, "Saved")
+            if os.path.isdir(candidate):
+                start_dir = candidate
+        if not os.path.isdir(start_dir):
+            start_dir = "."
+
+        # QFileDialog must run in the main thread — do it here in the View
+        file_path, __ = QFileDialog.getOpenFileName(
+            self,
+            _("Загрузить snapshot", "Load snapshot"),
+            start_dir,
+            "JSON files (*.json)",
+        )
+        if not file_path:
+            return
+
+        logger.info(f"[Debug] Отправляем Event LOAD_SNAPSHOT для {file_path}")
+        # ChatController reads the JSON and saves history, then emits RELOAD_CHAT_HISTORY.
+        # SettingsController catches that and calls load_chat_history_signal.emit(),
+        # which safely returns execution to the main thread — no 0xC0000409 crashes.
+        self.event_bus.emit(Events.Chat.LOAD_SNAPSHOT, {
+            "file_path": file_path,
+            "character_id": character_id,
+        })
+
+    def _get_current_character_id_for_debug(self) -> str:
+        try:
+            res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
+            profile = res[0] if res else {}
+            if isinstance(profile, dict):
+                return str(profile.get("character_id") or "")
+        except Exception:
+            pass
+        return ""
 
     def _news_wrapper(self, parent_layout):
         self.setup_news_control(parent_layout)

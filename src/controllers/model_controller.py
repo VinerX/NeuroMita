@@ -427,10 +427,18 @@ class ModelController:
 
         chat_history = ch.load_history()
         all_messages = chat_history.get("messages", []) or []
+        logger.info(f"[ModelController._on_load_history] Загружено {len(all_messages)} raw сообщений из истории")
+        if all_messages:
+            for i, msg in enumerate(all_messages[-3:]):  # последние 3
+                logger.info(f"[ModelController._on_load_history] msg[{i}]: role={msg.get('role')}, content={str(msg.get('content'))[:60]}")
         if not isinstance(all_messages, list):
             all_messages = []
 
         prepared = self.ui_projector.project_for_ui(all_messages)
+        logger.info(f"[ModelController._on_load_history] После project_for_ui: {len(prepared)} сообщений")
+        if prepared:
+            for i, msg in enumerate(prepared[-3:]):  # последние 3 после проекции
+                logger.info(f"[ModelController._on_load_history] projected[{i}]: role={msg.get('role')}, content={str(msg.get('content'))[:60]}")
 
         self.total_messages_in_history = len(prepared)
 

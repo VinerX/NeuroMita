@@ -37,16 +37,6 @@ def setup_general_settings_controls(self, parent):
 
         {'label': _('Выводить мышление', 'Show thinking'), 'key': 'SHOW_THINK_IN_GUI',
          'type': 'checkbutton', 'default_checkbutton': True},
-        {'label': _('Structured output (дебаг)', 'Structured output (debug)'), 'key': 'SHOW_STRUCTURED_IN_GUI',
-         'type': 'combobox',
-         'options': [_('Выкл', 'Off'), _('Кратко', 'Brief'), 'JSON'],
-         'default': _('Выкл', 'Off'),
-         'tooltip': _('Выкл — не показывать; Кратко — сегменты с командами; JSON — сырой ответ.',
-                      'Off — hidden; Brief — segments with commands; JSON — raw response.')},
-        {'label': _('Развёрнуто по умолчанию', 'Expanded by default'), 'key': 'STRUCTURED_EXPANDED_DEFAULT',
-         'type': 'checkbutton', 'default_checkbutton': False,
-         'tooltip': _('Если включено — блок с данными открыт сразу, иначе свёрнут.',
-                      'If enabled — the data block is open immediately, otherwise collapsed.')}
     ]
 
     create_settings_section(

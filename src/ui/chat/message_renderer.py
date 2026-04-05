@@ -21,6 +21,7 @@ from main_logger import logger
 from ui.chat.chat_delegate import ChatMessageDelegate
 from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget, AVATAR_SIZE
 from ui.chat.structured_panel import StructuredOutputPanel
+from core.events import get_event_bus, Events
 
 
 def _wrap_panel_aligned(panel, role="assistant", parent=None, extra_left=0):
@@ -115,8 +116,77 @@ def _group_segments_by_target(segments: list) -> list:
 
 # ─── Public message renderer API ─────────────────────────────────────────────
 
-def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None):
+def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id: str):
+    """Connect context menu signals to the event bus."""
+    bus = get_event_bus()
+
+    def on_delete(mid):
+        bus.emit(Events.Chat.DELETE_MESSAGE, {"message_id": mid, "character_id": character_id})
+
+    def on_edit(mid):
+        bus.emit(Events.Chat.DELETE_MESSAGES_FROM, {"message_id": mid, "character_id": character_id, "edit_mode": True})
+
+    def on_regenerate(mid):
+        bus.emit(Events.Chat.REGENERATE, {"character_id": character_id})
+
+    def on_regenerate_from(mid):
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+        dlg = QDialog()
+        dlg.setWindowTitle(_("Регенерировать", "Regenerate"))
+        dlg.setModal(True)
+        dlg.setFixedWidth(360)
+        dlg.setStyleSheet("""
+            QDialog { background-color: #1e1e1e; }
+            QLabel { color: #e0e0e0; background: transparent; border: none; }
+            QPushButton {
+                background-color: #2a2a2a;
+                color: #e0e0e0;
+                border: 1px solid #444;
+                border-radius: 4px;
+                padding: 6px 16px;
+                font-size: 12px;
+            }
+            QPushButton:hover { background-color: #383838; }
+            QPushButton#AcceptBtn {
+                background-color: #2a4a2a;
+                border-color: #4a8a4a;
+                color: #90ee90;
+            }
+            QPushButton#AcceptBtn:hover { background-color: #3a5a3a; }
+        """)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(16, 16, 16, 12)
+        lay.setSpacing(12)
+        lbl = QLabel(_("Все сообщения после этого будут удалены, и Мита ответит заново. Продолжить?",
+                       "All messages after this will be deleted and Mita will respond again. Continue?"))
+        lbl.setWordWrap(True)
+        lay.addWidget(lbl)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        no_btn = QPushButton(_("Отмена", "Cancel"))
+        no_btn.clicked.connect(dlg.reject)
+        btn_row.addWidget(no_btn)
+        yes_btn = QPushButton(_("Продолжить", "Continue"))
+        yes_btn.setObjectName("AcceptBtn")
+        yes_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(yes_btn)
+        lay.addLayout(btn_row)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            bus.emit(Events.Chat.REGENERATE_FROM, {"message_id": mid, "character_id": character_id})
+
+    widget.delete_requested.connect(on_delete)
+    widget.edit_requested.connect(on_edit)
+    widget.regenerate_requested.connect(on_regenerate)
+    widget.regenerate_from_requested.connect(on_regenerate_from)
+
+
+def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None,
+                   message_id=None, character_id=None):
     """Insert a complete message into the chat as a widget."""
+
+    # Debug logging
+    content_preview = content[:60] if isinstance(content, str) else f"list({len(content)})" if isinstance(content, list) else f"{type(content).__name__}"
+    logger.info(f"[insert_message] role='{role}', content_type={type(content).__name__}, preview={content_preview}")
 
     font_size = _get_font_size(gui)
     chat_parent = gui.chat_window.get_layout_parent()
@@ -178,6 +248,31 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         return
 
     # ── Other roles (user, assistant, system) ───────────────────────────────
+
+    # Detect user messages sent with [Системное]: prefix (as_user mode) and
+    # render them visually as system bubbles so they look distinct in the chat.
+    _SYS_PREFIX = "[Системное]:"
+    if role == "user":
+        raw = content if isinstance(content, str) else ""
+        logger.info(f"[SysDetect] role=user, checking. raw_is_str={isinstance(raw, str)}, len={len(raw) if raw else 0}")
+        if not raw and isinstance(content, list):
+            logger.info(f"[SysDetect] Content is list, extracting text...")
+            for _item in content:
+                if isinstance(_item, dict) and _item.get("type") == "text":
+                    raw = _item.get("text") or _item.get("content", "")
+                    logger.info(f"[SysDetect] Extracted from list: {raw[:50] if raw else 'EMPTY'}")
+                    break
+        if isinstance(raw, str):
+            has_prefix = raw.lstrip().startswith(_SYS_PREFIX)
+            logger.info(f"[SysDetect] Checking prefix. has_prefix={has_prefix}, raw={raw[:70]}")
+            if has_prefix:
+                logger.info(f"[SysDetect] ✓✓✓ DETECTED system-as-user message! Changing role user→system")
+                role = "system"
+            else:
+                logger.info(f"[SysDetect] No prefix found")
+        else:
+            logger.info(f"[SysDetect] raw is not str: {type(raw).__name__}")
+
     text_parts = []
     speaker_name = ""
     images = []
@@ -271,8 +366,11 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
                 show_timestamp=show_ts and is_last,
                 max_bubble_width=max_bw,
                 sample_id=_ft_sample_id if is_last else None,
+                message_id=message_id if is_last else None,
                 parent=chat_parent
             )
+            if message_id and is_last:
+                _connect_widget_signals(w, message_id, character_id or "")
             if is_last and _pending_struct_panel is not None:
                 w.set_structured_ref(_pending_struct_panel)
             gui.chat_window.add_message_widget(w, at_start=insert_at_start)
@@ -287,8 +385,11 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             show_timestamp=show_ts,
             max_bubble_width=max_bw,
             sample_id=_ft_sample_id,
+            message_id=message_id,
             parent=chat_parent
         )
+        if message_id:
+            _connect_widget_signals(msg_widget, message_id, character_id or "")
         if _pending_struct_panel is not None:
             msg_widget.set_structured_ref(_pending_struct_panel)
         gui.chat_window.add_message_widget(msg_widget, at_start=insert_at_start)

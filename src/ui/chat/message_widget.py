@@ -13,13 +13,15 @@ import base64
 import io
 from PyQt6.QtWidgets import (
     QFrame, QHBoxLayout, QVBoxLayout, QLabel, QWidget, QSizePolicy,
+    QMenu, QApplication,
 )
-from PyQt6.QtCore import Qt, QSize, QRectF, QPointF
+from PyQt6.QtCore import Qt, QSize, QRectF, QPointF, pyqtSignal
 from PyQt6.QtGui import (
     QPixmap, QPainter, QPainterPath, QColor, QFont, QBrush, QPen, QTextDocument,
-    QTextLayout, QTextOption, QFontMetrics
+    QTextLayout, QTextOption, QFontMetrics, QAction,
 )
 from main_logger import logger
+from utils import _
 
 
 # ── Avatar paths ────────────────────────────────────────────────────────────
@@ -253,6 +255,9 @@ class _TextBodyWidget(QWidget):
             Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
         self._text_label.setCursor(Qt.CursorShape.IBeamCursor)
+        # Suppress the default QLabel context menu so right-click bubbles
+        # up to MessageWidget.contextMenuEvent (our custom menu).
+        self._text_label.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self._text_label.setStyleSheet(
             f"color: {text_color}; font-size: {font_size}pt; "
             f"background: transparent; border: none; padding: 0px;"
@@ -287,6 +292,10 @@ class _TextBodyWidget(QWidget):
         if not show_ts:
             self._time_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self._ts_hint = self._time_label.sizeHint()
+
+    def contextMenuEvent(self, event):
+        # Propagate to parent (BubbleFrame → MessageWidget)
+        event.ignore()
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -418,6 +427,12 @@ class MessageWidget(QWidget):
     The toggle button in the name row controls the external panel.
     """
 
+    delete_requested = pyqtSignal(str)           # message_id
+    edit_requested = pyqtSignal(str)             # message_id
+    regenerate_requested = pyqtSignal(str)       # message_id
+    regenerate_from_requested = pyqtSignal(str)  # message_id
+    copy_requested = pyqtSignal(str)             # text
+
     def __init__(
         self,
         role: str = "assistant",
@@ -429,6 +444,7 @@ class MessageWidget(QWidget):
         show_timestamp: bool = True,
         max_bubble_width: int = 600,
         sample_id: str = None,
+        message_id: str = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -437,6 +453,7 @@ class MessageWidget(QWidget):
         self._font_size = font_size
         self._structured_panel = None  # external widget ref
         self._sample_id = sample_id
+        self._message_id = message_id
 
         self.setStyleSheet("background: transparent; border: none;")
 
@@ -468,8 +485,8 @@ class MessageWidget(QWidget):
         if not is_user and self._avatar_label:
             outer.addWidget(self._avatar_label, 0, Qt.AlignmentFlag.AlignBottom)
 
-        # User: push to right
-        if is_user:
+        # User: push to right; System: center (stretch both sides)
+        if is_user or role == "system":
             outer.addStretch()
 
         # ── Bubble ──────────────────────────────────────────────────────────
@@ -653,6 +670,72 @@ class MessageWidget(QWidget):
     @property
     def role(self) -> str:
         return self._role
+
+    # ── Context menu ─────────────────────────────────────────────────────────
+
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #1e1e2e;
+                color: #e6e6eb;
+                border: 1px solid #3a3a5a;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 20px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #2b3559;
+            }
+        """)
+
+        if self._role == "user":
+            edit_action = QAction(_("Редактировать", "Edit"), self)
+            edit_action.triggered.connect(lambda: self.edit_requested.emit(self._message_id or ""))
+            menu.addAction(edit_action)
+            if self._message_id:
+                regen_from_action = QAction(_("Регенерировать отсюда", "Regenerate from here"), self)
+                regen_from_action.triggered.connect(lambda: self.regenerate_from_requested.emit(self._message_id))
+                menu.addAction(regen_from_action)
+        elif self._role == "assistant":
+            regen_action = QAction(_("Регенерировать", "Regenerate"), self)
+            regen_action.triggered.connect(lambda: self.regenerate_requested.emit(self._message_id or ""))
+            menu.addAction(regen_action)
+            if self._message_id:
+                regen_from_action = QAction(_("Регенерировать отсюда", "Regenerate from here"), self)
+                regen_from_action.triggered.connect(lambda: self.regenerate_from_requested.emit(self._message_id))
+                menu.addAction(regen_from_action)
+        elif self._role == "system":
+            if self._message_id:
+                regen_from_action = QAction(_("Регенерировать отсюда", "Regenerate from here"), self)
+                regen_from_action.triggered.connect(lambda: self.regenerate_from_requested.emit(self._message_id))
+                menu.addAction(regen_from_action)
+
+        # Copy selected text if any, otherwise copy full message
+        selected = self._body._text_label.selectedText() if hasattr(self, '_body') else ""
+        if selected:
+            copy_sel_action = QAction(_("Копировать выделенное", "Copy selected"), self)
+            copy_sel_action.triggered.connect(lambda: QApplication.clipboard().setText(selected))
+            menu.addAction(copy_sel_action)
+        copy_action = QAction(_("Копировать всё", "Copy all"), self)
+        copy_action.triggered.connect(lambda: self._on_copy())
+        menu.addAction(copy_action)
+
+        if self._message_id:
+            menu.addSeparator()
+            del_action = QAction(_("Удалить", "Delete"), self)
+            del_action.triggered.connect(lambda: self.delete_requested.emit(self._message_id))
+            menu.addAction(del_action)
+
+        menu.exec(event.globalPos())
+
+    def _on_copy(self):
+        text = self.get_text()
+        QApplication.clipboard().setText(text)
+        self.copy_requested.emit(text)
 
 
 # ── ImageWidget ─────────────────────────────────────────────────────────────
