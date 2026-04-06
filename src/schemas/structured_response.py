@@ -17,9 +17,10 @@ Usage::
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import json as _json
+from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def _to_gemini_schema(schema: dict) -> dict:
@@ -95,7 +96,22 @@ class ToolCall(BaseModel):
     """Describes a tool the LLM wants to invoke during its response."""
 
     name: str = Field(..., description="Name of the tool to call (e.g. 'web_search', 'calculator')")
-    args: Dict[str, Any] = Field(default_factory=dict, description="Tool arguments as key-value pairs")
+    # Union allows Gemini to return args as a JSON string (Gemini can't freely use object type)
+    args: Union[Dict[str, Any], str] = Field(
+        default_factory=dict,
+        description='Tool arguments as key-value pairs, e.g. {"query": "search term"}'
+    )
+
+    @model_validator(mode="after")
+    def _coerce_args(self) -> "ToolCall":
+        """If Gemini returned args as a JSON string, parse it into a dict."""
+        if isinstance(self.args, str):
+            try:
+                parsed = _json.loads(self.args)
+                self.args = parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                self.args = {}
+        return self
 
 
 class ResponseSegment(BaseModel):
@@ -218,5 +234,19 @@ class StructuredResponse(BaseModel):
         Strips all JSON Schema features Gemini doesn't support:
         $ref/$defs, anyOf/null, default, title, additionalProperties.
         Converts Optional[X] → {type: X, nullable: true}.
+
+        Special case: tool_call.args is patched to type=string so Gemini
+        can freely write JSON arguments instead of being constrained to an
+        empty object (Gemini doesn't support free-form additionalProperties).
         """
-        return _to_gemini_schema(cls.model_json_schema())
+        schema = _to_gemini_schema(cls.model_json_schema())
+        # Patch tool_call.args: object without properties → string
+        try:
+            tc_props = schema["properties"]["tool_call"]["properties"]
+            tc_props["args"] = {
+                "type": "string",
+                "description": 'JSON-encoded tool arguments, e.g. {"query": "search term"}',
+            }
+        except (KeyError, TypeError):
+            pass
+        return schema
