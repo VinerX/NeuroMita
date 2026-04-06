@@ -36,12 +36,15 @@ def _render_tools_for_prompt(schema: list) -> str:
     for tool in schema:
         name = tool.get("name", "?")
         desc = tool.get("description", "")
-        params = tool.get("parameters", {}).get("properties", {})
+        params_def = tool.get("parameters", {})
+        props = params_def.get("properties", {})
+        required_set = set(params_def.get("required", []))
         param_parts = []
-        for pname, pdef in params.items():
+        for pname, pdef in props.items():
             ptype = pdef.get("type", "any")
             pdesc = pdef.get("description", "")
-            param_parts.append(f"{pname}: {ptype}" + (f" — {pdesc}" if pdesc else ""))
+            req_marker = " (REQUIRED)" if pname in required_set else ""
+            param_parts.append(f"{pname}: {ptype}{req_marker}" + (f" — {pdesc}" if pdesc else ""))
         params_str = ", ".join(param_parts) if param_parts else "no parameters"
         lines.append(f"- {name}({params_str}) — {desc}")
     return "\n".join(lines)
@@ -1216,6 +1219,22 @@ class ModelController:
             "speaker_name": "",
         }, sync=True)
 
+        # Detect dialect to choose the right role for the tool result message.
+        # Gemini does not support "system" role mid-conversation — use "user" with [SYSTEM INFO] tag.
+        # OpenAI-compatible providers handle "system" fine anywhere.
+        try:
+            preset_s = self.preset_resolver.resolve(preset_id)
+            _dialect = (preset_s.dialect_id or "").lower()
+        except Exception:
+            _dialect = ""
+        _gemini_mode = "gemini" in _dialect
+        tool_result_role = "user" if _gemini_mode else "system"
+        tool_result_content = (
+            f"[SYSTEM INFO] [Tool result: {tool_name}]\n{tool_result}"
+            if _gemini_mode
+            else f"[Tool result: {tool_name}]\n{tool_result}"
+        )
+
         # Build messages for second call: append first response JSON + tool result
         combined_messages_v2 = list(combined_messages)
         try:
@@ -1223,10 +1242,7 @@ class ModelController:
         except Exception:
             first_response_json = first_text
         combined_messages_v2.append({"role": "assistant", "content": first_response_json})
-        combined_messages_v2.append({
-            "role": "system",
-            "content": f"[Tool result: {tool_name}]\n{tool_result}"
-        })
+        combined_messages_v2.append({"role": tool_result_role, "content": tool_result_content})
 
         # Second LLM call
         self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
