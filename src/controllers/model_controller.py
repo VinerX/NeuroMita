@@ -1064,6 +1064,8 @@ class ModelController:
         result_dict = structured_response_to_result_dict(structured)
         # Remove reasoning from debug display — it's shown as a think block
         result_dict.pop("reasoning", None)
+        # Attach raw LLM JSON for the debug panel (not saved to history)
+        result_dict["_raw_json"] = visible_raw
         final_text = result_dict["response"]
 
         targets: list[str] = []
@@ -1083,6 +1085,7 @@ class ModelController:
 
         if policy.write_to_history:
             origin_message_id = str(data.get("origin_message_id") or "") or None
+            history_dict = {k: v for k, v in result_dict.items() if not k.startswith("_")}
             self.event_writer.write_turn(
                 responder_character_id=char_id,
                 sender=sender,
@@ -1095,7 +1098,7 @@ class ModelController:
                 assistant_target=target,
                 event_type=event_type,
                 task_uid=task_uid,
-                structured_data=result_dict,
+                structured_data=history_dict,
             )
 
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)

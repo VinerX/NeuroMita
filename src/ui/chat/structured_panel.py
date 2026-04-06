@@ -484,7 +484,11 @@ class StructuredOutputPanel(QFrame):
             layout.addWidget(rem_block)
 
     def _build_json_view(self, layout: QVBoxLayout, data: dict, font_size: int):
-        json_text = json.dumps(data, ensure_ascii=False, indent=2)
+        raw = data.get("_raw_json")
+        if raw:
+            json_text = raw
+        else:
+            json_text = json.dumps(data, ensure_ascii=False, indent=2)
         lbl = QLabel(json_text, layout.parentWidget())
         lbl.setWordWrap(True)
         lbl.setTextFormat(Qt.TextFormat.PlainText)

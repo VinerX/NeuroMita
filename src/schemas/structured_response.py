@@ -162,16 +162,16 @@ class StructuredResponse(BaseModel):
     boredom_change: float = Field(default=0.0, description="Change in boredom (-6 to 6)")
     stress_change: float = Field(default=0.0, description="Change in stress (-6 to 6)")
 
-    memory_add: List[str] = Field(default_factory=list, description="Memories to add")
-    memory_update: List[str] = Field(default_factory=list, description="Memories to update (format: 'number|new_text')")
-    memory_delete: List[str] = Field(default_factory=list, description="Memories to delete (format: 'number' or 'start-end')")
+    memory_add: Optional[List[str]] = Field(default=None, description="Memories to add")
+    memory_update: Optional[List[str]] = Field(default=None, description="Memories to update (format: 'number|new_text')")
+    memory_delete: Optional[List[str]] = Field(default=None, description="Memories to delete (format: 'number' or 'start-end')")
 
-    reminder_add: List[str] = Field(
-        default_factory=list,
+    reminder_add: Optional[List[str]] = Field(
+        default=None,
         description="Reminders to set. Format: 'YYYY-MM-DDTHH:MM:SS|reminder text'. Example: '2026-04-03T15:00:00|Remind player about the meeting'."
     )
-    reminder_delete: List[str] = Field(
-        default_factory=list,
+    reminder_delete: Optional[List[str]] = Field(
+        default=None,
         description="Reminder IDs to delete. Format: 'N' (number). Example: '3'."
     )
 

@@ -11,11 +11,6 @@ Schema:
   "attitude_change": <number -6..6>,
   "boredom_change": <number -6..6>,
   "stress_change": <number -6..6>,
-  "memory_add": ["priority|content", ...],
-  "memory_update": ["number|content", ...],
-  "memory_delete": ["number" or "start-end", ...],
-  "reminder_add": ["YYYY-MM-DDTHH:MM:SS|reminder text", ...],
-  "reminder_delete": ["N", ...],
   "segments": [
     {
       "text": "Your text here (REQUIRED)",
