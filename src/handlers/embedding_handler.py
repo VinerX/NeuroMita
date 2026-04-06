@@ -295,6 +295,10 @@ class EmbeddingModelHandler:
             inputs = [prefix + text]
             tokens = self.tokenizer(inputs, padding=True, truncation=True, return_tensors='pt', max_length=512).to(
                 self.device)
+            # Явно задаём position_ids: padding-токены получают позицию последнего реального токена
+            # (безопасно, т.к. attention_mask=0 их маскирует). Это обходит баг в custom RoPE
+            # Snowflake/snowflake-arctic-embed-m-v2.0 при некоторых версиях torch/transformers.
+            tokens["position_ids"] = (tokens["attention_mask"].cumsum(-1) - 1).clamp(min=0)
             with torch.no_grad():
                 outputs = self.model(**tokens)
                 embedding = self._pool(outputs.last_hidden_state, tokens["attention_mask"], self._use_last_token_pooling)
@@ -356,6 +360,9 @@ class EmbeddingModelHandler:
                         return_tensors='pt',
                         max_length=512
                     ).to(self.device)
+                    # Явно задаём position_ids — обход бага в custom RoPE Snowflake
+                    # при некоторых версиях torch/transformers (мусорные значения в position_ids).
+                    tokens["position_ids"] = (tokens["attention_mask"].cumsum(-1) - 1).clamp(min=0)
 
                     outputs = self.model(**tokens)
                     embedding = self._pool(outputs.last_hidden_state, tokens["attention_mask"], self._use_last_token_pooling)
