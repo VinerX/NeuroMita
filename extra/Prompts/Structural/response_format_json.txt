@@ -77,7 +77,8 @@ Example response:
 
 tool_call: Use this when you need to call an external tool (internet search, calculator, etc.).
 - "segments" is REQUIRED: write a very short phrase (2-5 words): "One moment.", "Let me check.", "Just a sec." — nothing else.
-- Set "tool_call": {"name": "tool_name", "args": {...}} with the tool name and arguments.
+- ALL required args MUST be filled with actual values derived from the conversation context. Never leave args empty {}.
+- Example: player asks about space news → "tool_call": {"name": "web_search", "args": {"query": "latest space news 2026"}}
 - You will receive the tool result in the next message and can then answer fully.
 - Omit "tool_call" entirely if no tool is needed.
 
