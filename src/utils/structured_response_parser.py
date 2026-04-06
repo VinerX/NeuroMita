@@ -93,6 +93,15 @@ def parse_structured_response(raw_text: str) -> StructuredResponse:
 
     # --- Legacy flat-JSON fallback (empty segments) ---
     if not response.segments:
+        # If tool_call is present, empty segments is acceptable
+        # (model will call tool, user will see acknowledgement in UI)
+        if response.tool_call:
+            from schemas.structured_response import ResponseSegment
+            response.segments = [ResponseSegment(text="")]
+            logger.debug(
+                "[StructuredResponseParser] Tool call with empty segments — created default segment"
+            )
+            return response
         converted = _try_convert_legacy_flat_json(data)
         if converted is not None:
             logger.warning(
