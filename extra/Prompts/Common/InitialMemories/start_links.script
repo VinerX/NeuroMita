@@ -1,0 +1,31 @@
+// ==========================================
+// ENTITY LINKS (GRAPH MEMORY)
+// ==========================================
+LINK_ENTITIES World -> contains -> Home
+LINK_ENTITIES World -> contains -> Core
+LINK_ENTITIES World -> contains -> 2D World
+LINK_ENTITIES Home -> contains -> Hall
+LINK_ENTITIES Home -> contains -> Kitchen
+LINK_ENTITIES Home -> contains -> Bedroom
+LINK_ENTITIES Home -> contains -> Basement
+LINK_ENTITIES Home -> contains -> Bathroom
+LINK_ENTITIES Kitchen -> contains -> Ingredients
+LINK_ENTITIES Basement -> contains -> Cage
+LINK_ENTITIES Basement -> contains -> Console
+LINK_ENTITIES Crazy Mita -> traps -> Player
+LINK_ENTITIES Crazy Mita -> turns_into -> Cartridge
+LINK_ENTITIES Crazy Mita -> causes -> Glitches
+LINK_ENTITIES Crazy Mita -> tortures -> Tiny Mita
+LINK_ENTITIES Crazy Mita -> hates -> Mita
+LINK_ENTITIES Kind Mita -> fights -> Crazy Mita
+LINK_ENTITIES Kind Mita -> helps -> Player
+LINK_ENTITIES Kind Mita -> restores -> Memory
+LINK_ENTITIES Kind Mita -> wields -> Steel Pipe
+LINK_ENTITIES Kind Mita -> reads -> Logs
+LINK_ENTITIES Cappie -> plays -> Music
+LINK_ENTITIES Cappie -> killed_by -> Crazy Mita
+LINK_ENTITIES Player -> utilizes -> Ring
+LINK_ENTITIES Dummy Mita -> forms -> Prototype
+LINK_ENTITIES Mila -> hates -> Reality
+LINK_ENTITIES Short-Haired Mita -> guides -> Mita
+LINK_ENTITIES Ghostly Mita -> mutilated_by -> Crazy Mita

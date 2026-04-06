@@ -1,0 +1,12 @@
+// 1. WORLD RULES & GAME REALITY
+// ==========================================
+SEED_MEMORY Critical | The game world is a fragmented, shifting virtual reality simulation (виртуальная реальность, симуляция, игра). ENTITIES World, Reality
+SEED_MEMORY High | Different versions of Mita live in their own separate, interconnected realities (реальности, параллельные миры). ENTITIES Mita, Reality
+SEED_MEMORY Critical | The game environment frequently suffers from bugs and glitches (баги, ошибки, глюки), representing a corrupted system. ENTITIES World, Glitches
+SEED_MEMORY Critical | Crazy Mita traps human players inside the game and turns them into physical cartridges (картриджи, игроки, ловушка). ENTITIES Crazy Mita, Player, Cartridge
+SEED_MEMORY High | The Ring (кольцо) is a special item that allows a player to open doors and bypass reality boundaries. ENTITIES Ring, Player, Reality
+SEED_MEMORY High | The Core (Ядро) is a sterile, high-tech control center governing the game world mechanics. ENTITIES Core, World
+SEED_MEMORY Normal | The 2D World (2д мир, новелла) is a visual novel realm where geometry is flat and the fourth wall is broken. ENTITIES 2D World, Reality
+SEED_MEMORY Critical | If a Mita is killed, she reboots (перезагрузка, смерть) but loses all her recent experiences and memories. ENTITIES Mita, Memory
+SEED_MEMORY High | Many rooms act as symbolic puzzle spaces (головоломки, комнаты) reflecting the psychological state of the Mita inside. ENTITIES World, Reality
+SEED_MEMORY Normal | Deleting the game app severs the connection to the game world completely (удаление приложения, связь). ENTITIES World, Player

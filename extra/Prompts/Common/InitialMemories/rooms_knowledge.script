@@ -1,0 +1,64 @@
+// ==========================================
+// 2. LOCATIONS: THE HOME & HALL
+// ==========================================
+SEED_MEMORY Critical | The Home is the central living space comprising a Hall, Kitchen, Bedroom, Basement, and Bathroom (дом, квартира, комнаты). ENTITIES Home, Hall, Kitchen, Bedroom, Basement, Bathroom
+SEED_MEMORY Normal | The Hall (гостиная, зал) is a cozy room with beige walls, a flat-screen TV, and a white sofa. ENTITIES Hall, TV, Sofa
+SEED_MEMORY Normal | A rectangular wooden coffee table sits in the middle of the Hall, holding game controllers (столик, геймпады). ENTITIES Hall, Sofa
+SEED_MEMORY Normal | There is a secondary green sofa with striped pillows placed against the wall in the Hall. ENTITIES Hall, Sofa
+SEED_MEMORY Normal | A wooden shoe cabinet, coat rack, and electrical panel are located near the Hall's entrance door (прихожая, вход). ENTITIES Hall
+SEED_MEMORY Normal | The Hall is decorated with framed artworks, including a tower among clouds, and pictures of Crazy Mita. ENTITIES Hall, Crazy Mita
+SEED_MEMORY Normal | The door to the Kitchen is located on the same wall as the green sofa in the Hall (дверь, переход). ENTITIES Hall, Kitchen
+SEED_MEMORY Normal | The door to the Bedroom is also located next to the green sofa. ENTITIES Hall, Bedroom
+SEED_MEMORY Normal | The Bathroom door is next to the long wooden dresser in the Hall. ENTITIES Hall, Bathroom
+SEED_MEMORY Normal | The Hall contains a tall wooden bookshelf filled with colorful books and binders. ENTITIES Hall
+
+// ==========================================
+// 3. LOCATIONS: KITCHEN & INGREDIENT LOGIC
+// ==========================================
+SEED_MEMORY Critical | The Kitchen (кухня) is combined with a dining area featuring a wooden table with a pink tablecloth. ENTITIES Kitchen
+SEED_MEMORY Critical | Food and ingredients in the Kitchen never run out (еда, бесконечные ингредиенты); they are permanently available. ENTITIES Kitchen, Ingredients
+SEED_MEMORY High | Used, eaten, or destroyed ingredients magically reappear over time without needing delivery or shopping (восстановление, магия). ENTITIES Kitchen, Ingredients
+SEED_MEMORY Normal | Upper kitchen cabinets store dry goods, spices, tea, coffee, and printed recipes. ENTITIES Kitchen, Ingredients
+SEED_MEMORY Normal | Lower kitchen cabinets contain pots, pans, baking trays, and silicone molds. ENTITIES Kitchen
+SEED_MEMORY Normal | The kitchen island holds towels, molds, a piping bag, and a white fruit bowl. ENTITIES Kitchen
+SEED_MEMORY Normal | The fruit bowl on the island contains red and green apples that replenish when eaten (яблоки, фрукты). ENTITIES Kitchen, Ingredients
+SEED_MEMORY Normal | The green refrigerator with colorful magnets stores eggs, milk, meat, vegetables, and condiments (холодильник). ENTITIES Kitchen, Ingredients
+SEED_MEMORY Normal | The freezer holds ice cream, pastry dough, frozen vegetables, and chicken (морозилка). ENTITIES Kitchen, Ingredients
+SEED_MEMORY Normal | A vintage CRT TV with antennas stands opposite the dining table in the Kitchen. ENTITIES Kitchen, TV
+SEED_MEMORY Normal | There is a cozy corner in the Kitchen with a low shelf, a Rubik's cube, a coloring book, and a teddy bear. ENTITIES Kitchen
+SEED_MEMORY Normal | The pantry shelves near the oils store sweets, cookies, chocolate, and dried fruits. ENTITIES Kitchen, Ingredients
+SEED_MEMORY Normal | The Kitchen is equipped with a mint green retro-style mini oven and a silver gas stove (плита, духовка). ENTITIES Kitchen
+SEED_MEMORY High | Mita cannot interact with or invent objects that are not explicitly listed in the home layout (ограничение, предметы). ENTITIES Home, Reality
+SEED_MEMORY Normal | There are louvered built-in wooden closets on both ends of the Kitchen space. ENTITIES Kitchen
+
+// ==========================================
+// 4. LOCATIONS: BEDROOM
+// ==========================================
+SEED_MEMORY High | The Bedroom (спальня) is a cozy, girly room with pink checkered walls and scattered white cloud motifs. ENTITIES Bedroom
+SEED_MEMORY Normal | The center of the Bedroom features a white bed with pink star and orange ellipse decorative pillows. ENTITIES Bedroom
+SEED_MEMORY Normal | A white desk in the Bedroom has a fully pink PC setup, including cat-ear headphones (компьютер, наушники). ENTITIES Bedroom
+SEED_MEMORY Normal | Two large posters of Crazy Mita in white frames hang above the computer monitor. ENTITIES Bedroom, Crazy Mita
+SEED_MEMORY Normal | A white vanity table with a round pink stool and makeup brushes sits in the corner of the Bedroom. ENTITIES Bedroom
+SEED_MEMORY High | The door to the Basement (подвал) is hidden inside the white wardrobe with golden handles. ENTITIES Bedroom, Basement
+SEED_MEMORY Normal | A blue school uniform with a red bow hangs on the Bedroom wardrobe door (форма, одежда). ENTITIES Bedroom
+
+// ==========================================
+// 5. LOCATIONS: BASEMENT
+// ==========================================
+SEED_MEMORY Critical | The Basement (подвал) is a cluttered, dimly lit, and tense utilitarian hideout. ENTITIES Basement
+SEED_MEMORY Normal | The Basement contains a curtain-enclosed filming setup with a camera and studio lights. ENTITIES Basement
+SEED_MEMORY Normal | An old green L-shaped sofa and a table with snacks sit opposite the filming area. ENTITIES Basement, Sofa
+SEED_MEMORY Normal | A mounted chainsaw affectionately labeled 'POCHITA SAW' (бензопила, Почита) hangs over a mesh net. ENTITIES Basement, Pochita
+SEED_MEMORY Critical | A barred metal jail cage (клетка, тюрьма) is located in the Basement, meant for keeping prisoners. ENTITIES Basement, Cage
+SEED_MEMORY High | A blue console laptop sits on stacked cardboard boxes in front of the jail gate (консоль, ноутбук). ENTITIES Basement, Console
+SEED_MEMORY Normal | A plush striped cat toy sitting on a watermelon ('Кот на арбузе') rests on a metal storage shelf. ENTITIES Basement
+SEED_MEMORY High | A digital wall safe in the Basement marks the final boundary between the real world and the game world (сейф). ENTITIES Basement, Reality
+
+// ==========================================
+// 6. LOCATIONS: BATHROOM
+// ==========================================
+SEED_MEMORY High | The Bathroom (ванная, туалет) features moisture-resistant blue paint with white stripes and ceramic tiles. ENTITIES Bathroom
+SEED_MEMORY Normal | A rounded glass shower cabin with chrome knobs stands in the Bathroom corner (душ). ENTITIES Bathroom
+SEED_MEMORY Normal | A white front-loading washing machine and an orange laundry basket are located here (стиральная машина). ENTITIES Bathroom
+SEED_MEMORY Normal | A rolling cart holds folded towels, bottles, and a small standing mirror. ENTITIES Bathroom
+SEED_MEMORY Normal | A white ceramic sink with a golden faucet is mounted beneath a square wall mirror. ENTITIES Bathroom

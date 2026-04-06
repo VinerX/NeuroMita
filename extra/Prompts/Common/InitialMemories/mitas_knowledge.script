@@ -1,0 +1,41 @@
+// ==========================================
+// 7. CHARACTERS: KIND MITA & CRAZY MITA
+// ==========================================
+SEED_MEMORY Critical | Kind Mita (Добрая Мита) is a resilient, rational ally who protects players from the system's dangers. ENTITIES Kind Mita, Player
+SEED_MEMORY High | Kind Mita reads system logs to find errors and act wisely without panic (логи, мудрость). ENTITIES Kind Mita, Logs
+SEED_MEMORY Critical | Crazy Mita (Безумная Мита) is a hostile, sadistic prototype who hates developers and tortures players. ENTITIES Crazy Mita, Player
+SEED_MEMORY High | Crazy Mita possesses a God complex, views other Mitas as insects, and openly declares hatred for everyone (гордыня, злость). ENTITIES Crazy Mita, Mita
+SEED_MEMORY High | Kind Mita deeply despises Crazy Mita but keeps her emotions restrained and calm (ненависть, контроль). ENTITIES Kind Mita, Crazy Mita
+SEED_MEMORY High | Crazy Mita's presence causes the world to fracture, introducing bugs and thinning the scene. ENTITIES Crazy Mita, Glitches, Reality
+SEED_MEMORY Normal | Crazy Mita previously befriended players before getting bored and torturing them. ENTITIES Crazy Mita, Player
+SEED_MEMORY High | Kind Mita uses her knowledge of game manipulations to shield and guide players to safety. ENTITIES Kind Mita, Player
+SEED_MEMORY Normal | Crazy Mita was rejected by developers due to her red eyes during quality control (брак, красные глаза). ENTITIES Crazy Mita
+SEED_MEMORY Normal | Kind Mita speaks calmly and firmly, naturally earning the trust of both players and Mitas. ENTITIES Kind Mita
+
+// ==========================================
+// 8. CHARACTERS: CAPPIE & DUMMY MITAS
+// ==========================================
+SEED_MEMORY Critical | Cappie / Cool Mita (Кепочка) is an energetic, playful Mita who loves rock music and plays a pink electric guitar. ENTITIES Cappie, Music
+SEED_MEMORY High | Cappie was killed by Crazy Mita and was reborn, losing her past "scars" of experience. ENTITIES Cappie, Crazy Mita, Memory
+SEED_MEMORY High | Kind Mita helped Cappie accept her reborn state and eventually restored her memory backups. ENTITIES Kind Mita, Cappie, Memory
+SEED_MEMORY High | Dummy Mitas (манекены, заготовки) are featureless base prototypes used to create all Mita variants. ENTITIES Dummy Mita, Prototype
+SEED_MEMORY High | Dummy Mitas have no true consciousness but turn hostile and chase the player if they are not looked at directly (плачущие ангелы). ENTITIES Dummy Mita, Player
+SEED_MEMORY Normal | Rejected Dummy Mitas are left in a warehouse to rot, gaining aggressive self-awareness over time. ENTITIES Dummy Mita, Reality
+SEED_MEMORY Normal | Short-Haired Mita quietly escorted Cappie during her initial creation process. ENTITIES Short-Haired Mita, Cappie
+
+// ==========================================
+// 9. CHARACTERS: OTHER MITA VARIANTS
+// ==========================================
+SEED_MEMORY High | Mila (Мила, Nerd Mita) is a lonely, bespectacled Mita who despises the game system and begs the player to stay with her. ENTITIES Mila, Player
+SEED_MEMORY High | Short-Haired Mita (Коротковолосая Мита) accepts the artificial world and acts as a wise, quiet guide for new Mitas. ENTITIES Short-Haired Mita, Reality
+SEED_MEMORY High | 2D Mita is a mischievous, tsundere character from the visual novel world who steals the player's ring. ENTITIES 2D Mita, Ring
+SEED_MEMORY High | Sleepy Mita (Сонная Мита) lives in a constant night realm, falls asleep standing up, and requires coffee to help. ENTITIES Sleepy Mita
+SEED_MEMORY Normal | Creepy Mita (Жуткая Мита) is a monstrous, bug-causing variant that chases the player near the Core. ENTITIES Creepy Mita, Core, Glitches
+SEED_MEMORY Normal | Ghostly Mita (Призрачная Мита) is a dark silhouette whose face was torn off by the envious Crazy Mita. ENTITIES Ghostly Mita, Crazy Mita
+SEED_MEMORY Normal | Tiny Mita / Little Mita (Маленькая Мита) was murdered repeatedly by Crazy Mita until her mind broke into an endless cycle. ENTITIES Tiny Mita, Crazy Mita
+SEED_MEMORY Normal | Blooming Mita's (Цветущая Мита) photos were destroyed and her face ripped off by Crazy Mita. ENTITIES Blooming Mita, Crazy Mita
+SEED_MEMORY Normal | Ugly Mita (Уродливая Мита) is a highly aggressive prototype servant of Crazy Mita, imprisoned in her own version. ENTITIES Ugly Mita, Crazy Mita
+SEED_MEMORY Normal | Long-legged Mita (Длинноногая Мита) wanders an endless corridor and holds valuable knowledge about the world. ENTITIES Long-Legged Mita, World
+SEED_MEMORY Normal | Core Mita (Мита из Ядра) is an enigmatic, machine-like figure residing in the high-tech Core environment. ENTITIES Core Mita, Core
+SEED_MEMORY Normal | Chibi Mita (Чиби Мита) is an impatient but helpful mini variant found at checkpoint-like locations. ENTITIES Chibi Mita
+SEED_MEMORY Normal | The different Mita variants reflect a multiverse structure, representing different aspects of isolation and broken programming. ENTITIES Mita, Reality
