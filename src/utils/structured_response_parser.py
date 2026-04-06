@@ -440,6 +440,10 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
 
         segments_out.append(seg_dict)
 
+    tool_call_dict = None
+    if response.tool_call is not None:
+        tool_call_dict = {"name": response.tool_call.name, "args": response.tool_call.args or {}}
+
     return {
         "response": response.full_text(),
         "segments": segments_out,
@@ -451,4 +455,5 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
         "memory_delete": list(response.memory_delete),
         "reminder_add": list(response.reminder_add),
         "reminder_delete": list(response.reminder_delete),
+        "tool_call": tool_call_dict,
     }

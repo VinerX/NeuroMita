@@ -76,7 +76,7 @@ Example response:
 }
 
 tool_call: Use this when you need to call an external tool (internet search, calculator, etc.).
-- In "segments", write a brief natural acknowledgement ("Let me check that", "One moment").
+- In "segments", write ONLY a very short phrase (2-5 words max): "One moment.", "Let me check.", "Just a sec.". Nothing else — no explanations, no extra sentences.
 - Set "tool_call": {"name": "tool_name", "args": {...}} with the tool name and arguments.
 - You will receive the tool result in the next message and can then answer fully.
 - Omit "tool_call" entirely if no tool is needed.

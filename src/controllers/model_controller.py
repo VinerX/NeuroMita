@@ -1175,6 +1175,18 @@ class ModelController:
 
         # Emit first response to UI (shows "I'll check that" message)
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
+        self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
+            "role": "assistant",
+            "response": first_text if first_text else "...",
+            "is_initial": False,
+            "emotion": "",
+            "character_id": char_id or "",
+            "character_name": char_name or "",
+            "speaker_name": char_name or "",
+            "target": target,
+            "targets": targets,
+            "structured_data": result_dict,
+        }, sync=True)
 
         # Emit tool executing indicator for UI
         self.event_bus.emit(Events.Model.ON_TOOL_EXECUTING, {
@@ -1194,6 +1206,15 @@ class ModelController:
             "tool_name": tool_name,
             "character_id": char_id,
         })
+        self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
+            "role": "system",
+            "response": f"[Tool: {tool_name}]\n{tool_result}",
+            "is_initial": False,
+            "emotion": "",
+            "character_id": "",
+            "character_name": "",
+            "speaker_name": "",
+        }, sync=True)
 
         # Build messages for second call: append first response JSON + tool result
         combined_messages_v2 = list(combined_messages)
