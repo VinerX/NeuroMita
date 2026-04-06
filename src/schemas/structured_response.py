@@ -95,7 +95,7 @@ def _to_gemini_schema(schema: dict) -> dict:
 class ToolCall(BaseModel):
     """Describes a tool the LLM wants to invoke during its response."""
 
-    name: str = Field(..., description="Name of the tool to call (e.g. 'web_search', 'calculator')")
+    name: str = Field(..., description="Exact name of the tool to call, chosen from the available tools list in the prompt")
     # Union allows Gemini to return args as a JSON string (Gemini can't freely use object type)
     args: Union[Dict[str, Any], str] = Field(
         default_factory=dict,
