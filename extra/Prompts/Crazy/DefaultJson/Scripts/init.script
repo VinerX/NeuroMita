@@ -1,3 +1,5 @@
+RUN ../../../Common/world_knowledge.script
+
 LOG "Initialization of variables"
 
 IF Love == None THEN
