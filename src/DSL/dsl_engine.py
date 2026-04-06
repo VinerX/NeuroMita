@@ -616,6 +616,16 @@ class DslInterpreter:
                                 _logging.warning(f"LINK_ENTITIES failed (ignored): {_link_err}")
                         continue
 
+                    if command == "RUN":
+                        run_path = args.strip().strip('"').strip("'")
+                        if not run_path:
+                            raise DslError("RUN requires a file path", resolved_script_id, num, raw)
+                        try:
+                            self.process_file(run_path, sys_msgs=sys_msgs)
+                        except DslError as _run_de:
+                            raise DslError(f"Error in RUN '{run_path}': {_run_de.message}", resolved_script_id, num, raw, _run_de) from _run_de
+                        continue
+
                     raise DslError(f"Unknown DSL command '{command}'", resolved_script_id, num, raw)
 
                 if if_stack:
