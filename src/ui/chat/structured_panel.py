@@ -41,6 +41,10 @@ CLR_REMIND_BORDER   = "rgba(255,180,80,0.20)"
 CLR_REMIND_BG       = "rgba(255,180,80,0.05)"
 CLR_REMIND_HEADER   = "#e8a040"
 CLR_REMIND_TEXT     = "#c8b080"
+CLR_TOOL_BORDER     = "rgba(100,200,255,0.22)"
+CLR_TOOL_BG         = "rgba(100,200,255,0.05)"
+CLR_TOOL_HEADER     = "#64c8ff"
+CLR_TOOL_TEXT       = "#a8d8ee"
 CLR_HEADER_TEXT   = "rgba(255,255,255,0.35)"
 
 MAX_PANEL_WIDTH = 520
@@ -333,6 +337,50 @@ class ReminderBlock(QFrame):
             layout.addWidget(lbl)
 
 
+class ToolCallBlock(QFrame):
+    """Compact tool call block."""
+
+    def __init__(self, tool_name: str, tool_args: dict, font_size: int = 8, parent=None):
+        super().__init__(parent)
+        fs = _COMPACT_FONT
+        self.setObjectName("ToolCallBlock")
+        self.setStyleSheet(f"""
+            QFrame#ToolCallBlock {{
+                background-color: {CLR_TOOL_BG};
+                border: 1px solid {CLR_TOOL_BORDER};
+                border-radius: 6px;
+                margin: 1px 0px;
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(1)
+
+        header = QLabel(f"\u2699\ufe0f tool_call: {tool_name}", self)
+        header.setStyleSheet(
+            f"color: {CLR_TOOL_HEADER}; font-weight: bold; font-size: {fs}pt; "
+            f"background: transparent; border: none;"
+        )
+        layout.addWidget(header)
+
+        if tool_args:
+            import json as _json
+            args_text = _json.dumps(tool_args, ensure_ascii=False)
+            lbl = QLabel(args_text, self)
+            lbl.setWordWrap(True)
+            lbl.setCursor(Qt.CursorShape.IBeamCursor)
+            lbl.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+                | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            )
+            lbl.setStyleSheet(
+                f"color: {CLR_TOOL_TEXT}; font-size: {fs}pt; "
+                f"background: transparent; border: none; padding-left: 4px;"
+            )
+            layout.addWidget(lbl)
+
+
 class StructuredOutputPanel(QFrame):
     """
     Compact collapsible structured output panel.
@@ -412,6 +460,16 @@ class StructuredOutputPanel(QFrame):
             card = SegmentCard(i, seg, _COMPACT_FONT, layout.parentWidget())
             layout.addWidget(card)
 
+        tool_call = data.get("tool_call")
+        if tool_call:
+            tc_block = ToolCallBlock(
+                tool_name=tool_call.get("name", "?"),
+                tool_args=tool_call.get("args") or {},
+                font_size=_COMPACT_FONT,
+                parent=layout.parentWidget(),
+            )
+            layout.addWidget(tc_block)
+
         mem_add    = data.get("memory_add") or []
         mem_update = data.get("memory_update") or []
         mem_delete = data.get("memory_delete") or []
@@ -426,7 +484,11 @@ class StructuredOutputPanel(QFrame):
             layout.addWidget(rem_block)
 
     def _build_json_view(self, layout: QVBoxLayout, data: dict, font_size: int):
-        json_text = json.dumps(data, ensure_ascii=False, indent=2)
+        raw = data.get("_raw_json")
+        if raw:
+            json_text = raw
+        else:
+            json_text = json.dumps(data, ensure_ascii=False, indent=2)
         lbl = QLabel(json_text, layout.parentWidget())
         lbl.setWordWrap(True)
         lbl.setTextFormat(Qt.TextFormat.PlainText)

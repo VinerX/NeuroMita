@@ -11,6 +11,7 @@ class StatusController(BaseController):
         self.event_bus.subscribe(Events.Model.ON_SUCCESSFUL_RESPONSE, self._on_successful_response, weak=False)
         self.event_bus.subscribe(Events.Model.ON_FAILED_RESPONSE_ATTEMPT, self._on_failed_response_attempt, weak=False)
         self.event_bus.subscribe(Events.Model.ON_FAILED_RESPONSE, self._on_failed_response, weak=False)
+        self.event_bus.subscribe(Events.Model.ON_TOOL_EXECUTING, self._on_tool_executing, weak=False)
 
     def update_status_colors(self):
         logger.debug("StatusController: update_status_colors")
@@ -88,6 +89,14 @@ class StatusController(BaseController):
     def _on_failed_response_attempt(self, event: Event):
         logger.info("StatusController: получено событие ON_FAILED_RESPONSE_ATTEMPT")
         self.show_mita_error_pulse()
+
+    def _on_tool_executing(self, event: Event):
+        logger.info("StatusController: получено событие ON_TOOL_EXECUTING")
+        tool_name = ""
+        if event and isinstance(getattr(event, "data", None), dict):
+            tool_name = event.data.get("tool_name", "")
+        display = f"🔍 {tool_name}" if tool_name else "🔍"
+        self.show_mita_thinking(display)
 
     def _on_failed_response(self, event: Event):
         logger.warning(f"StatusController: получено событие ON_FAILED_RESPONSE с данными: {event.data}")

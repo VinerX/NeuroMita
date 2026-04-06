@@ -242,8 +242,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         gui._think_block_counter += 1
         blocks[block_id] = block
 
-        # Отступ слева (10px от края аватарки — чтобы визуально ровнялось с текстом пузыря)
-        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent, extra_left=10)
+        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent)
         gui.chat_window.add_message_widget(wrapped, at_start=insert_at_start)
         return
 
@@ -434,8 +433,7 @@ def prepare_stream_slot(gui, role="assistant"):
         blocks[block_id] = block
         gui._current_streaming_think_block = block
 
-        # Сдвигаем блок размышлений при стриминге еще на 20px правее
-        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent, extra_left=10)
+        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent)
         gui.chat_window.add_message_widget(wrapped)
     else:
         speaker_name = str(getattr(gui, "_stream_speaker_name", "") or "")

@@ -1,5 +1,4 @@
 # File: chat_handler.py
-import json
 #import tiktoken
 import re
 from typing import List, Dict, Any, Optional
@@ -10,7 +9,6 @@ from characters.character import Character
 from managers.api_preset_resolver import ApiPresetResolver
 from managers.llm_request_runner import LLMRequestRunner
 from managers.model_config_loader import ModelConfigLoader
-from managers.tools.legacy_executor import LegacyToolExecutor
 from managers.tools.tool_manager import ToolManager
 
 from handlers.llm_providers.base import LLMRequest
@@ -46,16 +44,9 @@ class ChatModel:
             event_bus=self.event_bus
         )
 
-
         self.current_character: Character = None
         self.GameMaster: Character = None
         self.characters = {}
-
-        self.legacy_tools = LegacyToolExecutor(
-            settings=self.settings,
-            tool_manager=self.tool_manager,
-            preset_resolver=self.preset_resolver
-        )
 
         self._model_token_limits: Dict[str, int] = {
             "gpt-4o-mini": 128000,
@@ -95,31 +86,6 @@ class ChatModel:
 
         self._log_generation_start(preset_id)
 
-        tools_on = self.settings.get("TOOLS_ON", True)
-        tools_mode = self.settings.get("TOOLS_MODE", "native")
-        if tools_mode == "off":
-            tools_on = False
-
-        _ALL_TOOLS = ["calculator", "web_search", "google_search", "web_reader"]
-        enabled_tools = [n for n in _ALL_TOOLS if self.settings.get(f"TOOL_ENABLED_{n}", True)]
-
-        if not enabled_tools:
-            tools_on = False
-
-        if tools_on and tools_mode == "legacy":
-            tools_desc = json.dumps(self.tool_manager._filtered_schema(enabled_tools))
-            legacy_prompt = self.tool_manager.tools_prompt().format(tools_json=tools_desc)
-
-            already = False
-            for m in (combined_messages[:3] if isinstance(combined_messages, list) else []):
-                if isinstance(m, dict) and m.get("role") == "system" and m.get("content") == legacy_prompt:
-                    already = True
-                    break
-
-            if not already:
-                combined_messages.insert(0, {"role": "system", "content": legacy_prompt})
-
-
         # Capture the last built LLMRequest so we can save it for finetune data collection
         _last_req: list = [None]
 
@@ -141,13 +107,6 @@ class ChatModel:
                 force_params=getattr(cfg, "preset_forced_params", frozenset()),
             )
 
-            dialect = "gemini" if preset_settings.dialect_id == "gemini_generate_content" else "openai"
-
-            prebuilt_payload = (
-                self.tool_manager.get_tools_payload(dialect, enabled_tools)
-                if tools_on and tools_mode == "native" else None
-            )
-
             req = LLMRequest(
                 model=effective_model,
                 messages=combined_messages,
@@ -163,10 +122,6 @@ class ChatModel:
 
                 stream=bool(self.settings.get("ENABLE_STREAMING", False)) and stream_callback is not None,
                 stream_cb=stream_callback,
-                tools_on=tools_on,
-                tools_mode=tools_mode,
-                tools_payload=prebuilt_payload,
-                tools_dialect=dialect,
                 extra=params,
                 tool_manager=self.tool_manager,
                 settings=self.settings,
@@ -216,16 +171,6 @@ class ChatModel:
                     )
             except Exception as _ft_err:
                 logger.debug(f"[FinetuneCollector] save_sample skipped: {_ft_err}")
-
-        if response_text and tools_on and tools_mode == "legacy":
-            response_text = self.legacy_tools.process(
-                response_text=response_text,
-                messages=combined_messages,
-                generate_fn=self._generate_chat_response,
-                stream_callback=stream_callback,
-                preset_id=preset_id,
-                depth=0
-            )
 
         if response_text:
             cleaned_response = self._clean_response(response_text)

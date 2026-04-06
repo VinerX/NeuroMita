@@ -17,9 +17,10 @@ Usage::
 """
 from __future__ import annotations
 
-from typing import List, Optional
+import json as _json
+from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def _to_gemini_schema(schema: dict) -> dict:
@@ -91,6 +92,28 @@ def _to_gemini_schema(schema: dict) -> dict:
     return convert(copy.deepcopy(schema))
 
 
+class ToolCall(BaseModel):
+    """Describes a tool the LLM wants to invoke during its response."""
+
+    name: str = Field(..., description="Exact name of the tool to call, chosen from the available tools list in the prompt")
+    # Union allows Gemini to return args as a JSON string (Gemini can't freely use object type)
+    args: Union[Dict[str, Any], str] = Field(
+        default_factory=dict,
+        description='Tool arguments as key-value pairs, e.g. {"query": "search term"}'
+    )
+
+    @model_validator(mode="after")
+    def _coerce_args(self) -> "ToolCall":
+        """If Gemini returned args as a JSON string, parse it into a dict."""
+        if isinstance(self.args, str):
+            try:
+                parsed = _json.loads(self.args)
+                self.args = parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                self.args = {}
+        return self
+
+
 class ResponseSegment(BaseModel):
     """A single segment of the response tied to a chunk of displayed text."""
 
@@ -139,22 +162,32 @@ class StructuredResponse(BaseModel):
     boredom_change: float = Field(default=0.0, description="Change in boredom (-6 to 6)")
     stress_change: float = Field(default=0.0, description="Change in stress (-6 to 6)")
 
-    memory_add: List[str] = Field(default_factory=list, description="Memories to add")
-    memory_update: List[str] = Field(default_factory=list, description="Memories to update (format: 'number|new_text')")
-    memory_delete: List[str] = Field(default_factory=list, description="Memories to delete (format: 'number' or 'start-end')")
+    memory_add: Optional[List[str]] = Field(default=None, description="Memories to add")
+    memory_update: Optional[List[str]] = Field(default=None, description="Memories to update (format: 'number|new_text')")
+    memory_delete: Optional[List[str]] = Field(default=None, description="Memories to delete (format: 'number' or 'start-end')")
 
-    reminder_add: List[str] = Field(
-        default_factory=list,
+    reminder_add: Optional[List[str]] = Field(
+        default=None,
         description="Reminders to set. Format: 'YYYY-MM-DDTHH:MM:SS|reminder text'. Example: '2026-04-03T15:00:00|Remind player about the meeting'."
     )
-    reminder_delete: List[str] = Field(
-        default_factory=list,
+    reminder_delete: Optional[List[str]] = Field(
+        default=None,
         description="Reminder IDs to delete. Format: 'N' (number). Example: '3'."
     )
 
     segments: List[ResponseSegment] = Field(
         default_factory=list,
         description="Ordered list of response segments with positional commands",
+    )
+
+    tool_call: Optional[ToolCall] = Field(
+        default=None,
+        description=(
+            "Use this field when you need to call an external tool (web search, calculator, etc.). "
+            "In 'segments', write a natural acknowledgement ('Let me check that'). "
+            "You will receive the tool result in the next message and can then answer fully. "
+            "Leave null (omit) if no tool is needed."
+        )
     )
 
     def full_text(self) -> str:
@@ -173,7 +206,7 @@ class StructuredResponse(BaseModel):
                 "type": "json_schema",
                 "json_schema": {
                     "name": "structured_response",
-                    "strict": True,
+                    "strict": False,
                     "schema": { ... }
                 }
             }
@@ -183,7 +216,7 @@ class StructuredResponse(BaseModel):
             "type": "json_schema",
             "json_schema": {
                 "name": "structured_response",
-                "strict": True,
+                "strict": False,
                 "schema": schema,
             },
         }
@@ -201,5 +234,19 @@ class StructuredResponse(BaseModel):
         Strips all JSON Schema features Gemini doesn't support:
         $ref/$defs, anyOf/null, default, title, additionalProperties.
         Converts Optional[X] → {type: X, nullable: true}.
+
+        Special case: tool_call.args is patched to type=string so Gemini
+        can freely write JSON arguments instead of being constrained to an
+        empty object (Gemini doesn't support free-form additionalProperties).
         """
-        return _to_gemini_schema(cls.model_json_schema())
+        schema = _to_gemini_schema(cls.model_json_schema())
+        # Patch tool_call.args: object without properties → string
+        try:
+            tc_props = schema["properties"]["tool_call"]["properties"]
+            tc_props["args"] = {
+                "type": "string",
+                "description": 'JSON-encoded tool arguments, e.g. {"query": "search term"}',
+            }
+        except (KeyError, TypeError):
+            pass
+        return schema

@@ -136,10 +136,7 @@ def setup_model_interaction_controls(self, parent):
          'tooltip': _(
              'Позволяет использовать инструменты такие как поиск в сети',
              'Allow using tools like seacrh')},
-        {'label': _("Режим инструментов", "Tools mode"), 'key': 'TOOLS_MODE', 'type': 'combobox',
-         'options': ["native", "legacy"], 'default': "native", "depends_on": "TOOLS_ON",
-         'tooltip': _('Native - использует вшитые возможности модели, legacy - добавляет промпт и ловит вызов вручную',
-                    'Native - using buit-in tools, legacy - using own prompts and handler')},
+
         {'label': _('Калькулятор', 'Calculator'), 'key': 'TOOL_ENABLED_calculator',
          'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
          'tooltip': _('Включить инструмент "Калькулятор"', 'Enable the Calculator tool')},

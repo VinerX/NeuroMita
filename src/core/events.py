@@ -448,6 +448,8 @@ class Events:
         ON_SUCCESSFUL_RESPONSE = "on_successful_response"
         ON_FAILED_RESPONSE = "on_failed_response"
         ON_FAILED_RESPONSE_ATTEMPT = "on_failed_attempt_for_response"
+        ON_TOOL_EXECUTING = "on_tool_executing"   # payload: {tool_name, character_id}
+        ON_TOOL_DONE = "on_tool_done"             # payload: {tool_name, character_id}
         ADD_TEMPORARY_SYSTEM_INFO = "add_temporary_system_info"
         GENERATE_RESPONSE = "generate_response"
         GET_LLM_PROCESSING_STATUS = "get_llm_processing_status"

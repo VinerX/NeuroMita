@@ -844,23 +844,21 @@ class ThinkBlockWidget(QFrame):
         self._anim_phase = 0
         self._anim_timer = None
         self.setObjectName("ThinkBlock")
-        
-        # Вычитаем больше пикселей (например, 60), чтобы правый край сдвинулся левее
-        self.setMaximumWidth(max(100,max_bubble_width - 80))
-        # Заставляем блок растягиваться в ширину, даже если текста мало
+
+        # Ширина ровно как у пузырька
+        self.setMaximumWidth(max(100, max_bubble_width))
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.setStyleSheet("""
             QFrame#ThinkBlock {
-                background-color: rgba(43, 53, 89, 0.6);
-                border: none;
-                border-radius: 10px;
-                margin: 2px 0px;
+                background-color: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
             }
         """)
 
-        fs = max(font_size - 3, 8)  # Чуть мельче шрифт для компактности
+        fs = 8  # тот же размер, что у заголовков панели дебага
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setContentsMargins(10, 3, 10, 3)
         layout.setSpacing(2)
 
         self._header = QLabel(self)

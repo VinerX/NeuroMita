@@ -601,7 +601,7 @@ class Character:
 
     def _apply_structured_memory_ops(self, structured: StructuredResponse, save_as_missed: bool = False):
         """Apply memory add/update/delete operations from a StructuredResponse."""
-        for mem_text in structured.memory_add:
+        for mem_text in (structured.memory_add or []):
             mem_text = (mem_text or "").strip()
             if not mem_text:
                 continue
@@ -617,7 +617,7 @@ class Character:
             except Exception as e:
                 logger.error(f"[{self.char_id}] Structured: error adding memory: {e}")
 
-        for update_str in structured.memory_update:
+        for update_str in (structured.memory_update or []):
             update_str = (update_str or "").strip()
             if not update_str or "|" not in update_str:
                 continue
@@ -633,7 +633,7 @@ class Character:
                 except Exception as e:
                     logger.error(f"[{self.char_id}] Structured: error updating memory #{parts[0]}: {e}")
 
-        for delete_str in structured.memory_delete:
+        for delete_str in (structured.memory_delete or []):
             delete_str = (delete_str or "").strip()
             if not delete_str:
                 continue
@@ -661,7 +661,7 @@ class Character:
 
     def _apply_structured_reminder_ops(self, structured: StructuredResponse):
         """Apply reminder add/delete operations from a StructuredResponse."""
-        for entry in structured.reminder_add:
+        for entry in (structured.reminder_add or []):
             entry = (entry or "").strip()
             if not entry:
                 continue
@@ -675,7 +675,7 @@ class Character:
             except Exception as e:
                 logger.error(f"[{self.char_id}] Structured: error adding reminder: {e}")
 
-        for delete_str in structured.reminder_delete:
+        for delete_str in (structured.reminder_delete or []):
             delete_str = (delete_str or "").strip()
             if delete_str.isdigit():
                 try:

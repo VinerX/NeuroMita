@@ -12,7 +12,7 @@ from managers.settings_manager import SettingsManager
 
 class GoogleSearchTool(Tool):
     name = "google_search"
-    description = "Выполняет поиск в Google и возвращает результаты (заголовки, ссылки, сниппеты). Работает при наличии ключа, зато точный."
+    description = "Выполняет поиск в Google и возвращает результаты (заголовки, ссылки, сниппеты). Точнее и актуальнее чем web_search."
 
     parameters = {
         "type": "object",

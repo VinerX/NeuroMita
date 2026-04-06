@@ -42,14 +42,6 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
             params: Dict[str, Any] = {"model": model_to_use, "messages": cleaned_messages}
             params.update(self._map_unified_params(req.extra or {}, model_to_use))
 
-            # NEW: tools payload строит провайдер
-            if req.tools_on and req.tools_mode == "native" and req.tool_manager:
-                dialect = req.tools_dialect or self.tools_dialect_id
-                tools_payload = req.tools_payload or req.tool_manager.get_tools_payload(dialect)
-                if tools_payload:
-                    params["tools"] = tools_payload
-                    params["stream"] = False
-
             completion = client.chat.completions.create(**params, stream=req.stream)
 
             if req.stream:
@@ -57,25 +49,6 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
 
             if completion and getattr(completion, "choices", None):
                 message = completion.choices[0].message
-                tool_calls = getattr(message, "tool_calls", None)
-
-                if tool_calls:
-                    tm = req.tool_manager
-                    dialect = req.tools_dialect or self.tools_dialect_id
-
-                    for tool_call in tool_calls:
-                        call_id = getattr(tool_call, "id", None)
-                        name = tool_call.function.name
-                        args = json.loads(tool_call.function.arguments)
-
-                        tool_result = tm.run(name, args)
-
-                        req.messages.append(tm.mk_tool_call_msg(dialect, name, args, tool_call_id=call_id))
-                        req.messages.append(tm.mk_tool_resp_msg(dialect, name, tool_result, tool_call_id=call_id))
-
-                    req.depth += 1
-                    return self._generate(req)
-
                 content = message.content
                 if not content:
                     content = getattr(message, "reasoning_content", None)

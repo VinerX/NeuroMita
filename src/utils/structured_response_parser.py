@@ -93,6 +93,15 @@ def parse_structured_response(raw_text: str) -> StructuredResponse:
 
     # --- Legacy flat-JSON fallback (empty segments) ---
     if not response.segments:
+        # If tool_call is present, empty segments is acceptable
+        # (model will call tool, user will see acknowledgement in UI)
+        if response.tool_call:
+            from schemas.structured_response import ResponseSegment
+            response.segments = [ResponseSegment(text="")]
+            logger.debug(
+                "[StructuredResponseParser] Tool call with empty segments — created default segment"
+            )
+            return response
         converted = _try_convert_legacy_flat_json(data)
         if converted is not None:
             logger.warning(
@@ -440,15 +449,20 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
 
         segments_out.append(seg_dict)
 
+    tool_call_dict = None
+    if response.tool_call is not None:
+        tool_call_dict = {"name": response.tool_call.name, "args": response.tool_call.args or {}}
+
     return {
         "response": response.full_text(),
         "segments": segments_out,
         "attitude_change": response.attitude_change,
         "boredom_change": response.boredom_change,
         "stress_change": response.stress_change,
-        "memory_add": list(response.memory_add),
-        "memory_update": list(response.memory_update),
-        "memory_delete": list(response.memory_delete),
-        "reminder_add": list(response.reminder_add),
-        "reminder_delete": list(response.reminder_delete),
+        "memory_add": list(response.memory_add or []),
+        "memory_update": list(response.memory_update or []),
+        "memory_delete": list(response.memory_delete or []),
+        "reminder_add": list(response.reminder_add or []),
+        "reminder_delete": list(response.reminder_delete or []),
+        "tool_call": tool_call_dict,
     }
