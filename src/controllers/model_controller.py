@@ -880,6 +880,7 @@ class ModelController:
                     combined_messages=combined_messages,
                     preset_id=preset_id,
                     tools_on=_tools_on,
+                    enabled_tools=_enabled_tools,
                     tool_depth=0,
                 )
 
@@ -965,6 +966,7 @@ class ModelController:
         combined_messages: list | None = None,
         preset_id: int | None = None,
         tools_on: bool = False,
+        enabled_tools: list = None,
         tool_depth: int = 0,
     ) -> dict | None:
         """
@@ -1015,7 +1017,19 @@ class ModelController:
         )
 
         # --- Tool call path ---
-        if structured.tool_call and tools_on and tool_depth < 2:
+        _active_tools = enabled_tools or []
+        _tool_allowed = (
+            structured.tool_call
+            and tools_on
+            and tool_depth < 2
+            and (not _active_tools or structured.tool_call.name in _active_tools)
+        )
+        if not _tool_allowed and structured.tool_call and tools_on:
+            logger.warning(
+                f"[ModelController] Tool '{structured.tool_call.name}' called by model "
+                f"but not in enabled list {_active_tools} — ignoring."
+            )
+        if _tool_allowed:
             return self._handle_tool_call(
                 structured=structured,
                 think_text=think_text,
@@ -1033,6 +1047,7 @@ class ModelController:
                 event_type=event_type,
                 combined_messages=combined_messages or [],
                 preset_id=preset_id,
+                enabled_tools=_active_tools,
                 tool_depth=tool_depth,
             )
 
@@ -1124,6 +1139,7 @@ class ModelController:
         event_type: str,
         combined_messages: list,
         preset_id: int | None,
+        enabled_tools: list,
         tool_depth: int,
     ) -> dict | None:
         """
@@ -1294,6 +1310,7 @@ class ModelController:
             combined_messages=combined_messages_v2,
             preset_id=preset_id,
             tools_on=True,
+            enabled_tools=enabled_tools,
             tool_depth=tool_depth + 1,
         )
 
