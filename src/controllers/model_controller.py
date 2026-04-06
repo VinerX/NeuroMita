@@ -25,6 +25,27 @@ from utils.structured_response_parser import (
     StructuredResponseParseError,
 )
 
+_ALL_TOOLS_LIST = ["calculator", "web_search", "google_search", "web_reader"]
+
+
+def _render_tools_for_prompt(schema: list) -> str:
+    """Format tool JSON schema list into a human-readable prompt block."""
+    if not schema:
+        return ""
+    lines = ["Available tools:"]
+    for tool in schema:
+        name = tool.get("name", "?")
+        desc = tool.get("description", "")
+        params = tool.get("parameters", {}).get("properties", {})
+        param_parts = []
+        for pname, pdef in params.items():
+            ptype = pdef.get("type", "any")
+            pdesc = pdef.get("description", "")
+            param_parts.append(f"{pname}: {ptype}" + (f" — {pdesc}" if pdesc else ""))
+        params_str = ", ".join(param_parts) if param_parts else "no parameters"
+        lines.append(f"- {name}({params_str}) — {desc}")
+    return "\n".join(lines)
+
 
 class ModelController:
     """
@@ -713,6 +734,23 @@ class ModelController:
         except Exception as e:
             logger.warning(f"[ModelController] Failed to resolve preset capabilities: {e}")
 
+        # Determine tools state and inject description into capabilities for prompt injection
+        _tools_on = bool(self.settings.get("TOOLS_ON", True))
+        _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
+        if _tools_mode == "off":
+            _tools_on = False
+        _enabled_tools = [n for n in _ALL_TOOLS_LIST if self.settings.get(f"TOOL_ENABLED_{n}", True)]
+        if not _enabled_tools:
+            _tools_on = False
+
+        if _tools_on and effective_capabilities.get("structured_output", False):
+            try:
+                schema = self.model.tool_manager._filtered_schema(_enabled_tools)
+                effective_capabilities["tools_prompt"] = _render_tools_for_prompt(schema)
+            except Exception as e:
+                logger.warning(f"[ModelController] Failed to build tools prompt: {e}")
+                _tools_on = False
+
         try:
             prompt_res = self.event_bus.emit_and_wait(
                 Events.Prompt.BUILD_PROMPT,
@@ -836,6 +874,10 @@ class ModelController:
                     req_id=req_id,
                     task_uid=task_uid,
                     event_type=event_type,
+                    combined_messages=combined_messages,
+                    preset_id=preset_id,
+                    tools_on=_tools_on,
+                    tool_depth=0,
                 )
 
             # --- Legacy (tag-based) path ---
@@ -917,6 +959,10 @@ class ModelController:
         req_id: str | None,
         task_uid: str | None,
         event_type: str,
+        combined_messages: list | None = None,
+        preset_id: int | None = None,
+        tools_on: bool = False,
+        tool_depth: int = 0,
     ) -> dict | None:
         """
         Process a structured JSON response from the LLM.
@@ -964,6 +1010,28 @@ class ModelController:
             structured,
             save_as_missed=self.settings.get("SAVE_MISSED_MEMORY", False),
         )
+
+        # --- Tool call path ---
+        if structured.tool_call and tools_on and tool_depth < 2:
+            return self._handle_tool_call(
+                structured=structured,
+                think_text=think_text,
+                char=char,
+                char_id=char_id,
+                char_name=char_name,
+                data=data,
+                policy=policy,
+                sender=sender,
+                participants=participants,
+                user_input=user_input,
+                image_data=image_data,
+                req_id=req_id,
+                task_uid=task_uid,
+                event_type=event_type,
+                combined_messages=combined_messages or [],
+                preset_id=preset_id,
+                tool_depth=tool_depth,
+            )
 
         # Extract reasoning from structured response (if model used the reasoning field)
         if structured.reasoning:
@@ -1030,6 +1098,167 @@ class ModelController:
             "think": think_text or None,
             "structured": result_dict,
         }
+
+    # ---------------------------------------------------------------------
+    # Tool call handler (structured output tools)
+    # ---------------------------------------------------------------------
+
+    def _handle_tool_call(
+        self,
+        structured,
+        think_text: str,
+        char,
+        char_id: str,
+        char_name: str,
+        data: dict,
+        policy,
+        sender: str,
+        participants: list,
+        user_input: str,
+        image_data: list,
+        req_id: str | None,
+        task_uid: str | None,
+        event_type: str,
+        combined_messages: list,
+        preset_id: int | None,
+        tool_depth: int,
+    ) -> dict | None:
+        """
+        Handle a tool_call from a structured response:
+        1. Emit first response to UI.
+        2. Execute the tool.
+        3. Append tool result as system message.
+        4. Make a second LLM call for the final answer.
+        """
+        from utils.structured_response_parser import structured_response_to_result_dict
+
+        tool_name = structured.tool_call.name
+        tool_args = structured.tool_call.args or {}
+
+        # Build first response result dict
+        result_dict = structured_response_to_result_dict(structured)
+        result_dict.pop("reasoning", None)
+        first_text = result_dict.get("response", "")
+
+        targets: list[str] = []
+        if hasattr(char, "consume_pending_targets"):
+            try:
+                targets = char.consume_pending_targets()
+            except Exception:
+                targets = []
+        target = targets[-1] if targets else "Player"
+
+        voice_profile = None
+        if hasattr(char, "to_voice_profile"):
+            try:
+                voice_profile = char.to_voice_profile()
+            except Exception:
+                voice_profile = None
+
+        # Write first turn to history
+        if policy.write_to_history:
+            origin_message_id = str(data.get("origin_message_id") or "") or None
+            self.event_writer.write_turn(
+                responder_character_id=char_id,
+                sender=sender,
+                participants=participants,
+                user_input=user_input,
+                image_data=image_data,
+                req_id=req_id,
+                origin_message_id=origin_message_id,
+                assistant_text=first_text,
+                assistant_target=target,
+                event_type=event_type,
+                task_uid=task_uid,
+                structured_data=result_dict,
+            )
+
+        # Emit first response to UI (shows "I'll check that" message)
+        self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
+
+        # Emit tool executing indicator for UI
+        self.event_bus.emit(Events.Model.ON_TOOL_EXECUTING, {
+            "tool_name": tool_name,
+            "character_id": char_id,
+        })
+
+        # Execute the tool
+        logger.info(f"[ModelController] Executing tool '{tool_name}' with args: {tool_args}")
+        try:
+            tool_result = self.model.tool_manager.run(tool_name, tool_args)
+        except Exception as e:
+            tool_result = f"[Tool error: {e}]"
+            logger.error(f"[ModelController] Tool '{tool_name}' failed: {e}", exc_info=True)
+
+        self.event_bus.emit(Events.Model.ON_TOOL_DONE, {
+            "tool_name": tool_name,
+            "character_id": char_id,
+        })
+
+        # Build messages for second call: append first response JSON + tool result
+        combined_messages_v2 = list(combined_messages)
+        try:
+            first_response_json = structured.model_dump_json(exclude_none=True)
+        except Exception:
+            first_response_json = first_text
+        combined_messages_v2.append({"role": "assistant", "content": first_response_json})
+        combined_messages_v2.append({
+            "role": "system",
+            "content": f"[Tool result: {tool_name}]\n{tool_result}"
+        })
+
+        # Second LLM call
+        self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
+            "character_id": char_id,
+            "character_name": char_name or char_id or "Мита",
+        })
+
+        raw_text_2 = self.model.generate(combined_messages_v2, preset_id=preset_id)
+
+        if not raw_text_2:
+            logger.error(f"[ModelController] Second LLM call after tool '{tool_name}' returned empty.")
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                "error": _("Не удалось получить ответ после инструмента.", "Failed to get response after tool.")
+            })
+            # Return first response as fallback
+            return {
+                "text": first_text,
+                "character_id": char_id,
+                "voice_profile": voice_profile,
+                "target": target,
+                "targets": targets,
+                "think": think_text or None,
+                "structured": result_dict,
+            }
+
+        visible_raw_2, think_text_2 = self._extract_think_blocks(str(raw_text_2))
+
+        combined_think = think_text
+        if think_text_2:
+            combined_think = (combined_think + "\n\n" + think_text_2) if combined_think else think_text_2
+
+        # Process second response (depth+1 prevents infinite tool loops)
+        # user_input is empty so the user message is not written to history again
+        return self._process_structured_output(
+            visible_raw=visible_raw_2,
+            think_text=combined_think or "",
+            char=char,
+            char_id=char_id,
+            char_name=char_name,
+            data=data,
+            policy=policy,
+            sender=sender,
+            participants=participants,
+            user_input="",
+            image_data=[],
+            req_id=req_id,
+            task_uid=task_uid,
+            event_type=event_type,
+            combined_messages=combined_messages_v2,
+            preset_id=preset_id,
+            tools_on=True,
+            tool_depth=tool_depth + 1,
+        )
 
     # ---------------------------------------------------------------------
     # Reload prompts

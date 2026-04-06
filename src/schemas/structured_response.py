@@ -17,7 +17,7 @@ Usage::
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -91,6 +91,13 @@ def _to_gemini_schema(schema: dict) -> dict:
     return convert(copy.deepcopy(schema))
 
 
+class ToolCall(BaseModel):
+    """Describes a tool the LLM wants to invoke during its response."""
+
+    name: str = Field(..., description="Name of the tool to call (e.g. 'web_search', 'calculator')")
+    args: Dict[str, Any] = Field(default_factory=dict, description="Tool arguments as key-value pairs")
+
+
 class ResponseSegment(BaseModel):
     """A single segment of the response tied to a chunk of displayed text."""
 
@@ -157,6 +164,16 @@ class StructuredResponse(BaseModel):
         description="Ordered list of response segments with positional commands",
     )
 
+    tool_call: Optional[ToolCall] = Field(
+        default=None,
+        description=(
+            "Use this field when you need to call an external tool (web search, calculator, etc.). "
+            "In 'segments', write a natural acknowledgement ('Let me check that'). "
+            "You will receive the tool result in the next message and can then answer fully. "
+            "Leave null (omit) if no tool is needed."
+        )
+    )
+
     def full_text(self) -> str:
         """Concatenate all segment texts (for TTS and history)."""
         parts = [seg.text for seg in self.segments if seg.text is not None]
@@ -173,7 +190,7 @@ class StructuredResponse(BaseModel):
                 "type": "json_schema",
                 "json_schema": {
                     "name": "structured_response",
-                    "strict": True,
+                    "strict": False,
                     "schema": { ... }
                 }
             }
@@ -183,7 +200,7 @@ class StructuredResponse(BaseModel):
             "type": "json_schema",
             "json_schema": {
                 "name": "structured_response",
-                "strict": True,
+                "strict": False,
                 "schema": schema,
             },
         }

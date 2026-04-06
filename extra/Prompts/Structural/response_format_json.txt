@@ -34,7 +34,8 @@ Schema:
       "hint": "hint text",
       "allow_sleep": true/false
     }
-  ]
+  ],
+  "tool_call": {"name": "tool_name", "args": {"param": "value"}}
 }
 
 Rules:
@@ -73,6 +74,14 @@ Example response:
     }
   ]
 }
+
+tool_call: Use this when you need to call an external tool (internet search, calculator, etc.).
+- In "segments", write a brief natural acknowledgement ("Let me check that", "One moment").
+- Set "tool_call": {"name": "tool_name", "args": {...}} with the tool name and arguments.
+- You will receive the tool result in the next message and can then answer fully.
+- Omit "tool_call" entirely if no tool is needed.
+
+{TOOLS_DESCRIPTION}
 
 Tag [SYSTEM INFO] means system information, not player speech.
 Tag [SPEAKER] means you are in a multi-speaker dialogue.

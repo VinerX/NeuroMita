@@ -212,13 +212,7 @@ class GeminiProvider(BaseProvider):
         if gen_cfg:
             data["generationConfig"] = gen_cfg
 
-        if req.tools_on and req.tools_mode == "native" and req.tool_manager:
-            dialect = req.tools_dialect or "gemini"
-            tools_payload = req.tools_payload or req.tool_manager.get_tools_payload(dialect)
-            if tools_payload:
-                data["tools"] = tools_payload
-
-        need_stream = req.stream and "tools" not in data
+        need_stream = req.stream
 
         headers = {"Content-Type": "application/json"}
         if isinstance(req.headers, dict):
@@ -253,14 +247,11 @@ class GeminiProvider(BaseProvider):
 
             think_texts = []
             text_parts_list = []
-            func_call = None
 
             for part in parts:
                 if not isinstance(part, dict):
                     continue
-                if part.get("functionCall"):
-                    func_call = part.get("functionCall")
-                elif part.get("thought"):
+                if part.get("thought"):
                     t = part.get("text", "")
                     if t:
                         think_texts.append(t)
@@ -268,19 +259,6 @@ class GeminiProvider(BaseProvider):
                     t = part.get("text", "")
                     if t:
                         text_parts_list.append(t)
-
-            if func_call:
-                name = func_call.get("name")
-                args = func_call.get("args", {})
-                tm = req.tool_manager
-                if tm:
-                    tool_result = tm.run(name, args)
-                    new_messages = copy.deepcopy(req.messages)
-                    new_messages.append(tm.mk_tool_call_msg(self.tools_dialect_id, name, args))
-                    new_messages.append(tm.mk_tool_resp_msg(self.tools_dialect_id, name, tool_result))
-                    req.messages = new_messages
-                    req.depth += 1
-                    return self.generate_request_gemini(req)
 
             response_text = "".join(text_parts_list) or "…"
             if think_texts:

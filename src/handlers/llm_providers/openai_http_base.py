@@ -106,13 +106,6 @@ class OpenAIHTTPProviderBase(BaseProvider):
         }
         payload.update(self._map_unified_params(req.extra or {}, model_to_use))
 
-        if req.tools_on and req.tools_mode == "native" and req.tool_manager and self._supports_tools_for_req(req):
-            dialect = req.tools_dialect or self.tools_dialect_id
-            tools_payload = req.tools_payload or req.tool_manager.get_tools_payload(dialect)
-            if tools_payload:
-                payload["tools"] = tools_payload
-                payload["stream"] = False
-
         # Add structured output response_format when capability is enabled.
         # Use json_schema (strict) by default; json_object is a softer fallback
         # for providers that don't support json_schema (OpenRouter/StepFun, etc.)
@@ -185,24 +178,6 @@ class OpenAIHTTPProviderBase(BaseProvider):
             return None
 
         message = (data.get("choices", [{}])[0].get("message") or {}) if isinstance(data, dict) else {}
-        tool_calls = message.get("tool_calls") or []
-
-        if tool_calls and req.tool_manager and self._supports_tools_for_req(req):
-            tm = req.tool_manager
-            dialect = req.tools_dialect or self.tools_dialect_id
-
-            for call in tool_calls:
-                call_id = call.get("id")
-                name = call["function"]["name"]
-                args = json.loads(call["function"]["arguments"])
-
-                tool_result = tm.run(name, args)
-
-                req.messages.append(tm.mk_tool_call_msg(dialect, name, args, tool_call_id=call_id))
-                req.messages.append(tm.mk_tool_resp_msg(dialect, name, tool_result, tool_call_id=call_id))
-
-            req.depth += 1
-            return self.generate(req)
 
         content = message.get("content") or message.get("reasoning_content") or ""
         return content.strip()

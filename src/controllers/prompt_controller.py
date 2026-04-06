@@ -97,6 +97,8 @@ class PromptController:
         if caps.get("structured_output", False):
             so_prompt = self._load_structured_output_prompt()
             if so_prompt:
+                tools_desc = caps.get("tools_prompt", "")
+                so_prompt = so_prompt.replace("{TOOLS_DESCRIPTION}", tools_desc or "")
                 system_messages.append({"role": "system", "content": so_prompt})
 
         memory_message_content = ""
