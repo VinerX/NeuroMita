@@ -508,25 +508,24 @@ def open_character_history_folder(gui):
 
 
 def purge_deleted_data(gui):
-    """Physically delete is_deleted=1 records for the current character, with JSON backup."""
-    event_bus = get_event_bus()
-    current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-    profile = current_profile_res[0] if current_profile_res else {}
-    char_id = profile.get("character_id") if isinstance(profile, dict) else None
+    """Physically delete is_deleted=1 records for ALL characters, with JSON backup."""
+    from managers.memory_manager import MemoryManager
+    from managers.history_manager import HistoryManager
 
-    if not char_id:
-        QMessageBox.information(gui, _("Информация", "Information"),
-                                _("Персонаж не выбран.", "No character selected."))
+    character_ids = _get_all_character_ids()
+    if not character_ids:
+        QMessageBox.warning(gui, _("Ошибка", "Error"),
+                            _("Персонажи не найдены.", "No characters found."))
         return
 
     reply = QMessageBox.question(
         gui,
         _("Удалить помеченные записи?", "Purge deleted records?"),
         _(
-            f"Физически удалить все записи is_deleted=1 для '{char_id}'?\n"
-            "Резервная копия будет создана автоматически.",
-            f"Physically delete all is_deleted=1 records for '{char_id}'?\n"
-            "A backup will be created automatically."
+            f"Физически удалить все записи is_deleted=1 для {len(character_ids)} персонажей?\n"
+            "Резервная копия будет создана для каждого автоматически.",
+            f"Physically delete all is_deleted=1 records for {len(character_ids)} characters?\n"
+            "A backup will be created for each automatically."
         ),
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         QMessageBox.StandardButton.No,
@@ -534,33 +533,41 @@ def purge_deleted_data(gui):
     if reply != QMessageBox.StandardButton.Yes:
         return
 
-    results = []
+    total_memories = 0
+    total_history = 0
+    backups = []
     errors = []
 
-    try:
-        from managers.memory_manager import MemoryManager
-        mm = MemoryManager(char_id)
-        r = mm.purge_deleted(backup=True)
-        results.append(_("Память удалено: {n}", "Memories purged: {n}").format(n=r["purged_memories"]))
-        if r.get("backed_up"):
-            results.append(_("Бэкап: {p}", "Backup: {p}").format(p=r["backed_up"]))
-    except Exception as e:
-        errors.append(f"Memories: {e}")
+    for char_id in character_ids:
+        try:
+            mm = MemoryManager(char_id)
+            r = mm.purge_deleted(backup=True)
+            total_memories += r["purged_memories"]
+            if r.get("backed_up"):
+                backups.append(r["backed_up"])
+        except Exception as e:
+            errors.append(f"{char_id} memories: {e}")
 
-    try:
-        from managers.history_manager import HistoryManager
-        hm = HistoryManager(character_name=char_id, character_id=char_id)
-        r = hm.purge_deleted(backup=True)
-        results.append(_("История удалено: {n}", "History purged: {n}").format(n=r["purged_history"]))
-        if r.get("backed_up"):
-            results.append(_("Бэкап: {p}", "Backup: {p}").format(p=r["backed_up"]))
-    except Exception as e:
-        errors.append(f"History: {e}")
+        try:
+            hm = HistoryManager(character_name=char_id, character_id=char_id)
+            r = hm.purge_deleted(backup=True)
+            total_history += r["purged_history"]
+            if r.get("backed_up"):
+                backups.append(r["backed_up"])
+        except Exception as e:
+            errors.append(f"{char_id} history: {e}")
 
-    msg = "\n".join(results)
+    lines = [
+        _("Память удалено: {n}", "Memories purged: {n}").format(n=total_memories),
+        _("История удалено: {n}", "History purged: {n}").format(n=total_history),
+    ]
+    if backups:
+        lines.append(_("Бэкапов создано: {n}", "Backups created: {n}").format(n=len(backups)))
+        lines.append(backups[0] + (" ..." if len(backups) > 1 else ""))
     if errors:
-        msg += "\n" + _("Ошибки:", "Errors:") + "\n" + "\n".join(errors)
-    QMessageBox.information(gui, _("Готово", "Done"), msg)
+        lines.append(_("Ошибки:", "Errors:") + "\n" + "\n".join(errors))
+
+    QMessageBox.information(gui, _("Готово", "Done"), "\n".join(lines))
 
 
 def clear_history(gui):

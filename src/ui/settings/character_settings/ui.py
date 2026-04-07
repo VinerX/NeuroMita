@@ -219,22 +219,12 @@ def build_character_settings_ui(self, parent_layout):
     _mark_danger_hover(self.btn_clear_history)
     _make_compact(self.btn_clear_history)
 
-    self.btn_purge_deleted = QPushButton(_("Очистить удалённое", "Purge deleted"))
-    self.btn_purge_deleted.setToolTip(
-        _("Физически удалить is_deleted=1 записи с резервной копией",
-          "Physically delete is_deleted=1 records with backup")
-    )
-    self.btn_purge_deleted.setIcon(qta.icon('fa5s.fire-alt', color='#ffffff'))
-    _mark_danger_hover(self.btn_purge_deleted)
-    _make_compact(self.btn_purge_deleted)
-
     row_char_1 = QWidget()
     row_char_1_l = QHBoxLayout(row_char_1)
     row_char_1_l.setContentsMargins(0, 0, 0, 0)
     row_char_1_l.setSpacing(6)
     row_char_1_l.addWidget(self.btn_db_viewer, 1)
     row_char_1_l.addWidget(self.btn_clear_history, 1)
-    row_char_1_l.addWidget(self.btn_purge_deleted, 1)
     self.history_section.add_widget(row_char_1)
 
     self.btn_export_db = QPushButton(_("Выгрузить", "Export"))
@@ -464,6 +454,24 @@ def build_character_settings_ui(self, parent_layout):
     row_mig_all_2_l.addWidget(self.btn_reindex_global, 1)
     row_mig_all_2_l.addWidget(self.btn_reindex_all_global, 1)
     self.maintenance_section.add_widget(row_mig_all_2)
+
+    # -------- Разделитель --------
+    self.maintenance_section.add_widget(_make_separator())
+
+    self.btn_purge_deleted = QPushButton(_("Очистить удалённое (все)", "Purge deleted (All)"))
+    self.btn_purge_deleted.setToolTip(
+        _("Физически удалить is_deleted=1 записи для всех персонажей с резервной копией",
+          "Physically delete is_deleted=1 records for all characters with backup")
+    )
+    self.btn_purge_deleted.setIcon(qta.icon('fa5s.fire-alt', color='#ffffff'))
+    self.btn_purge_deleted.setStyleSheet(
+        "QPushButton { background-color: #8b1a1a; color: #ffffff; border-radius: 4px; }"
+        "QPushButton:hover { background-color: #b22222; }"
+        "QPushButton:pressed { background-color: #6a0f0f; }"
+    )
+    self.btn_purge_deleted.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    _make_compact(self.btn_purge_deleted)
+    self.maintenance_section.add_widget(self.btn_purge_deleted)
 
     container_lay.addWidget(root)
     parent_layout.addWidget(container)
