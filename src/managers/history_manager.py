@@ -997,6 +997,39 @@ class HistoryManager:
                 )
             conn.commit()
 
+    def purge_deleted(self, *, backup: bool = True, backup_dir: str | None = None) -> dict:
+        """Physically DELETE is_deleted=1 history rows + their embeddings. Optionally backup to JSON first."""
+        if "is_deleted" not in self._history_cols:
+            return {"backed_up": None, "purged_history": 0}
+        backed_up = None
+        if backup:
+            backed_up = self.db.backup_deleted_to_json(
+                character_id=self.storage_key,
+                backup_dir=backup_dir,
+                include_history=True,
+                include_memories=False,
+            )
+            logger.info(f"[HistoryManager] Backup written to: {backed_up}")
+        with self.db.connection() as conn:
+            cur = conn.cursor()
+            for emb_table in ("embeddings", "sentence_embeddings"):
+                try:
+                    cur.execute(
+                        f"DELETE FROM {emb_table} WHERE source_table='history' AND character_id=?"
+                        " AND source_id IN (SELECT id FROM history WHERE character_id=? AND is_deleted=1)",
+                        (self.storage_key, self.storage_key),
+                    )
+                except Exception:
+                    pass
+            cur.execute(
+                "DELETE FROM history WHERE character_id=? AND is_deleted=1",
+                (self.storage_key,),
+            )
+            purged = cur.rowcount
+            conn.commit()
+        logger.info(f"[HistoryManager] Purged {purged} deleted history rows for '{self.storage_key}'")
+        return {"backed_up": backed_up, "purged_history": purged}
+
     def _default_history(self):
         return {"fixed_parts": [], "messages": [], "variables": {}}
 

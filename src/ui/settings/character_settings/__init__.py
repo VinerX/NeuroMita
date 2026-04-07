@@ -12,6 +12,7 @@ from .logic import (
     save_character_provider,
     migrate_to_db,
     cleanup_character_workers,
+    purge_deleted_data,
 )
 
 
@@ -38,4 +39,5 @@ __all__ = [
     "save_character_provider",
     "migrate_to_db",
     "cleanup_character_workers",
+    "purge_deleted_data",
 ]

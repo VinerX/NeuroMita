@@ -219,12 +219,22 @@ def build_character_settings_ui(self, parent_layout):
     _mark_danger_hover(self.btn_clear_history)
     _make_compact(self.btn_clear_history)
 
+    self.btn_purge_deleted = QPushButton(_("Очистить удалённое", "Purge deleted"))
+    self.btn_purge_deleted.setToolTip(
+        _("Физически удалить is_deleted=1 записи с резервной копией",
+          "Physically delete is_deleted=1 records with backup")
+    )
+    self.btn_purge_deleted.setIcon(qta.icon('fa5s.fire-alt', color='#ffffff'))
+    _mark_danger_hover(self.btn_purge_deleted)
+    _make_compact(self.btn_purge_deleted)
+
     row_char_1 = QWidget()
     row_char_1_l = QHBoxLayout(row_char_1)
     row_char_1_l.setContentsMargins(0, 0, 0, 0)
     row_char_1_l.setSpacing(6)
     row_char_1_l.addWidget(self.btn_db_viewer, 1)
     row_char_1_l.addWidget(self.btn_clear_history, 1)
+    row_char_1_l.addWidget(self.btn_purge_deleted, 1)
     self.history_section.add_widget(row_char_1)
 
     self.btn_export_db = QPushButton(_("Выгрузить", "Export"))
