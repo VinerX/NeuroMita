@@ -1095,6 +1095,35 @@ class DatabaseManager:
             return "", []
         return "(" + " AND ".join(parts) + ")", params
 
+    def backup_deleted_to_json(
+        self,
+        *,
+        character_id: str,
+        backup_dir: str | None = None,
+        include_history: bool = True,
+        include_memories: bool = True,
+    ) -> str:
+        """Export only is_deleted=1 records for character_id to a timestamped JSON file.
+        Returns the path written."""
+        if not backup_dir:
+            backup_dir = os.path.dirname(os.path.abspath(self.db_path))
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        out_path = os.path.join(backup_dir, f"backup_{character_id}_{ts}.json")
+        self.export_to_json_file(
+            out_path=out_path,
+            character_id=character_id,
+            include_history=include_history,
+            include_memories=include_memories,
+            include_variables=False,
+            status_active=False,
+            status_forgotten=False,
+            status_deleted=True,
+            date_mode="all",
+            date_from="",
+            date_to="",
+        )
+        return out_path
+
     def export_to_json_file(
         self,
         *,

@@ -718,6 +718,37 @@ class MemoryManager:
                 pass
         self.total_characters = 0
 
+    def purge_deleted(self, *, backup: bool = True, backup_dir: str | None = None) -> dict:
+        """Physically DELETE is_deleted=1 memories + their embeddings. Optionally backup to JSON first."""
+        backed_up = None
+        if backup:
+            backed_up = self.db.backup_deleted_to_json(
+                character_id=self.character_name,
+                backup_dir=backup_dir,
+                include_history=False,
+                include_memories=True,
+            )
+            logging.info(f"[MemoryManager] Backup written to: {backed_up}")
+        with self.db.connection() as conn:
+            cur = conn.cursor()
+            for emb_table in ("embeddings", "sentence_embeddings"):
+                try:
+                    cur.execute(
+                        f"DELETE FROM {emb_table} WHERE source_table='memories' AND character_id=?"
+                        " AND source_id IN (SELECT id FROM memories WHERE character_id=? AND is_deleted=1)",
+                        (self.character_name, self.character_name),
+                    )
+                except Exception:
+                    pass
+            cur.execute(
+                "DELETE FROM memories WHERE character_id=? AND is_deleted=1",
+                (self.character_name,),
+            )
+            purged = cur.rowcount
+            conn.commit()
+        logging.info(f"[MemoryManager] Purged {purged} deleted memories for '{self.character_name}'")
+        return {"backed_up": backed_up, "purged_memories": purged}
+
     # Default templates (used when no custom file is found in prompt set)
     _DEFAULT_ITEM_TEMPLATE = "{risk_tag}N:{id}, Date {date}, Priority: {priority}: {content}"
     _DEFAULT_SUMMARY_TEMPLATE = "{risk_tag}N:{id}, Date {date}, Type: Summary: {content}"
