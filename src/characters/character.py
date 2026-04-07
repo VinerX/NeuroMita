@@ -1011,6 +1011,14 @@ class Character:
 
         self.memory_system.clear_memories()
         self.history_manager.clear_history()
+
+        try:
+            from managers.rag.graph.graph_store import GraphStore
+            from managers.database_manager import DatabaseManager
+            GraphStore(DatabaseManager(), self.char_id).clear_for_character()
+        except Exception as e:
+            logger.warning(f"[{self.char_id}] Graph clear failed (ignored): {e}", exc_info=True)
+
         logger.info(
             f"[{self.char_id}] History cleared and state reset to initial defaults/overrides."
         )

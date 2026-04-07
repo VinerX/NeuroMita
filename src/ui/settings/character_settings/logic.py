@@ -253,6 +253,8 @@ def wire_character_settings_logic(self):
         self.btn_open_history_folder.clicked.connect(lambda: open_character_history_folder(self))
     if hasattr(self, 'btn_clear_history'):
         self.btn_clear_history.clicked.connect(lambda: clear_history(self))
+    if hasattr(self, 'btn_purge_deleted'):
+        self.btn_purge_deleted.clicked.connect(lambda: purge_deleted_data(self))
     if hasattr(self, 'btn_clear_all_histories'):
         self.btn_clear_all_histories.clicked.connect(lambda: clear_history_all(self))
     if hasattr(self, 'btn_migrate_db'):
@@ -503,6 +505,62 @@ def open_character_history_folder(gui):
     else:
         QMessageBox.information(gui, _("Информация", "Information"),
                                 _("Персонаж не выбран или его имя недоступно.", "No character selected or its name is not available."))
+
+
+def purge_deleted_data(gui):
+    """Physically delete is_deleted=1 records for the current character, with JSON backup."""
+    event_bus = get_event_bus()
+    current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+    profile = current_profile_res[0] if current_profile_res else {}
+    char_id = profile.get("character_id") if isinstance(profile, dict) else None
+
+    if not char_id:
+        QMessageBox.information(gui, _("Информация", "Information"),
+                                _("Персонаж не выбран.", "No character selected."))
+        return
+
+    reply = QMessageBox.question(
+        gui,
+        _("Удалить помеченные записи?", "Purge deleted records?"),
+        _(
+            f"Физически удалить все записи is_deleted=1 для '{char_id}'?\n"
+            "Резервная копия будет создана автоматически.",
+            f"Physically delete all is_deleted=1 records for '{char_id}'?\n"
+            "A backup will be created automatically."
+        ),
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+
+    results = []
+    errors = []
+
+    try:
+        from managers.memory_manager import MemoryManager
+        mm = MemoryManager(char_id)
+        r = mm.purge_deleted(backup=True)
+        results.append(_("Память удалено: {n}", "Memories purged: {n}").format(n=r["purged_memories"]))
+        if r.get("backed_up"):
+            results.append(_("Бэкап: {p}", "Backup: {p}").format(p=r["backed_up"]))
+    except Exception as e:
+        errors.append(f"Memories: {e}")
+
+    try:
+        from managers.history_manager import HistoryManager
+        hm = HistoryManager(character_name=char_id, character_id=char_id)
+        r = hm.purge_deleted(backup=True)
+        results.append(_("История удалено: {n}", "History purged: {n}").format(n=r["purged_history"]))
+        if r.get("backed_up"):
+            results.append(_("Бэкап: {p}", "Backup: {p}").format(p=r["backed_up"]))
+    except Exception as e:
+        errors.append(f"History: {e}")
+
+    msg = "\n".join(results)
+    if errors:
+        msg += "\n" + _("Ошибки:", "Errors:") + "\n" + "\n".join(errors)
+    QMessageBox.information(gui, _("Готово", "Done"), msg)
 
 
 def clear_history(gui):

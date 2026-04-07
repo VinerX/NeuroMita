@@ -100,6 +100,31 @@ class GraphStore:
     # ------------------------------------------------------------------
     # Processed-message tracking
     # ------------------------------------------------------------------
+    def clear_for_character(self) -> Dict[str, int]:
+        """Hard-delete all graph data for this character. Called from clear_history()."""
+        counts: Dict[str, int] = {}
+        with self.db.connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "DELETE FROM graph_relations WHERE character_id = ?",
+                (self.character_id,),
+            )
+            counts["relations"] = cur.rowcount
+            # graph_entity_aliases and graph_entity_embeddings cascade via ON DELETE CASCADE
+            cur.execute(
+                "DELETE FROM graph_entities WHERE character_id = ?",
+                (self.character_id,),
+            )
+            counts["entities"] = cur.rowcount
+            cur.execute(
+                "DELETE FROM graph_processed_messages WHERE character_id = ?",
+                (self.character_id,),
+            )
+            counts["processed_messages"] = cur.rowcount
+            conn.commit()
+        logger.info(f"[GraphStore] clear_for_character '{self.character_id}': {counts}")
+        return counts
+
     def mark_messages_processed(self, message_ids: List[int]) -> None:
         """Mark history message IDs as processed (regardless of whether entities were found)."""
         if not message_ids:
