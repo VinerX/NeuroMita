@@ -1019,8 +1019,8 @@ class HistoryManager:
                         " AND source_id IN (SELECT id FROM history WHERE character_id=? AND is_deleted=1)",
                         (self.storage_key, self.storage_key),
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"[HistoryManager] purge_deleted: {emb_table} cleanup failed: {e}")
             cur.execute(
                 "DELETE FROM history WHERE character_id=? AND is_deleted=1",
                 (self.storage_key,),

@@ -738,8 +738,8 @@ class MemoryManager:
                         " AND source_id IN (SELECT id FROM memories WHERE character_id=? AND is_deleted=1)",
                         (self.character_name, self.character_name),
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.warning(f"[MemoryManager] purge_deleted: {emb_table} cleanup failed: {e}")
             cur.execute(
                 "DELETE FROM memories WHERE character_id=? AND is_deleted=1",
                 (self.character_name,),

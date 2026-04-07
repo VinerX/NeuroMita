@@ -1095,6 +1095,19 @@ class DatabaseManager:
             return "", []
         return "(" + " AND ".join(parts) + ")", params
 
+    def vacuum(self) -> None:
+        """Run VACUUM to compact the database file and release disk space.
+        Must be called outside any transaction (uses its own connection)."""
+        conn = self.get_connection()
+        try:
+            conn.isolation_level = None  # autocommit — required for VACUUM
+            conn.execute("VACUUM")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     def backup_deleted_to_json(
         self,
         *,
