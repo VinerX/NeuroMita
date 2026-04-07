@@ -509,14 +509,19 @@ def open_character_history_folder(gui):
 
 def purge_deleted_data(gui):
     """Physically delete is_deleted=1 records for ALL characters, with JSON backup."""
+    import os
     from managers.memory_manager import MemoryManager
     from managers.history_manager import HistoryManager
+    from managers.database_manager import DatabaseManager
 
     character_ids = _get_all_character_ids()
     if not character_ids:
         QMessageBox.warning(gui, _("Ошибка", "Error"),
                             _("Персонажи не найдены.", "No characters found."))
         return
+
+    db = DatabaseManager()
+    db_size_before = os.path.getsize(db.db_path) if os.path.exists(db.db_path) else 0
 
     reply = QMessageBox.question(
         gui,
@@ -557,9 +562,19 @@ def purge_deleted_data(gui):
         except Exception as e:
             errors.append(f"{char_id} history: {e}")
 
+    # VACUUM compacts the SQLite file and actually releases disk space
+    try:
+        db.vacuum()
+    except Exception as e:
+        errors.append(f"VACUUM: {e}")
+
+    db_size_after = os.path.getsize(db.db_path) if os.path.exists(db.db_path) else 0
+    freed_mb = (db_size_before - db_size_after) / (1024 * 1024)
+
     lines = [
         _("Память удалено: {n}", "Memories purged: {n}").format(n=total_memories),
         _("История удалено: {n}", "History purged: {n}").format(n=total_history),
+        _("Освобождено: {mb:.1f} МБ", "Freed: {mb:.1f} MB").format(mb=freed_mb),
     ]
     if backups:
         lines.append(_("Бэкапов создано: {n}", "Backups created: {n}").format(n=len(backups)))
