@@ -101,6 +101,8 @@ class SettingsController:
             "ENABLE_GAME_SEABATTLE",
 
             "REMINDERS_ENABLED",
+
+            "GRAPH_EXTRACTION_ENABLED",
         ]
 
         custom_vars: Dict[str, Any] = {
