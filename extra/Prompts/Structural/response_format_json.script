@@ -103,7 +103,7 @@ Entities (graph extraction is ON — fill these fields):
   Omit entirely if nothing notable in this turn.
 - memory_add with entities: You may append a third pipe-separated field with comma-separated entity names relevant to that memory.
   Example: "normal|Player likes cats|player,cats". Omit the third field if no specific entities apply to that memory."""
-    SET LOCAL result = result + graph_section
+    SET result = result + graph_section
 ENDIF
 
 RETURN result

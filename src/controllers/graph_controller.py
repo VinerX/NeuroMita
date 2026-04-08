@@ -155,8 +155,9 @@ class GraphController:
             text += f"Character: {assistant_output}\n"
 
         # Inline mode: model already embedded the graph JSON in its response.
-        # Inline store always runs (no extra LLM call needed).
-        if inline_graph_json and self._is_inline_mode():
+        # Two sources: legacy <graph> tag (requires GRAPH_EXTRACTION_INLINE) or
+        # structured output entities (always stored when inline_graph_json is present).
+        if inline_graph_json and (self._is_inline_mode() or from_structured_output):
             logger.info(f"[GraphController] Inline graph JSON received for '{char_id}', storing directly")
             try:
                 future = self._get_executor().submit(
