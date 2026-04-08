@@ -146,6 +146,7 @@ class ConversationEventWriter:
         event_type: str,
         task_uid: str | None,
         structured_data: dict | None = None,
+        thinking: str | None = None,
     ) -> dict:
         msg = {
             "message_id": self._make_message_id("out", task_uid),
@@ -160,6 +161,8 @@ class ConversationEventWriter:
         }
         if structured_data:
             msg["structured_data"] = structured_data
+        if thinking:
+            msg["thinking"] = thinking
         return msg
 
     def write_turn(
@@ -177,6 +180,7 @@ class ConversationEventWriter:
         event_type: str,
         task_uid: str | None,
         structured_data: dict | None = None,
+        thinking: str | None = None,
     ) -> None:
         sender = str(sender or "Player")
         responder_character_id = str(responder_character_id or "").strip()
@@ -207,6 +211,7 @@ class ConversationEventWriter:
             event_type=event_type,
             task_uid=task_uid,
             structured_data=structured_data,
+            thinking=thinking,
         )
 
         if user_event is not None:

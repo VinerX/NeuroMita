@@ -1006,6 +1006,7 @@ class ModelController:
                     assistant_target=target,
                     event_type=event_type,
                     task_uid=task_uid,
+                    thinking=think_text or None,
                 )
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
@@ -1310,6 +1311,7 @@ class ModelController:
                 event_type=event_type,
                 task_uid=task_uid,
                 structured_data=history_dict,
+                thinking=think_text or None,
             )
 
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
@@ -1431,6 +1433,7 @@ class ModelController:
                 event_type=event_type,
                 task_uid=task_uid,
                 structured_data=result_dict,
+                thinking=think_text or None,
             )
 
         # Emit first response to UI (shows "I'll check that" message)

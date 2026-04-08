@@ -19,7 +19,7 @@ from PyQt6.QtCore import Qt
 from utils import _
 from main_logger import logger
 from ui.chat.chat_delegate import ChatMessageDelegate
-from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget, AVATAR_SIZE
+from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget, AVATAR_SIZE, TAIL_W
 from ui.chat.structured_panel import StructuredOutputPanel
 from core.events import get_event_bus, Events
 
@@ -242,7 +242,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         gui._think_block_counter += 1
         blocks[block_id] = block
 
-        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent)
+        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent, extra_left=TAIL_W)
         gui.chat_window.add_message_widget(wrapped, at_start=insert_at_start)
         return
 
@@ -433,7 +433,7 @@ def prepare_stream_slot(gui, role="assistant"):
         blocks[block_id] = block
         gui._current_streaming_think_block = block
 
-        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent)
+        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent, extra_left=TAIL_W)
         gui.chat_window.add_message_widget(wrapped)
     else:
         speaker_name = str(getattr(gui, "_stream_speaker_name", "") or "")

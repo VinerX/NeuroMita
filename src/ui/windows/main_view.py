@@ -532,7 +532,18 @@ class ChatGUI(QMainWindow):
             message_time = entry.get("time", "???")
             structured_data = entry.get("structured_data")
             message_id = entry.get("message_id")
+            thinking_text = entry.get("thinking")
             try:
+                show_think_in_gui = bool(self._get_setting("SHOW_THINK_IN_GUI", False))
+                if role == "assistant" and thinking_text and show_think_in_gui:
+                    speaker = entry.get("speaker", "")
+                    message_renderer.insert_message(
+                        self, "think",
+                        [{"type": "meta", "speaker": speaker},
+                         {"type": "text", "text": thinking_text.strip()}],
+                        message_time=message_time,
+                        character_id=character_id,
+                    )
                 message_renderer.insert_message(self, role, content, message_time=message_time,
                                                 structured_data=structured_data,
                                                 message_id=message_id, character_id=character_id)

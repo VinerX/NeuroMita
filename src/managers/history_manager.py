@@ -355,6 +355,7 @@ class HistoryManager:
             "req_id": self._coerce_text(msg.get("req_id")),
             "task_uid": self._coerce_text(msg.get("task_uid")),
             "structured_data": structured_data_str,
+            "thinking": self._coerce_text(msg.get("thinking")),
         }
 
     def _normalize_loaded_message(self, msg: dict) -> dict:

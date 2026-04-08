@@ -41,6 +41,7 @@ class DatabaseManager:
         "task_uid": "TEXT",
         "is_deleted": "INTEGER DEFAULT 0",
         "structured_data": "TEXT",
+        "thinking": "TEXT",
     }
 
     def __new__(cls):
