@@ -92,6 +92,12 @@ def _to_gemini_schema(schema: dict) -> dict:
     return convert(copy.deepcopy(schema))
 
 
+class EntityItem(BaseModel):
+    """A named entity extracted from the current turn."""
+    name: str = Field(..., description="Entity name, 1-3 words lowercase")
+    type: str = Field(..., description="One of: person, place, thing, concept")
+
+
 class ToolCall(BaseModel):
     """Describes a tool the LLM wants to invoke during its response."""
 
@@ -173,6 +179,12 @@ class StructuredResponse(BaseModel):
     reminder_delete: Optional[List[str]] = Field(
         default=None,
         description="Reminder IDs to delete. Format: 'N' (number). Example: '3'."
+    )
+
+    entities: Optional[List[EntityItem]] = Field(
+        default=None,
+        description="Notable named entities in this turn (people, places, objects, preferences). "
+                    "Fill only when instructed. Omit entirely if not needed."
     )
 
     segments: List[ResponseSegment] = Field(

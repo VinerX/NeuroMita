@@ -601,18 +601,23 @@ class Character:
 
     def _apply_structured_memory_ops(self, structured: StructuredResponse, save_as_missed: bool = False):
         """Apply memory add/update/delete operations from a StructuredResponse."""
+        self._last_created_memory_ids = []
         for mem_text in (structured.memory_add or []):
             mem_text = (mem_text or "").strip()
             if not mem_text:
                 continue
-            # Support priority prefix: "priority|content"
-            parts = [p.strip() for p in mem_text.split("|", 1)]
-            if len(parts) == 2 and parts[0] in ("low", "normal", "high", "critical"):
-                priority, content = parts
+            # Format: "priority|content" or "priority|content|entity1,entity2,..."
+            parts = [p.strip() for p in mem_text.split("|", 2)]
+            if len(parts) >= 2 and parts[0] in ("low", "normal", "high", "critical"):
+                priority = parts[0]
+                content = parts[1]
+                ents = [e.strip() for e in parts[2].split(",")] if len(parts) == 3 and parts[2] else None
             else:
-                priority, content = "normal", mem_text
+                priority, content, ents = "normal", mem_text, None
             try:
-                self.memory_system.add_memory(priority=priority, content=content)
+                eid = self.memory_system.add_memory(priority=priority, content=content, entities=ents)
+                if eid is not None:
+                    self._last_created_memory_ids.append(eid)
                 logger.info(f"[{self.char_id}] Structured: added memory (P: {priority}): {content[:50]}...")
             except Exception as e:
                 logger.error(f"[{self.char_id}] Structured: error adding memory: {e}")

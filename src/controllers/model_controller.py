@@ -1314,6 +1314,33 @@ class ModelController:
 
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
+        # Build inline_graph_json from structured entities (if graph extraction enabled)
+        inline_graph_json: Optional[str] = None
+        if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
+                and structured.entities):
+            try:
+                import json as _json
+                graph_payload = {
+                    "entities": [e.model_dump() for e in structured.entities],
+                    "relations": [],
+                }
+                inline_graph_json = _json.dumps(graph_payload, ensure_ascii=False)
+            except Exception as _ge:
+                logger.warning(f"[ModelController] Failed to build graph JSON from structured entities: {_ge}")
+
+        # Notify graph extraction (and any future subscribers).
+        created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
+        self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
+            "character_id": char_id,
+            "character_ref": char,
+            "user_input": user_input,
+            "assistant_output": final_text,
+            "created_memory_ids": created_memory_ids,
+            "inline_graph_json": inline_graph_json,
+            "memories_already_tagged": True,
+            "from_structured_output": True,
+        })
+
         voice_profile = None
         if hasattr(char, "to_voice_profile"):
             try:

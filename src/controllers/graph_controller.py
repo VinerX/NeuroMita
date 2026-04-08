@@ -143,6 +143,8 @@ class GraphController:
         assistant_output = str(data.get("assistant_output") or data.get("response_text") or "").strip()
         created_memory_ids: List[int] = data.get("created_memory_ids") or []
         inline_graph_json: Optional[str] = data.get("inline_graph_json")
+        memories_already_tagged: bool = bool(data.get("memories_already_tagged", False))
+        from_structured_output: bool = bool(data.get("from_structured_output", False))
         if not user_input and not assistant_output:
             return
 
@@ -159,7 +161,7 @@ class GraphController:
             try:
                 future = self._get_executor().submit(
                     self._store_inline, character, char_id, inline_graph_json,
-                    user_input, assistant_output, created_memory_ids,
+                    user_input, assistant_output, created_memory_ids, memories_already_tagged,
                 )
                 self._track_future(char_id, future)
             except Exception as e:
@@ -167,6 +169,11 @@ class GraphController:
             return
 
         # Real-time extraction (separate LLM call) — only if explicitly enabled.
+        # Skip if response came from structured output path — entities are handled there.
+        if from_structured_output:
+            logger.debug(f"[GraphController] Skipped real-time extraction for '{char_id}': structured output path")
+            return
+
         if not bool(self._get_setting("GRAPH_EXTRACTION_REALTIME", False)):
             logger.debug(f"[GraphController] Skipped real-time extraction for '{char_id}': GRAPH_EXTRACTION_REALTIME is False")
             return
@@ -333,6 +340,7 @@ class GraphController:
         user_input: str = "",
         assistant_output: str = "",
         created_memory_ids: Optional[List[int]] = None,
+        memories_already_tagged: bool = False,
     ) -> None:
         """Store graph JSON that was already extracted inline by the main model."""
         try:
@@ -366,7 +374,7 @@ class GraphController:
             if entities:
                 entity_names = [e.get("name", "") for e in entities if e.get("name")]
                 self._tag_history_messages(db, char_id, entity_names, user_input, assistant_output)
-                if created_memory_ids and hasattr(character, "memory_system"):
+                if not memories_already_tagged and created_memory_ids and hasattr(character, "memory_system"):
                     for eid in created_memory_ids:
                         character.memory_system.tag_with_entities(eid, entity_names)
 
