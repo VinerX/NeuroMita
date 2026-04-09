@@ -12,14 +12,11 @@ SET LOCAL base = """Response Format (Structured JSON):
 You MUST respond with a single JSON object. No extra text before or after the JSON.
 
 The JSON has two parts:
-1. Global fields (top level) — applied once per response
-2. Segments — ordered list of text chunks with positional commands
+1. Segments — ordered list of text chunks with positional commands (comes first)
+2. Global fields (top level) — applied once per response
 
 Schema:
 {
-  "attitude_change": <number -6..6>,
-  "boredom_change": <number -6..6>,
-  "stress_change": <number -6..6>,
   "segments": [
     {
       "text": "Your text here (REQUIRED)",
@@ -39,6 +36,9 @@ Schema:
       "allow_sleep": true/false
     }
   ],
+  "attitude_change": <number -6..6>,
+  "boredom_change": <number -6..6>,
+  "stress_change": <number -6..6>,
   "tool_call": {"name": "tool_name", "args": {"param": "value"}}
 }
 
