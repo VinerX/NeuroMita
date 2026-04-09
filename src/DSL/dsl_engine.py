@@ -608,9 +608,9 @@ class DslInterpreter:
                             try:
                                 from managers.rag.graph.graph_store import GraphStore
                                 gs = GraphStore(rag.db, rag.character_id)
-                                sid = gs.upsert_entity(entity1)
-                                oid = gs.upsert_entity(entity2)
-                                gs.upsert_relation(sid, relation, oid)
+                                sid = gs.upsert_entity(entity1, protected=True)
+                                oid = gs.upsert_entity(entity2, protected=True)
+                                gs.upsert_relation(sid, relation, oid, protected=True)
                             except Exception as _link_err:
                                 import logging as _logging
                                 _logging.warning(f"LINK_ENTITIES failed (ignored): {_link_err}")

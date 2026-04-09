@@ -186,15 +186,27 @@ class EntityGC:
 
     def _load_entities(self, conn: sqlite3.Connection) -> List[dict]:
         cur = conn.cursor()
-        cur.execute(
-            "SELECT id, name, entity_type, mention_count FROM graph_entities "
-            "WHERE character_id = ? ORDER BY id",
-            (self.character_id,),
-        )
-        return [
-            {"id": r[0], "name": r[1], "type": r[2], "mentions": r[3]}
-            for r in cur.fetchall()
-        ]
+        # is_protected may not exist in older DBs — use COALESCE for safety
+        try:
+            cur.execute(
+                "SELECT id, name, entity_type, mention_count, COALESCE(is_protected, 0) "
+                "FROM graph_entities WHERE character_id = ? ORDER BY id",
+                (self.character_id,),
+            )
+            return [
+                {"id": r[0], "name": r[1], "type": r[2], "mentions": r[3], "protected": bool(r[4])}
+                for r in cur.fetchall()
+            ]
+        except Exception:
+            cur.execute(
+                "SELECT id, name, entity_type, mention_count FROM graph_entities "
+                "WHERE character_id = ? ORDER BY id",
+                (self.character_id,),
+            )
+            return [
+                {"id": r[0], "name": r[1], "type": r[2], "mentions": r[3], "protected": False}
+                for r in cur.fetchall()
+            ]
 
     def _load_relations(self, conn: sqlite3.Connection) -> List[dict]:
         cur = conn.cursor()
@@ -298,6 +310,8 @@ class EntityGC:
 
         # 1. Garbage detection
         for ent in entities:
+            if ent.get("protected"):
+                continue
             reason = is_garbage(ent["name"])
             if reason:
                 plan.actions.append(GCAction(
@@ -309,6 +323,8 @@ class EntityGC:
 
         # 2. Punctuation cleanup (rename)
         for ent in entities:
+            if ent.get("protected"):
+                continue
             cleaned = re.sub(r"[?!.,;:]+$", "", ent["name"]).strip()
             if cleaned != ent["name"] and cleaned:
                 plan.actions.append(GCAction(
@@ -320,9 +336,9 @@ class EntityGC:
                 ))
 
         # 3. Merge duplicates
-        # Exclude entities already marked for deletion
+        # Exclude entities already marked for deletion or protected
         delete_ids = {a.entity_id for a in plan.actions if a.action == "delete"}
-        alive = [e for e in entities if e["id"] not in delete_ids]
+        alive = [e for e in entities if e["id"] not in delete_ids and not e.get("protected")]
 
         merge_groups = self._build_merge_groups(alive)
         plan.merge_groups = merge_groups
@@ -330,6 +346,8 @@ class EntityGC:
         for group in merge_groups:
             canon_id = group["canonical_id"]
             for variant in group["variants"]:
+                if variant.get("protected"):
+                    continue
                 plan.actions.append(GCAction(
                     action="merge",
                     entity_id=variant["id"],
@@ -343,6 +361,8 @@ class EntityGC:
         handled_ids = {a.entity_id for a in plan.actions}
         merge_target_ids = {a.merge_into_id for a in plan.actions if a.action == "merge"}
         for ent in entities:
+            if ent.get("protected"):
+                continue
             if ent["id"] in handled_ids:
                 continue
             if ent["id"] in merge_target_ids:
@@ -406,13 +426,23 @@ class EntityGC:
             conn.close()
 
     def _do_delete(self, cur: sqlite3.Cursor, entity_id: int) -> None:
-        """Delete entity and all its relations."""
+        """Delete entity and all its relations. Skips protected entities (race-condition guard)."""
+        try:
+            row = cur.execute(
+                "SELECT COALESCE(is_protected, 0) FROM graph_entities WHERE id = ? AND character_id = ?",
+                (entity_id, self.character_id),
+            ).fetchone()
+            if row and row[0]:
+                logger.debug(f"EntityGC: skipping protected entity id={entity_id}")
+                return
+        except Exception:
+            pass
         cur.execute(
             "DELETE FROM graph_relations WHERE (subject_id = ? OR object_id = ?) AND character_id = ?",
             (entity_id, entity_id, self.character_id),
         )
         cur.execute(
-            "DELETE FROM graph_entities WHERE id = ? AND character_id = ?",
+            "DELETE FROM graph_entities WHERE id = ? AND character_id = ? AND COALESCE(is_protected, 0) = 0",
             (entity_id, self.character_id),
         )
 

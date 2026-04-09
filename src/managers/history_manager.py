@@ -1034,6 +1034,61 @@ class HistoryManager:
     def _default_history(self):
         return {"fixed_parts": [], "messages": [], "variables": {}}
 
+    def apply_history_ttl_cleanup(self) -> int:
+        """
+        Soft-archive old active history messages by setting is_active=0.
+        Controlled by HISTORY_TTL_ENABLED, HISTORY_TTL_DAYS.
+        Returns count of archived messages.
+        """
+        from managers.settings_manager import SettingsManager
+        try:
+            enabled = SettingsManager.get("HISTORY_TTL_ENABLED", False)
+            if str(enabled).lower() in ("false", "0", "", "none"):
+                return 0
+        except Exception:
+            return 0
+
+        if "is_active" not in self._history_cols:
+            return 0
+
+        try:
+            ttl_days = int(SettingsManager.get("HISTORY_TTL_DAYS", 0))
+        except Exception:
+            ttl_days = 0
+
+        if ttl_days <= 0:
+            return 0
+
+        # timestamp is stored as "dd.mm.yyyy HH:MM:SS" — convert for julianday()
+        _ts_expr = (
+            "CASE WHEN timestamp LIKE '__.__.____ __:__:__' "
+            "THEN substr(timestamp,7,4)||'-'||substr(timestamp,4,2)||'-'||substr(timestamp,1,2)||' '||substr(timestamp,12) "
+            "ELSE timestamp END"
+        )
+
+        total = 0
+        try:
+            with self.db.connection() as conn:
+                cur = conn.cursor()
+                not_deleted = " AND is_deleted = 0" if "is_deleted" in self._history_cols else ""
+                cur.execute(
+                    f"""UPDATE history SET is_active = 0
+                        WHERE character_id = ? AND is_active = 1{not_deleted}
+                          AND timestamp IS NOT NULL AND TRIM(timestamp) != ''
+                          AND julianday('now') - julianday({_ts_expr}) > ?""",
+                    (self.storage_key, ttl_days),
+                )
+                total = cur.rowcount
+                if total > 0:
+                    conn.commit()
+        except Exception as e:
+            logger.warning(f"[HistoryManager] apply_history_ttl_cleanup failed: {e}", exc_info=True)
+
+        if total > 0:
+            logger.info(f"[HistoryManager] TTL cleanup: archived {total} messages for '{self.storage_key}'")
+
+        return total
+
     # ---------------------------------------------------------------------
     # Paging
     # ---------------------------------------------------------------------

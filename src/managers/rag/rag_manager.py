@@ -2,6 +2,7 @@ import logging
 import math
 import sqlite3
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 import json
 import struct
@@ -39,6 +40,17 @@ class RAGManager:
     _fallback_handler: Optional[EmbeddingModelHandler] = None
     _fallback_lock: Lock = Lock()
     _fallback_failed: bool = False  # avoid retrying after permanent load failure
+
+    _ACCESS_EXECUTOR: Optional[ThreadPoolExecutor] = None
+    _ACCESS_EXECUTOR_LOCK: Lock = Lock()
+
+    @classmethod
+    def _get_access_executor(cls) -> ThreadPoolExecutor:
+        if cls._ACCESS_EXECUTOR is None:
+            with cls._ACCESS_EXECUTOR_LOCK:
+                if cls._ACCESS_EXECUTOR is None:
+                    cls._ACCESS_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rag_access")
+        return cls._ACCESS_EXECUTOR
 
     @classmethod
     def _get_fallback_handler(cls) -> EmbeddingModelHandler:
@@ -888,11 +900,59 @@ class RAGManager:
         if cfg.detailed_logs:
             RagDebugLogger(rag=self, cfg=cfg).log_final_output(cands_out)
 
+        if cands_out:
+            self._track_access_async(cands_out)
+
         # convert to old output format
         out: list[dict] = []
         for c in cands_out:
             out.append(c.to_public_dict())
         return out
+
+    def _track_access_async(self, cands: list) -> None:
+        """Fire-and-forget: increment access_count / last_accessed for retrieved items."""
+        memory_ids = [c.id for c in cands if getattr(c, "source", None) == "memory"]
+        graph_names: set = set()
+        for c in cands:
+            if getattr(c, "source", None) == "graph":
+                meta = getattr(c, "meta", None) or {}
+                subj = meta.get("subject", "")
+                obj_ = meta.get("object", "")
+                if subj: graph_names.add(subj.lower())
+                if obj_:  graph_names.add(obj_.lower())
+
+        if not memory_ids and not graph_names:
+            return
+
+        char_id = self.character_id
+        db = self.db
+
+        def _do_track():
+            now = datetime.datetime.utcnow().isoformat(timespec="seconds")
+            try:
+                with db.connection() as conn:
+                    if memory_ids:
+                        ph = ",".join("?" * len(memory_ids))
+                        conn.execute(
+                            f"UPDATE memories SET access_count=access_count+1, last_accessed=?"
+                            f" WHERE character_id=? AND eternal_id IN ({ph})",
+                            [now, char_id] + list(memory_ids),
+                        )
+                    if graph_names:
+                        ph = ",".join("?" * len(graph_names))
+                        conn.execute(
+                            f"UPDATE graph_entities SET access_count=access_count+1"
+                            f" WHERE character_id=? AND LOWER(name) IN ({ph})",
+                            [char_id] + list(graph_names),
+                        )
+                    conn.commit()
+            except Exception as e:
+                logger.debug(f"[RAG] access tracking failed: {e}")
+
+        try:
+            self._get_access_executor().submit(_do_track)
+        except Exception:
+            pass
 
     def index_all_missing(self, progress_callback=None) -> int:
         """

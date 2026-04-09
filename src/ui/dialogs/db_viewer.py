@@ -84,7 +84,7 @@ class _PrettySqlTableModel(QSqlTableModel):
     - disable editing for BLOB columns
     """
 
-    BOOLISH_COLUMNS = {"is_deleted", "is_active", "is_forgotten"}
+    BOOLISH_COLUMNS = {"is_deleted", "is_active", "is_forgotten", "is_protected"}
     # treat these as blob-like by name even if type introspection is flaky
     BLOBISH_NAME_PARTS = {"embedding"}
 
@@ -154,6 +154,7 @@ class _AdvancedTablePage(QWidget):
 
     OPERATORS = ["Contains", "Equals", "Starts With", "Is Empty"]
     SEARCH_OPERATORS = ["Contains", "Starts With", "Equals"]
+    TABLES_WITH_IS_DELETED: frozenset = frozenset({"memories", "history"})
 
     # Default visible columns (non-extended mode). Missing columns are ignored.
     DEFAULT_VISIBLE = {
@@ -220,6 +221,7 @@ class _AdvancedTablePage(QWidget):
         self.table_name = table_name
         self.character_id = character_id
 
+        self._hide_deleted: bool = True
         self._base_filter = self._build_base_filter()
         self._user_filter: str = ""
         self._search_filter: str = ""
@@ -293,7 +295,13 @@ class _AdvancedTablePage(QWidget):
         self.btn_apply.clicked.connect(self.apply_filter)
         self.btn_clear.clicked.connect(self.clear_filter)
 
+        self.chk_hide_deleted = QCheckBox("Скрыть удалённые", self)
+        self.chk_hide_deleted.setChecked(True)
+        self.chk_hide_deleted.setVisible(self.table_name in self.TABLES_WITH_IS_DELETED)
+        self.chk_hide_deleted.toggled.connect(self._on_hide_deleted_toggled)
+
         filter_row = QHBoxLayout()
+        filter_row.insertWidget(0, self.chk_hide_deleted)
         filter_row.addWidget(QLabel("Column:", self))
         filter_row.addWidget(self.cmb_column, 2)
         filter_row.addWidget(QLabel("Operator:", self))
@@ -419,7 +427,14 @@ class _AdvancedTablePage(QWidget):
         if self.character_id is not None and str(self.character_id).strip() != "":
             cid = _sql_escape_literal(str(self.character_id))
             parts.append(f"character_id = '{cid}'")
+        if getattr(self, "_hide_deleted", True) and self.table_name in self.TABLES_WITH_IS_DELETED:
+            parts.append("is_deleted = 0")
         return " AND ".join(f"({p})" for p in parts)
+
+    def _on_hide_deleted_toggled(self, checked: bool) -> None:
+        self._hide_deleted = bool(checked)
+        self._base_filter = self._build_base_filter()
+        self.refresh()
 
     def _combined_filter(self) -> str:
         parts = []

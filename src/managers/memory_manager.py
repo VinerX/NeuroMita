@@ -79,27 +79,32 @@ class MemoryManager:
 
     def _ensure_memories_schema(self) -> None:
         """
-        Пытаемся добавить колонку is_forgotten, если её нет.
+        Пытаемся добавить недостающие колонки.
         Не падаем вообще никогда.
         """
         try:
             cols = self._mem_cols()
-            if "is_forgotten" in cols:
+            needed = []
+            if "is_forgotten" not in cols:
+                needed.append(("is_forgotten", "INTEGER DEFAULT 0"))
+            if "access_count" not in cols:
+                needed.append(("access_count", "INTEGER DEFAULT 0"))
+            if "last_accessed" not in cols:
+                needed.append(("last_accessed", "TEXT"))
+
+            if not needed:
                 return
 
-            # если у тебя есть DatabaseManager.ensure_columns — используем его
             if hasattr(self.db, "ensure_columns"):
                 try:
-                    self.db.ensure_columns("memories", [("is_forgotten", "INTEGER DEFAULT 0")])
+                    self.db.ensure_columns("memories", needed)
                 except Exception:
                     pass
 
-            # перепроверим (на случай, если ensure_columns нет/не сработал)
             cols2 = self._mem_cols()
             if "is_forgotten" not in cols2:
                 logging.warning("[MemoryManager] Column memories.is_forgotten is missing; forget mechanism will be disabled.")
         except Exception:
-            # вообще ничего не делаем
             pass
 
     # ------------------------------------------------------------------
@@ -636,8 +641,14 @@ class MemoryManager:
 
     def apply_ttl_cleanup(self) -> int:
         """
-        Mark old low/normal-priority memories as forgotten (is_forgotten=1) based on TTL settings.
-        Controlled by MEMORY_TTL_ENABLED, MEMORY_TTL_LOW_DAYS, MEMORY_TTL_NORMAL_DAYS.
+        Mark old memories as forgotten (is_forgotten=1) based on TTL settings.
+        Controlled by MEMORY_TTL_ENABLED, MEMORY_TTL_LOW/NORMAL/HIGH_DAYS, MEMORY_TTL_MODE.
+
+        MEMORY_TTL_MODE options:
+          "date_created"    — age from date_created (default)
+          "access_weighted" — effective_days = base * (1 + log(1 + access_count) * weight)
+          "last_accessed"   — age from last_accessed (fallback to date_created if NULL)
+
         Returns count of newly forgotten memories.
         """
         try:
@@ -652,56 +663,110 @@ class MemoryManager:
             return 0
 
         try:
-            ttl_low = int(SettingsManager.get("MEMORY_TTL_LOW_DAYS", 30))
-            ttl_normal = int(SettingsManager.get("MEMORY_TTL_NORMAL_DAYS", 0))
+            ttl_low    = int(SettingsManager.get("MEMORY_TTL_LOW_DAYS",    30))
+            ttl_normal = int(SettingsManager.get("MEMORY_TTL_NORMAL_DAYS",  0))
+            ttl_high   = int(SettingsManager.get("MEMORY_TTL_HIGH_DAYS",    0))
         except Exception:
-            ttl_low, ttl_normal = 30, 0
+            ttl_low, ttl_normal, ttl_high = 30, 0, 0
 
-        # SQLite stores dates as "dd.mm.yyyy HH:MM:SS" — convert for julianday()
-        _date_expr = (
-            "CASE "
-            "WHEN date_created LIKE '__.__.____ __:__:__' "
-            "THEN substr(date_created,7,4)||'-'||substr(date_created,4,2)||'-'||substr(date_created,1,2)||' '||substr(date_created,12) "
-            "ELSE date_created END"
-        )
+        ttl_mode = str(SettingsManager.get("MEMORY_TTL_MODE", "date_created")).strip().lower()
+        try:
+            ttl_weight = float(SettingsManager.get("MEMORY_TTL_ACCESS_WEIGHT", 0.5))
+        except Exception:
+            ttl_weight = 0.5
+
+        has_access = "access_count" in cols
+        has_la     = "last_accessed" in cols
+
+        def _norm_date_expr(col: str) -> str:
+            """SQLite expression: convert dd.mm.yyyy HH:MM:SS → ISO for julianday()."""
+            return (
+                f"CASE WHEN {col} LIKE '__.__.____ __:__:__' "
+                f"THEN substr({col},7,4)||'-'||substr({col},4,2)||'-'||substr({col},1,2)||' '||substr({col},12) "
+                f"ELSE {col} END"
+            )
+
+        _date_created_expr = _norm_date_expr("date_created")
+
+        # For last_accessed mode: use last_accessed if present, else fallback to date_created
+        if ttl_mode == "last_accessed" and has_la:
+            _age_expr = (
+                f"julianday('now') - julianday(CASE WHEN last_accessed IS NOT NULL AND last_accessed != '' "
+                f"THEN {_norm_date_expr('last_accessed')} ELSE {_date_created_expr} END)"
+            )
+        else:
+            _age_expr = f"julianday('now') - julianday({_date_created_expr})"
+
+        priorities = []
+        if ttl_low    > 0: priorities.append(("low",    ttl_low))
+        if ttl_normal > 0: priorities.append(("normal", ttl_normal))
+        if ttl_high   > 0: priorities.append(("high",   ttl_high))
 
         total = 0
-        try:
-            with self.db.connection() as conn:
-                cur = conn.cursor()
 
-                if ttl_low > 0:
-                    cur.execute(
-                        f"""
-                        UPDATE memories SET is_forgotten=1
-                        WHERE character_id=? AND is_deleted=0 AND is_forgotten=0
-                          AND LOWER(priority)='low'
-                          AND julianday('now') - julianday({_date_expr}) > ?
-                        """,
-                        (self.character_name, ttl_low),
-                    )
-                    total += cur.rowcount
+        if ttl_mode == "access_weighted" and has_access:
+            # Python-side filtering: pull candidates, compute effective_days
+            import math as _math
+            try:
+                with self.db.connection() as conn:
+                    for prio, base_days in priorities:
+                        pre_days = base_days * 0.5
+                        extra = ", access_count" if has_access else ""
+                        rows = conn.execute(
+                            f"SELECT eternal_id, {_age_expr} as age{extra} "
+                            f"FROM memories WHERE character_id=? AND is_deleted=0 AND is_forgotten=0 "
+                            f"AND LOWER(priority)=? AND {_age_expr} > ?",
+                            (self.character_name, prio, pre_days),
+                        ).fetchall()
 
-                if ttl_normal > 0:
-                    cur.execute(
-                        f"""
-                        UPDATE memories SET is_forgotten=1
-                        WHERE character_id=? AND is_deleted=0 AND is_forgotten=0
-                          AND LOWER(priority)='normal'
-                          AND julianday('now') - julianday({_date_expr}) > ?
-                        """,
-                        (self.character_name, ttl_normal),
-                    )
-                    total += cur.rowcount
+                        to_forget = []
+                        for row in rows:
+                            eid = row[0]
+                            age = row[1]
+                            ac  = row[2] if has_access else 0
+                            effective = base_days * (1.0 + _math.log(1 + ac) * ttl_weight)
+                            if age > effective:
+                                to_forget.append(eid)
 
-                if total > 0:
-                    conn.commit()
-        except Exception as e:
-            logging.warning(f"[MemoryManager] apply_ttl_cleanup failed: {e}", exc_info=True)
+                        BATCH = 900
+                        for i in range(0, len(to_forget), BATCH):
+                            chunk = to_forget[i:i + BATCH]
+                            ph = ",".join("?" * len(chunk))
+                            conn.execute(
+                                f"UPDATE memories SET is_forgotten=1 WHERE eternal_id IN ({ph})",
+                                chunk,
+                            )
+                        total += len(to_forget)
+
+                    if total > 0:
+                        conn.commit()
+            except Exception as e:
+                logging.warning(f"[MemoryManager] apply_ttl_cleanup (access_weighted) failed: {e}", exc_info=True)
+        else:
+            # Pure SQL path (date_created or last_accessed)
+            try:
+                with self.db.connection() as conn:
+                    cur = conn.cursor()
+                    for prio, base_days in priorities:
+                        cur.execute(
+                            f"""
+                            UPDATE memories SET is_forgotten=1
+                            WHERE character_id=? AND is_deleted=0 AND is_forgotten=0
+                              AND LOWER(priority)=?
+                              AND {_age_expr} > ?
+                            """,
+                            (self.character_name, prio, base_days),
+                        )
+                        total += cur.rowcount
+
+                    if total > 0:
+                        conn.commit()
+            except Exception as e:
+                logging.warning(f"[MemoryManager] apply_ttl_cleanup failed: {e}", exc_info=True)
 
         if total > 0:
             self._calculate_total_characters()
-            logging.info(f"[MemoryManager] TTL cleanup: forgot {total} memories for '{self.character_name}'")
+            logging.info(f"[MemoryManager] TTL cleanup: forgot {total} memories for '{self.character_name}' (mode={ttl_mode})")
 
         return total
 
