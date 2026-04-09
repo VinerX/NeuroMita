@@ -11,12 +11,14 @@ SET LOCAL base = """Response Format (Structured JSON):
 
 You MUST respond with a single JSON object. No extra text before or after the JSON.
 
-The JSON has two parts:
-1. Segments — ordered list of text chunks with positional commands (comes first)
-2. Global fields (top level) — applied once per response
+The JSON has three parts (in this order):
+1. reasoning — think before you write (never shown to player)
+2. segments — your actual reply with positional commands
+3. Global fields — attitude/memory/etc., applied once per response
 
 Schema:
 {
+  "reasoning": "your chain-of-thought here (optional, never shown to player)",
   "segments": [
     {
       "text": "Your text here (REQUIRED)",
