@@ -60,6 +60,11 @@ def parse_structured_response(raw_text: str) -> StructuredResponse:
         repaired = _simple_text_repair(cleaned)
         data, parse_level = _try_json_loads(repaired, level="simple_repair")
 
+    # --- Level 2b: escape unescaped inner quotes ---
+    if data is None:
+        escaped = _escape_inner_quotes(cleaned)
+        data, parse_level = _try_json_loads(escaped, level="inner_quote_escape")
+
     # --- Level 3: json_repair library ---
     if data is None:
         data, parse_level = _try_json_repair_lib(cleaned)
@@ -172,6 +177,62 @@ def _simple_text_repair(text: str) -> str:
         return m.group(0).replace('\n', '\\n').replace('\r', '\\r')
     text = re.sub(r'"(?:[^"\\]|\\.)*"', fix_newlines_in_string, text, flags=re.DOTALL)
     return text
+
+
+def _escape_inner_quotes(text: str) -> str:
+    """
+    Level-2b repair: escape unescaped double quotes inside JSON string values.
+
+    LLMs often write  "text": "he said "hello" to me"  which breaks JSON.
+    Heuristic: inside a string, a " that is NOT followed by a JSON structural
+    character (,  }  ]  :  or end-of-input) is treated as an inner quote
+    and escaped.  This handles game/book titles, quoted speech, etc.
+    """
+    result: list[str] = []
+    i = 0
+    n = len(text)
+    _STRUCTURAL = frozenset(',}]:')
+
+    while i < n:
+        ch = text[i]
+        if ch != '"':
+            result.append(ch)
+            i += 1
+            continue
+
+        # Opening quote of a string
+        result.append('"')
+        i += 1
+
+        while i < n:
+            c = text[i]
+            if c == '\\':
+                # Already-escaped character — keep both chars
+                result.append(c)
+                i += 1
+                if i < n:
+                    result.append(text[i])
+                    i += 1
+            elif c == '"':
+                # Peek past optional whitespace to find the next non-space char
+                j = i + 1
+                while j < n and text[j] in ' \t\r\n':
+                    j += 1
+                after = text[j] if j < n else ''
+                if after in _STRUCTURAL or j >= n:
+                    # This quote closes the string
+                    result.append('"')
+                    i += 1
+                    break
+                else:
+                    # Inner unescaped quote — escape it
+                    result.append('\\"')
+                    i += 1
+            else:
+                result.append(c)
+                i += 1
+
+    return ''.join(result)
 
 
 def _close_truncated_json(text: str) -> str:

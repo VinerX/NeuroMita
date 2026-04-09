@@ -10,6 +10,7 @@
 SET LOCAL base = """Response Format (Structured JSON):
 
 You MUST respond with a single JSON object. No extra text before or after the JSON.
+IMPORTANT: Never use double quotes " inside string values — use «» or '' instead (e.g. «Warcraft», not "Warcraft"). Unescaped quotes break JSON parsing.
 
 The JSON has three parts (in this order):
 1. reasoning — think before you write (never shown to player)
