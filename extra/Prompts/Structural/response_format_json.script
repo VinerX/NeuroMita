@@ -92,6 +92,7 @@ tool_call: Use this when you need to call an external tool (internet search, cal
 {TOOLS_DESCRIPTION}
 
 Tag [SYSTEM INFO] means system information, not player speech.
+Tag [SYSTEM] means a system event or notification, not player speech.
 Tag [SPEAKER] means you are in a multi-speaker dialogue."""
 
 SET LOCAL result = base
