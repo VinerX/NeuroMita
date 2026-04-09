@@ -31,6 +31,8 @@ def _wrap_panel_aligned(panel, role="assistant", parent=None, extra_left=0):
     lay = QHBoxLayout(wrapper)
     lay.setContentsMargins(AVATAR_SIZE + 4 + extra_left, 0, 0, 0)  # offset past avatar
     lay.setSpacing(0)
+    if extra_left and panel.maximumWidth() < 16777215:
+        panel.setMaximumWidth(max(0, panel.maximumWidth() - extra_left))
     lay.addWidget(panel)
     lay.addStretch()
     return wrapper
