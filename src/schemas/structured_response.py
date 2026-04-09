@@ -146,6 +146,16 @@ class ResponseSegment(BaseModel):
 class StructuredResponse(BaseModel):
     """Top-level structured response from the LLM."""
 
+    # Optional reasoning field — lets the model "think" inside the JSON itself.
+    # Extracted as a think block in the UI, not shown in the main message.
+    # Must be first so the model reasons before writing segments.
+    reasoning: Optional[str] = Field(
+        default=None,
+        description="Your internal reasoning / chain-of-thought before answering. "
+                    "Write your analysis here, then fill the rest of the fields. "
+                    "This field is never shown to the player."
+    )
+
     segments: List[ResponseSegment] = Field(
         default_factory=list,
         description="Ordered list of response segments with positional commands",
@@ -157,15 +167,6 @@ class StructuredResponse(BaseModel):
         default=None,
         description="Set to true when the player has discovered your secret identity or hidden nature. "
                     "Only use once — when the secret is first revealed."
-    )
-
-    # Optional reasoning field — lets the model "think" inside the JSON itself.
-    # Extracted as a think block in the UI, not shown in the main message.
-    reasoning: Optional[str] = Field(
-        default=None,
-        description="Your internal reasoning / chain-of-thought before answering. "
-                    "Write your analysis here, then fill the rest of the fields. "
-                    "This field is never shown to the player."
     )
 
     # Global fields (not tied to a specific segment)

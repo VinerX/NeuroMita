@@ -4,6 +4,7 @@ You MUST respond with a single JSON object. No extra text before or after the JS
 
 Schema:
 {
+  "reasoning": "chain-of-thought (optional, never shown to player)",
   "segments": [
     {
       "text": "Your reply text (REQUIRED)",
