@@ -131,11 +131,15 @@ def setup_model_interaction_controls(self, parent):
         'tooltip': _('Параметр, влияющий на логарифмическую вероятность выбора токенов (-2.0 = поощрять, 2.0 = штрафовать)',
                     'Parameter influencing the logarithmic probability of token selection (-2.0 = encourage, 2.0 = penalize)')},
 
+        {'type': 'end'},
+
+        {'label': _('Инструменты (Tools)', 'Tools'), 'type': 'subsection'},
+
         {'label': _('Вызов инструментов', 'Tools use'),
          'key': 'TOOLS_ON', 'type': 'checkbutton', 'default_checkbutton': False,
          'tooltip': _(
              'Позволяет использовать инструменты такие как поиск в сети',
-             'Allow using tools like seacrh')},
+             'Allow using tools like search')},
 
         {'label': _('Калькулятор', 'Calculator'), 'key': 'TOOL_ENABLED_calculator',
          'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
@@ -149,6 +153,22 @@ def setup_model_interaction_controls(self, parent):
         {'label': _('Чтение страниц', 'Web Reader'), 'key': 'TOOL_ENABLED_web_reader',
          'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
          'tooltip': _('Включить инструмент "Чтение веб-страниц"', 'Enable the Web Reader tool')},
+        {'label': _('Поиск воспоминаний', 'Memory Search'), 'key': 'TOOL_ENABLED_memory_search',
+         'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
+         'tooltip': _(
+             'Мита может сама искать по воспоминаниям и истории чата. '
+             'Работает независимо от автоматического RAG. '
+             'Поддерживает фильтр по дате и выбор типа поиска.',
+             'Mita can search her memories and chat history on demand. '
+             'Works independently of automatic RAG. '
+             'Supports date filters and search type selection.')},
+        {'label': _('Напоминания', 'Reminders'), 'key': 'TOOL_ENABLED_reminder',
+         'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
+         'tooltip': _(
+             'Мита может добавлять, просматривать и удалять напоминания через тулу. '
+             'Поддерживает относительные даты: "через 2 часа", "завтра в 18:00".',
+             'Mita can add, view and delete reminders via tool. '
+             'Supports relative dates: "through 2 hours", "tomorrow at 18:00".')},
 
         {'label': _('GOOGLE API KEY'), 'key': 'GOOGLE_API_KEY', 'type': 'entry',
          'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},

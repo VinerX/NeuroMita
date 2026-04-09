@@ -27,7 +27,7 @@ from utils.structured_response_parser import (
     StructuredResponseParseError,
 )
 
-_ALL_TOOLS_LIST = ["calculator", "web_search", "google_search", "web_reader"]
+_ALL_TOOLS_LIST = ["calculator", "web_search", "google_search", "web_reader", "memory_search", "reminder"]
 
 
 def _render_tools_for_prompt(schema: list) -> str:
@@ -90,6 +90,11 @@ class ModelController:
 
         self.preset_resolver = ApiPresetResolver(settings=self.settings, event_bus=self.event_bus)
         self.model = ChatModel(settings)
+
+        from managers.tools.builtin.memory_search import MemorySearchTool
+        from managers.tools.builtin.reminder_tool import ReminderTool
+        self.model.tool_manager.register(MemorySearchTool(settings=self.settings))
+        self.model.tool_manager.register(ReminderTool())
 
         self.context_counter = ContextCounter(encoding_model="gpt-4o-mini")
         self._base_prompt_cache: dict[tuple[str, str], list[dict]] = {}
@@ -1463,6 +1468,7 @@ class ModelController:
 
         # Execute the tool
         logger.info(f"[ModelController] Executing tool '{tool_name}' with args: {tool_args}")
+        self.model.tool_manager.set_char_context(char_id)
         try:
             tool_result = self.model.tool_manager.run(tool_name, tool_args)
         except Exception as e:
