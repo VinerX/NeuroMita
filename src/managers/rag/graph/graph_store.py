@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from main_logger import logger
+from managers.settings_manager import SettingsManager
 
 
 class GraphStore:
@@ -97,6 +98,16 @@ class GraphStore:
             )
             conn.commit()
 
+        # Migrate existing tables: add new columns if missing
+        if hasattr(self.db, "ensure_columns"):
+            self.db.ensure_columns("graph_entities", [
+                ("is_protected", "INTEGER DEFAULT 0"),
+                ("access_count", "INTEGER DEFAULT 0"),
+            ])
+            self.db.ensure_columns("graph_relations", [
+                ("is_protected", "INTEGER DEFAULT 0"),
+            ])
+
     # ------------------------------------------------------------------
     # Processed-message tracking
     # ------------------------------------------------------------------
@@ -156,6 +167,7 @@ class GraphStore:
         name: str,
         entity_type: str = "thing",
         *,
+        protected: bool = False,
         conn: Optional[sqlite3.Connection] = None,
     ) -> int:
         """Insert or update an entity.  Returns the entity id."""
@@ -171,17 +183,18 @@ class GraphStore:
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO graph_entities (character_id, name, entity_type, mention_count, first_seen, last_seen)
-                VALUES (?, ?, ?, 1, ?, ?)
+                INSERT INTO graph_entities (character_id, name, entity_type, mention_count, first_seen, last_seen, is_protected)
+                VALUES (?, ?, ?, 1, ?, ?, ?)
                 ON CONFLICT(character_id, name) DO UPDATE SET
                     mention_count = mention_count + 1,
                     last_seen     = excluded.last_seen,
                     entity_type   = CASE
                         WHEN excluded.entity_type != 'thing' THEN excluded.entity_type
                         ELSE graph_entities.entity_type
-                    END
+                    END,
+                    is_protected  = MAX(graph_entities.is_protected, excluded.is_protected)
                 """,
-                (self.character_id, normalized, entity_type, now, now),
+                (self.character_id, normalized, entity_type, now, now, int(protected)),
             )
             # Fetch the id (works for both INSERT and UPDATE paths).
             cur.execute(
@@ -290,6 +303,7 @@ class GraphStore:
         *,
         confidence: float = 1.0,
         source_message_id: Optional[int] = None,
+        protected: bool = False,
         conn: Optional[sqlite3.Connection] = None,
     ) -> int:
         """Insert a relation triple. Returns the relation id."""
@@ -311,10 +325,13 @@ class GraphStore:
             )
             existing = cur.fetchone()
             if existing:
-                # Update confidence / source if newer.
+                # Update confidence / source / protection if newer.
                 cur.execute(
-                    "UPDATE graph_relations SET confidence = ?, source_message_id = ? WHERE id = ?",
-                    (confidence, source_message_id, existing[0]),
+                    """UPDATE graph_relations
+                       SET confidence = ?, source_message_id = ?,
+                           is_protected = MAX(is_protected, ?)
+                       WHERE id = ?""",
+                    (confidence, source_message_id, int(protected), existing[0]),
                 )
                 if own_conn:
                     conn.commit()
@@ -323,10 +340,10 @@ class GraphStore:
             cur.execute(
                 """
                 INSERT INTO graph_relations
-                    (character_id, subject_id, predicate, object_id, confidence, source_message_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (character_id, subject_id, predicate, object_id, confidence, source_message_id, created_at, is_protected)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (self.character_id, subject_id, pred, object_id, confidence, source_message_id, now),
+                (self.character_id, subject_id, pred, object_id, confidence, source_message_id, now, int(protected)),
             )
             rid = cur.lastrowid
             if own_conn:
@@ -453,3 +470,71 @@ class GraphStore:
             )
             n_rel = cur.fetchone()[0]
         return {"entities": n_ent, "relations": n_rel}
+
+    # ------------------------------------------------------------------
+    # TTL cleanup
+    # ------------------------------------------------------------------
+    def apply_graph_ttl_cleanup(self) -> Dict[str, int]:
+        """
+        Delete old graph relations and orphaned entities based on TTL settings.
+        Controlled by GRAPH_TTL_ENABLED, GRAPH_ENTITY_TTL_DAYS, GRAPH_RELATION_TTL_DAYS.
+        Protected entries (is_protected=1) are never deleted.
+        Returns {"relations": N, "entities": N}.
+        """
+        counts: Dict[str, int] = {"relations": 0, "entities": 0}
+        try:
+            enabled = SettingsManager.get("GRAPH_TTL_ENABLED", False)
+            if str(enabled).lower() in ("false", "0", "", "none"):
+                return counts
+        except Exception:
+            return counts
+
+        try:
+            rel_days = int(SettingsManager.get("GRAPH_RELATION_TTL_DAYS", 0))
+            ent_days = int(SettingsManager.get("GRAPH_ENTITY_TTL_DAYS", 0))
+        except Exception:
+            return counts
+
+        try:
+            with self.db.connection() as conn:
+                cur = conn.cursor()
+
+                # 1. Delete old relations (by created_at) — skip protected
+                if rel_days > 0:
+                    cur.execute(
+                        """DELETE FROM graph_relations
+                           WHERE character_id = ?
+                             AND COALESCE(is_protected, 0) = 0
+                             AND created_at IS NOT NULL
+                             AND julianday('now') - julianday(created_at) > ?""",
+                        (self.character_id, rel_days),
+                    )
+                    counts["relations"] = cur.rowcount
+
+                # 2. Delete orphaned entities (no remaining relations) — skip protected
+                if ent_days > 0:
+                    cur.execute(
+                        """DELETE FROM graph_entities
+                           WHERE character_id = ?
+                             AND COALESCE(is_protected, 0) = 0
+                             AND last_seen IS NOT NULL
+                             AND julianday('now') - julianday(last_seen) > ?
+                             AND id NOT IN (
+                                 SELECT subject_id FROM graph_relations WHERE character_id = ?
+                                 UNION
+                                 SELECT object_id  FROM graph_relations WHERE character_id = ?
+                             )""",
+                        (self.character_id, ent_days, self.character_id, self.character_id),
+                    )
+                    counts["entities"] = cur.rowcount
+
+                if counts["relations"] > 0 or counts["entities"] > 0:
+                    conn.commit()
+
+        except Exception as e:
+            logger.warning(f"[GraphStore] apply_graph_ttl_cleanup failed: {e}", exc_info=True)
+
+        if counts["relations"] > 0 or counts["entities"] > 0:
+            logger.info(f"[GraphStore] TTL cleanup for '{self.character_id}': {counts}")
+
+        return counts

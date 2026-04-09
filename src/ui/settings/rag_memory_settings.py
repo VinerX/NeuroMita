@@ -680,6 +680,64 @@ def _run_ttl_cleanup(gui) -> None:
         )
 
 
+def _run_graph_ttl_cleanup(gui) -> None:
+    """Apply graph TTL cleanup (relations + orphaned entities)."""
+    try:
+        from core.events import get_event_bus, Events
+        bus = get_event_bus()
+        char_id = getattr(gui, 'current_character_id', None) or getattr(gui, '_current_char_id', None)
+        if not char_id:
+            try:
+                res = bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+                char_id = ((res[0] if res else None) or {}).get("character_id", "")
+            except Exception:
+                char_id = ""
+        if not char_id:
+            QMessageBox.warning(gui, _("TTL графа", "Graph TTL"),
+                                _("Не удалось определить текущего персонажа.", "Could not determine the current character."))
+            return
+        from managers.database_manager import DatabaseManager
+        from managers.rag.graph.graph_store import GraphStore
+        db = DatabaseManager()
+        gs = GraphStore(db, char_id)
+        counts = gs.apply_graph_ttl_cleanup()
+        QMessageBox.information(
+            gui, _("TTL графа", "Graph TTL"),
+            _( f"Удалено: {counts['relations']} связей, {counts['entities']} сущностей.",
+               f"Removed: {counts['relations']} relations, {counts['entities']} entities."),
+        )
+    except Exception as e:
+        QMessageBox.critical(gui, _("Ошибка TTL графа", "Graph TTL Error"), str(e))
+
+
+def _run_history_ttl_cleanup(gui) -> None:
+    """Apply history TTL cleanup (archive old messages)."""
+    try:
+        from core.events import get_event_bus, Events
+        bus = get_event_bus()
+        char_id = getattr(gui, 'current_character_id', None) or getattr(gui, '_current_char_id', None)
+        if not char_id:
+            try:
+                res = bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+                char_id = ((res[0] if res else None) or {}).get("character_id", "")
+            except Exception:
+                char_id = ""
+        if not char_id:
+            QMessageBox.warning(gui, _("TTL истории", "History TTL"),
+                                _("Не удалось определить текущего персонажа.", "Could not determine the current character."))
+            return
+        from managers.history_manager import HistoryManager
+        hm = HistoryManager(char_id)
+        count = hm.apply_history_ttl_cleanup()
+        QMessageBox.information(
+            gui, _("TTL истории", "History TTL"),
+            _( f"Архивировано {count} сообщений (is_active=0).",
+               f"Archived {count} messages (is_active=0)."),
+        )
+    except Exception as e:
+        QMessageBox.critical(gui, _("Ошибка TTL истории", "History TTL Error"), str(e))
+
+
 def _run_entity_gc(gui, dry_run: bool = False) -> None:
     """Run entity GC for all characters (dry-run shows plan, apply executes it)."""
     from managers.database_manager import DatabaseManager
@@ -1036,11 +1094,95 @@ def _build_memory_limits_config(self) -> list:
          'tooltip': _(
              'Через сколько дней Normal-приоритетные воспоминания автоматически забываются. 0 = выключено.',
              'Days after which Normal-priority memories are auto-forgotten. 0 = disabled.')},
+        {'label': _('TTL для High-приоритета (дней)', 'TTL for High priority (days)'),
+         'key': 'MEMORY_TTL_HIGH_DAYS', 'type': 'entry', 'default': 0,
+         'validation': self.validate_positive_integer_or_zero,
+         'depends_on': 'MEMORY_TTL_ENABLED',
+         'tooltip': _(
+             'Через сколько дней High-приоритетные воспоминания автоматически забываются. 0 = выключено.',
+             'Days after which High-priority memories are auto-forgotten. 0 = disabled.')},
+        {'label': _('Режим TTL', 'TTL mode'),
+         'key': 'MEMORY_TTL_MODE', 'type': 'combobox', 'default': 'date_created',
+         'options': ['date_created', 'access_weighted', 'last_accessed'],
+         'depends_on': 'MEMORY_TTL_ENABLED',
+         'tooltip': _(
+             'Как считается возраст воспоминания:\n'
+             '  date_created — от даты создания (по умолчанию)\n'
+             '  access_weighted — базовые дни × (1 + log(1+access_count) × вес)\n'
+             '  last_accessed — от даты последнего доступа через RAG (fallback: date_created)',
+             'How memory age is calculated:\n'
+             '  date_created — from creation date (default)\n'
+             '  access_weighted — base_days × (1 + log(1+access_count) × weight)\n'
+             '  last_accessed — from last RAG access date (fallback: date_created)')},
+        {'label': _('Вес счётчика доступов', 'Access count weight'),
+         'key': 'MEMORY_TTL_ACCESS_WEIGHT', 'type': 'entry', 'default': 0.5,
+         'validation': self.validate_float_0_to_1,
+         'depends_on': 'MEMORY_TTL_ENABLED',
+         'tooltip': _(
+             'Используется только в режиме access_weighted. Чем выше — тем сильнее часто используемые воспоминания '
+             'получают продлённый TTL. 0.5 — при 10 обращениях TTL ×2.2.',
+             'Used only in access_weighted mode. Higher = more TTL extension for frequently accessed memories. '
+             '0.5 — at 10 accesses TTL ×2.2.')},
         {'type': 'button_group', 'buttons': [
             {'label': _('Применить TTL сейчас', 'Apply TTL cleanup now'),
              'command': lambda: _run_ttl_cleanup(self)},
         ]},
 
+        {'type': 'end'},
+    ]
+
+
+def _build_history_ttl_config(self) -> list:
+    return [
+        {'label': _('TTL-архивирование истории', 'History TTL (auto-archive)'), 'type': 'subsection'},
+        {'label': _('Включить TTL истории', 'Enable history TTL'),
+         'key': 'HISTORY_TTL_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _(
+             'Автоматически архивировать старые сообщения истории (is_active=0). '
+             'Они не попадают в контекст, но всё ещё доступны через RAG.',
+             'Automatically archive old history messages (is_active=0). '
+             'They are excluded from context but still searchable via RAG.')},
+        {'label': _('TTL истории (дней)', 'History TTL (days)'),
+         'key': 'HISTORY_TTL_DAYS', 'type': 'entry', 'default': 0,
+         'validation': self.validate_positive_integer_or_zero,
+         'depends_on': 'HISTORY_TTL_ENABLED',
+         'tooltip': _(
+             'Через сколько дней старые сообщения архивируются (is_active=0). 0 = выключено.',
+             'Days after which old messages are archived (is_active=0). 0 = disabled.')},
+        {'type': 'button_group', 'buttons': [
+            {'label': _('Применить TTL истории', 'Apply history TTL now'),
+             'command': lambda: _run_history_ttl_cleanup(self)},
+        ]},
+        {'type': 'end'},
+    ]
+
+
+def _build_graph_ttl_config(self) -> list:
+    return [
+        {'label': _('TTL-очистка графа', 'Graph TTL cleanup'), 'type': 'subsection'},
+        {'label': _('Включить TTL графа', 'Enable graph TTL'),
+         'key': 'GRAPH_TTL_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _(
+             'Автоматически удалять устаревшие связи и осиротевшие сущности графа знаний.',
+             'Automatically delete old relations and orphaned entities from the knowledge graph.')},
+        {'label': _('TTL связей графа (дней)', 'Graph relation TTL (days)'),
+         'key': 'GRAPH_RELATION_TTL_DAYS', 'type': 'entry', 'default': 0,
+         'validation': self.validate_positive_integer_or_zero,
+         'depends_on': 'GRAPH_TTL_ENABLED',
+         'tooltip': _(
+             'Через сколько дней удалять старые связи (по created_at). 0 = выключено. Protected связи не удаляются.',
+             'Days after which relations are deleted (by created_at). 0 = disabled. Protected relations are kept.')},
+        {'label': _('TTL сущностей графа (дней)', 'Graph entity TTL (days)'),
+         'key': 'GRAPH_ENTITY_TTL_DAYS', 'type': 'entry', 'default': 0,
+         'validation': self.validate_positive_integer_or_zero,
+         'depends_on': 'GRAPH_TTL_ENABLED',
+         'tooltip': _(
+             'Через сколько дней удалять осиротевшие сущности (по last_seen). 0 = выключено. Protected сущности не удаляются.',
+             'Days after which orphaned entities are deleted (by last_seen). 0 = disabled. Protected entities are kept.')},
+        {'type': 'button_group', 'buttons': [
+            {'label': _('Применить TTL графа', 'Apply graph TTL now'),
+             'command': lambda: _run_graph_ttl_cleanup(self)},
+        ]},
         {'type': 'end'},
     ]
 
@@ -1702,10 +1844,12 @@ def build_rag_memory_section(self, parent, hc_provider_names) -> None:
     config = (
         _build_pipeline_preset_config(self) +
         _build_memory_limits_config(self) +
+        _build_history_ttl_config(self) +
         _build_history_compression_config(self, hc_provider_names) +
         _build_rag_core_config(self) +
         _build_embed_config(self) +
         _build_graph_config(self, hc_provider_names) +
+        _build_graph_ttl_config(self) +
         _build_query_tail_config(self) +
         _build_weights_config(self) +
         _build_keyword_config(self) +
