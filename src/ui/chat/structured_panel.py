@@ -488,7 +488,10 @@ class StructuredOutputPanel(QFrame):
         if raw:
             json_text = raw
         else:
-            json_text = json.dumps(data, ensure_ascii=False, indent=2)
+            json_text = json.dumps(
+                {k: v for k, v in data.items() if k != "_raw_json"},
+                ensure_ascii=False, indent=2
+            )
         lbl = QLabel(json_text, layout.parentWidget())
         lbl.setWordWrap(True)
         lbl.setTextFormat(Qt.TextFormat.PlainText)

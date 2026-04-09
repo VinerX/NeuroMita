@@ -1244,6 +1244,7 @@ class ModelController:
         if _tool_allowed:
             return self._handle_tool_call(
                 structured=structured,
+                visible_raw=visible_raw,
                 think_text=think_text,
                 char=char,
                 char_id=char_id,
@@ -1297,7 +1298,8 @@ class ModelController:
 
         if policy.write_to_history:
             origin_message_id = str(data.get("origin_message_id") or "") or None
-            history_dict = {k: v for k, v in result_dict.items() if not k.startswith("_")}
+            history_dict = {k: v for k, v in result_dict.items()
+                            if not k.startswith("_") or k == "_raw_json"}
             self.event_writer.write_turn(
                 responder_character_id=char_id,
                 sender=sender,
@@ -1367,6 +1369,7 @@ class ModelController:
     def _handle_tool_call(
         self,
         structured,
+        visible_raw: str,
         think_text: str,
         char,
         char_id: str,
@@ -1400,6 +1403,7 @@ class ModelController:
         # Build first response result dict
         result_dict = structured_response_to_result_dict(structured)
         result_dict.pop("reasoning", None)
+        result_dict["_raw_json"] = visible_raw
         first_text = result_dict.get("response", "")
 
         targets: list[str] = []

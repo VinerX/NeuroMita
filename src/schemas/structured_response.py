@@ -146,6 +146,11 @@ class ResponseSegment(BaseModel):
 class StructuredResponse(BaseModel):
     """Top-level structured response from the LLM."""
 
+    segments: List[ResponseSegment] = Field(
+        default_factory=list,
+        description="Ordered list of response segments with positional commands",
+    )
+
     # Secret reveal flag — set to true when the character's secret is discovered.
     # Processed by character-specific logic (e.g. CrazyMita sets secretExposed variable).
     secret_exposed: Optional[bool] = Field(
@@ -185,11 +190,6 @@ class StructuredResponse(BaseModel):
         default=None,
         description="Notable named entities in this turn (people, places, objects, preferences). "
                     "Fill only when instructed. Omit entirely if not needed."
-    )
-
-    segments: List[ResponseSegment] = Field(
-        default_factory=list,
-        description="Ordered list of response segments with positional commands",
     )
 
     tool_call: Optional[ToolCall] = Field(

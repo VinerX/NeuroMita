@@ -454,8 +454,8 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
         tool_call_dict = {"name": response.tool_call.name, "args": response.tool_call.args or {}}
 
     return {
-        "response": response.full_text(),
         "segments": segments_out,
+        "response": response.full_text(),
         "attitude_change": response.attitude_change,
         "boredom_change": response.boredom_change,
         "stress_change": response.stress_change,
