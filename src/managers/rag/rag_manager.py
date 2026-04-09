@@ -713,15 +713,22 @@ class RAGManager:
             except Exception:
                 pass
 
-    def search_relevant(self, query: str, limit: int = DEFAULT_SEARCH_LIMIT, threshold: float = DEFAULT_SEARCH_THRESHOLD) -> List[Dict[str, Any]]:
+    def search_relevant(self, query: str, limit: int = DEFAULT_SEARCH_LIMIT,
+                        threshold: float = DEFAULT_SEARCH_THRESHOLD,
+                        config_overrides: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         Pipeline-based RAG search with selectable combiner modes:
           - union (default)
           - vector_only
           - intersect (min N methods)
           - two_stage (vector recall, others only add features; can fallback to union)
+
+        config_overrides: dict of settings-key → value applied on top of RAGConfig.
+            When provided, the RAG_ENABLED check is bypassed (tool-initiated call).
         """
-        if not SettingsManager.get("RAG_ENABLED", False):
+        # config_overrides=None means automatic RAG: respect RAG_ENABLED flag.
+        # config_overrides={} or non-None means explicit/tool call: always run.
+        if config_overrides is None and not SettingsManager.get("RAG_ENABLED", False):
             return []
 
         # lazy imports (avoid circular)
@@ -741,6 +748,26 @@ class RAGManager:
         from managers.rag.pipeline.debug_logger import RagDebugLogger
 
         cfg = RAGConfig.from_settings(limit=limit, threshold=threshold)
+
+        # Apply per-call overrides (from tool or direct API).
+        # Maps settings key → RAGConfig field name.
+        if config_overrides:
+            _KEY_TO_FIELD: Dict[str, str] = {
+                "RAG_VECTOR_SEARCH_ENABLED": "vector_search_enabled",
+                "RAG_USE_FTS": "use_fts",
+                "RAG_KEYWORD_SEARCH": "kw_enabled",
+                "RAG_SEARCH_MEMORY": "search_memory",
+                "RAG_SEARCH_HISTORY": "search_history",
+                "RAG_COMBINE_MODE": "combine_mode",
+                "RAG_CROSS_ENCODER_ENABLED": "cross_encoder_enabled",
+                "RAG_SEARCH_GRAPH": "search_graph",
+                "RAG_USE_RRF": "use_rrf",
+                "RAG_MEMORY_MODE": "memory_mode",
+            }
+            for key, val in config_overrides.items():
+                field = _KEY_TO_FIELD.get(key)
+                if field and hasattr(cfg, field):
+                    setattr(cfg, field, val)
 
         qb = QueryBuilder(rag=self, cfg=cfg)
         _t_embed0 = _time.perf_counter()

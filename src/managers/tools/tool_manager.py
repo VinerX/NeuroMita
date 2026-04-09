@@ -56,6 +56,12 @@ class ToolManager:
             raise ValueError(f"Unknown tools dialect: {dialect_id}")
         return d.mk_tool_resp_msg(name=name, result=result, tool_call_id=tool_call_id)
 
+    def set_char_context(self, char_id: str) -> None:
+        """Inject character context into tools that need it (e.g. memory_search)."""
+        for tool in self._tools.values():
+            if hasattr(tool, "set_char_id"):
+                tool.set_char_id(char_id)
+
     def run(self, name: str, arguments: dict):
         tool = self._tools.get(name)
         if not tool:
