@@ -159,7 +159,7 @@ class PromptController:
         if so_prompt and custom_params:
             lines = [
                 "\n### Custom character parameters",
-                "Use the `custom_fields` object to set character-specific values:",
+                "Use the `custom_fields` object **only if you want to change** one or more values. Omit it entirely (or set to null) if nothing needs to change.",
             ]
             for p in custom_params:
                 type_str = p.get("type", "any")

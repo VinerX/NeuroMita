@@ -841,6 +841,9 @@ class ModelController:
                 logger.warning(f"[ModelController] Failed to build tools prompt: {e}")
                 _tools_on = False
 
+        # Signal whether custom_fields should appear in the response schema.
+        effective_capabilities["has_custom_params"] = bool(getattr(char, "custom_params", []))
+
         try:
             prompt_res = self.event_bus.emit_and_wait(
                 Events.Prompt.BUILD_PROMPT,

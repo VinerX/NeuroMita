@@ -203,7 +203,8 @@ class GeminiProvider(BaseProvider):
             mode = caps.get("structured_output_mode", "gemini_schema")
             if mode != "gemini_prompt":
                 from schemas.structured_response import StructuredResponse as _SR
-                schema = _SR.gemini_schema_dict()
+                _excl = None if caps.get("has_custom_params", True) else {"custom_fields"}
+                schema = _SR.gemini_schema_dict(exclude_fields=_excl)
                 gen_cfg["responseJsonSchema"] = schema
                 logger.debug("[GeminiProvider] Structured output: responseSchema passed (gemini_schema mode)")
             else:
