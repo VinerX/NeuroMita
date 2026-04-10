@@ -1,11 +1,10 @@
-// ===== ОБРАБОТКА ТЕГА <love> =====
-RULE LoveTagHandler
-    MATCH REGEX "love_change: ([+-]?\d*\.?\d+)" CAPTURE (love_value_str)
+// ===== ОБРАБОТКА ПОЛЯ love_change (Structured Output) =====
+// Requires config.json: custom_params[{name: "love_change", type: "float", min: -10, max: 10}]
+RULE LoveFieldHandler
+    MATCH FIELD "love_change"
     ACTIONS
-        SET LOCAL love_value = float(love_value_str)
-        SET Love = Love + int(love_value)
-		SET Love = max(1, min(Love, 300))
-        LOG "Character love updated by " + str(love_value) + ". New love: " + str(Love)
+        SET Love = max(1, min(Love + love_change, 300))
+        LOG "Love updated by " + str(love_change) + ". New: " + str(Love)
     END_ACTIONS
 END_RULE
 
@@ -18,13 +17,13 @@ END_RULE
 //     END_ACTIONS
 // END_RULE
 
-// ===== АКТИВАЦИЯ ИСПЫТАНИЙ =====
+// ===== АКТИВАЦИЯ ИСПЫТАНИЙ (Structured Output) =====
+// Requires config.json: custom_params[{name: "secret_trial", type: "bool"}]
 RULE SecretQuestActivation
-    MATCH TEXT "<secretQuest>" 
+    MATCH FIELD "secret_trial"
     ACTIONS
-        SET secretTrial = True
-        LOG "secretTrial activated by <secretQuest> tag"
-        REMOVE_MATCH
+        SET secretTrial = secret_trial
+        LOG "secretTrial set to " + str(secret_trial)
     END_ACTIONS
 END_RULE
 

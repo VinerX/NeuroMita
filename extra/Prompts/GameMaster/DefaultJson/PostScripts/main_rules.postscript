@@ -1,0 +1,32 @@
+// ===== ПРИМЕР: КАСТОМНОЕ ПОЛЕ ЧЕРЕЗ MATCH FIELD =====
+// Чтобы использовать, добавь в config.json секцию "custom_params":
+// {
+//   "name": "example_field",
+//   "type": "float",
+//   "min": -10,
+//   "max": 10,
+//   "description": "Example custom parameter"
+// }
+//
+// RULE ExampleFieldHandler
+//     MATCH FIELD "example_field"
+//     ACTIONS
+//         SET some_variable = some_variable + example_field
+//         LOG "example_field applied: " + str(example_field)
+//     END_ACTIONS
+// END_RULE
+
+// ===== ЧИСТКА ТЕКСТА =====
+RULE RemoveAsterisks
+    MATCH REGEX "(\*{1,3})"
+    ACTIONS
+        REMOVE_MATCH
+    END_ACTIONS
+END_RULE
+
+DEBUG_DISPLAY
+    "Attitude": attitude
+    "Boredom": boredom
+    "Stress": stress
+    "Message time": SYSTEM_DATETIME
+END_DEBUG_DISPLAY
