@@ -233,18 +233,13 @@ class StructuredResponse(BaseModel):
             }
         """
         schema = cls.model_json_schema()
-        if custom_params:
+        if custom_params and "properties" in schema and "custom_fields" in schema["properties"]:
             _type_map = {"float": "number", "double": "number", "int": "integer",
                          "bool": "boolean", "str": "string", "string": "string"}
-            props = schema.setdefault("properties", {})
+            cf_props = {}
             for p in custom_params:
-                entry: dict = {"type": _type_map.get(p.get("type", "string"), "string")}
-                if p.get("description"):
-                    entry["description"] = p["description"]
-                props[p["name"]] = entry
-            props.pop("custom_fields", None)
-            if "required" in schema:
-                schema["required"] = [r for r in schema["required"] if r != "custom_fields"]
+                cf_props[p["name"]] = {"type": _type_map.get(p.get("type", "string"), "string")}
+            schema["properties"]["custom_fields"]["properties"] = cf_props
         if exclude_fields:
             for f in exclude_fields:
                 schema.get("properties", {}).pop(f, None)
@@ -295,27 +290,19 @@ class StructuredResponse(BaseModel):
             }
         except (KeyError, TypeError):
             pass
-        # Expose custom params as top-level fields (next to attitude_change etc.)
-        # and hide custom_fields from the LLM schema.  The model reliably fills
-        # simple top-level scalars; model_controller lifts them into custom_fields
-        # before Pydantic parsing.
-        if custom_params:
+        # Patch custom_fields: inject explicit per-param properties so Gemini
+        # doesn't strip keys the model writes into a free-form object.
+        if custom_params and "custom_fields" in schema.get("properties", {}):
             _type_map = {
                 "float": "number", "double": "number",
                 "int": "integer", "bool": "boolean",
                 "str": "string", "string": "string",
             }
-            props = schema.setdefault("properties", {})
+            cf_props = {}
             for p in custom_params:
                 gemini_type = _type_map.get(p.get("type", "string"), "string")
-                entry: dict = {"type": gemini_type, "nullable": True}
-                if p.get("description"):
-                    entry["description"] = p["description"]
-                props[p["name"]] = entry
-            # Remove the nested custom_fields object — LLM writes directly at top level
-            props.pop("custom_fields", None)
-            if "required" in schema:
-                schema["required"] = [r for r in schema["required"] if r != "custom_fields"]
+                cf_props[p["name"]] = {"type": gemini_type, "nullable": True}
+            schema["properties"]["custom_fields"]["properties"] = cf_props
         if exclude_fields:
             for f in exclude_fields:
                 schema.get("properties", {}).pop(f, None)

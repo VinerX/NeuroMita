@@ -160,23 +160,19 @@ class PromptController:
         if so_prompt and custom_params:
             _type_map = {"float": "number", "double": "number", "int": "integer",
                          "bool": "boolean", "str": "string", "string": "string"}
-            schema_lines = []
-            summary_lines = ["\n### Custom fields — always include:"]
+            field_lines = []
             for p in custom_params:
                 name = p["name"]
-                type_str = p.get("type", "any")
-                json_type = _type_map.get(type_str, type_str)
+                json_type = _type_map.get(p.get("type", "string"), "string")
                 desc = p.get("description", "")
                 mn, mx = p.get("min"), p.get("max")
                 range_str = f" ({mn} to {mx})" if mn is not None and mx is not None else ""
-                schema_lines.append(f'  "{name}": <{json_type}{range_str}>,  // {desc}')
-                summary_lines.append(f'- "{name}" ({type_str}{range_str}): {desc}')
-            inline = "\n".join(schema_lines) + "\n"
+                field_lines.append(f'    "{name}": <{json_type}{range_str}>,  // {desc}')
+            # Inject as nested custom_fields block into the schema example
+            inline = '  "custom_fields": {\n' + "\n".join(field_lines) + "\n  },\n"
             so_prompt = so_prompt.replace("{CUSTOM_PARAMS_SCHEMA}", inline)
-            so_prompt += "\n".join(summary_lines)
-        else:
-            if so_prompt:
-                so_prompt = so_prompt.replace("{CUSTOM_PARAMS_SCHEMA}", "")
+        elif so_prompt:
+            so_prompt = so_prompt.replace("{CUSTOM_PARAMS_SCHEMA}", "")
 
         return so_prompt
 
