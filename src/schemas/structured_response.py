@@ -253,7 +253,7 @@ class StructuredResponse(BaseModel):
         return cls.model_json_schema()
 
     @classmethod
-    def gemini_schema_dict(cls, exclude_fields: set = None) -> dict:
+    def gemini_schema_dict(cls, exclude_fields: set = None, custom_params: list = None) -> dict:
         """
         Return a Gemini-compatible responseSchema dict.
 
@@ -268,6 +268,10 @@ class StructuredResponse(BaseModel):
         Args:
             exclude_fields: optional set of top-level field names to remove
                 from the schema (e.g. {"custom_fields"} when no custom_params).
+            custom_params: list of custom param dicts from config.json; when
+                provided, patches custom_fields.properties so Gemini allows
+                the declared keys (without this Gemini strips all keys from
+                a free-form object and returns {}).
         """
         schema = _to_gemini_schema(cls.model_json_schema())
         # Patch tool_call.args: object without properties → string
@@ -279,6 +283,19 @@ class StructuredResponse(BaseModel):
             }
         except (KeyError, TypeError):
             pass
+        # Patch custom_fields: inject explicit per-param properties so Gemini
+        # doesn't strip keys written by the model into a free-form object.
+        if custom_params and "custom_fields" in schema.get("properties", {}):
+            _type_map = {
+                "float": "number", "double": "number",
+                "int": "integer", "bool": "boolean",
+                "str": "string", "string": "string",
+            }
+            cf_props = {}
+            for p in custom_params:
+                gemini_type = _type_map.get(p.get("type", "string"), "string")
+                cf_props[p["name"]] = {"type": gemini_type, "nullable": True}
+            schema["properties"]["custom_fields"]["properties"] = cf_props
         if exclude_fields:
             for f in exclude_fields:
                 schema.get("properties", {}).pop(f, None)
