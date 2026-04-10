@@ -35,6 +35,12 @@ def _is_lm_reranker(model_name: str) -> bool:
 
 
 def _checkpoints_dir() -> str:
+    val = os.environ.get("NEUROMITA_CHECKPOINTS_DIR")
+    if val:
+        return val
+    base = os.environ.get("NEUROMITA_BASE_DIR")
+    if base:
+        return os.path.join(base, "checkpoints")
     return os.path.join(os.path.dirname(sys.executable), "checkpoints")
 
 

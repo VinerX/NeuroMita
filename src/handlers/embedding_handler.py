@@ -41,8 +41,10 @@ QUERY_PREFIX = "query: "
 
 
 def _ensure_checkpoints_dir() -> str:
-    base_dir = os.environ.get("NEUROMITA_BASE_DIR", os.path.dirname(sys.executable))
-    checkpoints_dir = os.path.join(base_dir, "checkpoints")
+    checkpoints_dir = os.environ.get(
+        "NEUROMITA_CHECKPOINTS_DIR",
+        os.path.join(os.environ.get("NEUROMITA_BASE_DIR", os.path.dirname(sys.executable)), "checkpoints")
+    )
     os.makedirs(checkpoints_dir, exist_ok=True)
     return checkpoints_dir
 

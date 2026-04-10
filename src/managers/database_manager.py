@@ -59,8 +59,9 @@ class DatabaseManager:
             self.db_path = DatabaseManager._path_override
             os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
         else:
-            os.makedirs("Histories", exist_ok=True)
-            self.db_path = os.path.join("Histories", "world.db")
+            histories_dir = os.environ.get("NEUROMITA_HISTORIES_DIR", os.path.join(os.getcwd(), "Histories"))
+            os.makedirs(histories_dir, exist_ok=True)
+            self.db_path = os.path.join(histories_dir, "world.db")
 
         # Ensure WAL + timeout are applied early
         self._init_db()

@@ -58,10 +58,11 @@ class Character:
         self.miku_tts_name = miku_tts_name
         self.short_name = short_name
 
+        _prompts_dir = os.environ.get("NEUROMITA_PROMPTS_DIR", os.path.abspath("Prompts"))
         self.prompts_root = (
-            os.path.abspath("Prompts")
+            _prompts_dir
             if not is_cartridge
-            else os.path.abspath("Prompts/Cartridges")
+            else os.path.join(_prompts_dir, "Cartridges")
         )
 
         self.main_template_path_relative = "main_template.txt"

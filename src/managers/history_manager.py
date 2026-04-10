@@ -206,7 +206,8 @@ class HistoryManager:
             if ext == "jpeg":
                 ext = "jpg"
 
-            save_dir = os.path.join("Histories", self.character_name, "Images")
+            histories_dir = os.environ.get("NEUROMITA_HISTORIES_DIR", os.path.join(os.getcwd(), "Histories"))
+            save_dir = os.path.join(histories_dir, self.character_name, "Images")
             os.makedirs(save_dir, exist_ok=True)
 
             # ВАЖНО: убираем пробелы/переводы строк (иногда встречаются)

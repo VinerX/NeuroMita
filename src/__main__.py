@@ -89,7 +89,16 @@ current_file = os.path.abspath(__file__)
 base_dir = os.path.dirname(os.path.dirname(current_file))
 
 os.environ["NEUROMITA_BASE_DIR"] = base_dir
-os.environ["NEUROMITA_LIB_DIR"] = os.path.join(base_dir, "Lib")
+if not os.environ.get("NEUROMITA_LIB_DIR"):
+    os.environ["NEUROMITA_LIB_DIR"] = os.path.join(base_dir, "Lib")
+if not os.environ.get("NEUROMITA_PROMPTS_DIR"):
+    os.environ["NEUROMITA_PROMPTS_DIR"] = os.path.join(base_dir, "Prompts")
+if not os.environ.get("NEUROMITA_HISTORIES_DIR"):
+    os.environ["NEUROMITA_HISTORIES_DIR"] = os.path.join(base_dir, "Histories")
+if not os.environ.get("NEUROMITA_MODELS_DIR"):
+    os.environ["NEUROMITA_MODELS_DIR"] = os.path.join(base_dir, "Models")
+if not os.environ.get("NEUROMITA_CHECKPOINTS_DIR"):
+    os.environ["NEUROMITA_CHECKPOINTS_DIR"] = os.path.join(base_dir, "checkpoints")
 
 libs_dir = os.environ["NEUROMITA_LIB_DIR"]
 if not os.path.exists(libs_dir):
@@ -104,6 +113,9 @@ else:
 
 
 logger.info(f"Базовая директория: {os.environ['NEUROMITA_BASE_DIR']}")
+logger.info(f"Prompts: {os.environ['NEUROMITA_PROMPTS_DIR']}")
+logger.info(f"Histories: {os.environ['NEUROMITA_HISTORIES_DIR']}")
+logger.info(f"Checkpoints: {os.environ['NEUROMITA_CHECKPOINTS_DIR']}")
 logger.info(f"Python: {os.environ['NEUROMITA_PYTHON']}")
 logger.info(libs_dir)
 
