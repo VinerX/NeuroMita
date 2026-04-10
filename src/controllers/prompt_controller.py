@@ -154,20 +154,29 @@ class PromptController:
             tools_desc = caps.get("tools_prompt", "")
             so_prompt = so_prompt.replace("{TOOLS_DESCRIPTION}", tools_desc or "")
 
-        # Inject custom_params description so the LLM knows what to put in custom_fields.
+        # Inject custom_params into the schema example via {CUSTOM_PARAMS_SCHEMA} placeholder,
+        # and also append a summary section after the schema.
         custom_params = getattr(character, "custom_params", [])
         if so_prompt and custom_params:
-            lines = [
-                "\n### Custom character parameters",
-                "Use the `custom_fields` object **only if you want to change** one or more values. Omit it entirely (or set to null) if nothing needs to change.",
-            ]
+            _type_map = {"float": "number", "double": "number", "int": "integer",
+                         "bool": "boolean", "str": "string", "string": "string"}
+            schema_lines = []
+            summary_lines = ["\n### Custom fields — always include:"]
             for p in custom_params:
+                name = p["name"]
                 type_str = p.get("type", "any")
+                json_type = _type_map.get(type_str, type_str)
                 desc = p.get("description", "")
                 mn, mx = p.get("min"), p.get("max")
-                range_str = f", {mn} to {mx}" if mn is not None and mx is not None else ""
-                lines.append(f'- "{p["name"]}" ({type_str}{range_str}): {desc}')
-            so_prompt += "\n".join(lines)
+                range_str = f" ({mn} to {mx})" if mn is not None and mx is not None else ""
+                schema_lines.append(f'  "{name}": <{json_type}{range_str}>,  // {desc}')
+                summary_lines.append(f'- "{name}" ({type_str}{range_str}): {desc}')
+            inline = "\n".join(schema_lines) + "\n"
+            so_prompt = so_prompt.replace("{CUSTOM_PARAMS_SCHEMA}", inline)
+            so_prompt += "\n".join(summary_lines)
+        else:
+            if so_prompt:
+                so_prompt = so_prompt.replace("{CUSTOM_PARAMS_SCHEMA}", "")
 
         return so_prompt
 
