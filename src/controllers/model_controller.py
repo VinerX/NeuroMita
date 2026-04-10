@@ -718,7 +718,11 @@ class ModelController:
         task_uid = str(data.get("message_id") or "") or None
 
         policy_dict = data.get("policy")
-        policy = RequestPolicy.from_dict(policy_dict) if isinstance(policy_dict, dict) else resolve_policy(model_event_type=str(event_type or "chat"))
+        policy = (
+            RequestPolicy.from_dict(policy_dict)
+            if isinstance(policy_dict, dict)
+            else resolve_policy(model_event_type=str(event_type or "chat"))
+        )
 
         char = None
         if character_id_override:
@@ -741,10 +745,8 @@ class ModelController:
 
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
-        preset_id = preset_id_override  # Initialize early for capability resolution
+        preset_id = preset_id_override
 
-
-        # [RAG INTEGRATION] Внедрение контекста из памяти
         if bool(self.settings.get("RAG_ENABLED", False)) and event_type not in ("compress", "graph_extract"):
             prompt_set_path = getattr(char, "base_data_path", None)
             system_input = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
@@ -752,8 +754,6 @@ class ModelController:
         if event_type in ("compress", "graph_extract"):
             messages = []
             if system_input:
-                # For graph_extract: send as user message since many OpenAI-compatible
-                # APIs (LMStudio, Ollama) require at least one user message to generate.
                 if event_type == "graph_extract":
                     messages.append({"role": "user", "content": system_input})
                 else:
@@ -811,7 +811,6 @@ class ModelController:
         is_game_master = (char_id == "GameMaster")
         disable_history_compression = bool(data.get("disable_history_compression", False))
 
-        # Resolve capabilities from the effective preset for this request
         effective_capabilities = {}
         try:
             effective_preset = self.preset_resolver.resolve(preset_id)
@@ -824,7 +823,6 @@ class ModelController:
         except Exception as e:
             logger.warning(f"[ModelController] Failed to resolve preset capabilities: {e}")
 
-        # Determine tools state and inject description into capabilities for prompt injection
         _tools_on = bool(self.settings.get("TOOLS_ON", True))
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
         if _tools_mode == "off":
@@ -841,11 +839,11 @@ class ModelController:
                 logger.warning(f"[ModelController] Failed to build tools prompt: {e}")
                 _tools_on = False
 
-        # Signal whether custom_fields should appear in the response schema,
-        # and pass the params list so providers can patch the Gemini schema.
         _custom_params = getattr(char, "custom_params", [])
         effective_capabilities["has_custom_params"] = bool(_custom_params)
         effective_capabilities["custom_params"] = _custom_params
+
+        data["capabilities"] = dict(effective_capabilities)
 
         try:
             prompt_res = self.event_bus.emit_and_wait(
@@ -940,9 +938,27 @@ class ModelController:
 
         is_structured_output = effective_capabilities.get("structured_output", False)
 
+        structured_model_cls = None
+        if is_structured_output:
+            try:
+                from schemas.structured_response import StructuredResponse as _SR
+                try:
+                    from schemas.structured_response import build_structured_response_model  # type: ignore
+                    structured_model_cls = build_structured_response_model(_custom_params or [])
+                except Exception:
+                    structured_model_cls = _SR
+            except Exception:
+                structured_model_cls = None
+
         try:
             use_stream_cb = stream_callback if policy.allow_streaming else None
-            raw_text = self.model.generate(combined_messages, stream_callback=use_stream_cb, preset_id=preset_id)
+            raw_text = self.model.generate(
+                combined_messages,
+                stream_callback=use_stream_cb,
+                preset_id=preset_id,
+                capabilities_override=effective_capabilities,
+                structured_model=structured_model_cls,
+            )
 
             if not raw_text:
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
@@ -950,10 +966,8 @@ class ModelController:
                 })
                 return None
 
-            # Strip <think> blocks BEFORE any downstream processing (commands, voiceover, history)
             visible_raw, think_text = self._extract_think_blocks(str(raw_text))
 
-            # --- Structured Output path ---
             if is_structured_output:
                 return self._process_structured_output(
                     visible_raw=visible_raw,
@@ -975,10 +989,9 @@ class ModelController:
                     tools_on=_tools_on,
                     enabled_tools=_enabled_tools,
                     tool_depth=0,
+                    structured_model_cls=structured_model_cls,
                 )
 
-            # --- Legacy (tag-based) path ---
-            # Extract inline graph tags <graph>JSON</graph> if inline mode is active.
             inline_graph_json: Optional[str] = None
             if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
                     and bool(self.settings.get("GRAPH_EXTRACTION_INLINE", False))):
@@ -1022,7 +1035,6 @@ class ModelController:
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
-            # Notify graph extraction (and any future subscribers).
             created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
             self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
                 "character_id": char_id,
@@ -1191,14 +1203,10 @@ class ModelController:
         tools_on: bool = False,
         enabled_tools: list = None,
         tool_depth: int = 0,
+        structured_model_cls=None,
     ) -> dict | None:
-        """
-        Process a structured JSON response from the LLM.
-        Parses the JSON, applies global fields (behavior, memory),
-        processes game tags, and returns the result dict with segments.
-        """
         try:
-            structured = parse_structured_response(visible_raw)
+            structured = parse_structured_response(visible_raw, model_cls=structured_model_cls)
         except StructuredResponseParseError as e:
             logger.error(
                 f"[ModelController] Failed to parse structured response for {char_id}: {e}. "
@@ -1273,6 +1281,7 @@ class ModelController:
                 preset_id=preset_id,
                 enabled_tools=_active_tools,
                 tool_depth=tool_depth,
+                structured_model_cls=structured_model_cls,
             )
 
         # Extract reasoning from structured response (if model used the reasoning field)
@@ -1398,6 +1407,7 @@ class ModelController:
         preset_id: int | None,
         enabled_tools: list,
         tool_depth: int,
+        structured_model_cls=None,
     ) -> dict | None:
         """
         Handle a tool_call from a structured response:
@@ -1526,7 +1536,12 @@ class ModelController:
             "character_name": char_name or char_id or "Мита",
         })
 
-        raw_text_2 = self.model.generate(combined_messages_v2, preset_id=preset_id)
+        raw_text_2 = self.model.generate(
+            combined_messages_v2,
+            preset_id=preset_id,
+            capabilities_override=(data.get("capabilities") or None),
+            structured_model=structured_model_cls,
+        )
 
         if not raw_text_2:
             logger.error(f"[ModelController] Second LLM call after tool '{tool_name}' returned empty.")
@@ -1572,6 +1587,7 @@ class ModelController:
             tools_on=True,
             enabled_tools=enabled_tools,
             tool_depth=tool_depth + 1,
+            structured_model_cls=structured_model_cls,
         )
 
     # ---------------------------------------------------------------------

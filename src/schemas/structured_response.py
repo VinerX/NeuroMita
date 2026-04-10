@@ -17,11 +17,12 @@ Usage::
 """
 from __future__ import annotations
 
+import re
+import hashlib
 import json as _json
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Type
 
-from pydantic import BaseModel, Field, model_validator
-
+from pydantic import BaseModel, Field, model_validator, create_model
 
 def _to_gemini_schema(schema: dict) -> dict:
     """
@@ -309,3 +310,102 @@ class StructuredResponse(BaseModel):
                 if "required" in schema:
                     schema["required"] = [r for r in schema["required"] if r != f]
         return schema
+
+
+def build_structured_response_model(custom_params: list[dict] | None) -> Type[StructuredResponse]:
+    custom_params = custom_params or []
+    key_s = ""
+    try:
+        import json as _json
+        key_s = _json.dumps(custom_params, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        key_s = str(custom_params)
+
+    h = hashlib.md5(key_s.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    cache_key = f"sr:{h}"
+
+    _cache = getattr(build_structured_response_model, "_cache", None)
+    if not isinstance(_cache, dict):
+        _cache = {}
+        setattr(build_structured_response_model, "_cache", _cache)
+    if cache_key in _cache:
+        return _cache[cache_key]
+
+    type_map = {
+        "float": float,
+        "double": float,
+        "number": float,
+        "int": int,
+        "integer": int,
+        "bool": bool,
+        "boolean": bool,
+        "str": str,
+        "string": str,
+    }
+
+    def infer_default(py_t: type):
+        if py_t is float:
+            return 0.0
+        if py_t is int:
+            return 0
+        if py_t is bool:
+            return False
+        return ""
+
+    fields: Dict[str, tuple[Any, Any]] = {}
+    any_required = False
+
+    for p in custom_params:
+        if not isinstance(p, dict):
+            continue
+        name = str(p.get("name") or "").strip()
+        if not name or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            continue
+
+        tname = str(p.get("type") or "string").strip().lower()
+        py_t = type_map.get(tname, str)
+
+        required = bool(p.get("required", True))
+        nullable = bool(p.get("nullable", False))
+
+        desc = str(p.get("description") or "").strip()
+
+        default = p.get("default", None)
+        if default is None and not required:
+            default = infer_default(py_t)
+        if default is None and required:
+            default = ...
+
+        anno = Optional[py_t] if nullable else py_t
+
+        f_kwargs: Dict[str, Any] = {}
+        if desc:
+            f_kwargs["description"] = desc
+
+        mn = p.get("min", None)
+        mx = p.get("max", None)
+        if py_t in (int, float):
+            if mn is not None:
+                f_kwargs["ge"] = mn
+            if mx is not None:
+                f_kwargs["le"] = mx
+
+        fields[name] = (anno, Field(default, **f_kwargs))
+        if required:
+            any_required = True
+
+    if not fields:
+        _cache[cache_key] = StructuredResponse
+        return StructuredResponse
+
+    CustomFieldsModel = create_model(f"CustomFields_{h}", **fields)
+
+    custom_fields_default = ... if any_required else None
+    Extended = create_model(
+        f"ExtendedStructuredResponse_{h}",
+        __base__=StructuredResponse,
+        custom_fields=(Optional[CustomFieldsModel], Field(custom_fields_default)),
+    )
+
+    _cache[cache_key] = Extended
+    return Extended

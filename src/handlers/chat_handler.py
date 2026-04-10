@@ -1,7 +1,7 @@
-# File: chat_handler.py
-#import tiktoken
+# src/handlers/chat_handler.py
 import re
 from typing import List, Dict, Any, Optional
+
 from main_logger import logger
 
 from characters.character import Character
@@ -16,13 +16,13 @@ from handlers.llm_providers.param_mapper import build_unified_generation_params
 
 from core.events import get_event_bus
 
+
 class ChatModel:
     def __init__(self, settings):
         self.last_key = 0
         self.settings = settings
         self.event_bus = get_event_bus()
 
-        # Presets
         self.preset_resolver = ApiPresetResolver(settings=self.settings, event_bus=self.event_bus)
 
         preset_settings = self.preset_resolver.resolve()
@@ -31,13 +31,11 @@ class ChatModel:
         self.api_model = preset_settings.api_model
         self.gpt4free_model = str(self.settings.get("gpt4free_model", "") or "")
 
-        # Runtime config
         self.cfg_loader = ModelConfigLoader(self.settings)
         self.cfg = self.cfg_loader.load()
 
         self.tool_manager = ToolManager()
 
-        # Retry runner
         self.request_runner = LLMRequestRunner(
             settings=self.settings,
             preset_resolver=self.preset_resolver,
@@ -60,33 +58,44 @@ class ChatModel:
         }
 
         self.HideAiData = True
-        
+
     def generate(
         self,
         messages: List[Dict[str, Any]],
         stream_callback: callable = None,
-        preset_id: Optional[int] = None
+        preset_id: Optional[int] = None,
+        *,
+        capabilities_override: Optional[Dict[str, Any]] = None,
+        structured_model: Optional[type] = None,
     ) -> Optional[str]:
-        
         if messages is None:
             messages = []
         raw_text, success = self._generate_chat_response(
             combined_messages=messages,
             stream_callback=stream_callback,
-            preset_id=preset_id
+            preset_id=preset_id,
+            capabilities_override=capabilities_override,
+            structured_model=structured_model,
         )
         if not success:
             return None
         return raw_text
 
-    def _generate_chat_response(self, combined_messages, stream_callback: callable = None, preset_id: Optional[int] = None):
+    def _generate_chat_response(
+        self,
+        combined_messages,
+        stream_callback: callable = None,
+        preset_id: Optional[int] = None,
+        *,
+        capabilities_override: Optional[Dict[str, Any]] = None,
+        structured_model: Optional[type] = None,
+    ):
         max_attempts = self.cfg.max_request_attempts
         retry_delay = self.cfg.request_delay
         request_timeout = 45
 
         self._log_generation_start(preset_id)
 
-        # Capture the last built LLMRequest so we can save it for finetune data collection
         _last_req: list = [None]
 
         def build_request(preset_settings, effective_model: str) -> LLMRequest:
@@ -107,6 +116,10 @@ class ChatModel:
                 force_params=getattr(cfg, "preset_forced_params", frozenset()),
             )
 
+            caps = dict(preset_settings.capabilities or {})
+            if isinstance(capabilities_override, dict):
+                caps.update(capabilities_override)
+
             req = LLMRequest(
                 model=effective_model,
                 messages=combined_messages,
@@ -118,13 +131,14 @@ class ChatModel:
                 provider_name=preset_settings.provider_name,
                 headers=dict(preset_settings.headers or {}),
                 transforms=list(preset_settings.transforms or []),
-                capabilities=dict(preset_settings.capabilities or {}),
+                capabilities=caps,
 
                 stream=bool(self.settings.get("ENABLE_STREAMING", False)) and stream_callback is not None,
                 stream_cb=stream_callback,
                 extra=params,
                 tool_manager=self.tool_manager,
                 settings=self.settings,
+                structured_model=structured_model,
             )
 
             req.extra["tool_manager"] = self.tool_manager
@@ -145,14 +159,12 @@ class ChatModel:
             logger.error(f"Runner failed unexpectedly: {e}", exc_info=True)
             return None, False
 
-        # ── Finetune data collection hook ─────────────────────────────────────
         if response_text and _last_req[0]:
             try:
                 from managers.finetune_collector import FineTuneCollector
                 fc = FineTuneCollector.instance
                 if fc and fc.is_enabled():
                     char = self.current_character
-                    # Query game connection status (non-blocking)
                     game_connected = False
                     try:
                         from core.events import Events
@@ -180,7 +192,7 @@ class ChatModel:
             return None, False
 
         return None, False
-    
+
     def _log_generation_start(self, preset_id: Optional[int] = None):
         logger.info("Preparing to generate LLM response.")
         preset_settings = self.preset_resolver.resolve(preset_id)
