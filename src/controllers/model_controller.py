@@ -841,8 +841,11 @@ class ModelController:
                 logger.warning(f"[ModelController] Failed to build tools prompt: {e}")
                 _tools_on = False
 
-        # Signal whether custom_fields should appear in the response schema.
-        effective_capabilities["has_custom_params"] = bool(getattr(char, "custom_params", []))
+        # Signal whether custom_fields should appear in the response schema,
+        # and pass the params list so providers can patch the Gemini schema.
+        _custom_params = getattr(char, "custom_params", [])
+        effective_capabilities["has_custom_params"] = bool(_custom_params)
+        effective_capabilities["custom_params"] = _custom_params
 
         try:
             prompt_res = self.event_bus.emit_and_wait(
