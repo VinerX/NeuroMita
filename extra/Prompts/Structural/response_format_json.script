@@ -42,8 +42,9 @@ Schema:
   "attitude_change": <number -6..6>,
   "boredom_change": <number -6..6>,
   "stress_change": <number -6..6>,
-  "tool_call": {"name": "tool_name", "args": {"param": "value"}}
-}
+  "tool_call": {"name": "tool_name", "args": {"param": "value"}},
+{CUSTOM_PARAMS_SCHEMA}}
+
 
 Rules:
 - "text" is REQUIRED in every segment. All other segment fields are optional — omit them if not needed.
@@ -56,6 +57,7 @@ Rules:
 - reminder_add format: "YYYY-MM-DDTHH:MM:SS|text", e.g. "2026-04-05T18:00:00|Remind player about dinner"
 - reminder_delete format: reminder ID number as string, e.g. "3"
 - [Pending Reminders] block in system context shows scheduled reminders. Fire them when due time arrives.
+- custom_fields: Fill ALL declared custom fields every message according to their descriptions. Never leave custom_fields empty if it appears in the schema.
 - Split your response into segments when different parts need different emotions, animations, or commands.
 - Each segment's commands (emotions, animations, etc.) trigger when that segment's text is displayed.
 - Text limit per response: 25-60 words total across all segments. Maximum 700 characters.
