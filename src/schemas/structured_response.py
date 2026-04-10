@@ -217,7 +217,7 @@ class StructuredResponse(BaseModel):
         return " ".join(p for p in parts if p).strip()
 
     @classmethod
-    def openai_response_format(cls) -> dict:
+    def openai_response_format(cls, exclude_fields: set = None) -> dict:
         """
         Return the ``response_format`` payload for the OpenAI API.
 
@@ -233,6 +233,11 @@ class StructuredResponse(BaseModel):
             }
         """
         schema = cls.model_json_schema()
+        if exclude_fields:
+            for f in exclude_fields:
+                schema.get("properties", {}).pop(f, None)
+                if "required" in schema:
+                    schema["required"] = [r for r in schema["required"] if r != f]
         return {
             "type": "json_schema",
             "json_schema": {
@@ -248,7 +253,7 @@ class StructuredResponse(BaseModel):
         return cls.model_json_schema()
 
     @classmethod
-    def gemini_schema_dict(cls) -> dict:
+    def gemini_schema_dict(cls, exclude_fields: set = None) -> dict:
         """
         Return a Gemini-compatible responseSchema dict.
 
@@ -259,6 +264,10 @@ class StructuredResponse(BaseModel):
         Special case: tool_call.args is patched to type=string so Gemini
         can freely write JSON arguments instead of being constrained to an
         empty object (Gemini doesn't support free-form additionalProperties).
+
+        Args:
+            exclude_fields: optional set of top-level field names to remove
+                from the schema (e.g. {"custom_fields"} when no custom_params).
         """
         schema = _to_gemini_schema(cls.model_json_schema())
         # Patch tool_call.args: object without properties → string
@@ -270,4 +279,9 @@ class StructuredResponse(BaseModel):
             }
         except (KeyError, TypeError):
             pass
+        if exclude_fields:
+            for f in exclude_fields:
+                schema.get("properties", {}).pop(f, None)
+                if "required" in schema:
+                    schema["required"] = [r for r in schema["required"] if r != f]
         return schema

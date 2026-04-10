@@ -114,7 +114,8 @@ class OpenAIHTTPProviderBase(BaseProvider):
             if rf_mode == "json_object":
                 payload["response_format"] = {"type": "json_object"}
             else:
-                payload["response_format"] = StructuredResponse.openai_response_format()
+                _excl = None if (req.capabilities or {}).get("has_custom_params", True) else {"custom_fields"}
+                payload["response_format"] = StructuredResponse.openai_response_format(exclude_fields=_excl)
             logger.debug(f"[{self.name}] Structured output enabled: response_format={rf_mode}")
 
         return payload
