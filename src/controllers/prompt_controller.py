@@ -154,6 +154,21 @@ class PromptController:
             tools_desc = caps.get("tools_prompt", "")
             so_prompt = so_prompt.replace("{TOOLS_DESCRIPTION}", tools_desc or "")
 
+        # Inject custom_params description so the LLM knows what to put in custom_fields.
+        custom_params = getattr(character, "custom_params", [])
+        if so_prompt and custom_params:
+            lines = [
+                "\n### Custom character parameters",
+                "Use the `custom_fields` object to set character-specific values:",
+            ]
+            for p in custom_params:
+                type_str = p.get("type", "any")
+                desc = p.get("description", "")
+                mn, mx = p.get("min"), p.get("max")
+                range_str = f", {mn} to {mx}" if mn is not None and mx is not None else ""
+                lines.append(f'- "{p["name"]}" ({type_str}{range_str}): {desc}')
+            so_prompt += "\n".join(lines)
+
         return so_prompt
 
     def _on_build_prompt(self, event: Event) -> Dict[str, Any]:

@@ -96,6 +96,7 @@ class Character:
         for key, value in composed_initials.items():
             self.set_variable(key, value)
 
+        self.custom_params: List[Dict[str, Any]] = []
         self.load_config()
 
         logger.info(
@@ -141,7 +142,6 @@ class Character:
         self.set_variable("game_id", None)
         self.game_manager = GameManager(self)
 
-
     def load_config(self):
         """
         Загружает кастомные настройки из config.json в папке персонажа.
@@ -185,6 +185,10 @@ class Character:
             if os.path.exists(config_path):
                 with open(config_path, "r", encoding="utf-8") as f:
                     config_data = json.load(f)
+
+                # Extract custom_params before iterating — prevents it from being
+                # stored as a character variable.
+                self.custom_params = config_data.pop("custom_params", [])
 
                 changed = False
                 for k, v in bounds_defaults.items():
@@ -596,6 +600,57 @@ class Character:
                 seen.add(seg.target)
                 targets.append(seg.target)
         self._pending_targets = targets
+
+        # 1. Apply text PostDSL rules (Remove Asterisks etc.) to each segment
+        try:
+            for seg in structured.segments:
+                seg.text = self.post_dsl_interpreter.process(seg.text)
+        except Exception as e:
+            logger.error(
+                f"[{self.char_id}] Error in PostDSL text processing for segments: {e}",
+                exc_info=True,
+            )
+
+        # 2. Apply simple op-mappings from custom_params (no DSL needed)
+        if structured.custom_fields:
+            for param in self.custom_params:
+                name = param.get("name")
+                op = param.get("op")
+                target_var = param.get("target_var")
+                if not (name and op and target_var and name in structured.custom_fields):
+                    continue
+                value = structured.custom_fields[name]
+                try:
+                    current = self.get_variable(target_var, 0)
+                    if op == "set":
+                        new_val = value
+                    elif op == "add":
+                        new_val = current + value
+                        pmin, pmax = param.get("min"), param.get("max")
+                        if pmin is not None:
+                            new_val = max(pmin, new_val)
+                        if pmax is not None:
+                            new_val = min(pmax, new_val)
+                    else:
+                        continue
+                    self.set_variable(target_var, new_val)
+                    logger.info(
+                        f"[{self.char_id}] custom_param '{name}' op={op} → {target_var}={new_val}"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.char_id}] Error applying custom_param '{name}': {e}"
+                    )
+
+        # 3. Apply MATCH FIELD PostDSL rules (complex logic with expressions)
+        if structured.custom_fields:
+            try:
+                self.post_dsl_interpreter.process_structured_fields(structured.custom_fields)
+            except Exception as e:
+                logger.error(
+                    f"[{self.char_id}] Error in PostDSL field processing: {e}",
+                    exc_info=True,
+                )
 
         return structured
 

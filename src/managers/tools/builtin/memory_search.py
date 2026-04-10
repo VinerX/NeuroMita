@@ -258,7 +258,7 @@ class MemorySearchTool(Tool):
             date_hint = ""
             if dt_from or dt_to:
                 date_hint = f" в указанном диапазоне дат"
-            return f"Ничего не найдено по запросу «{query}»{date_hint}."
+            return f"Я ничего не нашла в своей памяти по запросу «{query}»{date_hint}."
 
         # Strict date filtering
         if dt_from or dt_to:
@@ -277,13 +277,13 @@ class MemorySearchTool(Tool):
         results = results[:limit]
 
         if not results:
-            return f"Ничего не найдено по запросу «{query}» в указанном диапазоне дат."
+            return f"Я ничего не нашла в своей памяти по запросу «{query}» в указанном диапазоне дат."
 
         return self._format_results(results)
 
     @staticmethod
     def _format_results(results: List[Dict]) -> str:
-        lines = [f"Found {len(results)} result(s):"]
+        lines = [f"Я нашла {len(results)} запис(ей) в своей памяти:"]
         for i, r in enumerate(results, 1):
             src = r.get("source", "?")
             content = str(r.get("content", "")).strip()

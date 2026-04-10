@@ -203,6 +203,14 @@ class StructuredResponse(BaseModel):
         )
     )
 
+    custom_fields: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Custom character-specific parameters defined by the prompter. "
+            "Keys and their meaning are described in the response format instructions."
+        )
+    )
+
     def full_text(self) -> str:
         """Concatenate all segment texts (for TTS and history)."""
         parts = [seg.text for seg in self.segments if seg.text is not None]

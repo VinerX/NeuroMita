@@ -19,7 +19,7 @@ class PostDslRule:
         self.name = name
         self.match_type = match_type  # "TEXT" or "REGEX"
         self.pattern_str = pattern_str
-        self.compiled_pattern = re.compile(pattern_str) if match_type == "REGEX" else pattern_str
+        self.compiled_pattern = re.compile(pattern_str) if match_type == "REGEX" else None
         self.capture_names = capture_names
         self.action_lines = action_lines
         self.remove_match_flag = False
@@ -99,6 +99,8 @@ class PostDslInterpreter:
                 if current_match_type == "TEXT":
                     current_pattern_str = pattern_part.strip('"')
                 elif current_match_type == "REGEX":
+                    current_pattern_str = pattern_part.strip('"')
+                elif current_match_type == "FIELD":
                     current_pattern_str = pattern_part.strip('"')
             elif current_rule_name and line.upper() == "ACTIONS":
                 in_actions_block = True
@@ -197,13 +199,16 @@ class PostDslInterpreter:
                          exc_info=True)
             raise PostDslError(f"Error evaluating expression: {expr}") from e
 
-    def _execute_actions(self, rule: PostDslRule, match_object: re.Match | None, current_response_segment: str) -> \
-    Tuple[str, bool]:
+    def _execute_actions(self, rule: PostDslRule, match_object: re.Match | None, current_response_segment: str,
+                         extra_context: Dict[str, Any] | None = None) -> Tuple[str, bool]:
         """
         Executes actions for a rule.
         Returns the modified segment and a boolean indicating if a match was processed.
+        extra_context: additional variables to inject (e.g. field values for MATCH FIELD rules).
         """
         context_vars = {}
+        if extra_context:
+            context_vars.update(extra_context)
         if rule.match_type == "REGEX" and match_object:
             captured_values = match_object.groups()
             if len(captured_values) == len(rule.capture_names):
@@ -291,6 +296,20 @@ class PostDslInterpreter:
 
         return processed_segment, True
 
+    def process_structured_fields(self, fields: Dict[str, Any]) -> None:
+        """Applies MATCH FIELD rules to a custom_fields dict from a StructuredResponse."""
+        self._local_vars.clear()
+        self._declared_local_vars.clear()
+
+        for rule in self.rules:
+            if rule.match_type != "FIELD":
+                continue
+            field_name = rule.pattern_str
+            if field_name not in fields:
+                continue
+            extra_context = {field_name: fields[field_name]}
+            self._execute_actions(rule, None, "", extra_context=extra_context)
+
     def process(self, response_text: str) -> str:
         # Clear local variables at the start of each processing cycle
         self._local_vars.clear()
@@ -299,6 +318,9 @@ class PostDslInterpreter:
         modified_response = response_text
 
         for rule in self.rules:
+            if rule.match_type == "FIELD":
+                continue  # FIELD rules are handled by process_structured_fields()
+
             new_response_parts = []
             last_end = 0
             processed_something_for_this_rule = False
