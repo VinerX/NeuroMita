@@ -167,9 +167,10 @@ class PromptController:
                 desc = p.get("description", "")
                 mn, mx = p.get("min"), p.get("max")
                 range_str = f" ({mn} to {mx})" if mn is not None and mx is not None else ""
-                field_lines.append(f'    "{name}": <{json_type}{range_str}>,  // {desc}')
-            # Inject as nested custom_fields block into the schema example
-            inline = '  "custom_fields": {\n' + "\n".join(field_lines) + "\n  },\n"
+                field_lines.append(f'    "{name}": <{json_type}{range_str}>  // {desc}')
+            fields_inline = ",\n".join(field_lines)
+            # Inject as array item — Gemini handles typed arrays reliably
+            inline = '  "custom_fields": [{\n' + fields_inline + "\n  }],\n"
             so_prompt = so_prompt.replace("{CUSTOM_PARAMS_SCHEMA}", inline)
         elif so_prompt:
             so_prompt = so_prompt.replace("{CUSTOM_PARAMS_SCHEMA}", "")
