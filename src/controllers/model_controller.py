@@ -1197,6 +1197,21 @@ class ModelController:
         Parses the JSON, applies global fields (behavior, memory),
         processes game tags, and returns the result dict with segments.
         """
+        # Lift top-level custom param keys into custom_fields before Pydantic parsing.
+        # The schema exposes them at the top level (next to attitude_change) so the
+        # model writes them reliably; we move them back to custom_fields here.
+        _custom_param_names = {p["name"] for p in getattr(char, "custom_params", [])}
+        if _custom_param_names:
+            try:
+                import json as _json
+                _raw_dict = _json.loads(visible_raw)
+                _lifted = {k: _raw_dict.pop(k) for k in _custom_param_names if k in _raw_dict}
+                if _lifted:
+                    _raw_dict["custom_fields"] = {**(_raw_dict.get("custom_fields") or {}), **_lifted}
+                    visible_raw = _json.dumps(_raw_dict)
+            except Exception as _e:
+                logger.warning(f"[ModelController] Failed to lift custom params: {_e}")
+
         try:
             structured = parse_structured_response(visible_raw)
         except StructuredResponseParseError as e:
