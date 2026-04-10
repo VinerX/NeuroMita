@@ -16,5 +16,19 @@
     "boredom_min": 0.0,
     "boredom_max": 100.0,
     "stress_min": 0.0,
-    "stress_max": 100.0
+    "stress_max": 100.0,
+    "custom_params": [
+        {
+            "name": "love_change",
+            "type": "float",
+            "min": -10,
+            "max": 10,
+            "description": "Change in Love relationship variable (positive = warmer, negative = colder)"
+        },
+        {
+            "name": "secret_trial",
+            "type": "bool",
+            "description": "Activate secret quest mode"
+        }
+    ]
 }
