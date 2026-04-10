@@ -144,130 +144,26 @@ class Character:
         self.game_manager = GameManager(self)
 
     def load_config(self):
-        """
-        Загружает кастомные настройки из config.json в папке персонажа.
-        Если файла нет - создаёт его с базовыми значениями из DEFAULT_OVERRIDES.
-        Добавляет и поддерживает 6 новых статичных переменных с ограничениями:
-        - attitude_min / attitude_max
-        - boredom_min / boredom_max
-        - stress_min / stress_max
-        null (None) допускается — означает отсутствие ограничения.
-        Логируем ошибку, если max < min.
-        """
-        config_path = os.path.join(self.base_data_path, "config.json")
-
-        bounds_defaults = {
-            "attitude_min": 0.0,
-            "attitude_max": 100.0,
-            "boredom_min": 0.0,
-            "boredom_max": 100.0,
-            "stress_min": 0.0,
-            "stress_max": 100.0,
-        }
-
-        def _validate_pairs(cfg: Dict[str, Any]):
-            def _check_pair(min_key: str, max_key: str, label: str):
-                vmin = cfg.get(min_key)
-                vmax = cfg.get(max_key)
-                if (
-                    isinstance(vmin, (int, float))
-                    and isinstance(vmax, (int, float))
-                    and vmax < vmin
-                ):
-                    logger.error(
-                        f"[{self.char_id}] Config error: {label} max ({vmax}) < min ({vmin})."
-                    )
-
-            _check_pair("attitude_min", "attitude_max", "attitude")
-            _check_pair("boredom_min", "boredom_max", "boredom")
-            _check_pair("stress_min", "stress_max", "stress")
+        from managers.character_config_manager import CharacterConfigManager
 
         try:
-            if os.path.exists(config_path):
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config_data = json.load(f)
-
-                # Extract custom_params before iterating — prevents it from being
-                # stored as a character variable.
-                self.custom_params = config_data.pop("custom_params", [])
-
-                changed = False
-                for k, v in bounds_defaults.items():
-                    if k not in config_data:
-                        config_data[k] = v
-                        changed = True
-
-                _validate_pairs(config_data)
-
-                logger.info(
-                    f"[{self.char_id}] Loading custom config from {config_path}"
-                )
-                for key, value in config_data.items():
-                    self.set_variable(key, value)
-                    logger.debug(
-                        f"[{self.char_id}] Set custom variable {key} = {value}"
-                    )
-
-                if changed:
-                    try:
-                        with open(config_path, "w", encoding="utf-8") as f:
-                            json.dump(config_data, f, indent=4, ensure_ascii=False)
-                        logger.info(
-                            f"[{self.char_id}] Missing config keys added and saved to {config_path}"
-                        )
-                    except Exception as e:
-                        logger.error(
-                            f"[{self.char_id}] Failed to update config.json with missing keys: {e}"
-                        )
-
-            else:
-                logger.info(
-                    f"[{self.char_id}] config.json not found at {config_path}, creating with default values"
-                )
-
-                base_config = self.BASE_DEFAULTS.copy()
-                if hasattr(self, "DEFAULT_OVERRIDES"):
-                    base_config.update(self.DEFAULT_OVERRIDES)
-
-                for k, v in bounds_defaults.items():
-                    base_config.setdefault(k, v)
-
-                os.makedirs(os.path.dirname(config_path), exist_ok=True)
-
-                with open(config_path, "w", encoding="utf-8") as f:
-                    json.dump(base_config, f, indent=4, ensure_ascii=False)
-
-                for key, value in base_config.items():
-                    self.set_variable(key, value)
-
-                logger.info(f"[{self.char_id}] Default config saved to {config_path}")
-
-        except json.JSONDecodeError as e:
-            logger.error(
-                f"[{self.char_id}] Error parsing config.json: {e}, creating new config"
+            cm = CharacterConfigManager(
+                character_id=self.char_id,
+                base_data_path=self.base_data_path,
+                logger=logger,
             )
+            cfg = cm.load_or_create()
 
-            base_config = self.BASE_DEFAULTS.copy()
-            if hasattr(self, "DEFAULT_OVERRIDES"):
-                base_config.update(self.DEFAULT_OVERRIDES)
+            self.custom_params = list(cfg.custom_params or [])
 
-            for k, v in bounds_defaults.items():
-                base_config.setdefault(k, v)
-
-            os.makedirs(os.path.dirname(config_path), exist_ok=True)
-
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(base_config, f, indent=4, ensure_ascii=False)
-
-            for key, value in base_config.items():
-                self.set_variable(key, value)
-
-            logger.info(
-                f"[{self.char_id}] New config created with defaults after JSON error"
-            )
+            reserved = {"PROMPT_SET_NAME", "PROMPT_SET_PATH"}
+            for k, v in (cfg.variables or {}).items():
+                if str(k) in reserved:
+                    continue
+                self.set_variable(str(k), v)
 
         except Exception as e:
-            logger.error(f"[{self.char_id}] Error loading/creating config.json: {e}")
+            logger.error(f"[{self.char_id}] Error loading config via CharacterConfigManager: {e}", exc_info=True)
 
     def get_stats_dict(self) -> Dict[str, float]:
         return {

@@ -446,7 +446,8 @@ class DslInterpreter:
                     args = parts[1] if len(parts) > 1 else ""
 
                     if command == "SET":
-                        if "=" not in args: raise DslError("SET requires '='", resolved_script_id, num, raw)
+                        if "=" not in args:
+                            raise DslError("SET requires '='", resolved_script_id, num, raw)
 
                         is_local = False
                         var = ""
@@ -478,7 +479,8 @@ class DslInterpreter:
                             if var in self._declared_local_vars:
                                 self._local_vars[var] = value
                             else:
-                                self.character.variables[var] = value
+                                self.character.set_variable(var, value)
+
                         continue
 
                     if command == "ADD_SYSTEM_INFO":
