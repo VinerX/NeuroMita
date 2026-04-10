@@ -33,7 +33,7 @@ Schema:
   "secret_exposed": true/false,
   "memory_delete": ["number" or "start-end", ...],
   "entities": [{"name": "lowercase 1-3 words", "type": "person|place|thing|concept"}, ...],  // fill only when graph extraction is enabled
-{CUSTOM_PARAMS_SCHEMA}}
+}
 
 Field descriptions:
 - All non-spoken actions must be represented by JSON fields and plain string values. Never use XML-like tags anywhere.
