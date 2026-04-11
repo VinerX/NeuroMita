@@ -105,8 +105,10 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 model_cls = req.structured_model or StructuredResponse
                 caps = req.capabilities or {}
                 has_custom = bool(caps.get("has_custom_params")) or bool(caps.get("custom_params"))
-                excl = None if has_custom else {"custom_fields"}
-                payload["response_format"] = model_cls.openai_response_format(exclude_fields=excl)
+                excl = set() if has_custom else {"custom_fields"}
+                if not caps.get("schema_reasoning", True):
+                    excl.add("reasoning")
+                payload["response_format"] = model_cls.openai_response_format(exclude_fields=excl or None)
             logger.debug(f"[{self.name}] Structured output enabled: response_format={rf_mode}")
 
         return payload

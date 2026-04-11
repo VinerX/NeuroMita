@@ -192,8 +192,10 @@ class GeminiProvider(BaseProvider):
             if mode != "gemini_prompt":
                 model_cls = req.structured_model or StructuredResponse
                 has_custom = bool(caps.get("has_custom_params")) or bool(caps.get("custom_params"))
-                excl = None if has_custom else {"custom_fields"}
-                schema = model_cls.gemini_schema_dict(exclude_fields=excl)
+                excl = set() if has_custom else {"custom_fields"}
+                if not caps.get("schema_reasoning", True):
+                    excl.add("reasoning")
+                schema = model_cls.gemini_schema_dict(exclude_fields=excl or None)
                 gen_cfg["responseJsonSchema"] = schema
                 logger.debug("[GeminiProvider] Structured output: responseJsonSchema passed (gemini_schema mode)")
             else:

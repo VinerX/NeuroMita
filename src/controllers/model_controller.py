@@ -842,6 +842,7 @@ class ModelController:
         _custom_params = getattr(char, "custom_params", [])
         effective_capabilities["has_custom_params"] = bool(_custom_params)
         effective_capabilities["custom_params"] = _custom_params
+        effective_capabilities["schema_reasoning"] = bool(self.settings.get("SCHEMA_REASONING", True))
 
         data["capabilities"] = dict(effective_capabilities)
 

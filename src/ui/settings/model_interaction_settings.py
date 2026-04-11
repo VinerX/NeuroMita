@@ -18,6 +18,15 @@ def setup_model_interaction_controls(self, parent):
         {'label': _('Включить стриминговую передачу', 'Enable Streaming'), 'key': 'ENABLE_STREAMING',
          'type': 'checkbutton',
          'default_checkbutton': False},
+        {'label': _('Reasoning в схеме (schema CoT)', 'Schema reasoning (CoT)'), 'key': 'SCHEMA_REASONING',
+         'type': 'checkbutton',
+         'default_checkbutton': True,
+         'tooltip': _('Включает поле reasoning в JSON-схему структурированного ответа. '
+                      'Модель "думает вслух" перед заполнением полей — улучшает качество для локальных моделей. '
+                      'Отключите если используете нативный thinking или хотите сэкономить токены.',
+                      'Adds a reasoning field to the structured output JSON schema. '
+                      'The model "thinks aloud" before filling other fields — improves quality for local models. '
+                      'Disable if using native thinking or to save tokens.')},
         {'label': _('Режим размышлений (enable_thinking)', 'Enable thinking mode'), 'key': 'ENABLE_THINKING',
          'type': 'checkbutton',
          'default_checkbutton': True,
