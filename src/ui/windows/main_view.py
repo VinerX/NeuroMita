@@ -1117,16 +1117,20 @@ class ChatGUI(QMainWindow):
     
         # ===== Совместимость: обновление индикаторов статуса =====
     def update_status_colors(self):
+        from managers.settings_manager import SettingsManager
         game_connected = self.event_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
         silero_connected = self.event_bus.emit_and_wait(Events.Telegram.GET_SILERO_STATUS, timeout=0.5)
         mic_active = self.event_bus.emit_and_wait(Events.Speech.GET_MIC_STATUS, timeout=0.5)
         screen_capture_active = self.event_bus.emit_and_wait(Events.Capture.GET_SCREEN_CAPTURE_STATUS, timeout=0.5)
         camera_capture_active = self.event_bus.emit_and_wait(Events.Capture.GET_CAMERA_CAPTURE_STATUS, timeout=0.5)
-        
+        rag_enabled = SettingsManager.get("RAG_ENABLED", False)
+
         if hasattr(self, 'game_status_checkbox'):
             self.game_status_checkbox.setChecked(bool(game_connected and game_connected[0]))
         if hasattr(self, 'silero_status_checkbox'):
             self.silero_status_checkbox.setChecked(bool(silero_connected and silero_connected[0]))
+        if hasattr(self, 'rag_status_checkbox'):
+            self.rag_status_checkbox.setChecked(bool(rag_enabled))
         if hasattr(self, 'mic_status_checkbox'):
             self.mic_status_checkbox.setChecked(bool(mic_active and mic_active[0]))
         if hasattr(self, 'screen_capture_status_checkbox'):

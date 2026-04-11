@@ -134,6 +134,7 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
 
         v.add_preset_btn.clicked.connect(self._safe(self._add_custom_preset_async, "add_preset"))
         v.remove_preset_btn.clicked.connect(self._safe(self._remove_custom_preset_async, "remove_preset"))
+        v.rename_preset_btn.clicked.connect(self._safe(self._rename_custom_preset_async, "rename_preset"))
         v.move_up_btn.clicked.connect(self._safe(self._move_preset_up, "move_up"))
         v.move_down_btn.clicked.connect(self._safe(self._move_preset_down, "move_down"))
 

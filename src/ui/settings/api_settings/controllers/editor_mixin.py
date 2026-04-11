@@ -391,6 +391,46 @@ class EditorMixin:
 
         self._bus_call_async(_call, _apply, name="add_preset")
 
+    def _rename_custom_preset_async(self) -> None:
+        v = self.view
+        cur_item = v.custom_presets_list.currentItem()
+        if not isinstance(cur_item, CustomPresetListItem):
+            return
+
+        old_name = cur_item.base_name
+        new_name, ok = QInputDialog.getText(
+            v,
+            _("Переименовать пресет", "Rename preset"),
+            _("Новое название:", "New name:"),
+            text=old_name,
+        )
+        if not ok or not str(new_name or "").strip():
+            return
+
+        new_name = str(new_name).strip()
+        if new_name == old_name:
+            return
+
+        pid = int(cur_item.preset_id)
+        data = dict(self.current_preset_data or {})
+        data["id"] = pid
+        data["name"] = new_name
+
+        def _call():
+            res = self.event_bus.emit_and_wait(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": data}, timeout=2.0)
+            return res[0] if res else None
+
+        def _apply(saved_id):
+            if not isinstance(saved_id, int):
+                return
+            cur_item.base_name = new_name
+            cur_item.update_display()
+            if self.current_preset_data is not None:
+                self.current_preset_data["name"] = new_name
+            v.provider_label.setText(new_name)
+
+        self._bus_call_async(_call, _apply, name="rename_preset")
+
     def _remove_custom_preset_async(self) -> None:
         v = self.view
         cur_item = v.custom_presets_list.currentItem()
