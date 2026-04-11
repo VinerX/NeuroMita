@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from main_logger import logger
 from .base import BaseProvider, LLMRequest
+from schemas.structured_response import StructuredResponse
 
 
 class OpenAICompatibleProvider(BaseProvider, ABC):
@@ -41,6 +42,20 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
 
             params: Dict[str, Any] = {"model": model_to_use, "messages": cleaned_messages}
             params.update(self._map_unified_params(req.extra or {}, model_to_use))
+
+            caps = req.capabilities or {}
+            if caps.get("structured_output"):
+                rf_mode = caps.get("structured_output_mode", "json_schema")
+                if rf_mode == "json_object":
+                    params["response_format"] = {"type": "json_object"}
+                else:
+                    model_cls = req.structured_model or StructuredResponse
+                    has_custom = bool(caps.get("has_custom_params")) or bool(caps.get("custom_params"))
+                    excl = set() if has_custom else {"custom_fields"}
+                    if not caps.get("schema_reasoning", True):
+                        excl.add("reasoning")
+                    params["response_format"] = model_cls.openai_response_format(exclude_fields=excl or None)
+                logger.debug(f"[{self.name}] Structured output enabled: response_format={rf_mode}")
 
             completion = client.chat.completions.create(**params, stream=req.stream)
 
