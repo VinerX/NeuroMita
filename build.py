@@ -36,11 +36,18 @@ BUILD_MODE = env.get("BUILD_MODE", "full").lower()
 # Фильтровать dot-папки (.cache, .git и т.п.) при копировании папок
 EXCLUDE_DOT_DIRS = env.get("BUILD_EXCLUDE_DOT_DIRS", "1") == "1"
 
-# Папки: поддержка абсолютных путей
+# Папки для full-режима: поддержка абсолютных путей
 _copy_dirs_raw = env.get("BUILD_COPY_DIRS", "Prompts")
 DIRS_TO_COPY: List[Tuple[Path, Path]] = [
     (resolve_path(d.strip(), PROJECT_DIR), OUTPUT_DIR / Path(d.strip()).name)
     for d in _copy_dirs_raw.split(",") if d.strip()
+]
+
+# Папки для fast-режима
+_fast_dirs_raw = env.get("BUILD_FAST_COPY_DIRS", "Prompts")
+FAST_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
+    (resolve_path(d.strip(), PROJECT_DIR), OUTPUT_DIR / Path(d.strip()).name)
+    for d in _fast_dirs_raw.split(",") if d.strip()
 ]
 
 # Файлы: поддержка абсолютных путей
@@ -149,7 +156,8 @@ if __name__ == "__main__":
         copy_entries(DIRS_TO_COPY)
         copy_entries(FILES_TO_COPY)
     else:
-        print("\nБыстрый режим — только .pyz + requirements.txt.")
+        print("\nБыстрый режим — .pyz + requirements.txt + быстрые папки...")
+        copy_entries(FAST_DIRS_TO_COPY)
 
     if ROOT_SCRIPTS:
         print("\nКопирую скрипты запуска...")
