@@ -20,6 +20,9 @@ class SpeechController:
         self.instant_send = False
         self.events_bus = get_event_bus()
 
+        self._last_text = ""
+        self._last_text_time = 0.0
+
         self._asr_settings_path = os.path.join("Settings", "asr_settings.json")
         self._asr_settings = {
             "engine": "google",
@@ -109,6 +112,15 @@ class SpeechController:
         self.device_id = self.settings.get("NM_MICROPHONE_ID", 0)
         self.selected_microphone = self.settings.get("NM_MICROPHONE_NAME", "")
 
+        try:
+            SpeechRecognition.VOSK_SAMPLE_RATE = int(self.settings.get("VOSK_SAMPLE_RATE", SpeechRecognition.VOSK_SAMPLE_RATE))
+            SpeechRecognition.CHUNK_SIZE = int(self.settings.get("CHUNK_SIZE", SpeechRecognition.CHUNK_SIZE))
+            SpeechRecognition.VAD_THRESHOLD = float(self.settings.get("VAD_THRESHOLD", SpeechRecognition.VAD_THRESHOLD))
+            SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC = float(self.settings.get("VAD_SILENCE_TIMEOUT_SEC", SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC))
+            SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC = float(self.settings.get("VAD_PRE_BUFFER_DURATION_SEC", SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC))
+        except Exception:
+            pass
+
         logger.info(f"Тип распознавателя установлен на: {engine}")
         if self.selected_microphone:
             logger.info(f"Загружен микрофон из настроек: {self.selected_microphone} (ID: {self.device_id})")
@@ -161,15 +173,33 @@ class SpeechController:
             if self.settings and self.settings.get("MIC_ACTIVE", False):
                 self._start_maybe_install()
 
-        elif key == "SILENCE_THRESHOLD":
+        elif key in ("SILENCE_THRESHOLD", "VAD_THRESHOLD"):
             try:
                 SpeechRecognition.VAD_THRESHOLD = float(value)
             except Exception:
                 pass
 
-        elif key == "SILENCE_DURATION":
+        elif key in ("SILENCE_DURATION", "VAD_SILENCE_TIMEOUT_SEC"):
             try:
                 SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC = float(value)
+            except Exception:
+                pass
+
+        elif key == "VOSK_SAMPLE_RATE":
+            try:
+                SpeechRecognition.VOSK_SAMPLE_RATE = int(value)
+            except Exception:
+                pass
+
+        elif key == "CHUNK_SIZE":
+            try:
+                SpeechRecognition.CHUNK_SIZE = int(value)
+            except Exception:
+                pass
+
+        elif key == "VAD_PRE_BUFFER_DURATION_SEC":
+            try:
+                SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC = float(value)
             except Exception:
                 pass
 
@@ -306,7 +336,14 @@ class SpeechController:
         if not bool(self.settings.get("MIC_ACTIVE")):
             return
 
-        # ---- NEW: send recognized text to Unity ----
+        # Защита от дублей: один и тот же текст в течение 2 секунд игнорируем
+        now = time.time()
+        if text == self._last_text and (now - self._last_text_time) < 2.0:
+            logger.debug(f"ASR дедупликация: игнорируем повтор '{text}'")
+            return
+        self._last_text = text
+        self._last_text_time = now
+
         try:
             con = self.events_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.3)
             connected = bool(con and con[0])

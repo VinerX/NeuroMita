@@ -147,6 +147,7 @@ class SpeechRecognition:
     FAILED_AUDIO_DIR = "FailedAudios"
 
     _text_lock = Lock()
+    _start_lock = Lock()
     _text_buffer = deque(maxlen=15)
     _current_text = ""
     _is_running = False
@@ -528,13 +529,14 @@ class SpeechRecognition:
 
     @staticmethod
     def speech_recognition_start(device_id: int, loop):
-        if SpeechRecognition._is_running:
-            SpeechRecognition.speech_recognition_stop()
-            time.sleep(0.2)
+        with SpeechRecognition._start_lock:
+            if SpeechRecognition._is_running:
+                SpeechRecognition.speech_recognition_stop()
+                time.sleep(0.2)
 
-        SpeechRecognition._is_running = True
-        SpeechRecognition.active = True
-        SpeechRecognition.microphone_index = device_id or 0
+            SpeechRecognition._is_running = True
+            SpeechRecognition.active = True
+            SpeechRecognition.microphone_index = device_id or 0
 
         engine_id = SpeechRecognition._recognizer_type
         use_remote = SpeechRecognition._remote_asr_mode and engine_id != "google"
