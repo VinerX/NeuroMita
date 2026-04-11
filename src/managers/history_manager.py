@@ -880,6 +880,10 @@ class HistoryManager:
             if not isinstance(msg, dict):
                 continue
 
+            if not msg.get("role"):
+                logger.warning(f"[HistoryManager] save_history: пропущено сообщение без поля 'role': {str(msg)[:120]}")
+                continue
+
             row_id = self._insert_history_row(msg=msg, is_active=1)
             if row_id:
                 # эмбеддим текст из content (и если это list — берём только text части)
@@ -906,6 +910,28 @@ class HistoryManager:
             self._get_embed_executor().submit(_bulk_embed_job)
         except Exception as e:
             logger.warning(f"[HistoryManager] Failed to schedule embeddings job (ignored): {e}", exc_info=True)
+
+    def save_history_separate(self) -> str:
+        """Экспортирует текущую активную историю в JSON-файл (бекап/снапшот).
+        Сохраняет в Histories/{storage_key}/Saved/chat_history_{timestamp}.json.
+        Возвращает путь к файлу или '' при ошибке."""
+        import shutil
+        histories_dir = os.environ.get("NEUROMITA_HISTORIES_DIR", os.path.join(os.getcwd(), "Histories"))
+        save_dir = os.path.join(histories_dir, self.storage_key, "Saved")
+        os.makedirs(save_dir, exist_ok=True)
+
+        timestamp = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M.%S")
+        target_path = os.path.join(save_dir, f"chat_history_{timestamp}.json")
+
+        try:
+            history_data = self.load_history()
+            with open(target_path, "w", encoding="utf-8") as f:
+                json.dump(history_data, f, ensure_ascii=False, indent=2)
+            logger.info(f"[HistoryManager] Snapshot сохранён: {target_path}")
+            return target_path
+        except Exception as e:
+            logger.error(f"[HistoryManager] Не удалось сохранить snapshot: {e}", exc_info=True)
+            return ""
 
     def add_message(self, message: dict):
         row_id = self._insert_history_row(msg=message, is_active=1)

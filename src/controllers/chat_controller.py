@@ -1064,8 +1064,15 @@ class ChatController:
         if character is None:
             logger.warning(f"[ChatController] SAVE_SNAPSHOT: персонаж '{character_id}' не найден")
             return
-        character.history_manager.save_history_separate()
-        logger.info(f"[ChatController] Snapshot сохранён для {character_id}")
+        saved_path = character.history_manager.save_history_separate()
+        if saved_path:
+            logger.info(f"[ChatController] Snapshot сохранён: {saved_path}")
+            self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
+                "title": "Snapshot",
+                "message": f"Snapshot сохранён:\n{saved_path}",
+            })
+        else:
+            logger.warning(f"[ChatController] SAVE_SNAPSHOT: не удалось сохранить для {character_id}")
 
     def _on_load_snapshot(self, event: Event):
         import json
@@ -1081,6 +1088,9 @@ class ChatController:
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 snapshot_data = json.load(f)
+            # Поддержка старого формата: список сообщений без обёртки
+            if isinstance(snapshot_data, list):
+                snapshot_data = {"messages": snapshot_data, "variables": {}}
             character.history_manager.save_history(snapshot_data)
             self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
             logger.info(f"[ChatController] Snapshot загружен из {file_path}")

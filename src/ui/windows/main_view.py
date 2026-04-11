@@ -975,9 +975,10 @@ class ChatGUI(QMainWindow):
         import os
         character_id = self._get_current_character_id_for_debug()
 
-        start_dir = "Histories"
+        histories_root = os.environ.get("NEUROMITA_HISTORIES_DIR", os.path.join(os.getcwd(), "Histories"))
+        start_dir = histories_root
         if character_id:
-            candidate = os.path.join("Histories", character_id, "Saved")
+            candidate = os.path.join(histories_root, character_id, "Saved")
             if os.path.isdir(candidate):
                 start_dir = candidate
         if not os.path.isdir(start_dir):
