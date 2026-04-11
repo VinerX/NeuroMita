@@ -2,6 +2,7 @@
 __pycache__
 /.idea
 build_VinerX.py
+build.env
 /Lib
 /Histories
 /lc0_engine_files

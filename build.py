@@ -21,34 +21,43 @@ def load_env(env_path: Path) -> dict:
     return env
 
 
+def resolve_path(raw: str, base: Path) -> Path:
+    """Абсолютный путь берём как есть, относительный — от base."""
+    p = Path(raw)
+    return p if p.is_absolute() else base / p
+
+
 PROJECT_DIR = Path(__file__).parent
 env = load_env(PROJECT_DIR / "build.env")
 
 OUTPUT_DIR = Path(env.get("BUILD_OUTPUT_DIR", str(PROJECT_DIR / "build_output")))
 BUILD_MODE = env.get("BUILD_MODE", "full").lower()
 
-# Папки: берём из BUILD_COPY_DIRS или дефолт
+# Фильтровать dot-папки (.cache, .git и т.п.) при копировании папок
+EXCLUDE_DOT_DIRS = env.get("BUILD_EXCLUDE_DOT_DIRS", "1") == "1"
+
+# Папки: поддержка абсолютных путей
 _copy_dirs_raw = env.get("BUILD_COPY_DIRS", "Prompts")
 DIRS_TO_COPY: List[Tuple[Path, Path]] = [
-    (PROJECT_DIR / d.strip(), OUTPUT_DIR / Path(d.strip()).name)
+    (resolve_path(d.strip(), PROJECT_DIR), OUTPUT_DIR / Path(d.strip()).name)
     for d in _copy_dirs_raw.split(",") if d.strip()
 ]
 
-# Файлы: берём из BUILD_COPY_FILES или дефолт
-_copy_files_raw = env.get("BUILD_COPY_FILES", "requirements.txt,extra/init.py,extra/Icon.png")
+# Файлы: поддержка абсолютных путей
+_copy_files_raw = env.get("BUILD_COPY_FILES", "extra/init.py,extra/Icon.png")
 FILES_TO_COPY: List[Tuple[Path, Path]] = [
-    (PROJECT_DIR / f.strip(), OUTPUT_DIR / Path(f.strip()).name)
+    (resolve_path(f.strip(), PROJECT_DIR), OUTPUT_DIR / Path(f.strip()).name)
     for f in _copy_files_raw.split(",") if f.strip()
 ]
 
-# Скрипты запуска/установки для копирования в корень билда (run.bat, install.bat и т.п.)
+# Скрипты запуска/установки для копирования в корень билда
 _root_scripts_raw = env.get("BUILD_ROOT_SCRIPTS", "")
 ROOT_SCRIPTS: List[Tuple[Path, Path]] = [
-    (PROJECT_DIR / s.strip(), OUTPUT_DIR / Path(s.strip()).name)
+    (resolve_path(s.strip(), PROJECT_DIR), OUTPUT_DIR / Path(s.strip()).name)
     for s in _root_scripts_raw.split(",") if s.strip()
 ]
 
-# Папки, которые исключаются из pyz
+# Части пути, исключаемые из pyz
 EXCLUDED_PARTS = {
     "include", "Prompts", "PromptsCatalogue", "ReadmeFiles",
     "MitaAiC#", "__pycache__", "Testing",
@@ -57,7 +66,6 @@ EXCLUDED_PARTS = {
 
 def bin_filter(path: pathlib.Path) -> bool:
     for part in path.parts:
-        # Исключаем dot-папки (.claude, .pytest_cache, .git и т.п.)
         if part.startswith("."):
             print(f"Игнорирую (dot): {path}")
             return False
@@ -71,7 +79,28 @@ def bin_filter(path: pathlib.Path) -> bool:
     return True
 
 
+EXCLUDE_CHECKPOINTS = env.get("BUILD_EXCLUDE_CHECKPOINTS", "1") == "1"
+
+
+def make_copy_ignore():
+    """Возвращает ignore-функцию для shutil.copytree."""
+    if not EXCLUDE_DOT_DIRS and not EXCLUDE_CHECKPOINTS:
+        return None
+    def ignore(directory, contents):
+        ignored = []
+        for name in contents:
+            if EXCLUDE_DOT_DIRS and name.startswith("."):
+                ignored.append(name)
+            elif EXCLUDE_CHECKPOINTS and name == "checkpoints":
+                ignored.append(name)
+        if ignored:
+            print(f"  Пропускаю в {directory}: {ignored}")
+        return ignored
+    return ignore
+
+
 def copy_entries(entries: List[Tuple[Path, Path]]) -> None:
+    ignore_fn = make_copy_ignore()
     for src, dst in entries:
         if src.is_file():
             print(f"Копирую файл {src} -> {dst}")
@@ -79,14 +108,16 @@ def copy_entries(entries: List[Tuple[Path, Path]]) -> None:
             shutil.copy2(src, dst)
         elif src.is_dir():
             print(f"Копирую папку {src} -> {dst}")
-            shutil.copytree(src, dst, dirs_exist_ok=True)
+            shutil.copytree(src, dst, dirs_exist_ok=True, ignore=ignore_fn)
         else:
             print(f"Предупреждение: {src} не существует, пропускаю")
 
 
 if __name__ == "__main__":
-    print(f"Режим сборки : {BUILD_MODE}")
-    print(f"Выходная папка: {OUTPUT_DIR}")
+    print(f"Режим сборки        : {BUILD_MODE}")
+    print(f"Выходная папка      : {OUTPUT_DIR}")
+    print(f"Фильтр dot-папок    : {'вкл' if EXCLUDE_DOT_DIRS else 'выкл'}")
+    print(f"Фильтр checkpoints  : {'вкл' if EXCLUDE_CHECKPOINTS else 'выкл'}")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -107,7 +138,7 @@ if __name__ == "__main__":
     shutil.move(str(pyz_temp), str(pyz_dest))
     print(f"Готово: {pyz_dest}")
 
-    # requirements.txt копируется всегда (нужен для обновления зависимостей)
+    # requirements.txt — всегда
     req = PROJECT_DIR / "requirements.txt"
     if req.exists():
         print(f"\nКопирую requirements.txt -> {OUTPUT_DIR / 'requirements.txt'}")
@@ -120,9 +151,19 @@ if __name__ == "__main__":
     else:
         print("\nБыстрый режим — только .pyz + requirements.txt.")
 
-    # Скрипты запуска/установки — всегда, если заданы
     if ROOT_SCRIPTS:
         print("\nКопирую скрипты запуска...")
         copy_entries(ROOT_SCRIPTS)
+
+    if env.get("BUILD_ARCHIVE", "0") == "1":
+        archive_path = env.get("BUILD_ARCHIVE_PATH")
+        if not archive_path:
+            print("\nПредупреждение: BUILD_ARCHIVE=1, но BUILD_ARCHIVE_PATH не задан — архив не создан.")
+        else:
+            archive_base = Path(archive_path)
+            archive_base.parent.mkdir(parents=True, exist_ok=True)
+            print(f"\nУпаковываю {OUTPUT_DIR} -> {archive_base}.zip ...")
+            shutil.make_archive(str(archive_base), "zip", root_dir=OUTPUT_DIR.parent, base_dir=OUTPUT_DIR.name)
+            print(f"Архив готов: {archive_base}.zip")
 
     print(f"\nСборка завершена! Результат: {OUTPUT_DIR}")
