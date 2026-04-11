@@ -1125,10 +1125,26 @@ class ChatGUI(QMainWindow):
         camera_capture_active = self.event_bus.emit_and_wait(Events.Capture.GET_CAMERA_CAPTURE_STATUS, timeout=0.5)
         rag_enabled = SettingsManager.get("RAG_ENABLED", False)
 
+        use_voice = bool(SettingsManager.get("USE_VOICEOVER", False))
+        method = str(SettingsManager.get("VOICEOVER_METHOD", "TG") or "TG")
+
         if hasattr(self, 'game_status_checkbox'):
             self.game_status_checkbox.setChecked(bool(game_connected and game_connected[0]))
         if hasattr(self, 'silero_status_checkbox'):
-            self.silero_status_checkbox.setChecked(bool(silero_connected and silero_connected[0]))
+            if method == "Local":
+                self.silero_status_checkbox.setText(_('Озвучка (Лок.)', 'Voice (Local)'))
+                if use_voice:
+                    model_id = str(SettingsManager.get("NM_CURRENT_VOICEOVER", "") or "")
+                    is_init = self.event_bus.emit_and_wait(
+                        Events.Audio.CHECK_MODEL_INITIALIZED, {'model_id': model_id}, timeout=0.5
+                    ) if model_id else None
+                    voice_active = bool(is_init and is_init[0])
+                else:
+                    voice_active = False
+            else:
+                self.silero_status_checkbox.setText(_('Озвучка (ТГ)', 'Voice (TG)'))
+                voice_active = bool(use_voice and silero_connected and silero_connected[0])
+            self.silero_status_checkbox.setChecked(voice_active)
         if hasattr(self, 'rag_status_checkbox'):
             self.rag_status_checkbox.setChecked(bool(rag_enabled))
         if hasattr(self, 'mic_status_checkbox'):

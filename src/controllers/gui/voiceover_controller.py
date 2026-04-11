@@ -110,6 +110,7 @@ class VoiceoverGuiController(BaseController):
                 lang = str(value or self._get_setting("VOICE_LANGUAGE", "ru") or "ru")
                 self.event_bus.emit_and_wait(Events.Audio.CHANGE_VOICE_LANGUAGE, {"language": lang}, timeout=1.0)
             self._sync_everything(allow_autoload=False)
+            self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
         self._ui(apply)
 
