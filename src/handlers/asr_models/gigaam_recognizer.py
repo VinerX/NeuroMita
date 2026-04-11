@@ -355,6 +355,18 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
                 download_root=self.gigaam_model_path,
                 use_flash=False,
             )
+
+            from handlers.asr_models.gigaam.model import GigaAMASR
+            if not isinstance(self._model, GigaAMASR):
+                self.logger.error(
+                    f"Загружена модель {type(self._model).__name__}, "
+                    f"а нужна GigaAMASR (модель '{self.gigaam_model}' — SSL/Emo, не ASR). "
+                    "Выберите модель типа gigaam_v2_ctc или gigaam_v2_rnnt."
+                )
+                self._model = None
+                self._is_initialized = False
+                return False
+
             self._is_initialized = True
             self.logger.success("GigaAM (PyTorch) успешно инициализирован")
             return True
