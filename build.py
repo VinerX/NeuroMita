@@ -41,13 +41,29 @@ FILES_TO_COPY: List[Tuple[Path, Path]] = [
     for f in _copy_files_raw.split(",") if f.strip()
 ]
 
+# Скрипты запуска/установки для копирования в корень билда (run.bat, install.bat и т.п.)
+_root_scripts_raw = env.get("BUILD_ROOT_SCRIPTS", "")
+ROOT_SCRIPTS: List[Tuple[Path, Path]] = [
+    (PROJECT_DIR / s.strip(), OUTPUT_DIR / Path(s.strip()).name)
+    for s in _root_scripts_raw.split(",") if s.strip()
+]
+
+# Папки, которые исключаются из pyz
+EXCLUDED_PARTS = {
+    "include", "Prompts", "PromptsCatalogue", "ReadmeFiles",
+    "MitaAiC#", "__pycache__", "Testing",
+}
+
 
 def bin_filter(path: pathlib.Path) -> bool:
-    excluded_parts = {"include", "Prompts", "PromptsCatalogue",
-                      "ReadmeFiles", "MitaAiC#", "__pycache__"}
-    if any(p in path.parts for p in excluded_parts):
-        print(f"Игнорирую: {path}")
-        return False
+    for part in path.parts:
+        # Исключаем dot-папки (.claude, .pytest_cache, .git и т.п.)
+        if part.startswith("."):
+            print(f"Игнорирую (dot): {path}")
+            return False
+        if part in EXCLUDED_PARTS:
+            print(f"Игнорирую: {path}")
+            return False
     if path.suffix in (".log", ".tmp", ".test", ".exe"):
         print(f"Игнорирую: {path}")
         return False
@@ -91,11 +107,22 @@ if __name__ == "__main__":
     shutil.move(str(pyz_temp), str(pyz_dest))
     print(f"Готово: {pyz_dest}")
 
+    # requirements.txt копируется всегда (нужен для обновления зависимостей)
+    req = PROJECT_DIR / "requirements.txt"
+    if req.exists():
+        print(f"\nКопирую requirements.txt -> {OUTPUT_DIR / 'requirements.txt'}")
+        shutil.copy2(req, OUTPUT_DIR / "requirements.txt")
+
     if BUILD_MODE == "full":
         print("\nПолный режим — копирую дополнительные файлы...")
         copy_entries(DIRS_TO_COPY)
         copy_entries(FILES_TO_COPY)
     else:
-        print("\nБыстрый режим — только .pyz.")
+        print("\nБыстрый режим — только .pyz + requirements.txt.")
+
+    # Скрипты запуска/установки — всегда, если заданы
+    if ROOT_SCRIPTS:
+        print("\nКопирую скрипты запуска...")
+        copy_entries(ROOT_SCRIPTS)
 
     print(f"\nСборка завершена! Результат: {OUTPUT_DIR}")
