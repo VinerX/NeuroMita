@@ -244,7 +244,13 @@ class ChatWidget(QFrame):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._mask_timer.start()
+        # When expanding (width grows), apply mask immediately to avoid visual clipping during animation.
+        # When shrinking, debounce is fine since the mask starts larger than the widget.
+        if event.size().width() > event.oldSize().width():
+            self._mask_timer.stop()
+            self._apply_mask()
+        else:
+            self._mask_timer.start()
         self._reposition_scroll_button()
 
     def _apply_mask(self):
