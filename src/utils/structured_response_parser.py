@@ -233,6 +233,29 @@ def _schema_aware_coerce(data: dict) -> dict:
     if not data.get("segments") and isinstance(data.get("text"), str):
         data["segments"] = [{"text": data["text"]}]
 
+    # Hoist fields the LLM accidentally placed inside a segment to top level.
+    # Happens when the model confuses segment-level and response-level fields.
+    if isinstance(data.get("segments"), list) and data["segments"]:
+        seg0 = data["segments"][0]
+        if isinstance(seg0, dict):
+            # custom_fields: may be required at top level
+            if not data.get("custom_fields") and "custom_fields" in seg0:
+                data["custom_fields"] = seg0.pop("custom_fields")
+
+            # numeric stat changes — hoist if top-level is missing/zero but segment has values
+            for stat_field in ("attitude_change", "boredom_change", "stress_change"):
+                if stat_field not in data and stat_field in seg0:
+                    try:
+                        data[stat_field] = float(seg0.pop(stat_field))
+                    except (TypeError, ValueError):
+                        seg0.pop(stat_field, None)
+
+            # memory lists — hoist if top-level is empty
+            for mem_field in ("memory_add", "memory_update", "memory_delete",
+                              "reminder_add", "reminder_delete"):
+                if not data.get(mem_field) and seg0.get(mem_field):
+                    data[mem_field] = seg0.pop(mem_field)
+
     return data
 
 
