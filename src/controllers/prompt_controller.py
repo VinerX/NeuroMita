@@ -143,6 +143,9 @@ class PromptController:
         so_prompt = ""
         try:
             if hasattr(character, "dsl_interpreter") and character.dsl_interpreter:
+                # Expose schema_reasoning flag so the DSL script can conditionally
+                # include / exclude the reasoning field description.
+                character.set_variable("SCHEMA_REASONING_ENABLED", caps.get("schema_reasoning", True))
                 content, _ = character.dsl_interpreter.process_file(_STRUCTURED_OUTPUT_SCRIPT_REL)
                 so_prompt = content.strip()
             else:

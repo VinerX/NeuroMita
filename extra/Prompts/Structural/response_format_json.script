@@ -4,23 +4,42 @@
 // Variables available from app_vars (set by settings_controller):
 //   GRAPH_EXTRACTION_ENABLED (bool) — whether knowledge-graph entity extraction is active
 //
+// Variables set by prompt_controller before this script runs:
+//   SCHEMA_REASONING_ENABLED (bool) — whether the reasoning field is included in the schema
+//
 // Python caller is responsible for replacing the {TOOLS_DESCRIPTION} placeholder
 // in the returned string with the actual tools prompt text.
 
-SET LOCAL base = """Response Format (Structured JSON):
+SET LOCAL p_header = """Response Format (Structured JSON):
 
 You MUST respond with a single JSON object. No extra text before or after the JSON.
 IMPORTANT: Never use double quotes " inside string values — use «» or '' instead (e.g. «Warcraft», not "Warcraft"). Unescaped quotes break JSON parsing.
 
-The JSON has three parts (in this order):
+"""
+
+IF SCHEMA_REASONING_ENABLED == True THEN
+    SET LOCAL p_toc = """The JSON has three parts (in this order):
 1. reasoning — think before you write (never shown to player)
 2. segments — your actual reply with positional commands
 3. Global fields — attitude/memory/etc., applied once per response
-
+"""
+    SET LOCAL p_schema_open = """
 Schema:
 {
   "reasoning": "your chain-of-thought here (optional, never shown to player)",
-  "segments": [
+"""
+ELSE
+    SET LOCAL p_toc = """The JSON has two parts (in this order):
+1. segments — your actual reply with positional commands
+2. Global fields — attitude/memory/etc., applied once per response
+"""
+    SET LOCAL p_schema_open = """
+Schema:
+{
+"""
+ENDIF
+
+SET LOCAL p_rest = """  "segments": [
     {
       "text": "Your text here (REQUIRED)",
       "emotions": ["emotion_id"],
@@ -97,6 +116,8 @@ tool_call: Use this when you need to call an external tool (internet search, cal
 Tag [SYSTEM INFO] means system information, not player speech.
 Tag [SYSTEM] means a system event or notification, not player speech.
 Tag [SPEAKER] means you are in a multi-speaker dialogue."""
+
+SET LOCAL base = p_header + p_toc + p_schema_open + p_rest
 
 SET LOCAL result = base
 
