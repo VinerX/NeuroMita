@@ -161,7 +161,8 @@ def check_for_updates(base_dir: str | None = None, logger=None) -> None:
         )
         # Exit immediately — continuing would read from the overwritten .pyz at stale offsets,
         # causing zipimport.ZipImportError: bad local file header.
-        sys.exit(0)
+        # Exit code 42 signals launch.py to restart after update.
+        sys.exit(42)
     except Exception as e:
         log(f"Update failed: {e}", "error")
         temp_zip.unlink(missing_ok=True)

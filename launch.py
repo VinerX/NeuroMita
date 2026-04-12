@@ -82,8 +82,19 @@ if __name__ == "__main__":
     else:
         print("\nШаг 2: requirements.txt не изменился — пропускаю.")
 
-    # 3. Запуск игры
-    print("=" * 50)
-    print("Шаг 3: запуск игры")
-    print("=" * 50)
-    run([str(GAME_PYTHON), "-m", "uv", "run", "NeuroMita.pyz"], cwd=OUTPUT_DIR)
+    # 3. Запуск игры (с перезапуском после автообновления)
+    # Exit code 42 означает что updater применил обновление и нужен рестарт.
+    game_cmd = [str(GAME_PYTHON), "-m", "uv", "run", "NeuroMita.pyz"]
+    while True:
+        print("=" * 50)
+        print("Шаг 3: запуск игры")
+        print("=" * 50)
+        print(f"\n>>> {' '.join(str(c) for c in game_cmd)}")
+        result = subprocess.run(game_cmd, cwd=OUTPUT_DIR)
+        if result.returncode == 42:
+            print("\nОбновление применено, перезапускаю...")
+        elif result.returncode != 0:
+            print(f"Ошибка (код {result.returncode}), прерываю.")
+            sys.exit(result.returncode)
+        else:
+            break
