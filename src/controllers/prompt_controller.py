@@ -74,7 +74,12 @@ class PromptController:
                 template_name = "react_template.txt"
                 candidate = os.path.join(character.base_data_path, template_name)
                 if not os.path.exists(candidate):
-                    template_name = character.main_template_path_relative
+                    common_react = "../../Common/react_template.txt"
+                    common_candidate = os.path.normpath(os.path.join(character.base_data_path, common_react))
+                    if os.path.exists(common_candidate):
+                        template_name = common_react
+                    else:
+                        template_name = character.main_template_path_relative
                 chosen_template = template_name
             else:
                 chosen_template = character.main_template_path_relative
