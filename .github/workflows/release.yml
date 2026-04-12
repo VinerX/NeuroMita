@@ -68,6 +68,8 @@ jobs:
       - name: Build
         shell: bash
         run: python build.py
+        env:
+          PYTHONUTF8: '1'
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
