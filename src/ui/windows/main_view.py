@@ -2,6 +2,7 @@ import io
 import base64
 import re
 import time
+import uuid
 from pathlib import Path
 import os
 from PyQt6.QtCore import QSize
@@ -703,8 +704,12 @@ class ChatGUI(QMainWindow):
         if not user_input and not system_input and not all_image_data:
             return
 
+        # Generate req_id now so we can pre-compute the user message_id for the widget
+        req_id = uuid.uuid4().hex
+        user_message_id = f"in:{req_id}"
+
         if user_input:
-            message_renderer.insert_message(self, "user", user_input)
+            message_renderer.insert_message(self, "user", user_input, message_id=user_message_id)
             self.user_entry.clear()
 
         if all_image_data:
@@ -720,7 +725,8 @@ class ChatGUI(QMainWindow):
 
                 image_content_for_display.insert(0, {"type": "text", "content": label + "\n"})
 
-            message_renderer.insert_message(self, "user", image_content_for_display)
+            message_renderer.insert_message(self, "user", image_content_for_display,
+                                            message_id=user_message_id)
 
         self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
             "user_input": user_input,
@@ -728,6 +734,7 @@ class ChatGUI(QMainWindow):
             "image_data": all_image_data,
             "character_id": character_id,
             "sender": "Player",
+            "req_id": req_id,
         })
 
         if staged_image_data:
@@ -1184,16 +1191,19 @@ class ChatGUI(QMainWindow):
 
     # ===== Совместимость: рендер сообщений (обёртки к message_renderer) =====
     def _on_update_chat_signal(self, role, content, insert_at_start, message_time):
-        """Slot for update_chat_signal — picks up pending structured_data if available."""
-        # Only assistant messages consume _pending_structured_data.
+        """Slot for update_chat_signal — picks up pending structured_data and message_id if available."""
+        # Only assistant messages consume _pending_structured_data / _pending_message_id.
         # Think/system messages must not steal it from the following assistant message.
         structured_data = None
+        message_id = None
         if role == "assistant":
             structured_data = getattr(self, '_pending_structured_data', None)
             self._pending_structured_data = None
+            message_id = getattr(self, '_pending_message_id', None) or None
+            self._pending_message_id = None
         from ui.chat import message_renderer
         message_renderer.insert_message(self, role, content, insert_at_start, message_time,
-                                        structured_data=structured_data)
+                                        structured_data=structured_data, message_id=message_id)
 
     def _insert_message_slot(self, role, content, insert_at_start, message_time):
         return self.insert_message(role, content, insert_at_start, message_time)

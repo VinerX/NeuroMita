@@ -91,9 +91,12 @@ class ChatController(BaseController):
             if len(distinct_targets) <= 1:
                 speaker_label = f"{speaker_name} → {target}"
 
-        # Attach structured_data to the view for the next insert_message call
+        # Attach structured_data and message_id to the view for the next insert_message call
         if self.view and structured_data:
             self.view._pending_structured_data = structured_data
+        message_id = str(data.get("message_id") or "")
+        if self.view:
+            self.view._pending_message_id = message_id
         self.update_chat(role, response, is_initial, emotion, speaker_label=speaker_label)
 
     def _on_prepare_stream_ui(self, event: Event):

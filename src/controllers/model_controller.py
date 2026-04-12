@@ -1016,10 +1016,11 @@ class ModelController:
                     final_text
                 )
 
+            assistant_message_id = ""
             if policy.write_to_history:
                 origin_message_id = str(data.get("origin_message_id") or "") or None
 
-                self.event_writer.write_turn(
+                assistant_message_id = self.event_writer.write_turn(
                     responder_character_id=char_id,
                     sender=sender,
                     participants=participants,
@@ -1063,6 +1064,7 @@ class ModelController:
                 "target": target,
                 "targets": targets,
                 "think": think_text or None,
+                "message_id": assistant_message_id,
             }
 
         except Exception as e:
@@ -1320,11 +1322,12 @@ class ModelController:
                 final_text,
             )
 
+        assistant_message_id = ""
         if policy.write_to_history:
             origin_message_id = str(data.get("origin_message_id") or "") or None
             history_dict = {k: v for k, v in result_dict.items()
                             if not k.startswith("_") or k == "_raw_json"}
-            self.event_writer.write_turn(
+            assistant_message_id = self.event_writer.write_turn(
                 responder_character_id=char_id,
                 sender=sender,
                 participants=participants,
@@ -1387,6 +1390,7 @@ class ModelController:
             "targets": targets,
             "think": think_text or None,
             "structured": result_dict,
+            "message_id": assistant_message_id,
         }
 
     # ---------------------------------------------------------------------
@@ -1450,9 +1454,10 @@ class ModelController:
                 voice_profile = None
 
         # Write first turn to history
+        first_assistant_message_id = ""
         if policy.write_to_history:
             origin_message_id = str(data.get("origin_message_id") or "") or None
-            self.event_writer.write_turn(
+            first_assistant_message_id = self.event_writer.write_turn(
                 responder_character_id=char_id,
                 sender=sender,
                 participants=participants,
@@ -1481,6 +1486,7 @@ class ModelController:
             "target": target,
             "targets": targets,
             "structured_data": result_dict,
+            "message_id": first_assistant_message_id,
         }, sync=True)
 
         # Emit tool executing indicator for UI

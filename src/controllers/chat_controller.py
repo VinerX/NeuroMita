@@ -417,6 +417,7 @@ class ChatController:
             target = "Player"
             think_text = None
             structured_data = None
+            assistant_message_id = ""
             if isinstance(payload, dict):
                 response_text = payload.get("text")
                 voice_profile = payload.get("voice_profile")
@@ -425,6 +426,7 @@ class ChatController:
                 targets: list[str] = payload.get("targets") or []
                 think_text = payload.get("think")
                 structured_data = payload.get("structured")  # segments + global fields
+                assistant_message_id = str(payload.get("message_id") or "")
             else:
                 response_text = payload
                 voice_profile = None
@@ -537,6 +539,7 @@ class ChatController:
                     "target": target,
                     "targets": targets,
                     "structured_data": structured_data,
+                    "message_id": assistant_message_id,
                 }, sync=True)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)

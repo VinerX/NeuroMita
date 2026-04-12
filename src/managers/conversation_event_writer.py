@@ -217,3 +217,4 @@ class ConversationEventWriter:
         if user_event is not None:
             self._fanout_event(user_event, pts)
         self._fanout_event(assistant_event, pts)
+        return str(assistant_event.get("message_id") or "")
