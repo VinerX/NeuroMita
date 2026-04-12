@@ -119,12 +119,12 @@ logger.info(f"Checkpoints: {os.environ['NEUROMITA_CHECKPOINTS_DIR']}")
 logger.info(f"Python: {os.environ['NEUROMITA_PYTHON']}")
 logger.info(libs_dir)
 
-# Проверка обновлений (до тяжёлых импортов)
+# Check for updates (before heavy imports)
 try:
     from updater import check_for_updates as _check_for_updates
     _check_for_updates(base_dir=base_dir, logger=logger)
 except Exception as _upd_err:
-    logger.warning(f"Проверка обновлений не выполнена: {_upd_err}")
+    logger.warning(f"Update check failed: {_upd_err}")
 
 if libs_dir not in sys.path:
     sys.path.insert(0, libs_dir)

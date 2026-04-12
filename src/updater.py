@@ -1,10 +1,10 @@
 """
-Проверка и применение обновлений с GitHub Releases.
+Auto-update from GitHub Releases.
 
-Управляется через features.env:
-  AUTO_UPDATE=0    — только уведомление о новой версии (по умолчанию)
-  AUTO_UPDATE=1    — автоматическое скачивание и распаковка
-  UPDATE_REPO=Atm4x/NeuroMita  — репозиторий с релизами
+Controlled via features.env:
+  AUTO_UPDATE=0    — notify only (default)
+  AUTO_UPDATE=1    — download and apply automatically
+  UPDATE_REPO=Atm4x/NeuroMita  — release repository
 """
 
 import json
@@ -42,7 +42,7 @@ def _fetch_latest_release(repo: str) -> dict | None:
 
 
 def _parse_version(tag: str) -> tuple:
-    """Преобразует строку вида 'v2026.04.12.1' → (2026, 4, 12, 1)."""
+    """Parses 'v2026.04.12.1' → (2026, 4, 12, 1)."""
     clean = tag.lstrip("v")
     parts = []
     for p in clean.split("."):
@@ -66,12 +66,11 @@ def _download(url: str, dest: Path) -> None:
 
 def _extract_zip(zip_path: Path, target: Path) -> None:
     """
-    Распаковывает zip в target.
-    Если внутри один корневой каталог (ci_build/) — прозрачно убирает его.
+    Extracts zip to target.
+    If there is a single root folder inside (e.g. ci_build/) — strips it transparently.
     """
     with zipfile.ZipFile(zip_path, "r") as z:
         names = z.namelist()
-        # Определяем общий префикс (вложенную папку) если она есть
         first_parts = {n.split("/")[0] for n in names if n}
         if len(first_parts) == 1:
             prefix = first_parts.pop() + "/"
@@ -94,11 +93,11 @@ def _extract_zip(zip_path: Path, target: Path) -> None:
 
 def check_for_updates(base_dir: str | None = None, logger=None) -> None:
     """
-    Проверяет наличие обновлений. Вызывать при старте приложения.
+    Checks for updates. Call at application startup.
 
     Args:
-        base_dir: корневая папка игры (куда распаковывать обновление)
-        logger:   объект логгера с методами info/warning/success/notify
+        base_dir: game root directory (where to extract the update)
+        logger:   logger object with info/warning/success/notify methods
     """
     def log(msg: str, level: str = "info") -> None:
         if logger:
@@ -110,11 +109,11 @@ def check_for_updates(base_dir: str | None = None, logger=None) -> None:
     local_version = _get_current_version()
     auto_update = os.environ.get("AUTO_UPDATE", "0") == "1"
 
-    log(f"Проверка обновлений ({repo}) ...")
+    log(f"Checking for updates ({repo}) ...")
 
     release = _fetch_latest_release(repo)
     if release is None:
-        log("Не удалось подключиться к GitHub для проверки обновлений", "warning")
+        log("Could not reach GitHub to check for updates", "warning")
         return
 
     remote_tag = release.get("tag_name", "")
@@ -122,31 +121,30 @@ def check_for_updates(base_dir: str | None = None, logger=None) -> None:
         return
 
     if not _is_newer(remote_tag, local_version):
-        log(f"Версия актуальна: {local_version}")
+        log(f"Up to date: {local_version}")
         return
 
-    log(f"Доступна новая версия: {remote_tag} (текущая: {local_version})", "notify")
+    log(f"New version available: {remote_tag} (current: {local_version})", "notify")
 
     if not auto_update:
         log(
-            "Автообновление выключено (AUTO_UPDATE=0). "
-            "Включите AUTO_UPDATE=1 в features.env для автоматической установки."
+            "Auto-update is disabled (AUTO_UPDATE=0). "
+            "Set AUTO_UPDATE=1 in features.env to enable automatic installation."
         )
         return
 
-    # Ищем zip-файл среди assets релиза
     assets = release.get("assets", [])
     zip_asset = next((a for a in assets if a["name"].endswith(".zip")), None)
     if not zip_asset:
-        log("ZIP-архив в релизе не найден", "warning")
+        log("No ZIP archive found in the release assets", "warning")
         return
 
     download_url = zip_asset["browser_download_url"]
     asset_name = zip_asset["name"]
-    log(f"Скачиваю {asset_name} ...")
+    log(f"Downloading {asset_name} ...")
 
     if base_dir is None:
-        # Внутри .pyz: sys.argv[0] — путь к .pyz, его родитель — папка игры
+        # Inside .pyz: sys.argv[0] is the pyz path, its parent is the game folder
         base_dir = str(Path(sys.argv[0]).parent)
 
     base_path = Path(base_dir)
@@ -154,14 +152,13 @@ def check_for_updates(base_dir: str | None = None, logger=None) -> None:
 
     try:
         _download(download_url, temp_zip)
-        log(f"Скачано. Применяю обновление в {base_path} ...")
+        log(f"Download complete. Applying update to {base_path} ...")
         _extract_zip(temp_zip, base_path)
         temp_zip.unlink(missing_ok=True)
         log(
-            f"Обновление {remote_tag} успешно установлено. "
-            "Перезапустите программу.",
+            f"Update {remote_tag} installed successfully. Please restart the application.",
             "success",
         )
     except Exception as e:
-        log(f"Ошибка при обновлении: {e}", "error")
+        log(f"Update failed: {e}", "error")
         temp_zip.unlink(missing_ok=True)
