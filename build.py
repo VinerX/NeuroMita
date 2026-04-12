@@ -137,7 +137,7 @@ if __name__ == "__main__":
         source=str(PROJECT_DIR / "src"),
         target=str(pyz_temp),
         filter=bin_filter,
-        compressed=True,
+        compressed=False,
     )
     print(f"Архив собран: {pyz_temp}")
 
