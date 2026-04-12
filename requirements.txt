@@ -91,3 +91,4 @@ portalocker
 pywinpty
 soxr
 json-repair
+huggingface_hub

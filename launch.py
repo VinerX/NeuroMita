@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).parent
-HASH_FILE = PROJECT_DIR / ".req_hash"
 
 
 def load_env(env_path: Path) -> dict:
@@ -36,7 +35,15 @@ OUTPUT_DIR = Path(env.get("BUILD_OUTPUT_DIR", str(PROJECT_DIR / "build_output"))
 _default_python = str(OUTPUT_DIR / "libs" / "python" / "python.exe")
 GAME_PYTHON = Path(env.get("LAUNCH_PYTHON", _default_python))
 
+# GPU_VENDOR: none | nvidia | amd  (по умолчанию none)
+GPU_VENDOR = env.get("GPU_VENDOR", "none").strip().lower()
+_GPU_EXTRA_PKG = {
+    "nvidia": "onnxruntime",
+    "amd":    "onnxruntime-directml",
+}
+
 REQ_FILE = OUTPUT_DIR / "requirements.txt"
+HASH_FILE = OUTPUT_DIR / ".req_hash"
 
 
 def file_hash(path: Path) -> str:
@@ -76,8 +83,19 @@ if __name__ == "__main__":
         print("=" * 50)
         print("Шаг 2: requirements.txt изменился — обновляю зависимости")
         print("=" * 50)
-        run([str(GAME_PYTHON), "-m", "uv", "pip", "install",
-             "-r", str(REQ_FILE), "--no-cache-dir"], cwd=OUTPUT_DIR)
+        _install_scripts = {
+            "nvidia": "scripts/install_nvidia.cmd",
+            "amd":    "scripts/install_amd.cmd",
+        }
+        install_script = _install_scripts.get(GPU_VENDOR)
+        if install_script:
+            script_path = OUTPUT_DIR / install_script
+            print(f"GPU_VENDOR={GPU_VENDOR!r}, запускаю {script_path}")
+            run(["cmd", "/c", str(script_path)], cwd=OUTPUT_DIR)
+        else:
+            print("GPU_VENDOR=none, устанавливаю только requirements.txt")
+            run([str(GAME_PYTHON), "-m", "uv", "pip", "install",
+                 "-r", str(REQ_FILE), "--no-cache-dir"], cwd=OUTPUT_DIR)
         save_hash()
     else:
         print("\nШаг 2: requirements.txt не изменился — пропускаю.")
