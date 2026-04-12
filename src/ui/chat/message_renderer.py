@@ -244,8 +244,9 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         _pending_struct_panel = StructuredOutputPanel(
             structured_data, font_size, max_bw, start_expanded=start_expanded, mode=display_mode, parent=chat_parent
         )
+        _think_blocks = _get_think_blocks(gui)
         gui._think_block_counter += 1
-        _get_think_blocks(gui)[gui._think_block_counter - 1] = _pending_struct_panel
+        _think_blocks[gui._think_block_counter - 1] = _pending_struct_panel
 
     _ft_sample_id = _pop_sample_id_if_collecting() if role == "assistant" else None
 
@@ -320,6 +321,7 @@ def prepare_stream_slot(gui, role="assistant"):
         if not name and hasattr(gui, "_get_character_name"): name = gui._get_character_name()
 
         block = ThinkBlockWidget(name, "", is_streaming=True, font_size=font_size, max_bubble_width=max_bw, parent=chat_parent)
+        _get_think_blocks(gui)
         gui._think_block_counter += 1
         _get_think_blocks(gui)[gui._think_block_counter - 1] = block
         gui._current_streaming_think_block = block
@@ -376,6 +378,7 @@ def attach_structured_to_stream(gui, structured_data: dict):
     panel = StructuredOutputPanel(
         structured_data, font_size, max_bw, start_expanded=start_expanded, mode=display_mode, parent=chat_parent
     )
+    _get_think_blocks(gui)
     gui._think_block_counter += 1
     _get_think_blocks(gui)[gui._think_block_counter - 1] = panel
 
