@@ -1,5 +1,5 @@
-import zipapp
 import pathlib
+import zipfile
 import os
 import shutil
 from pathlib import Path
@@ -133,12 +133,16 @@ if __name__ == "__main__":
     pyz_dest = OUTPUT_DIR / pyz_filename
 
     print("\nСобираю .pyz архив...")
-    zipapp.create_archive(
-        source=str(PROJECT_DIR / "src"),
-        target=str(pyz_temp),
-        filter=bin_filter,
-        compressed=False,
-    )
+    src_dir = PROJECT_DIR / "src"
+    with open(pyz_temp, "wb") as fd:
+        with zipfile.ZipFile(fd, "w", compression=zipfile.ZIP_STORED, allowZip64=False) as zf:
+            for path in sorted(src_dir.rglob("*")):
+                if path.is_dir():
+                    continue
+                arcname = path.relative_to(src_dir)
+                if not bin_filter(arcname):
+                    continue
+                zf.write(path, arcname)
     print(f"Архив собран: {pyz_temp}")
 
     print(f"Перемещаю в {pyz_dest}...")
