@@ -1036,6 +1036,9 @@ class ModelController:
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
+            if hasattr(char, "flush_variables"):
+                char.flush_variables()
+
             created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
             self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
                 "character_id": char_id,
@@ -1338,6 +1341,9 @@ class ModelController:
             )
 
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
+
+        if hasattr(char, "flush_variables"):
+            char.flush_variables()
 
         # Build inline_graph_json from structured entities (if graph extraction enabled)
         inline_graph_json: Optional[str] = None
