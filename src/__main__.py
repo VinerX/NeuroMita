@@ -86,7 +86,12 @@ os.environ["UV_LINK_MODE"] = "copy"
 
 #region Переменные для путей
 current_file = os.path.abspath(__file__)
-base_dir = os.path.dirname(os.path.dirname(current_file))
+# When running from a .pyz archive, __file__ is the pyz itself (one level),
+# not src/__main__.py (two levels). Detect and handle both cases.
+if current_file.lower().endswith(".pyz"):
+    base_dir = os.path.dirname(current_file)
+else:
+    base_dir = os.path.dirname(os.path.dirname(current_file))
 
 os.environ["NEUROMITA_BASE_DIR"] = base_dir
 if not os.environ.get("NEUROMITA_LIB_DIR"):

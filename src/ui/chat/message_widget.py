@@ -18,7 +18,9 @@ from PyQt6.QtGui import (
 from main_logger import logger
 from utils import _
 
-AVATAR_DIR = os.path.join("assets", "avatars")
+def _get_avatar_dir() -> str:
+    base = os.environ.get("NEUROMITA_BASE_DIR", "")
+    return os.path.join(base, "assets", "avatars") if base else os.path.join("assets", "avatars")
 AVATAR_MAP = {
     "Crazy Mita":     "crazy.png",
     "Kind Mita":      "kind.png",
@@ -118,7 +120,7 @@ def _get_avatar_pixmap(character_name: str, role: str) -> QPixmap:
                 filename = val
                 break
     if filename:
-        path = os.path.join(AVATAR_DIR, filename)
+        path = os.path.join(_get_avatar_dir(), filename)
         if os.path.isfile(path):
             pm = QPixmap(path)
             if not pm.isNull(): return _round_pixmap(pm, AVATAR_SIZE)
