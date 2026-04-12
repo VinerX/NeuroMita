@@ -159,6 +159,9 @@ def check_for_updates(base_dir: str | None = None, logger=None) -> None:
             f"Update {remote_tag} installed successfully. Please restart the application.",
             "success",
         )
+        # Exit immediately — continuing would read from the overwritten .pyz at stale offsets,
+        # causing zipimport.ZipImportError: bad local file header.
+        sys.exit(0)
     except Exception as e:
         log(f"Update failed: {e}", "error")
         temp_zip.unlink(missing_ok=True)
