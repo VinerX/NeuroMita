@@ -508,15 +508,23 @@ class Character:
                 exc_info=True,
             )
 
+        # Normalize custom_fields to a plain dict (it may be a Pydantic model when
+        # build_structured_response_model() creates an ExtendedStructuredResponse).
+        _cf_raw = structured.custom_fields
+        if _cf_raw is not None and hasattr(_cf_raw, "model_dump"):
+            _cf_raw = _cf_raw.model_dump(exclude_none=True)
+        elif _cf_raw is not None and not isinstance(_cf_raw, dict):
+            _cf_raw = dict(_cf_raw)
+
         # 2. Apply simple op-mappings from custom_params (no DSL needed)
-        if structured.custom_fields:
+        if _cf_raw:
             for param in self.custom_params:
                 name = param.get("name")
                 op = param.get("op")
                 target_var = param.get("target_var")
-                if not (name and op and target_var and name in structured.custom_fields):
+                if not (name and op and target_var and name in _cf_raw):
                     continue
-                value = structured.custom_fields[name]
+                value = _cf_raw[name]
                 try:
                     current = self.get_variable(target_var, 0)
                     if op == "set":
@@ -540,9 +548,9 @@ class Character:
                     )
 
         # 3. Apply MATCH FIELD PostDSL rules (complex logic with expressions)
-        if structured.custom_fields:
+        if _cf_raw:
             try:
-                self.post_dsl_interpreter.process_structured_fields(structured.custom_fields)
+                self.post_dsl_interpreter.process_structured_fields(_cf_raw)
             except Exception as e:
                 logger.error(
                     f"[{self.char_id}] Error in PostDSL field processing: {e}",
