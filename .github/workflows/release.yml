@@ -1,0 +1,67 @@
+name: Build & Release
+
+on:
+  push:
+    branches:
+      - releases
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Get version
+        id: ver
+        shell: bash
+        run: |
+          VERSION=$(python -c "
+          with open('src/_version.py') as f:
+              exec(f.read())
+          print(__version__)
+          ")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Create build.env
+        shell: bash
+        run: |
+          ARCHIVE_PATH="${GITHUB_WORKSPACE}/NeuroMita-${{ steps.ver.outputs.version }}"
+          OUTPUT_DIR="${GITHUB_WORKSPACE}/ci_build"
+          cat > build.env << EOF
+          BUILD_MODE=full
+          BUILD_OUTPUT_DIR=${OUTPUT_DIR}
+          BUILD_COPY_DIRS=Prompts,scripts,assets
+          BUILD_FAST_COPY_DIRS=Prompts
+          BUILD_COPY_FILES=
+          BUILD_ROOT_SCRIPTS=
+          BUILD_EXCLUDE_DOT_DIRS=1
+          BUILD_EXCLUDE_CHECKPOINTS=1
+          BUILD_ARCHIVE=1
+          BUILD_ARCHIVE_PATH=${ARCHIVE_PATH}
+          EOF
+
+      - name: Build
+        shell: bash
+        run: python build.py
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: NeuroMita v${{ steps.ver.outputs.version }}
+          body: |
+            Автоматическая сборка из ветки `releases`.
+
+            **Установка:** распакуйте архив поверх существующей установки.
+          files: NeuroMita-${{ steps.ver.outputs.version }}.zip
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
