@@ -162,12 +162,14 @@ class PromptController:
                          "bool": "boolean", "str": "string", "string": "string"}
             field_lines = []
             for p in custom_params:
-                name = p["name"]
+                # Ключ в JSON-ответе — change_command (по умолчанию = name)
+                cmd = p.get("change_command") or p["name"]
                 json_type = _type_map.get(p.get("type", "string"), "string")
                 desc = p.get("description", "")
-                mn, mx = p.get("min"), p.get("max")
-                range_str = f" ({mn} to {mx})" if mn is not None and mx is not None else ""
-                field_lines.append(f'    "{name}": <{json_type}{range_str}>,  // {desc}')
+                # Подсказка диапазона берётся из change_min/change_max (входное значение)
+                c_min, c_max = p.get("change_min"), p.get("change_max")
+                range_str = f" ({c_min} to {c_max})" if c_min is not None and c_max is not None else ""
+                field_lines.append(f'    "{cmd}": <{json_type}{range_str}>,  // {desc}')
             inline = '  "custom_fields": {\n' + "\n".join(field_lines) + "\n  },\n"
             so_prompt = so_prompt.replace("{CUSTOM_PARAMS_SCHEMA}", inline)
         elif so_prompt:

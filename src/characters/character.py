@@ -156,6 +156,15 @@ class Character:
 
             self.custom_params = list(cfg.custom_params or [])
 
+            # Применяем initial значения для кастомных параметров.
+            # load_history() вызывается ПОСЛЕ load_config() и перезапишет их
+            # сохранёнными значениями — так что при перезапуске переменные не сбросятся.
+            for param in self.custom_params:
+                param_name = param.get("name")
+                initial = param.get("initial")
+                if param_name and initial is not None:
+                    self.set_variable(param_name, initial)
+
             reserved = {"PROMPT_SET_NAME", "PROMPT_SET_PATH"}
             for k, v in (cfg.variables or {}).items():
                 if str(k) in reserved:
@@ -516,35 +525,88 @@ class Character:
         elif _cf_raw is not None and not isinstance(_cf_raw, dict):
             _cf_raw = dict(_cf_raw)
 
-        # 2. Apply simple op-mappings from custom_params (no DSL needed)
+        # 2. Apply custom_params from config (порядок по гайду):
+        #    1) клам change_min/change_max → 2) клам max_change (add) →
+        #    3) formula или op → 4) клам min/max
+        _SAFE_BUILTINS: dict = {
+            "max": max, "min": min, "abs": abs,
+            "int": int, "float": float, "round": round,
+        }
         if _cf_raw:
             for param in self.custom_params:
-                name = param.get("name")
-                op = param.get("op")
-                target_var = param.get("target_var")
-                if not (name and op and target_var and name in _cf_raw):
+                var_name = param.get("name")
+                if not var_name:
                     continue
-                value = _cf_raw[name]
+                change_cmd = param.get("change_command") or var_name
+                if change_cmd not in _cf_raw:
+                    continue
+                raw_value = _cf_raw[change_cmd]
+                if raw_value is None:
+                    continue
                 try:
-                    current = self.get_variable(target_var, 0)
-                    if op == "set":
-                        new_val = value
+                    # Приводим к числу для числовых типов
+                    p_type = param.get("type", "float")
+                    if p_type in ("float", "double", "number"):
+                        value = float(raw_value)
+                    elif p_type in ("int", "integer"):
+                        value = int(raw_value)
+                    else:
+                        value = raw_value
+
+                    # Шаг 2: клам входного значения в [change_min, change_max]
+                    if isinstance(value, (int, float)):
+                        c_min = param.get("change_min")
+                        c_max = param.get("change_max")
+                        if c_min is not None:
+                            value = max(float(c_min), value)
+                        if c_max is not None:
+                            value = min(float(c_max), value)
+
+                    # Шаг 3: клам в [-max_change, +max_change] только для op=add
+                    op = param.get("op")
+                    max_change = param.get("max_change")
+                    if op == "add" and max_change is not None and isinstance(value, (int, float)):
+                        mc = float(max_change)
+                        value = max(-mc, min(mc, value))
+
+                    current = self.get_variable(var_name, 0)
+                    formula = param.get("formula")
+
+                    # Шаг 4: применяем формулу или op
+                    if formula:
+                        eval_ctx = dict(self.variables)
+                        eval_ctx.update(_SAFE_BUILTINS)
+                        eval_ctx["current"] = current
+                        eval_ctx["value"] = value
+                        eval_ctx[change_cmd] = value
+                        eval_ctx[var_name] = current
+                        new_val = eval(formula, {"__builtins__": {}}, eval_ctx)
                     elif op == "add":
                         new_val = current + value
-                        pmin, pmax = param.get("min"), param.get("max")
-                        if pmin is not None:
-                            new_val = max(pmin, new_val)
-                        if pmax is not None:
-                            new_val = min(pmax, new_val)
+                    elif op == "set":
+                        new_val = value
                     else:
+                        logger.warning(
+                            f"[{self.char_id}] custom_param '{var_name}': нет op или formula, пропускаем"
+                        )
                         continue
-                    self.set_variable(target_var, new_val)
+
+                    # Шаг 5: клам результата в [min, max]
+                    if isinstance(new_val, (int, float)):
+                        pmin = param.get("min")
+                        pmax = param.get("max")
+                        if pmin is not None:
+                            new_val = max(float(pmin), new_val)
+                        if pmax is not None:
+                            new_val = min(float(pmax), new_val)
+
+                    self.set_variable(var_name, new_val)
                     logger.info(
-                        f"[{self.char_id}] custom_param '{name}' op={op} → {target_var}={new_val}"
+                        f"[{self.char_id}] custom_param '{change_cmd}' → {var_name}={new_val}"
                     )
                 except Exception as e:
                     logger.error(
-                        f"[{self.char_id}] Error applying custom_param '{name}': {e}"
+                        f"[{self.char_id}] Error applying custom_param '{var_name}': {e}"
                     )
 
         # 3. Apply MATCH FIELD PostDSL rules (complex logic with expressions)

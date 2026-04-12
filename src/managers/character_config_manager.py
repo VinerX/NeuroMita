@@ -37,6 +37,23 @@ class CustomParamSpec(BaseModel):
     type: str = Field(default="string")
     description: str = Field(default="")
 
+    # Имя поля в custom_fields JSON-ответа нейронки.
+    # Если не указано — совпадает с name.
+    change_command: Optional[str] = Field(default=None)
+
+    # Ограничения на входное значение от нейронки
+    change_min: Optional[float] = Field(default=None)
+    change_max: Optional[float] = Field(default=None)
+    max_change: Optional[float] = Field(default=None)  # только для op=add
+
+    # Начальное значение при первом запуске (история ещё пуста)
+    initial: Optional[Any] = Field(default=None)
+
+    # Применение: формула (вариант A) или op + bounds (вариант B)
+    formula: Optional[str] = Field(default=None)
+    op: Optional[str] = Field(default=None)  # "add" или "set"
+
+    # Границы результирующего значения переменной
     min: Optional[float] = Field(default=None)
     max: Optional[float] = Field(default=None)
 
@@ -61,12 +78,39 @@ class CustomParamSpec(BaseModel):
             raise ValueError(f"unsupported custom param type: {s!r}")
         return s
 
+    @field_validator("op")
+    @classmethod
+    def _validate_op(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            s = str(v).strip().lower()
+            if s not in ("add", "set"):
+                raise ValueError(f"custom param op must be 'add' or 'set', got {v!r}")
+            return s
+        return v
+
+    @field_validator("change_command")
+    @classmethod
+    def _validate_change_command(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", s):
+            raise ValueError("change_command must be a valid identifier [A-Za-z_][A-Za-z0-9_]*")
+        return s
+
     @model_validator(mode="after")
     def _validate_minmax_and_default(self) -> "CustomParamSpec":
         py_t = _TYPE_MAP.get(self.type, str)
 
         if self.min is not None and self.max is not None and float(self.max) < float(self.min):
             raise ValueError(f"custom param {self.name}: max < min")
+
+        if self.change_min is not None and self.change_max is not None and float(self.change_max) < float(self.change_min):
+            raise ValueError(f"custom param {self.name}: change_max < change_min")
+
+        # Если change_command не задан — по умолчанию совпадает с name
+        if not self.change_command:
+            self.change_command = self.name
 
         if self.default is None:
             self.default = _infer_default(py_t)

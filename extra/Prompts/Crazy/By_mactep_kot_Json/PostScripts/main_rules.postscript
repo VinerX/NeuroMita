@@ -1,13 +1,3 @@
-// ===== ОБРАБОТКА ПОЛЯ love_change (Structured Output) =====
-// Requires config.json: custom_params[{name: "love_change", type: "float", min: -10, max: 10}]
-RULE LoveFieldHandler
-    MATCH FIELD "love_change"
-    ACTIONS
-        SET Love = max(1, min(Love + love_change, 300))
-        LOG "Love updated by " + str(love_change) + ". New: " + str(Love)
-    END_ACTIONS
-END_RULE
-
 // ===== RULE SecretExposed By Tag =====
 //     MATCH TEXT "<secret_revealed>" 
 //     ACTIONS

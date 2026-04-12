@@ -239,7 +239,8 @@ class StructuredResponse(BaseModel):
                          "bool": "boolean", "str": "string", "string": "string"}
             cf_props = {}
             for p in custom_params:
-                cf_props[p["name"]] = {"type": _type_map.get(p.get("type", "string"), "string")}
+                key = p.get("change_command") or p["name"]
+                cf_props[key] = {"type": _type_map.get(p.get("type", "string"), "string")}
             schema["properties"]["custom_fields"]["properties"] = cf_props
         if exclude_fields:
             for f in exclude_fields:
@@ -301,8 +302,9 @@ class StructuredResponse(BaseModel):
             }
             cf_props = {}
             for p in custom_params:
+                key = p.get("change_command") or p["name"]
                 gemini_type = _type_map.get(p.get("type", "string"), "string")
-                cf_props[p["name"]] = {"type": gemini_type, "nullable": True}
+                cf_props[key] = {"type": gemini_type, "nullable": True}
             schema["properties"]["custom_fields"]["properties"] = cf_props
         if exclude_fields:
             for f in exclude_fields:
@@ -358,8 +360,9 @@ def build_structured_response_model(custom_params: list[dict] | None) -> Type[St
     for p in custom_params:
         if not isinstance(p, dict):
             continue
-        name = str(p.get("name") or "").strip()
-        if not name or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        # Имя поля в JSON-ответе нейронки — change_command (по умолчанию = name)
+        field_key = str(p.get("change_command") or p.get("name") or "").strip()
+        if not field_key or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", field_key):
             continue
 
         tname = str(p.get("type") or "string").strip().lower()
@@ -382,15 +385,16 @@ def build_structured_response_model(custom_params: list[dict] | None) -> Type[St
         if desc:
             f_kwargs["description"] = desc
 
-        mn = p.get("min", None)
-        mx = p.get("max", None)
+        # Ограничения на входное значение от нейронки (change_min/change_max)
         if py_t in (int, float):
+            mn = p.get("change_min", None)
+            mx = p.get("change_max", None)
             if mn is not None:
                 f_kwargs["ge"] = mn
             if mx is not None:
                 f_kwargs["le"] = mx
 
-        fields[name] = (anno, Field(default, **f_kwargs))
+        fields[field_key] = (anno, Field(default, **f_kwargs))
         if required:
             any_required = True
 
