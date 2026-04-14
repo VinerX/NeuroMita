@@ -92,3 +92,16 @@ def setup_debug_panel_controls(view, parent_layout):
     snap_row.addWidget(save_snap_btn)
     snap_row.addWidget(load_snap_btn)
     parent_layout.addLayout(snap_row)
+
+    # ── Context viewer ───────────────────────────────────────────────────────────
+    ctx_label = QLabel(_('Просмотр контекста запроса', 'Request context viewer'))
+    ctx_label.setObjectName('SeparatorLabel')
+    parent_layout.addWidget(ctx_label)
+
+    ctx_btn = QPushButton(_('Посмотреть последний запрос', 'View last request'))
+    ctx_btn.setToolTip(
+        _('Открыть просмотр контекста последнего запроса к нейросети (сообщения, системные промты, параметры)',
+          'Open context viewer for the last request sent to the neural network')
+    )
+    ctx_btn.clicked.connect(view._on_debug_view_last_context)
+    parent_layout.addWidget(ctx_btn)

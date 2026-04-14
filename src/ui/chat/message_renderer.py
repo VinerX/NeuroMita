@@ -142,10 +142,76 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
         if dlg.exec() == QDialog.DialogCode.Accepted:
             bus.emit(Events.Chat.REGENERATE_FROM, {"message_id": mid, "character_id": character_id})
 
+    def on_view_context(sample_id: str):
+        import json
+        import os
+        import traceback
+        from PyQt6.QtWidgets import QMessageBox
+        from ui.dialogs.context_viewer_dialog import ContextViewerDialog
+
+        data = None
+
+        # 1. Пробуем finetune JSONL по sample_id
+        if sample_id:
+            try:
+                from managers.finetune_collector import FineTuneCollector
+                fc = FineTuneCollector.instance
+                if fc:
+                    samples = fc.load_samples()
+                    data = next((s for s in samples if s.get("id") == sample_id), None)
+            except Exception as e:
+                QMessageBox.critical(None, _("Ошибка", "Error"), str(e))
+                return
+
+        # 2. Fallback — последний сохранённый запрос (всегда доступен)
+        used_fallback = False
+        if data is None:
+            base = os.environ.get("NEUROMITA_BASE_DIR", "")
+            path = (
+                os.path.join(base, "SavedMessages", "last_request_context.json")
+                if base else os.path.join("SavedMessages", "last_request_context.json")
+            )
+            if os.path.isfile(path):
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        data = json.load(f)
+                    used_fallback = True
+                except Exception:
+                    pass
+
+        if data is None:
+            QMessageBox.warning(
+                None,
+                _("Не найдено", "Not found"),
+                _("Данные не найдены. Убедитесь, что хотя бы одно сообщение было отправлено.",
+                  "No data found. Make sure at least one message has been sent.")
+            )
+            return
+
+        if used_fallback:
+            QMessageBox.information(
+                None,
+                _("Данные конкретного сообщения недоступны", "Message-specific data not available"),
+                _("Сбор данных для дообучения был отключён для этого сообщения.\n"
+                  "Показан последний сохранённый запрос — он может не совпадать с этим сообщением.",
+                  "Finetune collection was disabled for this message.\n"
+                  "Showing the last saved request — it may not match this message.")
+            )
+
+        try:
+            dlg = ContextViewerDialog(data, parent=widget)
+            dlg.exec()
+        except Exception as e:
+            QMessageBox.critical(
+                None, _("Ошибка открытия диалога", "Dialog error"),
+                f"{e}\n\n{traceback.format_exc()}"
+            )
+
     widget.delete_requested.connect(on_delete)
     widget.edit_requested.connect(on_edit)
     widget.regenerate_requested.connect(on_regenerate)
     widget.regenerate_from_requested.connect(on_regenerate_from)
+    widget.view_context_requested.connect(on_view_context)
 
 def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None):
     font_size = _get_font_size(gui)
