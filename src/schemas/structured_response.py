@@ -93,10 +93,6 @@ def _to_gemini_schema(schema: dict) -> dict:
     return convert(copy.deepcopy(schema))
 
 
-class EntityItem(BaseModel):
-    """A named entity extracted from the current turn."""
-    name: str = Field(..., description="Entity name, 1-3 words lowercase")
-    type: str = Field(..., description="One of: person, place, thing, concept")
 
 
 class ToolCall(BaseModel):
@@ -188,10 +184,16 @@ class StructuredResponse(BaseModel):
         description="Reminder IDs to delete. Format: 'N' (number). Example: '3'."
     )
 
-    entities: Optional[List[EntityItem]] = Field(
+    entities: Optional[List[str]] = Field(
         default=None,
-        description="Notable named entities in this turn (people, places, objects, preferences). "
-                    "Fill only when instructed. Omit entirely if not needed."
+        description="Notable named entities. Format: 'name:type'. Types: person|place|thing|concept. "
+                    "Example: ['player:person', 'cats:thing']. Fill only when instructed. Omit if not needed."
+    )
+
+    relations: Optional[List[str]] = Field(
+        default=None,
+        description="Relation triples. Format: 'subject|predicate|object'. "
+                    "Example: ['player|likes|cats', 'mita|is afraid of|darkness']. Fill only when instructed. Omit if not needed."
     )
 
     tool_call: Optional[ToolCall] = Field(

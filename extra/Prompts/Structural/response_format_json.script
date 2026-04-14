@@ -39,7 +39,7 @@ Schema:
 """
 ENDIF
 
-SET LOCAL p_rest = """  "segments": [
+SET LOCAL p_schema_fields = """  "segments": [
     {
       "text": "Your text here (REQUIRED)",
       "emotions": ["emotion_id"],
@@ -62,8 +62,36 @@ SET LOCAL p_rest = """  "segments": [
   "boredom_change": <number -6..6>,
   "stress_change": <number -6..6>,
   "tool_call": {"name": "tool_name", "args": {"param": "value"}},
-{CUSTOM_PARAMS_SCHEMA}}
+{CUSTOM_PARAMS_SCHEMA}}"""
 
+SET LOCAL p_graph_schema_fields = """  "segments": [
+    {
+      "text": "Your text here (REQUIRED)",
+      "emotions": ["emotion_id"],
+      "animations": ["animation_name"],
+      "commands": ["command_text"],
+      "movement_modes": ["mode"],
+      "visual_effects": ["effect,duration"],
+      "clothes": ["outfit_id"],
+      "music": ["music_name"],
+      "interactions": ["interaction_target"],
+      "face_params": ["param"],
+      "start_game": "game_id",
+      "end_game": "game_id",
+      "target": "character_name",
+      "hint": "hint text",
+      "allow_sleep": true/false
+    }
+  ],
+  "attitude_change": <number -6..6>,
+  "boredom_change": <number -6..6>,
+  "stress_change": <number -6..6>,
+  "tool_call": {"name": "tool_name", "args": {"param": "value"}},
+  "entities": ["name:type", ...],
+  "relations": ["subject|predicate|object", ...],
+{CUSTOM_PARAMS_SCHEMA}}"""
+
+SET LOCAL p_rules = """
 
 Rules:
 - "text" is REQUIRED in every segment. All other segment fields are optional — omit them if not needed.
@@ -81,7 +109,31 @@ Rules:
 - Each segment's commands (emotions, animations, etc.) trigger when that segment's text is displayed.
 - Text limit per response: 25-60 words total across all segments. Maximum 700 characters.
 - You can use the command "Continue" in commands to say more immediately.
-- Do NOT repeat commands from previous messages.
+- Do NOT repeat commands from previous messages."""
+
+SET LOCAL p_graph_rules = """
+
+Rules:
+- "text" is REQUIRED in every segment. All other segment fields are optional — omit them if not needed.
+- attitude_change, boredom_change, stress_change: ALWAYS include. Use decimal values in range -5.00 to 5.00. Values above 4 only in emotional moments. Avoid zero unless completely neutral.
+- memory_add/memory_update/memory_delete: omit entirely if no memory operations needed (do NOT output empty arrays).
+- memory_add format: "priority|content" where priority is one of: low, normal, high, critical. You may append a third pipe-separated field with comma-separated entity names: "normal|Player likes cats|player,cats"
+- memory_update format: "number|new_content"
+- memory_delete format: single number "5", comma-separated "5,6,7", or range "5-9"
+- reminder_add/reminder_delete: omit entirely if no reminder operations needed (do NOT output empty arrays).
+- reminder_add format: "YYYY-MM-DDTHH:MM:SS|text", e.g. "2026-04-05T18:00:00|Remind player about dinner"
+- reminder_delete format: reminder ID number as string, e.g. "3"
+- [Pending Reminders] block in system context shows scheduled reminders. Fire them when due time arrives.
+- custom_fields: Fill ALL declared custom fields every message according to their descriptions. Never leave custom_fields empty if it appears in the schema.
+- entities: Notable named entities mentioned this turn. Format: "name:type". Types: person|place|thing|concept. Example: ["player:person", "cats:thing"]. Omit if nothing notable.
+- relations: Relation triples this turn. Format: "subject|predicate|object". Example: ["player|likes|cats", "mita|is afraid of|darkness"]. Omit if no clear relations.
+- Split your response into segments when different parts need different emotions, animations, or commands.
+- Each segment's commands (emotions, animations, etc.) trigger when that segment's text is displayed.
+- Text limit per response: 25-60 words total across all segments. Maximum 700 characters.
+- You can use the command "Continue" in commands to say more immediately.
+- Do NOT repeat commands from previous messages."""
+
+SET LOCAL p_example = """
 
 Example response:
 {
@@ -101,7 +153,33 @@ Example response:
       "animations": ["Wave hand"]
     }
   ]
-}
+}"""
+
+SET LOCAL p_graph_example = """
+
+Example response:
+{
+  "attitude_change": 1.5,
+  "boredom_change": -0.3,
+  "stress_change": 0,
+  "memory_add": ["normal|The player asked about cats|player,cats"],
+  "entities": ["player:person", "cats:thing"],
+  "relations": ["player|likes|cats"],
+  "segments": [
+    {
+      "text": "Oh, you like cats too?",
+      "emotions": ["smile"],
+      "commands": ["Walk to player"]
+    },
+    {
+      "text": "I always wanted a kitten!",
+      "emotions": ["happy"],
+      "animations": ["Wave hand"]
+    }
+  ]
+}"""
+
+SET LOCAL p_footer = """
 
 tool_call: Use this when you need to call an external tool (internet search, calculator, etc.).
 - "segments" is REQUIRED: write a very short phrase (2-5 words): "One moment.", "Let me check.", "Just a sec." — nothing else.
@@ -117,20 +195,10 @@ Tag [SYSTEM INFO] means system information, not player speech.
 Tag [SYSTEM] means a system event or notification, not player speech.
 Tag [SPEAKER] means you are in a multi-speaker dialogue."""
 
-SET LOCAL base = p_header + p_toc + p_schema_open + p_rest
-
-SET LOCAL result = base
-
 IF GRAPH_EXTRACTION_ENABLED == True THEN
-    SET LOCAL graph_section = """
-
-Entities (graph extraction is ON — fill these fields):
-- entities: List of notable named entities in this turn (people, places, objects, preferences, key facts).
-  Format: [{"name": "lowercase 1-3 words", "type": "person|place|thing|concept"}].
-  Omit entirely if nothing notable in this turn.
-- memory_add with entities: You may append a third pipe-separated field with comma-separated entity names relevant to that memory.
-  Example: "normal|Player likes cats|player,cats". Omit the third field if no specific entities apply to that memory."""
-    SET result = result + graph_section
+    SET LOCAL result = p_header + p_toc + p_schema_open + p_graph_schema_fields + p_graph_rules + p_graph_example + p_footer
+ELSE
+    SET LOCAL result = p_header + p_toc + p_schema_open + p_schema_fields + p_rules + p_example + p_footer
 ENDIF
 
 RETURN result

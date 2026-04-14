@@ -1348,19 +1348,19 @@ class ModelController:
         if hasattr(char, "flush_variables"):
             char.flush_variables()
 
-        # Build inline_graph_json from structured entities (if graph extraction enabled)
+        # Build inline_graph_json from structured entities/relations (if graph extraction enabled)
         inline_graph_json: Optional[str] = None
         if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
-                and structured.entities):
+                and (structured.entities or structured.relations)):
             try:
                 import json as _json
                 graph_payload = {
-                    "entities": [e.model_dump() for e in structured.entities],
-                    "relations": [],
+                    "entities": list(structured.entities) if structured.entities else [],
+                    "relations": list(structured.relations) if structured.relations else [],
                 }
                 inline_graph_json = _json.dumps(graph_payload, ensure_ascii=False)
             except Exception as _ge:
-                logger.warning(f"[ModelController] Failed to build graph JSON from structured entities: {_ge}")
+                logger.warning(f"[ModelController] Failed to build graph JSON from structured entities/relations: {_ge}")
 
         # Notify graph extraction (and any future subscribers).
         created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
