@@ -1163,11 +1163,12 @@ class ModelController:
                     if mem_lines or hist_lines or graph_lines:
                         mem_header = "# score=RAG relevance (0..1); forgotten memories — use N:id with memory ops\n"
                         memory_block_str = (mem_header + "\n".join(mem_lines)) if mem_lines else ""
+                        graph_block_str = "\n".join(graph_lines) if graph_lines else ""
                         try:
                             rag_block = wrapper_tpl.format(
                                 memory_block=memory_block_str,
                                 history_block="\n".join(hist_lines) if hist_lines else "",
-                                graph_block="\n".join(graph_lines) if graph_lines else "",
+                                graph_block=graph_block_str,
                             )
                         except (KeyError, IndexError):
                             parts = []
@@ -1176,8 +1177,12 @@ class ModelController:
                             if hist_lines:
                                 parts.append("<past_context>\n" + "\n".join(hist_lines) + "\n</past_context>")
                             if graph_lines:
-                                parts.append("<entity_knowledge>\n" + "\n".join(graph_lines) + "\n</entity_knowledge>")
+                                parts.append("<entity_knowledge>\n" + graph_block_str + "\n</entity_knowledge>")
                             rag_block = "\n\n".join(parts)
+                        # If the wrapper template doesn't include {graph_block},
+                        # append graph entries separately so they are never silently dropped.
+                        if graph_lines and "{graph_block}" not in wrapper_tpl:
+                            rag_block += "\n\n<entity_knowledge>\n" + graph_block_str + "\n</entity_knowledge>"
                         if forgotten_count > 0:
                             rag_block += f"\nForgotten pool: {forgotten_count} memories"
 
