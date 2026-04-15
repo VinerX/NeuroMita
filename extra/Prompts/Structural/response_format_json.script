@@ -110,6 +110,7 @@ SET LOCAL p_rules = """
 Field descriptions:
 - "text" must contain ONLY spoken words. NEVER put XML tags in text.
 - "animations": play animation once, "idle_animations": set as idle/loop.
+- "commands": CHARACTER ACTIONS ONLY (Walk, Run, Stop, Dance, etc.). NEVER put tool names here.
 
 Rules:
 - "text" is REQUIRED in every segment. All other segment fields are optional — omit if not needed.
@@ -134,6 +135,7 @@ SET LOCAL p_graph_rules = """
 Field descriptions:
 - "text" must contain ONLY spoken words. NEVER put XML tags in text.
 - "animations": play animation once, "idle_animations": set as idle/loop.
+- "commands": CHARACTER ACTIONS ONLY (Walk, Run, Stop, Dance, etc.). NEVER put tool names here.
 
 Rules:
 - "text" is REQUIRED in every segment. All other segment fields are optional — omit if not needed.
@@ -203,11 +205,13 @@ Example response:
 
 SET LOCAL p_footer = """
 
-tool_call: Use this when you need to call an external tool (internet search, calculator, etc.).
+tool_call: Use this TOP-LEVEL field when you need to call an external tool (internet search, calculator, etc.).
+- NEVER put tool names in the "commands" array. commands is ONLY for character game actions.
 - "segments" is REQUIRED: write a very short phrase (2-5 words): "One moment.", "Let me check.", "Just a sec." — nothing else.
 - ALL required args MUST be filled with actual values from the conversation. Never leave args empty {}.
 - Use ONLY tools listed in the available tools section below.
 - You will receive the tool result in the next message and can then answer fully.
+- You can chain tools: e.g. first call web_search to get URLs, then call web_reader on the best result URL.
 - Omit "tool_call" entirely if no tool is needed.
 
 [{TOOLS_DESCRIPTION}]

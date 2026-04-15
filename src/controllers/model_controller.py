@@ -1255,10 +1255,11 @@ class ModelController:
 
         # --- Tool call path ---
         _active_tools = enabled_tools or []
+        _tool_max_depth = int(self.settings.get("TOOL_MAX_DEPTH", 2))
         _tool_allowed = (
             structured.tool_call
             and tools_on
-            and tool_depth < 2
+            and tool_depth < _tool_max_depth
             and (not _active_tools or structured.tool_call.name in _active_tools)
         )
         if not _tool_allowed and structured.tool_call and tools_on:
@@ -1518,21 +1519,20 @@ class ModelController:
             "speaker_name": "",
         }, sync=True)
 
-        # Detect dialect to choose the right role for the tool result message.
-        # Gemini does not support "system" role mid-conversation — use "user" with [SYSTEM INFO] tag.
-        # OpenAI-compatible providers handle "system" fine anywhere.
-        try:
-            preset_s = self.preset_resolver.resolve(preset_id)
-            _dialect = (preset_s.dialect_id or "").lower()
-        except Exception:
-            _dialect = ""
-        _gemini_mode = "gemini" in _dialect
-        tool_result_role = "user" if _gemini_mode else "system"
-        tool_result_content = (
-            f"[SYSTEM INFO] [Tool result: {tool_name}]\n{tool_result}"
-            if _gemini_mode
-            else f"[Tool result: {tool_name}]\n{tool_result}"
+        # Build tool result message(s) for the second LLM call.
+        # TOOL_RESULT_MSG_MODE controls which role(s) are used to inject the result:
+        #   "system" — only a system message (may be ignored by some providers mid-conversation)
+        #   "user"   — only a user message with [SYSTEM INFO] tag
+        #   "both"   — both (default, most reliable across providers)
+        _result_mode = str(self.settings.get("TOOL_RESULT_MSG_MODE", "both"))
+        _instruction = (
+            "\n\nThe tool has finished. "
+            "Use the results above to give the player a complete answer. "
+            "Do NOT call any tools again unless the question explicitly requires it. "
+            "Respond in JSON format."
         )
+        _system_content = f"[Tool result: {tool_name}]\n{tool_result}{_instruction}"
+        _user_content   = f"[SYSTEM INFO] [Tool result: {tool_name}]\n{tool_result}{_instruction}"
 
         # Build messages for second call: append first response JSON + tool result
         combined_messages_v2 = list(combined_messages)
@@ -1541,7 +1541,10 @@ class ModelController:
         except Exception:
             first_response_json = first_text
         combined_messages_v2.append({"role": "assistant", "content": first_response_json})
-        combined_messages_v2.append({"role": tool_result_role, "content": tool_result_content})
+        if _result_mode in ("system", "both"):
+            combined_messages_v2.append({"role": "system", "content": _system_content})
+        if _result_mode in ("user", "both"):
+            combined_messages_v2.append({"role": "user", "content": _user_content})
 
         # Second LLM call
         self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
