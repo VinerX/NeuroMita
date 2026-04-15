@@ -121,7 +121,7 @@ class SegmentCard(QFrame):
             layout.addWidget(line)
 
 class MemoryBlock(QFrame):
-    def __init__(self, mem_add: list, mem_update: list, mem_delete: list, font_sm: int, parent=None):
+    def __init__(self, mem_add: list, mem_update: list, mem_delete: list, font_sm: int, parent=None, mem_merge: list = None):
         super().__init__(parent)
         self.setStyleSheet(f"QFrame {{ background-color: {CLR_MEMORY_BG}; border: 1px solid {CLR_MEMORY_BORDER}; border-radius: 8px; margin: 2px 0px; }}")
         layout = QVBoxLayout(self)
@@ -132,7 +132,7 @@ class MemoryBlock(QFrame):
         header.setStyleSheet(f"color: {CLR_MEMORY_HEADER}; font-weight: bold; font-size: {font_sm}pt; background: transparent; border: none;")
         layout.addWidget(header)
 
-        for lst, prefix in [(mem_add, "+"), (mem_update, "~"), (mem_delete, "-")]:
+        for lst, prefix in [(mem_add, "+"), (mem_update, "~"), (mem_delete, "-"), (mem_merge or [], "↔")]:
             for entry in lst:
                 lbl = QLabel(f"{prefix} {entry}", self)
                 lbl.setWordWrap(True)
@@ -275,9 +275,9 @@ class StructuredOutputPanel(QFrame):
         if data.get("tool_call"):
             layout.addWidget(ToolCallBlock(data["tool_call"].get("name", "?"), data["tool_call"].get("args") or {}, self._font_sm, layout.parentWidget()))
 
-        mem_add, mem_update, mem_delete = data.get("memory_add") or [], data.get("memory_update") or [], data.get("memory_delete") or []
-        if mem_add or mem_update or mem_delete:
-            layout.addWidget(MemoryBlock(mem_add, mem_update, mem_delete, self._font_sm, layout.parentWidget()))
+        mem_add, mem_update, mem_delete, mem_merge = data.get("memory_add") or [], data.get("memory_update") or [], data.get("memory_delete") or [], data.get("memory_merge") or []
+        if mem_add or mem_update or mem_delete or mem_merge:
+            layout.addWidget(MemoryBlock(mem_add, mem_update, mem_delete, self._font_sm, layout.parentWidget(), mem_merge=mem_merge))
 
         rem_add, rem_delete = data.get("reminder_add") or [], data.get("reminder_delete") or []
         if rem_add or rem_delete:

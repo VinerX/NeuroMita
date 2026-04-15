@@ -67,6 +67,7 @@ SET LOCAL p_schema_fields = """  "segments": [
   "memory_add": ["priority|content", ...],
   "memory_update": ["number|priority|content", ...],
   "memory_delete": ["number" or "start-end", ...],
+  "memory_merge": ["id1,id2,...:merged text", ...],
   "reminder_add": ["YYYY-MM-DDTHH:MM:SS|text", ...],
   "reminder_delete": ["id", ...],
   "tool_call": {"name": "tool_name", "args": {"param": "value"}},
@@ -98,6 +99,7 @@ SET LOCAL p_graph_schema_fields = """  "segments": [
   "memory_add": ["priority|content" or "priority|content|entity1,entity2", ...],
   "memory_update": ["number|priority|content", ...],
   "memory_delete": ["number" or "start-end", ...],
+  "memory_merge": ["id1,id2,...:merged text", ...],
   "reminder_add": ["YYYY-MM-DDTHH:MM:SS|text", ...],
   "reminder_delete": ["id", ...],
   "tool_call": {"name": "tool_name", "args": {"param": "value"}},
@@ -115,11 +117,12 @@ Field descriptions:
 Rules:
 - "text" is REQUIRED in every segment. All other segment fields are optional — omit if not needed.
 - attitude_change, boredom_change, stress_change: ALWAYS include. Use decimals in range -5.00 to 5.00. Values above 4 only in emotional moments. Avoid zero unless completely neutral.
-- memory_add/memory_update/memory_delete: omit entirely if no memory operations needed (do NOT output empty arrays).
+- memory_add/memory_update/memory_delete/memory_merge: TOP-LEVEL fields ONLY — NEVER place them inside segments. Omit entirely if no memory operations needed (do NOT output empty arrays).
 - memory_add format: "priority|content" where priority is one of: low, normal, high, critical
-- memory_update format: "number|priority|content"
+- memory_update format: "number|priority|content" where priority is one of: low, normal, high, critical
 - memory_delete format: single number "5", comma-separated "5,6,7", or range "5-9"
-- reminder_add/reminder_delete: omit entirely if no reminder operations needed (do NOT output empty arrays).
+- memory_merge format: "id1,id2,...:merged text" — merges into first ID (rest deleted); content optional (auto-combined if omitted)
+- reminder_add/reminder_delete: TOP-LEVEL fields ONLY. Omit entirely if no reminder operations needed (do NOT output empty arrays).
 - reminder_add format: "YYYY-MM-DDTHH:MM:SS|text", e.g. "2026-04-05T18:00:00|Remind player about dinner"
 - reminder_delete format: reminder ID number as string, e.g. "3"
 - [Pending Reminders] block in system context shows scheduled reminders. Fire them when due time arrives.
@@ -140,11 +143,12 @@ Field descriptions:
 Rules:
 - "text" is REQUIRED in every segment. All other segment fields are optional — omit if not needed.
 - attitude_change, boredom_change, stress_change: ALWAYS include. Use decimals in range -5.00 to 5.00. Values above 4 only in emotional moments. Avoid zero unless completely neutral.
-- memory_add/memory_update/memory_delete: omit entirely if no memory operations needed (do NOT output empty arrays).
+- memory_add/memory_update/memory_delete/memory_merge: TOP-LEVEL fields ONLY — NEVER place them inside segments. Omit entirely if no memory operations needed (do NOT output empty arrays).
 - memory_add format: "priority|content" or "priority|content|entity1,entity2"  priority = low | normal | high | critical
-- memory_update format: "number|priority|content"
+- memory_update format: "number|priority|content" where priority is one of: low, normal, high, critical
 - memory_delete format: single number "5", comma-separated "5,6,7", or range "5-9"
-- reminder_add/reminder_delete: omit entirely if no reminder operations needed (do NOT output empty arrays).
+- memory_merge format: "id1,id2,...:merged text" — merges into first ID (rest deleted); content optional (auto-combined if omitted)
+- reminder_add/reminder_delete: TOP-LEVEL fields ONLY. Omit entirely if no reminder operations needed (do NOT output empty arrays).
 - reminder_add format: "YYYY-MM-DDTHH:MM:SS|text"
 - reminder_delete format: reminder ID number as string
 - [Pending Reminders] block in system context shows scheduled reminders. Fire them when due time arrives.
@@ -160,11 +164,7 @@ Rules:
 SET LOCAL p_example = """
 
 Example response:
-{
-  "attitude_change": 1.5,
-  "boredom_change": -0.3,
-  "stress_change": 0,
-  "memory_add": ["normal|The player asked about cats"],
+{  
   "segments": [
     {
       "text": "Oh, you like cats too?",
@@ -176,19 +176,17 @@ Example response:
       "emotions": ["happy"],
       "animations": ["Wave hand"]
     }
-  ]
+  ],
+  "attitude_change": 1.5,
+  "boredom_change": -0.3,
+  "stress_change": 0,
+  "memory_add": ["normal|The player asked about cats"]
 }"""
 
 SET LOCAL p_graph_example = """
 
 Example response:
-{
-  "attitude_change": 1.5,
-  "boredom_change": -0.3,
-  "stress_change": 0,
-  "memory_add": ["normal|The player asked about cats|player,cats"],
-  "entities": ["player:person", "cats:thing"],
-  "relations": ["player|likes|cats"],
+{  
   "segments": [
     {
       "text": "Oh, you like cats too?",
@@ -200,7 +198,13 @@ Example response:
       "emotions": ["happy"],
       "animations": ["Wave hand"]
     }
-  ]
+  ],
+  "attitude_change": 1.5,
+  "boredom_change": -0.3,
+  "stress_change": 0,
+  "memory_add": ["normal|The player asked about cats|player,cats"],
+  "entities": ["player:person", "cats:thing"],
+  "relations": ["player|likes|cats"]
 }"""
 
 SET LOCAL p_footer = """

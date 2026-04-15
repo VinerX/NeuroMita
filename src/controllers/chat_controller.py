@@ -644,6 +644,7 @@ class ChatController:
             result["memory_add"] = structured_data.get("memory_add", [])
             result["memory_update"] = structured_data.get("memory_update", [])
             result["memory_delete"] = structured_data.get("memory_delete", [])
+            result["memory_merge"] = structured_data.get("memory_merge", [])
         return result
 
     def _on_get_llm_processing_status(self, event: Event):
