@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
-from managers.rag.rag_utils import rag_clean_text, extract_keywords
+from managers.rag.rag_utils import rag_clean_text, extract_keywords, json_loads_list
 from .types import QueryState
 from .config import RAGConfig
 
@@ -60,24 +60,11 @@ class QueryBuilder:
             with self.rag.db.connection() as conn:
                 cur = conn.cursor()
 
-                where = "character_id=? AND is_active=1"
-                params = [self.rag.character_id]
-                if "is_deleted" in self.rag._history_cols:
-                    where += " AND is_deleted=0"
-
-                cols = ["speaker", "target", "participants", "sender"]
-                cols = [c for c in cols if c in self.rag._history_cols]
-                if cols:
-                    cur.execute(
-                        f"SELECT {', '.join(cols)} FROM history WHERE {where} ORDER BY id DESC LIMIT 1",
-                        tuple(params),
-                    )
-                    row = cur.fetchone()
-                    if row:
-                        rd = dict(zip(cols, row))
-                        ctx_speaker = str(rd.get("speaker") or rd.get("sender") or "").strip()
-                        ctx_target = str(rd.get("target") or "").strip()
-                        ctx_participants = self.rag._json_loads_list(rd.get("participants"))
+                rd = self.rag.history_repo.last_active_row(cur)
+                if rd:
+                    ctx_speaker = str(rd.get("speaker") or rd.get("sender") or "").strip()
+                    ctx_target = str(rd.get("target") or "").strip()
+                    ctx_participants = json_loads_list(rd.get("participants"))
         except Exception:
             pass
 

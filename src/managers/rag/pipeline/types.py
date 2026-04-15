@@ -5,6 +5,18 @@ from typing import Any, Optional
 import numpy as np
 
 
+@dataclass(frozen=True)
+class SchemaInfo:
+    """Snapshot of which optional columns exist in history / memories tables.
+
+    Created once in RAGManager.__init__ and shared with all pipeline components
+    via the public ``rag.schema`` property.  Avoids direct access to private
+    ``_history_cols`` / ``_mem_cols`` fields from outside RAGManager.
+    """
+    history_cols: frozenset
+    mem_cols: frozenset
+
+
 @dataclass
 class QueryState:
     character_id: str

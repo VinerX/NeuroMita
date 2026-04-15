@@ -8,16 +8,28 @@ from managers.rag.rag_utils import (
     keyword_score,
     fts_build_match_query,
     normalize_bm25_to_01,
+    blob_to_array,
+    json_loads_list,
 )
 from handlers.embedding_presets import resolve_model_settings
 from ..types import Candidate, QueryState
 from ..config import RAGConfig
+from ..repositories import HistoryRepository, MemoryRepository
 
 
 class FTSRetriever:
     name = "fts"
 
-    def __init__(self, *, rag: Any, cfg: RAGConfig):
+    def __init__(
+        self,
+        *,
+        history_repo: HistoryRepository,
+        memory_repo: MemoryRepository,
+        rag: Any,  # kept for db/character_id access during transition
+        cfg: RAGConfig,
+    ):
+        self.history_repo = history_repo
+        self.memory_repo = memory_repo
         self.rag = rag
         self.cfg = cfg
         self._model_name = resolve_model_settings()["hf_name"]
@@ -29,7 +41,6 @@ class FTSRetriever:
             if not self.rag.db.fts5_ready(cur):
                 return out
 
-            # prefer user query; fallback to expanded
             _fts_kwargs = dict(
                 max_terms=int(self.cfg.fts_max_terms),
                 min_len=int(self.cfg.fts_min_len),
@@ -52,10 +63,12 @@ class FTSRetriever:
     def _memories(self, cur, qs: QueryState, match_q: str) -> list[Candidate]:
         out: list[Candidate] = []
 
-        rows = self._fts_memory_rows(
+        rows = self.memory_repo.fts_rows(
             cur,
             match_q=match_q,
             top_k=max(1, int(self.cfg.fts_top_k_mem)),
+            model_name=self._model_name,
+            memory_mode=self.cfg.memory_mode,
         )
         ranks = [float(r.get("rank") or 0.0) for r in rows]
         lex_scores = normalize_bm25_to_01(ranks)
@@ -73,8 +86,7 @@ class FTSRetriever:
             sim = 0.0
             if qs.query_vec is not None:
                 try:
-                    blob = rd.get("embedding")
-                    vec = self.rag._blob_to_array(blob) if blob is not None else None
+                    vec = blob_to_array(rd.get("embedding"))
                     if vec is not None:
                         sim = float(np.dot(qs.query_vec, vec))
                 except Exception:
@@ -87,7 +99,7 @@ class FTSRetriever:
                 except Exception:
                     kw = 0.0
 
-            parts = self.rag._json_loads_list(rd.get("participants"))
+            parts = json_loads_list(rd.get("participants"))
             out.append(Candidate(
                 source="memory",
                 id=mid,
@@ -98,7 +110,6 @@ class FTSRetriever:
                     "date_created": rd.get("date_created"),
                     "participants": parts,
                     "entities": rd.get("entities"),
-                    # optional debug-only:
                     "_bm25": float(rd.get("rank") or 0.0),
                 },
                 features={"sim": sim, "kw": float(kw), "lex": float(lex), "time": 0.0, "entity": 0.0, "prio": 0.0},
@@ -110,10 +121,11 @@ class FTSRetriever:
     def _histories(self, cur, qs: QueryState, match_q: str) -> list[Candidate]:
         out: list[Candidate] = []
 
-        rows = self._fts_history_rows(
+        rows = self.history_repo.fts_rows(
             cur,
             match_q=match_q,
             top_k=max(1, int(self.cfg.fts_top_k_hist)),
+            model_name=self._model_name,
         )
         ranks = [float(r.get("rank") or 0.0) for r in rows]
         lex_scores = normalize_bm25_to_01(ranks)
@@ -131,8 +143,7 @@ class FTSRetriever:
             sim = 0.0
             if qs.query_vec is not None:
                 try:
-                    blob = rd.get("embedding")
-                    vec = self.rag._blob_to_array(blob) if blob is not None else None
+                    vec = blob_to_array(rd.get("embedding"))
                     if vec is not None:
                         sim = float(np.dot(qs.query_vec, vec))
                 except Exception:
@@ -145,7 +156,7 @@ class FTSRetriever:
                 except Exception:
                     kw = 0.0
 
-            parts = self.rag._json_loads_list(rd.get("participants"))
+            parts = json_loads_list(rd.get("participants"))
             out.append(Candidate(
                 source="history",
                 id=hid,
@@ -165,115 +176,3 @@ class FTSRetriever:
             ))
 
         return out
-
-    def _fts_history_rows(
-        self,
-        cursor,
-        *,
-        match_q: str,
-        top_k: int,
-    ) -> List[dict]:
-        if not match_q:
-            return []
-        if not self.rag.db.table_exists(cursor, "history_fts"):
-            return []
-
-        cols = ["h.id", "bm25(history_fts) AS rank", "h.role", "h.content", "h.timestamp"]
-        cols.append("e.embedding")
-        opt = []
-        for c in ("message_id", "speaker", "target", "participants", "entities"):
-            if c in self.rag._history_cols:
-                opt.append(f"h.{c}")
-        cols += opt
-
-        where = "h.character_id=? AND h.is_active=0"
-        params: list[Any] = [self.rag.character_id]
-        if "is_deleted" in self.rag._history_cols:
-            where += " AND h.is_deleted=0"
-
-        try:
-            cursor.execute(
-                f"""
-                SELECT {", ".join(cols)}
-                FROM history_fts
-                JOIN history h ON h.id = history_fts.rowid
-                LEFT JOIN embeddings e
-                  ON e.source_table='history' AND e.source_id=h.id
-                  AND e.character_id=h.character_id AND e.model_name=?
-                WHERE history_fts MATCH ? AND {where}
-                ORDER BY rank
-                LIMIT ?
-                """,
-                tuple([self._model_name, match_q] + params + [int(top_k)]),
-            )
-            rows = cursor.fetchall() or []
-            keys = [c.split(" AS ")[-1].split(".")[-1] for c in cols]
-            out = []
-            for r in rows:
-                rd = dict(zip(keys, r))
-                out.append(rd)
-            return out
-        except Exception:
-            return []
-
-    def _fts_memory_rows(
-        self,
-        cursor,
-        *,
-        match_q: str,
-        top_k: int,
-    ) -> List[dict]:
-        if not match_q:
-            return []
-        if not self.rag.db.table_exists(cursor, "memories_fts"):
-            return []
-
-        cols = [
-            "m.eternal_id",
-            "bm25(memories_fts) AS rank",
-            "m.content",
-            "m.type",
-            "m.priority",
-            "m.date_created",
-            "m.participants",
-        ]
-        cols.append("e.embedding")
-        if "is_forgotten" in self.rag._mem_cols:
-            cols.append("m.is_forgotten")
-        if "entities" in self.rag._mem_cols:
-            cols.append("m.entities")
-
-        where = "m.character_id=? AND m.is_deleted=0"
-        params: list[Any] = [self.rag.character_id]
-        if "is_forgotten" in self.rag._mem_cols:
-            if self.cfg.memory_mode == "forgotten":
-                where += " AND m.is_forgotten=1"
-            elif self.cfg.memory_mode == "active":
-                where += " AND m.is_forgotten=0"
-            elif self.cfg.memory_mode == "all":
-                pass
-
-        try:
-            cursor.execute(
-                f"""
-                SELECT {", ".join(cols)}
-                FROM memories_fts
-                JOIN memories m ON m.id = memories_fts.rowid
-                LEFT JOIN embeddings e
-                  ON e.source_table='memories' AND e.source_id=m.eternal_id
-                  AND e.character_id=m.character_id AND e.model_name=?
-                WHERE memories_fts MATCH ? AND {where}
-                ORDER BY rank
-                LIMIT ?
-                """,
-                tuple([self._model_name, match_q] + params + [int(top_k)]),
-            )
-            rows = cursor.fetchall() or []
-            keys = [c.split(" AS ")[-1].split(".")[-1] for c in cols]
-            out = []
-            for r in rows:
-                rd = dict(zip(keys, r))
-                out.append(rd)
-            return out
-        except Exception:
-            return []
