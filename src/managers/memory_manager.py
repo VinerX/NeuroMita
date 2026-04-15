@@ -288,6 +288,10 @@ class MemoryManager:
 
     def load_memories(self):
         self._calculate_total_characters()
+        try:
+            self._forget_over_limit_memories()
+        except Exception:
+            pass
 
     def save_memories(self):
         pass
@@ -298,11 +302,21 @@ class MemoryManager:
             with self.db.connection() as conn:
                 cur = conn.cursor()
                 cur.execute(
-                    "SELECT 1 FROM memories WHERE character_id=? AND content=? AND is_deleted=0 LIMIT 1",
+                    "SELECT id, is_deleted, is_forgotten FROM memories WHERE character_id=? AND content=? LIMIT 1",
                     (self.character_name, str(content)),
                 )
-                if cur.fetchone():
-                    return None
+                row = cur.fetchone()
+                if row:
+                    mem_id, is_deleted, is_forgotten = row
+                    if is_deleted or is_forgotten:
+                        # Восстанавливаем удалённое/забытое воспоминание вместо создания дубля
+                        cur.execute(
+                            "UPDATE memories SET is_deleted=0, is_forgotten=0, priority=? WHERE id=?",
+                            (priority, mem_id),
+                        )
+                        conn.commit()
+                        self._calculate_total_characters()
+                    return mem_id
 
         # забываем ПЕРЕД добавлением новой
         self._forget_over_limit_memories()
@@ -864,6 +878,13 @@ class MemoryManager:
         wrapper_tpl = load_optional_template(
             self.prompt_set_path, "Structural/memory_wrapper.txt", self._DEFAULT_WRAPPER_TEMPLATE
         )
+
+        # Enforce capacity before displaying — handles cases where the setting
+        # was changed or memories accumulated without add_memory being called.
+        try:
+            self._forget_over_limit_memories()
+        except Exception:
+            pass
 
         cols = self._mem_cols()
 
