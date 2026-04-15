@@ -92,6 +92,22 @@ class RAGManager:
 
         self._embed_failed_warned: bool = False  # warn once when embed model unavailable
 
+    def get_forgotten_count(self) -> int:
+        """Count forgotten-but-not-deleted memories for this character."""
+        if "is_forgotten" not in self._schema.mem_cols:
+            return 0
+        try:
+            with self.db.connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT COUNT(*) FROM memories WHERE character_id=? AND is_forgotten=1 AND is_deleted=0",
+                    (self.character_id,)
+                )
+                row = cursor.fetchone()
+                return int(row[0]) if row else 0
+        except Exception:
+            return 0
+
     @property
     def schema(self):
         """Public snapshot of which optional columns exist in history/memories.

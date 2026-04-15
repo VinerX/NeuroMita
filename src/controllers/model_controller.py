@@ -1073,7 +1073,7 @@ class ModelController:
             return None
 
     # Default RAG output templates
-    _DEFAULT_RAG_MEM_ITEM = "- [{score:.3f}] ({type}, prio={priority}, date={date}) {content}"
+    _DEFAULT_RAG_MEM_ITEM = "[{score:.3f}] N:{id} ({type}, prio={priority}, date={date}) {content}"
     _DEFAULT_RAG_HIST_ITEM = "- [{score:.3f}] ({date}){meta} {content}"
     _DEFAULT_RAG_WRAPPER = "<relevant_memories>\n{memory_block}\n</relevant_memories>\n\n<past_context>\n{history_block}\n</past_context>"
 
@@ -1096,6 +1096,7 @@ class ModelController:
                 rag_limit = int(self.settings.get("RAG_MAX_RESULTS", 8))
                 rag_thr = float(self.settings.get("RAG_SIM_THRESHOLD", 0.4))
                 results = rag.search_relevant(str(final_input), limit=rag_limit, threshold=rag_thr)
+                forgotten_count = rag.get_forgotten_count()
 
                 if results:
                     mem_tpl = load_optional_template(
@@ -1126,13 +1127,14 @@ class ModelController:
                             try:
                                 mem_lines.append(mem_tpl.format(
                                     score=float(r.get("score", 0)),
+                                    id=r.get("id", "?"),
                                     type=r.get("type", ""),
                                     priority=r.get("priority", ""),
                                     date=r.get("date_created", ""),
                                     content=_clip(r.get("content")),
                                 ))
                             except (KeyError, IndexError, ValueError):
-                                mem_lines.append(f"- [{r.get('score', 0):.3f}] {_clip(r.get('content'))}")
+                                mem_lines.append(f"[{r.get('score', 0):.3f}] N:{r.get('id', '?')} {_clip(r.get('content'))}")
                         elif src == "graph":
                             graph_lines.append(f"- [{r.get('score', 0):.2f}] {_clip(r.get('content'))}")
                         elif src == "history":
@@ -1159,21 +1161,25 @@ class ModelController:
                                 hist_lines.append(f"- [{r.get('score', 0):.3f}] {_clip(r.get('content'))}")
 
                     if mem_lines or hist_lines or graph_lines:
+                        mem_header = "# score=RAG relevance (0..1); forgotten memories — use N:id with memory ops\n"
+                        memory_block_str = (mem_header + "\n".join(mem_lines)) if mem_lines else ""
                         try:
                             rag_block = wrapper_tpl.format(
-                                memory_block="\n".join(mem_lines) if mem_lines else "",
+                                memory_block=memory_block_str,
                                 history_block="\n".join(hist_lines) if hist_lines else "",
                                 graph_block="\n".join(graph_lines) if graph_lines else "",
                             )
                         except (KeyError, IndexError):
                             parts = []
                             if mem_lines:
-                                parts.append("<relevant_memories>\n" + "\n".join(mem_lines) + "\n</relevant_memories>")
+                                parts.append("<relevant_memories>\n" + memory_block_str + "\n</relevant_memories>")
                             if hist_lines:
                                 parts.append("<past_context>\n" + "\n".join(hist_lines) + "\n</past_context>")
                             if graph_lines:
                                 parts.append("<entity_knowledge>\n" + "\n".join(graph_lines) + "\n</entity_knowledge>")
                             rag_block = "\n\n".join(parts)
+                        if forgotten_count > 0:
+                            rag_block += f"\nForgotten pool: {forgotten_count} memories"
 
                         separator = "\n\n" if system_input else ""
                         system_input = f"{system_input}{separator}{rag_block}"
