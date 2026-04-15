@@ -83,6 +83,8 @@ class CrossEncoderReranker:
             if self._failed:
                 return False
             try:
+                from handlers.embedding_handler import _ensure_torch_and_transformers
+                _ensure_torch_and_transformers()
                 import torch
                 cache_dir = _checkpoints_dir()
                 from managers.settings_manager import SettingsManager
