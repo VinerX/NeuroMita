@@ -79,9 +79,53 @@ class RAGManager:
         self.db = DatabaseManager()
 
         self.event_bus = get_event_bus()
-        self._history_cols = self.db.get_table_columns("history")
-        self._mem_cols = self.db.get_table_columns("memories")
+
+        from managers.rag.pipeline.types import SchemaInfo
+        from managers.rag.pipeline.repositories import HistoryRepository, MemoryRepository
+
+        self._schema = SchemaInfo(
+            history_cols=frozenset(self.db.get_table_columns("history")),
+            mem_cols=frozenset(self.db.get_table_columns("memories")),
+        )
+        self.history_repo = HistoryRepository(self.db, character_id, self._schema)
+        self.memory_repo = MemoryRepository(self.db, character_id, self._schema)
+
         self._embed_failed_warned: bool = False  # warn once when embed model unavailable
+
+    def get_forgotten_count(self) -> int:
+        """Count forgotten-but-not-deleted memories for this character."""
+        if "is_forgotten" not in self._schema.mem_cols:
+            return 0
+        try:
+            with self.db.connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT COUNT(*) FROM memories WHERE character_id=? AND is_forgotten=1 AND is_deleted=0",
+                    (self.character_id,)
+                )
+                row = cursor.fetchone()
+                return int(row[0]) if row else 0
+        except Exception:
+            return 0
+
+    @property
+    def schema(self):
+        """Public snapshot of which optional columns exist in history/memories.
+
+        Use this instead of the private ``_history_cols`` / ``_mem_cols``
+        attributes from pipeline components.
+        """
+        return self._schema
+
+    # Backward-compat shims — existing internal code that still uses
+    # _history_cols / _mem_cols continues to work without change.
+    @property
+    def _history_cols(self):
+        return self._schema.history_cols
+
+    @property
+    def _mem_cols(self):
+        return self._schema.mem_cols
 
     def _current_model_name(self) -> str:
         """Возвращает HF-имя текущей модели эмбеддингов (разрешает пресет)."""
@@ -783,7 +827,12 @@ class RAGManager:
 
         # vector recall (always useful if query_vec exists)
         if qs.query_vec is not None and cfg.vector_search_enabled:
-            retrievers.append(VectorRetriever(rag=self, cfg=cfg))
+            retrievers.append(VectorRetriever(
+                history_repo=self.history_repo,
+                memory_repo=self.memory_repo,
+                rag=self,
+                cfg=cfg,
+            ))
         elif cfg.vector_search_enabled and qs.query_vec is None and not self._embed_failed_warned:
             self._embed_failed_warned = True
             logger.warning(
@@ -795,12 +844,22 @@ class RAGManager:
         # keyword-only recall (embedding IS NULL candidates)
         # In two_stage we still allow it for fallback-to-union when vector set is empty.
         if cfg.kw_enabled and qs.keywords:
-            retrievers.append(KeywordOnlyRetriever(rag=self, cfg=cfg))
+            retrievers.append(KeywordOnlyRetriever(
+                history_repo=self.history_repo,
+                memory_repo=self.memory_repo,
+                rag=self,
+                cfg=cfg,
+            ))
 
         # FTS recall
         # In two_stage it is used mainly to add lex features to vector candidates (combiner decides).
         if cfg.use_fts:
-            retrievers.append(FTSRetriever(rag=self, cfg=cfg))
+            retrievers.append(FTSRetriever(
+                history_repo=self.history_repo,
+                memory_repo=self.memory_repo,
+                rag=self,
+                cfg=cfg,
+            ))
 
         # Graph retriever (entity-relation triples from knowledge graph).
         if cfg.search_graph:

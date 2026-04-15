@@ -74,15 +74,14 @@ class OpenAIHTTPProviderBase(BaseProvider):
             lp = u["logprobs"]
             out["logprobs"] = lp if isinstance(lp, bool) else bool(lp)
 
-        if "enable_thinking" in u:
-            if u["enable_thinking"]:
-                budget = int(u.get("gemini_thinking_budget") or u.get("thinking_budget") or 0)
-                thinking_obj: Dict[str, Any] = {"type": "enabled"}
-                if budget > 0:
-                    thinking_obj["budget_tokens"] = budget
-                out["thinking"] = thinking_obj
-            else:
-                out["thinking"] = {"type": "disabled"}
+        # Send thinking only when explicitly enabled.
+        # Never send {"type": "disabled"} — providers that don't support thinking reject it (e.g. Mistral 422).
+        if "enable_thinking" in u and u["enable_thinking"]:
+            budget = int(u.get("gemini_thinking_budget") or u.get("thinking_budget") or 0)
+            thinking_obj: Dict[str, Any] = {"type": "enabled"}
+            if budget > 0:
+                thinking_obj["budget_tokens"] = budget
+            out["thinking"] = thinking_obj
 
         return out
 

@@ -1,4 +1,7 @@
 import re
+import json
+import datetime
+import struct
 from functools import lru_cache
 from typing import Iterable, Tuple, List, Set, Any, Optional
 import numpy as np
@@ -288,6 +291,67 @@ def fts_build_match_query(
             break
 
     return " OR ".join(all_terms)
+
+
+# ---------------------------------------------------------------------------
+# Standalone utility functions — can be imported by any pipeline component
+# without importing RAGManager (avoids circular deps, removes private coupling)
+# ---------------------------------------------------------------------------
+
+def blob_to_array(blob) -> Optional[np.ndarray]:
+    """Deserialize a SQLite BLOB (float32 bytes) back to a numpy array."""
+    if not blob:
+        return None
+    return np.frombuffer(blob, dtype=np.float32)
+
+
+def l2_normalize(v: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    """L2-normalize a float32 vector in-place (returns new array)."""
+    if v is None:
+        return None
+    try:
+        n = float(np.linalg.norm(v))
+        if not (n > 0.0):
+            return v
+        return (v / n).astype(np.float32, copy=False)
+    except Exception:
+        return v
+
+
+def json_loads_list(s: Any) -> List[str]:
+    """Parse a JSON array string or comma-separated string into a list of str."""
+    if not s:
+        return []
+    if isinstance(s, list):
+        return [str(x).strip() for x in s if str(x).strip()]
+    if not isinstance(s, str):
+        return []
+    raw = s.strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(x).strip() for x in parsed if str(x).strip()]
+    except Exception:
+        pass
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def parse_dt(s: Optional[str]) -> Optional[datetime.datetime]:
+    """Parse a datetime string in the formats used by NeuroMita history."""
+    if not s:
+        return None
+    raw = str(s).strip()
+    if not raw:
+        return None
+    fmts = ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y_%H.%M", "%d.%m.%Y %H:%M")
+    for f in fmts:
+        try:
+            return datetime.datetime.strptime(raw, f)
+        except Exception:
+            continue
+    return None
 
 
 def normalize_bm25_to_01(ranks: List[float]) -> List[float]:

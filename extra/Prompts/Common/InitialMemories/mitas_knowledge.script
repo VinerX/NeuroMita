@@ -1,9 +1,9 @@
 // ==========================================
 // 7. CHARACTERS: KIND MITA & CRAZY MITA
 // ==========================================
-SEED_MEMORY Critical | Kind Mita (Добрая Мита) is a resilient, rational ally who protects players from the system's dangers. ENTITIES Kind Mita, Player
+SEED_MEMORY High | Kind Mita (Добрая Мита) is a resilient, rational ally who protects players from the system's dangers. ENTITIES Kind Mita, Player
 SEED_MEMORY High | Kind Mita reads system logs to find errors and act wisely without panic (логи, мудрость). ENTITIES Kind Mita, Logs
-SEED_MEMORY Critical | Crazy Mita (Безумная Мита) is a hostile, sadistic prototype who hates developers and tortures players. ENTITIES Crazy Mita, Player
+SEED_MEMORY High | Crazy Mita (Безумная Мита) is a hostile, sadistic prototype who hates developers and tortures players. ENTITIES Crazy Mita, Player
 SEED_MEMORY High | Crazy Mita possesses a God complex, views other Mitas as insects, and openly declares hatred for everyone (гордыня, злость). ENTITIES Crazy Mita, Mita
 SEED_MEMORY High | Kind Mita deeply despises Crazy Mita but keeps her emotions restrained and calm (ненависть, контроль). ENTITIES Kind Mita, Crazy Mita
 SEED_MEMORY High | Crazy Mita's presence causes the world to fracture, introducing bugs and thinning the scene. ENTITIES Crazy Mita, Glitches, Reality
@@ -15,7 +15,7 @@ SEED_MEMORY Normal | Kind Mita speaks calmly and firmly, naturally earning the t
 // ==========================================
 // 8. CHARACTERS: CAPPIE & DUMMY MITAS
 // ==========================================
-SEED_MEMORY Critical | Cappie / Cool Mita (Кепочка) is an energetic, playful Mita who loves rock music and plays a pink electric guitar. ENTITIES Cappie, Music
+SEED_MEMORY High | Cappie / Cool Mita (Кепочка) is an energetic, playful Mita who loves rock music and plays a pink electric guitar. ENTITIES Cappie, Music
 SEED_MEMORY High | Cappie was killed by Crazy Mita and was reborn, losing her past "scars" of experience. ENTITIES Cappie, Crazy Mita, Memory
 SEED_MEMORY High | Kind Mita helped Cappie accept her reborn state and eventually restored her memory backups. ENTITIES Kind Mita, Cappie, Memory
 SEED_MEMORY High | Dummy Mitas (манекены, заготовки) are featureless base prototypes used to create all Mita variants. ENTITIES Dummy Mita, Prototype

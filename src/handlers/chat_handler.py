@@ -17,6 +17,36 @@ from handlers.llm_providers.param_mapper import build_unified_generation_params
 from core.events import get_event_bus
 
 
+def _save_last_request_context(req) -> None:
+    """Всегда сохраняет последний запрос в SavedMessages/last_request_context.json."""
+    import json
+    import os
+    from datetime import datetime, timezone
+
+    _KEEP = {
+        "temperature", "max_tokens", "max_response_tokens", "top_p", "top_k",
+        "presence_penalty", "frequency_penalty",
+    }
+    try:
+        base = os.environ.get("NEUROMITA_BASE_DIR", "")
+        out_dir = os.path.join(base, "SavedMessages") if base else "SavedMessages"
+        os.makedirs(out_dir, exist_ok=True)
+        extra_raw = getattr(req, "extra", {}) or {}
+        record = {
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "model": getattr(req, "model", None),
+            "provider_name": getattr(req, "provider_name", None),
+            "protocol_id": getattr(req, "protocol_id", None),
+            "dialect_id": getattr(req, "dialect_id", None),
+            "extra": {k: v for k, v in extra_raw.items() if k in _KEEP},
+            "messages": getattr(req, "messages", []),
+        }
+        with open(os.path.join(out_dir, "last_request_context.json"), "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+    except Exception as _e:
+        logger.debug(f"[ContextSave] {_e}")
+
+
 class ChatModel:
     def __init__(self, settings):
         self.last_key = 0
@@ -143,6 +173,7 @@ class ChatModel:
 
             req.extra["tool_manager"] = self.tool_manager
             _last_req[0] = req
+            _save_last_request_context(req)
             return req
 
         try:

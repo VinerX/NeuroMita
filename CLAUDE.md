@@ -2,6 +2,10 @@
 
 ## Python Environment
 
+
+Промты персонажей использовать из extra/Prompts, а не Prompts!
+
+
 **Venv с torch/transformers/CUDA:**
 ```
 C:\Games\NeuroMita\Venv\Scripts\python.exe

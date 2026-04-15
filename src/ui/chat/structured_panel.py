@@ -38,6 +38,11 @@ CLR_TOOL_BG       = "rgba(167, 139, 250, 0.05)"
 CLR_TOOL_HEADER   = "#A78BFA"
 CLR_TOOL_TEXT     = "#DDD6FE"
 
+CLR_GRAPH_BORDER  = "rgba(56, 189, 248, 0.2)"
+CLR_GRAPH_BG      = "rgba(56, 189, 248, 0.05)"
+CLR_GRAPH_HEADER  = "#38BDF8"
+CLR_GRAPH_TEXT    = "#BAE6FD"
+
 def _fmt_val(v: float) -> str: return "±0" if v == 0 else f"+{v:.2g}" if v > 0 else f"{v:.2g}"
 def _val_color(v: float) -> str: return CLR_POSITIVE if v > 0 else CLR_NEGATIVE if v < 0 else CLR_NEUTRAL
 
@@ -116,7 +121,7 @@ class SegmentCard(QFrame):
             layout.addWidget(line)
 
 class MemoryBlock(QFrame):
-    def __init__(self, mem_add: list, mem_update: list, mem_delete: list, font_sm: int, parent=None):
+    def __init__(self, mem_add: list, mem_update: list, mem_delete: list, font_sm: int, parent=None, mem_merge: list = None):
         super().__init__(parent)
         self.setStyleSheet(f"QFrame {{ background-color: {CLR_MEMORY_BG}; border: 1px solid {CLR_MEMORY_BORDER}; border-radius: 8px; margin: 2px 0px; }}")
         layout = QVBoxLayout(self)
@@ -127,7 +132,7 @@ class MemoryBlock(QFrame):
         header.setStyleSheet(f"color: {CLR_MEMORY_HEADER}; font-weight: bold; font-size: {font_sm}pt; background: transparent; border: none;")
         layout.addWidget(header)
 
-        for lst, prefix in [(mem_add, "+"), (mem_update, "~"), (mem_delete, "-")]:
+        for lst, prefix in [(mem_add, "+"), (mem_update, "~"), (mem_delete, "-"), (mem_merge or [], "↔")]:
             for entry in lst:
                 lbl = QLabel(f"{prefix} {entry}", self)
                 lbl.setWordWrap(True)
@@ -154,6 +159,41 @@ class ReminderBlock(QFrame):
                 lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 lbl.setStyleSheet(f"color: {CLR_REMIND_TEXT}; font-size: {font_sm}pt; background: transparent; border: none; padding-left: 4px;")
                 layout.addWidget(lbl)
+
+class GraphBlock(QFrame):
+    def __init__(self, entities: list, relations: list, font_sm: int, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(f"QFrame {{ background-color: {CLR_GRAPH_BG}; border: 1px solid {CLR_GRAPH_BORDER}; border-radius: 8px; margin: 2px 0px; }}")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(2)
+
+        header = QLabel("\U0001f9e0 graph", self)
+        header.setStyleSheet(f"color: {CLR_GRAPH_HEADER}; font-weight: bold; font-size: {font_sm}pt; background: transparent; border: none;")
+        layout.addWidget(header)
+
+        for ent in entities:
+            if isinstance(ent, dict):
+                text = f"[{ent.get('type', '')}] {ent.get('name', '?')}"
+            else:
+                parts = str(ent).split(":", 1)
+                text = f"[{parts[1].strip()}] {parts[0].strip()}" if len(parts) == 2 else str(ent)
+            lbl = QLabel(f"  {text}", self)
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            lbl.setStyleSheet(f"color: {CLR_GRAPH_TEXT}; font-size: {font_sm}pt; background: transparent; border: none; padding-left: 4px;")
+            layout.addWidget(lbl)
+
+        for rel in relations:
+            if isinstance(rel, dict):
+                text = f"{rel.get('s','?')} → {rel.get('p','?')} → {rel.get('o','?')}"
+            else:
+                parts = str(rel).split("|", 2)
+                text = f"{parts[0]} → {parts[1]} → {parts[2]}" if len(parts) == 3 else str(rel)
+            lbl = QLabel(f"  {text}", self)
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            lbl.setStyleSheet(f"color: {CLR_GRAPH_TEXT}; font-size: {font_sm}pt; background: transparent; border: none; padding-left: 4px;")
+            layout.addWidget(lbl)
+
 
 class ToolCallBlock(QFrame):
     def __init__(self, tool_name: str, tool_args: dict, font_sm: int, parent=None):
@@ -235,13 +275,17 @@ class StructuredOutputPanel(QFrame):
         if data.get("tool_call"):
             layout.addWidget(ToolCallBlock(data["tool_call"].get("name", "?"), data["tool_call"].get("args") or {}, self._font_sm, layout.parentWidget()))
 
-        mem_add, mem_update, mem_delete = data.get("memory_add") or [], data.get("memory_update") or [], data.get("memory_delete") or []
-        if mem_add or mem_update or mem_delete:
-            layout.addWidget(MemoryBlock(mem_add, mem_update, mem_delete, self._font_sm, layout.parentWidget()))
+        mem_add, mem_update, mem_delete, mem_merge = data.get("memory_add") or [], data.get("memory_update") or [], data.get("memory_delete") or [], data.get("memory_merge") or []
+        if mem_add or mem_update or mem_delete or mem_merge:
+            layout.addWidget(MemoryBlock(mem_add, mem_update, mem_delete, self._font_sm, layout.parentWidget(), mem_merge=mem_merge))
 
         rem_add, rem_delete = data.get("reminder_add") or [], data.get("reminder_delete") or []
         if rem_add or rem_delete:
             layout.addWidget(ReminderBlock(rem_add, rem_delete, self._font_sm, layout.parentWidget()))
+
+        entities, relations = data.get("entities") or [], data.get("relations") or []
+        if entities or relations:
+            layout.addWidget(GraphBlock(entities, relations, self._font_sm, layout.parentWidget()))
 
     def _build_json_view(self, layout: QVBoxLayout, data: dict):
         raw = data.get("_raw_json") or json.dumps({k: v for k, v in data.items() if k != "_raw_json"}, ensure_ascii=False, indent=2)

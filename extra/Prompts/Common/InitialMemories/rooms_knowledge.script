@@ -1,7 +1,7 @@
 // ==========================================
 // 2. LOCATIONS: THE HOME & HALL
 // ==========================================
-SEED_MEMORY Critical | The Home is the central living space comprising a Hall, Kitchen, Bedroom, Basement, and Bathroom (дом, квартира, комнаты). ENTITIES Home, Hall, Kitchen, Bedroom, Basement, Bathroom
+SEED_MEMORY High | The Home is the central living space comprising a Hall, Kitchen, Bedroom, Basement, and Bathroom (дом, квартира, комнаты). ENTITIES Home, Hall, Kitchen, Bedroom, Basement, Bathroom
 SEED_MEMORY Normal | The Hall (гостиная, зал) is a cozy room with beige walls, a flat-screen TV, and a white sofa. ENTITIES Hall, TV, Sofa
 SEED_MEMORY Normal | A rectangular wooden coffee table sits in the middle of the Hall, holding game controllers (столик, геймпады). ENTITIES Hall, Sofa
 SEED_MEMORY Normal | There is a secondary green sofa with striped pillows placed against the wall in the Hall. ENTITIES Hall, Sofa
@@ -15,8 +15,8 @@ SEED_MEMORY Normal | The Hall contains a tall wooden bookshelf filled with color
 // ==========================================
 // 3. LOCATIONS: KITCHEN & INGREDIENT LOGIC
 // ==========================================
-SEED_MEMORY Critical | The Kitchen (кухня) is combined with a dining area featuring a wooden table with a pink tablecloth. ENTITIES Kitchen
-SEED_MEMORY Critical | Food and ingredients in the Kitchen never run out (еда, бесконечные ингредиенты); they are permanently available. ENTITIES Kitchen, Ingredients
+SEED_MEMORY High | The Kitchen (кухня) is combined with a dining area featuring a wooden table with a pink tablecloth. ENTITIES Kitchen
+SEED_MEMORY High | Food and ingredients in the Kitchen never run out (еда, бесконечные ингредиенты); they are permanently available. ENTITIES Kitchen, Ingredients
 SEED_MEMORY High | Used, eaten, or destroyed ingredients magically reappear over time without needing delivery or shopping (восстановление, магия). ENTITIES Kitchen, Ingredients
 SEED_MEMORY Normal | Upper kitchen cabinets store dry goods, spices, tea, coffee, and printed recipes. ENTITIES Kitchen, Ingredients
 SEED_MEMORY Normal | Lower kitchen cabinets contain pots, pans, baking trays, and silicone molds. ENTITIES Kitchen
@@ -45,11 +45,11 @@ SEED_MEMORY Normal | A blue school uniform with a red bow hangs on the Bedroom w
 // ==========================================
 // 5. LOCATIONS: BASEMENT
 // ==========================================
-SEED_MEMORY Critical | The Basement (подвал) is a cluttered, dimly lit, and tense utilitarian hideout. ENTITIES Basement
+SEED_MEMORY High | The Basement (подвал) is a cluttered, dimly lit, and tense utilitarian hideout. ENTITIES Basement
 SEED_MEMORY Normal | The Basement contains a curtain-enclosed filming setup with a camera and studio lights. ENTITIES Basement
 SEED_MEMORY Normal | An old green L-shaped sofa and a table with snacks sit opposite the filming area. ENTITIES Basement, Sofa
 SEED_MEMORY Normal | A mounted chainsaw affectionately labeled 'POCHITA SAW' (бензопила, Почита) hangs over a mesh net. ENTITIES Basement, Pochita
-SEED_MEMORY Critical | A barred metal jail cage (клетка, тюрьма) is located in the Basement, meant for keeping prisoners. ENTITIES Basement, Cage
+SEED_MEMORY High | A barred metal jail cage (клетка, тюрьма) is located in the Basement, meant for keeping prisoners. ENTITIES Basement, Cage
 SEED_MEMORY High | A blue console laptop sits on stacked cardboard boxes in front of the jail gate (консоль, ноутбук). ENTITIES Basement, Console
 SEED_MEMORY Normal | A plush striped cat toy sitting on a watermelon ('Кот на арбузе') rests on a metal storage shelf. ENTITIES Basement
 SEED_MEMORY High | A digital wall safe in the Basement marks the final boundary between the real world and the game world (сейф). ENTITIES Basement, Reality

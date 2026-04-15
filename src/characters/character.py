@@ -648,17 +648,21 @@ class Character:
             update_str = (update_str or "").strip()
             if not update_str or "|" not in update_str:
                 continue
-            parts = [p.strip() for p in update_str.split("|", 1)]
-            if len(parts) == 2 and parts[0].isdigit():
-                try:
-                    self.memory_system.update_memory(
-                        number=int(parts[0]),
-                        priority=None,
-                        content=parts[1],
-                    )
-                    logger.info(f"[{self.char_id}] Structured: updated memory #{parts[0]}")
-                except Exception as e:
-                    logger.error(f"[{self.char_id}] Structured: error updating memory #{parts[0]}: {e}")
+            # Format: "number|priority|content" or legacy "number|content"
+            parts = [p.strip() for p in update_str.split("|", 2)]
+            if not parts[0].isdigit():
+                continue
+            number = int(parts[0])
+            valid_priorities = {"low", "normal", "high", "critical"}
+            if len(parts) == 3 and parts[1].lower() in valid_priorities:
+                priority, content = parts[1].lower(), parts[2]
+            else:
+                priority, content = None, "|".join(parts[1:])
+            try:
+                self.memory_system.update_memory(number=number, priority=priority, content=content)
+                logger.info(f"[{self.char_id}] Structured: updated memory #{number}")
+            except Exception as e:
+                logger.error(f"[{self.char_id}] Structured: error updating memory #{number}: {e}")
 
         for delete_str in (structured.memory_delete or []):
             delete_str = (delete_str or "").strip()
@@ -685,6 +689,34 @@ class Character:
                 logger.info(f"[{self.char_id}] Structured: deleted memory(ies): {delete_str}")
             except Exception as e:
                 logger.error(f"[{self.char_id}] Structured: error deleting memory '{delete_str}': {e}")
+
+        for merge_str in (structured.memory_merge or []):
+            merge_str = (merge_str or "").strip()
+            # Format: "id1,id2,..." or "id1,id2,...:merged content"
+            ids_part, _, merged_content = merge_str.partition(":")
+            id_strs = [s.strip() for s in ids_part.split(",")]
+            if len(id_strs) < 2 or not all(s.isdigit() for s in id_strs):
+                logger.warning(f"[{self.char_id}] Structured: memory_merge bad format: {merge_str!r}")
+                continue
+            tgt_id = int(id_strs[0])
+            src_ids = [int(s) for s in id_strs[1:]]
+            try:
+                if not merged_content.strip():
+                    parts = [self.memory_system.get_memory_content(tgt_id) or ""]
+                    for sid in src_ids:
+                        c = self.memory_system.get_memory_content(sid) or ""
+                        if c:
+                            parts.append(c)
+                    merged_content = " | ".join(p for p in parts if p)
+                ok = self.memory_system.update_memory(number=tgt_id, content=merged_content.strip())
+                if not ok:
+                    logger.error(f"[{self.char_id}] Structured: memory_merge target #{tgt_id} not found — aborting merge, sources NOT deleted")
+                    continue
+                for sid in src_ids:
+                    self.memory_system.delete_memory(sid, save_as_missed)
+                logger.info(f"[{self.char_id}] Structured: merged memories {src_ids} → #{tgt_id}")
+            except Exception as e:
+                logger.error(f"[{self.char_id}] Structured: error merging {src_ids}→#{tgt_id}: {e}")
 
     def _apply_structured_reminder_ops(self, structured: StructuredResponse):
         """Apply reminder add/delete operations from a StructuredResponse."""

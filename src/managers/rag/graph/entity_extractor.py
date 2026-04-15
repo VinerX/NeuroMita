@@ -241,12 +241,18 @@ def store_extraction(
     # --- entities -----------------------------------------------------------
     name_to_id: Dict[str, int] = {}
     for ent in extraction.get("entities") or []:
-        if not isinstance(ent, dict):
+        # Support both flat string "name:type" and legacy dict {"name":..., "type":...}
+        if isinstance(ent, str):
+            parts = ent.split(":", 1)
+            raw_name = parts[0].strip()
+            etype = parts[1].strip().lower() if len(parts) == 2 else "thing"
+        elif isinstance(ent, dict):
+            raw_name = str(ent.get("name") or "").strip()
+            etype = str(ent.get("type") or "thing").strip().lower()
+        else:
             continue
-        raw_name = str(ent.get("name") or "").strip()
         if not raw_name:
             continue
-        etype = str(ent.get("type") or "thing").strip().lower()
         if etype not in ("person", "place", "thing", "concept"):
             etype = "thing"
 
@@ -263,11 +269,20 @@ def store_extraction(
 
     # --- relations ----------------------------------------------------------
     for rel in extraction.get("relations") or []:
-        if not isinstance(rel, dict):
+        # Support both flat string "subject|predicate|object" and legacy dict {"s":..., "p":..., "o":...}
+        if isinstance(rel, str):
+            parts = rel.split("|", 2)
+            if len(parts) != 3:
+                continue
+            subj = _normalize_entity_name(parts[0].strip())
+            pred = parts[1].strip().lower()
+            obj_ = _normalize_entity_name(parts[2].strip())
+        elif isinstance(rel, dict):
+            subj = _normalize_entity_name(str(rel.get("s") or ""))
+            pred = str(rel.get("p") or "").strip().lower()
+            obj_ = _normalize_entity_name(str(rel.get("o") or ""))
+        else:
             continue
-        subj = _normalize_entity_name(str(rel.get("s") or ""))
-        pred = str(rel.get("p") or "").strip().lower()
-        obj_ = _normalize_entity_name(str(rel.get("o") or ""))
         if not (subj and pred and obj_):
             continue
         if _is_blocked_entity(subj) or _is_blocked_entity(obj_) or _is_blocked_predicate(pred):

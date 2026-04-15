@@ -1073,7 +1073,7 @@ class ModelController:
             return None
 
     # Default RAG output templates
-    _DEFAULT_RAG_MEM_ITEM = "- [{score:.3f}] ({type}, prio={priority}, date={date}) {content}"
+    _DEFAULT_RAG_MEM_ITEM = "[{score:.3f}] N:{id} ({type}, prio={priority}, date={date}) {content}"
     _DEFAULT_RAG_HIST_ITEM = "- [{score:.3f}] ({date}){meta} {content}"
     _DEFAULT_RAG_WRAPPER = "<relevant_memories>\n{memory_block}\n</relevant_memories>\n\n<past_context>\n{history_block}\n</past_context>"
 
@@ -1096,6 +1096,7 @@ class ModelController:
                 rag_limit = int(self.settings.get("RAG_MAX_RESULTS", 8))
                 rag_thr = float(self.settings.get("RAG_SIM_THRESHOLD", 0.4))
                 results = rag.search_relevant(str(final_input), limit=rag_limit, threshold=rag_thr)
+                forgotten_count = rag.get_forgotten_count()
 
                 if results:
                     mem_tpl = load_optional_template(
@@ -1126,13 +1127,14 @@ class ModelController:
                             try:
                                 mem_lines.append(mem_tpl.format(
                                     score=float(r.get("score", 0)),
+                                    id=r.get("id", "?"),
                                     type=r.get("type", ""),
                                     priority=r.get("priority", ""),
                                     date=r.get("date_created", ""),
                                     content=_clip(r.get("content")),
                                 ))
                             except (KeyError, IndexError, ValueError):
-                                mem_lines.append(f"- [{r.get('score', 0):.3f}] {_clip(r.get('content'))}")
+                                mem_lines.append(f"[{r.get('score', 0):.3f}] N:{r.get('id', '?')} {_clip(r.get('content'))}")
                         elif src == "graph":
                             graph_lines.append(f"- [{r.get('score', 0):.2f}] {_clip(r.get('content'))}")
                         elif src == "history":
@@ -1159,21 +1161,30 @@ class ModelController:
                                 hist_lines.append(f"- [{r.get('score', 0):.3f}] {_clip(r.get('content'))}")
 
                     if mem_lines or hist_lines or graph_lines:
+                        mem_header = "# score=RAG relevance (0..1); forgotten memories — use N:id with memory ops\n"
+                        memory_block_str = (mem_header + "\n".join(mem_lines)) if mem_lines else ""
+                        graph_block_str = "\n".join(graph_lines) if graph_lines else ""
                         try:
                             rag_block = wrapper_tpl.format(
-                                memory_block="\n".join(mem_lines) if mem_lines else "",
+                                memory_block=memory_block_str,
                                 history_block="\n".join(hist_lines) if hist_lines else "",
-                                graph_block="\n".join(graph_lines) if graph_lines else "",
+                                graph_block=graph_block_str,
                             )
                         except (KeyError, IndexError):
                             parts = []
                             if mem_lines:
-                                parts.append("<relevant_memories>\n" + "\n".join(mem_lines) + "\n</relevant_memories>")
+                                parts.append("<relevant_memories>\n" + memory_block_str + "\n</relevant_memories>")
                             if hist_lines:
                                 parts.append("<past_context>\n" + "\n".join(hist_lines) + "\n</past_context>")
                             if graph_lines:
-                                parts.append("<entity_knowledge>\n" + "\n".join(graph_lines) + "\n</entity_knowledge>")
+                                parts.append("<entity_knowledge>\n" + graph_block_str + "\n</entity_knowledge>")
                             rag_block = "\n\n".join(parts)
+                        # If the wrapper template doesn't include {graph_block},
+                        # append graph entries separately so they are never silently dropped.
+                        if graph_lines and "{graph_block}" not in wrapper_tpl:
+                            rag_block += "\n\n<entity_knowledge>\n" + graph_block_str + "\n</entity_knowledge>"
+                        if forgotten_count > 0:
+                            rag_block += f"\nForgotten pool: {forgotten_count} memories"
 
                         separator = "\n\n" if system_input else ""
                         system_input = f"{system_input}{separator}{rag_block}"
@@ -1255,10 +1266,11 @@ class ModelController:
 
         # --- Tool call path ---
         _active_tools = enabled_tools or []
+        _tool_max_depth = int(self.settings.get("TOOL_MAX_DEPTH", 2))
         _tool_allowed = (
             structured.tool_call
             and tools_on
-            and tool_depth < 2
+            and tool_depth < _tool_max_depth
             and (not _active_tools or structured.tool_call.name in _active_tools)
         )
         if not _tool_allowed and structured.tool_call and tools_on:
@@ -1348,19 +1360,19 @@ class ModelController:
         if hasattr(char, "flush_variables"):
             char.flush_variables()
 
-        # Build inline_graph_json from structured entities (if graph extraction enabled)
+        # Build inline_graph_json from structured entities/relations (if graph extraction enabled)
         inline_graph_json: Optional[str] = None
         if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
-                and structured.entities):
+                and (structured.entities or structured.relations)):
             try:
                 import json as _json
                 graph_payload = {
-                    "entities": [e.model_dump() for e in structured.entities],
-                    "relations": [],
+                    "entities": list(structured.entities) if structured.entities else [],
+                    "relations": list(structured.relations) if structured.relations else [],
                 }
                 inline_graph_json = _json.dumps(graph_payload, ensure_ascii=False)
             except Exception as _ge:
-                logger.warning(f"[ModelController] Failed to build graph JSON from structured entities: {_ge}")
+                logger.warning(f"[ModelController] Failed to build graph JSON from structured entities/relations: {_ge}")
 
         # Notify graph extraction (and any future subscribers).
         created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
@@ -1518,21 +1530,20 @@ class ModelController:
             "speaker_name": "",
         }, sync=True)
 
-        # Detect dialect to choose the right role for the tool result message.
-        # Gemini does not support "system" role mid-conversation — use "user" with [SYSTEM INFO] tag.
-        # OpenAI-compatible providers handle "system" fine anywhere.
-        try:
-            preset_s = self.preset_resolver.resolve(preset_id)
-            _dialect = (preset_s.dialect_id or "").lower()
-        except Exception:
-            _dialect = ""
-        _gemini_mode = "gemini" in _dialect
-        tool_result_role = "user" if _gemini_mode else "system"
-        tool_result_content = (
-            f"[SYSTEM INFO] [Tool result: {tool_name}]\n{tool_result}"
-            if _gemini_mode
-            else f"[Tool result: {tool_name}]\n{tool_result}"
+        # Build tool result message(s) for the second LLM call.
+        # TOOL_RESULT_MSG_MODE controls which role(s) are used to inject the result:
+        #   "system" — only a system message (may be ignored by some providers mid-conversation)
+        #   "user"   — only a user message with [SYSTEM INFO] tag
+        #   "both"   — both (default, most reliable across providers)
+        _result_mode = str(self.settings.get("TOOL_RESULT_MSG_MODE", "both"))
+        _instruction = (
+            "\n\nThe tool has finished. "
+            "Use the results above to give the player a complete answer. "
+            "Do NOT call any tools again unless the question explicitly requires it. "
+            "Respond in JSON format."
         )
+        _system_content = f"[Tool result: {tool_name}]\n{tool_result}{_instruction}"
+        _user_content   = f"[SYSTEM INFO] [Tool result: {tool_name}]\n{tool_result}{_instruction}"
 
         # Build messages for second call: append first response JSON + tool result
         combined_messages_v2 = list(combined_messages)
@@ -1541,7 +1552,10 @@ class ModelController:
         except Exception:
             first_response_json = first_text
         combined_messages_v2.append({"role": "assistant", "content": first_response_json})
-        combined_messages_v2.append({"role": tool_result_role, "content": tool_result_content})
+        if _result_mode in ("system", "both"):
+            combined_messages_v2.append({"role": "system", "content": _system_content})
+        if _result_mode in ("user", "both"):
+            combined_messages_v2.append({"role": "user", "content": _user_content})
 
         # Second LLM call
         self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {

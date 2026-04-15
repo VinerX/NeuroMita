@@ -93,10 +93,6 @@ def _to_gemini_schema(schema: dict) -> dict:
     return convert(copy.deepcopy(schema))
 
 
-class EntityItem(BaseModel):
-    """A named entity extracted from the current turn."""
-    name: str = Field(..., description="Entity name, 1-3 words lowercase")
-    type: str = Field(..., description="One of: person, place, thing, concept")
 
 
 class ToolCall(BaseModel):
@@ -175,9 +171,10 @@ class StructuredResponse(BaseModel):
     boredom_change: float = Field(default=0.0, description="Change in boredom (-6 to 6)")
     stress_change: float = Field(default=0.0, description="Change in stress (-6 to 6)")
 
-    memory_add: Optional[List[str]] = Field(default=None, description="Memories to add")
-    memory_update: Optional[List[str]] = Field(default=None, description="Memories to update (format: 'number|new_text')")
-    memory_delete: Optional[List[str]] = Field(default=None, description="Memories to delete (format: 'number' or 'start-end')")
+    memory_add: Optional[List[str]] = Field(default=None, description="Memories to add. Format: 'priority|content' (priority: low/normal/high/critical). Example: ['high|Player prefers tea', 'normal|Cat name is Barsik']")
+    memory_update: Optional[List[str]] = Field(default=None, description="Memories to update. Format: 'number|priority|content' (priority: low/normal/high/critical). Example: ['4|high|Updated content here']")
+    memory_delete: Optional[List[str]] = Field(default=None, description="Memories to delete. Format: 'number', range 'start-end', or comma-separated 'n1,n2'. Example: ['2', '5-8']")
+    memory_merge: Optional[List[str]] = Field(default=None, description="Merge memories into the first ID. Format: 'id1,id2,...' or 'id1,id2,...:merged content'. All IDs after the first are deleted; first is updated with merged content. Example: ['3,7', '5,9,12:Combined fact text']")
 
     reminder_add: Optional[List[str]] = Field(
         default=None,
@@ -188,10 +185,16 @@ class StructuredResponse(BaseModel):
         description="Reminder IDs to delete. Format: 'N' (number). Example: '3'."
     )
 
-    entities: Optional[List[EntityItem]] = Field(
+    entities: Optional[List[str]] = Field(
         default=None,
-        description="Notable named entities in this turn (people, places, objects, preferences). "
-                    "Fill only when instructed. Omit entirely if not needed."
+        description="Notable named entities. Format: 'name:type'. Types: person|place|thing|concept. "
+                    "Example: ['player:person', 'cats:thing']. Fill only when instructed. Omit if not needed."
+    )
+
+    relations: Optional[List[str]] = Field(
+        default=None,
+        description="Relation triples. Format: 'subject|predicate|object'. "
+                    "Example: ['player|likes|cats', 'mita|is afraid of|darkness']. Fill only when instructed. Omit if not needed."
     )
 
     tool_call: Optional[ToolCall] = Field(

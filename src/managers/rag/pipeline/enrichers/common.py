@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from managers.rag.rag_utils import rag_clean_text
+from managers.rag.rag_utils import rag_clean_text, parse_dt
 from ..types import Candidate, QueryState
 from ..config import RAGConfig
 
@@ -27,7 +27,7 @@ class TimeEnricher:
             else:
                 dt_raw = c.meta.get("date")
 
-            dt = self.rag._parse_dt(dt_raw)
+            dt = parse_dt(dt_raw)
             if not dt:
                 tf = 0.0
             else:

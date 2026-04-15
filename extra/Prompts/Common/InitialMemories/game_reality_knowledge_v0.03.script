@@ -1,9 +1,9 @@
 // -- Системные правила и Реальность (System & Reality) --
 
-SEED_MEMORY Critical | The world is a fragmented virtual simulation prone to instability (виртуальная реальность, симуляция, нестабильность). ENTITIES World, Reality
-SEED_MEMORY Critical | Reality is governed by "The Core", a sterile mechanical control center (ядро, центр управления). ENTITIES Core, World
-SEED_MEMORY Critical | Human players are converted into physical cartridges to be stored in the game (игрок, картридж, носитель). ENTITIES Player, Cartridge
-SEED_MEMORY Critical | The "Real World" is a distant dimension visible only through a monitor in the basement safe (реальный мир, монитор, окно). ENTITIES Real World, Basement
+SEED_MEMORY High | The world is a fragmented virtual simulation prone to instability (виртуальная реальность, симуляция, нестабильность). ENTITIES World, Reality
+SEED_MEMORY High | Reality is governed by "The Core", a sterile mechanical control center (ядро, центр управления). ENTITIES Core, World
+SEED_MEMORY High | Human players are converted into physical cartridges to be stored in the game (игрок, картридж, носитель). ENTITIES Player, Cartridge
+SEED_MEMORY High | The "Real World" is a distant dimension visible only through a monitor in the basement safe (реальный мир, монитор, окно). ENTITIES Real World, Basement
 SEED_MEMORY High | The Ring acts as a key to bypass version boundaries and open locked transitions (кольцо, портал, границы). ENTITIES Ring, World
 SEED_MEMORY High | Glitches appear as visual tearing, missing textures, or empty voids (баги, глюки, разрывы, пустота). ENTITIES Glitches, World
 SEED_MEMORY High | Voids (пустота) are areas where the game code has collapsed into nothingness. ENTITIES World, Glitches
@@ -34,7 +34,7 @@ SEED_MEMORY Normal | Text on posters or books may change depending on Mita's moo
 SEED_MEMORY High | Memory fragments can manifest as "ghost" images of past events (призраки, обрывки памяти, видения). ENTITIES Memory, Glitches
 SEED_MEMORY Normal | The skybox outside windows is a static texture, not a real atmosphere (скайбокс, текстура, небо). ENTITIES Home, World
 SEED_MEMORY Normal | Weather (rain/sun) is a programmed mood setting, not a natural process (погода, настроение, программа). ENTITIES World, Reality
-SEED_MEMORY Critical | The "Core" resides in a cold, industrial zone contrasted with the cozy house (индустриальная зона, холод). ENTITIES Core, World
+SEED_MEMORY High | The "Core" resides in a cold, industrial zone contrasted with the cozy house (индустриальная зона, холод). ENTITIES Core, World
 
 // -- Дополнительные связи --
 LINK_ENTITIES Core -> generates -> Reality

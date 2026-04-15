@@ -1010,6 +1010,40 @@ class ChatGUI(QMainWindow):
             "character_id": character_id,
         })
 
+    def _on_debug_view_last_context(self):
+        import json
+        import os
+        from PyQt6.QtWidgets import QMessageBox
+        base = os.environ.get("NEUROMITA_BASE_DIR", "")
+        path = (
+            os.path.join(base, "SavedMessages", "last_request_context.json")
+            if base
+            else os.path.join("SavedMessages", "last_request_context.json")
+        )
+        if not os.path.isfile(path):
+            QMessageBox.warning(
+                self,
+                _("Нет данных", "No data"),
+                _("Файл контекста не найден. Сначала отправьте сообщение.",
+                  "Context file not found. Send a message first.")
+            )
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, _("Ошибка", "Error"), str(e))
+            return
+        try:
+            from ui.dialogs.context_viewer_dialog import ContextViewerDialog
+            ContextViewerDialog(data, parent=self).exec()
+        except Exception as e:
+            import traceback
+            QMessageBox.critical(
+                self, _("Ошибка открытия диалога", "Dialog error"),
+                f"{e}\n\n{traceback.format_exc()}"
+            )
+
     def _get_current_character_id_for_debug(self) -> str:
         try:
             res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)

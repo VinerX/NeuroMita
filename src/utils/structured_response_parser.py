@@ -221,7 +221,7 @@ def _schema_aware_coerce(data: dict) -> dict:
             except ValueError:
                 data[field] = 0.0
 
-    for field in ("memory_add", "memory_update", "memory_delete", "segments", "reminder_add", "reminder_delete"):
+    for field in ("memory_add", "memory_update", "memory_delete", "memory_merge", "segments", "reminder_add", "reminder_delete"):
         if data.get(field) is None:
             data[field] = []
 
@@ -251,7 +251,7 @@ def _schema_aware_coerce(data: dict) -> dict:
                         seg0.pop(stat_field, None)
 
             # memory lists — hoist if top-level is empty
-            for mem_field in ("memory_add", "memory_update", "memory_delete",
+            for mem_field in ("memory_add", "memory_update", "memory_delete", "memory_merge",
                               "reminder_add", "reminder_delete"):
                 if not data.get(mem_field) and seg0.get(mem_field):
                     data[mem_field] = seg0.pop(mem_field)
@@ -441,8 +441,11 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
         "memory_add": list(response.memory_add or []),
         "memory_update": list(response.memory_update or []),
         "memory_delete": list(response.memory_delete or []),
+        "memory_merge": list(response.memory_merge or []),
         "reminder_add": list(response.reminder_add or []),
         "reminder_delete": list(response.reminder_delete or []),
         "tool_call": tool_call_dict,
         "custom_fields": custom_fields_out,
+        "entities": list(response.entities) if response.entities else [],
+        "relations": list(response.relations) if response.relations else [],
     }

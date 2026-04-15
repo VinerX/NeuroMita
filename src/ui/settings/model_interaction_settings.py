@@ -179,6 +179,29 @@ def setup_model_interaction_controls(self, parent):
              'Mita can add, view and delete reminders via tool. '
              'Supports relative dates: "through 2 hours", "tomorrow at 18:00".')},
 
+        {'label': _('Макс. глубина цепочки тулов', 'Max tool chain depth'),
+         'key': 'TOOL_MAX_DEPTH', 'type': 'entry',
+         'default': 2, 'depends_on': 'TOOLS_ON',
+         'tooltip': _(
+             'Максимальное количество тул-вызовов подряд в одном диалоге (1–5). '
+             'Значение 2 позволяет цепочку: например, поиск → чтение страницы.',
+             'Max number of consecutive tool calls per dialogue (1–5). '
+             'Value 2 enables chains: e.g. web_search → web_reader.')},
+
+        {'label': _('Режим инжекции результата тула', 'Tool result message mode'),
+         'key': 'TOOL_RESULT_MSG_MODE', 'type': 'combobox',
+         'options': ['both', 'system', 'user'], 'default': 'both',
+         'depends_on': 'TOOLS_ON',
+         'tooltip': _(
+             'Как передавать результат тула в следующий запрос к LLM.\n'
+             'both — оба сообщения (рекомендуется, работает со всеми провайдерами).\n'
+             'system — только system-роль (может игнорироваться Gemini).\n'
+             'user — только user-роль с тегом [SYSTEM INFO].',
+             'How to inject the tool result into the next LLM request.\n'
+             'both — both messages (recommended, works with all providers).\n'
+             'system — system role only (may be ignored by Gemini).\n'
+             'user — user role only with [SYSTEM INFO] tag.')},
+
         {'label': _('GOOGLE API KEY'), 'key': 'GOOGLE_API_KEY', 'type': 'entry',
          'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},
         {'label': _('GOOGLE CSE ID'), 'key': 'GOOGLE_CSE_ID', 'type': 'entry',

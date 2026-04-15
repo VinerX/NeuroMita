@@ -288,6 +288,10 @@ class MemoryManager:
 
     def load_memories(self):
         self._calculate_total_characters()
+        try:
+            self._forget_over_limit_memories()
+        except Exception:
+            pass
 
     def save_memories(self):
         pass
@@ -298,11 +302,21 @@ class MemoryManager:
             with self.db.connection() as conn:
                 cur = conn.cursor()
                 cur.execute(
-                    "SELECT 1 FROM memories WHERE character_id=? AND content=? AND is_deleted=0 LIMIT 1",
+                    "SELECT id, is_deleted, is_forgotten FROM memories WHERE character_id=? AND content=? LIMIT 1",
                     (self.character_name, str(content)),
                 )
-                if cur.fetchone():
-                    return None
+                row = cur.fetchone()
+                if row:
+                    mem_id, is_deleted, is_forgotten = row
+                    if is_deleted or is_forgotten:
+                        # Восстанавливаем удалённое/забытое воспоминание вместо создания дубля
+                        cur.execute(
+                            "UPDATE memories SET is_deleted=0, is_forgotten=0, priority=? WHERE id=?",
+                            (priority, mem_id),
+                        )
+                        conn.commit()
+                        self._calculate_total_characters()
+                    return mem_id
 
         # забываем ПЕРЕД добавлением новой
         self._forget_over_limit_memories()
@@ -489,6 +503,25 @@ class MemoryManager:
                 logging.warning(f"RAG failed to schedule memory embedding (ignored): {e}", exc_info=True)
 
         return True
+
+    def get_memory_content(self, number: int):
+        """Return content of an active memory by eternal_id, or None if not found."""
+        cols = self._mem_cols()
+        where = "character_id=? AND eternal_id=? AND is_deleted=0"
+        params = [self.character_name, number]
+        if "is_forgotten" in cols:
+            where += " AND is_forgotten=0"
+        conn = self.db.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT content FROM memories WHERE {where}", tuple(params))
+            row = cursor.fetchone()
+            return row[0] if row else None
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def delete_memory(self, number, save_as_missing=False):
         """
@@ -815,9 +848,9 @@ class MemoryManager:
         return {"backed_up": backed_up, "purged_memories": purged}
 
     # Default templates (used when no custom file is found in prompt set)
-    _DEFAULT_ITEM_TEMPLATE = "{risk_tag}N:{id}, Date {date}, Priority: {priority}: {content}"
-    _DEFAULT_SUMMARY_TEMPLATE = "{risk_tag}N:{id}, Date {date}, Type: Summary: {content}"
-    _DEFAULT_WRAPPER_TEMPLATE = "LongMemory< {items} >EndLongMemory"
+    _DEFAULT_ITEM_TEMPLATE = "{risk_tag}N:{id} [{priority_cap}] {date_short}: {content}"
+    _DEFAULT_SUMMARY_TEMPLATE = "{risk_tag}N:{id} [Summary] {date_short}: {content}"
+    _DEFAULT_WRAPPER_TEMPLATE = "<active_memory>\n{items}\n</active_memory>"
 
     def get_memories_formatted(self):
         """
@@ -845,6 +878,13 @@ class MemoryManager:
         wrapper_tpl = load_optional_template(
             self.prompt_set_path, "Structural/memory_wrapper.txt", self._DEFAULT_WRAPPER_TEMPLATE
         )
+
+        # Enforce capacity before displaying — handles cases where the setting
+        # was changed or memories accumulated without add_memory being called.
+        try:
+            self._forget_over_limit_memories()
+        except Exception:
+            pass
 
         cols = self._mem_cols()
 
@@ -894,13 +934,17 @@ class MemoryManager:
         for i, (mid, date, prio, content, mtype) in enumerate(rows_sorted):
             risk_tag = "[RISK] " if i >= risk_start_idx else ""
             tpl = summary_tpl if mtype == "summary" else item_tpl
+            priority_cap = (prio or "normal").capitalize()
+            # Shorten date: "15.04.2026 19:52:19" → "15.04 19:52"
+            date_short = (((date or "")[:5] + " " + (date or "")[11:16]).strip()) if date else "?"
             try:
                 formatted_memories.append(tpl.format(
-                    risk_tag=risk_tag, id=mid, date=date, priority=prio,
+                    risk_tag=risk_tag, id=mid, date=date, date_short=date_short,
+                    priority=prio, priority_cap=priority_cap,
                     content=content, type=mtype,
                 ))
             except (KeyError, IndexError):
-                formatted_memories.append(f"{risk_tag}N:{mid}, Date {date}, Priority: {prio}: {content}")
+                formatted_memories.append(f"{risk_tag}N:{mid} [{priority_cap}] {date_short}: {content}")
 
         memory_stats = f"\nMemory status: {len(rows_sorted)} facts, {self.total_characters} characters"
 
@@ -919,12 +963,12 @@ class MemoryManager:
             management_tips.append("Too many memories!")
 
         examples = [
-            "Example of memory commands:",
-            "<-memory>2</memory>",
-            "<+memory>high|content</memory>",
-            "<#memory>4|low|content</memory>",
-            "<~memory>3→7:merged content</~memory>  (merge #3 into #7, content optional)",
-            "Prioritize English in memories to save tokens."
+            "Memory ops (JSON response fields):",
+            'memory_add: ["high|content"]        — add (low/normal/high/critical)',
+            'memory_update: ["4|new text"]       — replace N:4 content',
+            'memory_delete: ["2"]                — delete N:2; range: "3-7"; multi: "2,5"',
+            'memory_merge: ["3,7,12:merged text"] — merge into first ID; rest deleted; content optional',
+            "Use English to save tokens.",
         ]
 
         items_text = "\n".join(formatted_memories)
@@ -937,7 +981,7 @@ class MemoryManager:
                 items=items_text, stats=stats_text, tips=tips_text, examples=examples_text,
             )
         except (KeyError, IndexError):
-            full_message = f"LongMemory< {items_text} >EndLongMemory"
+            full_message = f"<active_memory>\n{items_text}\n</active_memory>"
 
         full_message += f"\n{stats_text}\n{tips_text}\n{examples_text}"
         return full_message
