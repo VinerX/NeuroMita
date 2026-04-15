@@ -15,9 +15,7 @@ from main_logger import logger
 from managers.settings_manager import SettingsManager
 from utils.gpu_utils import check_gpu_provider
 from utils.pip_installer import PipInstaller
-
-
-current_gpu = check_gpu_provider()
+from utils.torch_install_utils import TORCH_PACKAGES, decide_torch_install
 
 
 def getTranslationVariant(ru_str, en_str=""):
@@ -69,36 +67,68 @@ def _ensure_lib_on_path():
 
 def _ensure_torch_and_transformers(pip_installer: Optional[PipInstaller] = None) -> None:
     """
-    Гарантирует, что torch/transformers доступны.
+    Гарантирует, что torch/transformers доступны в нужном варианте (CUDA/CPU).
     НЕ вызывается на import-time, только когда реально нужен EmbeddingModelHandler.
+
+    Логика:
+      1. Определяем уже установленный вариант torch через importlib.metadata
+         (БЕЗ импорта torch — иначе переустановка не заменит загруженные расширения).
+      2. Сравниваем с доступным GPU. Если CPU-билд установлен, а есть NVIDIA —
+         сносим torch/torchaudio и ставим cu128-билд.
+      3. Только после этого импортируем torch.
+      4. Далее — transformers (без CUDA-логики).
     """
     _ensure_lib_on_path()
 
     try:
-        import torch  # noqa: F401
+        gpu = check_gpu_provider() or "CPU"
     except Exception:
+        gpu = "CPU"
+
+    plan = decide_torch_install(gpu)
+    action = plan["action"]
+
+    if action != "skip":
         pip_installer = pip_installer or _get_default_pip_installer()
         if pip_installer is None:
-            raise
-
-        try:
-            current_gpu = check_gpu_provider() or "CPU"
-        except Exception:
-            current_gpu = "CPU"
-
-        if current_gpu == "NVIDIA":
-            ok = pip_installer.install_package(
-                ["torch==2.7.1", "torchaudio==2.7.1"],
-                description="Installing PyTorch with CUDA (cu128)...",
-                extra_args=["--index-url", "https://download.pytorch.org/whl/cu128"]
-            )
+            # Инсталлера нет — единственный шанс выжить, если torch уже стоит
+            try:
+                import torch  # noqa: F401
+            except Exception as e:
+                raise RuntimeError(
+                    "torch не установлен и PipInstaller недоступен"
+                ) from e
         else:
-            ok = pip_installer.install_package(
-                ["torch==2.7.1", "torchaudio==2.7.1"],
-                description="Installing PyTorch CPU...",
-            )
-        if not ok:
-            raise RuntimeError("Failed to install torch/torchaudio")
+            # Если torch уже был импортирован ранее в этом процессе, переустановка
+            # не заменит нативные расширения — потребуется перезапуск игры.
+            if action == "reinstall" and "torch" in sys.modules:
+                logger.warning(
+                    "torch уже импортирован в этом процессе, апгрейд CPU→CUDA "
+                    "требует перезапуска. Используется текущий вариант."
+                )
+            else:
+                if action == "reinstall":
+                    logger.info("Удаление CPU-варианта PyTorch перед установкой CUDA-варианта...")
+                    ok = pip_installer.uninstall_packages(
+                        ["torch", "torchaudio"],
+                        description="Удаление CPU-варианта PyTorch",
+                    )
+                    if not ok:
+                        raise RuntimeError(
+                            "Не удалось удалить CPU-вариант torch/torchaudio"
+                        )
+
+                logger.info(plan["description"])
+                ok = pip_installer.install_package(
+                    list(TORCH_PACKAGES),
+                    description=plan["description"],
+                    extra_args=plan.get("extra_args"),
+                )
+                if not ok:
+                    raise RuntimeError("Failed to install torch/torchaudio")
+
+    # Импортируем только после того, как разобрались с установкой.
+    import torch  # noqa: F401
 
     try:
         from transformers import AutoModel, AutoTokenizer  # noqa: F401
