@@ -378,10 +378,10 @@ class WhisperRecognizer(SpeechRecognizerInterface):
         max_speech_duration = float(kwargs.get("max_speech_duration", 30.0))
 
         silence_chunks_needed = int(silence_timeout * sample_rate / chunk_size)
-        pre_buffer_size = int(pre_buffer_duration * sample_rate / chunk_size)
+        pre_buffer_size = max(0, int(pre_buffer_duration * sample_rate / chunk_size))
         max_speech_chunks = max(1, int(max_speech_duration * sample_rate / chunk_size))
 
-        pre_speech_buffer = deque(maxlen=max(1, pre_buffer_size))
+        pre_speech_buffer = deque(maxlen=pre_buffer_size) if pre_buffer_size > 0 else None
         speech_buffer = []
         is_speaking = False
         silence_counter = 0
@@ -414,9 +414,6 @@ class WhisperRecognizer(SpeechRecognizerInterface):
                         if overflow_count % 20 == 0:
                             self.logger.warning(f"ASR overflow count: {overflow_count}")
 
-                    if not is_speaking:
-                        pre_speech_buffer.append(audio_chunk)
-
                     audio_tensor = self._torch.from_numpy(audio_chunk.flatten())
                     speech_prob = vad_model(audio_tensor, sample_rate).item()
 
@@ -425,7 +422,8 @@ class WhisperRecognizer(SpeechRecognizerInterface):
                         if not is_speaking:
                             is_speaking = True
                             speech_buffer.clear()
-                            speech_buffer.extend(list(pre_speech_buffer))
+                            if pre_speech_buffer is not None:
+                                speech_buffer.extend(list(pre_speech_buffer))
                         speech_buffer.append(audio_chunk)
                         silence_counter = 0
                         if len(speech_buffer) >= max_speech_chunks:
@@ -435,6 +433,8 @@ class WhisperRecognizer(SpeechRecognizerInterface):
                         silence_counter += 1
                         if silence_counter > silence_chunks_needed or len(speech_buffer) >= max_speech_chunks:
                             should_finalize = True
+                    elif pre_speech_buffer is not None:
+                        pre_speech_buffer.append(audio_chunk)
 
                     if should_finalize and speech_buffer:
                         audio_to_process = self._np.concatenate(speech_buffer)

@@ -1,7 +1,9 @@
 import os
 import json
 import time
+import re
 import threading
+from difflib import SequenceMatcher
 import sounddevice as sd
 
 from handlers.asr_handler import SpeechRecognition
@@ -21,6 +23,7 @@ class SpeechController:
         self.events_bus = get_event_bus()
 
         self._last_text = ""
+        self._last_text_norm = ""
         self._last_text_time = 0.0
 
         self._asr_settings_path = os.path.join("Settings", "asr_settings.json")
@@ -336,6 +339,29 @@ class SpeechController:
     def _on_set_instant_send_status(self, event: Event):
         self.instant_send = event.data.get('status', False)
 
+    @staticmethod
+    def _normalize_asr_text(text: str) -> str:
+        lowered = (text or "").strip().lower().replace("\u0451", "\u0435")
+        lowered = re.sub(r"[^\w\s]+", " ", lowered, flags=re.UNICODE)
+        return re.sub(r"\s+", " ", lowered, flags=re.UNICODE).strip()
+
+    def _is_asr_duplicate(self, text: str, now: float) -> bool:
+        norm = self._normalize_asr_text(text)
+        if not norm:
+            return True
+
+        age = now - self._last_text_time
+        if self._last_text_norm and age < 2.0 and norm == self._last_text_norm:
+            return True
+
+        if self._last_text_norm and age < 1.5 and min(len(norm), len(self._last_text_norm)) >= 20:
+            ratio = SequenceMatcher(None, norm, self._last_text_norm).ratio()
+            if ratio >= 0.92:
+                logger.debug(f"ASR dedup (fuzzy): ignore '{text}'")
+                return True
+
+        return False
+
     def _on_speech_text_recognized(self, event: Event):
         text = (event.data or {}).get('text', '').strip()
         if not text or not self.settings:
@@ -343,12 +369,11 @@ class SpeechController:
         if not bool(self.settings.get("MIC_ACTIVE")):
             return
 
-        # Защита от дублей: один и тот же текст в течение 2 секунд игнорируем
         now = time.time()
-        if text == self._last_text and (now - self._last_text_time) < 2.0:
-            logger.debug(f"ASR дедупликация: игнорируем повтор '{text}'")
+        if self._is_asr_duplicate(text, now):
             return
         self._last_text = text
+        self._last_text_norm = self._normalize_asr_text(text)
         self._last_text_time = now
 
         try:
