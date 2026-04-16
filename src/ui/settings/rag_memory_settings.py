@@ -1861,7 +1861,7 @@ def build_rag_memory_section(self, parent, hc_provider_names) -> None:
     )
 
     create_settings_section(self, parent,
-                            _("Настройки Памяти и RAG", "Memory & RAG Settings"),
+                            _("Настройки памяти и RAG", "Memory & RAG settings"),
                             config)
 
     # --- Dynamic status labels + download button for embedding model ---
