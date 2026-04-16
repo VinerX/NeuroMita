@@ -2,6 +2,7 @@
 import time
 import wave
 import asyncio
+import gc
 import multiprocessing as mp
 from multiprocessing import Queue, Process
 from threading import Thread, Event
@@ -338,57 +339,69 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
         vad_threshold = float(kwargs.get("vad_threshold", 0.5))
         silence_timeout = float(kwargs.get("silence_timeout", 1.0))
         pre_buffer_duration = float(kwargs.get("pre_buffer_duration", 0.3))
+        max_speech_duration = float(kwargs.get("max_speech_duration", 30.0))
 
         silence_chunks_needed = int(silence_timeout * sample_rate / chunk_size)
         pre_buffer_size = int(pre_buffer_duration * sample_rate / chunk_size)
+        max_speech_chunks = max(1, int(max_speech_duration * sample_rate / chunk_size))
 
         pre_speech_buffer = deque(maxlen=max(1, pre_buffer_size))
         speech_buffer = []
         is_speaking = False
         silence_counter = 0
-
-        stream = self._sd.InputStream(
-            samplerate=sample_rate,
-            channels=1,
-            dtype="float32",
-            blocksize=chunk_size,
-            device=microphone_index
-        )
-        stream.start()
+        overflow_count = 0
+        loop = asyncio.get_running_loop()
 
         try:
-            while active_flag():
-                try:
-                    audio_chunk, overflowed = stream.read(chunk_size)
-                except Exception as e:
+            with self._sd.InputStream(
+                samplerate=sample_rate,
+                channels=1,
+                dtype="float32",
+                blocksize=chunk_size,
+                device=microphone_index,
+            ) as stream:
+                while active_flag():
+                    try:
+                        audio_chunk, overflowed = await loop.run_in_executor(None, stream.read, chunk_size)
+                    except Exception as e:
+                        if not active_flag():
+                            break
+                        self.logger.warning(f"Input stream read aborted: {e}")
+                        break
+
                     if not active_flag():
                         break
-                    self.logger.warning(f"Input stream read aborted: {e}")
-                    break
 
-                if overflowed:
-                    self.logger.warning("Переполнение буфера аудиопотока!")
+                    if overflowed:
+                        overflow_count += 1
+                        self.logger.warning("Переполнение буфера аудиопотока!")
+                        if overflow_count % 20 == 0:
+                            self.logger.warning(f"ASR overflow count: {overflow_count}")
 
-                if not is_speaking:
-                    pre_speech_buffer.append(audio_chunk)
-
-                audio_tensor = self._torch.from_numpy(audio_chunk.flatten())
-                speech_prob = vad_model(audio_tensor, sample_rate).item()
-
-                if speech_prob > vad_threshold:
                     if not is_speaking:
-                        is_speaking = True
-                        speech_buffer.clear()
-                        speech_buffer.extend(list(pre_speech_buffer))
-                    speech_buffer.append(audio_chunk)
-                    silence_counter = 0
+                        pre_speech_buffer.append(audio_chunk)
 
-                elif is_speaking:
-                    speech_buffer.append(audio_chunk)
-                    silence_counter += 1
-                    if silence_counter > silence_chunks_needed:
+                    audio_tensor = self._torch.from_numpy(audio_chunk.flatten())
+                    speech_prob = vad_model(audio_tensor, sample_rate).item()
+
+                    should_finalize = False
+                    if speech_prob > vad_threshold:
+                        if not is_speaking:
+                            is_speaking = True
+                            speech_buffer.clear()
+                            speech_buffer.extend(list(pre_speech_buffer))
+                        speech_buffer.append(audio_chunk)
+                        silence_counter = 0
+                        if len(speech_buffer) >= max_speech_chunks:
+                            should_finalize = True
+                    elif is_speaking:
+                        speech_buffer.append(audio_chunk)
+                        silence_counter += 1
+                        if silence_counter > silence_chunks_needed or len(speech_buffer) >= max_speech_chunks:
+                            should_finalize = True
+
+                    if should_finalize and speech_buffer:
                         audio_to_process = self._np.concatenate(speech_buffer)
-
                         is_speaking = False
                         speech_buffer.clear()
                         silence_counter = 0
@@ -399,17 +412,9 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
                         else:
                             await self._save_failed_audio(audio_to_process, sample_rate)
 
-                await asyncio.sleep(0.01)
-
         finally:
-            try:
-                stream.stop()
-            except Exception:
-                pass
-            try:
-                stream.close()
-            except Exception:
-                pass
+            if overflow_count:
+                self.logger.warning(f"ASR stream overflows total: {overflow_count}")
 
     async def _save_failed_audio(self, audio_data: np.ndarray, sample_rate: int):
         try:
@@ -431,14 +436,47 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
 
     def cleanup(self) -> None:
         self._stop_process()
+        gc.collect()
+        try:
+            if self._torch is not None and self._torch.cuda.is_available():
+                self._torch.cuda.empty_cache()
+        except Exception:
+            pass
         self._torch = None
         self._sd = None
         self._np = None
         self._is_initialized = False
 
+    def _handle_process_result(self, result):
+        rtype = result[0]
+        if rtype == "init_success":
+            self._process_initialized = True
+        elif rtype == "init_error":
+            self.logger.error(f"Whisper ONNX init error: {result[1]}")
+            self._process_initialized = False
+        elif rtype == "transcription":
+            self._transcribe_result = result[1]
+            self._transcribe_event.set()
+        elif rtype == "transcription_error":
+            self._transcribe_result = None
+            self._transcribe_event.set()
+
     def _monitor_process(self):
         while not self._stop_monitor.is_set() and self._process and self._process.is_alive():
             try:
+                if self._result_queue:
+                    try:
+                        result = self._result_queue.get(timeout=0.1)
+                        self._handle_process_result(result)
+                    except queue.Empty:
+                        pass
+
+                while self._result_queue:
+                    try:
+                        self._handle_process_result(self._result_queue.get_nowait())
+                    except queue.Empty:
+                        break
+
                 while self._log_queue:
                     try:
                         level, msg = self._log_queue.get_nowait()
@@ -446,31 +484,12 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
                     except queue.Empty:
                         break
 
-                while self._result_queue:
-                    try:
-                        result = self._result_queue.get_nowait()
-                        rtype = result[0]
-
-                        if rtype == "init_success":
-                            self._process_initialized = True
-                        elif rtype == "init_error":
-                            self.logger.error(f"Whisper ONNX init error: {result[1]}")
-                            self._process_initialized = False
-                        elif rtype == "transcription":
-                            self._transcribe_result = result[1]
-                            self._transcribe_event.set()
-                        elif rtype == "transcription_error":
-                            self._transcribe_result = None
-                            self._transcribe_event.set()
-                    except queue.Empty:
-                        break
-
-                time.sleep(0.01)
-
             except Exception as e:
                 self.logger.error(f"Ошибка в мониторе Whisper ONNX процесса: {e}")
 
     def _start_process(self) -> bool:
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            self._stop_process()
         if self._process and self._process.is_alive():
             return True
 
@@ -521,34 +540,48 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
         if not self._process:
             return
 
+        process = self._process
+        monitor_thread = self._monitor_thread
+        command_queue = self._command_queue
+        result_queue = self._result_queue
+        log_queue = self._log_queue
+
         self._stop_monitor.set()
 
         try:
-            if self._command_queue:
-                self._command_queue.put(("shutdown",))
+            if command_queue:
+                command_queue.put(("shutdown",))
+                command_queue.cancel_join_thread()
+                command_queue.close()
         except Exception:
             pass
 
         try:
-            if self._monitor_thread:
-                self._monitor_thread.join(timeout=2)
+            if monitor_thread:
+                monitor_thread.join(timeout=2)
         except Exception:
             pass
 
         try:
-            self._process.join(timeout=5)
-            if self._process.is_alive():
+            process.join(timeout=5)
+            if process.is_alive():
                 self.logger.warning("Whisper ONNX процесс не завершился, terminate()")
-                self._process.terminate()
-                self._process.join(timeout=2)
+                process.terminate()
+                process.join(timeout=2)
+                if process.is_alive():
+                    self.logger.warning("Whisper ONNX процесс не завершился после terminate(), kill()")
+                    process.kill()
+                    process.join(timeout=2)
+            if process.exitcode is None:
+                self.logger.warning("Whisper ONNX процесс не завершился корректно.")
         except Exception:
             pass
 
-        for q in (self._command_queue, self._result_queue, self._log_queue):
+        for q in (command_queue, result_queue, log_queue):
             try:
                 if q is not None:
+                    q.cancel_join_thread()
                     q.close()
-                    q.join_thread()
             except Exception:
                 pass
 

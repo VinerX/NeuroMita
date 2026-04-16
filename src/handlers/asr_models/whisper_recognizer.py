@@ -2,6 +2,7 @@
 import time
 import wave
 import asyncio
+import gc
 from typing import Optional, List
 from collections import deque
 
@@ -374,57 +375,69 @@ class WhisperRecognizer(SpeechRecognizerInterface):
         vad_threshold = float(kwargs.get('vad_threshold', 0.5))
         silence_timeout = float(kwargs.get('silence_timeout', 1.0))
         pre_buffer_duration = float(kwargs.get('pre_buffer_duration', 0.3))
+        max_speech_duration = float(kwargs.get("max_speech_duration", 30.0))
 
         silence_chunks_needed = int(silence_timeout * sample_rate / chunk_size)
         pre_buffer_size = int(pre_buffer_duration * sample_rate / chunk_size)
+        max_speech_chunks = max(1, int(max_speech_duration * sample_rate / chunk_size))
 
         pre_speech_buffer = deque(maxlen=max(1, pre_buffer_size))
         speech_buffer = []
         is_speaking = False
         silence_counter = 0
-
-        stream = self._sd.InputStream(
-            samplerate=sample_rate,
-            channels=1,
-            dtype='float32',
-            blocksize=chunk_size,
-            device=microphone_index
-        )
-        stream.start()
+        overflow_count = 0
+        loop = asyncio.get_running_loop()
 
         try:
-            while active_flag():
-                try:
-                    audio_chunk, overflowed = stream.read(chunk_size)
-                except Exception as e:
+            with self._sd.InputStream(
+                samplerate=sample_rate,
+                channels=1,
+                dtype='float32',
+                blocksize=chunk_size,
+                device=microphone_index,
+            ) as stream:
+                while active_flag():
+                    try:
+                        audio_chunk, overflowed = await loop.run_in_executor(None, stream.read, chunk_size)
+                    except Exception as e:
+                        if not active_flag():
+                            break
+                        self.logger.warning(f"Input stream read aborted: {e}")
+                        break
+
                     if not active_flag():
                         break
-                    self.logger.warning(f"Input stream read aborted: {e}")
-                    break
 
-                if overflowed:
-                    self.logger.warning("Переполнение буфера аудиопотока!")
+                    if overflowed:
+                        overflow_count += 1
+                        self.logger.warning("Переполнение буфера аудиопотока!")
+                        if overflow_count % 20 == 0:
+                            self.logger.warning(f"ASR overflow count: {overflow_count}")
 
-                if not is_speaking:
-                    pre_speech_buffer.append(audio_chunk)
-
-                audio_tensor = self._torch.from_numpy(audio_chunk.flatten())
-                speech_prob = vad_model(audio_tensor, sample_rate).item()
-
-                if speech_prob > vad_threshold:
                     if not is_speaking:
-                        is_speaking = True
-                        speech_buffer.clear()
-                        speech_buffer.extend(list(pre_speech_buffer))
-                    speech_buffer.append(audio_chunk)
-                    silence_counter = 0
+                        pre_speech_buffer.append(audio_chunk)
 
-                elif is_speaking:
-                    speech_buffer.append(audio_chunk)
-                    silence_counter += 1
-                    if silence_counter > silence_chunks_needed:
+                    audio_tensor = self._torch.from_numpy(audio_chunk.flatten())
+                    speech_prob = vad_model(audio_tensor, sample_rate).item()
+
+                    should_finalize = False
+                    if speech_prob > vad_threshold:
+                        if not is_speaking:
+                            is_speaking = True
+                            speech_buffer.clear()
+                            speech_buffer.extend(list(pre_speech_buffer))
+                        speech_buffer.append(audio_chunk)
+                        silence_counter = 0
+                        if len(speech_buffer) >= max_speech_chunks:
+                            should_finalize = True
+                    elif is_speaking:
+                        speech_buffer.append(audio_chunk)
+                        silence_counter += 1
+                        if silence_counter > silence_chunks_needed or len(speech_buffer) >= max_speech_chunks:
+                            should_finalize = True
+
+                    if should_finalize and speech_buffer:
                         audio_to_process = self._np.concatenate(speech_buffer)
-
                         is_speaking = False
                         speech_buffer.clear()
                         silence_counter = 0
@@ -435,17 +448,9 @@ class WhisperRecognizer(SpeechRecognizerInterface):
                         else:
                             await self._save_failed_audio(audio_to_process, sample_rate)
 
-                await asyncio.sleep(0.01)
-
         finally:
-            try:
-                stream.stop()
-            except Exception:
-                pass
-            try:
-                stream.close()
-            except Exception:
-                pass
+            if overflow_count:
+                self.logger.warning(f"ASR stream overflows total: {overflow_count}")
 
     async def _save_failed_audio(self, audio_data: np.ndarray, sample_rate: int):
         try:
@@ -466,6 +471,20 @@ class WhisperRecognizer(SpeechRecognizerInterface):
             self.logger.error(f"Не удалось сохранить аудиофрагмент: {e}")
 
     def cleanup(self) -> None:
+        try:
+            if self._model is not None:
+                try:
+                    self._model.cpu()
+                except Exception:
+                    pass
+                model_ref = self._model
+                self._model = None
+                del model_ref
+            gc.collect()
+            if self._torch is not None and self._torch.cuda.is_available():
+                self._torch.cuda.empty_cache()
+        except Exception:
+            pass
         self._model = None
         self._fw = None
         self._torch = None

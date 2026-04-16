@@ -146,6 +146,10 @@ def build_microphone_settings_ui(self, parent_layout):
     self.vad_pre_buffer_spinbox.setToolTip(_("Предбуфер (сек)", "Pre-buffer (sec)"))
     root_lay.addWidget(make_row(_("Pre-buffer (сек)", "Pre-buffer (sec)"), self.vad_pre_buffer_spinbox, label_w))
 
+    self.vad_max_speech_duration_spinbox = _dspinbox(1.0, 120.0, 30.0, 1.0, decimals=1)
+    self.vad_max_speech_duration_spinbox.setToolTip(_("Макс. длительность речи (сек)", "Max speech duration (sec)"))
+    root_lay.addWidget(make_row(_("Макс. речь (сек)", "Max speech (sec)"), self.vad_max_speech_duration_spinbox, label_w))
+
     self.vad_apply_button = QPushButton(_("Применить", "Apply"))
     self.vad_apply_button.setObjectName("SecondaryButton")
     self.vad_apply_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)

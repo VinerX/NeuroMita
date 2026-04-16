@@ -118,6 +118,7 @@ class SpeechController:
             SpeechRecognition.VAD_THRESHOLD = float(self.settings.get("VAD_THRESHOLD", SpeechRecognition.VAD_THRESHOLD))
             SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC = float(self.settings.get("VAD_SILENCE_TIMEOUT_SEC", SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC))
             SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC = float(self.settings.get("VAD_PRE_BUFFER_DURATION_SEC", SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC))
+            SpeechRecognition.MAX_SPEECH_DURATION_SEC = float(self.settings.get("MAX_SPEECH_DURATION_SEC", SpeechRecognition.MAX_SPEECH_DURATION_SEC))
         except Exception:
             pass
 
@@ -200,6 +201,12 @@ class SpeechController:
         elif key == "VAD_PRE_BUFFER_DURATION_SEC":
             try:
                 SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC = float(value)
+            except Exception:
+                pass
+
+        elif key == "MAX_SPEECH_DURATION_SEC":
+            try:
+                SpeechRecognition.MAX_SPEECH_DURATION_SEC = float(value)
             except Exception:
                 pass
 
@@ -423,9 +430,7 @@ class SpeechController:
         def restart():
             try:
                 self.events_bus.emit(Events.Speech.STOP_SPEECH_RECOGNITION)
-                start = time.time()
-                while SpeechRecognition._is_running and time.time() - start < 5:
-                    time.sleep(0.1)
+                SpeechRecognition._stopped_event.wait(timeout=5.0)
                 self.events_bus.emit(Events.Speech.START_SPEECH_RECOGNITION, {'device_id': dev_id})
             except Exception as e:
                 logger.error(f"Ошибка перезапуска распознавания: {e}")

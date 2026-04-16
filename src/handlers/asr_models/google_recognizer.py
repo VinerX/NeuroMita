@@ -40,6 +40,7 @@ class GoogleRecognizer(SpeechRecognizerInterface):
     def __init__(self, pip_installer, logger):
         super().__init__(pip_installer, logger)
         self._sr = None
+        self._pending_tasks: set[asyncio.Task] = set()
 
     def settings_spec(self):
         return []
@@ -215,7 +216,11 @@ class GoogleRecognizer(SpeechRecognizerInterface):
                 text = rec.recognize_google(audio, language="ru-RU")
                 if text and text.strip():
                     self.logger.info(f"Распознано (google): {text}")
-                    loop.call_soon_threadsafe(lambda t=text: asyncio.create_task(handle_voice_callback(t)))
+                    def _schedule(t=text):
+                        task = asyncio.create_task(handle_voice_callback(t))
+                        self._pending_tasks.add(task)
+                        task.add_done_callback(lambda done_task: self._pending_tasks.discard(done_task))
+                    loop.call_soon_threadsafe(_schedule)
             except self._sr.UnknownValueError:
                 pass
             except self._sr.RequestError as e:
@@ -247,5 +252,12 @@ class GoogleRecognizer(SpeechRecognizerInterface):
             self.logger.info("Микрофон (Google) корректно закрыт.")
 
     def cleanup(self) -> None:
+        pending = list(self._pending_tasks)
+        self._pending_tasks.clear()
+        for task in pending:
+            try:
+                task.cancel()
+            except Exception:
+                pass
         self._sr = None
         self._is_initialized = False

@@ -111,6 +111,8 @@ class MicrophoneSettingsController(BaseController):
                 v.vad_silence_timeout_spinbox.setValue(float(settings.get("VAD_SILENCE_TIMEOUT_SEC", 0.15)))
             if hasattr(v, "vad_pre_buffer_spinbox"):
                 v.vad_pre_buffer_spinbox.setValue(float(settings.get("VAD_PRE_BUFFER_DURATION_SEC", 0.3)))
+            if hasattr(v, "vad_max_speech_duration_spinbox"):
+                v.vad_max_speech_duration_spinbox.setValue(float(settings.get("MAX_SPEECH_DURATION_SEC", 30.0)))
         except Exception as e:
             logger.debug(f"VAD params load error: {e}")
 
@@ -129,6 +131,8 @@ class MicrophoneSettingsController(BaseController):
                 self._save_setting("VAD_SILENCE_TIMEOUT_SEC", v.vad_silence_timeout_spinbox.value())
             if hasattr(v, "vad_pre_buffer_spinbox"):
                 self._save_setting("VAD_PRE_BUFFER_DURATION_SEC", v.vad_pre_buffer_spinbox.value())
+            if hasattr(v, "vad_max_speech_duration_spinbox"):
+                self._save_setting("MAX_SPEECH_DURATION_SEC", v.vad_max_speech_duration_spinbox.value())
             logger.info("VAD параметры применены")
         except Exception as e:
             logger.error(f"VAD params apply error: {e}")
