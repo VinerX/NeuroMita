@@ -17,7 +17,7 @@ from handlers.llm_providers.param_mapper import build_unified_generation_params
 from core.events import get_event_bus
 
 
-def _save_last_request_context(req) -> None:
+def _save_last_request_context(req, character_name: str = "") -> None:
     """Всегда сохраняет последний запрос в SavedMessages/last_request_context.json."""
     import json
     import os
@@ -38,6 +38,7 @@ def _save_last_request_context(req) -> None:
             "provider_name": getattr(req, "provider_name", None),
             "protocol_id": getattr(req, "protocol_id", None),
             "dialect_id": getattr(req, "dialect_id", None),
+            "character_name": character_name or "",
             "extra": {k: v for k, v in extra_raw.items() if k in _KEEP},
             "messages": getattr(req, "messages", []),
         }
@@ -173,7 +174,8 @@ class ChatModel:
 
             req.extra["tool_manager"] = self.tool_manager
             _last_req[0] = req
-            _save_last_request_context(req)
+            _char = getattr(self, "current_character", None)
+            _save_last_request_context(req, character_name=getattr(_char, "name", "") or "")
             return req
 
         try:
