@@ -5,6 +5,9 @@ import uvicorn
 import os
 import sys
 import re
+
+os.environ["QT_API"] = "pyqt6" 
+
 from main_logger import logger
 from _version import __version__
 def create_startup_banner(title: str, version: str) -> str:
