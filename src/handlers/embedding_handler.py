@@ -61,8 +61,12 @@ def _get_default_pip_installer() -> Optional[PipInstaller]:
 
 def _ensure_lib_on_path():
     lib_path = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
-    if lib_path not in sys.path:
-        sys.path.insert(0, lib_path)
+    lib_path_norm = os.path.normcase(os.path.abspath(lib_path))
+    sys.path = [
+        p for p in sys.path
+        if os.path.normcase(os.path.abspath(p or "")) != lib_path_norm
+    ]
+    sys.path.insert(0, lib_path)
 
 
 def _ensure_torch_and_transformers(pip_installer: Optional[PipInstaller] = None) -> None:
@@ -87,6 +91,13 @@ def _ensure_torch_and_transformers(pip_installer: Optional[PipInstaller] = None)
 
     plan = decide_torch_install(gpu)
     action = plan["action"]
+
+    from utils.torch_install_utils import get_installed_torch_variant
+    installed_variant = get_installed_torch_variant()
+    logger.info(
+        f"torch bootstrap: gpu={gpu}, installed_variant={installed_variant}, "
+        f"action={action}, torch_in_sys_modules={'torch' in sys.modules}"
+    )
 
     if action != "skip":
         pip_installer = pip_installer or _get_default_pip_installer()
@@ -129,6 +140,40 @@ def _ensure_torch_and_transformers(pip_installer: Optional[PipInstaller] = None)
 
     # Импортируем только после того, как разобрались с установкой.
     import torch  # noqa: F401
+
+    # Post-import проверка: metadata могла показать CUDA, а реальный torch — CPU.
+    # Это ловит ситуацию, когда dist-info обновился на +cu128, но бинарники
+    # остались CPU (неполная предыдущая переустановка).
+    _torch_cuda_ver = getattr(torch.version, "cuda", None)
+    _torch_file = getattr(torch, "__file__", "?")
+    logger.info(
+        f"torch loaded: version={torch.__version__}, cuda_version={_torch_cuda_ver}, "
+        f"cuda_available={torch.cuda.is_available()}, path={_torch_file}"
+    )
+    if gpu == "NVIDIA" and _torch_cuda_ver is None:
+        logger.warning(
+            "GPU=NVIDIA но загруженный torch не содержит CUDA! "
+            "dist-info врёт — принудительная переустановка. "
+            f"torch.__file__={_torch_file}"
+        )
+        pip_installer = pip_installer or _get_default_pip_installer()
+        if pip_installer is not None:
+            # torch уже импортирован — в текущем процессе DLL не заменить.
+            # Но делаем uninstall + install на диске — следующий запуск подхватит CUDA.
+            logger.info("Удаление сломанного torch перед переустановкой CUDA...")
+            pip_installer.uninstall_packages(
+                ["torch", "torchaudio"],
+                description="Удаление torch с неверными бинарниками",
+            )
+            from utils.torch_install_utils import TORCH_PACKAGES, CUDA_INDEX_URL
+            pip_installer.install_package(
+                list(TORCH_PACKAGES),
+                description="Установка PyTorch CUDA (cu128) — исправление...",
+                extra_args=["--index-url", CUDA_INDEX_URL],
+            )
+            logger.warning(
+                "PyTorch CUDA переустановлен. Перезапустите игру для активации GPU."
+            )
 
     try:
         from transformers import AutoModel, AutoTokenizer  # noqa: F401

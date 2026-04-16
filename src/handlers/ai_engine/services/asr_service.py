@@ -167,6 +167,8 @@ class ASRService:
             return self._vad_model
 
         try:
+            from handlers.embedding_handler import _ensure_torch_and_transformers
+            _ensure_torch_and_transformers()
             import torch
         except Exception as e:
             raise RuntimeError(f"torch not available for VAD: {e}") from None

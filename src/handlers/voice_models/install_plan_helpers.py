@@ -52,23 +52,6 @@ def torch_install_action(ctx: dict, *, progress: int = 10) -> InstallAction:
             return False
         try:
             if callbacks:
-                callbacks.status(_(
-                    "Удаление CPU-варианта PyTorch...",
-                    "Removing CPU PyTorch...",
-                ))
-            ok = pip_installer.uninstall_packages(
-                ["torch", "torchaudio"],
-                description=_(
-                    "Удаление CPU-варианта PyTorch",
-                    "Removing CPU PyTorch",
-                ),
-            )
-            if not ok:
-                if callbacks:
-                    callbacks.log("uninstall torch/torchaudio failed")
-                return False
-
-            if callbacks:
                 callbacks.status(description)
             ok = pip_installer.install_package(
                 list(TORCH_PACKAGES),
