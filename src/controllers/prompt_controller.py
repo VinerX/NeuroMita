@@ -80,7 +80,7 @@ class PromptController:
         # via [{VAR}] substitution (e.g. in response_format_json.script includes).
         caps = capabilities or {}
         character.set_variable("TOOLS_DESCRIPTION", caps.get("tools_prompt", "") or "")
-        character.set_variable("SCHEMA_REASONING_ENABLED", caps.get("schema_reasoning", True))
+        character.set_variable("SCHEMA_REASONING_ENABLED", caps.get("schema_reasoning", False))
         character.set_variable("CUSTOM_PARAMS_SCHEMA",
                                _build_custom_params_schema(getattr(character, "custom_params", [])))
 
@@ -307,7 +307,7 @@ class PromptController:
 
         if user_content_chunks:
             user_message_for_history = {"role": "user", "content": user_content_chunks}
-            user_message_for_history["time"] = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M")
+            user_message_for_history["time"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
             if sender:
                 user_message_for_history["sender"] = sender
             if non_player_participants:

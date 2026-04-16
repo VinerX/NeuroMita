@@ -41,7 +41,7 @@ def _to_bool(v: Any, default: bool) -> bool:
 @dataclass
 class ModelRuntimeConfig:
     # generation params
-    max_response_tokens: int = 3200
+    max_response_tokens: int = 3000
     temperature: float = 0.5
     presence_penalty: float = 0.0
     frequency_penalty: float = 0.0
@@ -144,7 +144,7 @@ class ModelConfigLoader:
     def load(self) -> ModelRuntimeConfig:
         s = self.settings
         cfg = ModelRuntimeConfig(
-            max_response_tokens=_to_int(s.get("MODEL_MAX_RESPONSE_TOKENS", 3200), 3200),
+            max_response_tokens=_to_int(s.get("MODEL_MAX_RESPONSE_TOKENS", 3000), 3000),
             temperature=_to_float(s.get("MODEL_TEMPERATURE", 0.5), 0.5),
             presence_penalty=_to_float(s.get("MODEL_PRESENCE_PENALTY", 0.0), 0.0),
             frequency_penalty=_to_float(s.get("MODEL_FREQUENCY_PENALTY", 0.0), 0.0),

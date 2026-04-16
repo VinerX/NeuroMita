@@ -1041,7 +1041,7 @@ def _build_pipeline_preset_config(gui) -> list:
         {'label': _('Пресет', 'Preset'),
          'key': 'RAG_PIPELINE_PRESET', 'type': 'combobox',
          'options': list_pipeline_preset_names(user_presets),
-         'default': 'Custom',
+         'default': 'Keyword+FTS+Inline Graph',
          'command': lambda text: _update_preset_delete_btn(gui, text),
          'tooltip': _(
              'Выберите пресет и нажмите «Применить». Custom — ручная настройка.',
@@ -1074,35 +1074,35 @@ def _build_memory_limits_config(self) -> list:
 
         {'label': _('TTL-забывание памяти', 'Memory TTL (auto-forget)'), 'type': 'subsection'},
         {'label': _('Включить TTL-забывание', 'Enable memory TTL'),
-         'key': 'MEMORY_TTL_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
+         'key': 'MEMORY_TTL_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
          'tooltip': _(
              'Автоматически помечать старые воспоминания низкого/обычного приоритета как забытые (is_forgotten=1). '
              'Они не попадают в промпт, но всё ещё доступны через RAG.',
              'Automatically mark old low/normal-priority memories as forgotten (is_forgotten=1). '
              'They are excluded from the prompt but still searchable via RAG.')},
         {'label': _('TTL для Low-приоритета (дней)', 'TTL for Low priority (days)'),
-         'key': 'MEMORY_TTL_LOW_DAYS', 'type': 'entry', 'default': 30,
+         'key': 'MEMORY_TTL_LOW_DAYS', 'type': 'entry', 'default': 15,
          'validation': self.validate_positive_integer,
          'depends_on': 'MEMORY_TTL_ENABLED',
          'tooltip': _(
              'Через сколько дней Low-приоритетные воспоминания автоматически забываются. 0 = выключено.',
              'Days after which Low-priority memories are auto-forgotten. 0 = disabled.')},
         {'label': _('TTL для Normal-приоритета (дней)', 'TTL for Normal priority (days)'),
-         'key': 'MEMORY_TTL_NORMAL_DAYS', 'type': 'entry', 'default': 0,
+         'key': 'MEMORY_TTL_NORMAL_DAYS', 'type': 'entry', 'default': 30,
          'validation': self.validate_positive_integer_or_zero,
          'depends_on': 'MEMORY_TTL_ENABLED',
          'tooltip': _(
              'Через сколько дней Normal-приоритетные воспоминания автоматически забываются. 0 = выключено.',
              'Days after which Normal-priority memories are auto-forgotten. 0 = disabled.')},
         {'label': _('TTL для High-приоритета (дней)', 'TTL for High priority (days)'),
-         'key': 'MEMORY_TTL_HIGH_DAYS', 'type': 'entry', 'default': 0,
+         'key': 'MEMORY_TTL_HIGH_DAYS', 'type': 'entry', 'default': 90,
          'validation': self.validate_positive_integer_or_zero,
          'depends_on': 'MEMORY_TTL_ENABLED',
          'tooltip': _(
              'Через сколько дней High-приоритетные воспоминания автоматически забываются. 0 = выключено.',
              'Days after which High-priority memories are auto-forgotten. 0 = disabled.')},
         {'label': _('Режим TTL', 'TTL mode'),
-         'key': 'MEMORY_TTL_MODE', 'type': 'combobox', 'default': 'date_created',
+         'key': 'MEMORY_TTL_MODE', 'type': 'combobox', 'default': 'access_weighted',
          'options': ['date_created', 'access_weighted', 'last_accessed'],
          'depends_on': 'MEMORY_TTL_ENABLED',
          'tooltip': _(
@@ -1235,7 +1235,7 @@ def _build_rag_core_config(self) -> list:
         {'label': _('RAG и память', 'RAG & Memory'), 'type': 'subsection'},
 
         {'label': _('Включить RAG (требует перезагрузки)', 'Enable RAG (requires restart)'),
-         'key': 'RAG_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
+         'key': 'RAG_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
          'tooltip': _('Включает систему RAG. Если выключено, модель эмбеддингов не загружается.',
                       'Enables the RAG system. If disabled, the embedding model is not loaded.')},
         {'label': _('Искать в памяти', 'Search in memory'),
@@ -1313,11 +1313,11 @@ def _build_graph_config(self, hc_provider_names) -> list:
          'type': 'subsection'},
 
         {'label': _('Включить экстракцию сущностей', 'Enable entity extraction'),
-         'key': 'GRAPH_EXTRACTION_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
+         'key': 'GRAPH_EXTRACTION_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
          'tooltip': _('Извлекать сущности и связи из диалога через LLM-провайдер и сохранять в граф.',
                       'Extract entities and relations from dialogue via LLM provider and store in graph.')},
         {'label': _('Inline-режим (основная модель, без доп. запроса)', 'Inline mode (main model, no extra call)'),
-         'key': 'GRAPH_EXTRACTION_INLINE', 'type': 'checkbutton', 'default_checkbutton': False,
+         'key': 'GRAPH_EXTRACTION_INLINE', 'type': 'checkbutton', 'default_checkbutton': True,
          'depends_on': 'GRAPH_EXTRACTION_ENABLED',
          'tooltip': _('Основная модель сама пишет <graph>JSON</graph> в ответе — отдельный API-вызов не нужен. '
                       'Если выключено, используется отдельный провайдер ниже.',

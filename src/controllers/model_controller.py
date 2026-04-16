@@ -28,6 +28,14 @@ from utils.structured_response_parser import (
 )
 
 _ALL_TOOLS_LIST = ["calculator", "web_search", "google_search", "web_reader", "memory_search", "reminder"]
+_DEFAULT_TOOL_ENABLED = {
+    "calculator": False,
+    "web_search": False,
+    "google_search": False,
+    "web_reader": False,
+    "memory_search": True,
+    "reminder": True,
+}
 
 
 def _render_tools_for_prompt(schema: list) -> str:
@@ -827,7 +835,10 @@ class ModelController:
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
         if _tools_mode == "off":
             _tools_on = False
-        _enabled_tools = [n for n in _ALL_TOOLS_LIST if self.settings.get(f"TOOL_ENABLED_{n}", True)]
+        _enabled_tools = [
+            n for n in _ALL_TOOLS_LIST
+            if self.settings.get(f"TOOL_ENABLED_{n}", _DEFAULT_TOOL_ENABLED.get(n, False))
+        ]
         if not _enabled_tools:
             _tools_on = False
 
@@ -842,7 +853,7 @@ class ModelController:
         _custom_params = getattr(char, "custom_params", [])
         effective_capabilities["has_custom_params"] = bool(_custom_params)
         effective_capabilities["custom_params"] = _custom_params
-        effective_capabilities["schema_reasoning"] = bool(self.settings.get("SCHEMA_REASONING", True))
+        effective_capabilities["schema_reasoning"] = bool(self.settings.get("SCHEMA_REASONING", False))
 
         data["capabilities"] = dict(effective_capabilities)
 

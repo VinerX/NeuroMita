@@ -38,6 +38,17 @@ RAG_PIPELINE_PRESETS: dict[str, dict[str, object]] = {
         "RAG_USE_RRF": False,
         "RAG_SEARCH_GRAPH": False,
     },
+    "Keyword+FTS+Inline Graph": {
+        "RAG_VECTOR_SEARCH_ENABLED": False,
+        "RAG_CROSS_ENCODER_ENABLED": False,
+        "RAG_KEYWORD_SEARCH": True,
+        "RAG_USE_FTS": True,
+        "RAG_COMBINE_MODE": "union",
+        "RAG_USE_RRF": False,
+        "GRAPH_EXTRACTION_ENABLED": True,
+        "GRAPH_EXTRACTION_INLINE": True,
+        "RAG_SEARCH_GRAPH": True,
+    },
     "Vector+FTS (Qwen3 0.6B)": {
         "RAG_VECTOR_SEARCH_ENABLED": True,
         "RAG_CROSS_ENCODER_ENABLED": False,

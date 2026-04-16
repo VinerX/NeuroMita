@@ -134,7 +134,7 @@ class MainController:
         logger.notify("MainController подписался на события")
 
     def _init_server_controller(self):
-        use_new_api = self.settings.get('USE_NEW_API', False)
+        use_new_api = self.settings.get('USE_NEW_API', True)
 
         if hasattr(self, 'server_controller') and self.server_controller:
             current_is_new = isinstance(self.server_controller, ServerController)

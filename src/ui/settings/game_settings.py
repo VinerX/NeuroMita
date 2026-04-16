@@ -8,7 +8,7 @@ def setup_game_controls(self, parent):
         {'label': _('НЕ НАЖИМАТЬ!', 'Do not turn this on!'),
          'type': 'text'},
         {'label': _('Использовать новый API', 'Use new API'), 'key': 'USE_NEW_API', 'type': 'checkbutton',
-        'default_checkbutton': False,
+        'default_checkbutton': True,
         'tooltip': _('Использовать новую систему передачи данных с задачами', 'Use new task-based data transfer system')},
     ]
 

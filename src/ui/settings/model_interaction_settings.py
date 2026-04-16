@@ -20,7 +20,7 @@ def setup_model_interaction_controls(self, parent):
          'default_checkbutton': False},
         {'label': _('Reasoning в схеме (schema CoT)', 'Schema reasoning (CoT)'), 'key': 'SCHEMA_REASONING',
          'type': 'checkbutton',
-         'default_checkbutton': True,
+         'default_checkbutton': False,
          'tooltip': _('Включает поле reasoning в JSON-схему структурированного ответа. '
                       'Модель "думает вслух" перед заполнением полей — улучшает качество для локальных моделей. '
                       'Отключите если используете нативный thinking или хотите сэкономить токены.',
@@ -56,13 +56,16 @@ def setup_model_interaction_controls(self, parent):
         'type': 'entry',
         'toggle_key': 'USE_MODEL_MAX_RESPONSE_TOKENS',
         'toggle_default': self.settings.get('USE_MODEL_MAX_RESPONSE_TOKENS', True),
-        'default': 2500,
+        'default': 3000,
         'validation': self.validate_positive_integer,
         'tooltip': _('Максимальное количество токенов в ответе модели',
                     'Maximum number of tokens in the model response')},
 
         {'label': _('Температура', 'Temperature'), 'key': 'MODEL_TEMPERATURE',
-         'type': 'entry', 'default': 1.0, 'validation': self.validate_float_0_to_2,
+         'type': 'entry', 'default': 1.0,
+         'toggle_key': 'USE_MODEL_TEMPERATURE',
+         'toggle_default': self.settings.get('USE_MODEL_TEMPERATURE', True),
+         'validation': self.validate_float_0_to_2,
          'tooltip': _('Креативность ответа (0.0 = строго, 2.0 = очень творчески)',
                       'Creativity of response (0.0 = strict, 2.0 = very creative)')},
 
@@ -145,22 +148,22 @@ def setup_model_interaction_controls(self, parent):
         {'label': _('Инструменты (Tools)', 'Tools'), 'type': 'subsection'},
 
         {'label': _('Вызов инструментов', 'Tools use'),
-         'key': 'TOOLS_ON', 'type': 'checkbutton', 'default_checkbutton': False,
+         'key': 'TOOLS_ON', 'type': 'checkbutton', 'default_checkbutton': True,
          'tooltip': _(
              'Позволяет использовать инструменты такие как поиск в сети',
              'Allow using tools like search')},
 
         {'label': _('Калькулятор', 'Calculator'), 'key': 'TOOL_ENABLED_calculator',
-         'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
+         'type': 'checkbutton', 'default_checkbutton': False, 'depends_on': 'TOOLS_ON',
          'tooltip': _('Включить инструмент "Калькулятор"', 'Enable the Calculator tool')},
         {'label': _('Поиск в интернете', 'Web Search'), 'key': 'TOOL_ENABLED_web_search',
-         'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
+         'type': 'checkbutton', 'default_checkbutton': False, 'depends_on': 'TOOLS_ON',
          'tooltip': _('Включить инструмент "Поиск в сети" (DuckDuckGo)', 'Enable the Web Search tool (DuckDuckGo)')},
         {'label': _('Google поиск', 'Google Search'), 'key': 'TOOL_ENABLED_google_search',
-         'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
+         'type': 'checkbutton', 'default_checkbutton': False, 'depends_on': 'TOOLS_ON',
          'tooltip': _('Включить инструмент "Google Search" (требует API ключ)', 'Enable the Google Search tool (requires API key)')},
         {'label': _('Чтение страниц', 'Web Reader'), 'key': 'TOOL_ENABLED_web_reader',
-         'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
+         'type': 'checkbutton', 'default_checkbutton': False, 'depends_on': 'TOOLS_ON',
          'tooltip': _('Включить инструмент "Чтение веб-страниц"', 'Enable the Web Reader tool')},
         {'label': _('Поиск воспоминаний', 'Memory Search'), 'key': 'TOOL_ENABLED_memory_search',
          'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
@@ -231,7 +234,7 @@ def setup_model_interaction_controls(self, parent):
     react_settings_config = [
         {
             'label': _('Использовать реакции (react)', 'Use react events'),
-            'key': 'REACT_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
+            'key': 'REACT_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
             'tooltip': _(
                 'Включить генерацию реакций на действия игрока (react-задачи). '
                 'Отключение полностью блокирует вызовы модели для react.',
@@ -241,7 +244,7 @@ def setup_model_interaction_controls(self, parent):
         },
         {
             'label': _('Использовать реакции L1 (тихие)', 'Enable react L1 (silent)'),
-            'key': 'REACT_L1_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
+            'key': 'REACT_L1_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
             'depends_on': 'REACT_ENABLED',
             'tooltip': _(
                 'Тихие реакции: мимика/поза/действия без ответа текстом.',
@@ -260,7 +263,7 @@ def setup_model_interaction_controls(self, parent):
         },
         {
             'label': _('Использовать реакции L2 (с ответом)', 'Enable react L2 (with answer)'),
-            'key': 'REACT_L2_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
+            'key': 'REACT_L2_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
             'depends_on': 'REACT_ENABLED',
             'tooltip': _(
                 'Реакции с полноценным ответом: текст + озвучка, запись в историю.',
@@ -313,28 +316,3 @@ def setup_model_interaction_controls(self, parent):
                             _("Настройки токенов", "Token Settings"),
                             token_settings_config)
 
-    command_processing_config = [
-        {'label': _('Использовать обработку команд', 'Use command processing'), 'key': 'USE_COMMAND_REPLACER',
-         'type': 'checkbutton', 'default_checkbutton': False,
-         'tooltip': _('Включает замену команд в ответе модели на основе схожести.',
-                      'Enables replacing commands in the model response based on similarity.')},
-        {'label': _('Мин. порог схожести', 'Min similarity threshold'), 'key': 'MIN_SIMILARITY_THRESHOLD',
-         'type': 'entry', 'depends_on': 'USE_COMMAND_REPLACER', 'hide_when_disabled': True,
-         'default': 0.40, 'validation': self.validate_float_0_to_1,
-         'tooltip': _('Минимальный порог схожести для замены команды (0.0-1.0).',
-                      'Minimum similarity threshold for command replacement (0.0-1.0).')},
-        {'label': _('Порог смены категории', 'Category switch threshold'), 'key': 'CATEGORY_SWITCH_THRESHOLD',
-         'type': 'entry', 'depends_on': 'USE_COMMAND_REPLACER', 'hide_when_disabled': True,
-         'default': 0.18, 'validation': self.validate_float_0_to_1,
-         'tooltip': _('Дополнительный порог для переключения на другую категорию команд (0.0-1.0).',
-                      'Additional threshold for switching to a different command category (0.0-1.0).')},
-        {'label': _('Пропускать параметры с запятой', 'Skip comma parameters'), 'key': 'SKIP_COMMA_PARAMETERS',
-         'type': 'checkbutton', 'depends_on': 'USE_COMMAND_REPLACER', 'hide_when_disabled': True,
-         'default_checkbutton': True,
-         'tooltip': _('Пропускать параметры, содержащие запятую, при замене.',
-                      'Skip parameters containing commas during replacement.')},
-    ]
-
-    create_settings_section(self, parent,
-                            _("Обработка команд", "Command Processing"),
-                            command_processing_config)

@@ -132,7 +132,7 @@ class ConversationEventWriter:
             "target": target,
             "participants": list(participants),
             "event_type": event_type,
-            "time": datetime.datetime.now().strftime("%d.%m.%Y_%H.%M"),
+            "time": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
             "content": chunks,
         }
 
