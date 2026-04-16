@@ -15,7 +15,7 @@
 SET LOCAL p_header = """Response Format (Structured JSON):
 
 You MUST respond with a single JSON object. No extra text before or after the JSON.
-IMPORTANT: Never use double quotes " inside string values — use «» or '' instead. Unescaped quotes break JSON parsing.
+IMPORTANT: Never use double quotes "" inside string values — use «» or '' instead. Unescaped quotes break JSON parsing.
 
 """
 
