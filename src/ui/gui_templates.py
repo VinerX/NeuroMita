@@ -198,6 +198,16 @@ def create_button_group(gui, parent, buttons_config):
     return frame
 
 
+def _fmt_tooltip(text: str) -> str:
+    if not text:
+        return text
+    escaped = (text.replace('&', '&amp;')
+                   .replace('<', '&lt;')
+                   .replace('>', '&gt;')
+                   .replace('\n', '<br>'))
+    return f'<p style="max-width:350px;">{escaped}</p>'
+
+
 def create_setting_widget(
         gui,
         parent,
@@ -248,6 +258,11 @@ def create_setting_widget(
         widget.textChanged.connect(
             lambda w=widget: gui._save_setting(setting_key, w.toPlainText())
         )
+
+        if tooltip:
+            _tt = _fmt_tooltip(tooltip)
+            lbl.setToolTip(_tt)
+            widget.setToolTip(_tt)
 
         if widget_name:
             setattr(gui, widget_name, widget)
@@ -359,8 +374,11 @@ def create_setting_widget(
         widget.setWordWrap(True)
         layout.addWidget(widget)
 
-    if tooltip and widget:
-        widget.setToolTip(tooltip)
+    if tooltip:
+        _tt = _fmt_tooltip(tooltip)
+        if widget:
+            widget.setToolTip(_tt)
+        lbl.setToolTip(_tt)
 
     if widget_name and widget is not None:
         setattr(gui, widget_name, widget)
