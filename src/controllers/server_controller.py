@@ -1,4 +1,4 @@
-# File: src/controllers/server_controller.py
+﻿# File: src/controllers/server_controller.py
 from typing import Dict, Any, Optional, Tuple
 from collections import deque
 from main_logger import logger
@@ -89,7 +89,7 @@ class ServerController:
         self.ConnectedToGame = False
         self._destroyed = False
 
-        self.settings_to_send = ['ACTION_MENU', 'MITAS_MENU', 'IGNORE_GAME_REQUESTS', 'GAME_BLOCK_LEVEL', 'CHARACTER', 'WORLD_HIERARCHY_TREE']
+        self.settings_to_send = ['ACTION_MENU', 'MITAS_MENU', 'IGNORE_GAME_REQUESTS', 'GAME_BLOCK_LEVEL', 'CHARACTER', 'WORLD_HIERARCHY_TREE', 'BEAT_SYNC_ENABLED', 'BEAT_SYNC_STREAMING', 'BEAT_SYNC_CHUNK_SECONDS', 'BEAT_SYNC_MIN_CONFIDENCE', 'BEAT_SYNC_AUTO_INSTALL']
 
         self.echo_suppressor = ServerEchoSuppressor()
 
@@ -134,7 +134,7 @@ class ServerController:
     def _init_server(self):
         from game_connections.server import ChatServerNew
         self.server = ChatServerNew()
-        logger.info("Используется новый API сервер")
+        logger.info("РСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РЅРѕРІС‹Р№ API СЃРµСЂРІРµСЂ")
 
         def _conn_cb(is_connected: bool, _client_id: str | None):
             try:
@@ -173,21 +173,21 @@ class ServerController:
         if not self.running:
             self.running = True
             self.server.start()
-            logger.info("Сервер запущен")
+            logger.info("РЎРµСЂРІРµСЂ Р·Р°РїСѓС‰РµРЅ")
 
     def stop_server(self):
         if not self.running:
-            logger.debug("Сервер уже остановлен")
+            logger.debug("РЎРµСЂРІРµСЂ СѓР¶Рµ РѕСЃС‚Р°РЅРѕРІР»РµРЅ")
             return
 
-        logger.info("Начинаем остановку сервера...")
+        logger.info("РќР°С‡РёРЅР°РµРј РѕСЃС‚Р°РЅРѕРІРєСѓ СЃРµСЂРІРµСЂР°...")
         self.running = False
 
         try:
             if self.server:
                 self.server.stop()
         except Exception as e:
-            logger.error(f"Ошибка при остановке сервера: {e}", exc_info=True)
+            logger.error(f"РћС€РёР±РєР° РїСЂРё РѕСЃС‚Р°РЅРѕРІРєРµ СЃРµСЂРІРµСЂР°: {e}", exc_info=True)
 
         try:
             self.ConnectedToGame = False
@@ -196,13 +196,13 @@ class ServerController:
         except Exception:
             pass
 
-        logger.info("Сервер остановлен")
+        logger.info("РЎРµСЂРІРµСЂ РѕСЃС‚Р°РЅРѕРІР»РµРЅ")
 
     def destroy(self):
         if self._destroyed:
             return
 
-        logger.info("Уничтожение ServerController...")
+        logger.info("РЈРЅРёС‡С‚РѕР¶РµРЅРёРµ ServerController...")
         self._destroyed = True
 
         self._unsubscribe_from_events()
@@ -213,7 +213,7 @@ class ServerController:
             task_manager = get_task_manager()
             task_manager.clear_all_tasks()
         except Exception as e:
-            logger.error(f"Ошибка при очистке task manager: {e}")
+            logger.error(f"РћС€РёР±РєР° РїСЂРё РѕС‡РёСЃС‚РєРµ task manager: {e}")
 
         self.server = None
         self.event_bus = None
@@ -275,13 +275,26 @@ class ServerController:
             self.server.set_game_block_level(str(value))
         elif key == 'GM_VOICE':
             self.server.set_game_master_voice(bool(value))
+        elif key == 'BEAT_SYNC_ENABLED' and bool(value):
+            try:
+                import asyncio
+                from game_connections.services.beat_service import get_beat_service
+
+                auto_install = bool(self._get_setting('BEAT_SYNC_AUTO_INSTALL', True))
+                if self.server and self.server.can_schedule():
+                    asyncio.run_coroutine_threadsafe(
+                        get_beat_service().warmup(auto_install=auto_install),
+                        self.server._loop,
+                    )
+            except Exception as e:
+                logger.warning(f"Beat sync warmup failed: {e}")
 
         if key in self.settings_to_send:
             try:
                 body = self._prepare_loaded_settings_body()
                 self.server.schedule_broadcast_loaded_settings(body)
             except Exception as e:
-                logger.warning(f"Не удалось отправить обновлённые настройки клиентам ({key}): {e}")
+                logger.warning(f"РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РїСЂР°РІРёС‚СЊ РѕР±РЅРѕРІР»С‘РЅРЅС‹Рµ РЅР°СЃС‚СЂРѕР№РєРё РєР»РёРµРЅС‚Р°Рј ({key}): {e}")
 
     def _on_load_server_settings(self, event: Event):
         if self._destroyed or not self.server:
@@ -457,3 +470,6 @@ class ServerController:
             "emotion": "",
             "speaker_name": ("" if sender == "Player" else sender),
         })
+
+
+
