@@ -437,8 +437,14 @@ class RAGManager:
 
         # Очистка от тегов
         text = rag_clean_text(text)
+        cfg = resolve_full_config()
+        provider_name = str(cfg.get("provider_name") or "local").strip().lower()
+        can_use_event_bus = bool(use_event_bus and provider_name == "local")
+        logger.debug(
+            f"[RAG][embed_one] provider={provider_name} | model={cfg.get('db_model_key') or cfg.get('model') or cfg.get('hf_name')}"
+        )
 
-        if use_event_bus:
+        if can_use_event_bus:
             try:
                 logger.debug(f"RAGManager: Запрашиваю embedding через EventBus: {EMBED_EVENT_NAME}")
                 results = self.event_bus.emit_and_wait(EMBED_EVENT_NAME, {"text": text, "prefix": prefix})
@@ -463,13 +469,16 @@ class RAGManager:
         prefix: str = "",
         use_event_bus: bool = True,
         batch_size: Optional[int] = None,
+        allow_when_rag_disabled: bool = False,
     ) -> List[Optional[np.ndarray]]:
         """
         Массовое получение эмбеддингов:
         1) EventBus batch (rag.get_embeddings) — меньше overhead и lock'ов.
         2) Fallback на ленивый singleton EmbeddingModelHandler, если EventBus недоступен.
         """
-        if not texts or not SettingsManager.get("RAG_ENABLED", False):
+        if not texts:
+            return []
+        if (not allow_when_rag_disabled) and (not SettingsManager.get("RAG_ENABLED", False)):
             return []
 
         cleaned: List[str] = []
@@ -479,13 +488,24 @@ class RAGManager:
             else:
                 cleaned.append(rag_clean_text(str(t)))
 
-        bs = int(batch_size or self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16))
+        cfg = resolve_full_config()
+        cfg_extra = dict(cfg.get("extra") or {})
+        bs = int(batch_size or cfg_extra.get("batch_size") or self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16))
         if bs <= 0:
             bs = len(cleaned)
 
         out: List[Optional[np.ndarray]] = []
+        provider_name = str(cfg.get("provider_name") or "local").strip().lower()
+        can_use_event_bus = bool(use_event_bus and provider_name == "local")
+        req_delay_sec = float(cfg_extra.get("request_delay_sec") or self._get_float_setting("RAG_EMBED_REQUEST_DELAY_SEC", 0.0))
+        if req_delay_sec < 0.0:
+            req_delay_sec = 0.0
+        logger.debug(
+            f"[RAG][embed_batch] provider={provider_name} | model={cfg.get('db_model_key') or cfg.get('model') or cfg.get('hf_name')} | "
+            f"texts={len(cleaned)} | batch_size={bs} | delay={req_delay_sec:.3f}s | event_bus={can_use_event_bus}"
+        )
 
-        if use_event_bus:
+        if can_use_event_bus:
             try:
                 _eventbus_ok = False
                 for i in range(0, len(cleaned), bs):
@@ -505,8 +525,22 @@ class RAGManager:
                     # выравниваем длину под входной chunk
                     if len(vecs) != len(chunk):
                         vecs = (vecs + [None] * len(chunk))[:len(chunk)]
+                    # EventBus local-путь иногда возвращает только None/[] (например handler не инициализировался).
+                    # В этом случае считаем батч неуспешным и падаем в provider fallback.
+                    if not vecs or all(v is None for v in vecs):
+                        logger.warning(
+                            "[RAG][embed_batch] EventBus returned empty/None-only batch; switching to provider fallback"
+                        )
+                        out.clear()
+                        _eventbus_ok = False
+                        break
                     out.extend(vecs)
                     _eventbus_ok = True
+                    if req_delay_sec > 0.0 and (i + bs) < len(cleaned):
+                        try:
+                            _time.sleep(req_delay_sec)
+                        except Exception:
+                            pass
                 if _eventbus_ok:
                     return out
             except Exception as e:
@@ -517,12 +551,21 @@ class RAGManager:
 
         # Fallback: через провайдер-систему
         try:
-            vecs = self._embed_via_provider(cleaned, is_query=False, prefix=prefix)
-            if not isinstance(vecs, list):
-                vecs = []
-            if len(vecs) != len(cleaned):
-                vecs = (vecs + [None] * len(cleaned))[:len(cleaned)]
-            return vecs
+            merged: List[Optional[np.ndarray]] = []
+            for i in range(0, len(cleaned), bs):
+                chunk = cleaned[i:i + bs]
+                vecs = self._embed_via_provider(chunk, is_query=False, prefix=prefix)
+                if not isinstance(vecs, list):
+                    vecs = []
+                if len(vecs) != len(chunk):
+                    vecs = (vecs + [None] * len(chunk))[:len(chunk)]
+                merged.extend(vecs)
+                if req_delay_sec > 0.0 and (i + bs) < len(cleaned):
+                    try:
+                        _time.sleep(req_delay_sec)
+                    except Exception:
+                        pass
+            return merged
         except Exception as e:
             logger.error(f"RAGManager: ошибка fallback batch эмбеддингов: {e}", exc_info=True)
             return [None] * len(cleaned)
@@ -1114,7 +1157,11 @@ class RAGManager:
             for i in range(0, len(hist_rows), batch_size):
                 chunk = hist_rows[i:i + batch_size]
                 texts = [(c if isinstance(c, str) else "") for _, c in chunk]
-                vecs = self._get_embeddings(texts, batch_size=batch_size)
+                vecs = self._get_embeddings(
+                    texts,
+                    batch_size=batch_size,
+                    allow_when_rag_disabled=True,
+                )
 
                 for (row_id, _), vec in zip(chunk, vecs):
                     if vec is not None:
@@ -1145,7 +1192,11 @@ class RAGManager:
             for i in range(0, len(mem_rows), batch_size):
                 chunk = mem_rows[i:i + batch_size]
                 texts = [str(c or "") for _, c in chunk]
-                vecs = self._get_embeddings(texts, batch_size=batch_size)
+                vecs = self._get_embeddings(
+                    texts,
+                    batch_size=batch_size,
+                    allow_when_rag_disabled=True,
+                )
 
                 for (eternal_id, _), vec in zip(chunk, vecs):
                     if vec is not None:
@@ -1256,7 +1307,11 @@ class RAGManager:
             for i in range(0, len(hist_rows), batch_size):
                 chunk = hist_rows[i:i + batch_size]
                 texts = [(c if isinstance(c, str) else "") for _, c in chunk]
-                vecs = self._get_embeddings(texts, batch_size=batch_size)
+                vecs = self._get_embeddings(
+                    texts,
+                    batch_size=batch_size,
+                    allow_when_rag_disabled=True,
+                )
 
                 for (row_id, _), vec in zip(chunk, vecs):
                     if vec is not None:
@@ -1287,7 +1342,11 @@ class RAGManager:
             for i in range(0, len(mem_rows), batch_size):
                 chunk = mem_rows[i:i + batch_size]
                 texts = [str(c or "") for _, c in chunk]
-                vecs = self._get_embeddings(texts, batch_size=batch_size)
+                vecs = self._get_embeddings(
+                    texts,
+                    batch_size=batch_size,
+                    allow_when_rag_disabled=True,
+                )
 
                 for (eternal_id, _), vec in zip(chunk, vecs):
                     if vec is not None:

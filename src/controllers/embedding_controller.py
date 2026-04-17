@@ -7,7 +7,7 @@ import numpy as np
 
 from core.events import get_event_bus, Events, Event
 from handlers.embedding_handler import EmbeddingModelHandler, QUERY_PREFIX
-from handlers.embedding_presets import resolve_model_settings
+from handlers.embedding_presets import resolve_model_settings, resolve_full_config
 from main_logger import logger
 from managers.settings_manager import SettingsManager
 
@@ -59,13 +59,22 @@ class EmbeddingController:
         # Опциональный прогрев (в фоне), чтобы первый запрос не блокировал пользователя.
         # По умолчанию включаем, чтобы сохранить прежнее поведение (модель грузилась при старте),
         # но теперь это безопасно относительно подписки.
-        preload = SettingsManager.get("RAG_PRELOAD_EMBEDDINGS_MODEL", True)
-        if bool(preload):
+        preload = SettingsManager.get("RAG_PRELOAD_EMBEDDINGS_MODEL", False)
+        try:
+            cfg = resolve_full_config()
+            provider_name = str(cfg.get("provider_name") or "local").strip().lower()
+        except Exception:
+            provider_name = "local"
+        if bool(preload) and provider_name == "local":
             Thread(target=self._ensure_handler, daemon=True).start()
+        else:
+            logger.debug(
+                f"EmbeddingController: preload skipped (preload={bool(preload)}, provider='{provider_name}')"
+            )
 
     _EMBED_SETTING_KEYS = frozenset({
         "RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM", "RAG_EMBED_QUERY_PREFIX", "HF_TOKEN",
-        "RAG_VECTOR_SEARCH_ENABLED",
+        "RAG_VECTOR_SEARCH_ENABLED", "RAG_EMBED_PRESET_ID",
     })
 
     def _subscribe_to_events(self) -> None:
@@ -106,12 +115,20 @@ class EmbeddingController:
         """
         if self._handler_failed:
             return None
-        if self.handler is not None:
-            return self.handler
         if not SettingsManager.get("RAG_ENABLED", False):
             return None
         if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", True):
             return None
+        cfg = resolve_full_config()
+        provider_name = str(cfg.get("provider_name") or "local").strip().lower()
+        if provider_name != "local":
+            if self.handler is not None:
+                with self._init_lock:
+                    self.handler = None
+            logger.debug(f"EmbeddingController: provider='{provider_name}', local handler skipped")
+            return None
+        if self.handler is not None:
+            return self.handler
 
         with self._init_lock:
             if self.handler is None and not self._handler_failed:

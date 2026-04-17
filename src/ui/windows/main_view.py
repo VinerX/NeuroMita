@@ -116,7 +116,11 @@ class ChatGUI(QMainWindow):
         super().__init__()
         self.settings = settings
         
-        self.SETTINGS_PANEL_WIDTH = 400
+        try:
+            self.SETTINGS_PANEL_WIDTH = int(self.settings.get("SETTINGS_PANEL_WIDTH", 520) or 520)
+        except Exception:
+            self.SETTINGS_PANEL_WIDTH = 520
+        self.SETTINGS_PANEL_WIDTH = max(360, min(900, self.SETTINGS_PANEL_WIDTH))
         
         self.event_bus = get_event_bus()
         self._connect_signals()
@@ -397,7 +401,7 @@ class ChatGUI(QMainWindow):
             scroll_area.setWidgetResizable(True)
             scroll_area.setFrameShape(QFrame.Shape.NoFrame)
             scroll_area.setObjectName(f"ScrollArea_{key}")
-            scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             
             content_widget = QWidget()
             content_widget.setObjectName(f"ContentWidget_{key}")

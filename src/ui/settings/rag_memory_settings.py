@@ -249,8 +249,8 @@ def _download_ce_model(gui) -> None:
 # ---------------------------------------------------------------------------
 
 def _reindex_embeddings(gui) -> None:
-    """Run full reindex of embeddings for all characters with progress dialog."""
-    from ui.settings.character_settings.logic import FullReindexAllCharactersWorker
+    """Run missing-only reindex of embeddings for all characters with progress dialog."""
+    from ui.settings.character_settings.logic import ReindexAllCharactersWorker
     from managers.database_manager import DatabaseManager
 
     db = DatabaseManager()
@@ -264,7 +264,7 @@ def _reindex_embeddings(gui) -> None:
         QMessageBox.information(gui, _("Готово", "Done"), _("Нет персонажей для переиндексации.", "No characters to reindex."))
         return
 
-    worker = FullReindexAllCharactersWorker(cids)
+    worker = ReindexAllCharactersWorker(cids)
 
     progress = QProgressDialog(
         _("Переиндексация эмбеддингов...", "Reindexing embeddings..."),
@@ -1276,13 +1276,6 @@ def _build_embed_config(self) -> list:
                       'Enables vector search. Disable to use FTS/keyword only.'),
          'depends_on': 'RAG_ENABLED'},
 
-        {'label': _('HuggingFace токен', 'HuggingFace token'),
-         'key': 'HF_TOKEN', 'type': 'entry', 'default': '',
-         'hide': bool(self.settings.get("HIDE_PRIVATE")),
-         'depends_on': 'RAG_ENABLED',
-         'tooltip': _('Токен HuggingFace для ускорения загрузки и доступа к gated-моделям.',
-                      'HuggingFace token for faster downloads and gated model access.')},
-
         {'type': 'button_group', 'buttons': [
             {'label': _('Переиндексировать эмбеддинги', 'Reindex embeddings'),
              'command': lambda: _reindex_embeddings(self)},
@@ -1950,7 +1943,6 @@ def build_rag_section(self, parent, hc_provider_names) -> None:
         from main_logger import logger as _logger
         _logger.error(f"Failed to build embed provider section: {_e}", exc_info=True)
 
-    _attach_embed_downloader(self, rag_section)
     _attach_ce_downloader(self, rag_section)
 
     # Init delete button state (disabled for built-in presets / Custom)

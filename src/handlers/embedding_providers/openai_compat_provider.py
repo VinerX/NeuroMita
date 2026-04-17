@@ -39,6 +39,9 @@ class OpenAICompatibleEmbeddingProvider(BaseEmbeddingProvider):
         texts = req.texts
         if not texts:
             return []
+        timeout_sec = float((req.extra or {}).get("timeout_sec") or 60.0)
+        backoff_sec = float((req.extra or {}).get("retry_backoff_sec") or 0.5)
+        max_retries_cfg = int((req.extra or {}).get("max_retries") or 3)
 
         # Prepend query prefix when is_query
         if req.is_query and req.query_prefix:
@@ -52,8 +55,12 @@ class OpenAICompatibleEmbeddingProvider(BaseEmbeddingProvider):
         if req.dimensions:
             payload["dimensions"] = req.dimensions
 
+        logger.info(
+            f"[EmbedAPI][openai_compat] model={req.model} | url={url} | texts={len(texts)}"
+        )
         last_exc: Optional[Exception] = None
-        for attempt, key in enumerate(all_keys):
+        max_attempts = min(max(1, max_retries_cfg + 1), max(1, len(all_keys)))
+        for attempt, key in enumerate(all_keys[:max_attempts]):
             headers = {
                 "Content-Type": "application/json",
                 **req.headers,
@@ -62,13 +69,13 @@ class OpenAICompatibleEmbeddingProvider(BaseEmbeddingProvider):
                 headers["Authorization"] = f"Bearer {key}"
 
             try:
-                resp = _req.post(url, json=payload, headers=headers, timeout=60)
+                resp = _req.post(url, json=payload, headers=headers, timeout=timeout_sec)
 
-                if resp.status_code in _RETRY_STATUS and attempt < len(all_keys) - 1:
+                if resp.status_code in _RETRY_STATUS and attempt < max_attempts - 1:
                     logger.warning(
-                        f"OpenAICompatEmbedding: HTTP {resp.status_code} with key #{attempt+1}, retrying with reserve key"
+                        f"[EmbedAPI][openai_compat] HTTP {resp.status_code} key #{attempt+1}, retrying"
                     )
-                    time.sleep(0.5)
+                    time.sleep(backoff_sec)
                     continue
 
                 resp.raise_for_status()
@@ -89,11 +96,11 @@ class OpenAICompatibleEmbeddingProvider(BaseEmbeddingProvider):
             except Exception as e:
                 last_exc = e
                 logger.warning(
-                    f"OpenAICompatEmbedding: attempt {attempt+1} failed: {e}"
+                    f"[EmbedAPI][openai_compat] attempt {attempt+1} failed: {e}"
                 )
-                if attempt < len(all_keys) - 1:
-                    time.sleep(0.5)
+                if attempt < max_attempts - 1:
+                    time.sleep(backoff_sec)
                     continue
 
-        logger.error(f"OpenAICompatEmbedding: all attempts failed. Last error: {last_exc}", exc_info=True)
+        logger.error(f"[EmbedAPI][openai_compat] all attempts failed. Last error: {last_exc}", exc_info=True)
         return [None] * len(req.texts)

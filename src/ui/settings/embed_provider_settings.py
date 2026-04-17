@@ -68,8 +68,20 @@ class _EmbedProviderWidget(QWidget):
         self._del_btn.setFixedWidth(24)
         self._del_btn.setToolTip(_("Удалить пресет", "Delete preset"))
         self._del_btn.clicked.connect(self._on_delete)
+        self._up_btn = QToolButton()
+        self._up_btn.setText("↑")
+        self._up_btn.setFixedWidth(24)
+        self._up_btn.setToolTip(_("Вверх", "Move up"))
+        self._up_btn.clicked.connect(lambda: self._move_current_custom(-1))
+        self._down_btn = QToolButton()
+        self._down_btn.setText("↓")
+        self._down_btn.setFixedWidth(24)
+        self._down_btn.setToolTip(_("Вниз", "Move down"))
+        self._down_btn.clicked.connect(lambda: self._move_current_custom(1))
         preset_row.addWidget(self._add_btn)
         preset_row.addWidget(self._del_btn)
+        preset_row.addWidget(self._up_btn)
+        preset_row.addWidget(self._down_btn)
         root.addLayout(preset_row)
 
         # Row: provider type
@@ -147,6 +159,31 @@ class _EmbedProviderWidget(QWidget):
         rv.addWidget(self._reserve_edit)
         root.addWidget(self._reserve_widget)
 
+        # HF token + download (local only)
+        self._hf_widget = QWidget()
+        hf_row = QHBoxLayout(self._hf_widget)
+        hf_row.setContentsMargins(0, 0, 0, 0)
+        hf_row.setSpacing(4)
+        hf_row.addWidget(QLabel(_("HuggingFace токен:", "HuggingFace token:")))
+        self._hf_edit = QLineEdit()
+        self._hf_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._hf_edit.textChanged.connect(self._mark_dirty)
+        self._hf_eye = QToolButton()
+        self._hf_eye.setText("👁")
+        self._hf_eye.setCheckable(True)
+        self._hf_eye.setFixedWidth(24)
+        self._hf_eye.toggled.connect(
+            lambda on: self._hf_edit.setEchoMode(
+                QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password
+            )
+        )
+        self._download_btn = QPushButton(_("Скачать модель", "Download model"))
+        self._download_btn.clicked.connect(self._on_download_local_model)
+        hf_row.addWidget(self._hf_edit, 1)
+        hf_row.addWidget(self._hf_eye)
+        hf_row.addWidget(self._download_btn)
+        root.addWidget(self._hf_widget)
+
         # Row: query prefix
         prefix_row = QHBoxLayout()
         prefix_row.setSpacing(4)
@@ -156,6 +193,46 @@ class _EmbedProviderWidget(QWidget):
         self._prefix_edit.textChanged.connect(self._mark_dirty)
         prefix_row.addWidget(self._prefix_edit, 1)
         root.addLayout(prefix_row)
+
+        tune_row1 = QHBoxLayout()
+        tune_row1.setSpacing(4)
+        tune_row1.addWidget(QLabel(_("Размер batch:", "Batch size:")))
+        self._batch_edit = QLineEdit()
+        self._batch_edit.setPlaceholderText("16")
+        self._batch_edit.setMaximumWidth(90)
+        self._batch_edit.textChanged.connect(self._mark_dirty)
+        tune_row1.addWidget(self._batch_edit)
+        tune_row1.addWidget(QLabel(_("Задержка, сек:", "Delay, sec:")))
+        self._delay_edit = QLineEdit()
+        self._delay_edit.setPlaceholderText("0.0")
+        self._delay_edit.setMaximumWidth(90)
+        self._delay_edit.textChanged.connect(self._mark_dirty)
+        tune_row1.addWidget(self._delay_edit)
+        tune_row1.addWidget(QLabel(_("Таймаут, сек:", "Timeout, sec:")))
+        self._timeout_edit = QLineEdit()
+        self._timeout_edit.setPlaceholderText("60")
+        self._timeout_edit.setMaximumWidth(90)
+        self._timeout_edit.textChanged.connect(self._mark_dirty)
+        tune_row1.addWidget(self._timeout_edit)
+        tune_row1.addStretch()
+        root.addLayout(tune_row1)
+
+        tune_row2 = QHBoxLayout()
+        tune_row2.setSpacing(4)
+        tune_row2.addWidget(QLabel(_("Повторы:", "Retries:")))
+        self._retries_edit = QLineEdit()
+        self._retries_edit.setPlaceholderText("2")
+        self._retries_edit.setMaximumWidth(90)
+        self._retries_edit.textChanged.connect(self._mark_dirty)
+        tune_row2.addWidget(self._retries_edit)
+        tune_row2.addWidget(QLabel(_("Пауза повтора, сек:", "Retry backoff, sec:")))
+        self._backoff_edit = QLineEdit()
+        self._backoff_edit.setPlaceholderText("0.5")
+        self._backoff_edit.setMaximumWidth(90)
+        self._backoff_edit.textChanged.connect(self._mark_dirty)
+        tune_row2.addWidget(self._backoff_edit)
+        tune_row2.addStretch()
+        root.addLayout(tune_row2)
 
         # Status label
         self._status_label = QLabel()
@@ -261,13 +338,23 @@ class _EmbedProviderWidget(QWidget):
             self._reserve_edit.setPlainText("\n".join(rk))
             self._reserve_edit.blockSignals(False)
             self._prefix_edit.setText(cfg.get("query_prefix") or "")
+            extra = dict(cfg.get("extra") or {})
+            self._batch_edit.setText(str(extra["batch_size"]) if "batch_size" in extra else "")
+            self._delay_edit.setText(str(extra["request_delay_sec"]) if "request_delay_sec" in extra else "")
+            self._timeout_edit.setText(str(extra["timeout_sec"]) if "timeout_sec" in extra else "")
+            self._retries_edit.setText(str(extra["max_retries"]) if "max_retries" in extra else "")
+            self._backoff_edit.setText(str(extra["retry_backoff_sec"]) if "retry_backoff_sec" in extra else "")
 
             self._key_url = cfg.get("key_url") or ""
             self._key_url_btn.setVisible(bool(self._key_url) and not is_local)
+            self._hf_edit.setText(str(SettingsManager.get("HF_TOKEN", "") or ""))
+            self._refresh_download_btn()
 
             self._provider_combo.setEnabled(not is_builtin)
-            self._url_edit.setReadOnly(is_builtin)
+            self._url_edit.setReadOnly(False)
             self._del_btn.setEnabled(not is_builtin)
+            self._up_btn.setEnabled(not is_builtin)
+            self._down_btn.setEnabled(not is_builtin)
 
             self._apply_visibility(is_local)
             self._refresh_index_status()
@@ -300,6 +387,7 @@ class _EmbedProviderWidget(QWidget):
                     "headers": dict(bp.get("default_headers") or {}),
                     "query_prefix": "",
                     "dimensions": int(bp.get("default_dimensions") or 0),
+                    "extra": dict(bp.get("default_extra") or {}),
                     "key_url": bp.get("key_url") or "",
                     "known_models": list(bp.get("known_models") or []),
                     "is_builtin": True,
@@ -312,12 +400,14 @@ class _EmbedProviderWidget(QWidget):
         self._url_widget.setVisible(not is_local)
         self._key_widget.setVisible(not is_local)
         self._reserve_widget.setVisible(not is_local)
+        self._hf_widget.setVisible(is_local)
 
     def _on_provider_type_changed(self):
         if self._is_loading:
             return
         is_local = (self._provider_combo.currentData() == "local")
         self._apply_visibility(is_local)
+        self._refresh_download_btn()
         self._mark_dirty()
 
     def _mark_dirty(self):
@@ -336,30 +426,45 @@ class _EmbedProviderWidget(QWidget):
         key = self._key_edit.text().strip()
         reserve_keys = [l.strip() for l in self._reserve_edit.toPlainText().splitlines() if l.strip()]
         prefix = self._prefix_edit.text()
+        hf_token = self._hf_edit.text().strip()
+        extra: Dict[str, Any] = {}
+        try:
+            if self._batch_edit.text().strip():
+                extra["batch_size"] = max(1, int(self._batch_edit.text().strip()))
+        except Exception:
+            pass
+        try:
+            if self._delay_edit.text().strip():
+                extra["request_delay_sec"] = max(0.0, float(self._delay_edit.text().strip()))
+        except Exception:
+            pass
+        try:
+            if self._timeout_edit.text().strip():
+                extra["timeout_sec"] = max(1.0, float(self._timeout_edit.text().strip()))
+        except Exception:
+            pass
+        try:
+            if self._retries_edit.text().strip():
+                extra["max_retries"] = max(0, int(self._retries_edit.text().strip()))
+        except Exception:
+            pass
+        try:
+            if self._backoff_edit.text().strip():
+                extra["retry_backoff_sec"] = max(0.0, float(self._backoff_edit.text().strip()))
+        except Exception:
+            pass
 
-        is_builtin = isinstance(pid, str)
-        if is_builtin:
-            data = {
-                "id": None,
-                "name": self._get_current_display_name() + " (custom)",
-                "base": pid,
-                "provider_name": provider,
-                "model": model,
-                "url": "",
-                "key": key,
-                "reserve_keys": reserve_keys,
-                "query_prefix": prefix,
-            }
-        else:
-            data = {
-                "id": pid,
-                "provider_name": provider,
-                "model": model,
-                "url": url,
-                "key": key,
-                "reserve_keys": reserve_keys,
-                "query_prefix": prefix,
-            }
+        data = {
+            "id": pid,
+            "provider_name": provider,
+            "model": model,
+            "url": url,
+            "key": key,
+            "reserve_keys": reserve_keys,
+            "query_prefix": prefix,
+            "extra": extra,
+        }
+        SettingsManager.set("HF_TOKEN", hf_token)
 
         try:
             results = self._bus.emit_and_wait(
@@ -409,6 +514,35 @@ class _EmbedProviderWidget(QWidget):
         if self._preset_combo.count() > 0:
             self._preset_combo.setCurrentIndex(0)
 
+    def _move_current_custom(self, delta: int):
+        pid = self._current_preset_id
+        if pid is None or isinstance(pid, str):
+            return
+
+        custom_ids = []
+        for i in range(self._preset_combo.count()):
+            item_id = self._preset_combo.itemData(i)
+            if isinstance(item_id, int):
+                custom_ids.append(item_id)
+        try:
+            cur_idx = custom_ids.index(int(pid))
+        except Exception:
+            return
+        new_idx = cur_idx + int(delta)
+        if new_idx < 0 or new_idx >= len(custom_ids):
+            return
+        custom_ids[cur_idx], custom_ids[new_idx] = custom_ids[new_idx], custom_ids[cur_idx]
+        try:
+            self._bus.emit_and_wait(
+                Events.EmbeddingPresets.REORDER_PRESETS,
+                {"order": custom_ids},
+                timeout=2.0,
+            )
+        except Exception:
+            return
+        self._load_presets()
+        self._select_preset(pid)
+
     def _on_test(self):
         self._status_label.setStyleSheet("")
         self._status_label.setText(_("Тестирование...", "Testing..."))
@@ -438,6 +572,22 @@ class _EmbedProviderWidget(QWidget):
         import webbrowser
         if self._key_url:
             webbrowser.open(self._key_url)
+
+    def _on_download_local_model(self):
+        try:
+            from ui.settings.rag_memory_settings import _download_embed_model
+            _download_embed_model(self._gui)
+        except Exception as e:
+            self._status_label.setStyleSheet("color: red;")
+            self._status_label.setText(_("Ошибка: ", "Error: ") + str(e))
+        self._refresh_download_btn()
+
+    def _refresh_download_btn(self):
+        try:
+            from ui.settings.rag_memory_settings import _is_embed_model_downloaded
+            self._download_btn.setVisible(not _is_embed_model_downloaded())
+        except Exception:
+            self._download_btn.setVisible(False)
 
     def _get_current_display_name(self) -> str:
         return self._preset_combo.currentText().lstrip("✎ ").strip()

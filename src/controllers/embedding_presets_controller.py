@@ -56,6 +56,7 @@ class EmbeddingPresetsController:
 
         self.custom_presets: Dict[int, UserEmbedPreset] = {}
         self.custom_order: List[int] = []
+        self.builtin_overrides: Dict[str, Dict[str, Any]] = {}
 
         self._load()
         self._subscribe()
@@ -71,6 +72,7 @@ class EmbeddingPresetsController:
                     data = json.load(f)
             raw_presets = data.get("presets") or {}
             raw_order = data.get("order") or []
+            raw_builtin_overrides = data.get("builtin_overrides") or {}
 
             for k, v in raw_presets.items():
                 p = self._from_dict(v, fallback_id=k)
@@ -78,6 +80,10 @@ class EmbeddingPresetsController:
                     self.custom_presets[p.id] = p
 
             self.custom_order = self._normalize_order(raw_order)
+            if isinstance(raw_builtin_overrides, dict):
+                for k, v in raw_builtin_overrides.items():
+                    if isinstance(v, dict):
+                        self.builtin_overrides[str(k)] = dict(v)
             logger.info(f"[EmbedPresets] Loaded {len(self.custom_presets)} custom presets")
         except Exception as e:
             logger.error(f"[EmbedPresets] Failed to load: {e}", exc_info=True)
@@ -90,6 +96,7 @@ class EmbeddingPresetsController:
                 data = {
                     "presets": {str(p.id): asdict(p) for p in self.custom_presets.values()},
                     "order": self.custom_order,
+                    "builtin_overrides": self.builtin_overrides,
                 }
                 with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
@@ -174,9 +181,24 @@ class EmbeddingPresetsController:
 
     def _expand_builtin(self, bp: Dict[str, Any]) -> Dict[str, Any]:
         """Expand a built-in preset into a full config."""
+        override = self.builtin_overrides.get(str(bp.get("id"))) or {}
         model = bp.get("default_model") or ""
         url = bp.get("default_url") or ""
         provider = bp.get("provider") or "local"
+        model = str(override.get("model") or model)
+        url = str(override.get("url") or url)
+        query_prefix = str(override.get("query_prefix") or "")
+        reserve_keys = list(override.get("reserve_keys") or [])
+        api_key = override.get("key") or None
+        dimensions = int(override.get("dimensions") or bp.get("default_dimensions") or 0)
+        headers = dict(bp.get("default_headers") or {})
+        extra_headers = override.get("headers")
+        if isinstance(extra_headers, dict):
+            headers.update(extra_headers)
+        extra_cfg = dict(bp.get("default_extra") or {})
+        ov_extra = override.get("extra")
+        if isinstance(ov_extra, dict):
+            extra_cfg.update(ov_extra)
         return {
             "id": bp["id"],
             "name": bp["name"],
@@ -184,12 +206,12 @@ class EmbeddingPresetsController:
             "model": model,
             "hf_name": model if provider == "local" else "",
             "api_url": url if provider != "local" else model,
-            "api_key": None,
-            "reserve_keys": [],
-            "headers": dict(bp.get("default_headers") or {}),
-            "query_prefix": "",
-            "dimensions": int(bp.get("default_dimensions") or 0),
-            "extra": {},
+            "api_key": api_key,
+            "reserve_keys": reserve_keys,
+            "headers": headers,
+            "query_prefix": query_prefix,
+            "dimensions": dimensions,
+            "extra": extra_cfg,
             "key_url": bp.get("key_url") or "",
             "known_models": list(bp.get("known_models") or []),
             "is_builtin": True,
@@ -206,6 +228,8 @@ class EmbeddingPresetsController:
         url = up.url or (bp.get("default_url") or "" if bp else "")
         headers = dict(bp.get("default_headers") or {}) if bp else {}
         headers.update(up.headers)
+        extra_cfg = dict(bp.get("default_extra") or {}) if bp else {}
+        extra_cfg.update(dict(up.extra or {}))
 
         db_key = f"{provider}:{model}" if provider != "local" else model
 
@@ -222,7 +246,7 @@ class EmbeddingPresetsController:
             "headers": headers,
             "query_prefix": up.query_prefix,
             "dimensions": up.dimensions,
-            "extra": dict(up.extra),
+            "extra": extra_cfg,
             "key_url": bp.get("key_url") if bp else "",
             "known_models": list(bp.get("known_models") or []) if bp else [],
             "is_builtin": False,
@@ -265,6 +289,35 @@ class EmbeddingPresetsController:
     def _on_save(self, event: Event):
         data = (event.data or {}).get("data") or {}
         pid = data.get("id")
+        if isinstance(pid, str):
+            from presets.embedding_provider_presets import get_builtin_preset
+            bp = get_builtin_preset(pid)
+            if not bp:
+                logger.error(f"[EmbedPresets] SAVE: invalid builtin id={pid}")
+                return None
+
+            ov = dict(self.builtin_overrides.get(pid) or {})
+            for src, dst in (
+                ("model", "model"),
+                ("url", "url"),
+                ("key", "key"),
+                ("query_prefix", "query_prefix"),
+                ("dimensions", "dimensions"),
+                ("headers", "headers"),
+                ("extra", "extra"),
+            ):
+                if src in data:
+                    ov[dst] = data.get(src)
+            if "reserve_keys" in data:
+                rk = data.get("reserve_keys") or []
+                ov["reserve_keys"] = [str(k) for k in rk if str(k).strip()]
+            self.builtin_overrides[pid] = ov
+            if not self._save():
+                return None
+            self.event_bus.emit(Events.EmbeddingPresets.PRESET_SAVED, {"id": pid})
+            logger.info(f"[EmbedPresets] Saved builtin override id='{pid}'")
+            return pid
+
         if pid is None:
             pid = self._new_id()
         try:
@@ -315,6 +368,13 @@ class EmbeddingPresetsController:
 
     def _on_delete(self, event: Event):
         pid = (event.data or {}).get("id")
+        if isinstance(pid, str):
+            if pid in self.builtin_overrides:
+                del self.builtin_overrides[pid]
+                self._save()
+                self.event_bus.emit(Events.EmbeddingPresets.PRESET_DELETED, {"id": pid})
+                return True
+            return False
         try:
             pid = int(pid)
         except Exception:

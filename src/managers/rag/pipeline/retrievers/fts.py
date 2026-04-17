@@ -11,7 +11,7 @@ from managers.rag.rag_utils import (
     blob_to_array,
     json_loads_list,
 )
-from handlers.embedding_presets import resolve_model_settings
+from handlers.embedding_presets import resolve_full_config
 from ..types import Candidate, QueryState
 from ..config import RAGConfig
 from ..repositories import HistoryRepository, MemoryRepository
@@ -32,7 +32,10 @@ class FTSRetriever:
         self.memory_repo = memory_repo
         self.rag = rag
         self.cfg = cfg
-        self._model_name = resolve_model_settings()["hf_name"]
+        cfg_full = resolve_full_config()
+        self._model_name = str(
+            cfg_full.get("db_model_key") or cfg_full.get("hf_name") or cfg_full.get("model") or ""
+        )
 
     def retrieve(self, qs: QueryState) -> List[Candidate]:
         out: list[Candidate] = []

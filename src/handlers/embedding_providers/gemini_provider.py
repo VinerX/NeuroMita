@@ -48,19 +48,26 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
             return []
 
         results: List[Optional[np.ndarray]] = [None] * len(texts)
+        logger.info(
+            f"[EmbedAPI][gemini] model={model} | texts={len(texts)} | batch_limit={self._BATCH_LIMIT}"
+        )
 
         # Process in batches of _BATCH_LIMIT
         for batch_start in range(0, len(texts), self._BATCH_LIMIT):
             batch_texts = texts[batch_start: batch_start + self._BATCH_LIMIT]
             batch_result = self._embed_batch(
-                _req, all_keys, base_url, model, task_type, batch_texts
+                _req, all_keys, base_url, model, task_type, batch_texts, req
             )
             for j, vec in enumerate(batch_result):
                 results[batch_start + j] = vec
 
         return results
 
-    def _embed_batch(self, requests_lib, all_keys, base_url, model, task_type, texts):
+    def _embed_batch(self, requests_lib, all_keys, base_url, model, task_type, texts, req: EmbeddingRequest):
+        timeout_sec = float((req.extra or {}).get("timeout_sec") or 60.0)
+        backoff_sec = float((req.extra or {}).get("retry_backoff_sec") or 0.5)
+        max_retries_cfg = int((req.extra or {}).get("max_retries") or 3)
+        max_attempts = min(max(1, max_retries_cfg + 1), max(1, len(all_keys)))
         requests_list = [
             {"model": f"models/{model}", "content": {"parts": [{"text": t}]}, "taskType": task_type}
             for t in texts
@@ -68,17 +75,17 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
         payload = {"requests": requests_list}
 
         last_exc: Optional[Exception] = None
-        for attempt, key in enumerate(all_keys):
+        for attempt, key in enumerate(all_keys[:max_attempts]):
             url = f"{base_url}/models/{model}:batchEmbedContents?key={key}"
             headers = {"Content-Type": "application/json"}
             try:
-                resp = requests_lib.post(url, json=payload, headers=headers, timeout=60)
+                resp = requests_lib.post(url, json=payload, headers=headers, timeout=timeout_sec)
 
-                if resp.status_code in _RETRY_STATUS and attempt < len(all_keys) - 1:
+                if resp.status_code in _RETRY_STATUS and attempt < max_attempts - 1:
                     logger.warning(
-                        f"GeminiEmbedding: HTTP {resp.status_code} key #{attempt+1}, retrying reserve key"
+                        f"[EmbedAPI][gemini] HTTP {resp.status_code} key #{attempt+1}, retrying"
                     )
-                    time.sleep(0.5)
+                    time.sleep(backoff_sec)
                     continue
 
                 resp.raise_for_status()
@@ -99,10 +106,10 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
 
             except Exception as e:
                 last_exc = e
-                logger.warning(f"GeminiEmbedding: attempt {attempt+1} failed: {e}")
-                if attempt < len(all_keys) - 1:
-                    time.sleep(0.5)
+                logger.warning(f"[EmbedAPI][gemini] attempt {attempt+1} failed: {e}")
+                if attempt < max_attempts - 1:
+                    time.sleep(backoff_sec)
                     continue
 
-        logger.error(f"GeminiEmbedding: all attempts failed. Last: {last_exc}", exc_info=True)
+        logger.error(f"[EmbedAPI][gemini] all attempts failed. Last: {last_exc}", exc_info=True)
         return [None] * len(texts)

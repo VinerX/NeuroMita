@@ -18,6 +18,7 @@ from main_logger import logger
 
 def setup_chat_panel(gui, main_layout):
     chat_widget = QWidget()
+    chat_widget.setMinimumWidth(0)
     chat_layout = QVBoxLayout(chat_widget)
     chat_layout.setContentsMargins(10, 10, 10, 10)
     chat_layout.setSpacing(5)
