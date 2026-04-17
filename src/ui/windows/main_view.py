@@ -362,6 +362,12 @@ class ChatGUI(QMainWindow):
         setup_chat_panel(self, main_layout)
         setup_settings_panel(self, main_layout)
         self._init_settings_containers()
+        # применить режим интерфейса (скрыть кнопки панели по уровню)
+        try:
+            from ui.widgets.settings_panel import apply_interface_mode
+            apply_interface_mode(self, self.settings.get("INTERFACE_MODE") or _('Базовый', 'Basic'))
+        except Exception:
+            pass
         self.resize(1200, 800)
         
     def _on_hide_animation_finished(self):

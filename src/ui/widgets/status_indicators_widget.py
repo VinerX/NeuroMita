@@ -2,6 +2,21 @@ from PyQt6.QtWidgets import QWidget, QHBoxLayout, QCheckBox
 from PyQt6.QtCore import Qt
 from utils import _
 
+
+def apply_capture_visibility(gui, mode=None):
+    """Показывать/скрывать индикаторы захвата экрана и камеры в зависимости от режима интерфейса."""
+    try:
+        from ui.widgets.settings_panel import normalize_mode
+        m = normalize_mode(mode or gui.settings.get('INTERFACE_MODE'))
+    except Exception:
+        m = 'basic'
+    visible = m in ('advanced', 'full')
+    for attr in ('screen_capture_status_checkbox', 'camera_capture_status_checkbox'):
+        w = getattr(gui, attr, None)
+        if w is not None:
+            w.setVisible(visible)
+
+
 def create_status_indicators(gui, parent_layout):
     status_frame = QWidget()
     status_layout = QHBoxLayout(status_frame)
@@ -39,6 +54,7 @@ def create_status_indicators(gui, parent_layout):
     parent_layout.addWidget(status_frame)
 
     gui.update_status_colors()
+    apply_capture_visibility(gui)
 
 def create_status_indicators_inline(gui, layout):
     """Создает статус индикаторы для верхней панели чата"""
@@ -68,3 +84,4 @@ def create_status_indicators_inline(gui, layout):
     layout.addWidget(gui.camera_capture_status_checkbox)
 
     gui.update_status_colors()
+    apply_capture_visibility(gui)

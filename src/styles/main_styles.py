@@ -82,6 +82,23 @@ QTextEdit#DebugWindow {
     border-radius: 10px;
 }
 
+/* ========= SpinBox ========= */
+QSpinBox, QDoubleSpinBox {
+    background-color: {panel_bg};
+    color: {text};
+    border: 1px solid {border_soft};
+    border-radius: 4px;
+    padding: 2px 6px;
+    min-height: 22px;
+}
+QSpinBox:focus, QDoubleSpinBox:focus {
+    border: 1px solid {accent};
+}
+QSpinBox:disabled, QDoubleSpinBox:disabled {
+    background-color: rgba(14,14,18,0.85);
+    color: #8d8d96;
+}
+
 /* ========= ComboBox ========= */
 QComboBox {
     background-color: {panel_bg};

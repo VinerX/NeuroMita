@@ -1,7 +1,11 @@
 from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
 from core.events import get_event_bus, Events
-from ui.settings.rag_memory_settings import build_rag_memory_section
+from ui.settings.rag_memory_settings import (
+    build_memory_section,
+    build_rag_section,
+    build_rag_memory_section,  # обратная совместимость
+)
 
 
 def setup_model_interaction_controls(self, parent):
@@ -233,6 +237,17 @@ def setup_model_interaction_controls(self, parent):
 
     react_settings_config = [
         {
+            'type': 'text',
+            'label': _(
+                'Реакции — это когда триггером генерации служит событие, а не прямой запрос пользователя.\n'
+                'L1 — очень короткий ответ с выбором анимации (для слабых но шустрых моделей, сокращённый контекст).\n'
+                'L2 — полноценный ответ мощной моделью.',
+                'Reactions are triggered by events, not direct user input.\n'
+                'L1 — very short response with animation choice (lightweight fast models, trimmed context).\n'
+                'L2 — full response by a powerful model.'
+            ),
+        },
+        {
             'label': _('Использовать реакции (react)', 'Use react events'),
             'key': 'REACT_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
             'tooltip': _(
@@ -288,7 +303,8 @@ def setup_model_interaction_controls(self, parent):
         react_settings_config
     )
 
-    build_rag_memory_section(self, parent, hc_provider_names)
+    build_memory_section(self, parent, hc_provider_names)
+    build_rag_section(self, parent, hc_provider_names)
 
     token_settings_config = [
         {'label': _('Показывать информацию о токенах', 'Show Token Info'), 'key': 'SHOW_TOKEN_INFO',

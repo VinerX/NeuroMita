@@ -1064,13 +1064,22 @@ def _build_memory_limits_config(self) -> list:
     return [
         {'label': _('Лимит сообщений', 'Message limit'), 'key': 'MODEL_MESSAGE_LIMIT',
          'type': 'entry', 'default': 40,
+         'validation': self.validate_positive_integer,
+         'command': lambda _v: _sync_memory_profile(self),
          'tooltip': _('Сколько сообщений будет помнить мита', 'How much messages Mita will remember')},
         {'label': _('Лимит воспоминаний', 'Active memory limit (MEMORY_CAPACITY)'),
          'key': 'MEMORY_CAPACITY', 'type': 'entry', 'default': 75,
          'validation': self.validate_positive_integer,
+         'command': lambda _v: _sync_memory_profile(self),
          'tooltip': _(
              'Максимум активных воспоминаний (не удалённых и не забытых). При превышении система помечает одно как is_forgotten=1.',
              'Maximum number of active memories (not deleted and not forgotten). When exceeded, the system marks one as is_forgotten=1.')},
+        {'label': _('Макс. результатов RAG', 'RAG max results'),
+         'key': 'RAG_MAX_RESULTS', 'type': 'entry', 'default': 10,
+         'validation': self.validate_positive_integer,
+         'command': lambda _v: _sync_memory_profile(self),
+         'tooltip': _('Сколько фрагментов RAG добавлять в system prompt.',
+                      'How many RAG chunks to inject into the system prompt.')},
 
         {'label': _('TTL-забывание памяти', 'Memory TTL (auto-forget)'), 'type': 'subsection'},
         {'label': _('Включить TTL-забывание', 'Enable memory TTL'),
@@ -1243,12 +1252,6 @@ def _build_rag_core_config(self) -> list:
          'depends_on': 'RAG_ENABLED'},
         {'label': _('Искать в истории', 'Search in history'),
          'key': 'RAG_SEARCH_HISTORY', 'type': 'checkbutton', 'default_checkbutton': True,
-         'depends_on': 'RAG_ENABLED'},
-        {'label': _('Макс. результатов RAG', 'RAG max results'),
-         'key': 'RAG_MAX_RESULTS', 'type': 'entry', 'default': 10,
-         'validation': self.validate_positive_integer,
-         'tooltip': _('Сколько фрагментов RAG добавлять в system prompt.',
-                      'How many RAG chunks to inject into the system prompt.'),
          'depends_on': 'RAG_ENABLED'},
         {'label': _('Порог схожести (Sim threshold)', 'Similarity threshold (Sim threshold)'),
          'key': 'RAG_SIM_THRESHOLD', 'type': 'entry', 'default': 0.30,
@@ -1835,17 +1838,109 @@ def _build_rag_logging_config(self) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Section builder
+# Helpers
 # ---------------------------------------------------------------------------
 
-def build_rag_memory_section(self, parent, hc_provider_names) -> None:
-    """Build and inject the Memory & RAG settings section into *parent*."""
+def _sync_memory_profile(gui) -> None:
+    """Пересчитать профиль памяти по текущим значениям и обновить combobox."""
+    try:
+        from ui.settings.memory_profile import sync_profile_label
+        sync_profile_label(gui)
+    except Exception:
+        pass
 
+
+def _attach_embed_downloader(gui, section) -> None:
+    """Вставить download-виджеты эмбеддинга в нужную InnerCollapsibleSection секции RAG."""
+    try:
+        from managers.settings_manager import InnerCollapsibleSection
+        _dl_label = QLabel(_("Модель:", "Model:") + " " + _get_model_download_status())
+        _dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        _idx_label = QLabel(_("Индекс:", "Index:") + " " + _get_embed_status_text())
+        _idx_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        _embed_dl_btn = QPushButton(_("Скачать модель", "Download model"))
+        _embed_dl_btn.setVisible(not _is_embed_model_downloaded())
+        _embed_dl_btn.clicked.connect(lambda: _download_embed_model(gui))
+        gui._embed_status_label = _idx_label
+        gui._embed_dl_label = _dl_label
+        gui._embed_dl_btn = _embed_dl_btn
+
+        _content = getattr(section, 'content', None)
+        if _content:
+            _content_layout = _content.layout()
+            if _content_layout:
+                for i in range(_content_layout.count()):
+                    _item = _content_layout.itemAt(i)
+                    if _item and _item.widget():
+                        _w = _item.widget()
+                        if isinstance(_w, InnerCollapsibleSection):
+                            _tl = getattr(_w, 'title_label', None)
+                            _title = _tl.text() if _tl else ''
+                            if 'мбеддинг' in _title.lower() or 'mbedding' in _title.lower():
+                                _w.add_widget(_dl_label)
+                                _w.add_widget(_idx_label)
+                                _w.add_widget(_embed_dl_btn)
+                                break
+    except Exception:
+        pass
+
+
+def _attach_ce_downloader(gui, section) -> None:
+    """Вставить download-виджеты cross-encoder в нужную InnerCollapsibleSection секции RAG."""
+    try:
+        from managers.settings_manager import InnerCollapsibleSection
+        _ce_dl_label = QLabel(_("Модель:", "Model:") + " " + _get_ce_download_status())
+        _ce_dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        _ce_ld_label = QLabel(_("Статус:", "Status:") + " " + _get_ce_loaded_status())
+        _ce_ld_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        _ce_dl_btn = QPushButton(_("Скачать модель", "Download model"))
+        _ce_dl_btn.setVisible(not _is_ce_model_downloaded())
+        _ce_dl_btn.clicked.connect(lambda: _download_ce_model(gui))
+        gui._ce_dl_label = _ce_dl_label
+        gui._ce_loaded_label = _ce_ld_label
+        gui._ce_dl_btn = _ce_dl_btn
+
+        _content = getattr(section, 'content', None)
+        if _content:
+            _content_layout = _content.layout()
+            if _content_layout:
+                for i in range(_content_layout.count()):
+                    _item = _content_layout.itemAt(i)
+                    if _item and _item.widget():
+                        _w = _item.widget()
+                        if isinstance(_w, InnerCollapsibleSection):
+                            _tl = getattr(_w, 'title_label', None)
+                            _title = _tl.text() if _tl else ''
+                            if 'ross-encoder' in _title or 'реранкер' in _title.lower():
+                                _w.add_widget(_ce_dl_label)
+                                _w.add_widget(_ce_ld_label)
+                                _w.add_widget(_ce_dl_btn)
+                                break
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Section builders
+# ---------------------------------------------------------------------------
+
+def build_memory_section(self, parent, hc_provider_names) -> None:
+    """Секция «Память»: лимиты, TTL, сжатие истории."""
     config = (
-        _build_pipeline_preset_config(self) +
         _build_memory_limits_config(self) +
         _build_history_ttl_config(self) +
-        _build_history_compression_config(self, hc_provider_names) +
+        _build_history_compression_config(self, hc_provider_names)
+    )
+    create_settings_section(self, parent,
+                            _("Память", "Memory"),
+                            config,
+                            icon_name='fa5s.brain')
+
+
+def build_rag_section(self, parent, hc_provider_names) -> None:
+    """Секция «RAG»: pipeline preset, поиск, эмбеддинги, граф, веса."""
+    config = (
+        _build_pipeline_preset_config(self) +
         _build_rag_core_config(self) +
         _build_embed_config(self) +
         _build_graph_config(self, hc_provider_names) +
@@ -1856,85 +1951,15 @@ def build_rag_memory_section(self, parent, hc_provider_names) -> None:
         _build_fts_config(self) +
         _build_combine_config(self) +
         _build_cross_encoder_config(self) +
-        _build_rag_logging_config(self) +
-        []
+        _build_rag_logging_config(self)
     )
+    rag_section = create_settings_section(self, parent,
+                                          _("RAG", "RAG"),
+                                          config,
+                                          icon_name='fa5s.search')
 
-    create_settings_section(self, parent,
-                            _("Настройки памяти и RAG", "Memory & RAG settings"),
-                            config)
-
-    # --- Dynamic status labels + download button for embedding model ---
-    try:
-        _dl_label = QLabel(_("Модель:", "Model:") + " " + _get_model_download_status())
-        _dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _idx_label = QLabel(_("Индекс:", "Index:") + " " + _get_embed_status_text())
-        _idx_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _embed_dl_btn = QPushButton(_("Скачать модель", "Download model"))
-        _embed_dl_btn.setVisible(not _is_embed_model_downloaded())
-        _embed_dl_btn.clicked.connect(lambda: _download_embed_model(self))
-        self._embed_status_label = _idx_label
-        self._embed_dl_label = _dl_label
-        self._embed_dl_btn = _embed_dl_btn
-
-        _rag_section = parent.layout().itemAt(parent.layout().count() - 1)
-        if _rag_section and _rag_section.widget():
-            _sec_widget = _rag_section.widget()
-            _content = getattr(_sec_widget, 'content', None)
-            if _content:
-                _content_layout = _content.layout()
-                if _content_layout:
-                    for i in range(_content_layout.count()):
-                        _item = _content_layout.itemAt(i)
-                        if _item and _item.widget():
-                            _w = _item.widget()
-                            from managers.settings_manager import InnerCollapsibleSection
-                            if isinstance(_w, InnerCollapsibleSection):
-                                _tl = getattr(_w, 'title_label', None)
-                                _title = _tl.text() if _tl else ''
-                                if 'мбеддинг' in _title.lower() or 'mbedding' in _title.lower():
-                                    _w.add_widget(_dl_label)
-                                    _w.add_widget(_idx_label)
-                                    _w.add_widget(_embed_dl_btn)
-                                    break
-    except Exception:
-        pass
-
-    # --- Dynamic status labels + download button for cross-encoder model ---
-    try:
-        _ce_dl_label = QLabel(_("Модель:", "Model:") + " " + _get_ce_download_status())
-        _ce_dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _ce_ld_label = QLabel(_("Статус:", "Status:") + " " + _get_ce_loaded_status())
-        _ce_ld_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _ce_dl_btn = QPushButton(_("Скачать модель", "Download model"))
-        _ce_dl_btn.setVisible(not _is_ce_model_downloaded())
-        _ce_dl_btn.clicked.connect(lambda: _download_ce_model(self))
-        self._ce_dl_label = _ce_dl_label
-        self._ce_loaded_label = _ce_ld_label
-        self._ce_dl_btn = _ce_dl_btn
-
-        _rag_section = parent.layout().itemAt(parent.layout().count() - 1)
-        if _rag_section and _rag_section.widget():
-            _sec_widget = _rag_section.widget()
-            _content = getattr(_sec_widget, 'content', None)
-            if _content:
-                _content_layout = _content.layout()
-                if _content_layout:
-                    for i in range(_content_layout.count()):
-                        _item = _content_layout.itemAt(i)
-                        if _item and _item.widget():
-                            _w = _item.widget()
-                            from managers.settings_manager import InnerCollapsibleSection
-                            if isinstance(_w, InnerCollapsibleSection):
-                                _tl = getattr(_w, 'title_label', None)
-                                _title = _tl.text() if _tl else ''
-                                if 'ross-encoder' in _title or 'реранкер' in _title.lower():
-                                    _w.add_widget(_ce_dl_label)
-                                    _w.add_widget(_ce_ld_label)
-                                    _w.add_widget(_ce_dl_btn)
-                                    break
-    except Exception:
-        pass
+    _attach_embed_downloader(self, rag_section)
+    _attach_ce_downloader(self, rag_section)
 
     # Init delete button state (disabled for built-in presets / Custom)
     try:
@@ -1944,3 +1969,9 @@ def build_rag_memory_section(self, parent, hc_provider_names) -> None:
         )
     except Exception:
         pass
+
+
+def build_rag_memory_section(self, parent, hc_provider_names) -> None:
+    """Обратная совместимость: вызывает build_memory_section + build_rag_section."""
+    build_memory_section(self, parent, hc_provider_names)
+    build_rag_section(self, parent, hc_provider_names)
