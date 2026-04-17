@@ -15,6 +15,7 @@ from controllers.chat_controller import ChatController
 from controllers.loop_controller import LoopController
 from controllers.task_controller import TaskController
 from controllers.api_presets_controller import ApiPresetsController
+from controllers.embedding_presets_controller import EmbeddingPresetsController
 from controllers.local_voice_controller import LocalVoiceController
 from controllers.prompt_controller import PromptController
 from controllers.history_controller import HistoryController
@@ -97,6 +98,9 @@ class MainController:
 
         self.api_presets_controller = ApiPresetsController()
         logger.notify("ApiPresetsController успешно инициализирован.")
+
+        self.embedding_presets_controller = EmbeddingPresetsController()
+        logger.notify("EmbeddingPresetsController успешно инициализирован.")
 
         self.audio_controller = AudioController(self)
         logger.notify("AudioController успешно инициализирован.")

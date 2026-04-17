@@ -16,7 +16,7 @@ from managers.rag.pipeline.config import list_ce_preset_names, CE_PRESETS
 from managers.rag.pipeline.config import (
     RAG_PIPELINE_PRESETS, list_pipeline_preset_names, get_pipeline_preset_settings,
 )
-from handlers.embedding_presets import list_preset_names, resolve_model_settings
+from handlers.embedding_presets import list_preset_names, resolve_model_settings, resolve_full_config
 
 # Module-level state for the running extraction (survives dialog close).
 _extr_state: dict = {'worker': None, 'stop': None, 'total': 0, 'last_status': ''}
@@ -30,8 +30,8 @@ def _get_embed_status_text() -> str:
     """Check if current model has missing embeddings."""
     try:
         from managers.database_manager import DatabaseManager
-        ms = resolve_model_settings()
-        model = ms["hf_name"]
+        cfg = resolve_full_config()
+        model = cfg.get("db_model_key") or cfg.get("hf_name") or resolve_model_settings()["hf_name"]
         db = DatabaseManager()
         conn = db.get_connection()
         cur = conn.cursor()
@@ -1265,40 +1265,24 @@ def _build_rag_core_config(self) -> list:
 
 
 def _build_embed_config(self) -> list:
+    """Embedding section — vector search toggle + HF token (provider UI added separately)."""
     return [
         {'label': _('Модель эмбеддингов', 'Embedding Model'), 'type': 'subsection',
          'depends_on': 'RAG_ENABLED'},
 
-        {'label': _('Векторный поиск (локальная модель)', 'Vector search (local model)'),
+        {'label': _('Векторный поиск', 'Vector search'),
          'key': 'RAG_VECTOR_SEARCH_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
-         'tooltip': _('Включает векторный поиск через локальную модель эмбеддингов (torch/transformers). '
-                      'Выключите, если torch недоступен — RAG продолжит работать только на FTS/keyword.',
-                      'Enables vector search via a local embedding model (torch/transformers). '
-                      'Disable if torch is unavailable — RAG will fall back to FTS/keyword only.'),
+         'tooltip': _('Включает векторный поиск. Выключите для работы только на FTS/keyword.',
+                      'Enables vector search. Disable to use FTS/keyword only.'),
          'depends_on': 'RAG_ENABLED'},
 
-        {'label': _('Модель', 'Model'),
-         'key': 'RAG_EMBED_MODEL', 'type': 'combobox',
-         'options': list_preset_names(), 'default': 'Snowflake Arctic M v2.0',
-         'tooltip': _('Выберите пресет или "Custom" для ручного ввода HuggingFace модели.',
-                      'Choose a preset or "Custom" for manual HuggingFace model input.'),
-         'depends_on': 'RAG_ENABLED'},
-        {'label': _('HF имя модели (Custom)', 'HF model name (Custom)'),
-         'key': 'RAG_EMBED_MODEL_CUSTOM', 'type': 'entry', 'default': '',
-         'depends_on': 'RAG_EMBED_MODEL', 'depends_on_value': 'Custom', 'hide_when_disabled': True,
-         'tooltip': _('Полное имя модели на HuggingFace, напр. "BAAI/bge-m3".',
-                      'Full HuggingFace model name, e.g. "BAAI/bge-m3".')},
-        {'label': _('Префикс запроса (Custom)', 'Query prefix (Custom)'),
-         'key': 'RAG_EMBED_QUERY_PREFIX', 'type': 'entry', 'default': '',
-         'depends_on': 'RAG_EMBED_MODEL', 'depends_on_value': 'Custom', 'hide_when_disabled': True,
-         'tooltip': _('Префикс, добавляемый перед текстом запроса (напр. "query: ").',
-                      'Prefix prepended to query text (e.g. "query: ").')},
         {'label': _('HuggingFace токен', 'HuggingFace token'),
          'key': 'HF_TOKEN', 'type': 'entry', 'default': '',
          'hide': bool(self.settings.get("HIDE_PRIVATE")),
          'depends_on': 'RAG_ENABLED',
          'tooltip': _('Токен HuggingFace для ускорения загрузки и доступа к gated-моделям.',
                       'HuggingFace token for faster downloads and gated model access.')},
+
         {'type': 'button_group', 'buttons': [
             {'label': _('Переиндексировать эмбеддинги', 'Reindex embeddings'),
              'command': lambda: _reindex_embeddings(self)},
@@ -1957,6 +1941,14 @@ def build_rag_section(self, parent, hc_provider_names) -> None:
                                           _("RAG", "RAG"),
                                           config,
                                           icon_name='fa5s.search')
+
+    try:
+        from ui.settings.embed_provider_settings import build_embed_provider_inner_section
+        rag_section.add_widget(build_embed_provider_inner_section(self))
+    except Exception as _e:
+        import traceback
+        from main_logger import logger as _logger
+        _logger.error(f"Failed to build embed provider section: {_e}", exc_info=True)
 
     _attach_embed_downloader(self, rag_section)
     _attach_ce_downloader(self, rag_section)

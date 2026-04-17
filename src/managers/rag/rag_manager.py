@@ -13,7 +13,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 from managers.database_manager import DatabaseManager
 from handlers.embedding_handler import EmbeddingModelHandler, QUERY_PREFIX
-from handlers.embedding_presets import resolve_model_settings
+from handlers.embedding_presets import resolve_model_settings, resolve_full_config
 from managers.rag.pipeline.retrievers.faiss_index import invalidate as _faiss_invalidate
 from core.events import get_event_bus, Events
 from main_logger import logger
@@ -128,13 +128,30 @@ class RAGManager:
         return self._schema.mem_cols
 
     def _current_model_name(self) -> str:
-        """Возвращает HF-имя текущей модели эмбеддингов (разрешает пресет)."""
-        ms = resolve_model_settings()
-        return ms["hf_name"]
+        """Returns the DB key used to tag embedding rows (provider:model or bare hf_name)."""
+        cfg = resolve_full_config()
+        return str(cfg.get("db_model_key") or cfg.get("hf_name") or cfg.get("model") or "")
 
     def _current_dimensions(self) -> int:
-        ms = resolve_model_settings()
-        return int(ms.get("dimensions") or 0)
+        cfg = resolve_full_config()
+        return int(cfg.get("dimensions") or 0)
+
+    def _embed_via_provider(
+        self,
+        texts: List[str],
+        is_query: bool = False,
+        prefix: str = "",
+    ) -> List[Optional[np.ndarray]]:
+        """Embed texts through the configured embedding provider."""
+        from handlers.embedding_providers.registry import get_provider_for, build_request
+
+        cfg = resolve_full_config()
+        if prefix:
+            cfg = dict(cfg)
+            cfg["query_prefix"] = prefix
+        provider = get_provider_for(cfg)
+        req = build_request(cfg, texts=texts, is_query=is_query)
+        return provider.embed(req)
 
     def _get_bool_setting(self, key: str, default: bool) -> bool:
         try:
@@ -434,9 +451,10 @@ class RAGManager:
                 logger.warning(f"RAGManager: EventBus embedding не сработал, fallback на singleton. Причина: {e}")
 
         try:
-            return self._get_fallback_handler().get_embedding(text, prefix=prefix)
+            results = self._embed_via_provider([text], is_query=bool(prefix), prefix=prefix)
+            return results[0] if results else None
         except Exception as e:
-            logger.error(f"RAGManager: ошибка singleton эмбеддинга: {e}", exc_info=True)
+            logger.error(f"RAGManager: ошибка провайдера эмбеддинга: {e}", exc_info=True)
             return None
 
     def _get_embeddings(
@@ -497,12 +515,9 @@ class RAGManager:
                 )
                 out.clear()
 
-        # Fallback: последовательно (но без повторной загрузки модели)
+        # Fallback: через провайдер-систему
         try:
-            handler = self._get_fallback_handler()
-            # Используем batch API модели (быстрее и тоже без повторной загрузки)
-            # batch_size уже нормализован в bs
-            vecs = handler.get_embeddings(cleaned, prefix=prefix, batch_size=bs)
+            vecs = self._embed_via_provider(cleaned, is_query=False, prefix=prefix)
             if not isinstance(vecs, list):
                 vecs = []
             if len(vecs) != len(cleaned):
