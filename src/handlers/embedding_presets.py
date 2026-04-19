@@ -208,6 +208,13 @@ def resolve_full_config() -> Dict[str, Any]:
     }
 
 
+def _resolve_local_model_name(model: str) -> str:
+    preset = get_preset(str(model or ""))
+    if preset:
+        return str(preset.get("hf_name") or model)
+    return str(model or "")
+
+
 def _resolve_from_preset_storage(preset_id: Any) -> Optional[Dict[str, Any]]:
     from presets.embedding_provider_presets import get_builtin_preset
 
@@ -236,20 +243,21 @@ def _resolve_from_preset_storage(preset_id: Any) -> Optional[Dict[str, Any]]:
         extra = dict(bp.get("default_extra") or {})
         if isinstance(ov.get("extra"), dict):
             extra.update(dict(ov.get("extra") or {}))
+        resolved_model = _resolve_local_model_name(model) if provider == "local" else model
         return {
             "id": bp.get("id"),
             "name": bp.get("name"),
             "provider_name": provider,
             "model": model,
-            "hf_name": model if provider == "local" else "",
-            "api_url": url if provider != "local" else model,
+            "hf_name": resolved_model if provider == "local" else "",
+            "api_url": url if provider != "local" else resolved_model,
             "api_key": ov.get("key") or None,
             "reserve_keys": list(ov.get("reserve_keys") or []),
             "headers": headers,
             "query_prefix": query_prefix,
             "dimensions": int(ov.get("dimensions") or bp.get("default_dimensions") or 0),
             "extra": extra,
-            "db_model_key": f"{provider}:{model}" if provider != "local" else model,
+            "db_model_key": f"{provider}:{model}" if provider != "local" else resolved_model,
         }
 
     # Custom preset id (numeric)
@@ -272,18 +280,19 @@ def _resolve_from_preset_storage(preset_id: Any) -> Optional[Dict[str, Any]]:
     extra = dict(base.get("default_extra") or {}) if base else {}
     if isinstance(raw.get("extra"), dict):
         extra.update(dict(raw.get("extra") or {}))
+    resolved_model = _resolve_local_model_name(model) if provider == "local" else model
     return {
         "id": pid,
         "name": str(raw.get("name") or f"Preset {pid}"),
         "provider_name": provider,
         "model": model,
-        "hf_name": model if provider == "local" else "",
-        "api_url": url if provider != "local" else model,
+        "hf_name": resolved_model if provider == "local" else "",
+        "api_url": url if provider != "local" else resolved_model,
         "api_key": raw.get("key") or None,
         "reserve_keys": list(raw.get("reserve_keys") or []),
         "headers": headers,
         "query_prefix": str(raw.get("query_prefix") or ""),
         "dimensions": int(raw.get("dimensions") or (base.get("default_dimensions") if base else 0) or 0),
         "extra": extra,
-        "db_model_key": f"{provider}:{model}" if provider != "local" else model,
+        "db_model_key": f"{provider}:{model}" if provider != "local" else resolved_model,
     }

@@ -26,6 +26,17 @@ _extr_state: dict = {'worker': None, 'stop': None, 'total': 0, 'last_status': ''
 # Status helpers
 # ---------------------------------------------------------------------------
 
+def _get_checkpoints_dir() -> str:
+    root = os.getcwd()
+    if os.path.exists(os.path.join(root, ".project-root")) or os.path.isdir(os.path.join(root, "checkpoints")):
+        return os.path.join(root, "checkpoints")
+    try:
+        import sys
+        return os.path.join(os.path.dirname(sys.executable), "checkpoints")
+    except Exception:
+        return os.path.join(root, "checkpoints")
+
+
 def _get_embed_status_text() -> str:
     """Check if current model has missing embeddings."""
     try:
@@ -35,13 +46,21 @@ def _get_embed_status_text() -> str:
         db = DatabaseManager()
         conn = db.get_connection()
         cur = conn.cursor()
+        try:
+            hist_cols = set(db.get_table_columns("history"))
+        except Exception:
+            hist_cols = set()
+        hist_deleted_filter = "AND h.is_deleted=0" if "is_deleted" in hist_cols else ""
 
         cur.execute(
-            """SELECT COUNT(*) FROM history h
+            f"""SELECT COUNT(*) FROM history h
                LEFT JOIN embeddings e
                  ON e.source_table='history' AND e.source_id=h.id
                  AND e.character_id=h.character_id AND e.model_name=?
-               WHERE h.content != '' AND h.content IS NOT NULL AND e.id IS NULL""",
+               WHERE h.character_id IS NOT NULL AND TRIM(h.character_id) != ''
+                 AND h.content != '' AND h.content IS NOT NULL
+                 AND e.id IS NULL
+                 {hist_deleted_filter}""",
             (model,),
         )
         missing_hist = cur.fetchone()[0] or 0
@@ -51,7 +70,8 @@ def _get_embed_status_text() -> str:
                LEFT JOIN embeddings e
                  ON e.source_table='memories' AND e.source_id=m.eternal_id
                  AND e.character_id=m.character_id AND e.model_name=?
-               WHERE m.is_deleted=0 AND e.id IS NULL""",
+               WHERE m.character_id IS NOT NULL AND TRIM(m.character_id) != ''
+                 AND m.is_deleted=0 AND e.id IS NULL""",
             (model,),
         )
         missing_mem = cur.fetchone()[0] or 0
@@ -68,11 +88,12 @@ def _get_embed_status_text() -> str:
 def _get_model_download_status() -> str:
     """Check if current model is cached locally."""
     try:
-        import sys
-        ms = resolve_model_settings()
-        hf_name = ms["hf_name"]
-        script_dir = os.path.dirname(sys.executable)
-        checkpoints_dir = os.path.join(script_dir, "checkpoints")
+        cfg = resolve_full_config()
+        hf_name = str(cfg.get("hf_name") or resolve_model_settings()["hf_name"])
+        provider = str(cfg.get("provider_name") or "local").strip().lower()
+        if provider != "local" or not hf_name:
+            return _("Не требуется", "Not required")
+        checkpoints_dir = _get_checkpoints_dir()
         cache_dir_name = "models--" + hf_name.replace("/", "--")
         if os.path.isdir(os.path.join(checkpoints_dir, cache_dir_name)):
             return _("Скачана", "Downloaded")
@@ -145,11 +166,12 @@ def _refresh_embed_status(gui) -> None:
 
 def _is_embed_model_downloaded() -> bool:
     try:
-        import sys
-        ms = resolve_model_settings()
-        hf_name = ms["hf_name"]
-        script_dir = os.path.dirname(sys.executable)
-        checkpoints_dir = os.path.join(script_dir, "checkpoints")
+        cfg = resolve_full_config()
+        hf_name = str(cfg.get("hf_name") or resolve_model_settings()["hf_name"])
+        provider = str(cfg.get("provider_name") or "local").strip().lower()
+        if provider != "local" or not hf_name:
+            return True
+        checkpoints_dir = _get_checkpoints_dir()
         cache_dir_name = "models--" + hf_name.replace("/", "--")
         return os.path.isdir(os.path.join(checkpoints_dir, cache_dir_name))
     except Exception:
@@ -176,12 +198,10 @@ def _download_model_bg(gui, hf_name: str, on_done) -> None:
     from ui.task_worker import TaskWorker
 
     def _do_download(*, progress_callback=None):
-        import sys
         from huggingface_hub import snapshot_download
         from managers.settings_manager import SettingsManager
         token = str(SettingsManager.get("HF_TOKEN", "") or "").strip() or None
-        script_dir = os.path.dirname(sys.executable)
-        checkpoints_dir = os.path.join(script_dir, "checkpoints")
+        checkpoints_dir = _get_checkpoints_dir()
         snapshot_download(repo_id=hf_name, cache_dir=checkpoints_dir, token=token)
         return hf_name
 
@@ -204,8 +224,12 @@ def _download_model_bg(gui, hf_name: str, on_done) -> None:
 
 
 def _download_embed_model(gui) -> None:
-    ms = resolve_model_settings()
-    hf_name = ms["hf_name"]
+    cfg = resolve_full_config()
+    hf_name = str(cfg.get("hf_name") or resolve_model_settings()["hf_name"])
+    provider = str(cfg.get("provider_name") or "local").strip().lower()
+    if provider != "local" or not hf_name:
+        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Локальная HuggingFace модель не выбрана.", "No local HuggingFace model selected."))
+        return
     if hasattr(gui, '_embed_dl_btn'):
         gui._embed_dl_btn.setEnabled(False)
         gui._embed_dl_btn.setText(_("Скачивание...", "Downloading..."))
@@ -250,73 +274,8 @@ def _download_ce_model(gui) -> None:
 
 def _reindex_embeddings(gui) -> None:
     """Run missing-only reindex of embeddings for all characters with progress dialog."""
-    from ui.settings.character_settings.logic import ReindexAllCharactersWorker
-    from managers.database_manager import DatabaseManager
-
-    db = DatabaseManager()
-    conn = db.get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT DISTINCT character_id FROM history")
-    cids = [r[0] for r in cur.fetchall() if r[0]]
-    conn.close()
-
-    if not cids:
-        QMessageBox.information(gui, _("Готово", "Done"), _("Нет персонажей для переиндексации.", "No characters to reindex."))
-        return
-
-    worker = ReindexAllCharactersWorker(cids)
-
-    progress = QProgressDialog(
-        _("Переиндексация эмбеддингов...", "Reindexing embeddings..."),
-        _("Отмена", "Cancel"), 0, 100, gui,
-    )
-    progress.setWindowModality(Qt.WindowModality.WindowModal)
-    progress.setMinimumDuration(0)
-    progress.setMinimumWidth(400)
-    progress.setValue(0)
-
-    def on_progress(curr, total):
-        try:
-            progress.setRange(0, max(int(total), 1))
-            progress.setValue(min(int(curr), max(int(total), 1)))
-        except Exception:
-            pass
-
-    def on_status(status_text):
-        try:
-            base = _("Переиндексация эмбеддингов", "Reindexing embeddings")
-            progress.setLabelText(f"{base}\n{status_text}")
-        except Exception:
-            pass
-
-    def on_finished(count):
-        progress.close()
-        QMessageBox.information(
-            gui, _("Готово", "Done"),
-            _("Переиндексировано: {n}", "Reindexed: {n}").format(n=int(count or 0)),
-        )
-        _refresh_embed_status(gui)
-
-    def on_error(msg):
-        progress.close()
-        QMessageBox.critical(gui, _("Ошибка", "Error"), str(msg))
-
-    def on_cancel():
-        try:
-            worker.requestInterruption()
-        except Exception:
-            pass
-        progress.close()
-
-    worker.progress_signal.connect(on_progress)
-    worker.status_signal.connect(on_status)
-    worker.finished_signal.connect(on_finished)
-    worker.error_signal.connect(on_error)
-    progress.canceled.connect(on_cancel)
-
-    gui._embed_reindex_worker = worker
-    progress.show()
-    worker.start()
+    from ui.settings.character_settings.logic import run_reindexing_all
+    run_reindexing_all(gui)
 
 
 def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> None:
@@ -1267,7 +1226,7 @@ def _build_rag_core_config(self) -> list:
 def _build_embed_config(self) -> list:
     """Embedding section — vector search toggle + HF token (provider UI added separately)."""
     return [
-        {'label': _('Модель эмбеддингов', 'Embedding Model'), 'type': 'subsection',
+        {'label': _('Векторный поиск и эмбеддинги', 'Vector search and embeddings'), 'type': 'subsection',
          'depends_on': 'RAG_ENABLED'},
 
         {'label': _('Векторный поиск', 'Vector search'),
@@ -1276,8 +1235,10 @@ def _build_embed_config(self) -> list:
                       'Enables vector search. Disable to use FTS/keyword only.'),
          'depends_on': 'RAG_ENABLED'},
 
+        {'type': 'widget', 'factory': _build_embed_provider_widget},
+
         {'type': 'button_group', 'buttons': [
-            {'label': _('Переиндексировать эмбеддинги', 'Reindex embeddings'),
+            {'label': _('Индекс нового', 'Index new'),
              'command': lambda: _reindex_embeddings(self)},
             {'label': _('Обновить статус', 'Refresh status'),
              'command': lambda: _refresh_embed_status(self)},
@@ -1285,6 +1246,11 @@ def _build_embed_config(self) -> list:
 
         {'type': 'end'},
     ]
+
+
+def _build_embed_provider_widget(gui):
+    from ui.settings.embed_provider_settings import build_embed_provider_widget
+    return build_embed_provider_widget(gui)
 
 
 def _build_graph_config(self, hc_provider_names) -> list:
@@ -1934,14 +1900,6 @@ def build_rag_section(self, parent, hc_provider_names) -> None:
                                           _("RAG", "RAG"),
                                           config,
                                           icon_name='fa5s.search')
-
-    try:
-        from ui.settings.embed_provider_settings import build_embed_provider_inner_section
-        rag_section.add_widget(build_embed_provider_inner_section(self))
-    except Exception as _e:
-        import traceback
-        from main_logger import logger as _logger
-        _logger.error(f"Failed to build embed provider section: {_e}", exc_info=True)
 
     _attach_ce_downloader(self, rag_section)
 

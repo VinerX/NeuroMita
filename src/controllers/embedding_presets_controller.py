@@ -179,6 +179,19 @@ class EmbeddingPresetsController:
             return None
         return self._expand_custom(up)
 
+    @staticmethod
+    def _resolve_local_model_name(model: str) -> str:
+        if not model:
+            return ""
+        try:
+            from handlers.embedding_presets import get_preset
+            preset = get_preset(str(model))
+            if preset:
+                return str(preset.get("hf_name") or model)
+        except Exception:
+            pass
+        return str(model)
+
     def _expand_builtin(self, bp: Dict[str, Any]) -> Dict[str, Any]:
         """Expand a built-in preset into a full config."""
         override = self.builtin_overrides.get(str(bp.get("id"))) or {}
@@ -199,13 +212,14 @@ class EmbeddingPresetsController:
         ov_extra = override.get("extra")
         if isinstance(ov_extra, dict):
             extra_cfg.update(ov_extra)
+        resolved_model = self._resolve_local_model_name(model) if provider == "local" else model
         return {
             "id": bp["id"],
             "name": bp["name"],
             "provider_name": provider,
             "model": model,
-            "hf_name": model if provider == "local" else "",
-            "api_url": url if provider != "local" else model,
+            "hf_name": resolved_model if provider == "local" else "",
+            "api_url": url if provider != "local" else resolved_model,
             "api_key": api_key,
             "reserve_keys": reserve_keys,
             "headers": headers,
@@ -215,7 +229,7 @@ class EmbeddingPresetsController:
             "key_url": bp.get("key_url") or "",
             "known_models": list(bp.get("known_models") or []),
             "is_builtin": True,
-            "db_model_key": f"{provider}:{model}" if provider != "local" else model,
+            "db_model_key": f"{provider}:{model}" if provider != "local" else resolved_model,
         }
 
     def _expand_custom(self, up: UserEmbedPreset) -> Dict[str, Any]:
@@ -231,7 +245,8 @@ class EmbeddingPresetsController:
         extra_cfg = dict(bp.get("default_extra") or {}) if bp else {}
         extra_cfg.update(dict(up.extra or {}))
 
-        db_key = f"{provider}:{model}" if provider != "local" else model
+        resolved_model = self._resolve_local_model_name(model) if provider == "local" else model
+        db_key = f"{provider}:{model}" if provider != "local" else resolved_model
 
         return {
             "id": up.id,
@@ -239,8 +254,8 @@ class EmbeddingPresetsController:
             "base": up.base,
             "provider_name": provider,
             "model": model,
-            "hf_name": model if provider == "local" else "",
-            "api_url": url if provider != "local" else model,
+            "hf_name": resolved_model if provider == "local" else "",
+            "api_url": url if provider != "local" else resolved_model,
             "api_key": up.key or None,
             "reserve_keys": list(up.reserve_keys),
             "headers": headers,

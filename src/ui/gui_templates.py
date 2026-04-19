@@ -33,6 +33,9 @@ def create_settings_section(gui, parent_layout, title, cfg_list, *, icon_name=No
 
         if t == 'button_group':
             w = create_button_group(gui, parent, cfg.get('buttons', []))
+        elif t == 'widget':
+            factory = cfg.get('factory')
+            w = factory(gui) if callable(factory) else cfg.get('widget')
         else:
             w = create_setting_widget(
                 gui=gui, parent=parent, label=cfg.get('label'),
