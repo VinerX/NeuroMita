@@ -120,7 +120,7 @@ class ChatGUI(QMainWindow):
             self.SETTINGS_PANEL_WIDTH = int(self.settings.get("SETTINGS_PANEL_WIDTH", 520) or 520)
         except Exception:
             self.SETTINGS_PANEL_WIDTH = 520
-        self.SETTINGS_PANEL_WIDTH = max(360, min(900, self.SETTINGS_PANEL_WIDTH))
+        self.SETTINGS_PANEL_WIDTH = max(280, min(1800, self.SETTINGS_PANEL_WIDTH))
         
         self.event_bus = get_event_bus()
         self._connect_signals()
@@ -376,6 +376,8 @@ class ChatGUI(QMainWindow):
         
     def _on_hide_animation_finished(self):
         self.settings_overlay.hide()
+        if hasattr(self, "settings_resize_handle"):
+            self.settings_resize_handle.hide()
         try:
             self.settings_animation.finished.disconnect(self._on_hide_animation_finished)
         except TypeError:
@@ -437,8 +439,13 @@ class ChatGUI(QMainWindow):
             cont = self.settings_containers.get(category)
             if not cont:
                 return
+            if hasattr(self, "settings_resize_handle"):
+                self.settings_resize_handle.show()
             self.settings_overlay.show_category(cont)
-            self.settings_animation.setEndValue(self.SETTINGS_PANEL_WIDTH)
+            max_width = self.settings_overlay._effective_max_width() if hasattr(self.settings_overlay, "_effective_max_width") else self.SETTINGS_PANEL_WIDTH
+            target_width = max(280, min(int(max_width), int(self.SETTINGS_PANEL_WIDTH)))
+            self.SETTINGS_PANEL_WIDTH = target_width
+            self.settings_animation.setEndValue(target_width)
 
         self.settings_animation.setStartValue(self.settings_overlay.width())
         self.settings_animation.start()

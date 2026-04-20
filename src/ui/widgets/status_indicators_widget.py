@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QCheckBox
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QCheckBox, QGridLayout, QSizePolicy
 from PyQt6.QtCore import Qt
 from utils import _
 
@@ -56,7 +56,7 @@ def create_status_indicators(gui, parent_layout):
     gui.update_status_colors()
     apply_capture_visibility(gui)
 
-def create_status_indicators_inline(gui, layout):
+def create_status_indicators_inline_legacy(gui, layout):
     """Создает статус индикаторы для верхней панели чата"""
     def create_indicator(text):
         checkbox = QCheckBox(text)
@@ -82,6 +82,47 @@ def create_status_indicators_inline(gui, layout):
 
     gui.camera_capture_status_checkbox = create_indicator(_('Камера', 'Camera'))
     layout.addWidget(gui.camera_capture_status_checkbox)
+
+    gui.update_status_colors()
+    apply_capture_visibility(gui)
+
+
+def create_status_indicators_inline(gui, layout):
+    status_frame = QWidget()
+    status_frame.setObjectName("InlineStatusIndicators")
+    status_frame.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+    status_layout = QGridLayout(status_frame)
+    status_layout.setContentsMargins(0, 0, 0, 0)
+    status_layout.setHorizontalSpacing(10)
+    status_layout.setVerticalSpacing(0)
+
+    def create_indicator(text):
+        checkbox = QCheckBox(text)
+        checkbox.setObjectName("StatusIndicator")
+        checkbox.setEnabled(False)
+        checkbox.setStyleSheet("color: #ffffff; spacing: 5px;")
+        checkbox.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        return checkbox
+
+    gui.game_status_checkbox = create_indicator(_('Игра', 'Game'))
+    status_layout.addWidget(gui.game_status_checkbox, 0, 0)
+
+    gui.silero_status_checkbox = create_indicator(_('Озвучка', 'Voice'))
+    status_layout.addWidget(gui.silero_status_checkbox, 0, 1)
+
+    gui.rag_status_checkbox = create_indicator(_('RAG', 'RAG'))
+    status_layout.addWidget(gui.rag_status_checkbox, 0, 2)
+
+    gui.mic_status_checkbox = create_indicator(_('Распознавание', 'Recognition'))
+    status_layout.addWidget(gui.mic_status_checkbox, 1, 0)
+
+    gui.screen_capture_status_checkbox = create_indicator(_('Захват экрана', 'Screen'))
+    status_layout.addWidget(gui.screen_capture_status_checkbox, 1, 1)
+
+    gui.camera_capture_status_checkbox = create_indicator(_('Камера', 'Camera'))
+    status_layout.addWidget(gui.camera_capture_status_checkbox, 1, 2)
+
+    layout.addWidget(status_frame)
 
     gui.update_status_colors()
     apply_capture_visibility(gui)

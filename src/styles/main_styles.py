@@ -379,6 +379,26 @@ QPushButton#GuideButtonSmall {
 QPushButton#GuideButtonSmall:hover { background-color: {accent_hover}; }
 QPushButton#GuideButtonSmall:pressed { background-color: {accent_pressed}; }
 
+QPushButton#ChatTopIconButton {
+    background-color: {chip_bg};
+    color: #ffffff;
+    border: 1px solid {outline};
+    padding: 4px;
+    border-radius: 8px;
+}
+QPushButton#ChatTopIconButton:hover { background-color: {chip_hover}; }
+QPushButton#ChatTopIconButton:pressed { background-color: {chip_pressed}; }
+
+QComboBox#ChatCharacterCombo {
+    min-height: 20px;
+    padding: 4px 8px;
+    border-radius: 8px;
+}
+
+QWidget#InlineStatusIndicators {
+    background-color: transparent;
+}
+
 QPushButton#ChatIconMini {
     background-color: {chip_bg};
     border: 0px; border-radius: 10px;

@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from PyQt6.QtCore import Qt
-from ui.widgets.settings_overlay_widget import SettingsOverlay
+from ui.widgets.settings_overlay_widget import SettingsOverlay, SettingsResizeHandle
 from ui.widgets.settings_icon_button import SettingsIconButton
 from utils import _
 
@@ -49,6 +49,9 @@ def setup_settings_panel(gui, main_layout):
     gui.settings_overlay = SettingsOverlay(gui)
     gui.settings_overlay.setMaximumWidth(0)
     gui.settings_overlay.hide()
+    gui.settings_resize_handle = SettingsResizeHandle(gui.settings_overlay, gui)
+    gui.SETTINGS_RESIZE_HANDLE_WIDTH = gui.settings_resize_handle.width()
+    gui.settings_resize_handle.hide()
 
     gui.settings_buttons = {}
     gui._category_modes = {}
@@ -76,5 +79,6 @@ def setup_settings_panel(gui, main_layout):
 
     panel_layout.addStretch()
 
+    main_layout.addWidget(gui.settings_resize_handle)
     main_layout.addWidget(gui.settings_overlay)
     main_layout.addWidget(settings_panel)

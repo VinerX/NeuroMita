@@ -222,6 +222,14 @@ def wire_character_settings_logic(self):
     self.character_combobox.addItems(character_list if character_list else ["Crazy"])
     self.character_combobox.blockSignals(False)
 
+    if hasattr(self, 'chat_character_combobox'):
+        self.chat_character_combobox.blockSignals(True)
+        try:
+            self.chat_character_combobox.clear()
+            self.chat_character_combobox.addItems(character_list if character_list else ["Crazy"])
+        finally:
+            self.chat_character_combobox.blockSignals(False)
+
     presets_meta = event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
     provider_names = [_("Текущий", "Current")]
     if presets_meta and presets_meta[0]:
@@ -239,6 +247,10 @@ def wire_character_settings_logic(self):
         idx = self.character_combobox.findText(current_char_id, Qt.MatchFlag.MatchFixedString)
         if idx >= 0:
             self.character_combobox.setCurrentIndex(idx)
+        if hasattr(self, 'chat_character_combobox'):
+            chat_idx = self.chat_character_combobox.findText(current_char_id, Qt.MatchFlag.MatchFixedString)
+            if chat_idx >= 0:
+                self.chat_character_combobox.setCurrentIndex(chat_idx)
 
     change_character_actions(self, current_char_id)
 
@@ -386,6 +398,17 @@ def change_character_actions(gui, character_id=None):
 
     if selected_character:
         event_bus.emit(Events.Character.SET_CURRENT, {'character_id': selected_character})
+
+    if selected_character and hasattr(gui, 'chat_character_combobox'):
+        chat_combo = gui.chat_character_combobox
+        if chat_combo.currentText() != selected_character:
+            idx = chat_combo.findText(selected_character, Qt.MatchFlag.MatchFixedString)
+            if idx >= 0:
+                chat_combo.blockSignals(True)
+                try:
+                    chat_combo.setCurrentIndex(idx)
+                finally:
+                    chat_combo.blockSignals(False)
 
     if hasattr(gui, 'char_provider_combobox'):
         provider_key = f"CHAR_PROVIDER_{selected_character}"

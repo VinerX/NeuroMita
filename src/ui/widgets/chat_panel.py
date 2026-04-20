@@ -1,7 +1,8 @@
 import base64
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame,
-    QTextEdit, QGridLayout, QGraphicsOpacityEffect, QFileDialog
+    QTextEdit, QGridLayout, QGraphicsOpacityEffect, QFileDialog, QComboBox,
+    QSizePolicy
 )
 from PyQt6.QtCore import Qt, QPropertyAnimation, QPoint, QTimer, QBuffer, QIODevice
 from PyQt6.QtGui import QFont, QPixmap
@@ -16,6 +17,64 @@ from utils import _
 from core.events import Events
 from main_logger import logger
 
+TOP_ICON_BUTTON_SIZE = 30
+CHARACTER_HISTORY_GROUP_WIDTH = 260
+
+
+def _populate_chat_character_combobox(gui):
+    combo = getattr(gui, "chat_character_combobox", None)
+    if combo is None:
+        return
+
+    all_characters = gui.event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
+    character_list = all_characters[0] if all_characters else ["Crazy"]
+    if not character_list:
+        character_list = ["Crazy"]
+
+    current_profile_res = gui.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+    current_profile = current_profile_res[0] if current_profile_res else {}
+    current_char_id = current_profile.get("character_id", character_list[0]) if isinstance(current_profile, dict) else character_list[0]
+
+    combo.blockSignals(True)
+    try:
+        combo.clear()
+        combo.addItems(character_list)
+        idx = combo.findText(str(current_char_id), Qt.MatchFlag.MatchFixedString)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+    finally:
+        combo.blockSignals(False)
+
+
+def _on_chat_character_changed(gui, character_id):
+    character_id = str(character_id or "").strip()
+    if not character_id:
+        return
+
+    settings_combo = getattr(gui, "character_combobox", None)
+    if settings_combo is not None and settings_combo.currentText() != character_id:
+        idx = settings_combo.findText(character_id, Qt.MatchFlag.MatchFixedString)
+        if idx >= 0:
+            settings_combo.setCurrentIndex(idx)
+            return
+
+    gui.event_bus.emit(Events.Character.SET_CURRENT, {"character_id": character_id})
+    gui.event_bus.emit(Events.Character.RELOAD_DATA)
+
+
+def _open_selected_character_history(gui):
+    combo = getattr(gui, "chat_character_combobox", None)
+    character_id = combo.currentText().strip() if combo is not None else ""
+    if character_id:
+        gui.event_bus.emit(Events.Character.SET_CURRENT, {"character_id": character_id})
+
+    try:
+        from ui.settings.character_settings.logic import open_db_viewer
+        open_db_viewer(gui)
+    except Exception as e:
+        logger.error(f"Failed to open character history: {e}", exc_info=True)
+
+
 def setup_chat_panel(gui, main_layout):
     chat_widget = QWidget()
     chat_widget.setMinimumWidth(0)
@@ -25,13 +84,48 @@ def setup_chat_panel(gui, main_layout):
 
     top_panel_layout = QHBoxLayout()
 
+    character_history_group = QWidget()
+    character_history_group.setObjectName("ChatCharacterHistoryGroup")
+    character_history_group.setFixedWidth(CHARACTER_HISTORY_GROUP_WIDTH)
+    character_history_group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    character_history_layout = QHBoxLayout(character_history_group)
+    character_history_layout.setContentsMargins(0, 0, 0, 0)
+    character_history_layout.setSpacing(4)
+
+    gui.chat_character_combobox = QComboBox()
+    gui.chat_character_combobox.setObjectName("ChatCharacterCombo")
+    gui.chat_character_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    gui.chat_character_combobox.setToolTip(_("Выбрать персонажа", "Select character"))
+    gui.chat_character_combobox.currentTextChanged.connect(lambda text: _on_chat_character_changed(gui, text))
+
+    gui.open_character_history_button = QPushButton(qta.icon('fa5s.table', color='#dcdcdc'), '')
+    gui.open_character_history_button.setObjectName("ChatTopIconButton")
+    gui.open_character_history_button.setFixedSize(TOP_ICON_BUTTON_SIZE, TOP_ICON_BUTTON_SIZE)
+    gui.open_character_history_button.setCursor(Qt.CursorShape.PointingHandCursor)
+    gui.open_character_history_button.setToolTip(_("Открыть историю выбранного персонажа", "Open selected character history"))
+    gui.open_character_history_button.clicked.connect(lambda: _open_selected_character_history(gui))
+
+    character_history_layout.addWidget(gui.chat_character_combobox, 4)
+    character_history_layout.addWidget(gui.open_character_history_button, 1)
+    _populate_chat_character_combobox(gui)
+
     gui.clear_chat_button = QPushButton(_("Очистить", "Clear"))
     gui.clear_chat_button.clicked.connect(gui.clear_chat_display)
-    gui.clear_chat_button.setMaximumHeight(30)
+    gui.clear_chat_button.setText("")
+    gui.clear_chat_button.setIcon(qta.icon('fa5s.broom', color='#dcdcdc'))
+    gui.clear_chat_button.setObjectName("ChatTopIconButton")
+    gui.clear_chat_button.setFixedSize(TOP_ICON_BUTTON_SIZE, TOP_ICON_BUTTON_SIZE)
+    gui.clear_chat_button.setCursor(Qt.CursorShape.PointingHandCursor)
+    gui.clear_chat_button.setToolTip(_("Очистить чат", "Clear chat"))
 
     gui.load_history_button = QPushButton(_("Взять из истории", "Load from history"))
     gui.load_history_button.clicked.connect(gui.load_chat_history)
-    gui.load_history_button.setMaximumHeight(30)
+    gui.load_history_button.setText("")
+    gui.load_history_button.setIcon(qta.icon('fa5s.sync-alt', color='#dcdcdc'))
+    gui.load_history_button.setObjectName("ChatTopIconButton")
+    gui.load_history_button.setFixedSize(TOP_ICON_BUTTON_SIZE, TOP_ICON_BUTTON_SIZE)
+    gui.load_history_button.setCursor(Qt.CursorShape.PointingHandCursor)
+    gui.load_history_button.setToolTip(_("Взять из истории", "Load from history"))
 
     gui.guide_button = QPushButton(qta.icon('fa5s.question-circle', color='#dcdcdc'), '')
     gui.guide_button.setObjectName("GuideButtonSmall")
@@ -41,11 +135,12 @@ def setup_chat_panel(gui, main_layout):
     gui.guide_button.setToolTip(_("Открыть руководство пользователя", "Open user guide"))
 
 
-    top_panel_layout.addWidget(gui.clear_chat_button)
+    top_panel_layout.addWidget(character_history_group)
     top_panel_layout.addWidget(gui.load_history_button)
+    top_panel_layout.addWidget(gui.clear_chat_button)
     top_panel_layout.addWidget(gui.guide_button)
 
-    top_panel_layout.addSpacing(20)
+    top_panel_layout.addSpacing(8)
     create_status_indicators_inline(gui, top_panel_layout)
     top_panel_layout.addStretch()
     chat_layout.addLayout(top_panel_layout)
