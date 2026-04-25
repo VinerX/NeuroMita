@@ -755,7 +755,8 @@ class ModelController:
         char_name = getattr(char, "name", "") or ""
         preset_id = preset_id_override
 
-        if bool(self.settings.get("RAG_ENABLED", False)) and event_type not in ("compress", "graph_extract"):
+        _rag_skip = event_type in ("compress", "graph_extract") or policy.react_level == 1
+        if bool(self.settings.get("RAG_ENABLED", False)) and not _rag_skip:
             prompt_set_path = getattr(char, "base_data_path", None)
             system_input = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
 
