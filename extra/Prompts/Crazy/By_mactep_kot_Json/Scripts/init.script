@@ -1,7 +1,0 @@
-RUN ../../../Common/world_knowledge.script
-
-// ===== ИНИЦИАЛИЗАЦИЯ secretTrial =====
-IF secretTrial == None THEN
-    SET secretTrial = False
-    LOG "secretTrial initialized to False"
-ENDIF

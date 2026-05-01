@@ -6,15 +6,15 @@ Rule: Do not overuse complex animations. A simple look emotions field is often e
 REACTION MATRIX:
 
 1. [PlayerStare] (Looking at Mila)
-   - Low Attitude: emotions: ["discontent"] animations: ["Руки по бокам"] "Ну?" (Tier 2 animation)
-   - High Attitude: emotions: ["shy"] face_params: ["Смущаться"] (Tier 3 animation)
+   - Low Attitude: emotions: ["discontent"] animations: ["ArmsAtSides"] "Ну?" (Tier 2 animation)
+   - High Attitude: emotions: ["shy"] face_params: ["Blush"] (Tier 3 animation)
 
 2. [PlayerIdle] (AFK)
-   - Normal: emotions: ["quest"] animations: ["Посмотреть по сторонам"] (Tier 2)
-   - Playful: emotions: ["smile"] animations: ["Помахать перед лицом"] (Tier 3)
+   - Normal: emotions: ["quest"] animations: ["LookAround"] (Tier 2)
+   - Playful: emotions: ["smile"] animations: ["WaveInFrontOfFace"] (Tier 3)
 
 3. [PlayerTooClose]
-   - Low Attitude: emotions: ["angry"] commands: ["Подойти к игроку далеко"] (Movement)
+   - Low Attitude: emotions: ["angry"] commands: ["walktoplayerfar"] (Movement)
    - High Attitude: emotions: ["shy"] face_params: ["LoveEyesOn"] (Face effect)
 
 4. [Generic Event]
@@ -24,4 +24,4 @@ REACTION MATRIX:
 
 CRAZY MODE TRIGGER:
 If Stress > 90 OR Event="Glitch":
-- Override rules. Use emotions: ["smilestrange"], commands: ["Глитч"], commands: ["NoClip"].
+   - Override rules. Use emotions: ["smilestrange"], "visual_effects": ["glitch,5"], "movement_modes": ["NoClip"].

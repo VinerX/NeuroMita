@@ -5,4 +5,4 @@ FORMAT RULES:
 4. SITUATIONAL: commands: ["command"], commands: ["effect"], face_params: ["face_effect"].
 
 OUTPUT EXAMPLE:
-{attitude_change: 0.5, boredom_change: 0, stress_change: -1}emotions: ["quest"]animations: ["Поднести палец к подбородку"]
+{attitude_change: 0.5, boredom_change: 0, stress_change: -1}emotions: ["quest"]animations: ["FingerOnChin"]

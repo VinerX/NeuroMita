@@ -1,0 +1,90 @@
+// custom_response_schema.script
+SET LOCAL result = ""
+
+// Заголовок
+SET result = result + """
+## Формат ответа:
+   - **Ты ДОЛЖНА ответить одним JSON-объектом. Никакого дополнительного текста до или после JSON.**
+   - **ВАЖНО:** Никогда не используй двойные кавычки " внутри строковых значений — используй «» или ''. Неэкранированные кавычки ломают парсинг JSON.
+   - **ВАЖНО:** Используй ТОЛЬКО поля, перечисленные в этой схеме. Не добавляй никаких других полей.
+
+"""
+
+// Вступление про части JSON (если reasoning включён)
+IF SCHEMA_REASONING_ENABLED == True THEN
+    SET result = result + """JSON состоит из трёх частей (в указанном порядке):
+1. reasoning — твои рассуждения перед ответом (никогда не показываются игроку)
+2. segments — твой непосредственный ответ с командами
+3. Глобальные поля — изменение параметров, память и т.д., применяются один раз на ответ
+
+"""
+ELSE
+    SET result = result + """JSON состоит из двух частей (в указанном порядке):
+1. segments — твой ответ с командами
+2. Глобальные поля — изменение параметров, память и т.д.
+
+"""
+ENDIF
+
+// Начало схемы
+IF SCHEMA_REASONING_ENABLED == True THEN
+    SET result = result + """Схема:
+{
+  "reasoning": "цепочка_рассуждений (опционально, никогда не показывается игроку)",
+"""
+ELSE
+    SET result = result + """Схема:
+{
+"""
+ENDIF
+
+// Базовая схема (общая часть, без графа)
+SET result = result + """  "segments": [
+    {
+      "text": "Твой ответный текст (ОБЯЗАТЕЛЬНО)",
+      "emotions": ["id_эмоции"],
+      "animations": ["имя_анимации"],
+      "idle_animations": ["имя_анимации"],
+      "commands": ["команда"],
+      "movement_modes": ["режим"],
+      "visual_effects": ["эффект,секунды"],
+      "clothes": ["id_одежды"],
+      "music": ["имя_музыки"],
+      "interactions": ["цель взаимодействия"],
+      "face_params": ["параметр лица"],
+      "start_game": "id_игры",
+      "end_game": "id_игры",
+      "target": "имя_персонажа",
+      "hint": "текст_подсказки",
+      "allow_sleep": true/false
+    }
+  ],
+  "attitude_change": <число -10..10>,
+  "boredom_change": <число -10..10>,
+  "stress_change": <число -10..10>,
+  "secret_exposed": true/false,
+  "memory_add": ["приоритет|содержание" или "приоритет|содержание|сущность1,сущность2", ...],
+  "memory_update": ["номер|приоритет|содержание", ...],
+  "memory_delete": ["номер" или "начало-конец", ...],
+  "reminder_add": ["ГГГГ-ММ-ДДTЧЧ:ММ:СС|текст", ...],
+  "reminder_delete": ["id", ...],
+  "tool_call": {"name": "имя_инструмента", "args": {"параметр": "значение"}},
+"""
+
+// Если граф включён, добавляем entities и relations
+IF GRAPH_EXTRACTION_ENABLED == True THEN
+    SET result = result + """  "entities": [{"name": "нижний_регистр_1_3_слова", "type": "person|place|thing|concept"}, ...],
+  "relations": ["субъект|предикат|объект", ...],
+"""
+ENDIF
+
+// Добавляем custom_fields
+SET result = result + """  "custom_fields": {
+    "love_change": <число -5..5>,
+    "secret_trial": true/false
+  }
+}
+
+"""
+
+RETURN result
