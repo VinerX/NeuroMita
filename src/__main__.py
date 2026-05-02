@@ -1,4 +1,6 @@
 ### main.py
+import faulthandler
+faulthandler.enable()
 
 import pydantic.fields
 import uvicorn

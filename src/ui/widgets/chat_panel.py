@@ -77,12 +77,35 @@ def _open_selected_character_history(gui):
 
 def setup_chat_panel(gui, main_layout):
     chat_widget = QWidget()
+    chat_widget.setObjectName("ChatWorkspace")
     chat_widget.setMinimumWidth(0)
     chat_layout = QVBoxLayout(chat_widget)
-    chat_layout.setContentsMargins(10, 10, 10, 10)
-    chat_layout.setSpacing(5)
+    chat_layout.setContentsMargins(18, 18, 18, 18)
+    chat_layout.setSpacing(12)
+
+    hero_card = QFrame()
+    hero_card.setObjectName("ChatToolbarCard")
+    hero_layout = QVBoxLayout(hero_card)
+    hero_layout.setContentsMargins(18, 18, 18, 18)
+    hero_layout.setSpacing(12)
+
+    title_label = QLabel(_("Песочница NeuroMita", "NeuroMita Sandbox"))
+    title_label.setObjectName("ChatHeroTitle")
+    hero_layout.addWidget(title_label)
+
+    subtitle_label = QLabel(
+        _(
+            "Общайся, проверяй память, голос и визуальный контекст в одном окне.",
+            "Chat, inspect memory, voice and visual context in one workspace.",
+        )
+    )
+    subtitle_label.setObjectName("ChatHeroSubtitle")
+    subtitle_label.setWordWrap(True)
+    hero_layout.addWidget(subtitle_label)
 
     top_panel_layout = QHBoxLayout()
+    top_panel_layout.setContentsMargins(0, 0, 0, 0)
+    top_panel_layout.setSpacing(8)
 
     character_history_group = QWidget()
     character_history_group.setObjectName("ChatCharacterHistoryGroup")
@@ -143,7 +166,8 @@ def setup_chat_panel(gui, main_layout):
     top_panel_layout.addSpacing(8)
     create_status_indicators_inline(gui, top_panel_layout)
     top_panel_layout.addStretch()
-    chat_layout.addLayout(top_panel_layout)
+    hero_layout.addLayout(top_panel_layout)
+    chat_layout.addWidget(hero_card)
 
     # ── Chat display: widget-based scroll area ──────────────────────────────
     gui.chat_window = ChatWidget()
@@ -160,11 +184,14 @@ def setup_chat_panel(gui, main_layout):
     gui.mita_status = MitaStatusWidget(gui.chat_window)
 
     input_frame = QFrame()
+    input_frame.setObjectName("ChatComposerCard")
     input_frame.setStyleSheet(get_stylesheet())
     input_layout = QVBoxLayout(input_frame)
+    input_layout.setContentsMargins(18, 16, 18, 16)
+    input_layout.setSpacing(8)
 
     gui.token_count_label = QLabel(_("Токены: 0/0 | Стоимость: 0.00 ₽", "Tokens: 0/0 | Cost: 0.00 ₽"))
-    gui.token_count_label.setStyleSheet("font-size: 10px;")
+    gui.token_count_label.setObjectName("TokenCountLabel")
     input_layout.addWidget(gui.token_count_label)
 
     input_container = QWidget()
@@ -178,12 +205,13 @@ def setup_chat_panel(gui, main_layout):
     gui.user_entry.setMinimumHeight(24)
     gui.user_entry.setMaximumHeight(80)
     gui.user_entry.setFixedHeight(36)
+    gui.user_entry.setPlaceholderText(_("Напиши что-нибудь Mita…", "Write something to Mita…"))
     gui.user_entry.setStyleSheet("""
         QTextEdit {
             background-color: transparent;
             border: none;
-            color: #dcdcdc;
-            padding: 2px;
+            color: #f7edf5;
+            padding: 4px 2px;
         }
         QTextEdit:focus {
             background-color: transparent;

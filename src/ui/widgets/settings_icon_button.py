@@ -5,18 +5,24 @@ import qtawesome as qta
 
 
 class SettingsIconButton(QPushButton):
-    def __init__(self, icon_name, tooltip_text, parent=None):
+    def __init__(self, icon_name, tooltip_text, category_key=None, parent=None):
         super().__init__(parent)
 
+        self.category_key = str(category_key or "")
         self._base_tooltip = str(tooltip_text or "")
         self._indicator_tooltip = ""
         self._indicator_state: str | None = None
+        self._icon_name = icon_name
 
-        self.setIcon(qta.icon(icon_name, color='#dcdcdc'))
+        self.setIcon(qta.icon(icon_name, color='#f7d7ee'))
         icon_size = QApplication.style().pixelMetric(QApplication.style().PixelMetric.PM_SmallIconSize)
         self.setIconSize(QSize(icon_size, icon_size))
+        self.setText(self._base_tooltip)
         self.setToolTip(self._base_tooltip)
-        self.setFixedSize(40, 40)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(42)
+        self.setFixedHeight(42)
+        self.setCheckable(False)
 
         self.is_active = False
 
@@ -68,7 +74,7 @@ class SettingsIconButton(QPushButton):
         return (
             "QLabel {"
             f"background-color: {color_hex};"
-            "border: 2px solid rgba(20, 20, 20, 220);"
+            "border: 2px solid rgba(28, 7, 28, 235);"
             "border-radius: 5px;"
             "}"
         )
@@ -146,33 +152,54 @@ class SettingsIconButton(QPushButton):
         p.end()
 
     def update_style(self):
+        icon_color = '#ffffff' if self.is_active else '#f0cfe7'
+        self.setIcon(qta.icon(self._icon_name, color=icon_color))
+
         if self.is_active:
             self.setStyleSheet("""
                 QPushButton {
-                    background-color: #8a2be2;
-                    border: none;
-                    padding: 8px;
-                    border-radius: 4px;
+                    background-color: qlineargradient(
+                        x1: 0, y1: 0, x2: 1, y2: 0,
+                        stop: 0 rgba(255, 93, 159, 0.30),
+                        stop: 1 rgba(255, 54, 126, 0.60)
+                    );
+                    color: #ffffff;
+                    border: 1px solid rgba(255, 92, 158, 0.80);
+                    padding: 10px 14px;
+                    border-radius: 14px;
+                    text-align: left;
+                    font-size: 10pt;
+                    font-weight: 700;
                 }
                 QPushButton:hover {
-                    background-color: #9932cc;
+                    background-color: qlineargradient(
+                        x1: 0, y1: 0, x2: 1, y2: 0,
+                        stop: 0 rgba(255, 103, 170, 0.34),
+                        stop: 1 rgba(255, 68, 140, 0.68)
+                    );
                 }
                 QPushButton:pressed {
-                    background-color: #7b1fa2;
+                    background-color: rgba(255, 74, 144, 0.75);
                 }
             """)
         else:
             self.setStyleSheet("""
                 QPushButton {
-                    background-color: transparent;
-                    border: none;
-                    padding: 8px;
-                    border-radius: 4px;
+                    background-color: rgba(255, 255, 255, 0.03);
+                    color: #d5b6cb;
+                    border: 1px solid rgba(255, 255, 255, 0.05);
+                    padding: 10px 14px;
+                    border-radius: 14px;
+                    text-align: left;
+                    font-size: 10pt;
+                    font-weight: 600;
                 }
                 QPushButton:hover {
-                    background-color: rgba(138, 43, 226, 0.3);
+                    background-color: rgba(255, 92, 158, 0.12);
+                    border: 1px solid rgba(255, 92, 158, 0.26);
+                    color: #f5d6ea;
                 }
                 QPushButton:pressed {
-                    background-color: rgba(138, 43, 226, 0.5);
+                    background-color: rgba(255, 92, 158, 0.18);
                 }
             """)

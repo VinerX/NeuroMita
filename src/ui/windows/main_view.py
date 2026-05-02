@@ -358,13 +358,14 @@ class ChatGUI(QMainWindow):
 
     def setup_ui(self):
         central_widget = QWidget()
+        central_widget.setObjectName("LauncherRoot")
         self.setCentralWidget(central_widget)
         self.setStyleSheet(get_stylesheet())
         main_layout = QHBoxLayout(central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
-        setup_chat_panel(self, main_layout)
         setup_settings_panel(self, main_layout)
+        setup_chat_panel(self, main_layout)
         self._init_settings_containers()
         # применить режим интерфейса (скрыть кнопки панели по уровню)
         try:
@@ -372,7 +373,7 @@ class ChatGUI(QMainWindow):
             apply_interface_mode(self, self.settings.get("INTERFACE_MODE") or _('Базовый', 'Basic'))
         except Exception:
             pass
-        self.resize(1200, 800)
+        self.resize(1560, 920)
         
     def _on_hide_animation_finished(self):
         self.settings_overlay.hide()
@@ -384,6 +385,57 @@ class ChatGUI(QMainWindow):
             pass
 
     def _init_settings_containers(self):
+        settings_meta = {
+            "general": (
+                _("Общие настройки", "General settings"),
+                _("Базовые параметры интерфейса, приватности, памяти и языка.", "Core interface, privacy, memory and language settings."),
+            ),
+            "api": (
+                _("Подключение к моделям", "Model connectivity"),
+                _("Провайдеры, пресеты, ключи и параметры генерации ответов.", "Providers, presets, keys and generation parameters."),
+            ),
+            "models": (
+                _("Модели и поведение", "Models and behavior"),
+                _("Управление логикой ответа, памятью, мышлением и RAG.", "Control response logic, memory, thinking and RAG."),
+            ),
+            "voice": (
+                _("Озвучка", "Voice"),
+                _("Голосовой выход, локальные голоса и параметры синтеза.", "Speech output, local voices and synthesis settings."),
+            ),
+            "microphone": (
+                _("Микрофон и ASR", "Microphone and ASR"),
+                _("Устройства ввода, распознавание речи и словарь терминов.", "Input devices, speech recognition and glossary settings."),
+            ),
+            "characters": (
+                _("Персонажи", "Characters"),
+                _("Профили, шаблоны поведения и история выбранного персонажа.", "Profiles, behavior presets and selected character history."),
+            ),
+            "screen": (
+                _("Экран и камера", "Screen and camera"),
+                _("Захват экрана, анализ изображений и визуальный контекст.", "Screen capture, image analysis and visual context."),
+            ),
+            "game": (
+                _("Связь с игрой", "Game integration"),
+                _("Параметры подключения и обмена данными с игрой.", "Connection settings and data exchange with the game."),
+            ),
+            "debug": (
+                _("Системная телеметрия", "System telemetry"),
+                _("Текущее состояние модулей, отладочная информация и индикаторы.", "Current module status, debug information and live indicators."),
+            ),
+            "news": (
+                _("Новости проекта", "Project news"),
+                _("Сводка обновлений и последние заметки по сборке.", "Build notes and recent project updates."),
+            ),
+            "data": (
+                _("Данные и хранилище", "Data and storage"),
+                _("История, экспорт, резервные данные и локальное хранилище.", "History, export, backups and local storage."),
+            ),
+            "updates": (
+                _("Обновления", "Updates"),
+                _("Управление обновлением клиента и связанных компонентов.", "Manage client and component updates."),
+            ),
+        }
+
         callbacks = {
             "general":     general_settings.setup_general_settings_controls,
             "api":         api_settings.setup_api_controls,
@@ -410,7 +462,26 @@ class ChatGUI(QMainWindow):
             content_widget.setObjectName(f"ContentWidget_{key}")
             content_layout = QVBoxLayout(content_widget)
             content_layout.setContentsMargins(10, 10, 10, 10)
-            content_layout.setSpacing(5)
+            content_layout.setSpacing(12)
+
+            title_text, subtitle_text = settings_meta.get(key, (key.title(), ""))
+            header_card = QFrame()
+            header_card.setObjectName("SettingsHeroCard")
+            header_layout = QVBoxLayout(header_card)
+            header_layout.setContentsMargins(18, 18, 18, 18)
+            header_layout.setSpacing(6)
+
+            title_label = QLabel(title_text)
+            title_label.setObjectName("SettingsHeroTitle")
+            header_layout.addWidget(title_label)
+
+            if subtitle_text:
+                subtitle_label = QLabel(subtitle_text)
+                subtitle_label.setObjectName("SettingsHeroSubtitle")
+                subtitle_label.setWordWrap(True)
+                header_layout.addWidget(subtitle_label)
+
+            content_layout.addWidget(header_card)
 
             if isinstance(fn, types.MethodType) and fn.__self__ is self:
                 fn(content_layout)

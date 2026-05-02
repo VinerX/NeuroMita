@@ -40,40 +40,40 @@ BUBBLE_RADIUS = 12
 
 # Modern, balanced chat colors (Telegram/Discord inspired)
 ROLE_COLORS = {
-    "user":      "#F4D35E",  # Soft Gold
-    "assistant": "#A78BFA",  # Soft Purple
-    "system":    "#60A5FA",  # Soft Blue
-    "think":     "#9CA3AF",  # Soft Gray
+    "user":      "#ff7ab8",
+    "assistant": "#ff9cd2",
+    "system":    "#7bc6ff",
+    "think":     "#bdb4c7",
 }
 CARD_BG = {
-    "user":      QColor(232, 203, 100, 245),
-    "assistant": QColor(38, 43, 68, 245), 
-    "system":    QColor(96, 165, 250, 30),
-    "think":     QColor(156, 163, 175, 20),
+    "user":      QColor(171, 44, 102, 242),
+    "assistant": QColor(46, 24, 52, 244),
+    "system":    QColor(67, 122, 176, 42),
+    "think":     QColor(74, 58, 82, 72),
 }
 CARD_BORDER = {
-    "user":      QColor(232, 203, 100, 100),
-    "assistant": QColor(255, 255, 255, 15),
-    "system":    QColor(96, 165, 250, 50),
-    "think":     QColor(156, 163, 175, 30),
+    "user":      QColor(255, 133, 188, 165),
+    "assistant": QColor(255, 132, 191, 70),
+    "system":    QColor(123, 198, 255, 70),
+    "think":     QColor(189, 180, 199, 42),
 }
 TEXT_COLOR = {
-    "user":      "#1E1E24", 
-    "assistant": "#EAEAEA",
-    "system":    "#EAEAEA",
-    "think":     "#A0A0A5",
+    "user":      "#fff6fb",
+    "assistant": "#f3eaf3",
+    "system":    "#eef7ff",
+    "think":     "#cbc1d1",
 }
 NAME_COLOR = {
-    "user":      "#8C6B14",
-    "assistant": "#D896FF",
-    "system":    "#60A5FA",
-    "think":     "#9CA3AF",
+    "user":      "#ffd7ea",
+    "assistant": "#ff8fc8",
+    "system":    "#7bc6ff",
+    "think":     "#bdb4c7",
 }
 TIME_COLOR = {
-    "user":      "rgba(0,0,0,0.4)",
-    "assistant": "rgba(255,255,255,0.35)",
-    "system":    "rgba(255,255,255,0.35)",
-    "think":     "rgba(255,255,255,0.25)",
+    "user":      "rgba(255,255,255,0.55)",
+    "assistant": "rgba(255,255,255,0.42)",
+    "system":    "rgba(255,255,255,0.42)",
+    "think":     "rgba(255,255,255,0.28)",
 }
 
 def _round_pixmap(pixmap: QPixmap, size: int) -> QPixmap:

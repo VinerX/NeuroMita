@@ -2,44 +2,44 @@
 from utils import render_qss
 
 THEME = {
-    "bg_root": "#1b1d22",
-    "bg_window": "#17181d",
-    "text": "#e6e6eb",
-    "muted": "#9a9aa2",
+    "bg_root": "#0d0713",
+    "bg_window": "#09050f",
+    "text": "#f4e7f1",
+    "muted": "#b095ad",
 
-    "panel_bg": "rgba(18,18,22,0.92)",
-    "card_bg": "rgba(24,24,28,0.95)",
-    "card_border": "rgba(255,255,255,0.08)",
-    "border_soft": "rgba(255,255,255,0.08)",
+    "panel_bg": "rgba(27,12,31,0.94)",
+    "card_bg": "rgba(34,14,39,0.96)",
+    "card_border": "rgba(255,120,181,0.18)",
+    "border_soft": "rgba(255,255,255,0.10)",
     "outline": "rgba(255,255,255,0.06)",
 
-    "accent": "#8a2be2",
-    "accent_hover": "#9b47ea",
-    "accent_pressed": "#7a1fda",
-    "accent_border": "rgba(138,43,226,0.35)",
+    "accent": "#ff5c9e",
+    "accent_hover": "#ff73ad",
+    "accent_pressed": "#ef4b8f",
+    "accent_border": "rgba(255,92,158,0.48)",
 
-    "chip_bg": "rgba(255,255,255,0.06)",
-    "chip_hover": "rgba(255,255,255,0.10)",
-    "chip_pressed": "rgba(255,255,255,0.14)",
+    "chip_bg": "rgba(255,255,255,0.05)",
+    "chip_hover": "rgba(255,92,158,0.14)",
+    "chip_pressed": "rgba(255,92,158,0.20)",
 
-    "scroll_handle": "rgba(255,255,255,0.12)",
+    "scroll_handle": "rgba(255,156,210,0.22)",
 
     "warn_bg": "rgba(255,120,120,0.08)",
     "warn_border": "rgba(255,120,120,0.25)",
     "warn_text": "#ffb4b4",
 
-    "success": "#3da66e",
-    "success_hover": "#49b57b",
-    "success_pressed": "#349a69",
+    "success": "#7fe38c",
+    "success_hover": "#91eba0",
+    "success_pressed": "#69d97a",
 
     "danger": "#d64545",
     "danger_hover": "#e25757",
     "danger_pressed": "#bf3838",
 
-    "link": "#3498db",
+    "link": "#7bc6ff",
 
-    "btn_disabled_bg": "#4a4a4a",
-    "btn_disabled_fg": "#666666",
+    "btn_disabled_bg": "#3a2236",
+    "btn_disabled_fg": "#7e6178",
 }
 
 def get_theme():
@@ -50,11 +50,19 @@ style_template = """
 QWidget {
     background-color: {bg_root};
     color: {text};
-    font-family: "Segoe UI", Arial, sans-serif;
+    font-family: "Segoe UI Variable", "Segoe UI", Arial, sans-serif;
     font-size: 9pt;
     border-radius: 0px;
 }
 QMainWindow { background-color: {bg_window}; }
+QWidget#LauncherRoot {
+    background-color: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 1,
+        stop: 0 #140913,
+        stop: 0.45 #0c0813,
+        stop: 1 #07060d
+    );
+}
 QDialog { background-color: {bg_root}; }
 QFrame { border: none; background: transparent; }
 
@@ -581,6 +589,115 @@ QScrollArea#ChatScrollArea::viewport {
 }
 QWidget#ChatContainer {
     background-color: {panel_bg};
+}
+
+/* ========= Launcher Shell ========= */
+QWidget#SettingsSidebar {
+    background-color: rgba(11, 7, 18, 0.98);
+    border-right: 1px solid rgba(255, 92, 158, 0.18);
+}
+
+QFrame#LauncherBrandCard,
+QFrame#LauncherFooterCard,
+QFrame#ChatToolbarCard,
+QFrame#ChatComposerCard,
+QFrame#SettingsHeroCard {
+    background-color: rgba(29, 12, 34, 0.94);
+    border: 1px solid rgba(255, 92, 158, 0.22);
+    border-radius: 20px;
+}
+
+QFrame#LauncherBrandCard {
+    background-color: rgba(34, 13, 36, 0.98);
+}
+
+QLabel#LauncherBrandTitle {
+    font-size: 17pt;
+    font-weight: 800;
+    color: #fff1f9;
+}
+
+QLabel#LauncherBrandSubtitle,
+QLabel#LauncherFooterHint,
+QLabel#ChatHeroSubtitle,
+QLabel#SettingsHeroSubtitle {
+    color: #c5a8bf;
+    font-size: 9pt;
+}
+
+QLabel#SettingsSidebarTitle,
+QLabel#LauncherFooterStatus {
+    color: #ff84bd;
+    font-size: 8.5pt;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+QLabel#ChatHeroTitle,
+QLabel#SettingsHeroTitle {
+    font-size: 18pt;
+    font-weight: 800;
+    color: #fff1f9;
+}
+
+QLabel#TokenCountLabel {
+    color: #d6b3c7;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background-color: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.05);
+}
+
+QWidget#ChatCharacterHistoryGroup,
+QWidget#ChatInputContainer {
+    background-color: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 14px;
+}
+
+QPushButton#ChatTopIconButton,
+QPushButton#GuideButtonSmall {
+    background-color: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px;
+}
+
+QPushButton#ChatTopIconButton:hover,
+QPushButton#GuideButtonSmall:hover {
+    background-color: rgba(255,92,158,0.16);
+    border: 1px solid rgba(255,92,158,0.24);
+}
+
+QPushButton#ChatSendButtonCircle {
+    background-color: {accent};
+    border: 1px solid rgba(255, 180, 216, 0.55);
+    border-radius: 14px;
+}
+
+QPushButton#ChatIconMini {
+    background-color: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+}
+
+QCheckBox#StatusIndicator {
+    color: #dcbfd3;
+    spacing: 6px;
+    padding: 2px 6px 2px 0;
+}
+
+QCheckBox#StatusIndicator::indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background-color: rgba(255,255,255,0.08);
+}
+
+QCheckBox#StatusIndicator::indicator:checked {
+    background-color: #79e78c;
+    border: 1px solid rgba(121, 231, 140, 0.85);
 }
 """
 
