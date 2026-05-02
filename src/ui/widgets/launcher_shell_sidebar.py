@@ -39,6 +39,15 @@ DEFAULT_SIDEBAR_SECTIONS: tuple[SidebarSection, ...] = (
 )
 
 
+DEFAULT_SIDEBAR_SECTIONS = (
+    SidebarSection("home", _("Главная", "Home"), "fa6s.house", _("Обзор лаунчера", "Launcher overview")),
+    SidebarSection("news", _("Новости", "News"), "fa6s.rectangle-list", _("Апдейты и заметки", "Updates and notes")),
+    SidebarSection("sandbox", _("Песочница", "Sandbox"), "fa6s.flask", _("Быстрый вход в чат", "Quick chat access")),
+    SidebarSection("settings", _("Настройки", "Settings"), "fa6s.gear", _("Системные параметры", "System controls")),
+    SidebarSection("logs", _("Логи", "Logs"), "fa6s.list", _("События и диагностика", "Events and diagnostics")),
+)
+
+
 class LauncherSidebarWidget(QFrame):
     page_requested = pyqtSignal(str)
     social_requested = pyqtSignal(str)

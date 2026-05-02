@@ -15,6 +15,7 @@ from managers.settings_manager import CollapsibleSection
 from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
 import types
 import json
+import qtawesome as qta
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QPropertyAnimation, QBuffer, QIODevice, QEvent, QEasingCurve, QUrl
 from PyQt6.QtWidgets import (
@@ -55,6 +56,7 @@ from ui.widgets.launcher_dashboard_helpers import (
     DashboardMetric,
     LogItem,
     NewsItem,
+    create_shell_page_container,
     create_home_page,
     create_logs_page,
     create_news_page,
@@ -870,6 +872,272 @@ class ChatGUI(QMainWindow):
         self.page_stack.insertWidget(index, new_page)
         self.page_map[page_key] = new_page
 
+    def _build_home_page(self):
+        page, layout = create_shell_page_container()
+        news_items = self._parse_news_items(self.get_news_content())
+
+        content = QHBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        content.setSpacing(24)
+
+        left_column = QVBoxLayout()
+        left_column.setSpacing(14)
+
+        title = QLabel(_("Добро пожаловать!", "Welcome!"))
+        title.setObjectName("LauncherHomeTitle")
+        left_column.addWidget(title)
+
+        subtitle = QLabel(
+            _(
+                'Погрузись в "мисайд" по-новому с NeuroMita.',
+                "Dive into NeuroMita with the rebuilt launcher shell.",
+            )
+        )
+        subtitle.setObjectName("LauncherHomeSubtitle")
+        left_column.addWidget(subtitle)
+        left_column.addWidget(self._build_home_update_chip(news_items))
+
+        logo = QLabel()
+        logo.setObjectName("LauncherHomeLogo")
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_path = Path("assets/launcher_ui/logo.png")
+        if logo_path.exists():
+            logo.setPixmap(
+                QPixmap(str(logo_path)).scaled(
+                    360,
+                    260,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        else:
+            logo.setText("NeuroMita")
+        left_column.addWidget(logo, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        backend_row = QHBoxLayout()
+        backend_row.setSpacing(12)
+        backend_row.addWidget(
+            self._build_home_status_card(
+                "fa6b.python",
+                _("Python-бэкенд", "Python backend"),
+                self._get_home_backend_status(),
+                "#ffd86b",
+            )
+        )
+        backend_row.addWidget(
+            self._build_home_status_card(
+                "mdi.unity",
+                "Unity",
+                self._get_home_unity_status(),
+                "#f0f0f0",
+            )
+        )
+        left_column.addLayout(backend_row)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(8)
+
+        primary_button = QPushButton(self._get_home_primary_action_label())
+        primary_button.setObjectName("LauncherHomePrimaryButton")
+        primary_button.clicked.connect(self._run_home_primary_action)
+        button_row.addWidget(primary_button, 1)
+
+        menu_button = QPushButton("▾")
+        menu_button.setObjectName("LauncherHomeMenuButton")
+        menu_button.clicked.connect(lambda: self.switch_main_page("settings"))
+        button_row.addWidget(menu_button)
+        left_column.addLayout(button_row)
+
+        verify_button = QPushButton(_("Проверить и обновить промпты", "Check and reload prompts"))
+        verify_button.setObjectName("LauncherHomeVerifyButton")
+        verify_button.clicked.connect(lambda: self.event_bus.emit(Events.Model.RELOAD_PROMPTS_ASYNC))
+        left_column.addWidget(verify_button)
+
+        status_card = QFrame()
+        status_card.setObjectName("LauncherHomeStatusCard")
+        status_layout = QVBoxLayout(status_card)
+        status_layout.setContentsMargins(16, 14, 16, 14)
+        status_layout.setSpacing(8)
+
+        status_title = QLabel(_("Подключения", "Connections"))
+        status_title.setObjectName("LauncherHomeCardTitle")
+        status_layout.addWidget(status_title)
+        status_indicators_widget.create_status_indicators(self, status_layout)
+        left_column.addWidget(status_card)
+
+        status_line = QLabel(self._get_home_status_line(news_items))
+        status_line.setObjectName("LauncherHomeFootnote")
+        status_line.setWordWrap(True)
+        left_column.addWidget(status_line)
+
+        left_column.addStretch(1)
+        content.addLayout(left_column, 5)
+        content.addWidget(self._build_home_news_panel(news_items), 2)
+
+        layout.addLayout(content)
+        layout.addStretch(1)
+        return page
+
+    def _get_home_backend_status(self):
+        model_name = str(self._get_setting("MODEL", "") or "")
+        api_type = str(self._get_setting("API_TYPE", "") or "")
+        if model_name:
+            return _("Готов: {model}", "Ready: {model}").format(model=model_name)
+        if api_type:
+            return _("Источник: {api}", "Source: {api}").format(api=api_type)
+        return _("Не настроен", "Not configured")
+
+    def _get_home_unity_status(self):
+        game_connected = self.event_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
+        if game_connected and game_connected[0]:
+            return _("Подключено", "Connected")
+        return _("Не подключен", "Disconnected")
+
+    def _get_home_primary_action_label(self):
+        game_connected = self.event_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
+        if game_connected and game_connected[0]:
+            return _("▶ Играть / Песочница", "▶ Play / Sandbox")
+        return _("▶ Открыть песочницу", "▶ Open sandbox")
+
+    def _run_home_primary_action(self):
+        self.switch_main_page("sandbox")
+
+    def _build_home_update_chip(self, news_items):
+        card = QFrame()
+        card.setObjectName("LauncherHomeUpdateChip")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+
+        dot = QLabel()
+        dot.setObjectName("LauncherHomeUpdateDot")
+        dot.setFixedSize(10, 10)
+        layout.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        headline = news_items[0].title if news_items else _("Новости недоступны", "News unavailable")
+        label = QLabel(_("Доступно обновление: {headline}", "Fresh update: {headline}").format(headline=headline[:48]))
+        label.setObjectName("LauncherHomeUpdateText")
+        layout.addWidget(label)
+        layout.addStretch(1)
+
+        link = QPushButton(_("Что нового?", "What's new?"))
+        link.setObjectName("LauncherHomeLinkButton")
+        link.clicked.connect(lambda: self.switch_main_page("news"))
+        layout.addWidget(link)
+        return card
+
+    def _build_home_status_card(self, icon_name, title_text, value_text, color):
+        card = QFrame()
+        card.setObjectName("LauncherHomeStatusCard")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        icon = QLabel()
+        icon.setPixmap(qta.icon(icon_name, color=color).pixmap(34, 34))
+        layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        text_column = QVBoxLayout()
+        text_column.setSpacing(2)
+        title = QLabel(title_text.upper())
+        title.setObjectName("LauncherHomeStatusEyebrow")
+        text_column.addWidget(title)
+
+        value = QLabel(value_text)
+        value.setObjectName("LauncherHomeStatusValue")
+        text_column.addWidget(value)
+
+        layout.addLayout(text_column, 1)
+        return card
+
+    def _build_home_news_panel(self, news_items):
+        panel = QFrame()
+        panel.setObjectName("LauncherHomeNewsPanel")
+        panel.setMinimumWidth(320)
+
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(10)
+
+        header = QHBoxLayout()
+        title = QLabel(_("Последние новости", "Latest news").upper())
+        title.setObjectName("LauncherHomeNewsTitle")
+        header.addWidget(title)
+        header.addStretch(1)
+
+        all_news = QPushButton(_("Все новости", "All news"))
+        all_news.setObjectName("LauncherHomeLinkButton")
+        all_news.clicked.connect(lambda: self.switch_main_page("news"))
+        header.addWidget(all_news)
+        layout.addLayout(header)
+
+        divider = QFrame()
+        divider.setObjectName("LauncherHomeDivider")
+        divider.setFixedHeight(1)
+        layout.addWidget(divider)
+
+        preview_items = news_items[:3] if news_items else [
+            NewsItem(_("Новости недоступны", "News unavailable"), _("Удалённая лента пока недоступна.", "Remote feed is currently unavailable."))
+        ]
+        for index, item in enumerate(preview_items):
+            layout.addWidget(self._build_home_news_item(item, is_fresh=index == 0))
+
+        layout.addStretch(1)
+        return panel
+
+    def _build_home_news_item(self, item, is_fresh=False):
+        row = QFrame()
+        row.setObjectName("LauncherHomeNewsItem")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 4, 0, 4)
+        layout.setSpacing(10)
+
+        text_column = QVBoxLayout()
+        text_column.setSpacing(2)
+
+        top = QHBoxLayout()
+        title = QLabel(item.title)
+        title.setObjectName("LauncherHomeNewsItemTitle")
+        top.addWidget(title)
+
+        if is_fresh:
+            badge = QLabel(_("НОВОЕ", "NEW"))
+            badge.setObjectName("LauncherHomeNewsBadge")
+            top.addWidget(badge)
+
+        top.addStretch(1)
+        text_column.addLayout(top)
+
+        summary = QLabel(item.summary)
+        summary.setObjectName("LauncherHomeNewsItemBody")
+        summary.setWordWrap(True)
+        text_column.addWidget(summary)
+        layout.addLayout(text_column, 1)
+
+        if item.timestamp:
+            stamp = QLabel(item.timestamp)
+            stamp.setObjectName("LauncherHomeNewsDate")
+            layout.addWidget(stamp, 0, Qt.AlignmentFlag.AlignTop)
+
+        return row
+
+    def _get_home_status_line(self, news_items):
+        active_character = _("Без персонажа", "No character")
+        try:
+            profile_result = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
+            profile = profile_result[0] if profile_result else {}
+            active_character = str(profile.get("character_id") or active_character)
+        except Exception:
+            pass
+
+        model_name = str(self._get_setting("MODEL", "gpt-4o-mini"))
+        latest = news_items[0].title if news_items else _("Лента новостей офлайн", "News feed offline")
+        return _("Активно: {character} • {model} • {latest}", "Active: {character} • {model} • {latest}").format(
+            character=active_character,
+            model=model_name,
+            latest=latest[:48],
+        )
+
     def _create_debug_section(self, parent, layout):
         debug_label = QLabel(_('Отладочная информация', 'Debug Information'))
         debug_label.setObjectName('SeparatorLabel')
@@ -1612,11 +1880,25 @@ class ChatGUI(QMainWindow):
         use_voice = bool(SettingsManager.get("USE_VOICEOVER", False))
         method = str(SettingsManager.get("VOICEOVER_METHOD", "TG") or "TG")
 
-        if hasattr(self, 'game_status_checkbox'):
-            self.game_status_checkbox.setChecked(bool(game_connected and game_connected[0]))
-        if hasattr(self, 'silero_status_checkbox'):
+        registry = getattr(self, "_status_indicator_registry", {})
+
+        def apply_to(attr_name, checked=None, text=None):
+            widgets = list(registry.get(attr_name, []))
+            fallback = getattr(self, attr_name, None)
+            if fallback is not None and fallback not in widgets:
+                widgets.append(fallback)
+
+            for widget in widgets:
+                if text is not None and hasattr(widget, "setText"):
+                    widget.setText(text)
+                if checked is not None and hasattr(widget, "setChecked"):
+                    widget.setChecked(bool(checked))
+
+        apply_to("game_status_checkbox", checked=bool(game_connected and game_connected[0]))
+
+        if registry.get("silero_status_checkbox") or hasattr(self, "silero_status_checkbox"):
             if method == "Local":
-                self.silero_status_checkbox.setText(_('Озвучка (Лок.)', 'Voice (Local)'))
+                voice_label = _('Озвучка (Лок.)', 'Voice (Local)')
                 if use_voice:
                     model_id = str(SettingsManager.get("NM_CURRENT_VOICEOVER", "") or "")
                     is_init = self.event_bus.emit_and_wait(
@@ -1626,17 +1908,14 @@ class ChatGUI(QMainWindow):
                 else:
                     voice_active = False
             else:
-                self.silero_status_checkbox.setText(_('Озвучка (ТГ)', 'Voice (TG)'))
+                voice_label = _('Озвучка (ТГ)', 'Voice (TG)')
                 voice_active = bool(use_voice and silero_connected and silero_connected[0])
-            self.silero_status_checkbox.setChecked(voice_active)
-        if hasattr(self, 'rag_status_checkbox'):
-            self.rag_status_checkbox.setChecked(bool(rag_enabled))
-        if hasattr(self, 'mic_status_checkbox'):
-            self.mic_status_checkbox.setChecked(bool(mic_active and mic_active[0]))
-        if hasattr(self, 'screen_capture_status_checkbox'):
-            self.screen_capture_status_checkbox.setChecked(bool(screen_capture_active and screen_capture_active[0]))
-        if hasattr(self, 'camera_capture_status_checkbox'):
-            self.camera_capture_status_checkbox.setChecked(bool(camera_capture_active and camera_capture_active[0]))
+            apply_to("silero_status_checkbox", checked=voice_active, text=voice_label)
+
+        apply_to("rag_status_checkbox", checked=bool(rag_enabled))
+        apply_to("mic_status_checkbox", checked=bool(mic_active and mic_active[0]))
+        apply_to("screen_capture_status_checkbox", checked=bool(screen_capture_active and screen_capture_active[0]))
+        apply_to("camera_capture_status_checkbox", checked=bool(camera_capture_active and camera_capture_active[0]))
 
     # ===== Совместимость: диалоги g4f =====
     def trigger_g4f_reinstall_schedule(self):

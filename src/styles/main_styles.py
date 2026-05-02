@@ -700,6 +700,38 @@ QCheckBox#StatusIndicator::indicator:checked {
     border: 1px solid rgba(121, 231, 140, 0.85);
 }
 
+QWidget#StatusIndicatorStrip,
+QWidget#InlineStatusIndicators {
+    background-color: rgba(22, 10, 26, 0.96);
+    border: 1px solid rgba(255, 92, 158, 0.14);
+    border-radius: 18px;
+}
+
+QWidget#StatusIndicatorChip {
+    background: transparent;
+}
+
+QLabel#StatusIndicatorDot {
+    border-radius: 7px;
+    background-color: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.14);
+}
+
+QLabel#StatusIndicatorDot[active="true"] {
+    background-color: #79e78c;
+    border: 1px solid rgba(121,231,140,0.88);
+}
+
+QLabel#StatusIndicatorText {
+    color: #d7b6c6;
+    font-size: 9pt;
+    font-weight: 600;
+}
+
+QLabel#StatusIndicatorText[active="true"] {
+    color: #fff0f8;
+}
+
 QFrame#LauncherContentHost,
 QStackedWidget#MainPageStack,
 QStackedWidget#MainPageStack > QWidget,
@@ -840,6 +872,152 @@ QWidget#SettingsPageOverlay QScrollArea,
 QWidget#SettingsPageOverlay QScrollArea > QWidget > QWidget {
     background: transparent;
     border: none;
+}
+
+QLabel#LauncherHomeTitle {
+    color: #ffffff;
+    font-size: 30pt;
+    font-weight: 800;
+}
+
+QLabel#LauncherHomeSubtitle,
+QLabel#LauncherHomeFootnote {
+    color: #e2bccb;
+    font-size: 12pt;
+}
+
+QLabel#LauncherHomeFootnote {
+    font-size: 9pt;
+    color: #c39aab;
+}
+
+QFrame#LauncherHomeUpdateChip,
+QFrame#LauncherHomeNewsPanel,
+QFrame#LauncherHomeStatusCard,
+QFrame#LauncherHomeNewsItem {
+    background-color: rgba(24, 10, 22, 0.82);
+    border: 1px solid rgba(255, 92, 158, 0.18);
+    border-radius: 18px;
+}
+
+QLabel#LauncherHomeLogo {
+    min-height: 220px;
+    background: transparent;
+}
+
+QLabel#LauncherHomeUpdateDot {
+    border-radius: 5px;
+    background-color: #ffd06b;
+}
+
+QLabel#LauncherHomeUpdateText {
+    color: #f5e2e8;
+    font-size: 10pt;
+}
+
+QPushButton#LauncherHomeLinkButton {
+    background: transparent;
+    border: none;
+    color: #ff80a9;
+    font-size: 10pt;
+    font-weight: 600;
+    padding: 0;
+}
+
+QPushButton#LauncherHomeLinkButton:hover {
+    color: #ff9ec0;
+}
+
+QLabel#LauncherHomeStatusEyebrow,
+QLabel#LauncherHomeNewsTitle,
+QLabel#LauncherHomeCardTitle {
+    color: #f5c9d4;
+    font-size: 8.5pt;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+QLabel#LauncherHomeStatusValue {
+    color: #ffffff;
+    font-size: 14pt;
+    font-weight: 700;
+}
+
+QPushButton#LauncherHomePrimaryButton {
+    background-color: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 #ff4d8a,
+        stop: 1 #c81663
+    );
+    border: 1px solid rgba(255, 179, 212, 0.42);
+    border-radius: 18px;
+    color: #ffffff;
+    padding: 16px 22px;
+    font-size: 16pt;
+    font-weight: 800;
+}
+
+QPushButton#LauncherHomePrimaryButton:hover {
+    background-color: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 #ff73a8,
+        stop: 1 #dd3a76
+    );
+}
+
+QPushButton#LauncherHomeMenuButton {
+    min-width: 56px;
+    min-height: 56px;
+    background-color: rgba(34, 16, 26, 0.96);
+    border: 1px solid rgba(255, 92, 158, 0.22);
+    border-radius: 18px;
+    color: #ffd6e1;
+    font-size: 16pt;
+    font-weight: 700;
+}
+
+QPushButton#LauncherHomeMenuButton:hover,
+QPushButton#LauncherHomeVerifyButton:hover {
+    background-color: rgba(42, 16, 25, 0.96);
+    border: 1px solid rgba(255, 92, 158, 0.32);
+}
+
+QPushButton#LauncherHomeVerifyButton {
+    min-height: 46px;
+    background-color: rgba(28, 10, 18, 0.94);
+    border: 1px solid rgba(255, 92, 158, 0.18);
+    border-radius: 14px;
+    color: #f5c9d4;
+    text-align: left;
+    padding: 12px 14px;
+    font-size: 10pt;
+    font-weight: 600;
+}
+
+QFrame#LauncherHomeDivider {
+    background-color: rgba(90, 34, 51, 1);
+}
+
+QLabel#LauncherHomeNewsItemTitle {
+    color: #ffffff;
+    font-size: 10pt;
+    font-weight: 700;
+}
+
+QLabel#LauncherHomeNewsItemBody,
+QLabel#LauncherHomeNewsDate {
+    color: #b08a96;
+    font-size: 8.5pt;
+}
+
+QLabel#LauncherHomeNewsBadge {
+    background-color: #ff4d8a;
+    border-radius: 8px;
+    color: #ffffff;
+    padding: 2px 8px;
+    font-size: 7.5pt;
+    font-weight: 800;
 }
 """
 
