@@ -1,4 +1,4 @@
-"""Settings panel — Updates section.
+"""Settings panel - Updates section.
 
 Provides channel selection, tester code, Unity install path, and
 a "Check now" button that runs update checks in a background thread.
@@ -30,7 +30,17 @@ from utils import getTranslationVariant as _
 def setup_updates_settings_controls(self, parent):
     create_section_header(parent, _("Обновления", "Updates"))
 
-    # ── Current versions ──────────────────────────────────────────────────────
+    def _persist_setting(key: str, value):
+        if hasattr(self, "_save_setting"):
+            self._save_setting(key, value)
+            return
+        try:
+            self.settings.set(key, value)
+            self.settings.save_settings()
+        except Exception:
+            pass
+
+    # Current versions
     try:
         from _version import __version__ as py_ver
     except Exception:
@@ -58,18 +68,22 @@ def setup_updates_settings_controls(self, parent):
     ver_layout.setSpacing(2)
 
     lbl_py = QLabel(_("Python-часть: ", "Python part: ") + f"<b>{py_ver}</b>")
-    lbl_py.setStyleSheet("QLabel { background: transparent; border: none; color: #b0b0d0; font-size: 11px; }")
+    lbl_py.setStyleSheet(
+        "QLabel { background: transparent; border: none; color: #b0b0d0; font-size: 11px; }"
+    )
     lbl_py.setTextFormat(Qt.TextFormat.RichText)
     ver_layout.addWidget(lbl_py)
 
     lbl_unity = QLabel(_("Unity-часть: ", "Unity part: ") + f"<b>{unity_ver}</b>")
-    lbl_unity.setStyleSheet("QLabel { background: transparent; border: none; color: #b0b0d0; font-size: 11px; }")
+    lbl_unity.setStyleSheet(
+        "QLabel { background: transparent; border: none; color: #b0b0d0; font-size: 11px; }"
+    )
     lbl_unity.setTextFormat(Qt.TextFormat.RichText)
     ver_layout.addWidget(lbl_unity)
 
     parent.addWidget(ver_widget)
 
-    # ── Channel ───────────────────────────────────────────────────────────────
+    # Channel
     channel_row = QWidget()
     channel_layout = QHBoxLayout(channel_row)
     channel_layout.setContentsMargins(0, 4, 0, 0)
@@ -85,54 +99,56 @@ def setup_updates_settings_controls(self, parent):
     idx = channel_combo.findText(current_channel)
     if idx >= 0:
         channel_combo.setCurrentIndex(idx)
-    channel_combo.setToolTip(_(
-        "stable — официальные релизы.\nbeta — включая пре-релизы.",
-        "stable — official releases.\nbeta — including pre-releases."
-    ))
+    channel_combo.setToolTip(
+        _(
+            "stable - официальные релизы.\n"
+            "beta - включая пре-релизы.",
+            "stable - official releases.\n"
+            "beta - including pre-releases.",
+        )
+    )
 
-    def _save_channel(text):
-        self.settings["UPDATE_CHANNEL"] = text
-        try:
-            self.settings_controller.save_settings()
-        except Exception:
-            pass
+    def _save_channel(text: str):
+        if text == self.settings.get("UPDATE_CHANNEL", "stable"):
+            return
+        _persist_setting("UPDATE_CHANNEL", text)
 
-    channel_combo.currentTextChanged.connect(_save_channel)
+    def _on_channel_activated(_index: int):
+        selected = channel_combo.currentText()
+        QTimer.singleShot(0, lambda: _save_channel(selected))
+
+    channel_combo.activated.connect(_on_channel_activated)
     channel_layout.addWidget(channel_combo)
     channel_layout.addStretch()
     parent.addWidget(channel_row)
 
-    # ── Auto-update checkboxes ────────────────────────────────────────────────
+    # Auto-update checkboxes
     chk_auto = QCheckBox(_("Авто-обновление Python при запуске", "Auto-update Python on startup"))
     chk_auto.setToolTip(_("AUTO_UPDATE=1 в features.env", "AUTO_UPDATE=1 in features.env"))
     chk_auto.setChecked(bool(self.settings.get("AUTO_UPDATE_CHECK", False)))
 
     def _save_auto(state):
-        self.settings["AUTO_UPDATE_CHECK"] = bool(state)
-        try:
-            self.settings_controller.save_settings()
-        except Exception:
-            pass
+        _persist_setting("AUTO_UPDATE_CHECK", bool(state))
 
     chk_auto.stateChanged.connect(_save_auto)
     parent.addWidget(chk_auto)
 
     chk_unity = QCheckBox(_("Авто-обновление Unity при запуске", "Auto-update Unity on startup"))
-    chk_unity.setToolTip(_("Скачивает Unity-часть мода если вышла новая версия",
-                           "Downloads Unity part of the mod when a new version is released"))
+    chk_unity.setToolTip(
+        _(
+            "Скачивает Unity-часть мода если вышла новая версия",
+            "Downloads Unity part of the mod when a new version is released",
+        )
+    )
     chk_unity.setChecked(bool(self.settings.get("AUTO_UPDATE_UNITY", False)))
 
     def _save_unity_auto(state):
-        self.settings["AUTO_UPDATE_UNITY"] = bool(state)
-        try:
-            self.settings_controller.save_settings()
-        except Exception:
-            pass
+        _persist_setting("AUTO_UPDATE_UNITY", bool(state))
 
     chk_unity.stateChanged.connect(_save_unity_auto)
     parent.addWidget(chk_unity)
 
-    # ── Tester code ───────────────────────────────────────────────────────────
+    # Tester code
     tester_row = QWidget()
     tester_layout = QHBoxLayout(tester_row)
     tester_layout.setContentsMargins(0, 4, 0, 0)
@@ -147,23 +163,21 @@ def setup_updates_settings_controls(self, parent):
     tester_entry.setEchoMode(QLineEdit.EchoMode.Password)
     tester_entry.setPlaceholderText(_("пароль для тестовых архивов", "password for test archives"))
     tester_entry.setText(self.settings.get("TESTER_CODE", ""))
-    tester_entry.setToolTip(_(
-        "Пароль для распаковки зашифрованных тестовых архивов.",
-        "Password to unpack encrypted tester archives."
-    ))
+    tester_entry.setToolTip(
+        _(
+            "Пароль для распаковки зашифрованных тестовых архивов.",
+            "Password to unpack encrypted tester archives.",
+        )
+    )
 
     def _save_tester():
-        self.settings["TESTER_CODE"] = tester_entry.text()
-        try:
-            self.settings_controller.save_settings()
-        except Exception:
-            pass
+        _persist_setting("TESTER_CODE", tester_entry.text())
 
     tester_entry.editingFinished.connect(_save_tester)
     tester_layout.addWidget(tester_entry)
     parent.addWidget(tester_row)
 
-    # ── Unity install dir ─────────────────────────────────────────────────────
+    # Unity install dir
     unity_row = QWidget()
     unity_layout = QHBoxLayout(unity_row)
     unity_layout.setContentsMargins(0, 4, 0, 0)
@@ -184,32 +198,25 @@ def setup_updates_settings_controls(self, parent):
     unity_browse.setToolTip(_("Выбрать папку", "Browse folder"))
 
     def _browse_unity():
-        d = QFileDialog.getExistingDirectory(
-            None, _("Выбрать папку Unity", "Select Unity folder"),
-            unity_entry.text() or str(Path.home())
+        directory = QFileDialog.getExistingDirectory(
+            None,
+            _("Выбрать папку Unity", "Select Unity folder"),
+            unity_entry.text() or str(Path.home()),
         )
-        if d:
-            unity_entry.setText(d)
-            self.settings["UNITY_INSTALL_DIR"] = d
-            try:
-                self.settings_controller.save_settings()
-            except Exception:
-                pass
+        if directory:
+            unity_entry.setText(directory)
+            _persist_setting("UNITY_INSTALL_DIR", directory)
 
     unity_browse.clicked.connect(_browse_unity)
     unity_layout.addWidget(unity_browse)
 
     def _save_unity_dir():
-        self.settings["UNITY_INSTALL_DIR"] = unity_entry.text()
-        try:
-            self.settings_controller.save_settings()
-        except Exception:
-            pass
+        _persist_setting("UNITY_INSTALL_DIR", unity_entry.text())
 
     unity_entry.editingFinished.connect(_save_unity_dir)
     parent.addWidget(unity_row)
 
-    # ── Progress + status ─────────────────────────────────────────────────────
+    # Progress + status
     progress_bar = QProgressBar()
     progress_bar.setRange(0, 100)
     progress_bar.setValue(0)
@@ -225,7 +232,7 @@ def setup_updates_settings_controls(self, parent):
     status_lbl.setStyleSheet("QLabel { color: #a0a0c0; font-size: 11px; padding: 2px 0; }")
     parent.addWidget(status_lbl)
 
-    # ── Check now button ──────────────────────────────────────────────────────
+    # Check now button
     btn_check = QPushButton(_("Проверить обновления", "Check for updates"))
     btn_check.setStyleSheet(
         "QPushButton { background: #3a3a7c; color: #e0e0ff; border: none; border-radius: 5px; padding: 6px 12px; font-size: 12px; }"
@@ -268,30 +275,45 @@ def setup_updates_settings_controls(self, parent):
         bd = os.environ.get("NEUROMITA_BASE_DIR") or None
         ud = self.settings.get("UNITY_INSTALL_DIR") or None
 
-        # Simple logger that routes to status label
         class _UiLogger:
-            def info(self, msg): _set_status(msg)
-            def warning(self, msg): _set_status(f"⚠ {msg}")
-            def error(self, msg): _set_status(f"✗ {msg}")
-            def success(self, msg): _set_status(f"✓ {msg}")
-            def notify(self, msg): _set_status(f"★ {msg}")
+            def info(self, msg):
+                _set_status(msg)
+
+            def warning(self, msg):
+                _set_status(f"⚠ {msg}")
+
+            def error(self, msg):
+                _set_status(f"✗ {msg}")
+
+            def success(self, msg):
+                _set_status(f"✓ {msg}")
+
+            def notify(self, msg):
+                _set_status(f"★ {msg}")
 
         ui_log = _UiLogger()
 
         try:
             check_for_updates(
-                base_dir=bd, logger=ui_log, channel=ch,
-                tester_code=tc, on_progress=_on_progress,
+                base_dir=bd,
+                logger=ui_log,
+                channel=ch,
+                tester_code=tc,
+                on_progress=_on_progress,
             )
         except SystemExit:
-            raise  # let exit(42) propagate
+            raise
         except Exception as e:
             _set_status(f"Python update error: {e}")
 
         try:
             check_for_unity_updates(
-                base_dir=bd, logger=ui_log, unity_dir=ud,
-                channel=ch, tester_code=tc, on_progress=_on_progress,
+                base_dir=bd,
+                logger=ui_log,
+                unity_dir=ud,
+                channel=ch,
+                tester_code=tc,
+                on_progress=_on_progress,
             )
         except Exception as e:
             _set_status(f"Unity update error: {e}")
@@ -304,8 +326,8 @@ def setup_updates_settings_controls(self, parent):
         progress_bar.setValue(0)
         progress_bar.setVisible(True)
         status_lbl.setText(_("Проверяю...", "Checking ..."))
-        t = threading.Thread(target=_run_check, daemon=True)
-        t.start()
+        thread = threading.Thread(target=_run_check, daemon=True)
+        thread.start()
 
     btn_check.clicked.connect(_on_check_clicked)
     parent.addWidget(btn_check)
