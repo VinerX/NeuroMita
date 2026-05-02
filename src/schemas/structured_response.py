@@ -17,11 +17,12 @@ Usage::
 """
 from __future__ import annotations
 
+import re
+import hashlib
 import json as _json
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Type
 
-from pydantic import BaseModel, Field, model_validator
-
+from pydantic import BaseModel, Field, model_validator, create_model
 
 def _to_gemini_schema(schema: dict) -> dict:
     """
@@ -92,6 +93,8 @@ def _to_gemini_schema(schema: dict) -> dict:
     return convert(copy.deepcopy(schema))
 
 
+
+
 class ToolCall(BaseModel):
     """Describes a tool the LLM wants to invoke during its response."""
 
@@ -140,6 +143,21 @@ class ResponseSegment(BaseModel):
 class StructuredResponse(BaseModel):
     """Top-level structured response from the LLM."""
 
+    # Optional reasoning field — lets the model "think" inside the JSON itself.
+    # Extracted as a think block in the UI, not shown in the main message.
+    # Must be first so the model reasons before writing segments.
+    reasoning: Optional[str] = Field(
+        default=None,
+        description="Your internal reasoning / chain-of-thought before answering. "
+                    "Write your analysis here, then fill the rest of the fields. "
+                    "This field is never shown to the player."
+    )
+
+    segments: List[ResponseSegment] = Field(
+        default_factory=list,
+        description="Ordered list of response segments with positional commands",
+    )
+
     # Secret reveal flag — set to true when the character's secret is discovered.
     # Processed by character-specific logic (e.g. CrazyMita sets secretExposed variable).
     secret_exposed: Optional[bool] = Field(
@@ -148,23 +166,15 @@ class StructuredResponse(BaseModel):
                     "Only use once — when the secret is first revealed."
     )
 
-    # Optional reasoning field — lets the model "think" inside the JSON itself.
-    # Extracted as a think block in the UI, not shown in the main message.
-    reasoning: Optional[str] = Field(
-        default=None,
-        description="Your internal reasoning / chain-of-thought before answering. "
-                    "Write your analysis here, then fill the rest of the fields. "
-                    "This field is never shown to the player."
-    )
-
     # Global fields (not tied to a specific segment)
     attitude_change: float = Field(default=0.0, description="Change in attitude (-6 to 6)")
     boredom_change: float = Field(default=0.0, description="Change in boredom (-6 to 6)")
     stress_change: float = Field(default=0.0, description="Change in stress (-6 to 6)")
 
-    memory_add: Optional[List[str]] = Field(default=None, description="Memories to add")
-    memory_update: Optional[List[str]] = Field(default=None, description="Memories to update (format: 'number|new_text')")
-    memory_delete: Optional[List[str]] = Field(default=None, description="Memories to delete (format: 'number' or 'start-end')")
+    memory_add: Optional[List[str]] = Field(default=None, description="Memories to add. Format: 'priority|content' (priority: low/normal/high/critical). Example: ['high|Player prefers tea', 'normal|Cat name is Barsik']")
+    memory_update: Optional[List[str]] = Field(default=None, description="Memories to update. Format: 'number|priority|content' (priority: low/normal/high/critical). Example: ['4|high|Updated content here']")
+    memory_delete: Optional[List[str]] = Field(default=None, description="Memories to delete. Format: 'number', range 'start-end', or comma-separated 'n1,n2'. Example: ['2', '5-8']")
+    memory_merge: Optional[List[str]] = Field(default=None, description="Merge memories into the first ID. Format: 'id1,id2,...' or 'id1,id2,...:merged content'. All IDs after the first are deleted; first is updated with merged content. Example: ['3,7', '5,9,12:Combined fact text']")
 
     reminder_add: Optional[List[str]] = Field(
         default=None,
@@ -175,9 +185,16 @@ class StructuredResponse(BaseModel):
         description="Reminder IDs to delete. Format: 'N' (number). Example: '3'."
     )
 
-    segments: List[ResponseSegment] = Field(
-        default_factory=list,
-        description="Ordered list of response segments with positional commands",
+    entities: Optional[List[str]] = Field(
+        default=None,
+        description="Notable named entities. Format: 'name:type'. Types: person|place|thing|concept. "
+                    "Example: ['player:person', 'cats:thing']. Fill only when instructed. Omit if not needed."
+    )
+
+    relations: Optional[List[str]] = Field(
+        default=None,
+        description="Relation triples. Format: 'subject|predicate|object'. "
+                    "Example: ['player|likes|cats', 'mita|is afraid of|darkness']. Fill only when instructed. Omit if not needed."
     )
 
     tool_call: Optional[ToolCall] = Field(
@@ -190,13 +207,21 @@ class StructuredResponse(BaseModel):
         )
     )
 
+    custom_fields: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Custom character-specific parameters defined by the prompter. "
+            "Keys and their meaning are described in the response format instructions."
+        )
+    )
+
     def full_text(self) -> str:
         """Concatenate all segment texts (for TTS and history)."""
         parts = [seg.text for seg in self.segments if seg.text is not None]
         return " ".join(p for p in parts if p).strip()
 
     @classmethod
-    def openai_response_format(cls) -> dict:
+    def openai_response_format(cls, exclude_fields: set = None, custom_params: list = None) -> dict:
         """
         Return the ``response_format`` payload for the OpenAI API.
 
@@ -212,6 +237,19 @@ class StructuredResponse(BaseModel):
             }
         """
         schema = cls.model_json_schema()
+        if custom_params and "properties" in schema and "custom_fields" in schema["properties"]:
+            _type_map = {"float": "number", "double": "number", "int": "integer",
+                         "bool": "boolean", "str": "string", "string": "string"}
+            cf_props = {}
+            for p in custom_params:
+                key = p.get("change_command") or p["name"]
+                cf_props[key] = {"type": _type_map.get(p.get("type", "string"), "string")}
+            schema["properties"]["custom_fields"]["properties"] = cf_props
+        if exclude_fields:
+            for f in exclude_fields:
+                schema.get("properties", {}).pop(f, None)
+                if "required" in schema:
+                    schema["required"] = [r for r in schema["required"] if r != f]
         return {
             "type": "json_schema",
             "json_schema": {
@@ -227,7 +265,7 @@ class StructuredResponse(BaseModel):
         return cls.model_json_schema()
 
     @classmethod
-    def gemini_schema_dict(cls) -> dict:
+    def gemini_schema_dict(cls, exclude_fields: set = None, custom_params: list = None) -> dict:
         """
         Return a Gemini-compatible responseSchema dict.
 
@@ -238,6 +276,14 @@ class StructuredResponse(BaseModel):
         Special case: tool_call.args is patched to type=string so Gemini
         can freely write JSON arguments instead of being constrained to an
         empty object (Gemini doesn't support free-form additionalProperties).
+
+        Args:
+            exclude_fields: optional set of top-level field names to remove
+                from the schema (e.g. {"custom_fields"} when no custom_params).
+            custom_params: list of custom param dicts from config.json; when
+                provided, patches custom_fields.properties so Gemini allows
+                the declared keys (without this Gemini strips all keys from
+                a free-form object and returns {}).
         """
         schema = _to_gemini_schema(cls.model_json_schema())
         # Patch tool_call.args: object without properties → string
@@ -249,4 +295,124 @@ class StructuredResponse(BaseModel):
             }
         except (KeyError, TypeError):
             pass
+        # Patch custom_fields: inject explicit per-param properties so Gemini
+        # doesn't strip keys the model writes into a free-form object.
+        if custom_params and "custom_fields" in schema.get("properties", {}):
+            _type_map = {
+                "float": "number", "double": "number",
+                "int": "integer", "bool": "boolean",
+                "str": "string", "string": "string",
+            }
+            cf_props = {}
+            for p in custom_params:
+                key = p.get("change_command") or p["name"]
+                gemini_type = _type_map.get(p.get("type", "string"), "string")
+                cf_props[key] = {"type": gemini_type, "nullable": True}
+            schema["properties"]["custom_fields"]["properties"] = cf_props
+        if exclude_fields:
+            for f in exclude_fields:
+                schema.get("properties", {}).pop(f, None)
+                if "required" in schema:
+                    schema["required"] = [r for r in schema["required"] if r != f]
         return schema
+
+
+def build_structured_response_model(custom_params: list[dict] | None) -> Type[StructuredResponse]:
+    custom_params = custom_params or []
+    key_s = ""
+    try:
+        import json as _json
+        key_s = _json.dumps(custom_params, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        key_s = str(custom_params)
+
+    h = hashlib.md5(key_s.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    cache_key = f"sr:{h}"
+
+    _cache = getattr(build_structured_response_model, "_cache", None)
+    if not isinstance(_cache, dict):
+        _cache = {}
+        setattr(build_structured_response_model, "_cache", _cache)
+    if cache_key in _cache:
+        return _cache[cache_key]
+
+    type_map = {
+        "float": float,
+        "double": float,
+        "number": float,
+        "int": int,
+        "integer": int,
+        "bool": bool,
+        "boolean": bool,
+        "str": str,
+        "string": str,
+    }
+
+    def infer_default(py_t: type):
+        if py_t is float:
+            return 0.0
+        if py_t is int:
+            return 0
+        if py_t is bool:
+            return False
+        return ""
+
+    fields: Dict[str, tuple[Any, Any]] = {}
+    any_required = False
+
+    for p in custom_params:
+        if not isinstance(p, dict):
+            continue
+        # Имя поля в JSON-ответе нейронки — change_command (по умолчанию = name)
+        field_key = str(p.get("change_command") or p.get("name") or "").strip()
+        if not field_key or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", field_key):
+            continue
+
+        tname = str(p.get("type") or "string").strip().lower()
+        py_t = type_map.get(tname, str)
+
+        required = bool(p.get("required", True))
+        nullable = bool(p.get("nullable", False))
+
+        desc = str(p.get("description") or "").strip()
+
+        default = p.get("default", None)
+        if default is None and not required:
+            default = infer_default(py_t)
+        if default is None and required:
+            default = ...
+
+        anno = Optional[py_t] if nullable else py_t
+
+        f_kwargs: Dict[str, Any] = {}
+        if desc:
+            f_kwargs["description"] = desc
+
+        # Ограничения на входное значение от нейронки (change_min/change_max)
+        if py_t in (int, float):
+            mn = p.get("change_min", None)
+            mx = p.get("change_max", None)
+            if mn is not None:
+                f_kwargs["ge"] = mn
+            if mx is not None:
+                f_kwargs["le"] = mx
+
+        fields[field_key] = (anno, Field(default, **f_kwargs))
+        if required:
+            any_required = True
+
+    if not fields:
+        _cache[cache_key] = StructuredResponse
+        return StructuredResponse
+
+    CustomFieldsModel = create_model(f"CustomFields_{h}", **fields)
+
+    custom_fields_default = ... if any_required else None
+    Extended = create_model(
+        f"ExtendedStructuredResponse_{h}",
+        __base__=StructuredResponse,
+        custom_fields=(Optional[CustomFieldsModel], Field(custom_fields_default)),
+    )
+
+    _cache[cache_key] = Extended
+    return Extended

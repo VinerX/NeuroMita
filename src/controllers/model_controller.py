@@ -1,6 +1,8 @@
 # src/controllers/model_controller.py
 from __future__ import annotations
 
+from managers.rag.rag_manager import RAGManager
+import base64
 import json
 import datetime
 import re
@@ -25,7 +27,15 @@ from utils.structured_response_parser import (
     StructuredResponseParseError,
 )
 
-_ALL_TOOLS_LIST = ["calculator", "web_search", "google_search", "web_reader"]
+_ALL_TOOLS_LIST = ["calculator", "web_search", "google_search", "web_reader", "memory_search", "reminder"]
+_DEFAULT_TOOL_ENABLED = {
+    "calculator": False,
+    "web_search": False,
+    "google_search": False,
+    "web_reader": False,
+    "memory_search": True,
+    "reminder": True,
+}
 
 
 def _render_tools_for_prompt(schema: list) -> str:
@@ -48,6 +58,19 @@ def _render_tools_for_prompt(schema: list) -> str:
         params_str = ", ".join(param_parts) if param_parts else "no parameters"
         lines.append(f"- {name}({params_str}) — {desc}")
     return "\n".join(lines)
+
+
+_GRAPH_TAG_RE = re.compile(r"<graph>([\s\S]*?)</graph>", re.IGNORECASE)
+
+
+def _strip_graph_tag(text: str) -> tuple[str, Optional[str]]:
+    """Remove <graph>...</graph> from response, return (clean_text, json_str|None)."""
+    m = _GRAPH_TAG_RE.search(text)
+    if not m:
+        return text, None
+    json_str = m.group(1).strip()
+    clean = _GRAPH_TAG_RE.sub("", text).strip()
+    return clean, json_str
 
 
 class ModelController:
@@ -75,6 +98,11 @@ class ModelController:
 
         self.preset_resolver = ApiPresetResolver(settings=self.settings, event_bus=self.event_bus)
         self.model = ChatModel(settings)
+
+        from managers.tools.builtin.memory_search import MemorySearchTool
+        from managers.tools.builtin.reminder_tool import ReminderTool
+        self.model.tool_manager.register(MemorySearchTool(settings=self.settings))
+        self.model.tool_manager.register(ReminderTool())
 
         self.context_counter = ContextCounter(encoding_model="gpt-4o-mini")
         self._base_prompt_cache: dict[tuple[str, str], list[dict]] = {}
@@ -274,26 +302,18 @@ class ModelController:
                 return True
         return False
 
-
     def _append_history_message(self, ch_ref, msg: dict) -> bool:
         if ch_ref is None or not isinstance(msg, dict):
             return False
 
         try:
-            history_data = ch_ref.history_manager.load_history()
-            messages = history_data.get("messages", []) or []
-            if not isinstance(messages, list):
-                messages = []
-
-            mid = str(msg.get("message_id") or "")
-            if mid and self._has_message_id_recent(messages, mid):
-                return False
-
-            messages.append(msg)
-            ch_ref.save_character_state_to_history(messages)
+            ch_ref.add_message_to_history(msg)
             return True
+
         except Exception as e:
-            logger.warning(f"[ModelController] append_history_message failed for {getattr(ch_ref,'char_id','?')}: {e}", exc_info=True)
+            logger.warning(
+                f"[ModelController] append_history_message failed for {getattr(ch_ref, 'char_id', '?')}: {e}",
+                exc_info=True)
             return False
 
 
@@ -364,7 +384,8 @@ class ModelController:
             "target": target,
             "participants": list(participants),
             "event_type": event_type,
-            "time": datetime.datetime.now().strftime("%d.%m.%Y_%H.%M"),
+            # единый формат времени для user/assistant (чтобы не было каши в БД)
+            "time": datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
             "content": chunks,
         }
 
@@ -387,10 +408,10 @@ class ModelController:
             "target": target,
             "participants": list(participants),
             "event_type": event_type,
-            "time": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
+            # единый формат времени для user/assistant
+            "time": datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
             "content": final_text,
         }
-
 
     def _ui_wrap_history_message(self, msg: dict) -> dict | None:
         """
@@ -401,24 +422,61 @@ class ModelController:
         if not isinstance(msg, dict):
             return None
 
-        role = str(msg.get("role") or "")
-        if role not in ("user", "assistant", "system"):
+        raw_role = str(msg.get("role") or "").strip().lower()
+        # небольшая обратная совместимость на случай странных значений
+        if raw_role == "player":
+            raw_role = "user"
+        if raw_role not in ("user", "assistant", "system"):
             return None
 
         # фильтр пустых user
-        if role == "user":
+        if raw_role == "user":
             content = msg.get("content")
             if not self._has_visible_user_text(content):
                 return None
 
-        speaker = str(msg.get("speaker") or msg.get("sender") or "")
-        target = str(msg.get("target") or "")
+        def _norm_actor(v: Any) -> str:
+            s = str(v or "").strip()
+            if not s:
+                return ""
+            if s.lower() == "player":
+                return "Player"
+            return s
 
-        # UI роль по speaker, а не по role из истории
-        ui_role = "user" if speaker == "Player" else ("assistant" if role in ("user", "assistant") else role)
+        def _is_player(v: Any) -> bool:
+            return _norm_actor(v) == "Player"
+
+        # достаём поля максимально терпимо
+        speaker_raw = msg.get("speaker")
+        sender_raw = msg.get("sender")
+        target_raw = msg.get("target")
+
+        speaker = _norm_actor(speaker_raw or sender_raw)
+        sender = _norm_actor(sender_raw or speaker_raw)
+        target = _norm_actor(target_raw)
+
+        # IMPORTANT: приоритет Player/role=user (как просили)
+        is_player_msg = (raw_role == "user") or _is_player(speaker) or _is_player(sender)
+
+        if raw_role == "system":
+            ui_role = "system"
+        elif is_player_msg:
+            ui_role = "user"
+        else:
+            ui_role = "assistant"
 
         mm = dict(msg)
         mm["role"] = ui_role
+
+        # Для user-сообщений убираем любые speaker/meta намёки,
+        # чтобы делегат рисовал "You:" и жёлтую сторону.
+        if ui_role == "user":
+            mm["speaker"] = "Player"
+            mm["sender"] = "Player"
+            c = mm.get("content")
+            if isinstance(c, list):
+                mm["content"] = [it for it in c if not (isinstance(it, dict) and it.get("type") == "meta")]
+            return mm
 
         # meta label
         speaker_label = ""
@@ -438,8 +496,10 @@ class ModelController:
 
         return mm
 
-
     def _on_load_history(self, event: Event):
+        """
+        Загрузка первой страницы истории (самые свежие сообщения).
+        """
         self.loaded_messages_offset = 0
         self.total_messages_in_history = 0
         self.loading_more_history = False
@@ -449,93 +509,106 @@ class ModelController:
             self.event_bus.emit("history_loaded", {"messages": [], "total_messages": 0, "loaded_offset": 0})
             return
 
-        chat_history = ch.load_history()
-        all_messages = chat_history.get("messages", []) or []
-        logger.info(f"[ModelController._on_load_history] Загружено {len(all_messages)} raw сообщений из истории")
-        if all_messages:
-            for i, msg in enumerate(all_messages[-3:]):  # последние 3
-                logger.info(f"[ModelController._on_load_history] msg[{i}]: role={msg.get('role')}, content={str(msg.get('content'))[:60]}")
-        if not isinstance(all_messages, list):
-            all_messages = []
+        # [ИСПРАВЛЕНО] Оптимизация SQL
+        hm = getattr(ch, "history_manager", None)
 
-        prepared = self.ui_projector.project_for_ui(all_messages)
-        logger.info(f"[ModelController._on_load_history] После project_for_ui: {len(prepared)} сообщений")
-        if prepared:
-            for i, msg in enumerate(prepared[-3:]):  # последние 3 после проекции
-                logger.info(f"[ModelController._on_load_history] projected[{i}]: role={msg.get('role')}, content={str(msg.get('content'))[:60]}")
+        # Проверяем, поддерживает ли HM новые методы пагинации
+        if hm and hasattr(hm, "get_total_messages_count") and hasattr(hm, "get_recent_messages"):
+            self.total_messages_in_history = hm.get_total_messages_count()
 
-        self.total_messages_in_history = len(prepared)
+            # Загружаем только последние N сообщений
+            # Offset 0 = самые последние
+            raw_messages = hm.get_recent_messages(limit=self.lazy_load_batch_size, offset=0)
 
-        max_display_messages = int(self.settings.get("MAX_CHAT_HISTORY_DISPLAY", 200))
-        start_index = max(0, self.total_messages_in_history - max_display_messages)
-        messages_to_load = prepared[start_index:]
+            self.loaded_messages_offset = len(raw_messages)
 
-        self.loaded_messages_offset = len(messages_to_load)
+            # Проекция для UI (цвета, мета-теги)
+            prepared = self.ui_projector.project_for_ui(raw_messages)
+            if isinstance(prepared, list):
+                prepared = [
+                    self._fix_projected_ui_message(r, m)
+                    for r, m in zip(raw_messages, prepared)
+                ]
 
-        self.event_bus.emit("history_loaded", {
-            "messages": messages_to_load,
-            "total_messages": self.total_messages_in_history,
-            "loaded_offset": self.loaded_messages_offset
-        })
+            self.event_bus.emit("history_loaded", {
+                "messages": prepared,
+                "total_messages": self.total_messages_in_history,
+                "loaded_offset": self.loaded_messages_offset
+            })
+        else:
+            # Fallback (Старый метод: грузим всё)
+            chat_history = ch.load_history()
+            all_messages = chat_history.get("messages", []) or []
+            self.total_messages_in_history = len(all_messages)
 
+            prepared_all = self.ui_projector.project_for_ui(all_messages)
+            if isinstance(prepared_all, list):
+                prepared_all = [
+                    self._fix_projected_ui_message(r, m)
+                    for r, m in zip(all_messages, prepared_all)
+                ]
+            # Берем хвост списка
+            max_display = self.lazy_load_batch_size
+            start_index = max(0, self.total_messages_in_history - max_display)
+            messages_to_load = prepared_all[start_index:]
 
-    # def _on_load_more_history(self, event: Event):
-    #     if self.loaded_messages_offset >= self.total_messages_in_history:
-    #         return
+            self.loaded_messages_offset = len(messages_to_load)
 
-    #     data = event.data or {}
-    #     requested_cid = self._normalize_character_id_from_data(data)
-
-    #     self.loading_more_history = True
-    #     try:
-    #         ch = self._get_character_ref(requested_cid) if requested_cid else self._get_current_character_ref()
-    #         if not ch:
-    #             return
-
-    #         chat_history = ch.load_history()
-    #         all_messages = chat_history.get("messages", []) or []
-
-    #         end_index = self.total_messages_in_history - self.loaded_messages_offset
-    #         start_index = max(0, end_index - self.lazy_load_batch_size)
-    #         messages_to_prepend = all_messages[start_index:end_index]
-
-    #         if messages_to_prepend:
-    #             self.loaded_messages_offset += len(messages_to_prepend)
-    #             self.event_bus.emit("more_history_loaded", {
-    #                 "messages": messages_to_prepend,
-    #                 "loaded_offset": self.loaded_messages_offset
-    #             })
-    #     finally:
-    #         self.loading_more_history = False
+            self.event_bus.emit("history_loaded", {
+                "messages": messages_to_load,
+                "total_messages": self.total_messages_in_history,
+                "loaded_offset": self.loaded_messages_offset
+            })
 
     def _on_load_more_history(self, event: Event):
+        """
+        Подгрузка старых сообщений при скролле вверх.
+        """
         if self.loaded_messages_offset >= self.total_messages_in_history:
             return
 
         self.loading_more_history = True
         try:
             ch = self._get_current_character_ref()
-            if not ch:
-                return
+            if not ch: return
 
-            chat_history = ch.load_history()
-            all_messages = chat_history.get("messages", []) or []
-            if not isinstance(all_messages, list):
-                all_messages = []
+            hm = getattr(ch, "history_manager", None)
 
-            prepared = self.ui_projector.project_for_ui(all_messages)
-            self.total_messages_in_history = len(prepared)
+            # [ИСПРАВЛЕНО] Оптимизация SQL
+            if hm and hasattr(hm, "get_recent_messages"):
+                # offset равен текущему количеству загруженных (мы идем от конца вглубь)
+                raw_messages = hm.get_recent_messages(
+                    limit=self.lazy_load_batch_size,
+                    offset=self.loaded_messages_offset
+                )
 
-            end_index = self.total_messages_in_history - self.loaded_messages_offset
-            start_index = max(0, end_index - self.lazy_load_batch_size)
-            messages_to_prepend = prepared[start_index:end_index]
+                if raw_messages:
+                    self.loaded_messages_offset += len(raw_messages)
+                    prepared = self.ui_projector.project_for_ui(raw_messages)
 
-            if messages_to_prepend:
-                self.loaded_messages_offset += len(messages_to_prepend)
-                self.event_bus.emit("more_history_loaded", {
-                    "messages": messages_to_prepend,
-                    "loaded_offset": self.loaded_messages_offset
-                })
+                    self.event_bus.emit("more_history_loaded", {
+                        "messages": prepared,
+                        "loaded_offset": self.loaded_messages_offset
+                    })
+            else:
+                # Fallback
+                chat_history = ch.load_history()
+                all_messages = chat_history.get("messages", []) or []
+                self.total_messages_in_history = len(all_messages)  # Обновляем на всякий случай
+
+                prepared_all = self.ui_projector.project_for_ui(all_messages)
+
+                end_index = self.total_messages_in_history - self.loaded_messages_offset
+                start_index = max(0, end_index - self.lazy_load_batch_size)
+
+                messages_to_prepend = prepared_all[start_index:end_index]
+
+                if messages_to_prepend:
+                    self.loaded_messages_offset += len(messages_to_prepend)
+                    self.event_bus.emit("more_history_loaded", {
+                        "messages": messages_to_prepend,
+                        "loaded_offset": self.loaded_messages_offset
+                    })
         finally:
             self.loading_more_history = False
 
@@ -653,7 +726,11 @@ class ModelController:
         task_uid = str(data.get("message_id") or "") or None
 
         policy_dict = data.get("policy")
-        policy = RequestPolicy.from_dict(policy_dict) if isinstance(policy_dict, dict) else resolve_policy(model_event_type=str(event_type or "chat"))
+        policy = (
+            RequestPolicy.from_dict(policy_dict)
+            if isinstance(policy_dict, dict)
+            else resolve_policy(model_event_type=str(event_type or "chat"))
+        )
 
         char = None
         if character_id_override:
@@ -676,22 +753,41 @@ class ModelController:
 
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
-        preset_id = preset_id_override  # Initialize early for capability resolution
+        preset_id = preset_id_override
 
-        if event_type == "compress":
+        _rag_skip = event_type in ("compress", "graph_extract") or policy.react_level == 1
+        if bool(self.settings.get("RAG_ENABLED", False)) and not _rag_skip:
+            prompt_set_path = getattr(char, "base_data_path", None)
+            system_input = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
+
+        if event_type in ("compress", "graph_extract"):
             messages = []
             if system_input:
-                messages.append({"role": "system", "content": system_input})
+                if event_type == "graph_extract":
+                    messages.append({"role": "user", "content": system_input})
+                else:
+                    messages.append({"role": "system", "content": system_input})
 
-            self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
-                "character_id": char_id,
-                "character_name": char_name or char_id or "Мита",
-            })
+            preset_id = preset_id_override
+
+            if event_type == "compress":
+                self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
+                    "character_id": char_id,
+                    "character_name": char_name or char_id or "Мита",
+                })
+
+            logger.info(
+                f"[ModelController] {event_type}: sending {len(messages)} messages, "
+                f"preset_id={preset_id}, char='{char_id}'"
+            )
 
             try:
-                return self.model.generate(messages, stream_callback=None, preset_id=preset_id)
+                result = self.model.generate(messages, stream_callback=None, preset_id=preset_id)
+                if not result:
+                    logger.warning(f"[ModelController] {event_type}: model.generate() returned empty/None")
+                return result
             except Exception as e:
-                logger.error(f"Ошибка при сжатии истории: {e}", exc_info=True)
+                logger.error(f"Ошибка при {event_type}: {e}", exc_info=True)
                 return None
 
         game_state = self.game_state.to_prompt_dict()
@@ -724,7 +820,6 @@ class ModelController:
         is_game_master = (char_id == "GameMaster")
         disable_history_compression = bool(data.get("disable_history_compression", False))
 
-        # Resolve capabilities from the effective preset for this request
         effective_capabilities = {}
         try:
             effective_preset = self.preset_resolver.resolve(preset_id)
@@ -737,12 +832,14 @@ class ModelController:
         except Exception as e:
             logger.warning(f"[ModelController] Failed to resolve preset capabilities: {e}")
 
-        # Determine tools state and inject description into capabilities for prompt injection
         _tools_on = bool(self.settings.get("TOOLS_ON", True))
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
         if _tools_mode == "off":
             _tools_on = False
-        _enabled_tools = [n for n in _ALL_TOOLS_LIST if self.settings.get(f"TOOL_ENABLED_{n}", True)]
+        _enabled_tools = [
+            n for n in _ALL_TOOLS_LIST
+            if self.settings.get(f"TOOL_ENABLED_{n}", _DEFAULT_TOOL_ENABLED.get(n, False))
+        ]
         if not _enabled_tools:
             _tools_on = False
 
@@ -753,6 +850,13 @@ class ModelController:
             except Exception as e:
                 logger.warning(f"[ModelController] Failed to build tools prompt: {e}")
                 _tools_on = False
+
+        _custom_params = getattr(char, "custom_params", [])
+        effective_capabilities["has_custom_params"] = bool(_custom_params)
+        effective_capabilities["custom_params"] = _custom_params
+        effective_capabilities["schema_reasoning"] = bool(self.settings.get("SCHEMA_REASONING", False))
+
+        data["capabilities"] = dict(effective_capabilities)
 
         try:
             prompt_res = self.event_bus.emit_and_wait(
@@ -847,9 +951,27 @@ class ModelController:
 
         is_structured_output = effective_capabilities.get("structured_output", False)
 
+        structured_model_cls = None
+        if is_structured_output:
+            try:
+                from schemas.structured_response import StructuredResponse as _SR
+                try:
+                    from schemas.structured_response import build_structured_response_model  # type: ignore
+                    structured_model_cls = build_structured_response_model(_custom_params or [])
+                except Exception:
+                    structured_model_cls = _SR
+            except Exception:
+                structured_model_cls = None
+
         try:
             use_stream_cb = stream_callback if policy.allow_streaming else None
-            raw_text = self.model.generate(combined_messages, stream_callback=use_stream_cb, preset_id=preset_id)
+            raw_text = self.model.generate(
+                combined_messages,
+                stream_callback=use_stream_cb,
+                preset_id=preset_id,
+                capabilities_override=effective_capabilities,
+                structured_model=structured_model_cls,
+            )
 
             if not raw_text:
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
@@ -857,10 +979,8 @@ class ModelController:
                 })
                 return None
 
-            # Strip <think> blocks BEFORE any downstream processing (commands, voiceover, history)
             visible_raw, think_text = self._extract_think_blocks(str(raw_text))
 
-            # --- Structured Output path ---
             if is_structured_output:
                 return self._process_structured_output(
                     visible_raw=visible_raw,
@@ -882,9 +1002,14 @@ class ModelController:
                     tools_on=_tools_on,
                     enabled_tools=_enabled_tools,
                     tool_depth=0,
+                    structured_model_cls=structured_model_cls,
                 )
 
-            # --- Legacy (tag-based) path ---
+            inline_graph_json: Optional[str] = None
+            if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
+                    and bool(self.settings.get("GRAPH_EXTRACTION_INLINE", False))):
+                visible_raw, inline_graph_json = _strip_graph_tag(visible_raw)
+
             processed = char.process_response_nlp_commands(visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False))
 
             targets: list[str] = []
@@ -903,10 +1028,11 @@ class ModelController:
                     final_text
                 )
 
+            assistant_message_id = ""
             if policy.write_to_history:
                 origin_message_id = str(data.get("origin_message_id") or "") or None
 
-                self.event_writer.write_turn(
+                assistant_message_id = self.event_writer.write_turn(
                     responder_character_id=char_id,
                     sender=sender,
                     participants=participants,
@@ -918,9 +1044,23 @@ class ModelController:
                     assistant_target=target,
                     event_type=event_type,
                     task_uid=task_uid,
+                    thinking=think_text or None,
                 )
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
+
+            if hasattr(char, "flush_variables"):
+                char.flush_variables()
+
+            created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
+            self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
+                "character_id": char_id,
+                "character_ref": char,
+                "user_input": user_input,
+                "assistant_output": final_text,
+                "created_memory_ids": created_memory_ids,
+                "inline_graph_json": inline_graph_json,
+            })
 
             voice_profile = None
             if hasattr(char, "to_voice_profile"):
@@ -936,12 +1076,136 @@ class ModelController:
                 "target": target,
                 "targets": targets,
                 "think": think_text or None,
+                "message_id": assistant_message_id,
             }
 
         except Exception as e:
             logger.error(f"Error during LLM generation/processing: {e}", exc_info=True)
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": str(e)})
             return None
+
+    # Default RAG output templates
+    _DEFAULT_RAG_MEM_ITEM = "[{score:.3f}] N:{id} ({type}, prio={priority}, date={date}) {content}"
+    _DEFAULT_RAG_HIST_ITEM = "- [{score:.3f}] ({date}){meta} {content}"
+    _DEFAULT_RAG_WRAPPER = "<relevant_memories>\n{memory_block}\n</relevant_memories>\n\n<past_context>\n{history_block}\n</past_context>"
+
+    def process_rag(self, char_id, system_input, user_input, prompt_set_path=None):
+        # ---------------------------------------------------------------------
+        # RAG выполняется ДО BUILD_PROMPT
+        # результаты кладутся в system prompt
+        # Templates can be customized per prompt set via Structural/ files:
+        #   rag_memory_item.txt, rag_history_item.txt, rag_wrapper.txt
+        from utils.template_loader import load_optional_template
+
+        final_input = False
+        if user_input:
+            final_input = user_input
+        elif system_input:
+            final_input = system_input
+        if final_input:
+            try:
+                rag = RAGManager(char_id)
+                rag_limit = int(self.settings.get("RAG_MAX_RESULTS", 8))
+                rag_thr = float(self.settings.get("RAG_SIM_THRESHOLD", 0.4))
+                results = rag.search_relevant(str(final_input), limit=rag_limit, threshold=rag_thr)
+                forgotten_count = rag.get_forgotten_count()
+
+                if results:
+                    mem_tpl = load_optional_template(
+                        prompt_set_path, "Structural/rag_memory_item.txt", self._DEFAULT_RAG_MEM_ITEM
+                    )
+                    hist_tpl = load_optional_template(
+                        prompt_set_path, "Structural/rag_history_item.txt", self._DEFAULT_RAG_HIST_ITEM
+                    )
+                    wrapper_tpl = load_optional_template(
+                        prompt_set_path, "Structural/rag_wrapper.txt", self._DEFAULT_RAG_WRAPPER
+                    )
+
+                    clip_max = int(self.settings.get("RAG_CLIP_MAX_CHARS", 700))
+
+                    def _clip(s, n=clip_max):
+                        t = str(s or "").strip()
+                        return (t[:n] + "…") if len(t) > n else t
+
+                    mem_lines = []
+                    hist_lines = []
+                    graph_lines = []
+
+                    for r in results:
+                        if not isinstance(r, dict):
+                            continue
+                        src = r.get("source")
+                        if src == "memory":
+                            try:
+                                mem_lines.append(mem_tpl.format(
+                                    score=float(r.get("score", 0)),
+                                    id=r.get("id", "?"),
+                                    type=r.get("type", ""),
+                                    priority=r.get("priority", ""),
+                                    date=r.get("date_created", ""),
+                                    content=_clip(r.get("content")),
+                                ))
+                            except (KeyError, IndexError, ValueError):
+                                mem_lines.append(f"[{r.get('score', 0):.3f}] N:{r.get('id', '?')} {_clip(r.get('content'))}")
+                        elif src == "graph":
+                            graph_lines.append(f"- [{r.get('score', 0):.2f}] {_clip(r.get('content'))}")
+                        elif src == "history":
+                            sp = r.get("speaker") or ""
+                            tg = r.get("target") or ""
+                            meta = ""
+                            if sp and tg:
+                                meta = f" ({sp}→{tg})"
+                            elif sp:
+                                meta = f" ({sp})"
+                            elif tg:
+                                meta = f" (→{tg})"
+                            try:
+                                hist_lines.append(hist_tpl.format(
+                                    score=float(r.get("score", 0)),
+                                    date=r.get("date", ""),
+                                    meta=meta,
+                                    content=_clip(r.get("content")),
+                                    speaker=sp,
+                                    target=tg,
+                                    role=r.get("role", ""),
+                                ))
+                            except (KeyError, IndexError, ValueError):
+                                hist_lines.append(f"- [{r.get('score', 0):.3f}] {_clip(r.get('content'))}")
+
+                    if mem_lines or hist_lines or graph_lines:
+                        mem_header = "# score=RAG relevance (0..1); forgotten memories — use N:id with memory ops\n"
+                        memory_block_str = (mem_header + "\n".join(mem_lines)) if mem_lines else ""
+                        graph_block_str = "\n".join(graph_lines) if graph_lines else ""
+                        try:
+                            rag_block = wrapper_tpl.format(
+                                memory_block=memory_block_str,
+                                history_block="\n".join(hist_lines) if hist_lines else "",
+                                graph_block=graph_block_str,
+                            )
+                        except (KeyError, IndexError):
+                            parts = []
+                            if mem_lines:
+                                parts.append("<relevant_memories>\n" + memory_block_str + "\n</relevant_memories>")
+                            if hist_lines:
+                                parts.append("<past_context>\n" + "\n".join(hist_lines) + "\n</past_context>")
+                            if graph_lines:
+                                parts.append("<entity_knowledge>\n" + graph_block_str + "\n</entity_knowledge>")
+                            rag_block = "\n\n".join(parts)
+                        # If the wrapper template doesn't include {graph_block},
+                        # append graph entries separately so they are never silently dropped.
+                        if graph_lines and "{graph_block}" not in wrapper_tpl:
+                            rag_block += "\n\n<entity_knowledge>\n" + graph_block_str + "\n</entity_knowledge>"
+                        if forgotten_count > 0:
+                            rag_block += f"\nForgotten pool: {forgotten_count} memories"
+
+                        separator = "\n\n" if system_input else ""
+                        system_input = f"{system_input}{separator}{rag_block}"
+                        logger.info(
+                            f"[{char_id}] RAG blocks injected into system_input "
+                            f"(mem={len(mem_lines)}, hist={len(hist_lines)}, graph={len(graph_lines)}).")
+            except Exception as e:
+                logger.warning(f"[{char_id}] Failed to run RAG (ignored): {e}", exc_info=True)
+        return system_input
 
     # ---------------------------------------------------------------------
     # Structured Output processing
@@ -968,14 +1232,10 @@ class ModelController:
         tools_on: bool = False,
         enabled_tools: list = None,
         tool_depth: int = 0,
+        structured_model_cls=None,
     ) -> dict | None:
-        """
-        Process a structured JSON response from the LLM.
-        Parses the JSON, applies global fields (behavior, memory),
-        processes game tags, and returns the result dict with segments.
-        """
         try:
-            structured = parse_structured_response(visible_raw)
+            structured = parse_structured_response(visible_raw, model_cls=structured_model_cls)
         except StructuredResponseParseError as e:
             logger.error(
                 f"[ModelController] Failed to parse structured response for {char_id}: {e}. "
@@ -1018,10 +1278,11 @@ class ModelController:
 
         # --- Tool call path ---
         _active_tools = enabled_tools or []
+        _tool_max_depth = int(self.settings.get("TOOL_MAX_DEPTH", 2))
         _tool_allowed = (
             structured.tool_call
             and tools_on
-            and tool_depth < 2
+            and tool_depth < _tool_max_depth
             and (not _active_tools or structured.tool_call.name in _active_tools)
         )
         if not _tool_allowed and structured.tool_call and tools_on:
@@ -1032,6 +1293,7 @@ class ModelController:
         if _tool_allowed:
             return self._handle_tool_call(
                 structured=structured,
+                visible_raw=visible_raw,
                 think_text=think_text,
                 char=char,
                 char_id=char_id,
@@ -1049,6 +1311,7 @@ class ModelController:
                 preset_id=preset_id,
                 enabled_tools=_active_tools,
                 tool_depth=tool_depth,
+                structured_model_cls=structured_model_cls,
             )
 
         # Extract reasoning from structured response (if model used the reasoning field)
@@ -1083,10 +1346,12 @@ class ModelController:
                 final_text,
             )
 
+        assistant_message_id = ""
         if policy.write_to_history:
             origin_message_id = str(data.get("origin_message_id") or "") or None
-            history_dict = {k: v for k, v in result_dict.items() if not k.startswith("_")}
-            self.event_writer.write_turn(
+            history_dict = {k: v for k, v in result_dict.items()
+                            if not k.startswith("_") or k == "_raw_json"}
+            assistant_message_id = self.event_writer.write_turn(
                 responder_character_id=char_id,
                 sender=sender,
                 participants=participants,
@@ -1099,9 +1364,40 @@ class ModelController:
                 event_type=event_type,
                 task_uid=task_uid,
                 structured_data=history_dict,
+                thinking=think_text or None,
             )
 
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
+
+        if hasattr(char, "flush_variables"):
+            char.flush_variables()
+
+        # Build inline_graph_json from structured entities/relations (if graph extraction enabled)
+        inline_graph_json: Optional[str] = None
+        if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
+                and (structured.entities or structured.relations)):
+            try:
+                import json as _json
+                graph_payload = {
+                    "entities": list(structured.entities) if structured.entities else [],
+                    "relations": list(structured.relations) if structured.relations else [],
+                }
+                inline_graph_json = _json.dumps(graph_payload, ensure_ascii=False)
+            except Exception as _ge:
+                logger.warning(f"[ModelController] Failed to build graph JSON from structured entities/relations: {_ge}")
+
+        # Notify graph extraction (and any future subscribers).
+        created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
+        self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
+            "character_id": char_id,
+            "character_ref": char,
+            "user_input": user_input,
+            "assistant_output": final_text,
+            "created_memory_ids": created_memory_ids,
+            "inline_graph_json": inline_graph_json,
+            "memories_already_tagged": True,
+            "from_structured_output": True,
+        })
 
         voice_profile = None
         if hasattr(char, "to_voice_profile"):
@@ -1118,6 +1414,7 @@ class ModelController:
             "targets": targets,
             "think": think_text or None,
             "structured": result_dict,
+            "message_id": assistant_message_id,
         }
 
     # ---------------------------------------------------------------------
@@ -1127,6 +1424,7 @@ class ModelController:
     def _handle_tool_call(
         self,
         structured,
+        visible_raw: str,
         think_text: str,
         char,
         char_id: str,
@@ -1144,6 +1442,7 @@ class ModelController:
         preset_id: int | None,
         enabled_tools: list,
         tool_depth: int,
+        structured_model_cls=None,
     ) -> dict | None:
         """
         Handle a tool_call from a structured response:
@@ -1160,6 +1459,7 @@ class ModelController:
         # Build first response result dict
         result_dict = structured_response_to_result_dict(structured)
         result_dict.pop("reasoning", None)
+        result_dict["_raw_json"] = visible_raw
         first_text = result_dict.get("response", "")
 
         targets: list[str] = []
@@ -1178,9 +1478,10 @@ class ModelController:
                 voice_profile = None
 
         # Write first turn to history
+        first_assistant_message_id = ""
         if policy.write_to_history:
             origin_message_id = str(data.get("origin_message_id") or "") or None
-            self.event_writer.write_turn(
+            first_assistant_message_id = self.event_writer.write_turn(
                 responder_character_id=char_id,
                 sender=sender,
                 participants=participants,
@@ -1193,6 +1494,7 @@ class ModelController:
                 event_type=event_type,
                 task_uid=task_uid,
                 structured_data=result_dict,
+                thinking=think_text or None,
             )
 
         # Emit first response to UI (shows "I'll check that" message)
@@ -1208,6 +1510,7 @@ class ModelController:
             "target": target,
             "targets": targets,
             "structured_data": result_dict,
+            "message_id": first_assistant_message_id,
         }, sync=True)
 
         # Emit tool executing indicator for UI
@@ -1218,6 +1521,7 @@ class ModelController:
 
         # Execute the tool
         logger.info(f"[ModelController] Executing tool '{tool_name}' with args: {tool_args}")
+        self.model.tool_manager.set_char_context(char_id)
         try:
             tool_result = self.model.tool_manager.run(tool_name, tool_args)
         except Exception as e:
@@ -1238,21 +1542,20 @@ class ModelController:
             "speaker_name": "",
         }, sync=True)
 
-        # Detect dialect to choose the right role for the tool result message.
-        # Gemini does not support "system" role mid-conversation — use "user" with [SYSTEM INFO] tag.
-        # OpenAI-compatible providers handle "system" fine anywhere.
-        try:
-            preset_s = self.preset_resolver.resolve(preset_id)
-            _dialect = (preset_s.dialect_id or "").lower()
-        except Exception:
-            _dialect = ""
-        _gemini_mode = "gemini" in _dialect
-        tool_result_role = "user" if _gemini_mode else "system"
-        tool_result_content = (
-            f"[SYSTEM INFO] [Tool result: {tool_name}]\n{tool_result}"
-            if _gemini_mode
-            else f"[Tool result: {tool_name}]\n{tool_result}"
+        # Build tool result message(s) for the second LLM call.
+        # TOOL_RESULT_MSG_MODE controls which role(s) are used to inject the result:
+        #   "system" — only a system message (may be ignored by some providers mid-conversation)
+        #   "user"   — only a user message with [SYSTEM INFO] tag
+        #   "both"   — both (default, most reliable across providers)
+        _result_mode = str(self.settings.get("TOOL_RESULT_MSG_MODE", "both"))
+        _instruction = (
+            "\n\nThe tool has finished. "
+            "Use the results above to give the player a complete answer. "
+            "Do NOT call any tools again unless the question explicitly requires it. "
+            "Respond in JSON format."
         )
+        _system_content = f"[Tool result: {tool_name}]\n{tool_result}{_instruction}"
+        _user_content   = f"[SYSTEM INFO] [Tool result: {tool_name}]\n{tool_result}{_instruction}"
 
         # Build messages for second call: append first response JSON + tool result
         combined_messages_v2 = list(combined_messages)
@@ -1261,7 +1564,10 @@ class ModelController:
         except Exception:
             first_response_json = first_text
         combined_messages_v2.append({"role": "assistant", "content": first_response_json})
-        combined_messages_v2.append({"role": tool_result_role, "content": tool_result_content})
+        if _result_mode in ("system", "both"):
+            combined_messages_v2.append({"role": "system", "content": _system_content})
+        if _result_mode in ("user", "both"):
+            combined_messages_v2.append({"role": "user", "content": _user_content})
 
         # Second LLM call
         self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
@@ -1269,7 +1575,12 @@ class ModelController:
             "character_name": char_name or char_id or "Мита",
         })
 
-        raw_text_2 = self.model.generate(combined_messages_v2, preset_id=preset_id)
+        raw_text_2 = self.model.generate(
+            combined_messages_v2,
+            preset_id=preset_id,
+            capabilities_override=(data.get("capabilities") or None),
+            structured_model=structured_model_cls,
+        )
 
         if not raw_text_2:
             logger.error(f"[ModelController] Second LLM call after tool '{tool_name}' returned empty.")
@@ -1315,6 +1626,7 @@ class ModelController:
             tools_on=True,
             enabled_tools=enabled_tools,
             tool_depth=tool_depth + 1,
+            structured_model_cls=structured_model_cls,
         )
 
     # ---------------------------------------------------------------------
@@ -1350,7 +1662,28 @@ class ModelController:
     # ---------------------------------------------------------------------
     # Helpers
     # ---------------------------------------------------------------------
+    def _fix_projected_ui_message(self, raw: dict, ui_msg: dict) -> dict:
+        if not isinstance(raw, dict) or not isinstance(ui_msg, dict):
+            return ui_msg
 
+        raw_role = str(raw.get("role") or "").strip().lower()
+        speaker = str(raw.get("speaker") or "").strip()
+        sender = str(raw.get("sender") or "").strip()
+
+        def is_player(x: str) -> bool:
+            return str(x or "").strip().lower() == "player"
+
+        if raw_role == "user" or is_player(speaker) or is_player(sender) or sender == "Player" or speaker == "Player":
+            out = dict(ui_msg)
+            out["role"] = "user"
+            out["speaker"] = "Player"
+            out["sender"] = "Player"
+            c = out.get("content")
+            if isinstance(c, list):
+                out["content"] = [it for it in c if not (isinstance(it, dict) and it.get("type") == "meta")]
+            return out
+
+        return ui_msg
 
     def _has_visible_user_text(self, content: Any) -> bool:
         if isinstance(content, str):

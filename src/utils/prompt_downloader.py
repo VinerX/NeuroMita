@@ -10,8 +10,8 @@ class PromptDownloader:
     def __init__(self):
         self.repo_url = "https://github.com/VinerX/NeuroMita" #https://github.com/vlad2830/NeuroMita
         self.branch = "main"
-        self.base_path = "Prompts"
-        self.temp_download_path = "Prompts_temp"
+        self.base_path = os.environ.get("NEUROMITA_PROMPTS_DIR", os.path.abspath("Prompts"))
+        self.temp_download_path = self.base_path + "_temp"
 
     def download_and_replace_prompts(self):
         """Downloads prompts from GitHub and replaces the existing ones"""

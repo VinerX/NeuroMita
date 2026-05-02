@@ -1,0 +1,908 @@
+# RAG Pipeline Improvement Log
+
+**Purpose:** Context document for AI assistants in future sessions. Summarizes the full history of RAG pipeline development, bugs found, fixes applied, and current state.
+
+**Last updated:** 2026-03-26 (Session 4)
+
+**Branch:** `RAG-embedding-providers`
+
+---
+
+## 1. System Overview
+
+### Pipeline Flow
+
+```
+Query
+  └─► Embed (Qwen3-Embedding-0.6B)
+        └─► Retrieval (parallel)
+              ├─► Vector search (cosine similarity on embeddings)
+              ├─► FTS search (SQLite full-text search)
+              └─► Keyword search
+        └─► Combiner (two_stage mode)
+              └─► LinearReranker (weighted score: sim + time + priority + entity + keywords + lexical)
+                    └─► CrossEncoder (Qwen3-Reranker-0.6B, alpha-mix CE score + normalized linear score)
+                          └─► Threshold filter (RAG_SIM_THRESHOLD)
+                                └─► Top-K results → LLM context
+```
+
+### Tech Stack
+
+- **Storage:** SQLite with WAL mode (Write-Ahead Logging for concurrent reads)
+- **Language:** Python
+- **ML:** PyTorch, HuggingFace transformers
+- **Numerics:** NumPy (matmul-based in-memory index), optional FAISS for ANN search
+- **Hyperparameter optimization:** Optuna
+
+### Python Environments
+
+There are two distinct Python environments. Using the wrong one causes silent failures.
+
+| Environment | Path | Has torch/transformers | Use for |
+|---|---|---|---|
+| **Venv** (ML) | `C:/Games/NeuroMita/Venv/Scripts/python.exe` | Yes (CUDA, torch 2.7.1+cu128, transformers 5.3.0) | All RAG tests, embedding, cross-encoder, Optuna |
+| **libs/python** (game) | `C:/Games/NeuroMita/NeuroMita/libs/python/python.exe` | No | Running the game only |
+
+**Critical rule:** Never use `libs/python` for RAG tests. It has no torch — embeddings silently fail, falling back to FTS-only.
+
+### Database Paths
+
+- **Live game DB:** `Histories/world.db` relative to game root (`C:/Games/NeuroMita/NeuroMita/`)
+- **Main test DB:** `src/utils/Testing/rag_tester/Histories/test_qwen3_gpu.db`
+- Test DB contains: 33 memories, ~25k history messages for character "Crazy", ~49 graph entities, ~38 relations
+
+### RAG Tester Working Directory
+
+```
+C:/Games/NeuroMita/NeuroMita/src/utils/Testing/rag_tester/
+```
+
+---
+
+## 2. Problems Identified & Fixes Applied
+
+### 2.1 Silent Embedding Failure (CRITICAL BUG)
+
+**Problem:** When `libs/python` (no torch) was used to run RAG tests, embeddings silently failed. The pipeline fell back to FTS-only retrieval. All embedding model tests returned identical results:
+
+```
+P=0.238  R=0.467  MRR=0.372
+```
+
+This made every model look the same — the embedding model was completely ignored.
+
+**Root cause:** No error was raised when `query_vec` was `None`. The vector retriever silently returned nothing, and FTS filled all slots.
+
+**Fixes applied:**
+- `VectorRetriever` now logs a `WARNING` when `query_vec is None`
+- `BatchResult` tracks `vector_doc_count` (number of docs that have stored embeddings)
+- CLI performs a pre-flight check: exits with a fatal error if 0 embeddings are stored in the DB
+- Documentation updated: always use `C:/Games/NeuroMita/Venv/Scripts/python.exe` for RAG tests
+
+**Detection:** If you see all models scoring identically, check which Python is being used and whether `vector_doc_count > 0`.
+
+---
+
+### 2.2 Score Normalization Before CE Alpha-Mixing
+
+**Problem:** The cross-encoder final score was computed as:
+
+```python
+score = alpha * CE_score + (1 - alpha) * linear_score
+```
+
+But `CE_score` is in roughly [0, 1] while `linear_score` can be any positive float (sum of weighted components). The mixing was meaningless — the linear term dominated or was negligible depending on scale.
+
+**Fix:** MinMax-normalize linear scores to [0, 1] before mixing, in `cross_encoder.py`:
+
+```python
+min_s, max_s = min(linear_scores), max(linear_scores)
+if max_s > min_s:
+    linear_scores = [(s - min_s) / (max_s - min_s) for s in linear_scores]
+```
+
+**File:** `src/managers/rag/pipeline/cross_encoder.py`
+
+---
+
+### 2.3 Actor Pre-Filter
+
+**New feature:** `RAG_PREFILTER_ACTORS` (bool, default `False`) in `pipeline/config.py`.
+
+When enabled, a SQL pre-pass fetches documents where the speaker or target matches the current dialogue participants, using `threshold=0`. This biases retrieval toward messages involving the current participants before general vector/FTS search runs.
+
+**File:** `src/managers/rag/pipeline/config.py`
+
+---
+
+### 2.4 Sentence-Level Retrieval
+
+**New feature:** Two config keys added:
+- `RAG_SENTENCE_LEVEL` (bool)
+- `RAG_SENTENCE_MIN_LEN` (int, default 20)
+
+**How it works:**
+- New DB table `sentence_embeddings` with columns: `source_table`, `source_id`, `sentence_idx`, `embedding`
+- Messages are split on punctuation + newlines; each sentence is embedded individually
+- At query time, max-similarity sentence per message is retrieved; the whole message is returned
+
+**Result:** Sentence-level retrieval **without** cross-encoder performed **worse** than whole-document retrieval. The finer granularity helps only when CE re-ranks candidates — the CE can identify which sentence actually matches the query. Without CE, sentence-level adds noise.
+
+**Files:**
+- `src/managers/rag/pipeline/retrievers/vector.py` — `_histories_sentence()`, `_memories_sentence()`
+- `src/managers/database_manager.py` — `sentence_embeddings` table in `_upgrade_schema()`
+- `src/managers/rag/rag_manager.py` — `_split_sentences()`, `_index_sentences()`, `_index_sentences_missing()`
+
+---
+
+### 2.5 Threshold Discovery (CRITICAL INSIGHT)
+
+**Problem:** Optuna v4 was configured with threshold range `(0.05, 0.5)`. It found `threshold=0.355` as optimal.
+
+At `threshold=0.355`, many relevant candidates were being cut **before** the cross-encoder could see them. The CE was never given a chance to rescue low-linear-score but semantically relevant documents.
+
+**Discovery:** Manual test with `threshold=0` and `CE top_k=100`:
+
+```
+Recall: 0.467 → 0.750   (+60% improvement)
+```
+
+This was the single largest metric jump in the entire optimization process.
+
+**Fix:** Optuna v5 changed threshold range to `(0.0, 0.4)`. The threshold's job is now to cut obvious garbage after CE has done its work, not to pre-filter before CE.
+
+**Key insight:** With a strong cross-encoder, the threshold should be near 0. The CE itself is the filter.
+
+**File:** `src/utils/Testing/rag_tester/optuna_sweep.py`
+
+---
+
+### 2.6 CE top_k Not Swept in Optuna
+
+**Problem:** `RAG_CROSS_ENCODER_TOP_K` was fixed at the default value of 30 in all Optuna trials. This meant the optimization never explored how many candidates to pass to the CE.
+
+**Fix:** Added `int_params` support to the Optuna sweep config:
+
+```json
+"int_params": {
+  "RAG_CROSS_ENCODER_TOP_K": [30, 150]
+}
+```
+
+Optuna now treats CE top_k as an integer hyperparameter to optimize.
+
+**File:** `src/utils/Testing/rag_tester/optuna_sweep.py`
+
+---
+
+### 2.7 CE OOM When top_k Too High
+
+**Problem:** The cross-encoder processed all `top_k` pairs in a single batch. With `top_k=200` on a GPU with only ~2.5GB free VRAM (15.93GB total, 13.38GB used by models), this caused Out-of-Memory errors.
+
+**Fix:** Added mini-batch inference in `cross_encoder.py` with a configurable `batch_size`. Pairs are split into chunks and processed sequentially, accumulating scores.
+
+**File:** `src/managers/rag/pipeline/cross_encoder.py`
+
+---
+
+### 2.8 Flat Candidate Scores When K2(time) ≈ 0
+
+**Problem:** With `RAG_WEIGHT_TIME=0.001` (near-zero), the time component contributes almost nothing. All memories with the same priority cluster at approximately:
+
+```
+score ≈ K1 * similarity + K3 * 0.25
+```
+
+The scores are nearly identical for large numbers of candidates. CE top_k=75 out of 400+ candidates means 82% of candidates are never re-ranked. For abstract queries ("what do I hate?"), the relevant docs may not appear in the top 75 by linear score.
+
+**Partial fix:** Increase CE top_k (currently set to 75). A proper fix requires better differentiation in linear scoring — either time matters again, or a different pre-ranking signal is needed.
+
+**Status:** Ongoing. See Section 7 (Known Issues).
+
+---
+
+### 2.9 Graph Entity Quality
+
+**Problem:** Gemma 1 (1B) extracts poor-quality entities:
+- Punctuation in names: `kepochka?`
+- Structural artifacts: `is bored`, `subject`, `predicate`
+- Mixed Russian/English for the same concept: `chess` and `шахматы` as separate entities
+- Abstract non-entities: `topic`, `conversation`
+
+**Fixes applied:**
+
+**Prompt:** Updated to say "Prefer Russian, no punctuation in names, avoid abstract entities."
+
+**Code fixes:**
+- `normalize_name()` in `graph_store.py`: strips punctuation, lowercases before insert
+- New table `graph_entity_aliases`: tracks surface forms (all the ways a name has appeared)
+- New table `graph_entity_embeddings`: stores entity name embeddings for vector deduplication
+
+**Remaining issue:** Cross-lingual deduplication (chess vs шахматы) requires embedding similarity matching at insert time. `find_by_embedding()` method exists but dedup logic is not fully automatic.
+
+**Recommended upgrade:** Gemma3-4B or Qwen3.5-0.6B for entity extraction, instead of Gemma 1 (1B).
+
+**Files:**
+- `src/managers/rag/graph/graph_store.py` — `normalize_name()`, `add_alias()`, `find_by_alias()`, `store_entity_embedding()`, `get_entities_without_embeddings()`, `find_by_embedding()`
+- `src/managers/rag/rag_manager.py` — `index_graph_entity_embeddings()`
+
+---
+
+### 2.10 Vector Memory Deduplication (Session 4)
+
+**New feature:** `src/managers/memory_dedup.py` — `MemoryDeduplicator` class.
+
+**Algorithm:**
+1. Load all active memories with embeddings (JOIN `memories` + `embeddings`, fallback to legacy BLOB column)
+2. Build normalized matrix, compute cosine similarity `O(N²)` vectorized via numpy
+3. For each pair above threshold: select canonical (higher priority > newer > longer content)
+4. Resolve chains A→B and B→C → A→C to avoid double-merging
+5. `apply()` calls `merge_memories()` for each pair
+
+**Threshold with age decay:**
+- < 7 days: `base + 0.03` (stricter — fresh duplicates are obvious)
+- 7–30 days: `base` (default `MEMORY_DEDUP_THRESHOLD=0.94`)
+- > 30 days: `base - 0.04` (looser — old memories may be legitimately related)
+
+**UI:** Settings → Knowledge Graph section → "Find duplicates (preview)" + "Merge duplicates" buttons.
+
+**Settings:** `MEMORY_DEDUP_THRESHOLD` (float, default 0.94), `MEMORY_DEDUP_AGE_DECAY` (bool, default True).
+
+---
+
+### 2.11 LLM Merge Command `<~memory>` (Session 4)
+
+**New feature:** LLM can now merge two memories in a single command.
+
+**Syntax:** `<~memory>SOURCE_ID→TARGET_ID:new_content</~memory>` (content is optional; if omitted, target's content is kept)
+
+**What it does:**
+- Updates target content (if new_content provided)
+- Merges entity tags from source into target (union of entity sets)
+- Re-embeds target in background
+- Soft-deletes source (`is_deleted=1`)
+
+**Files:**
+- `src/managers/memory_manager.py` — `merge_memories(source_id, target_id, new_content=None)`
+- `src/characters/character.py` — regex extended to `[+#~-]`, new `elif operation == "~":` branch
+
+**Prompt example shown to LLM:**
+```
+<~memory>3→7:merged content</~memory>  (merge #3 into #7, content optional)
+```
+
+---
+
+### 2.12 TTL / Soft-Forget for Low-Priority Memories (Session 4)
+
+**New feature:** `apply_ttl_cleanup()` in `MemoryManager` — marks old low/normal-priority memories as `is_forgotten=1`.
+
+**Logic:**
+- `Low` priority: forgotten after `MEMORY_TTL_LOW_DAYS` days (default 30)
+- `Normal` priority: forgotten after `MEMORY_TTL_NORMAL_DAYS` days (default 0 = disabled)
+- `High` / `Critical`: never touched by TTL
+
+**Important:** Uses `is_forgotten=1`, not `is_deleted=1`. Forgotten memories are excluded from the prompt but still findable via RAG if the query matches.
+
+**Triggers:**
+- Automatic: called at the end of `_forget_over_limit_memories()` on every `add_memory()` (if `MEMORY_TTL_ENABLED=True`)
+- Manual: "Apply TTL cleanup now" button in Settings → Memory Limits section
+
+**Settings:** `MEMORY_TTL_ENABLED` (bool, default False — opt-in), `MEMORY_TTL_LOW_DAYS` (int, default 30), `MEMORY_TTL_NORMAL_DAYS` (int, default 0).
+
+---
+
+## 3. Architecture Changes (Key Files)
+
+### `src/managers/rag/pipeline/cross_encoder.py`
+- MinMax normalization of linear scores to [0, 1] before alpha-mixing with CE scores
+- Mini-batch inference loop to prevent VRAM OOM on large `top_k`
+
+### `src/managers/rag/pipeline/config.py`
+- Added config keys:
+  - `RAG_PREFILTER_ACTORS` → `prefilter_actors` (bool, default False)
+  - `RAG_SENTENCE_LEVEL` → `sentence_level` (bool)
+  - `RAG_SENTENCE_MIN_LEN` → `sentence_min_len` (int, default 20)
+  - `RAG_GRAPH_VECTOR_SEARCH` → `graph_vector_search` (bool)
+
+### `src/managers/rag/pipeline/retrievers/vector.py`
+- Logs WARNING when `query_vec is None` (embedding failure detection)
+- `_histories_actor_boost()`: SQL filtered by speaker/target for actor pre-filter
+- `_histories_sentence()`, `_memories_sentence()`: sentence-level retrieval via JOIN on `sentence_embeddings`
+
+### `src/managers/rag/pipeline/retrievers/graph.py`
+- Vector search path: when `cfg.graph_vector_search=True` and `qs.query_vec is not None`, calls `gs.find_by_embedding(query_vec, threshold=0.55)`
+- Additive with keyword match — both always run, results merged
+
+### `src/managers/rag/graph/graph_store.py`
+- `normalize_name()`: strips punctuation, lowercases — applied on every entity insert
+- New tables: `graph_entity_aliases`, `graph_entity_embeddings`
+- New methods: `add_alias()`, `find_by_alias()`, `store_entity_embedding()`, `get_entities_without_embeddings()`, `find_by_embedding()`
+
+### `src/managers/rag/rag_manager.py`
+- `_split_sentences()`: splits message text on punctuation + newlines
+- `_index_sentences()`, `_index_sentences_missing()`: embeds sentences, stores in `sentence_embeddings`
+- `index_graph_entity_embeddings()`: embeds entity names, stores in `graph_entity_embeddings`
+- `index_all_missing()`: calls sentence indexing when `RAG_SENTENCE_LEVEL=True`; calls graph entity embedding when `RAG_GRAPH_VECTOR_SEARCH=True`
+
+### `src/managers/database_manager.py`
+- Added `sentence_embeddings` table in `_upgrade_schema()` (schema migration, safe to run on existing DBs)
+
+### `src/utils/Testing/rag_tester/rag_tester_core.py`
+- `BatchResult` extended with: `vector_doc_count`, `embed_model_name`, `warnings`
+- Pre-flight check: exits with fatal error if `vector_doc_count == 0`
+
+### `src/utils/Testing/rag_tester/optuna_sweep.py`
+- Fixed threshold range: `(0.05, 0.5)` → `(0.0, 0.4)`
+- Added `int_params` support for sweeping integer hyperparameters
+- `RAG_CROSS_ENCODER_TOP_K` now swept in `[30, 150]`
+
+### `src/utils/Testing/rag_tester/rag_tester_cli.py`
+- Pre-flight embedding check before running test suite
+- Auto-indexes graph entity embeddings when `RAG_GRAPH_VECTOR_SEARCH=true`
+
+### `src/managers/memory_manager.py` *(session 4)*
+- `merge_memories(source_id, target_id, new_content=None)` — merge entity sets, re-embed target, soft-delete source
+- `apply_ttl_cleanup()` — mark old low/normal memories as `is_forgotten=1` based on TTL settings
+- `_forget_over_limit_memories()` — now calls `apply_ttl_cleanup()` at the end if TTL enabled
+- `get_memories_formatted()` — added `<~memory>` example in prompt
+
+### `src/managers/memory_dedup.py` *(session 4, new file)*
+- `MemoryDeduplicator` — batch cosine similarity deduplication
+- `analyze()` → `DedupPlan` — dry-run, returns list of (source, target, similarity) pairs
+- `apply(plan, mm)` — executes merges via `mm.merge_memories()`
+- Fallback: tries `embeddings` table JOIN first, falls back to BLOB column on `memories`
+
+### `src/characters/character.py` *(session 4)*
+- `extract_and_process_memory_data()` regex: `[+#-]` → `[+#~-]`
+- New branch `elif operation == "~":` — parses `SOURCE→TARGET:content`, calls `merge_memories()`
+
+### `src/ui/settings/rag_memory_settings.py` *(session 4)*
+- `_build_memory_limits_config()` — added TTL settings section: `MEMORY_TTL_ENABLED`, `MEMORY_TTL_LOW_DAYS`, `MEMORY_TTL_NORMAL_DAYS`, "Apply TTL cleanup now" button
+- `_build_graph_config()` — added dedup settings: `MEMORY_DEDUP_THRESHOLD`, `MEMORY_DEDUP_AGE_DECAY`, "Find duplicates (preview)" + "Merge duplicates" buttons
+- `_run_ttl_cleanup()` — UI handler for manual TTL cleanup
+- `_run_memory_dedup(dry_run)` — UI handler for dedup preview and apply
+
+---
+
+## 4. Metrics Reference
+
+| Metric | Description | Notes |
+|---|---|---|
+| **Precision** | Fraction of returned docs that are relevant | Penalizes noise/irrelevant results |
+| **Recall** | Fraction of relevant docs that were found | **Primary metric** — better to return extra than miss relevant |
+| **MRR** | Mean Reciprocal Rank (1/rank of first relevant doc) | Critical when LLM only uses top-1 or top-3 results |
+| **nDCG** | Normalized Discounted Cumulative Gain | Considers both rank position and multiple relevant docs |
+
+**Why recall is primary:** The LLM can ignore irrelevant context, but it cannot use information that was never retrieved. Missing relevant memories causes the LLM to give worse answers.
+
+### Metric Progression
+
+```
+Baseline (FTS only, wrong Python):                P=0.238  R=0.467  MRR=0.372
+After fixing Python environment:                  embeddings actually work
+After threshold=0 + CE top_k=100:                R=0.750   (+60% on recall)
+Qwen3x2 + graph + vector search (100 cases):     R=0.757  MRR=0.556  nDCG=0.564
+```
+
+---
+
+## 5. Test Infrastructure
+
+### Test Databases
+
+| DB | Path | Contents |
+|---|---|---|
+| Main test DB | `src/utils/Testing/rag_tester/Histories/test_qwen3_gpu.db` | Qwen3 embeddings, 33 memories, ~25k messages, character "Crazy" |
+| Live game DB | `Histories/world.db` (relative to game root) | Production data |
+
+Graph tables in test DB: ~49 entities, ~38 relations.
+
+### Test Suite Files
+
+| File | Description |
+|---|---|
+| `fixtures/crazy_suite_v4.json` | 100 test cases: positive retrieval, negative (absent topics), graph queries |
+| `fixtures/crazy_suite_v4_split.json` | Split into train/val sets (59/19) for Optuna |
+| `fixtures/crazy_scenario_full.json` | Scenario definition (character, dialogue state, available context) |
+| `fixtures/crazy_optimize_v5.json` | Optuna config: 200 trials, metric=mean_recall, threshold range (0.0, 0.4) |
+
+### Message ID Format
+
+Test cases reference messages by MD5-based IDs:
+- User messages: `in:md5hash`
+- Assistant messages: `out:md5hash`
+
+### Optuna Progress
+
+- Progress file: `results/optuna_progress.json`
+- **Warning:** With only 78 test cases (59 train / 19 val), overfitting is easy. Observed gap: train MRR=0.563 vs val MRR=0.421 (gap=0.142). Need 200+ cases for reliable optimization.
+
+---
+
+## 6. Current Best Settings (Applied to Game)
+
+```json
+{
+  "RAG_EMBED_MODEL": "Qwen3-Embedding-0.6B (600M, 2025)",
+  "RAG_CROSS_ENCODER_MODEL": "Qwen3-Reranker-0.6B (600M, 2025)",
+  "RAG_CROSS_ENCODER_ENABLED": true,
+  "RAG_CROSS_ENCODER_TOP_K": 75,
+  "RAG_CROSS_ENCODER_ALPHA": 0.68,
+  "RAG_SIM_THRESHOLD": 0.13,
+  "RAG_WEIGHT_SIMILARITY": 1.27,
+  "RAG_WEIGHT_TIME": 0.001,
+  "RAG_WEIGHT_PRIORITY": 0.92,
+  "RAG_WEIGHT_ENTITY": 0.52,
+  "RAG_WEIGHT_KEYWORDS": 1.01,
+  "RAG_WEIGHT_LEXICAL": 0.3,
+  "RAG_COMBINE_MODE": "two_stage",
+  "RAG_SEARCH_GRAPH": true
+}
+```
+
+### Notes on Key Settings
+
+- **`RAG_WEIGHT_TIME=0.001`** (near-zero): Time weight was penalizing old but highly relevant memories. Optuna found 0.54 on recent data, but that was overfitting to recency — old important memories were being buried.
+- **`RAG_SIM_THRESHOLD=0.13`** (low): Keeps more candidates alive for the CE to re-rank. The CE is the real filter. Pre-CE threshold should be a loose gate, not a strict one.
+- **`RAG_CROSS_ENCODER_TOP_K=75`**: May be too low. With 400+ candidates, CE only sees 18%. Consider 150-200. Limited by VRAM.
+- **`RAG_CROSS_ENCODER_ALPHA=0.68`**: 68% CE score + 32% normalized linear score. Pure CE (alpha=1.0) not tested in A/B.
+
+---
+
+## 7. Known Issues & Limitations
+
+### 7.1 Flat Candidate Pool Problem
+
+**Symptom:** For abstract queries ("what do I hate?", "what am I afraid of?"), recall is lower than for specific queries.
+
+**Cause:** With `K2(time)=0.001` and uniform priority, all linear scores cluster tightly. CE top_k=75 out of 400+ means 82% of candidates are never re-ranked. Relevant docs for abstract queries tend to have lower similarity scores (the query is indirect) and fall outside the CE window.
+
+**Impact:** High — affects all abstract/indirect queries.
+
+**Proposed fixes:**
+1. Dynamic CE top_k: `min(150, n_candidates * 0.4)`
+2. Query rewriting to make abstract queries more concrete before embedding
+3. Predicate-based graph search for relation-type queries
+
+### 7.2 Graph Entity Quality
+
+**Symptom:** Entities like `is bored`, `kepochka?`, `subject`, `predicate` appear in the graph. Chess appears as both `chess` and `шахматы`.
+
+**Cause:** Gemma 1 (1B) is too small for reliable structured extraction. The model produces structural artifacts (field names instead of values) and code-switches between languages.
+
+**Current mitigations:** `normalize_name()` strips punctuation; `graph_entity_aliases` tracks all surface forms; `graph_entity_embeddings` enables vector-based dedup.
+
+**Recommended fix:** Upgrade extraction model to Gemma3-4B or Qwen3.5-0.6B.
+
+### 7.3 Duplicate Memories
+
+**Status: ADDRESSED** — post-hoc deduplication implemented (see 2.10). Write-time dedup still not done.
+
+**Symptom:** The same memory appears 5+ times with slight wording variation (e.g., "The basement holds secrets" extracted repeatedly).
+
+**Cause:** No write-time deduplication. Each extraction pass re-inserts without checking for near-duplicates.
+
+**Current fix:** `MemoryDeduplicator.analyze()` + `apply()` — batch cosine similarity over all existing memories. Run manually via UI or script to clean up accumulated duplicates.
+
+**Remaining:** Write-time check at `add_memory()` is not yet implemented. Dedup is reactive, not preventive.
+
+**Impact:** Wastes CE slots, artificially boosts some topics in retrieval.
+
+### 7.4 Optuna Overfitting
+
+**Symptom:** Train MRR=0.563, val MRR=0.421 (gap=0.142 with 78 total cases).
+
+**Cause:** 78 test cases is too few for 7+ continuous hyperparameters. Optuna finds settings that are specialized to the training cases.
+
+**Fix:** Expand test suite to 200+ cases before running further optimization.
+
+### 7.5 History Search Disabled
+
+**Status:** History search appears to be disabled in memory-only mode. Needs investigation of when/why it's turned off.
+
+---
+
+## 8. FAISS Integration
+
+- **Status:** Implemented as optional backend in the vectorized in-memory index
+- **Default:** NumPy matmul (`O(N)`) — fast enough for current scale (~25k messages)
+- **FAISS:** Would give approximate nearest-neighbor (`O(log N)`), needed for production scale (>10k messages)
+- **Config key:** `RAG_USE_FAISS` (implemented but not yet exposed in game UI)
+- **When to enable:** When history grows beyond 5-10k messages and query latency becomes noticeable
+
+---
+
+## 9. Future Roadmap (Priority Order)
+
+### High Priority
+
+1. **Duplicate memory deduplication** ✅ **(partially done — session 4)**
+   - Post-hoc batch dedup: `MemoryDeduplicator` + UI buttons (preview / apply)
+   - Age-based threshold decay: fresh <7d → 0.97, 7–30d → 0.94, old >30d → 0.90
+   - LLM merge command `<~memory>SOURCE→TARGET:content</~memory>` for manual merges
+   - **Remaining:** write-time check at `add_memory()` not yet implemented
+
+2. **Dynamic CE top_k**
+   - Replace fixed `top_k=75` with `min(150, n_candidates * 0.4)`
+   - Adapts to actual candidate pool size
+   - Ensures CE sees at least 40% of candidates
+
+3. **More test cases**
+   - Need 200+ total cases (currently 78) for Optuna to produce reliable results
+   - Add cases for: abstract queries, graph-only information, multi-turn references, negative examples
+
+4. **Graph entity extraction upgrade**
+   - Replace Gemma 1 (1B) with Gemma3-4B or Qwen3.5-0.6B
+   - Better language consistency, fewer structural artifacts, more accurate entity boundaries
+
+### Medium Priority
+
+5. **Predicate search in graph**
+   - For queries like "what do I hate?" → search relations by predicate type (`dislikes`, `hates`, `ненавидит`)
+   - Currently graph search only matches entity names, not relation types
+
+6. **Graph coreference resolution**
+   - When graph has `player --name_is--> Дима`, automatically add "Дима" as an alias for the "player" entity
+   - Prevents same person being split into multiple disconnected nodes
+
+7. **Sentence-level + CE A/B test**
+   - Sentence retrieval was tested without CE and performed worse
+   - Need explicit A/B test with CE enabled to determine if sentence-level + CE beats whole-doc + CE
+
+8. **Query rewriting**
+   - Small LLM rewrites abstract queries before embedding
+   - Example: "что я ненавижу?" → "игрок ненавидит / отвращение игрока / игрок отказывается"
+   - Improves recall for indirect/abstract queries
+
+### Low Priority
+
+9. **FAISS GPU index** for production scale (>10k messages)
+10. **Score normalization A/B test:** compare `alpha=1.0` (pure CE) vs `alpha=0.68` (normalized mixing)
+11. **Investigate history search** — determine why it's disabled in current mode and whether enabling it helps
+
+---
+
+## 10. Run Commands Reference
+
+### Standard Test Run
+
+```bash
+cd src/utils/Testing/rag_tester
+
+"C:/Games/NeuroMita/Venv/Scripts/python.exe" rag_tester_cli.py run \
+  --db Histories/test_qwen3_gpu.db \
+  --scenario fixtures/crazy_scenario_full.json \
+  --suite fixtures/crazy_suite_v4.json \
+  --limit 10 \
+  --threshold 0.13 \
+  --overrides '{"RAG_EMBED_MODEL":"Qwen3-Embedding-0.6B (600M, 2025)","RAG_CROSS_ENCODER_MODEL":"Qwen3-Reranker-0.6B (600M, 2025)","RAG_CROSS_ENCODER_ENABLED":true,"RAG_CROSS_ENCODER_TOP_K":75}' \
+  --format text \
+  --output results/result_name.txt
+```
+
+### Optuna Optimization
+
+```bash
+"C:/Games/NeuroMita/Venv/Scripts/python.exe" rag_tester_cli.py optimize \
+  --scenario fixtures/crazy_scenario_full.json \
+  --suite fixtures/crazy_suite_v4_split.json \
+  --db Histories/test_qwen3_gpu.db \
+  --optimize-config fixtures/crazy_optimize_v5.json \
+  --overrides '{"RAG_EMBED_MODEL":"Qwen3-Embedding-0.6B (600M, 2025)","RAG_CROSS_ENCODER_MODEL":"Qwen3-Reranker-0.6B (600M, 2025)","RAG_CROSS_ENCODER_ENABLED":true}' \
+  --metric mean_recall \
+  --output results/optuna_result.txt
+```
+
+### Check Optuna Progress
+
+```bash
+cat src/utils/Testing/rag_tester/results/optuna_progress.json
+```
+
+### Quick Diagnostic (Check Embedding Is Working)
+
+```bash
+cd src/utils/Testing/rag_tester
+
+# Should show vector_doc_count > 0; if 0, wrong Python is being used
+"C:/Games/NeuroMita/Venv/Scripts/python.exe" rag_tester_cli.py run \
+  --db Histories/test_qwen3_gpu.db \
+  --scenario fixtures/crazy_scenario_full.json \
+  --suite fixtures/crazy_suite_v4.json \
+  --limit 1 \
+  --format text
+```
+
+---
+
+## 11. Checklist for Future Sessions
+
+When picking up RAG work, verify:
+
+- [ ] Using `C:/Games/NeuroMita/Venv/Scripts/python.exe` (not `libs/python`)
+- [ ] Test DB is `test_qwen3_gpu.db` (has Qwen3 embeddings)
+- [ ] `vector_doc_count > 0` in first test run output
+- [ ] CE is enabled (`RAG_CROSS_ENCODER_ENABLED: true`)
+- [ ] Threshold is low (`RAG_SIM_THRESHOLD ≤ 0.13`) to let CE see enough candidates
+- [ ] Optuna suite is the split version (`crazy_suite_v4_split.json`) not the full suite
+- [ ] Check `results/optuna_progress.json` before starting a new Optuna run (may have prior progress to resume)
+
+---
+
+## 12. Session 2 Findings (2026-03-25)
+
+### 12.1 Test Suite Expansion: 78 → 100 Cases
+
+The previous test suite (`crazy_suite_v4.json`) had 9 hallucinated test cases (Q84–Q89, Q93, Q94, Q100) generated by the agent with fake MD5 hashes that did not exist in `crazy_scenario_full.json` (which has only 58 messages). These were replaced with real scenario IDs. The suite was also expanded to exactly 100 total cases.
+
+The split was regenerated: `crazy_suite_v4_split.json` → 74 train / 26 val (val_ratio=0.25, seed=42). The prior split was stale (78 cases, 59/19 split).
+
+### 12.2 New Baseline: Qwen3x2 at 100 Cases
+
+| Config | R@K | MRR | nDCG | Latency |
+|---|---|---|---|---|
+| Qwen3-Embed + Qwen3-Reranker, 100 cases, adaptive top_k | **0.757** | **0.556** | **0.564** | **1064 ms/query** |
+
+New `mean_elapsed_ms` metric added to `BatchResult` and test output — tracks average per-query RAG latency (ms) across the batch. Useful for latency regression testing.
+
+### 12.3 Latency Investigation
+
+The 1 second per-query latency is dominated by the **Qwen3-Reranker-0.6B (CausalLM)** cross-encoder: ~70–80% of total time. Three optimizations were investigated:
+
+#### CE Early Exit (TESTED — NOT VIABLE)
+
+**Idea:** Stop scoring mini-batches once best CE score exceeds a threshold. Unscored candidates keep their linear score.
+
+**Results:**
+
+| early_exit_score | R@K | MRR | Latency | vs baseline |
+|---|---|---|---|---|
+| 1.1 (disabled) | 0.757 | 0.556 | 1064 ms | baseline |
+| 0.99 | 0.674 | 0.536 | 805 ms | -11% recall, -24% latency |
+| 0.95 | 0.637 | 0.507 | 704 ms | -12% recall, -34% latency |
+
+**Conclusion: Early exit is not viable.** The CE's value is precisely in rescuing relevant documents from the *tail* of the linear ranking. Early exit fires after the first mini-batch (~16 pairs), leaving ~46 of 62 candidates unscored. At threshold 0.99 or lower the recall loss is unacceptable. The infrastructure is in place (config key `RAG_CE_EARLY_EXIT_SCORE`, default=1.1 = disabled) but should not be used with the current model and pool sizes.
+
+**Root cause:** With batch_size=16, early exit fires after scoring only the top-16 linear candidates. CE is most valuable for recovering docs ranked 17–62 by linear score.
+
+#### INT8 Quantization (NOT APPLICABLE)
+
+`bitsandbytes` INT8 loading is implemented for SeqCls cross-encoders (GTE/BGE/Jina family). However, **Qwen3-Reranker is a CausalLM**, so it always loads as float16 — `load_in_8bit` cannot be applied. The infrastructure is in place (`RAG_CE_INT8` config key) but has no effect with Qwen3-Reranker.
+
+#### Adaptive top_k (IMPLEMENTED — BUG FIXED)
+
+**Bug in original formula:** `max(10, min(75, pool*0.4))` was *reducing* pool coverage for pool < 187. Example: pool=62 → min(75, 24) = **24 pairs** instead of all 62. This was worse than the fixed top_k=75.
+
+**Fixed formula:** `min(pool, max(top_k, int(pool * ratio)))`:
+- pool=62, top_k=75, ratio=0.4 → max(75, 24)=75 → min(62, 75)=**62** (all candidates scored)
+- pool=300, top_k=75, ratio=0.4 → max(75, 120)=120 → **120** (+60% coverage vs fixed 75)
+
+This ensures small pools always score everything, and large pools get adaptive coverage. Config keys: `RAG_CE_TOP_K_RATIO` (default=0.4), `RAG_CROSS_ENCODER_TOP_K` (default=75).
+
+#### Remaining Latency Options
+
+Not yet implemented, but viable:
+- **Reduce `max_length` 512→256** for Qwen3-Reranker: ~15–20% speedup, slight quality loss possible. Most memories are short, so truncation rarely applies anyway.
+- **torch.compile()** on the reranker model: ~10–20% speedup after warmup, requires PyTorch 2.x.
+- **GGUF/llama.cpp**: replace HuggingFace with quantized GGUF inference. Largest speedup option but requires integration work.
+- **Reduce CE top_k**: e.g., top_k=40 instead of 75. Would cut latency ~45% at some recall cost. Needs A/B test.
+
+### 12.4 Optuna v5 — Partial Results (45/200 trials, killed)
+
+**Config:** `crazy_optimize_v5.json`, 74 train + 26 val cases, CE enabled.
+
+**Status:** Killed at trial 45/200. No val metrics recorded. Best trial observed:
+- `CE_TOP_K=141`, `threshold=0.077`, `KEYWORDS=1.70`
+- Best recall seen: **0.818** (train only, no val)
+
+**Time weight artifact (important!):** Optuna consistently wants `RAG_WEIGHT_TIME ≈ 0.645`. This is an artifact of the test database — all memories have similar timestamps (same recording session), so time weight is a free parameter that doesn't hurt recall. In production with year-old memories, high time weight would bury important old facts.
+
+**Manual override:** Keep `RAG_WEIGHT_TIME = 0.001` regardless of what Optuna suggests.
+
+**Fix needed:** Add test memories with diverse timestamps (e.g., artificially back-dated entries spanning 1 year) to the test DB so Optuna can optimize time weight reliably.
+
+**Progress file:** `src/utils/Testing/rag_tester/results/optuna_qwen3_v5_progress.json`
+(Note: the CLAUDE.md points to `optuna_progress.json` but actual file has model suffix)
+
+### 12.5 Updated Priority Roadmap
+
+#### Immediate (next session)
+
+1. **Run full Optuna v5 (200 trials) without interruption** — needs ~2–3 hours on GPU. Run standalone without other GPU processes. Ignore time weight recommendation.
+2. **Test max_length=256** for Qwen3-Reranker latency reduction — edit `cross_encoder.py` loading to add `max_length=256`, re-run baseline test, compare recall vs 1064ms baseline.
+3. **Add time-diverse memories to test DB** — insert 10–20 artificially old memories (timestamp = 1 year ago) with known content into `test_qwen3_gpu.db` and add test cases for them. This unblocks reliable Optuna for `RAG_WEIGHT_TIME`.
+
+#### Medium Term
+
+4. **Duplicate deduplication** — write-time cosine similarity check (sim > 0.92 → update, not insert)
+5. **Graph entity extraction upgrade** — Gemma 1B → Qwen3.5-0.6B
+
+#### Low Priority
+
+6. Sentence-level + CE A/B test
+7. Query rewriting with small LLM
+8. Predicate search in graph
+9. FAISS GPU index (needed only at >10k messages)
+
+### 12.6 Run Commands (Updated)
+
+```bash
+cd src/utils/Testing/rag_tester
+
+# Baseline test (Qwen3x2, all 100 cases)
+"C:/Games/NeuroMita/Venv/Scripts/python.exe" rag_tester_cli.py run \
+  --db Histories/test_qwen3_gpu.db \
+  --scenario fixtures/crazy_scenario_full.json \
+  --suite fixtures/crazy_suite_v4.json \
+  --threshold 0.13 \
+  --overrides '{"RAG_EMBED_MODEL":"Qwen3-Embedding-0.6B (600M, 2025)","RAG_CROSS_ENCODER_MODEL":"Qwen3-Reranker-0.6B (600M, 2025)","RAG_CROSS_ENCODER_ENABLED":true,"RAG_CROSS_ENCODER_TOP_K":75}' \
+  --format text \
+  --output results/result_qwen3x2_v5.txt
+
+# Optuna v5 (200 trials, use val split)
+"C:/Games/NeuroMita/Venv/Scripts/python.exe" rag_tester_cli.py optimize \
+  --scenario fixtures/crazy_scenario_full.json \
+  --suite fixtures/crazy_suite_v4_split.json \
+  --db Histories/test_qwen3_gpu.db \
+  --optimize-config fixtures/crazy_optimize_v5.json \
+  --overrides '{"RAG_EMBED_MODEL":"Qwen3-Embedding-0.6B (600M, 2025)","RAG_CROSS_ENCODER_MODEL":"Qwen3-Reranker-0.6B (600M, 2025)","RAG_CROSS_ENCODER_ENABLED":true}' \
+  --metric mean_recall \
+  --output results/optuna_qwen3_v5.txt
+
+# Check Optuna progress
+cat src/utils/Testing/rag_tester/results/optuna_qwen3_v5_progress.json
+```
+
+---
+
+## 13. Session 3 Findings (2026-03-26)
+
+### 13.1 Per-Component Latency Timing (IMPLEMENTED)
+
+Added per-component latency breakdown to the test framework.
+
+**Changes:**
+- `rag_manager.py`: `_last_query_timing` dict populated after each `search_relevant()` call with `embed_ms` (QueryBuilder.build) and `rerank_ms` (CE rerank)
+- `rag_tester_core.py`: `SingleResult` gets `embed_ms`/`rerank_ms` fields; `BatchResult` gets `mean_embed_ms`/`mean_rerank_ms`; `summary_text()` shows breakdown
+- New `_search_timed()` method returns `(results, timing_dict)` alongside normal results
+
+**Baseline latency breakdown (Qwen3x2, 100 cases, top_k=75):**
+
+```
+Mean RAG latency: 1027 ms/query
+  embed:           100 ms   (10%)
+  rerank:          883 ms   (86%)
+  other:            44 ms    (4%)  ← retrieval + scoring
+```
+
+Reranker is 86% of total time. Embedding and retrieval are negligible.
+
+---
+
+### 13.2 RAG_DEFAULTS Updated to Optimal Settings
+
+The "Reset RAG defaults" button in the UI was pointing to stale pre-optimization values.
+Updated `RAG_DEFAULTS` in `config.py` to reflect current best settings:
+
+| Key | Old | New |
+|---|---|---|
+| `RAG_EMBED_MODEL` | GTE multilingual base (620M) | Qwen3-Embedding-0.6B (600M, 2025) |
+| `RAG_CROSS_ENCODER_MODEL` | GTE Reranker base multilingual | Qwen3-Reranker-0.6B (600M, 2025) |
+| `RAG_CROSS_ENCODER_TOP_K` | 30 | 75 |
+| `RAG_CROSS_ENCODER_ALPHA` | 1.0 | 0.68 |
+| `RAG_SIM_THRESHOLD` | 0.20 | 0.13 |
+| `RAG_WEIGHT_SIMILARITY` | 1.0 | 1.27 |
+| `RAG_WEIGHT_TIME` | 0.3 | 0.001 |
+| `RAG_WEIGHT_PRIORITY` | 0.5 | 0.92 |
+| `RAG_WEIGHT_ENTITY` | 0.5 | 0.52 |
+| `RAG_WEIGHT_KEYWORDS` | 0.6 | 1.01 |
+| `RAG_COMBINE_MODE` | "union" | "two_stage" |
+| `RAG_SEARCH_GRAPH` | False | True |
+
+---
+
+### 13.3 Jina Reranker v2 A/B Test (TESTED — NOT VIABLE FOR PRIMARY)
+
+**Model:** `jinaai/jina-reranker-v2-base-multilingual` (278M, SeqCls)
+
+| Metric | Qwen3-Reranker 0.6B | Jina v2 (278M) | Δ |
+|---|---|---|---|
+| Recall | **0.759** | 0.601 | -21% |
+| MRR | **0.554** | 0.403 | -27% |
+| nDCG | **0.570** | 0.434 | -24% |
+| Latency | 1027 ms | **198 ms** | -81% |
+| rerank only | 883 ms | **43 ms** | -95% |
+
+**Conclusion:** Jina is 5× faster but loses -21% recall. Not viable as primary reranker given the 0.8 recall target. Could be used as a fast pre-filter in a two-stage CE pipeline (Jina → Qwen3 on top-N), but not tested.
+
+---
+
+### 13.4 CE top_k=40 A/B Test (TESTED — NOT VIABLE)
+
+**Hypothesis:** Reducing top_k from 75 to 40 would cut latency ~45%.
+
+| Metric | top_k=75 | top_k=40 | Δ |
+|---|---|---|---|
+| Recall | **0.759** | 0.656 | **-13%** |
+| MRR | **0.554** | 0.527 | -5% |
+| Latency | **1027 ms** | 1167 ms | **+14% slower** |
+
+**Conclusion:** Both worse on recall AND slower. The adaptive formula explains the latency paradox: with pool≈62 candidates, top_k=75 makes the formula score all 62 candidates (same cost), while top_k=40 scores 40 — but GPU batching makes 40 pairs nearly as slow as 62. No benefit in either dimension.
+
+**Rule:** Do not lower `RAG_CROSS_ENCODER_TOP_K` below 75 for current pool sizes.
+
+---
+
+### 13.5 LM Studio HTTP Reranker (INVESTIGATED — NOT VIABLE FOR Qwen3)
+
+**Idea:** Use LM Studio's OpenAI-compatible API (`/v1/completions`, `/v1/chat/completions`) to offload Qwen3-Reranker inference. This would free VRAM and allow GGUF Q8_0 quantization.
+
+**Root cause of failure:** Qwen3-Reranker requires two things the API cannot provide:
+1. **Direct logit access** — the model scores by reading `P(yes)` vs `P(no)` at position -1 without generating. HTTP APIs generate text; logprobs returned as `null` by LM Studio.
+2. **Special token handling** — `<|im_start|>` tokens must be tokenized as special tokens, not text. `/v1/completions` passes them as raw text → model behavior degrades. The skip-think prefix `<think>\n\n</think>\n\n` in chat messages is stripped by LM Studio.
+
+**Symptoms observed:**
+- `logprobs: null` from both `/v1/completions` and `/v1/chat/completions`
+- Without skip-think: model generates Chinese thinking text instead of yes/no
+- With skip-think via assistant prefill: LM Studio strips think tags → model loses reasoning → strong yes-bias (cats document classified as relevant to chess query)
+- Russian text in chat completions rendered as `���` (encoding issue)
+
+**What would work instead:**
+- `llama-cpp-python` directly in-process: full control over tokenization and logit access, same GGUF model. ~2× speedup + -600 MB VRAM vs float16. Requires matching prebuilt CUDA wheel.
+- A SeqCls reranker (BGE/GTE) via HTTP: these output a single relevance logit, no special token tricks needed. But quality is lower (Jina at 278M gives -21% recall).
+
+**Infrastructure note:** The HTTP reranker code was added then removed in this session. Not committed.
+
+---
+
+### 13.6 Latency Status & Remaining Options
+
+**Goal:** ≤500 ms per query. Current: 1027 ms. Gap: ~2× reduction needed.
+
+All "easy" options tested and ruled out:
+- ✗ Early exit (session 2): -11% recall at best
+- ✗ CE top_k=40: -13% recall, no speedup
+- ✗ LM Studio HTTP: model incompatibility
+- ✗ INT8 (bitsandbytes): not applicable to CausalLM
+
+**Remaining viable options (not yet tested):**
+
+| Option | Expected speedup | Risk |
+|---|---|---|
+| `llama-cpp-python` GGUF Q8_0 | ~2× reranker | Integration complexity; two GPU backends |
+| `torch.compile()` on reranker | ~10–20% | Warmup time; PyTorch 2.x only |
+| `max_length=256` (truncation) | ~15–20% | May hurt long documents; needs A/B test |
+| Two-stage CE: Jina pre-filter → Qwen3 top-20 | potentially fast + quality | Complex; needs testing |
+
+**Two-stage idea:** Run Jina (43 ms) on all 62 candidates, keep top-20 with highest Jina score, then run Qwen3 (883 ms → ~240 ms for 20 pairs) only on those. Total ~283 ms. But Jina may miss relevant docs in the tail → same problem as CE early exit.
+
+### 13.7 Updated Priority Roadmap
+
+#### Immediate (next session)
+
+1. **Run full Optuna v5 (200 trials) without interruption** — ~2–3 hours GPU, standalone. Ignore time weight recommendation (artifact).
+2. **Add time-diverse memories to test DB** — unblocks reliable Optuna for `RAG_WEIGHT_TIME`.
+3. **Duplicate memory deduplication** — write-time cosine similarity (sim > 0.92 → update, not insert).
+
+#### Medium Term
+
+4. **`torch.compile()` on Qwen3-Reranker** — low-risk ~10–20% speedup, 2 lines of code.
+5. **`max_length=256` A/B test** — measure recall impact before committing.
+6. **`llama-cpp-python` GGUF** — largest speedup but most integration work.
+
+### 13.8 Run Commands (Updated)
+
+```bash
+cd src/utils/Testing/rag_tester
+
+# Standard baseline (Qwen3x2, 100 cases, all optimal settings)
+"C:/Games/NeuroMita/Venv/Scripts/python.exe" rag_tester_cli.py run \
+  --db Histories/test_qwen3_gpu.db \
+  --scenario fixtures/crazy_scenario_full.json \
+  --suite fixtures/crazy_suite_v4.json \
+  --threshold 0.13 \
+  --overrides '{"RAG_ENABLED":true,"RAG_EMBED_MODEL":"Qwen3-Embedding-0.6B (600M, 2025)","RAG_CROSS_ENCODER_MODEL":"Qwen3-Reranker-0.6B (600M, 2025)","RAG_CROSS_ENCODER_ENABLED":true,"RAG_CROSS_ENCODER_TOP_K":75,"RAG_CROSS_ENCODER_ALPHA":0.68,"RAG_SIM_THRESHOLD":0.13,"RAG_WEIGHT_SIMILARITY":1.27,"RAG_WEIGHT_TIME":0.001,"RAG_WEIGHT_PRIORITY":0.92,"RAG_WEIGHT_ENTITY":0.52,"RAG_WEIGHT_KEYWORDS":1.01,"RAG_COMBINE_MODE":"two_stage","RAG_SEARCH_GRAPH":true}' \
+  --format text \
+  --output results/result_qwen3x2_vN.txt
+```

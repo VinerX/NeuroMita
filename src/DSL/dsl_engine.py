@@ -446,7 +446,8 @@ class DslInterpreter:
                     args = parts[1] if len(parts) > 1 else ""
 
                     if command == "SET":
-                        if "=" not in args: raise DslError("SET requires '='", resolved_script_id, num, raw)
+                        if "=" not in args:
+                            raise DslError("SET requires '='", resolved_script_id, num, raw)
 
                         is_local = False
                         var = ""
@@ -478,7 +479,8 @@ class DslInterpreter:
                             if var in self._declared_local_vars:
                                 self._local_vars[var] = value
                             else:
-                                self.character.variables[var] = value
+                                self.character.set_variable(var, value)
+
                         continue
 
                     if command == "ADD_SYSTEM_INFO":
@@ -573,6 +575,58 @@ class DslInterpreter:
                         returned = self.process_template_content(txt, f"RETURN in {rel_script_path}:{num}", sys_msgs=sys_msgs)
                         returned_value_for_log = returned is not None
                         return (returned or "", sys_msgs)
+
+                    if command == "SEED_MEMORY":
+                        if not args or "|" not in args:
+                            raise DslError("SEED_MEMORY requires format: SEED_MEMORY priority | content [ENTITIES e1, e2]", resolved_script_id, num, raw)
+                        entities = []
+                        raw_args = args
+                        upper_args = args.upper()
+                        if " ENTITIES " in upper_args:
+                            ent_idx = upper_args.index(" ENTITIES ")
+                            entities_str = args[ent_idx + len(" ENTITIES "):]
+                            raw_args = args[:ent_idx]
+                            entities = [e.strip() for e in entities_str.split(",") if e.strip()]
+                        if "|" not in raw_args:
+                            raise DslError("SEED_MEMORY requires format: SEED_MEMORY priority | content [ENTITIES e1, e2]", resolved_script_id, num, raw)
+                        parts = raw_args.split("|", 1)
+                        priority = parts[0].strip()
+                        content = self._eval_expr(f'f"""{parts[1].strip()}"""', resolved_script_id, num, raw, sys_msgs=sys_msgs) if '{' in parts[1] else parts[1].strip()
+                        if content and hasattr(self.character, "memory_system") and self.character.memory_system:
+                            self.character.memory_system.add_memory(
+                                str(content), priority=priority, skip_if_exists=True,
+                                entities=entities if entities else None
+                            )
+                        continue
+
+                    if command == "LINK_ENTITIES":
+                        parts = [p.strip() for p in args.split("->")]
+                        if len(parts) != 3:
+                            raise DslError("LINK_ENTITIES requires format: entity1 -> relation -> entity2", resolved_script_id, num, raw)
+                        entity1, relation, entity2 = parts
+                        mem_sys = getattr(self.character, "memory_system", None)
+                        rag = getattr(mem_sys, "rag", None) if mem_sys else None
+                        if rag and entity1 and entity2 and relation:
+                            try:
+                                from managers.rag.graph.graph_store import GraphStore
+                                gs = GraphStore(rag.db, rag.character_id)
+                                sid = gs.upsert_entity(entity1, protected=True)
+                                oid = gs.upsert_entity(entity2, protected=True)
+                                gs.upsert_relation(sid, relation, oid, protected=True)
+                            except Exception as _link_err:
+                                import logging as _logging
+                                _logging.warning(f"LINK_ENTITIES failed (ignored): {_link_err}")
+                        continue
+
+                    if command == "RUN":
+                        run_path = args.strip().strip('"').strip("'")
+                        if not run_path:
+                            raise DslError("RUN requires a file path", resolved_script_id, num, raw)
+                        try:
+                            self.process_file(run_path, sys_msgs=sys_msgs)
+                        except DslError as _run_de:
+                            raise DslError(f"Error in RUN '{run_path}': {_run_de.message}", resolved_script_id, num, raw, _run_de) from _run_de
+                        continue
 
                     raise DslError(f"Unknown DSL command '{command}'", resolved_script_id, num, raw)
 

@@ -35,6 +35,8 @@ class LLMRequest:
     depth: int = 0
     tool_manager: Optional[Any] = None
 
+    structured_model: Optional[Any] = None
+
 
 class BaseProvider(ABC):
     name: str

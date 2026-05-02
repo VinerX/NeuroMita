@@ -1,23 +1,20 @@
 from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
 from core.events import get_event_bus, Events
+from ui.settings.rag_memory_settings import (
+    build_memory_section,
+    build_rag_section,
+    build_rag_memory_section,  # обратная совместимость
+)
+
 
 def setup_model_interaction_controls(self, parent):
     create_section_header(parent, _("Настройки взаимодействия с моделью", "Model Interaction Settings"))
-    
+
     general_config = [
         {'label': _('Настройки сообщений', 'Message settings'), 'type': 'subsection'},
         {'label': _('Промты раздельно', 'Separated prompts'), 'key': 'SEPARATE_PROMPTS',
          'type': 'checkbutton', 'default_checkbutton': True},
-
-        {'label': _('Лимит сообщений', 'Message limit'), 'key': 'MODEL_MESSAGE_LIMIT',
-         'type': 'entry', 'default': 40,
-         'tooltip': _('Сколько сообщений будет помнить мита', 'How much messages Mita will remember')},
-        {'label': _('Сохранять утерянную историю ', 'Save lost history'),
-         'key': 'GPT4FREE_LAST_ATTEMPT', 'type': 'checkbutton', 'default_checkbutton': False},
-        {'label': _('Сохранять утерянную память ', 'Save lost memory'),
-         'key': 'SAVE_MISSED_MEMORY', 'type': 'checkbutton', 'default_checkbutton': False},
-
         {'label': _('Кол-во попыток', 'Attempt count'), 'key': 'MODEL_MESSAGE_ATTEMPTS_COUNT',
          'type': 'entry', 'default': 3},
         {'label': _('Время между попытками', 'time between attempts'),
@@ -25,6 +22,15 @@ def setup_model_interaction_controls(self, parent):
         {'label': _('Включить стриминговую передачу', 'Enable Streaming'), 'key': 'ENABLE_STREAMING',
          'type': 'checkbutton',
          'default_checkbutton': False},
+        {'label': _('Reasoning в схеме (schema CoT)', 'Schema reasoning (CoT)'), 'key': 'SCHEMA_REASONING',
+         'type': 'checkbutton',
+         'default_checkbutton': False,
+         'tooltip': _('Включает поле reasoning в JSON-схему структурированного ответа. '
+                      'Модель "думает вслух" перед заполнением полей — улучшает качество для локальных моделей. '
+                      'Отключите если используете нативный thinking или хотите сэкономить токены.',
+                      'Adds a reasoning field to the structured output JSON schema. '
+                      'The model "thinks aloud" before filling other fields — improves quality for local models. '
+                      'Disable if using native thinking or to save tokens.')},
         {'label': _('Режим размышлений (enable_thinking)', 'Enable thinking mode'), 'key': 'ENABLE_THINKING',
          'type': 'checkbutton',
          'default_checkbutton': True,
@@ -54,13 +60,16 @@ def setup_model_interaction_controls(self, parent):
         'type': 'entry',
         'toggle_key': 'USE_MODEL_MAX_RESPONSE_TOKENS',
         'toggle_default': self.settings.get('USE_MODEL_MAX_RESPONSE_TOKENS', True),
-        'default': 2500,
+        'default': 3000,
         'validation': self.validate_positive_integer,
         'tooltip': _('Максимальное количество токенов в ответе модели',
                     'Maximum number of tokens in the model response')},
 
         {'label': _('Температура', 'Temperature'), 'key': 'MODEL_TEMPERATURE',
-         'type': 'entry', 'default': 1.0, 'validation': self.validate_float_0_to_2,
+         'type': 'entry', 'default': 1.0,
+         'toggle_key': 'USE_MODEL_TEMPERATURE',
+         'toggle_default': self.settings.get('USE_MODEL_TEMPERATURE', True),
+         'validation': self.validate_float_0_to_2,
          'tooltip': _('Креативность ответа (0.0 = строго, 2.0 = очень творчески)',
                       'Creativity of response (0.0 = strict, 2.0 = very creative)')},
 
@@ -138,25 +147,67 @@ def setup_model_interaction_controls(self, parent):
         'tooltip': _('Параметр, влияющий на логарифмическую вероятность выбора токенов (-2.0 = поощрять, 2.0 = штрафовать)',
                     'Parameter influencing the logarithmic probability of token selection (-2.0 = encourage, 2.0 = penalize)')},
 
+        {'type': 'end'},
+
+        {'label': _('Инструменты (Tools)', 'Tools'), 'type': 'subsection'},
+
         {'label': _('Вызов инструментов', 'Tools use'),
-         'key': 'TOOLS_ON',
-         'type': 'checkbutton',
-         'default_checkbutton': False,
+         'key': 'TOOLS_ON', 'type': 'checkbutton', 'default_checkbutton': True,
          'tooltip': _(
              'Позволяет использовать инструменты такие как поиск в сети',
-             'Allow using tools like seacrh')},
+             'Allow using tools like search')},
+
         {'label': _('Калькулятор', 'Calculator'), 'key': 'TOOL_ENABLED_calculator',
-         'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
+         'type': 'checkbutton', 'default_checkbutton': False, 'depends_on': 'TOOLS_ON',
          'tooltip': _('Включить инструмент "Калькулятор"', 'Enable the Calculator tool')},
         {'label': _('Поиск в интернете', 'Web Search'), 'key': 'TOOL_ENABLED_web_search',
-         'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
+         'type': 'checkbutton', 'default_checkbutton': False, 'depends_on': 'TOOLS_ON',
          'tooltip': _('Включить инструмент "Поиск в сети" (DuckDuckGo)', 'Enable the Web Search tool (DuckDuckGo)')},
         {'label': _('Google поиск', 'Google Search'), 'key': 'TOOL_ENABLED_google_search',
-         'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
+         'type': 'checkbutton', 'default_checkbutton': False, 'depends_on': 'TOOLS_ON',
          'tooltip': _('Включить инструмент "Google Search" (требует API ключ)', 'Enable the Google Search tool (requires API key)')},
         {'label': _('Чтение страниц', 'Web Reader'), 'key': 'TOOL_ENABLED_web_reader',
-         'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
+         'type': 'checkbutton', 'default_checkbutton': False, 'depends_on': 'TOOLS_ON',
          'tooltip': _('Включить инструмент "Чтение веб-страниц"', 'Enable the Web Reader tool')},
+        {'label': _('Поиск воспоминаний', 'Memory Search'), 'key': 'TOOL_ENABLED_memory_search',
+         'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
+         'tooltip': _(
+             'Мита может сама искать по воспоминаниям и истории чата. '
+             'Работает независимо от автоматического RAG. '
+             'Поддерживает фильтр по дате и выбор типа поиска.',
+             'Mita can search her memories and chat history on demand. '
+             'Works independently of automatic RAG. '
+             'Supports date filters and search type selection.')},
+        {'label': _('Напоминания', 'Reminders'), 'key': 'TOOL_ENABLED_reminder',
+         'type': 'checkbutton', 'default_checkbutton': True, 'depends_on': 'TOOLS_ON',
+         'tooltip': _(
+             'Мита может добавлять, просматривать и удалять напоминания через тулу. '
+             'Поддерживает относительные даты: "через 2 часа", "завтра в 18:00".',
+             'Mita can add, view and delete reminders via tool. '
+             'Supports relative dates: "through 2 hours", "tomorrow at 18:00".')},
+
+        {'label': _('Макс. глубина цепочки тулов', 'Max tool chain depth'),
+         'key': 'TOOL_MAX_DEPTH', 'type': 'entry',
+         'default': 2, 'depends_on': 'TOOLS_ON',
+         'tooltip': _(
+             'Максимальное количество тул-вызовов подряд в одном диалоге (1–5). '
+             'Значение 2 позволяет цепочку: например, поиск → чтение страницы.',
+             'Max number of consecutive tool calls per dialogue (1–5). '
+             'Value 2 enables chains: e.g. web_search → web_reader.')},
+
+        {'label': _('Режим инжекции результата тула', 'Tool result message mode'),
+         'key': 'TOOL_RESULT_MSG_MODE', 'type': 'combobox',
+         'options': ['both', 'system', 'user'], 'default': 'both',
+         'depends_on': 'TOOLS_ON',
+         'tooltip': _(
+             'Как передавать результат тула в следующий запрос к LLM.\n'
+             'both — оба сообщения (рекомендуется, работает со всеми провайдерами).\n'
+             'system — только system-роль (может игнорироваться Gemini).\n'
+             'user — только user-роль с тегом [SYSTEM INFO].',
+             'How to inject the tool result into the next LLM request.\n'
+             'both — both messages (recommended, works with all providers).\n'
+             'system — system role only (may be ignored by Gemini).\n'
+             'user — user role only with [SYSTEM INFO] tag.')},
 
         {'label': _('GOOGLE API KEY'), 'key': 'GOOGLE_API_KEY', 'type': 'entry',
          'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},
@@ -167,8 +218,7 @@ def setup_model_interaction_controls(self, parent):
     ]
 
     create_settings_section(
-        self,
-        parent,
+        self, parent,
         _("Параметры генерации", "Generation Parameters"),
         general_config,
         icon_name='fa5s.cogs'
@@ -178,64 +228,28 @@ def setup_model_interaction_controls(self, parent):
     presets_meta = event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
     hc_provider_names = [_('Текущий', 'Current')]
     if presets_meta and presets_meta[0]:
-        all_presets = presets_meta[0].get('custom', [])
-        for preset in all_presets:
+        for preset in presets_meta[0].get('custom', []):
             hc_provider_names.append(preset.name)
     react_provider_names = [_('Текущий', 'Current')]
     if presets_meta and presets_meta[0]:
-        all_presets = presets_meta[0].get('custom', [])
-        for preset in all_presets:
+        for preset in presets_meta[0].get('custom', []):
             react_provider_names.append(preset.name)
 
-    history_compression_config = [
-        {'label': _('Сжимать историю при достижении лимита', 'Compress history on limit'),
-         'key': 'ENABLE_HISTORY_COMPRESSION_ON_LIMIT', 'type': 'checkbutton',
-         'default_checkbutton': False,
-         'tooltip': _('Включить автоматическое сжатие истории чата, когда количество сообщений превышает лимит.',
-                      'Enable automatic chat history compression when message count exceeds a limit.')},
-        {'label': _('Периодическое сжатие истории', 'Periodic history compression'),
-         'key': 'ENABLE_HISTORY_COMPRESSION_PERIODIC', 'type': 'checkbutton',
-         'default_checkbutton': False,
-         'tooltip': _('Включить автоматическое сжатие истории чата через заданные интервалы.',
-                      'Enable automatic chat history compression at specified intervals.')},
-        {'label': _('Интервал периодического сжатия (сообщения)', 'Periodic compression interval (messages)'),
-         'key': 'HISTORY_COMPRESSION_PERIODIC_INTERVAL', 'type': 'entry',
-         'default': 20, 'validation': self.validate_positive_integer,
-         'tooltip': _('Количество сообщений, после которых будет произведено периодическое сжатие истории.',
-                      'Number of messages after which periodic history compression will occur.')},
-        {'label': _('Шаблон промпта для сжатия', 'Compression prompt template'),
-         'key': 'HISTORY_COMPRESSION_PROMPT_TEMPLATE', 'type': 'entry',
-         'default': "Prompts/System/compression_prompt.txt",
-         'tooltip': _('Путь к файлу шаблона промпта, используемого для сжатия истории.',
-                      'Path to the prompt template file used for history compression.')},
-        {'label': _('Процент для сжатия', 'Percent to compress'),
-         'key': 'HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS', 'type': 'entry',
-         'default': 0.85, 'validation': self.validate_float_0_1,
-         'tooltip': _('Минимальное количество сообщений в истории, необходимое для запуска процесса сжатия.',
-                      'Minimum number of messages in history required to trigger compression.')},
-        {'label': _('Цель вывода сжатой истории', 'Compressed history output target'),
-         'key': 'HISTORY_COMPRESSION_OUTPUT_TARGET', 'type': 'combobox',
-         'options': ['history','memory'],
-         'default': "history",
-         'tooltip': _('Куда помещать результат сжатия истории (например, "memory", "summary_message").',
-                      'Where to place the compressed history output (e.g., "memory", "summary_message").')},
-        {'label': _('Провайдер для сжатия', 'Provider for compression'),
-         'key': 'HC_PROVIDER',
-         'type': 'combobox',
-         'options': hc_provider_names,
-         'default': _('Текущий', 'Current')},
-    ]
-    
-    create_settings_section(self, parent,
-                           _("Сжатие истории", "History Compression"),
-                           history_compression_config)
-    
     react_settings_config = [
         {
+            'type': 'text',
+            'label': _(
+                'Реакции — это когда триггером генерации служит событие, а не прямой запрос пользователя.\n'
+                'L1 — очень короткий ответ с выбором анимации (для слабых но шустрых моделей, сокращённый контекст).\n'
+                'L2 — полноценный ответ мощной моделью.',
+                'Reactions are triggered by events, not direct user input.\n'
+                'L1 — very short response with animation choice (lightweight fast models, trimmed context).\n'
+                'L2 — full response by a powerful model.'
+            ),
+        },
+        {
             'label': _('Использовать реакции (react)', 'Use react events'),
-            'key': 'REACT_ENABLED',
-            'type': 'checkbutton',
-            'default_checkbutton': False,
+            'key': 'REACT_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
             'tooltip': _(
                 'Включить генерацию реакций на действия игрока (react-задачи). '
                 'Отключение полностью блокирует вызовы модели для react.',
@@ -245,9 +259,7 @@ def setup_model_interaction_controls(self, parent):
         },
         {
             'label': _('Использовать реакции L1 (тихие)', 'Enable react L1 (silent)'),
-            'key': 'REACT_L1_ENABLED',
-            'type': 'checkbutton',
-            'default_checkbutton': True,
+            'key': 'REACT_L1_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
             'depends_on': 'REACT_ENABLED',
             'tooltip': _(
                 'Тихие реакции: мимика/поза/действия без ответа текстом.',
@@ -256,10 +268,8 @@ def setup_model_interaction_controls(self, parent):
         },
         {
             'label': _('Провайдер для реакций L1', 'Provider for react L1'),
-            'key': 'REACT_PROVIDER_L1',
-            'type': 'combobox',
-            'options': react_provider_names,
-            'default': _('Текущий', 'Current'),
+            'key': 'REACT_PROVIDER_L1', 'type': 'combobox',
+            'options': react_provider_names, 'default': _('Текущий', 'Current'),
             'depends_on': 'REACT_L1_ENABLED',
             'tooltip': _(
                 'Какой API-пресет использовать для тихих react-сообщений (L1).',
@@ -268,9 +278,7 @@ def setup_model_interaction_controls(self, parent):
         },
         {
             'label': _('Использовать реакции L2 (с ответом)', 'Enable react L2 (with answer)'),
-            'key': 'REACT_L2_ENABLED',
-            'type': 'checkbutton',
-            'default_checkbutton': False,
+            'key': 'REACT_L2_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
             'depends_on': 'REACT_ENABLED',
             'tooltip': _(
                 'Реакции с полноценным ответом: текст + озвучка, запись в историю.',
@@ -279,10 +287,8 @@ def setup_model_interaction_controls(self, parent):
         },
         {
             'label': _('Провайдер для реакций L2', 'Provider for react L2'),
-            'key': 'REACT_PROVIDER_L2',
-            'type': 'combobox',
-            'options': react_provider_names,
-            'default': _('Текущий', 'Current'),
+            'key': 'REACT_PROVIDER_L2', 'type': 'combobox',
+            'options': react_provider_names, 'default': _('Текущий', 'Current'),
             'depends_on': 'REACT_L2_ENABLED',
             'tooltip': _(
                 'Какой API-пресет использовать для react-ответов (L2).',
@@ -292,62 +298,37 @@ def setup_model_interaction_controls(self, parent):
     ]
 
     create_settings_section(
-        self,
-        parent,
+        self, parent,
         _("Настройки реакций", "React settings"),
         react_settings_config
     )
+
+    build_memory_section(self, parent, hc_provider_names)
+    build_rag_section(self, parent, hc_provider_names)
 
     token_settings_config = [
         {'label': _('Показывать информацию о токенах', 'Show Token Info'), 'key': 'SHOW_TOKEN_INFO',
          'type': 'checkbutton', 'default_checkbutton': True,
          'tooltip': _('Отображать количество токенов и ориентировочную стоимость в интерфейсе чата.',
                       'Display token count and approximate cost in the chat interface.')},
-        {'label': _('Стоимость токена (вход, ₽)', 'Token Cost (input, ₽)'), 'key': 'TOKEN_COST_INPUT', 'depends_on': 'SHOW_TOKEN_INFO',
-         'type': 'entry', 'default': 0.000001, 'validation': self.validate_float_positive_or_zero,
+        {'label': _('Стоимость токена (вход, ₽)', 'Token Cost (input, ₽)'), 'key': 'TOKEN_COST_INPUT',
+         'depends_on': 'SHOW_TOKEN_INFO', 'type': 'entry', 'default': 0.000001,
+         'validation': self.validate_float_positive_or_zero,
          'tooltip': _('Стоимость одного токена для входных данных (например, 0.000001 ₽ за токен).',
                       'Cost of one token for input data (e.g., 0.000001 ₽ per token).')},
-        {'label': _('Стоимость токена (выход, ₽)', 'Token Cost (output, ₽)'), 'key': 'TOKEN_COST_OUTPUT', 'depends_on': 'SHOW_TOKEN_INFO',
-         'type': 'entry', 'default': 0.000002, 'validation': self.validate_float_positive_or_zero,
+        {'label': _('Стоимость токена (выход, ₽)', 'Token Cost (output, ₽)'), 'key': 'TOKEN_COST_OUTPUT',
+         'depends_on': 'SHOW_TOKEN_INFO', 'type': 'entry', 'default': 0.000002,
+         'validation': self.validate_float_positive_or_zero,
          'tooltip': _('Стоимость одного токена для выходных данных (например, 0.000002 ₽ за токен).',
                       'Cost of one token for output data (e.g., 0.000002 ₽ per token).')},
-        {'label': _('Максимальное количество токенов модели', 'Max Model Tokens'), 'key': 'MAX_MODEL_TOKENS', 'depends_on': 'SHOW_TOKEN_INFO',
-         'type': 'entry', 'default': 32000, 'validation': self.validate_positive_integer,
+        {'label': _('Максимальное количество токенов модели', 'Max Model Tokens'), 'key': 'MAX_MODEL_TOKENS',
+         'depends_on': 'SHOW_TOKEN_INFO', 'type': 'entry', 'default': 32000,
+         'validation': self.validate_positive_integer,
          'tooltip': _('Максимальное количество токенов, которое может обработать модель.',
                       'Maximum number of tokens the model can process.')},
     ]
 
     create_settings_section(self, parent,
-                           _("Настройки токенов", "Token Settings"),
-                           token_settings_config)
+                            _("Настройки токенов", "Token Settings"),
+                            token_settings_config)
 
-    command_processing_config = [
-        {'label': _('Использовать обработку команд', 'Use command processing'), 'key': 'USE_COMMAND_REPLACER',
-         'type': 'checkbutton',
-         'default_checkbutton': False, 'tooltip': _('Включает замену команд в ответе модели на основе схожести.',
-                                                    'Enables replacing commands in the model response based on similarity.')},
-        {'label': _('Мин. порог схожести', 'Min similarity threshold'), 'key': 'MIN_SIMILARITY_THRESHOLD',
-         'type': 'entry', 
-         'depends_on': 'USE_COMMAND_REPLACER', 'hide_when_disabled': True,
-         'default': 0.40, 
-         'validation': self.validate_float_0_to_1, 
-         'tooltip': _('Минимальный порог схожести для замены команды (0.0-1.0).',
-                      'Minimum similarity threshold for command replacement (0.0-1.0).')},
-        {'label': _('Порог смены категории', 'Category switch threshold'), 'key': 'CATEGORY_SWITCH_THRESHOLD',
-         'type': 'entry',
-         'depends_on': 'USE_COMMAND_REPLACER', 'hide_when_disabled': True,
-         'default': 0.18,
-         'validation': self.validate_float_0_to_1, 
-         'tooltip': _('Дополнительный порог для переключения на другую категорию команд (0.0-1.0).',
-                      'Additional threshold for switching to a different command category (0.0-1.0).')},
-        {'label': _('Пропускать параметры с запятой', 'Skip comma parameters'), 'key': 'SKIP_COMMA_PARAMETERS',
-         'type': 'checkbutton', 
-         'depends_on': 'USE_COMMAND_REPLACER', 'hide_when_disabled': True,
-         'default_checkbutton': True, 
-         'tooltip': _('Пропускать параметры, содержащие запятую, при замене.',
-                                                   'Skip parameters containing commas during replacement.')},
-    ]
-
-    create_settings_section(self, parent,
-                           _("Обработка команд", "Command Processing"),
-                           command_processing_config)

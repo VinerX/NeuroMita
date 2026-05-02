@@ -15,12 +15,15 @@ from controllers.chat_controller import ChatController
 from controllers.loop_controller import LoopController
 from controllers.task_controller import TaskController
 from controllers.api_presets_controller import ApiPresetsController
+from controllers.embedding_presets_controller import EmbeddingPresetsController
 from controllers.local_voice_controller import LocalVoiceController
 from controllers.prompt_controller import PromptController
 from controllers.history_controller import HistoryController
+from controllers.graph_controller import GraphController
 from controllers.voice_model_controller import VoiceModelController
 from controllers.install_controller import InstallController
 from controllers.protocols_controller import ProtocolsController
+from controllers.embedding_controller import EmbeddingController
 from controllers.ai_engine_controller import AIEngineController
 
 from main_logger import logger
@@ -84,6 +87,9 @@ class MainController:
         self.history_controller = HistoryController()
         logger.notify("HistoryController успешно инициализирован.")
 
+        self.graph_controller = GraphController()
+        logger.notify("GraphController успешно инициализирован.")
+
         self.prompt_controller = PromptController()
         logger.notify("PromptController успешно инициализирован.")
 
@@ -92,6 +98,9 @@ class MainController:
 
         self.api_presets_controller = ApiPresetsController()
         logger.notify("ApiPresetsController успешно инициализирован.")
+
+        self.embedding_presets_controller = EmbeddingPresetsController()
+        logger.notify("EmbeddingPresetsController успешно инициализирован.")
 
         self.audio_controller = AudioController(self)
         logger.notify("AudioController успешно инициализирован.")
@@ -104,6 +113,9 @@ class MainController:
 
         self.model_controller = ModelController(self.settings)
         logger.notify("ModelController успешно инициализирован.")
+
+        self.embedding_controller = EmbeddingController()
+        logger.notify("EmbeddingController успешно инициализирован.")
 
         self.capture_controller = CaptureController(self.settings)
         logger.notify("CaptureController успешно инициализирован.")
@@ -126,7 +138,7 @@ class MainController:
         logger.notify("MainController подписался на события")
 
     def _init_server_controller(self):
-        use_new_api = self.settings.get('USE_NEW_API', False)
+        use_new_api = self.settings.get('USE_NEW_API', True)
 
         if hasattr(self, 'server_controller') and self.server_controller:
             current_is_new = isinstance(self.server_controller, ServerController)

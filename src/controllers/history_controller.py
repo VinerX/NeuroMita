@@ -339,14 +339,35 @@ class HistoryController:
 
             hc_provider = str(self._get_setting("HC_PROVIDER", "Current"))
             preset_id: Optional[int] = None
-            if hc_provider != "Current":
+            if hc_provider and hc_provider not in ("Current", "Текущий"):
+                # Try numeric ID first (legacy / direct ID usage).
                 try:
                     preset_id = int(hc_provider)
-                    logger.info(f"[HistoryController] Используется пресет для сжатия истории: {preset_id}")
                 except ValueError:
-                    logger.warning(
-                        f"[HistoryController] Некорректный HC_PROVIDER='{hc_provider}', используется текущий пресет."
-                    )
+                    # Look up by display name via ApiPresets event.
+                    try:
+                        meta_res = self.event_bus.emit_and_wait(
+                            Events.ApiPresets.GET_PRESET_LIST, timeout=1.0
+                        )
+                        meta = meta_res[0] if meta_res else None
+                        if meta:
+                            for bucket in ("custom", "builtin"):
+                                for pm in (meta.get(bucket) or []):
+                                    if getattr(pm, "name", None) == hc_provider:
+                                        pid = getattr(pm, "id", None)
+                                        if isinstance(pid, int):
+                                            preset_id = pid
+                                            break
+                                if preset_id is not None:
+                                    break
+                    except Exception as e:
+                        logger.warning(f"[HistoryController] Preset name lookup failed: {e}")
+                    if preset_id is None:
+                        logger.warning(
+                            f"[HistoryController] Не удалось найти пресет '{hc_provider}', используется текущий."
+                        )
+                if preset_id is not None:
+                    logger.info(f"[HistoryController] Используется пресет для сжатия истории: {preset_id}")
 
             res = self.event_bus.emit_and_wait(
                 Events.Model.GENERATE_RESPONSE,

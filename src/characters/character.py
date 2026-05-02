@@ -58,15 +58,17 @@ class Character:
         self.miku_tts_name = miku_tts_name
         self.short_name = short_name
 
+        _prompts_dir = os.environ.get("NEUROMITA_PROMPTS_DIR", os.path.abspath("Prompts"))
         self.prompts_root = (
-            os.path.abspath("Prompts")
+            _prompts_dir
             if not is_cartridge
-            else os.path.abspath("Prompts/Cartridges")
+            else os.path.join(_prompts_dir, "Cartridges")
         )
 
         self.main_template_path_relative = "main_template.txt"
 
         self.variables: Dict[str, Any] = {}
+        self._dirty_vars: set = set()
         self.is_cartridge = is_cartridge
         self.app_vars: Dict[str, Any] = {}
 
@@ -95,6 +97,7 @@ class Character:
         for key, value in composed_initials.items():
             self.set_variable(key, value)
 
+        self.custom_params: List[Dict[str, Any]] = []
         self.load_config()
 
         logger.info(
@@ -114,6 +117,7 @@ class Character:
 
         self.history_manager = HistoryManager(character_name=self.name, character_id=self.char_id)
         self.memory_system = MemoryManager(self.char_id)
+        self.memory_system.prompt_set_path = self.base_data_path
 
         from managers.reminder_manager import ReminderManager
         self.reminder_system = ReminderManager(self.char_id)
@@ -139,128 +143,36 @@ class Character:
         self.set_variable("game_id", None)
         self.game_manager = GameManager(self)
 
-
     def load_config(self):
-        """
-        Загружает кастомные настройки из config.json в папке персонажа.
-        Если файла нет - создаёт его с базовыми значениями из DEFAULT_OVERRIDES.
-        Добавляет и поддерживает 6 новых статичных переменных с ограничениями:
-        - attitude_min / attitude_max
-        - boredom_min / boredom_max
-        - stress_min / stress_max
-        null (None) допускается — означает отсутствие ограничения.
-        Логируем ошибку, если max < min.
-        """
-        config_path = os.path.join(self.base_data_path, "config.json")
-
-        bounds_defaults = {
-            "attitude_min": 0.0,
-            "attitude_max": 100.0,
-            "boredom_min": 0.0,
-            "boredom_max": 100.0,
-            "stress_min": 0.0,
-            "stress_max": 100.0,
-        }
-
-        def _validate_pairs(cfg: Dict[str, Any]):
-            def _check_pair(min_key: str, max_key: str, label: str):
-                vmin = cfg.get(min_key)
-                vmax = cfg.get(max_key)
-                if (
-                    isinstance(vmin, (int, float))
-                    and isinstance(vmax, (int, float))
-                    and vmax < vmin
-                ):
-                    logger.error(
-                        f"[{self.char_id}] Config error: {label} max ({vmax}) < min ({vmin})."
-                    )
-
-            _check_pair("attitude_min", "attitude_max", "attitude")
-            _check_pair("boredom_min", "boredom_max", "boredom")
-            _check_pair("stress_min", "stress_max", "stress")
+        from managers.character_config_manager import CharacterConfigManager
 
         try:
-            if os.path.exists(config_path):
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config_data = json.load(f)
-
-                changed = False
-                for k, v in bounds_defaults.items():
-                    if k not in config_data:
-                        config_data[k] = v
-                        changed = True
-
-                _validate_pairs(config_data)
-
-                logger.info(
-                    f"[{self.char_id}] Loading custom config from {config_path}"
-                )
-                for key, value in config_data.items():
-                    self.set_variable(key, value)
-                    logger.debug(
-                        f"[{self.char_id}] Set custom variable {key} = {value}"
-                    )
-
-                if changed:
-                    try:
-                        with open(config_path, "w", encoding="utf-8") as f:
-                            json.dump(config_data, f, indent=4, ensure_ascii=False)
-                        logger.info(
-                            f"[{self.char_id}] Missing config keys added and saved to {config_path}"
-                        )
-                    except Exception as e:
-                        logger.error(
-                            f"[{self.char_id}] Failed to update config.json with missing keys: {e}"
-                        )
-
-            else:
-                logger.info(
-                    f"[{self.char_id}] config.json not found at {config_path}, creating with default values"
-                )
-
-                base_config = self.BASE_DEFAULTS.copy()
-                if hasattr(self, "DEFAULT_OVERRIDES"):
-                    base_config.update(self.DEFAULT_OVERRIDES)
-
-                for k, v in bounds_defaults.items():
-                    base_config.setdefault(k, v)
-
-                os.makedirs(os.path.dirname(config_path), exist_ok=True)
-
-                with open(config_path, "w", encoding="utf-8") as f:
-                    json.dump(base_config, f, indent=4, ensure_ascii=False)
-
-                for key, value in base_config.items():
-                    self.set_variable(key, value)
-
-                logger.info(f"[{self.char_id}] Default config saved to {config_path}")
-
-        except json.JSONDecodeError as e:
-            logger.error(
-                f"[{self.char_id}] Error parsing config.json: {e}, creating new config"
+            cm = CharacterConfigManager(
+                character_id=self.char_id,
+                base_data_path=self.base_data_path,
+                logger=logger,
             )
+            cfg = cm.load_or_create()
 
-            base_config = self.BASE_DEFAULTS.copy()
-            if hasattr(self, "DEFAULT_OVERRIDES"):
-                base_config.update(self.DEFAULT_OVERRIDES)
+            self.custom_params = list(cfg.custom_params or [])
 
-            for k, v in bounds_defaults.items():
-                base_config.setdefault(k, v)
+            # Применяем initial значения для кастомных параметров.
+            # load_history() вызывается ПОСЛЕ load_config() и перезапишет их
+            # сохранёнными значениями — так что при перезапуске переменные не сбросятся.
+            for param in self.custom_params:
+                param_name = param.get("name")
+                initial = param.get("initial")
+                if param_name and initial is not None:
+                    self.set_variable(param_name, initial)
 
-            os.makedirs(os.path.dirname(config_path), exist_ok=True)
-
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(base_config, f, indent=4, ensure_ascii=False)
-
-            for key, value in base_config.items():
-                self.set_variable(key, value)
-
-            logger.info(
-                f"[{self.char_id}] New config created with defaults after JSON error"
-            )
+            reserved = {"PROMPT_SET_NAME", "PROMPT_SET_PATH"}
+            for k, v in (cfg.variables or {}).items():
+                if str(k) in reserved:
+                    continue
+                self.set_variable(str(k), v)
 
         except Exception as e:
-            logger.error(f"[{self.char_id}] Error loading/creating config.json: {e}")
+            logger.error(f"[{self.char_id}] Error loading config via CharacterConfigManager: {e}", exc_info=True)
 
     def get_stats_dict(self) -> Dict[str, float]:
         return {
@@ -279,7 +191,6 @@ class Character:
                 value = True
             elif val_lower == "false":
                 value = False
-
             elif value.isdigit():
                 try:
                     value = int(value)
@@ -291,13 +202,20 @@ class Character:
                 except ValueError:
                     pass
             else:
-                if (value.startswith("'") and value.endswith("'")) or (
-                    value.startswith('"') and value.endswith('"')
-                ):
+                if (value.startswith("'") and value.endswith("'")) or (value.startswith('"') and value.endswith('"')):
                     value = value[1:-1]
 
         self.variables[name] = value
-        # logger.debug(f"Variable '{name}' set to: {value} (type: {type(value)}) for char '{self.char_id}'")
+        self._dirty_vars.add(name)
+
+    def flush_variables(self):
+        """Batch-write all dirty variables to DB in a single transaction."""
+        if not self._dirty_vars or not hasattr(self, "history_manager"):
+            return
+        to_flush = {k: self.variables[k] for k in self._dirty_vars if k in self.variables}
+        if to_flush:
+            self.history_manager.update_variables_batch(to_flush)
+        self._dirty_vars.clear()
 
     def consume_pending_targets(self) -> list[str]:
         targets = getattr(self, "_pending_targets", [])
@@ -589,22 +507,139 @@ class Character:
                 targets.append(seg.target)
         self._pending_targets = targets
 
+        # 1. Apply text PostDSL rules (Remove Asterisks etc.) to each segment
+        try:
+            for seg in structured.segments:
+                seg.text = self.post_dsl_interpreter.process(seg.text)
+        except Exception as e:
+            logger.error(
+                f"[{self.char_id}] Error in PostDSL text processing for segments: {e}",
+                exc_info=True,
+            )
+
+        # Normalize custom_fields to a plain dict (it may be a Pydantic model when
+        # build_structured_response_model() creates an ExtendedStructuredResponse).
+        _cf_raw = structured.custom_fields
+        if _cf_raw is not None and hasattr(_cf_raw, "model_dump"):
+            _cf_raw = _cf_raw.model_dump(exclude_none=True)
+        elif _cf_raw is not None and not isinstance(_cf_raw, dict):
+            _cf_raw = dict(_cf_raw)
+
+        # 2. Apply custom_params from config (порядок по гайду):
+        #    1) клам change_min/change_max → 2) клам max_change (add) →
+        #    3) formula или op → 4) клам min/max
+        _SAFE_BUILTINS: dict = {
+            "max": max, "min": min, "abs": abs,
+            "int": int, "float": float, "round": round,
+        }
+        if _cf_raw:
+            for param in self.custom_params:
+                var_name = param.get("name")
+                if not var_name:
+                    continue
+                change_cmd = param.get("change_command") or var_name
+                if change_cmd not in _cf_raw:
+                    continue
+                raw_value = _cf_raw[change_cmd]
+                if raw_value is None:
+                    continue
+                try:
+                    # Приводим к числу для числовых типов
+                    p_type = param.get("type", "float")
+                    if p_type in ("float", "double", "number"):
+                        value = float(raw_value)
+                    elif p_type in ("int", "integer"):
+                        value = int(raw_value)
+                    else:
+                        value = raw_value
+
+                    # Шаг 2: клам входного значения в [change_min, change_max]
+                    if isinstance(value, (int, float)):
+                        c_min = param.get("change_min")
+                        c_max = param.get("change_max")
+                        if c_min is not None:
+                            value = max(float(c_min), value)
+                        if c_max is not None:
+                            value = min(float(c_max), value)
+
+                    # Шаг 3: клам в [-max_change, +max_change] только для op=add
+                    op = param.get("op")
+                    max_change = param.get("max_change")
+                    if op == "add" and max_change is not None and isinstance(value, (int, float)):
+                        mc = float(max_change)
+                        value = max(-mc, min(mc, value))
+
+                    current = self.get_variable(var_name, 0)
+                    formula = param.get("formula")
+
+                    # Шаг 4: применяем формулу или op
+                    if formula:
+                        eval_ctx = dict(self.variables)
+                        eval_ctx.update(_SAFE_BUILTINS)
+                        eval_ctx["current"] = current
+                        eval_ctx["value"] = value
+                        eval_ctx[change_cmd] = value
+                        eval_ctx[var_name] = current
+                        new_val = eval(formula, {"__builtins__": {}}, eval_ctx)
+                    elif op == "add":
+                        new_val = current + value
+                    elif op == "set":
+                        new_val = value
+                    else:
+                        logger.warning(
+                            f"[{self.char_id}] custom_param '{var_name}': нет op или formula, пропускаем"
+                        )
+                        continue
+
+                    # Шаг 5: клам результата в [min, max]
+                    if isinstance(new_val, (int, float)):
+                        pmin = param.get("min")
+                        pmax = param.get("max")
+                        if pmin is not None:
+                            new_val = max(float(pmin), new_val)
+                        if pmax is not None:
+                            new_val = min(float(pmax), new_val)
+
+                    self.set_variable(var_name, new_val)
+                    logger.info(
+                        f"[{self.char_id}] custom_param '{change_cmd}' → {var_name}={new_val}"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.char_id}] Error applying custom_param '{var_name}': {e}"
+                    )
+
+        # 3. Apply MATCH FIELD PostDSL rules (complex logic with expressions)
+        if _cf_raw:
+            try:
+                self.post_dsl_interpreter.process_structured_fields(_cf_raw)
+            except Exception as e:
+                logger.error(
+                    f"[{self.char_id}] Error in PostDSL field processing: {e}",
+                    exc_info=True,
+                )
+
         return structured
 
     def _apply_structured_memory_ops(self, structured: StructuredResponse, save_as_missed: bool = False):
         """Apply memory add/update/delete operations from a StructuredResponse."""
+        self._last_created_memory_ids = []
         for mem_text in (structured.memory_add or []):
             mem_text = (mem_text or "").strip()
             if not mem_text:
                 continue
-            # Support priority prefix: "priority|content"
-            parts = [p.strip() for p in mem_text.split("|", 1)]
-            if len(parts) == 2 and parts[0] in ("low", "normal", "high", "critical"):
-                priority, content = parts
+            # Format: "priority|content" or "priority|content|entity1,entity2,..."
+            parts = [p.strip() for p in mem_text.split("|", 2)]
+            if len(parts) >= 2 and parts[0] in ("low", "normal", "high", "critical"):
+                priority = parts[0]
+                content = parts[1]
+                ents = [e.strip() for e in parts[2].split(",")] if len(parts) == 3 and parts[2] else None
             else:
-                priority, content = "normal", mem_text
+                priority, content, ents = "normal", mem_text, None
             try:
-                self.memory_system.add_memory(priority=priority, content=content)
+                eid = self.memory_system.add_memory(priority=priority, content=content, entities=ents)
+                if eid is not None:
+                    self._last_created_memory_ids.append(eid)
                 logger.info(f"[{self.char_id}] Structured: added memory (P: {priority}): {content[:50]}...")
             except Exception as e:
                 logger.error(f"[{self.char_id}] Structured: error adding memory: {e}")
@@ -613,17 +648,21 @@ class Character:
             update_str = (update_str or "").strip()
             if not update_str or "|" not in update_str:
                 continue
-            parts = [p.strip() for p in update_str.split("|", 1)]
-            if len(parts) == 2 and parts[0].isdigit():
-                try:
-                    self.memory_system.update_memory(
-                        number=int(parts[0]),
-                        priority=None,
-                        content=parts[1],
-                    )
-                    logger.info(f"[{self.char_id}] Structured: updated memory #{parts[0]}")
-                except Exception as e:
-                    logger.error(f"[{self.char_id}] Structured: error updating memory #{parts[0]}: {e}")
+            # Format: "number|priority|content" or legacy "number|content"
+            parts = [p.strip() for p in update_str.split("|", 2)]
+            if not parts[0].isdigit():
+                continue
+            number = int(parts[0])
+            valid_priorities = {"low", "normal", "high", "critical"}
+            if len(parts) == 3 and parts[1].lower() in valid_priorities:
+                priority, content = parts[1].lower(), parts[2]
+            else:
+                priority, content = None, "|".join(parts[1:])
+            try:
+                self.memory_system.update_memory(number=number, priority=priority, content=content)
+                logger.info(f"[{self.char_id}] Structured: updated memory #{number}")
+            except Exception as e:
+                logger.error(f"[{self.char_id}] Structured: error updating memory #{number}: {e}")
 
         for delete_str in (structured.memory_delete or []):
             delete_str = (delete_str or "").strip()
@@ -650,6 +689,34 @@ class Character:
                 logger.info(f"[{self.char_id}] Structured: deleted memory(ies): {delete_str}")
             except Exception as e:
                 logger.error(f"[{self.char_id}] Structured: error deleting memory '{delete_str}': {e}")
+
+        for merge_str in (structured.memory_merge or []):
+            merge_str = (merge_str or "").strip()
+            # Format: "id1,id2,..." or "id1,id2,...:merged content"
+            ids_part, _, merged_content = merge_str.partition(":")
+            id_strs = [s.strip() for s in ids_part.split(",")]
+            if len(id_strs) < 2 or not all(s.isdigit() for s in id_strs):
+                logger.warning(f"[{self.char_id}] Structured: memory_merge bad format: {merge_str!r}")
+                continue
+            tgt_id = int(id_strs[0])
+            src_ids = [int(s) for s in id_strs[1:]]
+            try:
+                if not merged_content.strip():
+                    parts = [self.memory_system.get_memory_content(tgt_id) or ""]
+                    for sid in src_ids:
+                        c = self.memory_system.get_memory_content(sid) or ""
+                        if c:
+                            parts.append(c)
+                    merged_content = " | ".join(p for p in parts if p)
+                ok = self.memory_system.update_memory(number=tgt_id, content=merged_content.strip())
+                if not ok:
+                    logger.error(f"[{self.char_id}] Structured: memory_merge target #{tgt_id} not found — aborting merge, sources NOT deleted")
+                    continue
+                for sid in src_ids:
+                    self.memory_system.delete_memory(sid, save_as_missed)
+                logger.info(f"[{self.char_id}] Structured: merged memories {src_ids} → #{tgt_id}")
+            except Exception as e:
+                logger.error(f"[{self.char_id}] Structured: error merging {src_ids}→#{tgt_id}: {e}")
 
     def _apply_structured_reminder_ops(self, structured: StructuredResponse):
         """Apply reminder add/delete operations from a StructuredResponse."""
@@ -767,7 +834,8 @@ class Character:
         Extracts memory operation tags (<+memory>, <#memory>, <-memory>)
         from the LLM response, processes them, and removes them from the response string.
         """
-        memory_pattern = r"<([+#-])memory(?:_([a-zA-Z]+))?>(.*?)</\1?memory>"
+        self._last_created_memory_ids: list[int] = []
+        memory_pattern = r"<([+#~-])memory(?:_([a-zA-Z]+))?>(.*?)</\1?memory>"
 
         def memory_processor(match_obj):
             operation, tag_priority, content = match_obj.groups()
@@ -791,9 +859,11 @@ class Character:
                         mem_content = content
                         priority = tag_priority or "normal"
 
-                    self.memory_system.add_memory(
+                    eid = self.memory_system.add_memory(
                         priority=priority, content=mem_content
                     )
+                    if eid is not None:
+                        self._last_created_memory_ids.append(eid)
                     logger.info(
                         f"[{self.char_id}] Added memory (P: {priority}): {mem_content[:50]}..."
                     )
@@ -828,6 +898,43 @@ class Character:
                         logger.warning(
                             f"[{self.char_id}] Invalid format for memory update: {content}"
                         )
+
+                elif operation == "~":
+                    # Format: <~memory>SOURCE→TARGET:new_content</~memory>
+                    # Arrow can be → (U+2192) or ->; new_content is optional
+                    arrow = "→" if "→" in content else "->"
+                    arrow_parts = content.split(arrow, 1)
+                    if len(arrow_parts) != 2:
+                        logger.warning(
+                            f"[{self.char_id}] Invalid format for memory merge (expected SOURCE→TARGET[:content]): {content}"
+                        )
+                    else:
+                        source_str = arrow_parts[0].strip()
+                        rest = arrow_parts[1].strip()
+                        colon_idx = rest.find(":")
+                        if colon_idx >= 0:
+                            target_str = rest[:colon_idx].strip()
+                            new_content = rest[colon_idx + 1:].strip() or None
+                        else:
+                            target_str = rest.strip()
+                            new_content = None
+
+                        if source_str.isdigit() and target_str.isdigit():
+                            source_id = int(source_str)
+                            target_id = int(target_str)
+                            ok = self.memory_system.merge_memories(source_id, target_id, new_content)
+                            if ok:
+                                logger.info(
+                                    f"[{self.char_id}] Merged memory #{source_id} into #{target_id}"
+                                )
+                            else:
+                                logger.warning(
+                                    f"[{self.char_id}] Failed to merge memory #{source_id} into #{target_id}"
+                                )
+                        else:
+                            logger.warning(
+                                f"[{self.char_id}] Invalid IDs for memory merge: source='{source_str}', target='{target_str}'"
+                            )
 
                 elif operation == "-":
 
@@ -941,11 +1048,11 @@ class Character:
         return data
 
     def save_character_state_to_history(self, messages: List[Dict[str, str]]):
+        """Force-sync full state to DB: flushes dirty variables, then persists
+        all messages and variables. Called at end-of-turn and on explicit saves."""
+        self.flush_variables()
         history_data = {"messages": messages, "variables": self.variables.copy()}
         self.history_manager.save_history(history_data)
-        logger.debug(
-            f"[{self.char_id}] Saved character state and {len(messages)} messages to history."
-        )
 
     def clear_history(self):
         logger.info(f"[{self.char_id}] Clearing history and resetting state.")
@@ -963,15 +1070,28 @@ class Character:
 
         self.memory_system.clear_memories()
         self.history_manager.clear_history()
+
+        try:
+            from managers.rag.graph.graph_store import GraphStore
+            from managers.database_manager import DatabaseManager
+            GraphStore(DatabaseManager(), self.char_id).clear_for_character()
+        except Exception as e:
+            logger.warning(f"[{self.char_id}] Graph clear failed (ignored): {e}", exc_info=True)
+
         logger.info(
             f"[{self.char_id}] History cleared and state reset to initial defaults/overrides."
         )
 
+    # --- ИЗМЕНЕНИЯ В add_message_to_history ---
     def add_message_to_history(self, message: Dict[str, str]):
-        current_history_data = self.history_manager.load_history()
-        messages = current_history_data.get("messages", [])
-        messages.append(message)
-        self.save_character_state_to_history(messages)
+        # [NEW] Используем точечное добавление вместо перезаписи всего списка
+        # Это сильно ускорит работу на длинных историях
+        self.history_manager.add_message(message)
+
+        # Обновлять локальный список в памяти (если он нужен для контекста) можно перезагрузкой
+        # или просто не хранить его в классе Character, полагаясь на history_manager.load_history()
+        # Но чтобы не ломать старую логику, которая может ожидать messages внутри history_data,
+        # оставим всё как есть, просто база обновляется инкрементально.
 
     # endregion
 
@@ -1163,3 +1283,4 @@ class Character:
 
     def __str__(self):
         return f"Character(id='{self.char_id}', name='{self.name}')"
+

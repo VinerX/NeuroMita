@@ -1,0 +1,19 @@
+Extract named entities and their relationships from this conversation snippet.
+Output ONLY valid JSON, no commentary or markdown:
+{"entities":[{"name":"alice","type":"person"},{"name":"chess","type":"concept"}],
+ "relations":[{"s":"alice","p":"likes","o":"chess"}]}
+
+Rules:
+- Entity names: 1-3 words, lowercase, real nouns only (people, places, objects, topics).
+- Predicates: short verb phrases — "likes", "lives in", "is afraid of", "owns".
+- The AI character is referred to as "mita" (or their actual name if stated).
+- The human player is referred to as "player" (or their real name if stated).
+- DO NOT extract grammar roles: do not use "subject", "verb", "object", "predicate", "action" as names or predicates.
+- DO NOT extract emotion/animation tags: angry, sad, smile, smileteeth, magiceye, trytoque, discontent, etc.
+- DO NOT extract pronouns or generic words: it, they, he, she, we, you, i, thing, person, character.
+- DO NOT extract interjections or filler words.
+- Only extract clearly stated facts, not speculation or hypotheticals.
+- If nothing meaningful to extract, return {"entities":[],"relations":[]}
+
+Conversation:
+{text}

@@ -1,0 +1,431 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from managers.settings_manager import SettingsManager
+
+
+# ── Cross-encoder presets ─────────────────────────────────────────────────
+# Maps display name → HuggingFace model ID
+CE_PRESETS: dict[str, str] = {
+    # Multilingual — includes Russian (recommended)
+    "GTE Reranker base multilingual (306M)": "Alibaba-NLP/gte-multilingual-reranker-base",
+    "Jina Reranker v2 multilingual (278M)":  "jinaai/jina-reranker-v2-base-multilingual",
+    "BGE Reranker v2-m3 (568M, best)":       "BAAI/bge-reranker-v2-m3",
+    "mMiniLM-L12 mMARCO (117M)":             "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+    # LM-based rerankers (yes/no scoring)
+    "Qwen3-Reranker-0.6B (600M, 2025)":      "Qwen/Qwen3-Reranker-0.6B",
+    # English only (MS MARCO)
+    "MiniLM-L6 v2 EN (22M, fast)":           "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "MiniLM-L12 v2 EN (33M)":                "cross-encoder/ms-marco-MiniLM-L-12-v2",
+    "Custom": "",
+}
+
+
+def list_ce_preset_names() -> list[str]:
+    return list(CE_PRESETS.keys())
+
+
+# ── Pipeline presets (built-in) ───────────────────────────────────────────
+# Each preset is a partial dict of SettingsManager keys to apply.
+# User-saved presets are stored separately in RAG_PIPELINE_USER_PRESETS (JSON).
+RAG_PIPELINE_PRESETS: dict[str, dict[str, object]] = {
+    "Keyword+FTS only": {
+        "RAG_VECTOR_SEARCH_ENABLED": False,
+        "RAG_CROSS_ENCODER_ENABLED": False,
+        "RAG_KEYWORD_SEARCH": True,
+        "RAG_USE_FTS": True,
+        "RAG_COMBINE_MODE": "union",
+        "RAG_USE_RRF": False,
+        "RAG_SEARCH_GRAPH": False,
+    },
+    "Keyword+FTS+Inline Graph": {
+        "RAG_VECTOR_SEARCH_ENABLED": False,
+        "RAG_CROSS_ENCODER_ENABLED": False,
+        "RAG_KEYWORD_SEARCH": True,
+        "RAG_USE_FTS": True,
+        "RAG_COMBINE_MODE": "union",
+        "RAG_USE_RRF": False,
+        "GRAPH_EXTRACTION_ENABLED": True,
+        "GRAPH_EXTRACTION_INLINE": True,
+        "RAG_SEARCH_GRAPH": True,
+    },
+    "Vector+FTS (Qwen3 0.6B)": {
+        "RAG_VECTOR_SEARCH_ENABLED": True,
+        "RAG_CROSS_ENCODER_ENABLED": False,
+        "RAG_KEYWORD_SEARCH": True,
+        "RAG_USE_FTS": True,
+        "RAG_COMBINE_MODE": "union",
+        "RAG_EMBED_MODEL": "Qwen3-Embedding-0.6B (600M, 2025)",
+        "RAG_USE_RRF": False,
+        "RAG_SEARCH_GRAPH": False,
+    },
+    "Vector+FTS+Reranker (Qwen3)": {
+        "RAG_VECTOR_SEARCH_ENABLED": True,
+        "RAG_CROSS_ENCODER_ENABLED": True,
+        "RAG_KEYWORD_SEARCH": True,
+        "RAG_USE_FTS": True,
+        "RAG_COMBINE_MODE": "two_stage",
+        "RAG_EMBED_MODEL": "Qwen3-Embedding-0.6B (600M, 2025)",
+        "RAG_CROSS_ENCODER_MODEL": "Qwen3-Reranker-0.6B (600M, 2025)",
+        "RAG_CROSS_ENCODER_TOP_K": 75,
+        "RAG_CROSS_ENCODER_ALPHA": 0.68,
+        "RAG_USE_RRF": False,
+        "RAG_SEARCH_GRAPH": False,
+    },
+}
+
+
+def list_pipeline_preset_names(user_presets: dict | None = None) -> list[str]:
+    names = list(RAG_PIPELINE_PRESETS.keys())
+    if user_presets:
+        names.extend(user_presets.keys())
+    names.append("Custom")
+    return names
+
+
+def get_pipeline_preset_settings(name: str, user_presets: dict | None = None) -> dict | None:
+    """Return settings dict for preset name, or None for 'Custom'."""
+    if name in RAG_PIPELINE_PRESETS:
+        return RAG_PIPELINE_PRESETS[name].copy()
+    if user_presets and name in user_presets:
+        return user_presets[name].copy()
+    return None
+
+
+def resolve_ce_model() -> str:
+    """Return the actual HF model ID for the cross-encoder (resolves preset name)."""
+    model = str(SettingsManager.get("RAG_CROSS_ENCODER_MODEL", "GTE Reranker base multilingual (306M)") or "").strip()
+    if model in CE_PRESETS:
+        hf_id = CE_PRESETS[model]
+        if not hf_id:  # "Custom"
+            hf_id = str(SettingsManager.get("RAG_CROSS_ENCODER_MODEL_CUSTOM", "") or "").strip()
+        return hf_id or "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    # Legacy: might already be a raw HF ID
+    return model or "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+
+def _b(v, default=False) -> bool:
+    try:
+        if isinstance(v, str):
+            return v.strip().lower() in ("1", "true", "yes", "on")
+        return bool(v)
+    except Exception:
+        return bool(default)
+
+
+def _i(v, default=0) -> int:
+    try:
+        return int(v)
+    except Exception:
+        return int(default)
+
+
+def _f(v, default=0.0) -> float:
+    try:
+        return float(v)
+    except Exception:
+        return float(default)
+
+
+@dataclass
+class RAGConfig:
+    limit: int = 5
+    threshold: float = 0.3
+
+    # weights
+    K1: float = 1.0
+    K2: float = 0.3
+    K3: float = 0.5
+    K4: float = 0.5
+    K5: float = 0.6
+    K6: float = 0.3
+    # K7 — graph score multiplier: scales the final score of graph candidates
+    # so they can compete with vector/memory results.  Default 1.5 means a
+    # perfect-kw-match graph triple (~0.6) becomes ~0.9 after boost.
+    K7: float = 1.5
+
+    decay_rate: float = 0.05
+    noise_max: float = 0.02
+    noise_seed: int | None = None
+
+    # query build
+    tail_messages: int = 2
+
+    # enabled scopes
+    search_memory: bool = True
+    search_history: bool = True
+    search_graph: bool = False
+    graph_vector_search: bool = False
+    # guaranteed graph slots: at least N graph triples are included regardless
+    # of their rank (0 = disabled, compete on equal terms).
+    graph_min_results: int = 0
+
+    # keyword
+    kw_enabled: bool = True
+    kw_max_terms: int = 8
+    kw_min_score: float = 0.34
+    kw_sql_limit: int = 250
+    kw_min_len: int = 3
+    lemmatization: bool = True
+
+    # fts
+    use_fts: bool = True
+    fts_top_k_hist: int = 100
+    fts_top_k_mem: int = 100
+    fts_max_terms: int = 10
+    fts_min_len: int = 3
+    # Morphological expansion: expand each Cyrillic query token to all its word
+    # forms before passing to FTS5.  Dramatically improves Russian recall because
+    # FTS5 does no stemming/lemmatisation of its own.
+    fts_morph_expand: bool = True
+    # Prefix wildcard: append * to each term for partial prefix matching.
+    # Applied to non-Cyrillic tokens when morph_expand is True, or to all tokens
+    # when morph_expand is False.
+    fts_prefix_match: bool = False
+
+    memory_mode: str = "all"  # forgotten|active|all
+
+    # logging
+    detailed_logs: bool = True
+    log_top_n: int = 10
+    log_bottom_n: int = 5
+    log_show_all: bool = False
+
+    # --- NEW: combine / recall controls ---
+    # union|vector_only|intersect|two_stage
+    combine_mode: str = "union"
+
+    # Disable vector retrieval entirely (FTS+keyword-only mode)
+    vector_search_enabled: bool = True
+
+    # vector candidate cap used by some combiners (vector_only/two_stage)
+    vector_top_k: int = 0  # 0 = no cap
+
+    # intersect settings
+    intersect_min_methods: int = 2
+    intersect_require_vector: bool = True
+    intersect_fallback_union: bool = True
+
+    # two-stage fallback
+    two_stage_fallback_union: bool = True
+
+    # cross-encoder reranker (optional second pass)
+    cross_encoder_enabled: bool = True
+    cross_encoder_model: str = "Alibaba-NLP/gte-multilingual-reranker-base"
+    cross_encoder_top_k: int = 30
+    # Alpha mixing: final_score = alpha*CE + (1-alpha)*linear.
+    # 1.0 = pure CE (old behaviour); 0.0 = ignore CE entirely.
+    # Values 0.5-0.9 protect high-linear-score docs from being killed by CE errors.
+    cross_encoder_alpha: float = 1.0
+    # CE performance optimizations
+    # Adaptive top_k: effective_top_k = max(10, min(top_k, n_candidates * ratio))
+    # Ensures CE never sees more than a fraction of the pool (faster for large pools)
+    # and fewer pairs for small pools (no waste).  Set to 1.0 to disable.
+    ce_top_k_ratio: float = 0.4
+    # Hard cap on items sent to CE regardless of pool size or ratio.
+    # Prevents GPU saturation on large histories (e.g. pool=1512 → ratio gives 604,
+    # cap at 150 → 4× faster without meaningful recall loss since pool is cosine-sorted).
+    # Set to 0 to disable the cap.
+    ce_max_items: int = 150
+    # Early exit: stop scoring mini-batches once best CE score exceeds this threshold.
+    # Unscored candidates keep their linear scores.  Set > 1.0 to disable (default).
+    ce_early_exit_score: float = 1.1
+    # INT8 quantization via bitsandbytes (seqcls models only, requires GPU + bitsandbytes).
+    ce_int8: bool = False
+
+    # Reciprocal Rank Fusion: replaces weighted-sum scoring with rank-based fusion.
+    # When enabled, each retriever bucket contributes 1/(rrf_k + rank) to the candidate score.
+    # Time/priority/entity bonuses are still added on top.
+    use_rrf: bool = False
+    rrf_k: int = 60  # smoothing constant (industry default)
+
+    # Pre-filtering by context actors (speaker/target of current dialogue).
+    # When True, an extra retrieval pass is run with speaker/target filter and
+    # threshold=0 to guarantee actor-relevant docs are in the candidate pool,
+    # even if their vector similarity falls below the main threshold.
+    prefilter_actors: bool = False
+
+    # Sentence-level retrieval: embed each sentence separately and retrieve
+    # the best-matching sentence per message.  Requires re-indexing after enabling.
+    sentence_level: bool = False
+    sentence_min_len: int = 20  # ignore sentences shorter than this (chars)
+
+    @classmethod
+    def from_settings(cls, *, limit: int, threshold: float) -> "RAGConfig":
+        cfg = cls()
+        cfg.limit = _i(limit, 5)
+        cfg.threshold = _f(threshold, 0.2)
+
+        cfg.K1 = _f(SettingsManager.get("RAG_WEIGHT_SIMILARITY", 1.0), 1.0)
+        cfg.K2 = _f(SettingsManager.get("RAG_WEIGHT_TIME", 0.3), 0.3)
+        cfg.K3 = _f(SettingsManager.get("RAG_WEIGHT_PRIORITY", 0.5), 0.5)
+        cfg.K4 = _f(SettingsManager.get("RAG_WEIGHT_ENTITY", 0.5), 0.5)
+        cfg.K5 = _f(SettingsManager.get("RAG_WEIGHT_KEYWORDS", 0.6), 0.6)
+        cfg.K6 = _f(SettingsManager.get("RAG_WEIGHT_LEXICAL", 0.3), 0.3)
+        cfg.K7 = _f(SettingsManager.get("RAG_WEIGHT_GRAPH", 1.5), 1.5)
+
+        cfg.decay_rate = _f(SettingsManager.get("RAG_TIME_DECAY_RATE", 0.05), 0.05)
+        cfg.noise_max = _f(SettingsManager.get("RAG_NOISE_MAX", 0.02), 0.02)
+        _seed = SettingsManager.get("RAG_NOISE_SEED", None)
+        cfg.noise_seed = _i(_seed, 0) if _seed is not None else None
+
+        cfg.tail_messages = _i(SettingsManager.get("RAG_QUERY_TAIL_MESSAGES", 2), 2)
+
+        cfg.search_memory = _b(SettingsManager.get("RAG_SEARCH_MEMORY", True), True)
+        cfg.search_history = _b(SettingsManager.get("RAG_SEARCH_HISTORY", True), True)
+        cfg.search_graph = _b(SettingsManager.get("RAG_SEARCH_GRAPH", False), False)
+        cfg.graph_vector_search = _b(SettingsManager.get("RAG_GRAPH_VECTOR_SEARCH", False), False)
+        cfg.graph_min_results = _i(SettingsManager.get("RAG_GRAPH_MIN_RESULTS", 0), 0)
+
+        cfg.kw_enabled = _b(SettingsManager.get("RAG_KEYWORD_SEARCH", True), True)
+        cfg.kw_max_terms = _i(SettingsManager.get("RAG_KEYWORDS_MAX_TERMS", 8), 8)
+        cfg.kw_min_score = _f(SettingsManager.get("RAG_KEYWORD_MIN_SCORE", 0.34), 0.34)
+        cfg.kw_sql_limit = _i(SettingsManager.get("RAG_KEYWORD_SQL_LIMIT", 250), 250)
+        cfg.kw_min_len = _i(SettingsManager.get("RAG_KEYWORDS_MIN_LEN", 3), 3)
+        cfg.lemmatization = _b(SettingsManager.get("RAG_LEMMATIZATION", True), True)
+
+        cfg.use_fts = _b(SettingsManager.get("RAG_USE_FTS", True), True)
+        cfg.fts_top_k_hist = _i(SettingsManager.get("RAG_FTS_TOP_K_HISTORY", 100), 100)
+        cfg.fts_top_k_mem = _i(SettingsManager.get("RAG_FTS_TOP_K_MEMORIES", 100), 100)
+        cfg.fts_max_terms = _i(SettingsManager.get("RAG_FTS_MAX_TERMS", 10), 10)
+        cfg.fts_min_len = _i(SettingsManager.get("RAG_FTS_MIN_LEN", 3), 3)
+        cfg.fts_morph_expand = _b(SettingsManager.get("RAG_FTS_MORPH_EXPAND", True), True)
+        cfg.fts_prefix_match = _b(SettingsManager.get("RAG_FTS_PREFIX_MATCH", False), False)
+
+        cfg.memory_mode = str(SettingsManager.get("RAG_MEMORY_MODE", "all") or "all").strip().lower()
+
+        cfg.detailed_logs = _b(SettingsManager.get("RAG_DETAILED_LOGS", True), True)
+        cfg.log_top_n = _i(SettingsManager.get("RAG_LOG_LIST_TOP_N", 10), 10)
+        cfg.log_bottom_n = _i(SettingsManager.get("RAG_LOG_LIST_BOTTOM_N", 5), 5)
+        cfg.log_show_all = _b(SettingsManager.get("RAG_LOG_LIST_SHOW_ALL", False), False)
+
+        # --- NEW settings (safe defaults) ---
+        cfg.combine_mode = str(SettingsManager.get("RAG_COMBINE_MODE", "union") or "union").strip().lower()
+        cfg.vector_search_enabled = _b(SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", True), True)
+        cfg.vector_top_k = _i(SettingsManager.get("RAG_VECTOR_TOP_K", 0), 0)
+
+        cfg.intersect_min_methods = _i(SettingsManager.get("RAG_INTERSECT_MIN_METHODS", 2), 2)
+        cfg.intersect_require_vector = _b(SettingsManager.get("RAG_INTERSECT_REQUIRE_VECTOR", True), True)
+        cfg.intersect_fallback_union = _b(SettingsManager.get("RAG_INTERSECT_FALLBACK_UNION", True), True)
+
+        cfg.two_stage_fallback_union = _b(SettingsManager.get("RAG_TWO_STAGE_FALLBACK_UNION", True), True)
+
+        cfg.cross_encoder_enabled = _b(SettingsManager.get("RAG_CROSS_ENCODER_ENABLED", True), True)
+        cfg.cross_encoder_model = resolve_ce_model()
+        cfg.cross_encoder_top_k = _i(SettingsManager.get("RAG_CROSS_ENCODER_TOP_K", 30), 30)
+        cfg.cross_encoder_alpha = _f(SettingsManager.get("RAG_CROSS_ENCODER_ALPHA", 1.0), 1.0)
+        cfg.ce_top_k_ratio = _f(SettingsManager.get("RAG_CE_TOP_K_RATIO", 0.4), 0.4)
+        cfg.ce_max_items = _i(SettingsManager.get("RAG_CE_MAX_ITEMS", 0), 0)
+        cfg.ce_early_exit_score = _f(SettingsManager.get("RAG_CE_EARLY_EXIT_SCORE", 1.1), 1.1)
+        cfg.ce_int8 = _b(SettingsManager.get("RAG_CE_INT8", False), False)
+
+        cfg.use_rrf = _b(SettingsManager.get("RAG_USE_RRF", False), False)
+        cfg.rrf_k = _i(SettingsManager.get("RAG_RRF_K", 60), 60)
+
+        cfg.prefilter_actors = _b(SettingsManager.get("RAG_PREFILTER_ACTORS", False), False)
+
+        cfg.sentence_level = _b(SettingsManager.get("RAG_SENTENCE_LEVEL", False), False)
+        cfg.sentence_min_len = _i(SettingsManager.get("RAG_SENTENCE_MIN_LEN", 20), 20)
+
+        cfg._validate()
+        return cfg
+
+    def _validate(self) -> None:
+        """Clamp values to sane ranges to prevent misconfiguration."""
+        self.limit = max(1, self.limit)
+        self.threshold = max(0.0, min(1.0, self.threshold))
+        self.decay_rate = max(0.0, min(1.0, self.decay_rate))
+        self.noise_max = max(0.0, min(1.0, self.noise_max))
+        self.tail_messages = max(0, self.tail_messages)
+        self.kw_max_terms = max(1, self.kw_max_terms)
+        self.kw_min_score = max(0.0, min(1.0, self.kw_min_score))
+        self.kw_sql_limit = max(1, self.kw_sql_limit)
+        self.kw_min_len = max(1, self.kw_min_len)
+        self.fts_top_k_hist = max(1, self.fts_top_k_hist)
+        self.fts_top_k_mem = max(1, self.fts_top_k_mem)
+        self.fts_max_terms = max(1, self.fts_max_terms)
+        self.fts_min_len = max(1, self.fts_min_len)
+        # fts_morph_expand / fts_prefix_match are booleans — no clamping needed
+        if self.memory_mode not in ("forgotten", "active", "all"):
+            self.memory_mode = "forgotten"
+        _VALID_MODES = ("union", "vector_only", "intersect", "intersect2", "intersect_n", "two_stage")
+        if self.combine_mode not in _VALID_MODES:
+            self.combine_mode = "union"
+        self.vector_top_k = max(0, self.vector_top_k)
+        self.intersect_min_methods = max(1, self.intersect_min_methods)
+        self.K7 = max(0.0, self.K7)
+        self.graph_min_results = max(0, self.graph_min_results)
+        self.cross_encoder_top_k = max(1, self.cross_encoder_top_k)
+        self.cross_encoder_alpha = max(0.0, min(1.0, self.cross_encoder_alpha))
+        self.ce_top_k_ratio = max(0.05, min(1.0, self.ce_top_k_ratio))
+        self.ce_max_items = max(0, self.ce_max_items)
+        self.ce_early_exit_score = max(0.5, self.ce_early_exit_score)
+        self.rrf_k = max(1, self.rrf_k)
+        self.sentence_min_len = max(1, self.sentence_min_len)
+
+
+# ── Default values for all SettingsManager RAG keys ──────────────────────
+# Used by the "Reset RAG defaults" button in the UI.
+RAG_DEFAULTS: dict[str, object] = {
+    "RAG_ENABLED": True,
+    "RAG_EMBED_MODEL": "Qwen3-Embedding-0.6B (600M, 2025)",
+    "RAG_EMBED_MODEL_CUSTOM": "",
+    "RAG_EMBED_QUERY_PREFIX": "query: ",
+    "HF_TOKEN": "",
+    "RAG_WEIGHT_SIMILARITY": 1.27,
+    "RAG_WEIGHT_TIME": 0.001,
+    "RAG_WEIGHT_PRIORITY": 0.92,
+    "RAG_WEIGHT_ENTITY": 0.52,
+    "RAG_WEIGHT_KEYWORDS": 1.01,
+    "RAG_WEIGHT_LEXICAL": 0.3,
+    "RAG_WEIGHT_GRAPH": 1.5,
+    "RAG_GRAPH_MIN_RESULTS": 0,
+    "RAG_TIME_DECAY_RATE": 0.05,
+    "RAG_NOISE_MAX": 0.02,
+    "RAG_MAX_RESULTS": 5,
+    "RAG_SIM_THRESHOLD": 0.13,
+    "RAG_QUERY_TAIL_MESSAGES": 2,
+    "RAG_SEARCH_MEMORY": True,
+    "RAG_SEARCH_HISTORY": True,
+    "RAG_SEARCH_GRAPH": False,
+    "RAG_GRAPH_VECTOR_SEARCH": False,
+    "RAG_KEYWORD_SEARCH": True,
+    "RAG_VECTOR_SEARCH_ENABLED": False,
+    "RAG_LEMMATIZATION": True,
+    "RAG_KEYWORDS_MAX_TERMS": 8,
+    "RAG_KEYWORDS_MIN_LEN": 3,
+    "RAG_KEYWORD_MIN_SCORE": 0.34,
+    "RAG_KEYWORD_SQL_LIMIT": 250,
+    "RAG_USE_FTS": True,
+    "RAG_FTS_TOP_K_HISTORY": 100,
+    "RAG_FTS_TOP_K_MEMORIES": 100,
+    "RAG_FTS_MAX_TERMS": 10,
+    "RAG_FTS_MIN_LEN": 3,
+    "RAG_FTS_MORPH_EXPAND": True,
+    "RAG_FTS_PREFIX_MATCH": False,
+    "RAG_MEMORY_MODE": "all",
+    "RAG_COMBINE_MODE": "two_stage",
+    "RAG_VECTOR_TOP_K": 0,
+    "RAG_INTERSECT_MIN_METHODS": 2,
+    "RAG_INTERSECT_REQUIRE_VECTOR": True,
+    "RAG_INTERSECT_FALLBACK_UNION": True,
+    "RAG_TWO_STAGE_FALLBACK_UNION": True,
+    "RAG_CROSS_ENCODER_ENABLED": True,
+    "RAG_CROSS_ENCODER_MODEL": "Qwen3-Reranker-0.6B (600M, 2025)",
+    "RAG_CROSS_ENCODER_MODEL_CUSTOM": "",
+    "RAG_CROSS_ENCODER_TOP_K": 75,
+    "RAG_CROSS_ENCODER_ALPHA": 0.68,
+    "RAG_CE_TOP_K_RATIO": 0.4,
+    "RAG_CE_MAX_ITEMS": 150,
+    "RAG_CE_EARLY_EXIT_SCORE": 1.1,
+    "RAG_CE_INT8": False,
+    "RAG_USE_RRF": False,
+    "RAG_RRF_K": 60,
+    "RAG_PREFILTER_ACTORS": False,
+    "RAG_SENTENCE_LEVEL": False,
+    "RAG_SENTENCE_MIN_LEN": 20,
+    "RAG_DETAILED_LOGS": True,
+    "RAG_LOG_LIST_TOP_N": 10,
+    "RAG_LOG_LIST_BOTTOM_N": 5,
+    "RAG_LOG_LIST_SHOW_ALL": False,
+}

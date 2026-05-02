@@ -33,6 +33,9 @@ def create_settings_section(gui, parent_layout, title, cfg_list, *, icon_name=No
 
         if t == 'button_group':
             w = create_button_group(gui, parent, cfg.get('buttons', []))
+        elif t == 'widget':
+            factory = cfg.get('factory')
+            w = factory(gui) if callable(factory) else cfg.get('widget')
         else:
             w = create_setting_widget(
                 gui=gui, parent=parent, label=cfg.get('label'),
@@ -191,9 +194,21 @@ def create_button_group(gui, parent, buttons_config):
         button = QPushButton(btn_config['label'])
         if 'command' in btn_config:
             button.clicked.connect(btn_config['command'])
+        if 'widget_name' in btn_config:
+            setattr(gui, btn_config['widget_name'], button)
         layout.addWidget(button)
         
     return frame
+
+
+def _fmt_tooltip(text: str) -> str:
+    if not text:
+        return text
+    escaped = (text.replace('&', '&amp;')
+                   .replace('<', '&lt;')
+                   .replace('>', '&gt;')
+                   .replace('\n', '<br>'))
+    return f'<p style="max-width:350px;">{escaped}</p>'
 
 
 def create_setting_widget(
@@ -247,6 +262,11 @@ def create_setting_widget(
             lambda w=widget: gui._save_setting(setting_key, w.toPlainText())
         )
 
+        if tooltip:
+            _tt = _fmt_tooltip(tooltip)
+            lbl.setToolTip(_tt)
+            widget.setToolTip(_tt)
+
         if widget_name:
             setattr(gui, widget_name, widget)
             setattr(gui, f"{widget_name}_frame", frame)
@@ -257,6 +277,7 @@ def create_setting_widget(
     layout = QHBoxLayout(frame)
     layout.setContentsMargins(0, 2, 0, 2)
     layout.setSpacing(10)
+    frame.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
     lbl = QLabel(label)
     lbl.setMinimumWidth(140)
@@ -299,6 +320,7 @@ def create_setting_widget(
     elif widget_type == 'entry':
         widget = QLineEdit(str(gui.settings.get(setting_key, default)))
         widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        widget.setMinimumWidth(60)
         if hide:
             widget.setEchoMode(QLineEdit.EchoMode.Password)
 
@@ -321,6 +343,7 @@ def create_setting_widget(
     elif widget_type == 'combobox':
         widget = QComboBox()
         widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        widget.setMinimumWidth(60)
         if options:
             widget.addItems([str(o) for o in options])
         widget.setCurrentText(str(gui.settings.get(setting_key, default)))
@@ -354,8 +377,11 @@ def create_setting_widget(
         widget.setWordWrap(True)
         layout.addWidget(widget)
 
-    if tooltip and widget:
-        widget.setToolTip(tooltip)
+    if tooltip:
+        _tt = _fmt_tooltip(tooltip)
+        if widget:
+            widget.setToolTip(_tt)
+        lbl.setToolTip(_tt)
 
     if widget_name and widget is not None:
         setattr(gui, widget_name, widget)
@@ -372,8 +398,11 @@ def create_setting_widget(
                 if isinstance(controller, QCheckBox):
                     active = controller.isChecked()
                 elif isinstance(controller, QComboBox):
-                    if depends_on_value:
-                        active = (controller.currentText() == depends_on_value)
+                    if depends_on_value is not None:
+                        if isinstance(depends_on_value, (list, tuple, set)):
+                            active = controller.currentText() in depends_on_value
+                        else:
+                            active = (controller.currentText() == depends_on_value)
                     else:
                         active = bool(controller.currentText())
                 elif hasattr(controller, "currentText"):

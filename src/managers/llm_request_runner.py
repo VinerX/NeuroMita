@@ -64,7 +64,9 @@ class LLMRequestRunner:
             logger.info(f"Generation attempt {attempt}/{max_attempts}")
 
             try:
-                save_combined_messages(messages, "SavedMessages/last_attempt_log")
+                _base = os.environ.get("NEUROMITA_BASE_DIR", "")
+                _log_path = os.path.join(_base, "SavedMessages", "last_attempt_log") if _base else "SavedMessages/last_attempt_log"
+                save_combined_messages(messages, _log_path)
             except Exception:
                 pass
 

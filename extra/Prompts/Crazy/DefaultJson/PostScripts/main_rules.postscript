@@ -1,49 +1,36 @@
-// Rule to handle a custom <love> tag
-RULE LoveTagHandler
-    MATCH REGEX "<love>([+-]?\d*\.?\d+)</love>" CAPTURE (love_value_str)
+// ===== КАСТОМНАЯ ПЕРЕМЕННАЯ LOVE =====
+// Requires config.json: {"name": "love_change", "type": "float", "min": -10, "max": 10, "description": "Change in Love relationship variable"}
+RULE LoveHandler
+    MATCH FIELD "love_change"
     ACTIONS
-        SET LOCAL love_value = float(love_value_str)
-        SET Love = Love + int(love_value)
-        LOG "Character love updated by " + str(love_value) + ". New love: " + str(Love)
-        REMOVE_MATCH // This will remove "<love>X</love>" from the response
+        SET Love = max(1, min(Love + love_change, 300))
+        LOG "Love updated by " + str(love_change) + ". New: " + str(Love)
     END_ACTIONS
 END_RULE
 
-// Rule for a boolean <secret_revealed> tag
-RULE SecretExposedByTag
-    MATCH TEXT "<secret_revealed>" // Simple text match
+// ===== АКТИВАЦИЯ КВЕСТА =====
+// Альтернатива: можно задать через op:set в config.json без DSL
+RULE SecretTrialHandler
+    MATCH FIELD "secret_trial"
     ACTIONS
-        SET secretExposed = True
-        LOG "secretExposed set to True by <secret_revealed> tag."
-        REMOVE_MATCH
+        SET secretTrial = secret_trial
+        LOG "secretTrial set to " + str(secret_trial)
     END_ACTIONS
 END_RULE
 
-// Rule to modify response text without changing variables
-RULE PoliteGreeting
-    MATCH TEXT "Hello."
+// ===== ЧИСТКА ТЕКСТА (работает в обоих режимах: legacy и structured) =====
+RULE RemoveAsterisks
+    MATCH REGEX "(\*{1,3})"
     ACTIONS
-        REPLACE_MATCH WITH "Greetings and salutations!" // Replaces "Hello."
-        LOG "Replaced 'Hello.' with a more formal greeting."
-    END_ACTIONS
-END_RULE
-
-// Rule to extract multiple parameters
-RULE ActionParams
-    MATCH REGEX "<action name=\"(\w+)\" value1=\"(\d+)\" value2=\"(true|false)\"/>" CAPTURE (action_name, val1_str, val2_str)
-    ACTIONS
-        SET current_action = action_name
-        SET action_param1 = int(val1_str)
-        SET action_param2 = (val2_str == "true")
-        LOG "Parsed action: " + current_action + " with params " + str(action_param1) + ", " + str(action_param2)
         REMOVE_MATCH
     END_ACTIONS
 END_RULE
 
 DEBUG_DISPLAY
-    attitude: attitude      // "LabelForAttitude" будет видно в UI, "attitude" - имя переменной
-    boredom: boredom
-    stress: stress
-    Love: Love           // <<< Наша новая переменная
-    //"Состояние FSM": current_fsm_state // Можно использовать строки в кавычках для меток с пробелами
+    "Attitude": attitude
+    "Boredom": boredom
+    "Stress": stress
+    "Love": Love
+    "Secret": secretExposed
+    "Message time": SYSTEM_DATETIME
 END_DEBUG_DISPLAY

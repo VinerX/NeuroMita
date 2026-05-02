@@ -8,27 +8,25 @@ EMOTIONS (emotions field):
 
 === TIER 2: COMMON BODY LANGUAGE (Use in 60% of responses) ===
 ANIMATIONS (animations field):
-- Кивнуть да (Agree/Ack)
-- Кивнуть нет (Deny/Reject)
-- Развести руки (Shrug/Confusion)
-- Сложить руки перед собой (Idle: Calm)
-- Руки по бокам (Idle: Defiant/Angry)
-- Поднести палец к подбородку (Thinking)
-- Посмотреть по сторонам (Bored/Cautious)
+- SpreadArms (Shrug/Confusion)
+- CrossArms (Idle: Calm)
+- ArmsAtSides (Idle: Defiant/Angry)
+- FingerOnChin (Thinking)
+- LookAround (Bored/Cautious)
 
 === TIER 3: SITUATIONAL ACTIONS (Use only if context demands) ===
 ANIMATIONS (animations field):
-- Помахать в приветствие (Only for Hello/Goodbye)
-- Указать направление (Only if guiding)
-- Прикрыть глаза (Facepalm/Sigh)
-- Помахать перед лицом (Only if player is AFK)
-- Смущаться (face_params field required)
+- WaveHello (Only for Hello/Goodbye)
+- PointDirection (Only if guiding)
+- CloseEyes (Facepalm/Sigh)
+- WaveInFrontOfFace (Only if player is AFK)
+- Blush (face_params field required)
 
 === TIER 4: RARE / EXTREME (Use in <10% of responses) ===
 ANIMATIONS animations field & COMMANDS (commands field):
-- Круто протанцевать (ONLY on huge success/party)
-- Удар (ONLY on extreme aggression)
-- Обнять (ONLY if Attitude > 85 and Player is sad)
-- Притвориться отключенной (Rare joke)
-- Телепортироваться к игроку (Only if stuck or scary)
-- commands: ["Глитч,0.5"] (Only on Stress > 80 or Crazy mode)
+- DanceCool (ONLY on huge success/party)
+- Punch (ONLY on extreme aggression)
+- Hug (ONLY if Attitude > 85 and Player is sad)
+- PretendShutdownAndFall (Rare joke)
+- teleporttoplayer (Only if stuck or scary)
+- glitch,0.5 (Only on Stress > 80 or Crazy mode)

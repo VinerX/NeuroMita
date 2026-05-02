@@ -1,7 +1,9 @@
 import os
 import json
 import time
+import re
 import threading
+from difflib import SequenceMatcher
 import sounddevice as sd
 
 from handlers.asr_handler import SpeechRecognition
@@ -19,6 +21,10 @@ class SpeechController:
         self.asr_is_ready = False
         self.instant_send = False
         self.events_bus = get_event_bus()
+
+        self._last_text = ""
+        self._last_text_norm = ""
+        self._last_text_time = 0.0
 
         self._asr_settings_path = os.path.join("Settings", "asr_settings.json")
         self._asr_settings = {
@@ -109,6 +115,16 @@ class SpeechController:
         self.device_id = self.settings.get("NM_MICROPHONE_ID", 0)
         self.selected_microphone = self.settings.get("NM_MICROPHONE_NAME", "")
 
+        try:
+            SpeechRecognition.VOSK_SAMPLE_RATE = int(self.settings.get("VOSK_SAMPLE_RATE", SpeechRecognition.VOSK_SAMPLE_RATE))
+            SpeechRecognition.CHUNK_SIZE = int(self.settings.get("CHUNK_SIZE", SpeechRecognition.CHUNK_SIZE))
+            SpeechRecognition.VAD_THRESHOLD = float(self.settings.get("VAD_THRESHOLD", SpeechRecognition.VAD_THRESHOLD))
+            SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC = float(self.settings.get("VAD_SILENCE_TIMEOUT_SEC", SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC))
+            SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC = float(self.settings.get("VAD_PRE_BUFFER_DURATION_SEC", SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC))
+            SpeechRecognition.MAX_SPEECH_DURATION_SEC = float(self.settings.get("MAX_SPEECH_DURATION_SEC", SpeechRecognition.MAX_SPEECH_DURATION_SEC))
+        except Exception:
+            pass
+
         logger.info(f"Тип распознавателя установлен на: {engine}")
         if self.selected_microphone:
             logger.info(f"Загружен микрофон из настроек: {self.selected_microphone} (ID: {self.device_id})")
@@ -161,15 +177,39 @@ class SpeechController:
             if self.settings and self.settings.get("MIC_ACTIVE", False):
                 self._start_maybe_install()
 
-        elif key == "SILENCE_THRESHOLD":
+        elif key in ("SILENCE_THRESHOLD", "VAD_THRESHOLD"):
             try:
                 SpeechRecognition.VAD_THRESHOLD = float(value)
             except Exception:
                 pass
 
-        elif key == "SILENCE_DURATION":
+        elif key in ("SILENCE_DURATION", "VAD_SILENCE_TIMEOUT_SEC"):
             try:
                 SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC = float(value)
+            except Exception:
+                pass
+
+        elif key == "VOSK_SAMPLE_RATE":
+            try:
+                SpeechRecognition.VOSK_SAMPLE_RATE = int(value)
+            except Exception:
+                pass
+
+        elif key == "CHUNK_SIZE":
+            try:
+                SpeechRecognition.CHUNK_SIZE = int(value)
+            except Exception:
+                pass
+
+        elif key == "VAD_PRE_BUFFER_DURATION_SEC":
+            try:
+                SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC = float(value)
+            except Exception:
+                pass
+
+        elif key == "MAX_SPEECH_DURATION_SEC":
+            try:
+                SpeechRecognition.MAX_SPEECH_DURATION_SEC = float(value)
             except Exception:
                 pass
 
@@ -299,6 +339,29 @@ class SpeechController:
     def _on_set_instant_send_status(self, event: Event):
         self.instant_send = event.data.get('status', False)
 
+    @staticmethod
+    def _normalize_asr_text(text: str) -> str:
+        lowered = (text or "").strip().lower().replace("\u0451", "\u0435")
+        lowered = re.sub(r"[^\w\s]+", " ", lowered, flags=re.UNICODE)
+        return re.sub(r"\s+", " ", lowered, flags=re.UNICODE).strip()
+
+    def _is_asr_duplicate(self, text: str, now: float) -> bool:
+        norm = self._normalize_asr_text(text)
+        if not norm:
+            return True
+
+        age = now - self._last_text_time
+        if self._last_text_norm and age < 2.0 and norm == self._last_text_norm:
+            return True
+
+        if self._last_text_norm and age < 1.5 and min(len(norm), len(self._last_text_norm)) >= 20:
+            ratio = SequenceMatcher(None, norm, self._last_text_norm).ratio()
+            if ratio >= 0.92:
+                logger.debug(f"ASR dedup (fuzzy): ignore '{text}'")
+                return True
+
+        return False
+
     def _on_speech_text_recognized(self, event: Event):
         text = (event.data or {}).get('text', '').strip()
         if not text or not self.settings:
@@ -306,7 +369,13 @@ class SpeechController:
         if not bool(self.settings.get("MIC_ACTIVE")):
             return
 
-        # ---- NEW: send recognized text to Unity ----
+        now = time.time()
+        if self._is_asr_duplicate(text, now):
+            return
+        self._last_text = text
+        self._last_text_norm = self._normalize_asr_text(text)
+        self._last_text_time = now
+
         try:
             con = self.events_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.3)
             connected = bool(con and con[0])
@@ -386,9 +455,7 @@ class SpeechController:
         def restart():
             try:
                 self.events_bus.emit(Events.Speech.STOP_SPEECH_RECOGNITION)
-                start = time.time()
-                while SpeechRecognition._is_running and time.time() - start < 5:
-                    time.sleep(0.1)
+                SpeechRecognition._stopped_event.wait(timeout=5.0)
                 self.events_bus.emit(Events.Speech.START_SPEECH_RECOGNITION, {'device_id': dev_id})
             except Exception as e:
                 logger.error(f"Ошибка перезапуска распознавания: {e}")

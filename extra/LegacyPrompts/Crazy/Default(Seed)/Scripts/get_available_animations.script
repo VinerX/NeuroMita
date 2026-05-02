@@ -1,0 +1,70 @@
+LOG "GetAvailableAnimations: Script started. attitude=" + attitude
+SET always_available_animations_instant = """<a>Указать направление</a>
+<a>Взять предмет</a>
+<a>Кивнуть нет</a>
+<a>Посмотреть по сторонам</a>
+"""
+
+SET always_available_animations_idle = """<a>Показать усталость</a>
+<a>Притвориться отключенной и упасть</a>
+<a>Сесть и плакать</a>
+<a>Стать уставшей</a>
+<a>Начать махать руками в стороны</a>
+"""
+
+SET final_animations_list = always_available_animations_instant + always_available_animations_idle
+
+IF attitude <= 20 THEN
+    LOG "GetAvailableAnimations: Low attitude. Aggressive/dismissive animations."
+
+	SET low_attitude_instant = """<a>Удар</a>
+<a>Помахать перед лицом</a>
+<a>Глянуть глазами в случайном направлении</a>
+<a>Повернуться в случайном направлении</a>
+"""
+
+    SET low_attitude_idle = """<a>Смотреть с презрением</a>
+<a>Руки в кулаки</a>
+<a>Стать разочарованной</a>
+"""
+
+    SET final_animations_list = final_animations_list + low_attitude_instant + low_attitude_idle
+ELSEIF attitude > 20 AND attitude <= 50 THEN
+    LOG "GetAvailableAnimations: Medium attitude. Neutral/observant animations."
+
+    SET medium_attitude_instant = """<a>Щелчек</a>
+<a>Жест пальцами</a>""" + """
+<a>Развести руки</a>
+<a>Прикрыть глаза</a>
+"""
+
+    SET medium_attitude_idle = """<a>Руки по бокам</a>
+<a>Поднести палец к подбородку</a>
+<a>Руки вперед по бокам</a>
+"""
+
+    SET final_animations_list = final_animations_list + medium_attitude_instant + medium_attitude_idle
+ELSE
+    LOG "GetAvailableAnimations: High attitude. Friendly/expressive animations."
+
+    SET high_attitude_instant = """<a>Похлопать в ладоши</a>
+<a>Помахать в приветствие</a>
+<a>Кивнуть да</a>
+<a>Дружески ударить</a>
+<a>Обнять</a>
+<a>Показать предмет</a>
+<a>Похвастаться предметом</a>
+<a>Прикрыть рот и помахать рукой</a>
+<a>Круто протанцевать</a>
+"""
+
+    SET high_attitude_idle = """<a>Начать круто танцевать</a>
+<a>Руки сложены в ладони перед собой</a>
+<a>Одна рука прижата, вторая сзади</a>
+<a>Сложить руки перед собой</a>
+"""
+
+    SET final_animations_list = final_animations_list + high_attitude_instant + high_attitude_idle
+ENDIF
+
+RETURN final_animations_list

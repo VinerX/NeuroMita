@@ -1,7 +1,8 @@
-import os
+﻿import os
 import time
 import wave
 import asyncio
+import gc
 from typing import Optional, List
 from collections import deque
 import numpy as np
@@ -17,9 +18,9 @@ from utils.gpu_utils import check_gpu_provider
 
 class GigaAMRecognizer(SpeechRecognizerInterface):
     """
-    Обычная PyTorch-версия:
-    - без отдельного процесса
-    - работает на CPU/CUDA (если доступно)
+    Regular PyTorch version:
+    - no separate process
+    - runs on CPU/CUDA (if available)
     """
 
     MODEL_CONFIGS = [
@@ -27,14 +28,14 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             "id": "gigaam",
             "name": "GigaAM",
             "description": _(
-                "Офлайн-распознавание речи на базе GigaAM (PyTorch). Работает в текущем процессе.",
+                "Offline speech recognition based on GigaAM (PyTorch). Runs in current process.",
                 "Offline speech recognition based on GigaAM (PyTorch). Runs in current process."
             ),
             "languages": ["Russian"],
             "gpu_vendor": ["NVIDIA", "CPU"],
             "tags": [
-                _("Локально", "Local"),
-                _("Без отдельного процесса", "No separate process"),
+                _("Local", "Local"),
+                _("No separate process", "No separate process"),
             ],
             "links": []
         }
@@ -56,7 +57,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
         self.FAILED_AUDIO_DIR = "FailedAudios"
         self._url_dir = "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM"
 
-        self._model = None  # PyTorch модель
+        self._model = None  # PyTorch model
 
         self._model_names = [
             "v2_rnnt", "v2_ctc",
@@ -67,9 +68,9 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
     # ---------- UI schema ----------
     def settings_spec(self):
         return [
-            {"key": "device", "label_ru": "Устройство", "label_en": "Device",
+            {"key": "device", "label_ru": "Device", "label_en": "Device",
              "type": "combobox", "options": ["auto", "cuda", "cpu"], "default": "auto"},
-            {"key": "model", "label_ru": "Модель", "label_en": "Model",
+            {"key": "model", "label_ru": "Model", "label_en": "Model",
              "type": "combobox",
              "options": [
                  "v2_rnnt", "v2_ctc",
@@ -90,11 +91,11 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
 
     def set_options(self, device: str, model: str = None, model_path: str = None):
         """
-        Идемпотентная установка опций.
+        Idempotent options update.
 
-        Важно: НЕ сбрасываем уже загруженную модель, если эффективные значения не изменились.
-        Это защищает от повторных apply_settings() (например, из UI/индикаторов),
-        которые раньше обнуляли self._model и self._is_initialized.
+        Important: do not reset an already loaded model if effective values did not change.
+        This protects from repeated apply_settings() calls (for example from UI/indicators)
+        that previously reset self._model and self._is_initialized.
         """
         old_device = (self.gigaam_device or "auto").strip().lower()
         old_model = str(self.gigaam_model or "v3_rnnt").strip()
@@ -114,15 +115,15 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
 
         changed = (new_device != old_device) or (new_model != old_model) or (new_path != old_path)
 
-        # Обновляем поля только если реально изменились
+        # Update fields only when values actually changed
         if changed:
             self.gigaam_device = new_device
             self.gigaam_model = new_model
             self.gigaam_model_path = new_path
 
-            # Сбрасываем только если модель уже загружена или инициализация была отмечена
+            # Reset only if the model is already loaded or marked initialized
             if self._model is not None or self._is_initialized:
-                self.logger.info("Настройки изменены — модель будет перезагружена при следующем init()")
+                self.logger.info("Settings changed - the model will be reloaded on the next init().")
                 self._model = None
                 self._is_initialized = False
 
@@ -165,40 +166,40 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
         if gpu == "NVIDIA" and device in ("auto", "cuda"):
             steps.append({
                 "progress": 10,
-                "description": _("Установка PyTorch с CUDA (cu128)...", "Installing PyTorch with CUDA (cu128)..."),
+                "description": _("Installing PyTorch with CUDA (cu128)...", "Installing PyTorch with CUDA (cu128)..."),
                 "packages": ["torch==2.7.1", "torchaudio==2.7.1"],
                 "extra_args": ["--index-url", "https://download.pytorch.org/whl/cu128"]
             })
         else:
             steps.append({
                 "progress": 10,
-                "description": _("Установка PyTorch CPU...", "Installing PyTorch CPU..."),
+                "description": _("Installing PyTorch CPU...", "Installing PyTorch CPU..."),
                 "packages": ["torch==2.7.1", "torchaudio==2.7.1"],
                 "extra_args": None
             })
 
         steps.append({
             "progress": 30,
-            "description": _("Установка зависимостей...", "Installing deps..."),
+            "description": _("Installing deps...", "Installing deps..."),
             "packages": ["hydra-core", "sentencepiece", "omegaconf"],
             "extra_args": None
         })
 
         steps.append({
             "progress": 55,
-            "description": _("Установка Silero VAD...", "Installing Silero VAD..."),
+            "description": _("Installing Silero VAD...", "Installing Silero VAD..."),
             "packages": ["silero-vad"],
             "extra_args": None
         })
         steps.append({
             "progress": 60,
-            "description": _("Установка sounddevice...", "Installing sounddevice..."),
+            "description": _("Installing sounddevice...", "Installing sounddevice..."),
             "packages": ["sounddevice"],
             "extra_args": None
         })
         steps.append({
             "progress": 65,
-            "description": _("Установка numpy...", "Installing numpy..."),
+            "description": _("Installing numpy...", "Installing numpy..."),
             "packages": ["numpy"],
             "extra_args": None
         })
@@ -318,12 +319,12 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             self.logger.error(f"GigaAM init imports failed: {e}")
             return False
 
-        # alias для hydra targets ("gigaam.*")
+        # alias for hydra targets ("gigaam.*")
         import handlers.asr_models.gigaam as gigaam
         import sys
         sys.modules["gigaam"] = gigaam
 
-        # safe_globals для torch.load(ckpt)
+        # safe_globals for torch.load(ckpt)
         import omegaconf, typing, collections
         self._torch.serialization.add_safe_globals([
             omegaconf.dictconfig.DictConfig,
@@ -338,49 +339,61 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             int
         ])
 
-        # выбор девайса
+        # device selection
         device_choice = (self.gigaam_device or "auto").strip().lower()
         if device_choice == "cuda" and not (self._torch.cuda.is_available()):
-            self.logger.warning("Запрошен CUDA, но CUDA недоступен. Переходим на CPU.")
+            self.logger.warning("CUDA was requested but is unavailable. Falling back to CPU.")
             device_choice = "cpu"
 
         if device_choice == "auto":
             device_choice = "cuda" if self._torch.cuda.is_available() else "cpu"
 
         try:
-            self.logger.info(f"Загрузка GigaAM (PyTorch) на {device_choice}...")
+            self.logger.info(f"Loading GigaAM (PyTorch) on {device_choice}...")
             self._model = gigaam.load_model(
                 self.gigaam_model,
                 device=device_choice,
                 download_root=self.gigaam_model_path,
                 use_flash=False,
             )
+
+            from handlers.asr_models.gigaam.model import GigaAMASR
+            if not isinstance(self._model, GigaAMASR):
+                self.logger.error(
+                    f"Loaded model type is {type(self._model).__name__}, but GigaAMASR is required "
+                    f"(selected '{self.gigaam_model}' appears to be SSL/Emo, not ASR). "
+                    "Choose an ASR model like gigaam_v2_ctc or gigaam_v2_rnnt."
+                )
+                self._model = None
+                self._is_initialized = False
+                return False
+
             self._is_initialized = True
-            self.logger.success("GigaAM (PyTorch) успешно инициализирован")
+            self.logger.success("GigaAM (PyTorch) initialized successfully.")
             return True
         except Exception as e:
-            self.logger.error(f"Не удалось загрузить GigaAM: {e}", exc_info=True)
+            self.logger.error(f"Failed to load GigaAM: {e}", exc_info=True)
             self._model = None
             self._is_initialized = False
             return False
 
     async def transcribe(self, audio_data: np.ndarray, sample_rate: int) -> Optional[str]:
         if not self._is_initialized or self._model is None:
-            self.logger.error("GigaAM не инициализирован")
+            self.logger.error("GigaAM is not initialized.")
             return None
 
         try:
             import torchaudio
 
             wav = self._torch.from_numpy(np.asarray(audio_data, dtype=np.float32).reshape(-1))
-            # ресемпл до 16k (чтобы соответствовать модели, как делал ffmpeg)
+            # resample to 16k (to match model expectations, like ffmpeg did)
             if int(sample_rate) != 16000:
                 wav = torchaudio.functional.resample(wav, int(sample_rate), 16000)
 
             wav = wav.to(next(self._model.parameters()).device).to(next(self._model.parameters()).dtype)
             length = self._torch.tensor([wav.numel()], device=wav.device, dtype=self._torch.long)
 
-            # напрямую используем forward+decoding (без временного файла)
+            # directly use forward + decoding (without temporary file)
             encoded, encoded_len = self._model.forward(wav.unsqueeze(0), length)
             text = self._model.decoding.decode(self._model.head, encoded, encoded_len)[0]
 
@@ -389,13 +402,13 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             return None
 
         except Exception as e:
-            self.logger.error(f"Ошибка транскрибации: {e}", exc_info=True)
+            self.logger.error(f"Transcription error: {e}", exc_info=True)
             return None
 
     async def live_recognition(self, microphone_index: int, handle_voice_callback,
                               vad_model, active_flag, **kwargs) -> None:
         if not self._is_initialized or self._model is None:
-            self.logger.error("GigaAM не инициализирован")
+            self.logger.error("GigaAM is not initialized.")
             return
 
         sample_rate = kwargs.get("sample_rate", 16000)
@@ -403,57 +416,69 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
         vad_threshold = kwargs.get("vad_threshold", 0.5)
         silence_timeout = kwargs.get("silence_timeout", 1.0)
         pre_buffer_duration = kwargs.get("pre_buffer_duration", 0.3)
+        max_speech_duration = float(kwargs.get("max_speech_duration", 30.0))
 
         silence_chunks_needed = int(silence_timeout * sample_rate / chunk_size)
-        pre_buffer_size = int(pre_buffer_duration * sample_rate / chunk_size)
+        pre_buffer_size = max(0, int(pre_buffer_duration * sample_rate / chunk_size))
+        max_speech_chunks = max(1, int(max_speech_duration * sample_rate / chunk_size))
 
-        pre_speech_buffer = deque(maxlen=pre_buffer_size)
+        pre_speech_buffer = deque(maxlen=pre_buffer_size) if pre_buffer_size > 0 else None
         speech_buffer = []
         is_speaking = False
         silence_counter = 0
-
-        stream = self._sd.InputStream(
-            samplerate=sample_rate,
-            channels=1,
-            dtype="float32",
-            blocksize=chunk_size,
-            device=microphone_index
-        )
-        stream.start()
+        overflow_count = 0
+        loop = asyncio.get_running_loop()
 
         try:
-            while active_flag():
-                try:
-                    audio_chunk, overflowed = stream.read(chunk_size)
-                except Exception as e:
+            with self._sd.InputStream(
+                samplerate=sample_rate,
+                channels=1,
+                dtype="float32",
+                blocksize=chunk_size,
+                device=microphone_index,
+            ) as stream:
+                while active_flag():
+                    try:
+                        audio_chunk, overflowed = await loop.run_in_executor(None, stream.read, chunk_size)
+                    except Exception as e:
+                        if not active_flag():
+                            break
+                        self.logger.warning(f"Input stream read aborted: {e}")
+                        break
+
                     if not active_flag():
                         break
-                    self.logger.warning(f"Input stream read aborted: {e}")
-                    break
 
-                if overflowed:
-                    self.logger.warning("Переполнение буфера аудиопотока!")
+                    if overflowed:
+                        overflow_count += 1
+                        self.logger.warning("Audio stream buffer overflow detected.")
+                        if overflow_count % 20 == 0:
+                            self.logger.warning(f"ASR overflow count: {overflow_count}")
 
-                if not is_speaking:
-                    pre_speech_buffer.append(audio_chunk)
+                    audio_tensor = self._torch.from_numpy(audio_chunk.flatten())
+                    speech_prob = vad_model(audio_tensor, sample_rate).item()
 
-                audio_tensor = self._torch.from_numpy(audio_chunk.flatten())
-                speech_prob = vad_model(audio_tensor, sample_rate).item()
+                    should_finalize = False
+                    if speech_prob > vad_threshold:
+                        if not is_speaking:
+                            is_speaking = True
+                            speech_buffer.clear()
+                            if pre_speech_buffer is not None:
+                                speech_buffer.extend(list(pre_speech_buffer))
+                        speech_buffer.append(audio_chunk)
+                        silence_counter = 0
+                        if len(speech_buffer) >= max_speech_chunks:
+                            should_finalize = True
+                    elif is_speaking:
+                        speech_buffer.append(audio_chunk)
+                        silence_counter += 1
+                        if silence_counter > silence_chunks_needed or len(speech_buffer) >= max_speech_chunks:
+                            should_finalize = True
+                    elif pre_speech_buffer is not None:
+                        pre_speech_buffer.append(audio_chunk)
 
-                if speech_prob > vad_threshold:
-                    if not is_speaking:
-                        is_speaking = True
-                        speech_buffer.clear()
-                        speech_buffer.extend(list(pre_speech_buffer))
-                    speech_buffer.append(audio_chunk)
-                    silence_counter = 0
-
-                elif is_speaking:
-                    speech_buffer.append(audio_chunk)
-                    silence_counter += 1
-                    if silence_counter > silence_chunks_needed:
+                    if should_finalize and speech_buffer:
                         audio_to_process = self._np.concatenate(speech_buffer)
-
                         is_speaking = False
                         speech_buffer.clear()
                         silence_counter = 0
@@ -463,17 +488,9 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
                             await handle_voice_callback(text)
                         else:
                             await self._save_failed_audio(audio_to_process, sample_rate)
-
-                await asyncio.sleep(0.01)
         finally:
-            try:
-                stream.stop()
-            except Exception:
-                pass
-            try:
-                stream.close()
-            except Exception:
-                pass
+            if overflow_count:
+                self.logger.warning(f"ASR stream overflows total: {overflow_count}")
 
     async def _save_failed_audio(self, audio_data: np.ndarray, sample_rate: int):
         try:
@@ -489,14 +506,21 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
                 wf.setframerate(sample_rate)
                 wf.writeframes(audio_data_int16.tobytes())
 
-            self.logger.info(f"Фрагмент сохранен в: {filename}")
+            self.logger.info(f"Segment saved to: {filename}")
         except Exception as e:
-            self.logger.error(f"Не удалось сохранить аудиофрагмент: {e}")
+            self.logger.error(f"Failed to save audio segment: {e}")
 
     def cleanup(self) -> None:
         try:
             if self._model is not None:
-                del self._model
+                try:
+                    self._model.cpu()
+                except Exception:
+                    pass
+                model_ref = self._model
+                self._model = None
+                del model_ref
+            gc.collect()
             if self._torch is not None and self._torch.cuda.is_available():
                 self._torch.cuda.empty_cache()
         except Exception:
@@ -507,3 +531,4 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
         self._sd = None
         self._np = None
         self._is_initialized = False
+

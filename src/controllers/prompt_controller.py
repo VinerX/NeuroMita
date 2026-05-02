@@ -9,9 +9,23 @@ from main_logger import logger
 from utils.prompt_builder import build_system_prompts
 from core.request_policy import RequestPolicy, resolve_policy
 
-_STRUCTURED_OUTPUT_PROMPT_PATH = os.path.join(
-    os.path.abspath("Prompts"), "Structural", "response_format_json.txt"
-)
+_TYPE_MAP = {"float": "number", "double": "number", "int": "integer",
+             "bool": "boolean", "str": "string", "string": "string"}
+
+
+def _build_custom_params_schema(custom_params: list) -> str:
+    """Build the custom_fields schema block from character custom_params."""
+    if not custom_params:
+        return ""
+    field_lines = []
+    for p in custom_params:
+        cmd = p.get("change_command") or p["name"]
+        json_type = _TYPE_MAP.get(p.get("type", "string"), "string")
+        desc = p.get("description", "")
+        c_min, c_max = p.get("change_min"), p.get("change_max")
+        range_str = f" ({c_min} to {c_max})" if c_min is not None and c_max is not None else ""
+        field_lines.append(f'    "{cmd}": <{json_type}{range_str}>,  // {desc}')
+    return '  "custom_fields": {\n' + "\n".join(field_lines) + "\n  },\n"
 
 
 class PromptController:
@@ -62,6 +76,14 @@ class PromptController:
     ) -> tuple[List[Dict[str, Any]], List[str]]:
         self._setup_character_for_prompt(character, event_type)
 
+        # Expose capabilities as character variables so DSL templates can use them
+        # via [{VAR}] substitution (e.g. in response_format_json.script includes).
+        caps = capabilities or {}
+        character.set_variable("TOOLS_DESCRIPTION", caps.get("tools_prompt", "") or "")
+        character.set_variable("SCHEMA_REASONING_ENABLED", caps.get("schema_reasoning", False))
+        character.set_variable("CUSTOM_PARAMS_SCHEMA",
+                               _build_custom_params_schema(getattr(character, "custom_params", [])))
+
         chosen_template = None
 
         if policy and policy.template_name_override:
@@ -74,7 +96,14 @@ class PromptController:
                 template_name = "react_template.txt"
                 candidate = os.path.join(character.base_data_path, template_name)
                 if not os.path.exists(candidate):
-                    template_name = character.main_template_path_relative
+                    common_react = "../../Common/react_template.txt"
+                    common_candidate = os.path.normpath(
+                        os.path.join(character.base_data_path, common_react)
+                    )
+                    if os.path.exists(common_candidate):
+                        template_name = common_react
+                    else:
+                        template_name = character.main_template_path_relative
                 chosen_template = template_name
             else:
                 chosen_template = character.main_template_path_relative
@@ -91,15 +120,6 @@ class PromptController:
 
         system_messages: List[Dict[str, Any]] = []
         system_messages.extend(build_system_prompts(blocks, separate=separate_prompts))
-
-        # Inject structured output format instructions when capability is enabled
-        caps = capabilities or {}
-        if caps.get("structured_output", False):
-            so_prompt = self._load_structured_output_prompt()
-            if so_prompt:
-                tools_desc = caps.get("tools_prompt", "")
-                so_prompt = so_prompt.replace("{TOOLS_DESCRIPTION}", tools_desc or "")
-                system_messages.append({"role": "system", "content": so_prompt})
 
         memory_message_content = ""
         try:
@@ -127,22 +147,6 @@ class PromptController:
             )
 
         return system_messages, dsl_system_infos
-
-    def _load_structured_output_prompt(self) -> str:
-        """Load the structured output format instructions from the prompt file."""
-        try:
-            if os.path.exists(_STRUCTURED_OUTPUT_PROMPT_PATH):
-                with open(_STRUCTURED_OUTPUT_PROMPT_PATH, "r", encoding="utf-8") as f:
-                    return f.read().strip()
-            else:
-                logger.warning(
-                    f"[PromptController] Structured output prompt not found: "
-                    f"{_STRUCTURED_OUTPUT_PROMPT_PATH}"
-                )
-                return ""
-        except Exception as e:
-            logger.warning(f"[PromptController] Failed to load structured output prompt: {e}")
-            return ""
 
     def _on_build_prompt(self, event: Event) -> Dict[str, Any]:
         data = event.data or {}
@@ -303,7 +307,7 @@ class PromptController:
 
         if user_content_chunks:
             user_message_for_history = {"role": "user", "content": user_content_chunks}
-            user_message_for_history["time"] = datetime.datetime.now().strftime("%d.%m.%Y_%H.%M")
+            user_message_for_history["time"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
             if sender:
                 user_message_for_history["sender"] = sender
             if non_player_participants:

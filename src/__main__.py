@@ -5,6 +5,9 @@ import uvicorn
 import os
 import sys
 import re
+
+os.environ["QT_API"] = "pyqt6" 
+
 from main_logger import logger
 from _version import __version__
 def create_startup_banner(title: str, version: str) -> str:
@@ -86,10 +89,24 @@ os.environ["UV_LINK_MODE"] = "copy"
 
 #region Переменные для путей
 current_file = os.path.abspath(__file__)
-base_dir = os.path.dirname(os.path.dirname(current_file))
+# When running from a .pyz archive, __file__ is the pyz itself (one level),
+# not src/__main__.py (two levels). Detect and handle both cases.
+if current_file.lower().endswith(".pyz"):
+    base_dir = os.path.dirname(current_file)
+else:
+    base_dir = os.path.dirname(os.path.dirname(current_file))
 
 os.environ["NEUROMITA_BASE_DIR"] = base_dir
-os.environ["NEUROMITA_LIB_DIR"] = os.path.join(base_dir, "Lib")
+if not os.environ.get("NEUROMITA_LIB_DIR"):
+    os.environ["NEUROMITA_LIB_DIR"] = os.path.join(base_dir, "Lib")
+if not os.environ.get("NEUROMITA_PROMPTS_DIR"):
+    os.environ["NEUROMITA_PROMPTS_DIR"] = os.path.join(base_dir, "Prompts")
+if not os.environ.get("NEUROMITA_HISTORIES_DIR"):
+    os.environ["NEUROMITA_HISTORIES_DIR"] = os.path.join(base_dir, "Histories")
+if not os.environ.get("NEUROMITA_MODELS_DIR"):
+    os.environ["NEUROMITA_MODELS_DIR"] = os.path.join(base_dir, "Models")
+if not os.environ.get("NEUROMITA_CHECKPOINTS_DIR"):
+    os.environ["NEUROMITA_CHECKPOINTS_DIR"] = os.path.join(base_dir, "checkpoints")
 
 libs_dir = os.environ["NEUROMITA_LIB_DIR"]
 if not os.path.exists(libs_dir):
@@ -104,13 +121,62 @@ else:
 
 
 logger.info(f"Базовая директория: {os.environ['NEUROMITA_BASE_DIR']}")
+logger.info(f"Prompts: {os.environ['NEUROMITA_PROMPTS_DIR']}")
+logger.info(f"Histories: {os.environ['NEUROMITA_HISTORIES_DIR']}")
+logger.info(f"Checkpoints: {os.environ['NEUROMITA_CHECKPOINTS_DIR']}")
 logger.info(f"Python: {os.environ['NEUROMITA_PYTHON']}")
 logger.info(libs_dir)
 
+# Check for updates (before heavy imports)
+try:
+    from updater import check_for_updates as _check_for_updates
+    _check_for_updates(base_dir=base_dir, logger=logger)
+except Exception as _upd_err:
+    logger.warning(f"Update check failed: {_upd_err}")
 
-if libs_dir not in sys.path:
-    sys.path.insert(0, libs_dir)
+_libs_dir_norm = os.path.normcase(os.path.abspath(libs_dir))
+sys.path = [
+    p for p in sys.path
+    if os.path.normcase(os.path.abspath(p or "")) != _libs_dir_norm
+]
+sys.path.insert(0, libs_dir)
 import importlib.util, ctypes, pathlib, os
+
+# ── Torch CUDA bootstrap ──────────────────────────────────────────────
+# Должен выполняться ДО любого import torch в процессе.
+# Если стоит CPU-вариант, а GPU — NVIDIA, переустанавливаем на CUDA.
+try:
+    from utils.torch_install_utils import decide_torch_install, TORCH_PACKAGES
+    from utils.gpu_utils import check_gpu_provider
+    _gpu = check_gpu_provider() or "CPU"
+    # Передаём libs_dir как target_dir — проверяем dist-info прямо в папке
+    # установки, а не через importlib.metadata (который может найти torch из
+    # другого Python-окружения).
+    _plan = decide_torch_install(_gpu, target_dir=libs_dir)
+    # Только реактивный апгрейд: если torch уже установлен в неправильном варианте.
+    # Первичную установку делает lazy bootstrap (embedding_handler / cross_encoder).
+    from utils.torch_install_utils import get_installed_torch_variant as _get_torch_variant
+    if _plan["action"] == "reinstall" and _get_torch_variant(target_dir=libs_dir) is not None:
+        logger.info(f"Torch bootstrap (early): gpu={_gpu}, action=reinstall (CPU→CUDA)")
+        from utils.pip_installer import PipInstaller
+        _pip = PipInstaller(update_log=logger.info)
+        logger.info("Удаление CPU-варианта PyTorch перед установкой CUDA...")
+        _pip.uninstall_packages(
+            ["torch", "torchaudio"],
+            description="Удаление CPU-варианта PyTorch",
+        )
+        _pip.install_package(
+            list(TORCH_PACKAGES),
+            description=_plan["description"],
+            extra_args=_plan.get("extra_args"),
+        )
+    elif _plan["action"] != "skip":
+        logger.info(f"Torch bootstrap (early): gpu={_gpu}, action={_plan['action']} — отложено до первого использования")
+    else:
+        logger.info(f"Torch bootstrap (early): gpu={_gpu}, action=skip — {_plan.get('reason', '')}")
+except Exception as _torch_boot_err:
+    logger.warning(f"Torch early bootstrap failed: {_torch_boot_err}")
+# ──────────────────────────────────────────────────────────────────────
 
 # ort_spec = importlib.util.find_spec("onnxruntime")
 # capi_dir = pathlib.Path(ort_spec.origin).parent / "capi"

@@ -12,14 +12,6 @@ from schemas.structured_response import StructuredResponse
 
 
 class OpenAIHTTPProviderBase(BaseProvider):
-    """
-    OpenAI-compatible HTTP provider base:
-    - payload: {"model": ..., "messages": ...} + canonical params
-    - tools (native) via ToolManager dialect (if supported)
-    - tool_calls recursion
-    - SSE streaming ("data: ...")
-    """
-
     supports_tools_native = True
     supports_streaming = True
     supports_streaming_with_tools = False
@@ -82,16 +74,14 @@ class OpenAIHTTPProviderBase(BaseProvider):
             lp = u["logprobs"]
             out["logprobs"] = lp if isinstance(lp, bool) else bool(lp)
 
-        # Thinking / reasoning support (OpenRouter unified format)
-        if "enable_thinking" in u:
-            if u["enable_thinking"]:
-                budget = int(u.get("gemini_thinking_budget") or u.get("thinking_budget") or 0)
-                thinking_obj: Dict[str, Any] = {"type": "enabled"}
-                if budget > 0:
-                    thinking_obj["budget_tokens"] = budget
-                out["thinking"] = thinking_obj
-            else:
-                out["thinking"] = {"type": "disabled"}
+        # Send thinking only when explicitly enabled.
+        # Never send {"type": "disabled"} — providers that don't support thinking reject it (e.g. Mistral 422).
+        if "enable_thinking" in u and u["enable_thinking"]:
+            budget = int(u.get("gemini_thinking_budget") or u.get("thinking_budget") or 0)
+            thinking_obj: Dict[str, Any] = {"type": "enabled"}
+            if budget > 0:
+                thinking_obj["budget_tokens"] = budget
+            out["thinking"] = thinking_obj
 
         return out
 
@@ -106,22 +96,24 @@ class OpenAIHTTPProviderBase(BaseProvider):
         }
         payload.update(self._map_unified_params(req.extra or {}, model_to_use))
 
-        # Add structured output response_format when capability is enabled.
-        # Use json_schema (strict) by default; json_object is a softer fallback
-        # for providers that don't support json_schema (OpenRouter/StepFun, etc.)
         if self._supports_structured_output(req):
             rf_mode = (req.capabilities or {}).get("structured_output_mode", "json_schema")
             if rf_mode == "json_object":
                 payload["response_format"] = {"type": "json_object"}
             else:
-                payload["response_format"] = StructuredResponse.openai_response_format()
+                model_cls = req.structured_model or StructuredResponse
+                caps = req.capabilities or {}
+                has_custom = bool(caps.get("has_custom_params")) or bool(caps.get("custom_params"))
+                excl = set() if has_custom else {"custom_fields"}
+                if not caps.get("schema_reasoning", True):
+                    excl.add("reasoning")
+                payload["response_format"] = model_cls.openai_response_format(exclude_fields=excl or None)
             logger.debug(f"[{self.name}] Structured output enabled: response_format={rf_mode}")
 
         return payload
 
     def _request(self, req: LLMRequest, payload: Dict[str, Any]) -> requests.Response:
         headers = self._headers(req)
-        # Принудительно добавляем stream в payload, если он включен в запросе
         if req.stream:
             payload["stream"] = True
         return requests.post(req.api_url, headers=headers, json=payload, stream=req.stream)
@@ -143,7 +135,6 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
         resp = self._request(req, payload)
 
-        # If json_schema was rejected (HTTP 400), retry once with json_object
         if resp.status_code == 400 and self._supports_structured_output(req):
             rf_mode = (req.capabilities or {}).get("structured_output_mode", "json_schema")
             if rf_mode != "json_object" and "response_format" in payload:

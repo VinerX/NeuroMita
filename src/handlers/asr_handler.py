@@ -1,7 +1,9 @@
-import time
+﻿import time
 import asyncio
+import gc
+import concurrent.futures
 from collections import deque
-from threading import Lock, RLock
+from threading import Lock, RLock, Event as ThreadEvent
 from typing import Optional, List, Dict
 
 from main_logger import logger
@@ -15,26 +17,6 @@ from handlers.asr_models.gigaam_onnx_recognizer import GigaAMOnnxRecognizer
 from handlers.asr_models.whisper_recognizer import WhisperRecognizer
 from handlers.asr_models.whisper_onnx_recognizer import WhisperOnnxRecognizer
 from core.events import get_event_bus, Events, Event
-
-
-class AudioState:
-    def __init__(self):
-        self.is_recording = False
-        self.audio_buffer = []
-        self.last_sound_time = time.time()
-        self.is_playing = False
-        self.lock = asyncio.Lock()
-        self.vc = None
-        self.max_buffer_size = 9999999
-
-    async def add_to_buffer(self, data):
-        async with self.lock:
-            if len(self.audio_buffer) >= self.max_buffer_size:
-                self.audio_buffer = self.audio_buffer[-self.max_buffer_size // 2:]
-            self.audio_buffer.append(data.copy())
-
-
-audio_state = AudioState()
 
 
 def _asr_install_runner(engine: str, engine_settings: Optional[dict], timeout_sec: float):
@@ -79,8 +61,8 @@ def _on_install_asr_model_event(event: Event):
         "kind": "asr",
         "item_id": str(engine),
         "task_id": f"asr:{engine}",
-        "title": _("Установка ASR модели: ", "Installing ASR model: ") + str(engine),
-        "initial_status": _("Подготовка...", "Preparing..."),
+        "title": _("Installing ASR model: ", "Installing ASR model: ") + str(engine),
+        "initial_status": _("Preparing...", "Preparing..."),
         "timeout_sec": float(timeout_sec),
         "meta": {
             "kind": "asr",
@@ -143,13 +125,18 @@ class SpeechRecognition:
     VAD_THRESHOLD = 0.5
     VAD_SILENCE_TIMEOUT_SEC = 0.15
     VAD_PRE_BUFFER_DURATION_SEC = 0.3
+    MAX_SPEECH_DURATION_SEC = 30.0
 
     FAILED_AUDIO_DIR = "FailedAudios"
 
     _text_lock = Lock()
+    _start_lock = Lock()
     _text_buffer = deque(maxlen=15)
     _current_text = ""
     _is_running = False
+    _running_event = ThreadEvent()
+    _stopped_event = ThreadEvent()
+    _stopped_event.set()
     _recognition_task = None
 
     _torch = None
@@ -199,7 +186,7 @@ class SpeechRecognition:
     @staticmethod
     def set_recognizer_type(engine: str = None):
         if engine not in SpeechRecognition._registry:
-            logger.warning(f"Неизвестный движок ASR: {engine}")
+            logger.warning(f"Unknown ASR engine: {engine}")
             return
         with SpeechRecognition._rec_instance_lock:
             if engine == SpeechRecognition._recognizer_type:
@@ -208,7 +195,19 @@ class SpeechRecognition:
                 SpeechRecognition._recognizer_instance.cleanup()
                 SpeechRecognition._recognizer_instance = None
             SpeechRecognition._recognizer_type = engine
-        logger.info(f"Тип распознавателя установлен на: {engine}")
+            if engine == "google":
+                SpeechRecognition._unload_vad()
+        logger.info(f"Recognizer type set to: {engine}")
+
+    @staticmethod
+    def _unload_vad():
+        SpeechRecognition._silero_vad_model = None
+        gc.collect()
+        try:
+            if SpeechRecognition._torch is not None and SpeechRecognition._torch.cuda.is_available():
+                SpeechRecognition._torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     @staticmethod
     def build_install_plan(
@@ -369,6 +368,10 @@ class SpeechRecognition:
                 SpeechRecognition.VAD_THRESHOLD = float(settings["silence_threshold"])
             if "silence_duration" in settings:
                 SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC = float(settings["silence_duration"])
+            if "max_speech_duration" in settings:
+                SpeechRecognition.MAX_SPEECH_DURATION_SEC = float(settings["max_speech_duration"])
+            if "MAX_SPEECH_DURATION_SEC" in settings:
+                SpeechRecognition.MAX_SPEECH_DURATION_SEC = float(settings["MAX_SPEECH_DURATION_SEC"])
         except Exception:
             pass
 
@@ -427,7 +430,7 @@ class SpeechRecognition:
                 except ImportError:
                     SpeechRecognition._init_pip()
                     SpeechRecognition._pip_installer.install_package(
-                        ["silero-vad"], description=_("Установка Silero VAD...", "Installing Silero VAD...")
+                        ["silero-vad"], description=_("Installing Silero VAD...", "Installing Silero VAD...")
                     )
                     from silero_vad import load_silero_vad
                 SpeechRecognition._silero_vad_loader = load_silero_vad
@@ -438,7 +441,7 @@ class SpeechRecognition:
 
             return True
         except Exception as e:
-            logger.error(f"Ошибка инициализации VAD: {e}")
+            logger.error(f"VAD initialization error: {e}")
             return False
 
     @staticmethod
@@ -446,6 +449,7 @@ class SpeechRecognition:
         max_retries = 3
         retry = 0
         eb = get_event_bus()
+        inst_for_cleanup: Optional[SpeechRecognizerInterface] = None
         try:
             while retry < max_retries and SpeechRecognition.active:
                 try:
@@ -455,16 +459,17 @@ class SpeechRecognition:
                         retry += 1
                         await asyncio.sleep(1)
                         continue
+                    inst_for_cleanup = inst
 
                     if not inst.is_installed():
-                        logger.warning("ASR-модель не установлена. Остановлено распознавание.")
+                        logger.warning("ASR model is not set. Stopping recognition.")
                         return
 
                     eb.emit(Events.Speech.ASR_MODEL_INIT_STARTED)
 
                     ok = await inst.init()
                     if not ok:
-                        logger.error("Не удалось инициализировать распознаватель.")
+                        logger.error("Failed to initialize recognizer.")
                         return
 
                     eb.emit(Events.Speech.ASR_MODEL_INITIALIZED)
@@ -480,7 +485,7 @@ class SpeechRecognition:
                         )
                     else:
                         if not await SpeechRecognition._init_vad_dependencies():
-                            logger.error("Не удалось инициализировать VAD.")
+                            logger.error("Failed to initialize VAD.")
                             return
                         await inst.live_recognition(
                             SpeechRecognition.microphone_index,
@@ -491,27 +496,35 @@ class SpeechRecognition:
                             chunk_size=SpeechRecognition.CHUNK_SIZE,
                             vad_threshold=SpeechRecognition.VAD_THRESHOLD,
                             silence_timeout=SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC,
-                            pre_buffer_duration=SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC
+                            pre_buffer_duration=SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC,
+                            max_speech_duration=SpeechRecognition.MAX_SPEECH_DURATION_SEC,
                         )
                     break
 
                 except asyncio.CancelledError:
-                    logger.info("Задача распознавания отменена.")
+                    logger.info("Recognition task cancelled.")
                     break
                 except Exception as e:
                     retry += 1
                     logger.error(
-                        f"Ошибка в цикле распознавания (попытка {retry}/{max_retries}): {e}",
+                        f"Recognition loop error (attempt {retry}/{max_retries}): {e}",
                         exc_info=True
                     )
                     if retry < max_retries and SpeechRecognition.active:
                         await asyncio.sleep(2)
                     else:
-                        logger.error("Превышено число попыток. Остановлено.")
+                        logger.error("Retry limit exceeded. Stopping recognition.")
                         break
         finally:
             SpeechRecognition._is_running = False
-            logger.info("Цикл распознавания речи остановлен.")
+            SpeechRecognition._running_event.clear()
+            SpeechRecognition._stopped_event.set()
+            if inst_for_cleanup is not None:
+                try:
+                    inst_for_cleanup.cleanup()
+                except Exception:
+                    pass
+        logger.info("Speech recognition loop stopped.")
 
     @staticmethod
     async def _handle_voice_message(text: str):
@@ -528,13 +541,16 @@ class SpeechRecognition:
 
     @staticmethod
     def speech_recognition_start(device_id: int, loop):
-        if SpeechRecognition._is_running:
-            SpeechRecognition.speech_recognition_stop()
-            time.sleep(0.2)
+        with SpeechRecognition._start_lock:
+            if SpeechRecognition._is_running:
+                SpeechRecognition.speech_recognition_stop()
+                time.sleep(0.2)
 
-        SpeechRecognition._is_running = True
-        SpeechRecognition.active = True
-        SpeechRecognition.microphone_index = device_id or 0
+            SpeechRecognition._is_running = True
+            SpeechRecognition._running_event.set()
+            SpeechRecognition._stopped_event.clear()
+            SpeechRecognition.active = True
+            SpeechRecognition.microphone_index = device_id or 0
 
         engine_id = SpeechRecognition._recognizer_type
         use_remote = SpeechRecognition._remote_asr_mode and engine_id != "google"
@@ -550,6 +566,7 @@ class SpeechRecognition:
                     "vad_threshold": SpeechRecognition.VAD_THRESHOLD,
                     "silence_timeout": SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC,
                     "pre_buffer_duration": SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC,
+                    "max_speech_duration": SpeechRecognition.MAX_SPEECH_DURATION_SEC,
                 }
                 settings = SpeechRecognition._engine_settings.get(engine_id, {}) or {}
                 fut = eng.call("asr", "start_live", {
@@ -561,17 +578,17 @@ class SpeechRecognition:
                 try:
                     ok = bool(fut.result(timeout=10.0))
                     if ok:
-                        logger.info(f"Запущено ASR (engine:{engine_id}) на устройстве {device_id}")
+                        logger.info(f"ASR started (engine:{engine_id}) on device {device_id}")
                         return
                     logger.error("ASR engine start failed, fallback to local mode")
                 except Exception as e:
                     logger.error(f"ASR engine start exception: {e}")
 
-        # fallback: старый local режим
+        # fallback: old local mode
         SpeechRecognition._recognition_task = asyncio.run_coroutine_threadsafe(
             SpeechRecognition.speech_recognition_start_async(), loop
         )
-        logger.info(f"Запущено распознавание речи (local) на устройстве {device_id}")
+        logger.info(f"Speech recognition started (local) on device {device_id}")
 
     @staticmethod
     async def speech_recognition_start_async():
@@ -599,7 +616,19 @@ class SpeechRecognition:
                 except Exception:
                     pass
 
-        # stop local
+        task = SpeechRecognition._recognition_task
+        if task:
+            try:
+                if not task.done():
+                    task.cancel()
+                    task.result(timeout=5)
+            except concurrent.futures.CancelledError:
+                pass
+            except concurrent.futures.TimeoutError:
+                logger.warning("ASR local task stop timeout.")
+            except Exception:
+                pass
+
         try:
             inst = SpeechRecognition._get_recognizer_snapshot()
             if inst:
@@ -607,16 +636,10 @@ class SpeechRecognition:
         except Exception:
             pass
 
-        task = SpeechRecognition._recognition_task
-        if task:
-            try:
-                if not task.done():
-                    task.cancel()
-                    task.result(timeout=3)
-            except Exception:
-                pass
-
+        SpeechRecognition._unload_vad()
         SpeechRecognition._is_running = False
+        SpeechRecognition._running_event.clear()
+        SpeechRecognition._stopped_event.set()
         SpeechRecognition._recognition_task = None
 
     @staticmethod

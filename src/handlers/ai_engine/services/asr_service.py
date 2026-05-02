@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import gc
 from typing import Any, Callable, Optional
 
 
@@ -50,6 +51,7 @@ class ASRService:
             vad_threshold = float(vad_cfg.get("vad_threshold", 0.5) or 0.5)
             silence_timeout = float(vad_cfg.get("silence_timeout", 0.15) or 0.15)
             pre_buffer_duration = float(vad_cfg.get("pre_buffer_duration", 0.3) or 0.3)
+            max_speech_duration = float(vad_cfg.get("max_speech_duration", 30.0) or 30.0)
 
             await self._stop_live_internal()
 
@@ -62,6 +64,7 @@ class ASRService:
                 vad_threshold=vad_threshold,
                 silence_timeout=silence_timeout,
                 pre_buffer_duration=pre_buffer_duration,
+                max_speech_duration=max_speech_duration,
             )
             return bool(ok)
 
@@ -82,6 +85,7 @@ class ASRService:
         vad_threshold: float,
         silence_timeout: float,
         pre_buffer_duration: float,
+        max_speech_duration: float,
     ) -> bool:
         self._engine_id = engine_id
         self._engine_settings = engine_settings or {}
@@ -134,6 +138,7 @@ class ASRService:
                     vad_threshold=vad_threshold,
                     silence_timeout=silence_timeout,
                     pre_buffer_duration=pre_buffer_duration,
+                    max_speech_duration=max_speech_duration,
                 )
             finally:
                 self._active = False
@@ -144,22 +149,29 @@ class ASRService:
 
     async def _stop_live_internal(self):
         self._active = False
-        try:
-            if self._recognizer is not None:
-                try:
-                    self._recognizer.cleanup()
-                except Exception:
-                    pass
-        finally:
-            self._recognizer = None
 
         if self._task is not None:
             try:
                 self._task.cancel()
-                await asyncio.sleep(0)
+                await asyncio.wait_for(self._task, timeout=5.0)
+            except asyncio.CancelledError:
+                pass
+            except asyncio.TimeoutError:
+                pass
             except Exception:
                 pass
-        self._task = None
+            finally:
+                self._task = None
+
+        if self._recognizer is not None:
+            try:
+                self._recognizer.cleanup()
+            except Exception:
+                pass
+            finally:
+                self._recognizer = None
+
+        self._unload_vad_model()
         self.emit_event("status", {"running": False})
 
     async def _get_vad_model(self):
@@ -167,6 +179,8 @@ class ASRService:
             return self._vad_model
 
         try:
+            from handlers.embedding_handler import _ensure_torch_and_transformers
+            _ensure_torch_and_transformers()
             import torch
         except Exception as e:
             raise RuntimeError(f"torch not available for VAD: {e}") from None
@@ -178,6 +192,16 @@ class ASRService:
 
         self._vad_model = load_silero_vad()
         return self._vad_model
+
+    def _unload_vad_model(self):
+        self._vad_model = None
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     def _get_recognizer(self, engine_id: str):
         if self._recognizer is not None and self._engine_id == engine_id:

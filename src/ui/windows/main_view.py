@@ -2,6 +2,7 @@ import io
 import base64
 import re
 import time
+import uuid
 from pathlib import Path
 import os
 from PyQt6.QtCore import QSize
@@ -115,7 +116,11 @@ class ChatGUI(QMainWindow):
         super().__init__()
         self.settings = settings
         
-        self.SETTINGS_PANEL_WIDTH = 400
+        try:
+            self.SETTINGS_PANEL_WIDTH = int(self.settings.get("SETTINGS_PANEL_WIDTH", 520) or 520)
+        except Exception:
+            self.SETTINGS_PANEL_WIDTH = 520
+        self.SETTINGS_PANEL_WIDTH = max(280, min(1800, self.SETTINGS_PANEL_WIDTH))
         
         self.event_bus = get_event_bus()
         self._connect_signals()
@@ -361,10 +366,18 @@ class ChatGUI(QMainWindow):
         setup_chat_panel(self, main_layout)
         setup_settings_panel(self, main_layout)
         self._init_settings_containers()
+        # применить режим интерфейса (скрыть кнопки панели по уровню)
+        try:
+            from ui.widgets.settings_panel import apply_interface_mode
+            apply_interface_mode(self, self.settings.get("INTERFACE_MODE") or _('Базовый', 'Basic'))
+        except Exception:
+            pass
         self.resize(1200, 800)
         
     def _on_hide_animation_finished(self):
         self.settings_overlay.hide()
+        if hasattr(self, "settings_resize_handle"):
+            self.settings_resize_handle.hide()
         try:
             self.settings_animation.finished.disconnect(self._on_hide_animation_finished)
         except TypeError:
@@ -390,7 +403,7 @@ class ChatGUI(QMainWindow):
             scroll_area.setWidgetResizable(True)
             scroll_area.setFrameShape(QFrame.Shape.NoFrame)
             scroll_area.setObjectName(f"ScrollArea_{key}")
-            scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             
             content_widget = QWidget()
             content_widget.setObjectName(f"ContentWidget_{key}")
@@ -426,8 +439,13 @@ class ChatGUI(QMainWindow):
             cont = self.settings_containers.get(category)
             if not cont:
                 return
+            if hasattr(self, "settings_resize_handle"):
+                self.settings_resize_handle.show()
             self.settings_overlay.show_category(cont)
-            self.settings_animation.setEndValue(self.SETTINGS_PANEL_WIDTH)
+            max_width = self.settings_overlay._effective_max_width() if hasattr(self.settings_overlay, "_effective_max_width") else self.SETTINGS_PANEL_WIDTH
+            target_width = max(280, min(int(max_width), int(self.SETTINGS_PANEL_WIDTH)))
+            self.SETTINGS_PANEL_WIDTH = target_width
+            self.settings_animation.setEndValue(target_width)
 
         self.settings_animation.setStartValue(self.settings_overlay.width())
         self.settings_animation.start()
@@ -532,7 +550,18 @@ class ChatGUI(QMainWindow):
             message_time = entry.get("time", "???")
             structured_data = entry.get("structured_data")
             message_id = entry.get("message_id")
+            thinking_text = entry.get("thinking")
             try:
+                show_think_in_gui = bool(self._get_setting("SHOW_THINK_IN_GUI", False))
+                if role == "assistant" and thinking_text and show_think_in_gui:
+                    speaker = entry.get("speaker", "")
+                    message_renderer.insert_message(
+                        self, "think",
+                        [{"type": "meta", "speaker": speaker},
+                         {"type": "text", "text": thinking_text.strip()}],
+                        message_time=message_time,
+                        character_id=character_id,
+                    )
                 message_renderer.insert_message(self, role, content, message_time=message_time,
                                                 structured_data=structured_data,
                                                 message_id=message_id, character_id=character_id)
@@ -692,8 +721,12 @@ class ChatGUI(QMainWindow):
         if not user_input and not system_input and not all_image_data:
             return
 
+        # Generate req_id now so we can pre-compute the user message_id for the widget
+        req_id = uuid.uuid4().hex
+        user_message_id = f"in:{req_id}"
+
         if user_input:
-            message_renderer.insert_message(self, "user", user_input)
+            message_renderer.insert_message(self, "user", user_input, message_id=user_message_id)
             self.user_entry.clear()
 
         if all_image_data:
@@ -709,7 +742,8 @@ class ChatGUI(QMainWindow):
 
                 image_content_for_display.insert(0, {"type": "text", "content": label + "\n"})
 
-            message_renderer.insert_message(self, "user", image_content_for_display)
+            message_renderer.insert_message(self, "user", image_content_for_display,
+                                            message_id=user_message_id)
 
         self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
             "user_input": user_input,
@@ -717,6 +751,7 @@ class ChatGUI(QMainWindow):
             "image_data": all_image_data,
             "character_id": character_id,
             "sender": "Player",
+            "req_id": req_id,
         })
 
         if staged_image_data:
@@ -964,9 +999,10 @@ class ChatGUI(QMainWindow):
         import os
         character_id = self._get_current_character_id_for_debug()
 
-        start_dir = "Histories"
+        histories_root = os.environ.get("NEUROMITA_HISTORIES_DIR", os.path.join(os.getcwd(), "Histories"))
+        start_dir = histories_root
         if character_id:
-            candidate = os.path.join("Histories", character_id, "Saved")
+            candidate = os.path.join(histories_root, character_id, "Saved")
             if os.path.isdir(candidate):
                 start_dir = candidate
         if not os.path.isdir(start_dir):
@@ -990,6 +1026,40 @@ class ChatGUI(QMainWindow):
             "file_path": file_path,
             "character_id": character_id,
         })
+
+    def _on_debug_view_last_context(self):
+        import json
+        import os
+        from PyQt6.QtWidgets import QMessageBox
+        base = os.environ.get("NEUROMITA_BASE_DIR", "")
+        path = (
+            os.path.join(base, "SavedMessages", "last_request_context.json")
+            if base
+            else os.path.join("SavedMessages", "last_request_context.json")
+        )
+        if not os.path.isfile(path):
+            QMessageBox.warning(
+                self,
+                _("Нет данных", "No data"),
+                _("Файл контекста не найден. Сначала отправьте сообщение.",
+                  "Context file not found. Send a message first.")
+            )
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, _("Ошибка", "Error"), str(e))
+            return
+        try:
+            from ui.dialogs.context_viewer_dialog import ContextViewerDialog
+            ContextViewerDialog(data, parent=self).exec()
+        except Exception as e:
+            import traceback
+            QMessageBox.critical(
+                self, _("Ошибка открытия диалога", "Dialog error"),
+                f"{e}\n\n{traceback.format_exc()}"
+            )
 
     def _get_current_character_id_for_debug(self) -> str:
         try:
@@ -1106,16 +1176,36 @@ class ChatGUI(QMainWindow):
     
         # ===== Совместимость: обновление индикаторов статуса =====
     def update_status_colors(self):
+        from managers.settings_manager import SettingsManager
         game_connected = self.event_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
         silero_connected = self.event_bus.emit_and_wait(Events.Telegram.GET_SILERO_STATUS, timeout=0.5)
         mic_active = self.event_bus.emit_and_wait(Events.Speech.GET_MIC_STATUS, timeout=0.5)
         screen_capture_active = self.event_bus.emit_and_wait(Events.Capture.GET_SCREEN_CAPTURE_STATUS, timeout=0.5)
         camera_capture_active = self.event_bus.emit_and_wait(Events.Capture.GET_CAMERA_CAPTURE_STATUS, timeout=0.5)
-        
+        rag_enabled = SettingsManager.get("RAG_ENABLED", False)
+
+        use_voice = bool(SettingsManager.get("USE_VOICEOVER", False))
+        method = str(SettingsManager.get("VOICEOVER_METHOD", "TG") or "TG")
+
         if hasattr(self, 'game_status_checkbox'):
             self.game_status_checkbox.setChecked(bool(game_connected and game_connected[0]))
         if hasattr(self, 'silero_status_checkbox'):
-            self.silero_status_checkbox.setChecked(bool(silero_connected and silero_connected[0]))
+            if method == "Local":
+                self.silero_status_checkbox.setText(_('Озвучка (Лок.)', 'Voice (Local)'))
+                if use_voice:
+                    model_id = str(SettingsManager.get("NM_CURRENT_VOICEOVER", "") or "")
+                    is_init = self.event_bus.emit_and_wait(
+                        Events.Audio.CHECK_MODEL_INITIALIZED, {'model_id': model_id}, timeout=0.5
+                    ) if model_id else None
+                    voice_active = bool(is_init and is_init[0])
+                else:
+                    voice_active = False
+            else:
+                self.silero_status_checkbox.setText(_('Озвучка (ТГ)', 'Voice (TG)'))
+                voice_active = bool(use_voice and silero_connected and silero_connected[0])
+            self.silero_status_checkbox.setChecked(voice_active)
+        if hasattr(self, 'rag_status_checkbox'):
+            self.rag_status_checkbox.setChecked(bool(rag_enabled))
         if hasattr(self, 'mic_status_checkbox'):
             self.mic_status_checkbox.setChecked(bool(mic_active and mic_active[0]))
         if hasattr(self, 'screen_capture_status_checkbox'):
@@ -1152,16 +1242,19 @@ class ChatGUI(QMainWindow):
 
     # ===== Совместимость: рендер сообщений (обёртки к message_renderer) =====
     def _on_update_chat_signal(self, role, content, insert_at_start, message_time):
-        """Slot for update_chat_signal — picks up pending structured_data if available."""
-        # Only assistant messages consume _pending_structured_data.
+        """Slot for update_chat_signal — picks up pending structured_data and message_id if available."""
+        # Only assistant messages consume _pending_structured_data / _pending_message_id.
         # Think/system messages must not steal it from the following assistant message.
         structured_data = None
+        message_id = None
         if role == "assistant":
             structured_data = getattr(self, '_pending_structured_data', None)
             self._pending_structured_data = None
+            message_id = getattr(self, '_pending_message_id', None) or None
+            self._pending_message_id = None
         from ui.chat import message_renderer
         message_renderer.insert_message(self, role, content, insert_at_start, message_time,
-                                        structured_data=structured_data)
+                                        structured_data=structured_data, message_id=message_id)
 
     def _insert_message_slot(self, role, content, insert_at_start, message_time):
         return self.insert_message(role, content, insert_at_start, message_time)

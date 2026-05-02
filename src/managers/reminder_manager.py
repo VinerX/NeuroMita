@@ -10,7 +10,8 @@ logger = logging.getLogger(__name__)
 class ReminderManager:
     def __init__(self, character_name: str):
         self.character_name = character_name
-        self.history_dir = f"Histories\\{character_name}"
+        _histories_dir = os.environ.get("NEUROMITA_HISTORIES_DIR", os.path.join(os.getcwd(), "Histories"))
+        self.history_dir = os.path.join(_histories_dir, character_name)
         os.makedirs(self.history_dir, exist_ok=True)
 
         self.filename = os.path.join(self.history_dir, f"{character_name}_reminders.json")

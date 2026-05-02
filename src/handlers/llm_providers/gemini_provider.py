@@ -7,6 +7,7 @@ import json
 import copy
 from main_logger import logger
 from handlers.llm_providers.param_mapper import filter_jsonable_params
+from schemas.structured_response import StructuredResponse
 
 
 class GeminiProvider(BaseProvider):
@@ -25,7 +26,6 @@ class GeminiProvider(BaseProvider):
 
     def _supports_system_instruction(self, model: str) -> bool:
         m = (model or "").lower()
-        # Gemma-family часто не поддерживает developer instruction => нельзя system_instruction
         if "gemma" in m and "gemini" not in m:
             return False
         return True
@@ -43,9 +43,6 @@ class GeminiProvider(BaseProvider):
         return "\n".join([c for c in chunks if c and str(c).strip()]).strip()
 
     def _inject_system_into_contents(self, system_parts: list, contents: list) -> list:
-        """
-        Для моделей без system_instruction: переносим system в первое user-сообщение.
-        """
         sys_text = self._system_parts_to_text(system_parts)
         if not sys_text:
             return contents
@@ -58,7 +55,6 @@ class GeminiProvider(BaseProvider):
                 "parts": [{"text": prefix}]
             }]
 
-        # найти первое user сообщение
         for msg in contents:
             if not isinstance(msg, dict) or msg.get("role") != "user":
                 continue
@@ -79,7 +75,6 @@ class GeminiProvider(BaseProvider):
             msg["parts"] = parts
             return contents
 
-        # если user-сообщений нет — добавим отдельное в начало
         return [{"role": "user", "parts": [{"text": prefix}]}] + contents
 
     def _format_messages_for_gemini_api(self, messages):
@@ -141,7 +136,6 @@ class GeminiProvider(BaseProvider):
         if model in ("gemini-2.5-pro-exp-03-25", "gemini-2.5-flash-preview-04-17"):
             cfg.pop("presencePenalty", None)
 
-        # Thinking support (Gemini 2.5+)
         if u.get("enable_thinking"):
             budget = u.get("gemini_thinking_budget")
             thinking_cfg: dict = {"includeThoughts": True}
@@ -150,7 +144,6 @@ class GeminiProvider(BaseProvider):
             cfg["thinkingConfig"] = thinking_cfg
             logger.debug(f"[GeminiProvider] thinkingConfig enabled: {thinking_cfg}")
         elif "enable_thinking" in u:
-            # Явно отключаем thinking, иначе модели Gemini 2.5+ думают по умолчанию
             cfg["thinkingConfig"] = {"thinkingBudget": 0}
             logger.debug("[GeminiProvider] thinkingConfig explicitly disabled (thinkingBudget=0)")
 
@@ -170,7 +163,6 @@ class GeminiProvider(BaseProvider):
         if "system_instruction" in formatted:
             system_parts = (formatted.get("system_instruction") or {}).get("parts") or []
 
-        # Gemma: system_instruction нельзя — переносим system в contents
         if system_parts and not self._supports_system_instruction(req.model):
             contents = self._inject_system_into_contents(system_parts, contents)
         else:
@@ -193,19 +185,19 @@ class GeminiProvider(BaseProvider):
 
         gen_cfg = self._map_unified_params_to_generation_config(req.extra, req.model)
 
-        # Add structured output for Gemini when capability is enabled.
-        # Default mode "gemini_schema": pass responseSchema for strict enforcement.
-        # Escape hatch: set structured_output_mode="gemini_prompt" in preset to use
-        # prompt-guided JSON only (old behavior, no schema constraint).
         caps = req.capabilities or {}
         if caps.get("structured_output", False):
             gen_cfg["responseMimeType"] = "application/json"
             mode = caps.get("structured_output_mode", "gemini_schema")
             if mode != "gemini_prompt":
-                from schemas.structured_response import StructuredResponse as _SR
-                schema = _SR.gemini_schema_dict()
+                model_cls = req.structured_model or StructuredResponse
+                has_custom = bool(caps.get("has_custom_params")) or bool(caps.get("custom_params"))
+                excl = set() if has_custom else {"custom_fields"}
+                if not caps.get("schema_reasoning", True):
+                    excl.add("reasoning")
+                schema = model_cls.gemini_schema_dict(exclude_fields=excl or None)
                 gen_cfg["responseJsonSchema"] = schema
-                logger.debug("[GeminiProvider] Structured output: responseSchema passed (gemini_schema mode)")
+                logger.debug("[GeminiProvider] Structured output: responseJsonSchema passed (gemini_schema mode)")
             else:
                 logger.debug("[GeminiProvider] Structured output: prompt-guided only (gemini_prompt mode)")
 
@@ -292,8 +284,6 @@ class GeminiProvider(BaseProvider):
                                 continue
                             is_thought = bool(part.get("thought"))
                             if stream_callback:
-                                # Wrap thinking parts in <think> tags so the existing
-                                # ThinkTagStreamFilter in chat_controller routes them correctly
                                 if is_thought:
                                     stream_callback(f"<think>{text}</think>")
                                 else:

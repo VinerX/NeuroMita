@@ -46,7 +46,7 @@ pydantic==2.10.6
 pydantic-core==2.27.2
 pygame==2.6.1
 python-dateutil==2.9.0.post0
-regex==2024.11.6
+regex>=2025.10.22
 requests==2.32.3
 rsa==4.9
 setuptools==75.8.0
@@ -66,7 +66,8 @@ emoji
 nodriver
 platformdirs
 dotenv
-
+pymorphy2
+bitsandbytes>=0.43.0
 # tools reqs
 ddgs
 bs4
@@ -90,3 +91,4 @@ portalocker
 pywinpty
 soxr
 json-repair
+huggingface_hub

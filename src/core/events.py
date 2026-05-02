@@ -32,7 +32,7 @@ class EventBus:
 
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
 
-        wait_workers = max(8, max_workers * 2)
+        wait_workers = max(24, max_workers * 4)
         self._wait_executor = ThreadPoolExecutor(max_workers=wait_workers)
 
         self._event_queue = Queue()
@@ -650,6 +650,12 @@ class Events:
         """Работа с историей диалога"""
         PREPARE_FOR_PROMPT = "prepare_history_for_prompt"
         SAVE_AFTER_RESPONSE = "save_history_after_response"
+        MESSAGE_COMPLETED = "history_message_completed"
+
+    class RAG:
+        GET_EMBEDDING = "rag_get_embedding"
+        GET_EMBEDDINGS = "rag_get_embeddings"
+        MODEL_CHANGED = "rag_model_changed"
 
     class Install:
         """Унифицированные события для менеджера установок"""
@@ -689,3 +695,16 @@ class Events:
         ENGINE_EVENT = "ai_engine_event"
         RESTART_SERVICE = "ai_restart_service"
         SERVICE_RESTARTED = "ai_service_restarted"
+
+    class EmbeddingPresets:
+        """События для управления пресетами провайдеров эмбеддингов"""
+        GET_PRESET_LIST = "embed_get_preset_list"
+        GET_PRESET_FULL = "embed_get_preset_full"
+        SAVE_CUSTOM_PRESET = "embed_save_custom_preset"
+        DELETE_CUSTOM_PRESET = "embed_delete_custom_preset"
+        RENAME_CUSTOM_PRESET = "embed_rename_custom_preset"
+        REORDER_PRESETS = "embed_reorder_presets"
+        TEST_PRESET = "embed_test_preset"
+        TEST_RESULT = "embed_test_result"
+        PRESET_SAVED = "embed_preset_saved"
+        PRESET_DELETED = "embed_preset_deleted"

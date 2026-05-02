@@ -58,7 +58,7 @@ def get_character_voice_paths(character=None, provider=None):
 
     is_nvidia = provider in ["NVIDIA"]
     model_ext = 'pth' if is_nvidia else 'onnx'
-    clone_voice_folder = "Models"
+    clone_voice_folder = os.environ.get("NEUROMITA_MODELS_DIR", os.path.abspath("Models"))
 
     short_name = "Mila"  # значение по умолчанию
 

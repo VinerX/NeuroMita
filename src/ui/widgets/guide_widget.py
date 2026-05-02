@@ -8,6 +8,8 @@ from core.events import get_event_bus, Events
 import os
 
 class IGuidePage(ABC):
+    min_mode: str = "basic"
+
     def __init__(self):
         pass
         
@@ -40,6 +42,19 @@ class GuideWidget(QWidget):
         self.pages = []
         self.current_page_index = 0
         self.current_language = "ru"
+        self._guide_level = "basic"
+        self._filtered_pages = []
+        try:
+            from managers.settings_manager import SettingsManager
+            from ui.widgets.settings_panel import normalize_mode
+            saved = SettingsManager.get("GUIDE_LEVEL")
+            if saved in ("basic", "advanced", "full"):
+                self._guide_level = saved
+            else:
+                iface = SettingsManager.get("INTERFACE_MODE")
+                self._guide_level = normalize_mode(iface)
+        except Exception:
+            pass
         self.setObjectName("GuideWidget")
         self.setup_ui()
         self._init_pages()
@@ -154,6 +169,28 @@ class GuideWidget(QWidget):
         self.setMinimumSize(600, 500)
         self.setMaximumSize(800, 700)
         
+        # --- Level selector ---
+        level_row = QWidget()
+        level_row_layout = QHBoxLayout(level_row)
+        level_row_layout.setContentsMargins(0, 0, 0, 4)
+        level_row_layout.setSpacing(8)
+        level_row_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self._level_group = QButtonGroup(level_row)
+        self._level_group.setExclusive(True)
+
+        for label, key in [("Базовый", "basic"), ("Продвинутый", "advanced"), ("Полный", "full")]:
+            rb = QRadioButton(label)
+            rb.setObjectName("GuideLevelButton")
+            rb.setProperty("level_key", key)
+            if key == self._guide_level:
+                rb.setChecked(True)
+            level_row_layout.addWidget(rb)
+            self._level_group.addButton(rb)
+
+        self._level_group.buttonClicked.connect(self._on_level_changed)
+        container_layout.addWidget(level_row)
+
         header_layout = QHBoxLayout()
         self.title_label = QLabel("")
         self.title_label.setObjectName("GuideTitle")
@@ -203,6 +240,7 @@ class GuideWidget(QWidget):
         self.description_label.setObjectName("GuideDescription")
         self.description_label.setWordWrap(True)
         self.description_label.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.description_label.setTextFormat(Qt.TextFormat.RichText)
         container_layout.addWidget(self.description_label, 1)
         
         nav_layout = QHBoxLayout()
@@ -255,6 +293,31 @@ class GuideWidget(QWidget):
         else:
             self.close_button.setText("Finish")
         
+    def _on_level_changed(self, btn):
+        level = btn.property("level_key")
+        if not level:
+            return
+        self._guide_level = level
+        self._update_filtered_pages()
+        self.current_page_index = 0
+        self.show_page(0)
+        try:
+            from managers.settings_manager import SettingsManager
+            SettingsManager.set("GUIDE_LEVEL", level)
+        except Exception:
+            pass
+        try:
+            self.event_bus.emit(Events.Settings.GUIDE_LEVEL_CHANGED, level)
+        except Exception:
+            pass
+
+    def _update_filtered_pages(self):
+        cur_rank = _LEVEL_RANK.get(self._guide_level, 0)
+        self._filtered_pages = [
+            p for p in self.pages
+            if _LEVEL_RANK.get(getattr(p, 'min_mode', 'basic'), 0) <= cur_rank
+        ]
+
     def _init_pages(self):
         self.pages = [
             WelcomeGuidePage(),
@@ -267,6 +330,7 @@ class GuideWidget(QWidget):
             ChatGuidePage(),
             FinalGuidePage(),
         ]
+        self._update_filtered_pages()
         
     def _load_image(self, filename):
         if not filename:
@@ -287,42 +351,42 @@ class GuideWidget(QWidget):
         return None
 
     def show_page(self, index: int):
-        if 0 <= index < len(self.pages):
+        if 0 <= index < len(self._filtered_pages):
             self.current_page_index = index
-            page = self.pages[index]
-            
+            page = self._filtered_pages[index]
+
             if self.current_language == "ru":
                 self.title_label.setText(page.get_title_ru())
                 self.description_label.setText(page.get_description_ru())
             else:
                 self.title_label.setText(page.get_title_en())
                 self.description_label.setText(page.get_description_en())
-            
+
             image_filename = page.get_image_filename()
             pixmap = self._load_image(image_filename)
-            
+
             if pixmap:
                 available_width = self.width() - 80
                 available_height = 320
-                
+
                 scaled_pixmap = pixmap.scaled(
                     available_width,
                     available_height,
-                    Qt.AspectRatioMode.KeepAspectRatio, 
+                    Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation
                 )
-                
+
                 self.image_label.setPixmap(scaled_pixmap)
-                
+
                 needed_height = scaled_pixmap.height() + 20
                 final_height = max(120, min(needed_height, 350))
                 self.image_frame.setFixedHeight(final_height)
-            
-            self.page_indicator.setText(f"{index + 1} / {len(self.pages)}")
-            
+
+            self.page_indicator.setText(f"{index + 1} / {len(self._filtered_pages)}")
+
             self.prev_button.setEnabled(index > 0)
-            self.next_button.setVisible(index < len(self.pages) - 1)
-            self.close_button.setVisible(index == len(self.pages) - 1)
+            self.next_button.setVisible(index < len(self._filtered_pages) - 1)
+            self.close_button.setVisible(index == len(self._filtered_pages) - 1)
 
     def start(self):
         self.show_page(0)
@@ -330,9 +394,9 @@ class GuideWidget(QWidget):
     def _prev_page(self):
         if self.current_page_index > 0:
             self.show_page(self.current_page_index - 1)
-            
+
     def _next_page(self):
-        if self.current_page_index < len(self.pages) - 1:
+        if self.current_page_index < len(self._filtered_pages) - 1:
             self.show_page(self.current_page_index + 1)
             
     def _on_skip(self):
@@ -343,7 +407,12 @@ class GuideWidget(QWidget):
 
 # ----------------- СТРАНИЦЫ РУКОВОДСТВА -----------------
 
+_LEVEL_RANK = {"basic": 0, "advanced": 1, "full": 2}
+
+
 class WelcomeGuidePage(IGuidePage):
+    min_mode = "basic"
+
     def get_title_ru(self):
         return "Добро пожаловать в NeuroMita!"
         
@@ -368,6 +437,8 @@ Click 'Next' to begin, or 'Skip' if you want to figure it out on your own."""
         return "guide_welcome.jpg"
 
 class APIGuidePage(IGuidePage):
+    min_mode = "basic"
+
     def get_title_ru(self):
         return "Шаг 1: Подключение к 'мозгу' AI"
         
@@ -396,6 +467,8 @@ In the API settings (<b>plug</b> icon), you can select a <b>Provider</b>:
         return "guide_api.jpg"
 
 class CharactersGuidePage(IGuidePage):
+    min_mode = "basic"
+
     def get_title_ru(self):
         return "Шаг 2: Выбор Персонажа"
         
@@ -426,6 +499,8 @@ In the Character settings (<b>user</b> icon), you can:
         return "guide_characters.jpg"
 
 class VoiceoverGuidePage(IGuidePage):
+    min_mode = "advanced"
+
     def get_title_ru(self):
         return "Шаг 3: Настройка голоса (Озвучка)"
         
@@ -454,6 +529,8 @@ In the Voiceover settings (<b>speaker</b> icon), first check <b>"Use speech"</b>
         return "guide_voice.jpg"
 
 class MicrophoneGuidePage(IGuidePage):
+    min_mode = "advanced"
+
     def get_title_ru(self):
         return "Шаг 4: Общение голосом (Микрофон)"
         
@@ -484,6 +561,8 @@ In the Microphone settings (<b>microphone</b> icon):
         return "guide_microphone.jpg"
 
 class ScreenAnalysisGuidePage(IGuidePage):
+    min_mode = "full"
+
     def get_title_ru(self):
         return "Доп. фича: Анализ экрана"
         
@@ -512,6 +591,8 @@ In the Screen settings (<b>desktop</b> icon):
         return "guide_screen.jpg"
 
 class ModelsGuidePage(IGuidePage):
+    min_mode = "full"
+
     def get_title_ru(self):
         return "Тонкая настройка: Параметры модели"
         
@@ -542,6 +623,8 @@ Key parameters:
         return "guide_models.jpg"
 
 class ChatGuidePage(IGuidePage):
+    min_mode = "full"
+
     def get_title_ru(self):
         return "Интерфейс: Настройки чата"
         
@@ -554,7 +637,7 @@ class ChatGuidePage(IGuidePage):
 В настройках Чата (иконка <b>облачка диалога</b>) можно изменить:
 • <b>Размер шрифта</b> в окне диалога.
 • <b>Показывать метки времени</b> рядом с сообщениями.
-• <b>Скрывать теги</b>: убирает технические теги (вроде <e>, <c>) из сообщений AI для более чистого вида.
+• <b>Скрывать теги</b>: убирает технические теги (вроде &lt;e&gt;, &lt;c&gt;) из сообщений AI для более чистого вида.
 
 <b>Проще говоря:</b> настройте чат так, как вам удобно читать."""
         
@@ -564,7 +647,7 @@ class ChatGuidePage(IGuidePage):
 In the Chat settings (<b>dialog bubble</b> icon), you can change:
 • <b>Chat Font Size</b> in the dialogue window.
 • <b>Show Timestamps</b> next to messages.
-• <b>Hide Tags</b>: removes technical tags (like <e>, <c>) from AI messages for a cleaner look.
+• <b>Hide Tags</b>: removes technical tags (like &lt;e&gt;, &lt;c&gt;) from AI messages for a cleaner look.
 
 <b>Simply put:</b> configure the chat to be comfortable for you to read."""
         
@@ -572,6 +655,8 @@ In the Chat settings (<b>dialog bubble</b> icon), you can change:
         return "guide_chat.jpg"
 
 class FinalGuidePage(IGuidePage):
+    min_mode = "basic"
+
     def get_title_ru(self):
         return "Вы готовы!"
         

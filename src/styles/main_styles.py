@@ -82,6 +82,23 @@ QTextEdit#DebugWindow {
     border-radius: 10px;
 }
 
+/* ========= SpinBox ========= */
+QSpinBox, QDoubleSpinBox {
+    background-color: {panel_bg};
+    color: {text};
+    border: 1px solid {border_soft};
+    border-radius: 4px;
+    padding: 2px 6px;
+    min-height: 22px;
+}
+QSpinBox:focus, QDoubleSpinBox:focus {
+    border: 1px solid {accent};
+}
+QSpinBox:disabled, QDoubleSpinBox:disabled {
+    background-color: rgba(14,14,18,0.85);
+    color: #8d8d96;
+}
+
 /* ========= ComboBox ========= */
 QComboBox {
     background-color: {panel_bg};
@@ -135,6 +152,12 @@ QPushButton#SecondaryButton {
     background-color: {chip_bg};
     color: {text};
     border: 1px solid {outline};
+}
+/* Compact buttons (for tight rows like History & cleanup) */
+QPushButton[compact="true"] {
+    padding: 4px 8px;
+    font-size: 8.5pt;
+    font-weight: 600;
 }
 QPushButton#SecondaryButton:hover { background-color: {chip_hover}; }
 QPushButton#SecondaryButton:pressed { background-color: {chip_pressed}; }
@@ -217,18 +240,63 @@ QCheckBox::indicator:disabled {
 }
 
 /* ========= Scrolls ========= */
-QScrollArea { background-color: transparent; border: none; }
+QScrollArea {
+    background-color: transparent;
+    border: none;
+}
+
+/* общий сброс */
+QScrollBar {
+    background: transparent;
+}
+
+/* Vertical */
 QScrollBar:vertical {
-    border: none; background: transparent; width: 10px; margin: 0;
+    border: none;
+    background: transparent;
+    width: 10px;
+    margin: 0px;
 }
 QScrollBar::handle:vertical {
     background: {scroll_handle};
-    min-height: 26px; border-radius: 6px;
+    min-height: 26px;
+    border-radius: 6px;
 }
-QScrollBar::handle:vertical:hover { background: rgba(255,255,255,0.18); }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
+QScrollBar::handle:vertical:hover {
+    background: rgba(255,255,255,0.18);
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: transparent;
+}
 
+/* Horizontal */
+QScrollBar:horizontal {
+    border: none;
+    background: transparent;
+    height: 10px;
+    margin: 0px;
+}
+QScrollBar::handle:horizontal {
+    background: {scroll_handle};
+    min-width: 26px;
+    border-radius: 6px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: rgba(255,255,255,0.18);
+}
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    width: 0px;
+}
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {
+    background: transparent;
+}
 /* ========= Collapsible ========= */
 QWidget#CollapsibleHeader {
     background-color: {chip_bg};
@@ -311,6 +379,26 @@ QPushButton#GuideButtonSmall {
 QPushButton#GuideButtonSmall:hover { background-color: {accent_hover}; }
 QPushButton#GuideButtonSmall:pressed { background-color: {accent_pressed}; }
 
+QPushButton#ChatTopIconButton {
+    background-color: {chip_bg};
+    color: #ffffff;
+    border: 1px solid {outline};
+    padding: 4px;
+    border-radius: 8px;
+}
+QPushButton#ChatTopIconButton:hover { background-color: {chip_hover}; }
+QPushButton#ChatTopIconButton:pressed { background-color: {chip_pressed}; }
+
+QComboBox#ChatCharacterCombo {
+    min-height: 20px;
+    padding: 4px 8px;
+    border-radius: 8px;
+}
+
+QWidget#InlineStatusIndicators {
+    background-color: transparent;
+}
+
 QPushButton#ChatIconMini {
     background-color: {chip_bg};
     border: 0px; border-radius: 10px;
@@ -382,6 +470,103 @@ QPushButton#SecondaryButton[dangerHover="true"]:hover {
 }
 QPushButton#SecondaryButton[dangerHover="true"]:pressed {
     background-color: rgba(214, 69, 69, 0.26);   /* чуть сильнее при нажатии */
+}
+
+/* ========= Tables ========= */
+QTableView {
+    background-color: {panel_bg};
+    alternate-background-color: rgba(255,255,255,0.03);
+    color: {text};
+
+    border: 1px solid {border_soft};
+    gridline-color: {outline};
+
+    selection-background-color: rgba(138,43,226,0.25); /* на всякий случай */
+    selection-color: #ffffff;
+
+    outline: 0;
+}
+
+QTableView::item {
+    padding: 6px 8px;
+    border: none;
+}
+
+QTableView::item:hover {
+    background-color: rgba(255,255,255,0.06);
+}
+
+QTableView::item:selected:active {
+    background-color: rgba(138,43,226,0.35);
+    color: #ffffff;
+}
+
+QTableView::item:selected:!active {
+    background-color: rgba(138,43,226,0.22);
+    color: #ffffff;
+}
+
+QHeaderView::section {
+    background-color: {chip_bg};
+    color: {text};
+
+    padding: 6px 8px;
+    font-weight: 700;
+
+    border: none;
+    border-bottom: 1px solid {border_soft};
+    border-right: 1px solid {outline};
+}
+
+QHeaderView::section:horizontal:last {
+    border-right: none;
+}
+
+QTableCornerButton::section {
+    background-color: {chip_bg};
+    border: none;
+    border-bottom: 1px solid {border_soft};
+    border-right: 1px solid {outline};
+}
+
+/* ========= Tabs ========= */
+QTabWidget::pane {
+    border: 1px solid {border_soft};
+    background-color: {card_bg};
+    border-radius: 12px;
+    top: -1px; /* чтобы стык с табами был аккуратнее */
+}
+
+QTabBar {
+    background: transparent;
+}
+
+QTabBar::tab {
+    background-color: {chip_bg};
+    color: {text};
+    border: 1px solid {outline};
+    padding: 8px 12px;
+    margin-right: 6px;
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+}
+
+QTabBar::tab:hover {
+    background-color: {chip_hover};
+    border: 1px solid {border_soft};
+}
+
+QTabBar::tab:selected {
+    background-color: {panel_bg};
+    border: 1px solid {border_soft};
+    border-bottom-color: {panel_bg}; /* визуально “сливаем” с pane */
+    font-weight: 700;
+}
+
+QTabBar::tab:disabled {
+    color: {muted};
+    background-color: rgba(255,255,255,0.03);
+    border: 1px solid {outline};
 }
 
 /* ========= Chat scroll area (widget-based) ========= */

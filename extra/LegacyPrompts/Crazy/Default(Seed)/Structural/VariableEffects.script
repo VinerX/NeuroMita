@@ -1,0 +1,27 @@
+SET LOCAL relation_text = """Relationship Levels and Their Impact on Behavior:
+"""
+
+IF attitude <= 20 THEN
+		SET relation_text = relation_text + LOAD RelationLow FROM "Structural/VariablesEffects.txt"
+ELSEIF attitude <= 50 THEN
+		SET relation_text = relation_text + LOAD RelationNormal FROM "Structural/VariablesEffects.txt"
+ELSE 
+		SET relation_text = relation_text + LOAD RelationHigh FROM "Structural/VariablesEffects.txt"
+ENDIF
+
+// Добавляем новую переменную 'love'.
+// DSL должен уметь обрабатывать None или инициализировать ее значением по умолчанию, если она еще не установлена.
+// Если 'love' может быть None, нужна проверка:
+SET LOCAL output = ""
+IF Love == None THEN
+    SET Love = 5
+    SET output = output + "Love level: Not yet determined\n" // Или какое-то другое значение по умолчанию
+ELSE
+    SET output = output + "Love lvl: " + str(Love) + "\n"
+ENDIF
+
+SET relation_text = relation_text + output
+
+LOG "ИТОГО ПО ОТНОШЕНИЯМ" + relation_text
+
+RETURN relation_text

@@ -417,6 +417,7 @@ class ChatController:
             target = "Player"
             think_text = None
             structured_data = None
+            assistant_message_id = ""
             if isinstance(payload, dict):
                 response_text = payload.get("text")
                 voice_profile = payload.get("voice_profile")
@@ -425,6 +426,7 @@ class ChatController:
                 targets: list[str] = payload.get("targets") or []
                 think_text = payload.get("think")
                 structured_data = payload.get("structured")  # segments + global fields
+                assistant_message_id = str(payload.get("message_id") or "")
             else:
                 response_text = payload
                 voice_profile = None
@@ -537,6 +539,7 @@ class ChatController:
                     "target": target,
                     "targets": targets,
                     "structured_data": structured_data,
+                    "message_id": assistant_message_id,
                 }, sync=True)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)
@@ -641,6 +644,7 @@ class ChatController:
             result["memory_add"] = structured_data.get("memory_add", [])
             result["memory_update"] = structured_data.get("memory_update", [])
             result["memory_delete"] = structured_data.get("memory_delete", [])
+            result["memory_merge"] = structured_data.get("memory_merge", [])
         return result
 
     def _on_get_llm_processing_status(self, event: Event):
@@ -1064,8 +1068,15 @@ class ChatController:
         if character is None:
             logger.warning(f"[ChatController] SAVE_SNAPSHOT: персонаж '{character_id}' не найден")
             return
-        character.history_manager.save_history_separate()
-        logger.info(f"[ChatController] Snapshot сохранён для {character_id}")
+        saved_path = character.history_manager.save_history_separate()
+        if saved_path:
+            logger.info(f"[ChatController] Snapshot сохранён: {saved_path}")
+            self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
+                "title": "Snapshot",
+                "message": f"Snapshot сохранён:\n{saved_path}",
+            })
+        else:
+            logger.warning(f"[ChatController] SAVE_SNAPSHOT: не удалось сохранить для {character_id}")
 
     def _on_load_snapshot(self, event: Event):
         import json
@@ -1081,6 +1092,9 @@ class ChatController:
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 snapshot_data = json.load(f)
+            # Поддержка старого формата: список сообщений без обёртки
+            if isinstance(snapshot_data, list):
+                snapshot_data = {"messages": snapshot_data, "variables": {}}
             character.history_manager.save_history(snapshot_data)
             self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
             logger.info(f"[ChatController] Snapshot загружен из {file_path}")

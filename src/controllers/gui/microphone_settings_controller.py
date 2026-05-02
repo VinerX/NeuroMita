@@ -24,7 +24,7 @@ class MicrophoneSettingsController(BaseController):
 
         self._ui(self._bind_if_ready)
 
-    def _widgets_signature(self) -> tuple[int, int, int, int, int, int] | None:
+    def _widgets_signature(self) -> tuple[int, ...] | None:
         v = self.view
         if not v:
             return None
@@ -35,18 +35,12 @@ class MicrophoneSettingsController(BaseController):
             "asr_refresh_button",
             "mic_active_checkbox",
             "mic_instant_checkbox",
+            "vad_apply_button",
         )
         for n in need:
             if not hasattr(v, n):
                 return None
-        return (
-            id(getattr(v, "mic_combobox")),
-            id(getattr(v, "mic_refresh_button")),
-            id(getattr(v, "recognizer_combobox")),
-            id(getattr(v, "asr_refresh_button")),
-            id(getattr(v, "mic_active_checkbox")),
-            id(getattr(v, "mic_instant_checkbox")),
-        )
+        return tuple(id(getattr(v, n)) for n in need)
 
     def _bind_if_ready(self):
         sig = self._widgets_signature()
@@ -89,11 +83,59 @@ class MicrophoneSettingsController(BaseController):
             safe_disconnect(v.asr_manage_button.clicked, self._open_asr_glossary)
             v.asr_manage_button.clicked.connect(self._open_asr_glossary)
 
+        if hasattr(v, "vad_apply_button") and v.vad_apply_button:
+            safe_disconnect(v.vad_apply_button.clicked, self._on_apply_vad_params)
+            v.vad_apply_button.clicked.connect(self._on_apply_vad_params)
+
+        self._load_vad_params()
+
         self.refresh_microphones()
         self.refresh_engines()
         QTimer.singleShot(400, lambda: self._ui(self.refresh_engines))
 
         QTimer.singleShot(1200, lambda: self._ui(self._bind_if_ready))
+
+    def _load_vad_params(self):
+        v = self.view
+        if not v:
+            return
+        try:
+            settings = getattr(v, "settings", None) or {}
+            if hasattr(v, "vad_sample_rate_spinbox"):
+                v.vad_sample_rate_spinbox.setValue(int(settings.get("VOSK_SAMPLE_RATE", 16000)))
+            if hasattr(v, "vad_chunk_size_spinbox"):
+                v.vad_chunk_size_spinbox.setValue(int(settings.get("CHUNK_SIZE", 512)))
+            if hasattr(v, "vad_threshold_spinbox"):
+                v.vad_threshold_spinbox.setValue(float(settings.get("VAD_THRESHOLD", 0.5)))
+            if hasattr(v, "vad_silence_timeout_spinbox"):
+                v.vad_silence_timeout_spinbox.setValue(float(settings.get("VAD_SILENCE_TIMEOUT_SEC", 0.15)))
+            if hasattr(v, "vad_pre_buffer_spinbox"):
+                v.vad_pre_buffer_spinbox.setValue(float(settings.get("VAD_PRE_BUFFER_DURATION_SEC", 0.3)))
+            if hasattr(v, "vad_max_speech_duration_spinbox"):
+                v.vad_max_speech_duration_spinbox.setValue(float(settings.get("MAX_SPEECH_DURATION_SEC", 30.0)))
+        except Exception as e:
+            logger.debug(f"VAD params load error: {e}")
+
+    def _on_apply_vad_params(self):
+        v = self.view
+        if not v:
+            return
+        try:
+            if hasattr(v, "vad_sample_rate_spinbox"):
+                self._save_setting("VOSK_SAMPLE_RATE", v.vad_sample_rate_spinbox.value())
+            if hasattr(v, "vad_chunk_size_spinbox"):
+                self._save_setting("CHUNK_SIZE", v.vad_chunk_size_spinbox.value())
+            if hasattr(v, "vad_threshold_spinbox"):
+                self._save_setting("VAD_THRESHOLD", v.vad_threshold_spinbox.value())
+            if hasattr(v, "vad_silence_timeout_spinbox"):
+                self._save_setting("VAD_SILENCE_TIMEOUT_SEC", v.vad_silence_timeout_spinbox.value())
+            if hasattr(v, "vad_pre_buffer_spinbox"):
+                self._save_setting("VAD_PRE_BUFFER_DURATION_SEC", v.vad_pre_buffer_spinbox.value())
+            if hasattr(v, "vad_max_speech_duration_spinbox"):
+                self._save_setting("MAX_SPEECH_DURATION_SEC", v.vad_max_speech_duration_spinbox.value())
+            logger.info("VAD параметры применены")
+        except Exception as e:
+            logger.error(f"VAD params apply error: {e}")
 
     def _open_asr_glossary(self):
         try:
@@ -112,10 +154,6 @@ class MicrophoneSettingsController(BaseController):
 
         try:
             self.event_bus.emit(Events.Core.SETTING_CHANGED, {"key": key, "value": value})
-        except Exception:
-            pass
-        try:
-            self.event_bus.emit("setting_changed", {"key": key, "value": value})
         except Exception:
             pass
 
