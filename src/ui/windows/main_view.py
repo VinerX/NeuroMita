@@ -16,14 +16,14 @@ from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
 import types
 import json
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QPropertyAnimation, QBuffer, QIODevice, QEvent, QEasingCurve
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QPropertyAnimation, QBuffer, QIODevice, QEvent, QEasingCurve, QUrl
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPlainTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
     QMessageBox, QDialog, QProgressBar, QStackedWidget,
     QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy, QCheckBox
 )
-from PyQt6.QtGui import QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap
+from PyQt6.QtGui import QDesktopServices, QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap
 
 from ui.settings import (
     api_settings, character_settings, game_settings,
@@ -49,7 +49,18 @@ from ui.dialogs.ffmpeg_dialogs import create_ffmpeg_install_popup, show_ffmpeg_e
 from ui.dialogs.telegram_auth_dialogs import show_tg_code_dialog, show_tg_password_dialog
 from ui.dialogs.voice_model_dialog_manager import handle_voice_model_dialog
 
-from ui.widgets.settings_panel import setup_settings_panel
+from ui.widgets.launcher_dashboard_helpers import (
+    DashboardAction,
+    DashboardCard,
+    DashboardMetric,
+    LogItem,
+    NewsItem,
+    create_home_page,
+    create_logs_page,
+    create_news_page,
+)
+from ui.widgets.launcher_shell_sidebar import LauncherSidebarWidget
+from ui.widgets.settings_panel import create_settings_page
 from ui.widgets.chat_panel import setup_chat_panel, hide_image_preview_bar, update_send_button_state
 from ui.chat import message_renderer
 from ui.chat.chat_delegate import ChatMessageDelegate
@@ -364,8 +375,42 @@ class ChatGUI(QMainWindow):
         main_layout = QHBoxLayout(central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
-        setup_settings_panel(self, main_layout)
-        setup_chat_panel(self, main_layout)
+        self.shell_sidebar = LauncherSidebarWidget(
+            initial_page="sandbox",
+            on_page_requested=self.switch_main_page,
+        )
+        self.shell_sidebar.social_requested.connect(self._on_shell_social_requested)
+        self.shell_sidebar.utility_requested.connect(self._on_shell_utility_requested)
+        self.shell_sidebar.set_language_label(_("Язык: RU / EN", "Language: RU / EN"))
+        main_layout.addWidget(self.shell_sidebar)
+
+        content_host = QFrame()
+        content_host.setObjectName("LauncherContentHost")
+        content_layout = QVBoxLayout(content_host)
+        content_layout.setContentsMargins(18, 18, 18, 18)
+        content_layout.setSpacing(0)
+
+        self.page_stack = QStackedWidget()
+        self.page_stack.setObjectName("MainPageStack")
+        content_layout.addWidget(self.page_stack)
+        main_layout.addWidget(content_host, 1)
+
+        self.page_map = {}
+        self.page_map["home"] = self._build_home_page()
+        self.page_map["news"] = self._build_news_page()
+
+        sandbox_host = QWidget()
+        sandbox_layout = QVBoxLayout(sandbox_host)
+        sandbox_layout.setContentsMargins(0, 0, 0, 0)
+        sandbox_layout.setSpacing(0)
+        setup_chat_panel(self, sandbox_layout)
+        self.page_map["sandbox"] = sandbox_host
+
+        self.page_map["settings"] = create_settings_page(self)
+        self.page_map["logs"] = self._build_logs_page()
+
+        for key in ("home", "news", "sandbox", "settings", "logs"):
+            self.page_stack.addWidget(self.page_map[key])
         self._init_settings_containers()
         # применить режим интерфейса (скрыть кнопки панели по уровню)
         try:
@@ -373,12 +418,12 @@ class ChatGUI(QMainWindow):
             apply_interface_mode(self, self.settings.get("INTERFACE_MODE") or _('Базовый', 'Basic'))
         except Exception:
             pass
+        self.switch_main_page("sandbox")
         self.resize(1560, 920)
         
     def _on_hide_animation_finished(self):
-        self.settings_overlay.hide()
-        if hasattr(self, "settings_resize_handle"):
-            self.settings_resize_handle.hide()
+        if hasattr(self, "settings_overview_container"):
+            self.settings_overlay.show_category(self.settings_overview_container)
         try:
             self.settings_animation.finished.disconnect(self._on_hide_animation_finished)
         except TypeError:
@@ -494,33 +539,336 @@ class ChatGUI(QMainWindow):
             self.settings_overlay.add_container(scroll_area)
 
     def show_settings_category(self, category):
-        self.settings_animation.stop()
-        is_hiding = (self.current_settings_category == category and self.settings_overlay.width() > 0)
+        cont = self.settings_containers.get(category)
+        if cont is None:
+            return
+
+        self.switch_main_page("settings")
+        is_hiding = self.current_settings_category == category
         for cat, btn in self.settings_buttons.items():
             btn.set_active(cat == category and not is_hiding)
+
         if is_hiding:
             self.current_settings_category = None
-            self.settings_animation.setEndValue(0)
-            try:
-                self.settings_animation.finished.disconnect(self._on_hide_animation_finished)
-            except TypeError:
-                pass
-            self.settings_animation.finished.connect(self._on_hide_animation_finished)
-        else:
-            self.current_settings_category = category
-            cont = self.settings_containers.get(category)
-            if not cont:
-                return
-            if hasattr(self, "settings_resize_handle"):
-                self.settings_resize_handle.show()
-            self.settings_overlay.show_category(cont)
-            max_width = self.settings_overlay._effective_max_width() if hasattr(self.settings_overlay, "_effective_max_width") else self.SETTINGS_PANEL_WIDTH
-            target_width = max(280, min(int(max_width), int(self.SETTINGS_PANEL_WIDTH)))
-            self.SETTINGS_PANEL_WIDTH = target_width
-            self.settings_animation.setEndValue(target_width)
+            self.settings_overlay.show_category(self.settings_overview_container)
+            return
 
-        self.settings_animation.setStartValue(self.settings_overlay.width())
-        self.settings_animation.start()
+        self.current_settings_category = category
+        self.settings_overlay.show_category(cont)
+
+    def switch_main_page(self, page_key):
+        page = getattr(self, "page_map", {}).get(page_key)
+        if page is None or not hasattr(self, "page_stack"):
+            return
+
+        self.page_stack.setCurrentWidget(page)
+        self.current_main_page = page_key
+
+        if hasattr(self, "shell_sidebar"):
+            self.shell_sidebar.set_active_page(page_key)
+
+        if page_key == "settings" and getattr(self, "current_settings_category", None) is None:
+            if hasattr(self, "settings_overview_container"):
+                self.settings_overlay.show_category(self.settings_overview_container)
+
+        if page_key == "logs":
+            self.update_debug_info()
+
+        if page_key == "sandbox":
+            try:
+                update_send_button_state(self)
+            except Exception:
+                pass
+
+    def _on_shell_utility_requested(self, action):
+        if action == "language":
+            self.show_settings_category("general")
+            return
+
+        self.switch_main_page("home")
+
+    def _on_shell_social_requested(self, platform):
+        urls = {
+            "discord": "https://discord.gg/Tu5MPFxM4P",
+            "vk": "https://vk.com/",
+            "youtube": "https://www.youtube.com/",
+            "github": "https://github.com/VinerX/NeuroMita",
+            "boosty": "https://boosty.to/",
+        }
+        url = urls.get(platform)
+        if url:
+            QDesktopServices.openUrl(QUrl(url))
+
+    def _build_home_page(self):
+        current_profile = {}
+        try:
+            profile_result = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
+            current_profile = profile_result[0] if profile_result else {}
+        except Exception:
+            current_profile = {}
+
+        active_character = str(current_profile.get("character_id") or _("Не выбран", "Not selected"))
+        model_name = str(self._get_setting("MODEL", "gpt-4o-mini"))
+        interface_mode = str(self._get_setting("INTERFACE_MODE", _("Базовый", "Basic")))
+        voice_mode = str(self._get_setting("VOICEOVER_METHOD", "TG"))
+
+        page = create_home_page(
+            title=_("NeuroMita Launcher", "NeuroMita Launcher"),
+            subtitle=_(
+                "Единая точка входа для песочницы, новостей, настроек и служебных инструментов.",
+                "Unified entry point for sandbox, news, settings and service tools.",
+            ),
+            hero_tag="HOME",
+            metrics=[
+                DashboardMetric(_("Интерфейс", "Interface"), interface_mode, _("Текущий режим панели", "Current panel mode")),
+                DashboardMetric(_("Модель", "Model"), model_name, _("Активный движок ответа", "Active response engine")),
+                DashboardMetric(_("Персонаж", "Character"), active_character, _("Профиль для диалога", "Dialogue profile")),
+                DashboardMetric(_("Озвучка", "Voice"), voice_mode, _("Текущий voice pipeline", "Current voice pipeline")),
+            ],
+            actions=[
+                DashboardAction(_("Открыть песочницу", "Open sandbox"), callback=lambda: self.switch_main_page("sandbox"), icon_name="fa6s.comments"),
+                DashboardAction(_("Открыть настройки", "Open settings"), callback=lambda: self.switch_main_page("settings"), icon_name="fa6s.sliders", accent=False),
+                DashboardAction(_("Руководство", "Guide"), callback=self._show_guide, icon_name="fa6s.circle-info", accent=False),
+            ],
+            cards=[
+                DashboardCard(
+                    _("Песочница", "Sandbox"),
+                    _("Быстрый вход в чат, работа со скриншотами, историей и живыми статусами.", "Quick access to chat, screenshots, history and live statuses."),
+                    meta=_("Центральный сценарий общения", "Primary interaction workflow"),
+                    icon_name="fa6s.flask",
+                    action=DashboardAction(_("Перейти", "Open"), callback=lambda: self.switch_main_page("sandbox"), icon_name="fa6s.arrow-right"),
+                ),
+                DashboardCard(
+                    _("Матрица настроек", "Settings matrix"),
+                    _("Все текущие секции сохранены, но собраны в новый card-based shell.", "All current sections are preserved inside a new card-based shell."),
+                    meta=_("API, память, экран, голос, данные", "API, memory, screen, voice, data"),
+                    icon_name="fa6s.sliders",
+                    action=DashboardAction(_("Настроить", "Configure"), callback=lambda: self.switch_main_page("settings"), icon_name="fa6s.wand-magic-sparkles"),
+                ),
+                DashboardCard(
+                    _("База персонажей", "Character data"),
+                    _("История, DB viewer и экспорт доступны без потери старой логики.", "History, DB viewer and export stay available without losing existing behavior."),
+                    meta=_("Служебные окна подключаются из shell", "Utility windows mounted into the shell"),
+                    icon_name="fa6s.database",
+                    action=DashboardAction(_("Открыть DB", "Open DB"), callback=lambda: self.show_settings_category("characters"), icon_name="fa6s.book-open"),
+                ),
+                DashboardCard(
+                    _("Лента обновлений", "Update pulse"),
+                    _("Новости и диагностика вынесены в отдельные страницы, чтобы shell читался как launcher.", "News and diagnostics live on dedicated pages so the shell reads like a launcher."),
+                    meta=_("Следующий шаг: унификация всех попапов", "Next step: unify remaining popups"),
+                    icon_name="fa6s.bolt",
+                    action=DashboardAction(_("Новости", "News"), callback=lambda: self.switch_main_page("news"), icon_name="fa6s.newspaper", accent=False),
+                ),
+            ],
+        )
+
+        self._append_to_shell_page(page, self._build_launcher_spotlight_card())
+        return page
+
+    def _build_launcher_spotlight_card(self):
+        card = QFrame()
+        card.setObjectName("LauncherSpotlightCard")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setSpacing(18)
+
+        text_column = QVBoxLayout()
+        text_column.setSpacing(8)
+
+        eyebrow = QLabel("LAUNCHER")
+        eyebrow.setObjectName("LauncherShellEyebrow")
+        text_column.addWidget(eyebrow)
+
+        title = QLabel(_("Shell-подход из отдельного launcher", "Shell language from the standalone launcher"))
+        title.setObjectName("LauncherShellSectionTitle")
+        title.setWordWrap(True)
+        text_column.addWidget(title)
+
+        body = QLabel(
+            _(
+                "Левая навигация, промо-блоки, quick actions и тёмная неоновая сетка теперь формируют общий язык приложения.",
+                "Left navigation, promo blocks, quick actions and the neon grid now define the app-wide language.",
+            )
+        )
+        body.setObjectName("LauncherShellBody")
+        body.setWordWrap(True)
+        text_column.addWidget(body)
+
+        action = QPushButton(_("Открыть логи", "Open logs"))
+        action.setObjectName("LauncherShellActionButton")
+        action.clicked.connect(lambda: self.switch_main_page("logs"))
+        text_column.addWidget(action, 0, Qt.AlignmentFlag.AlignLeft)
+        text_column.addStretch(1)
+        layout.addLayout(text_column, 1)
+
+        logo_label = QLabel()
+        logo_label.setObjectName("LauncherSpotlightArt")
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_path = Path("assets/launcher_ui/logo.png")
+        if logo_path.exists():
+            logo_label.setPixmap(
+                QPixmap(str(logo_path)).scaled(
+                    220,
+                    180,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        else:
+            logo_label.setText("NeuroMita")
+        layout.addWidget(logo_label, 0, Qt.AlignmentFlag.AlignCenter)
+        return card
+
+    def _build_news_page(self):
+        page = create_news_page(
+            title=_("Новости Launcher Shell", "Launcher shell news"),
+            subtitle=_(
+                "Сюда вынесены changelog, заметки по сборке и быстрые переходы в блок обновлений.",
+                "Changelog, build notes and update-entry shortcuts live here.",
+            ),
+            items=self._parse_news_items(self.get_news_content()),
+            header_actions=[
+                DashboardAction(_("Обновить", "Refresh"), callback=self._refresh_news_page, icon_name="fa6s.rotate-right"),
+                DashboardAction(_("Апдейты", "Updates"), callback=lambda: self.show_settings_category("updates"), icon_name="fa6s.download", accent=False),
+            ],
+        )
+        return page
+
+    def _build_logs_page(self):
+        page = create_logs_page(
+            title=_("Системные логи", "System logs"),
+            subtitle=_(
+                "Живой поток диагностики и быстрые действия для отладки, не выходя из launcher shell.",
+                "Live diagnostics stream and debug actions without leaving the launcher shell.",
+            ),
+            items=[
+                LogItem("INFO", _("Отладочная секция сохранена в настройках.", "Debug section is preserved inside settings."), context=_("debug", "debug")),
+                LogItem("UI", _("Левая навигация собрана в единый shell.", "Left navigation is assembled into a unified shell."), context=_("shell", "shell")),
+                LogItem("CHAT", _("Sandbox использует тот же runtime, что и основная беседа.", "Sandbox uses the same runtime as the main conversation."), context=_("sandbox", "sandbox")),
+            ],
+            header_actions=[
+                DashboardAction(_("Debug settings", "Debug settings"), callback=lambda: self.show_settings_category("debug"), icon_name="fa6s.bug"),
+                DashboardAction(_("Очистить чат", "Clear chat"), callback=self.clear_chat_display, icon_name="fa6s.trash", accent=False),
+            ],
+        )
+
+        card = QFrame()
+        card.setObjectName("LauncherShellSectionCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(18, 18, 18, 18)
+        card_layout.setSpacing(10)
+
+        title = QLabel(_("Живой поток", "Live stream"))
+        title.setObjectName("LauncherShellSectionTitle")
+        card_layout.addWidget(title)
+
+        subtitle = QLabel(
+            _(
+                "Этот поток дублирует системную диагностическую строку и помогает быстро замечать сбои, не открывая hidden debug view.",
+                "This stream mirrors the system diagnostic line so issues are visible without opening the hidden debug view.",
+            )
+        )
+        subtitle.setObjectName("LauncherShellMeta")
+        subtitle.setWordWrap(True)
+        card_layout.addWidget(subtitle)
+
+        self.logs_window = QPlainTextEdit()
+        self.logs_window.setObjectName("DebugWindow")
+        self.logs_window.setReadOnly(True)
+        self.logs_window.setMinimumHeight(280)
+        card_layout.addWidget(self.logs_window)
+
+        self._append_to_shell_page(page, card)
+        return page
+
+    def _append_to_shell_page(self, page, widget):
+        content_widget = page.findChild(QWidget, "LauncherShellPage")
+        if content_widget is None or content_widget.layout() is None:
+            return
+
+        layout = content_widget.layout()
+        insert_index = max(0, layout.count() - 1)
+        layout.insertWidget(insert_index, widget)
+
+    def _parse_news_items(self, raw_text):
+        if not raw_text:
+            return [
+                NewsItem(
+                    _("Новости недоступны", "News unavailable"),
+                    _("Не удалось загрузить удалённую ленту, поэтому страница показывает локальный shell-state.", "Remote feed is unavailable, so the page falls back to local shell state."),
+                    tag="OFFLINE",
+                )
+            ]
+
+        items = []
+        current_title = ""
+        current_lines = []
+
+        def flush_current():
+            nonlocal current_title, current_lines
+            if not current_title and not current_lines:
+                return
+            summary = " ".join(line.strip("-* ").strip() for line in current_lines if line.strip())
+            if not summary:
+                summary = _("Подробности внутри полной ленты новостей.", "Details are available in the full news feed.")
+            items.append(
+                NewsItem(
+                    current_title or _("Обновление", "Update"),
+                    summary[:260],
+                    tag="NEWS",
+                )
+            )
+            current_title = ""
+            current_lines = []
+
+        for raw_line in raw_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                flush_current()
+                current_title = line.lstrip("#").strip()
+                continue
+            if len(current_lines) < 3:
+                current_lines.append(line)
+
+        flush_current()
+
+        if not items:
+            fallback_lines = [line.strip() for line in raw_text.splitlines() if line.strip()][:4]
+            items = [
+                NewsItem(
+                    _("Сводка", "Summary"),
+                    " ".join(fallback_lines)[:260] if fallback_lines else _("Новости пока пусты.", "News feed is currently empty."),
+                    tag="NEWS",
+                )
+            ]
+
+        return items[:6]
+
+    def _refresh_news_page(self):
+        new_page = self._build_news_page()
+        self._replace_page("news", new_page)
+        if getattr(self, "current_main_page", "") == "news":
+            self.switch_main_page("news")
+
+    def _replace_page(self, page_key, new_page):
+        old_page = self.page_map.get(page_key)
+        if old_page is None:
+            self.page_map[page_key] = new_page
+            self.page_stack.addWidget(new_page)
+            return
+
+        index = self.page_stack.indexOf(old_page)
+        if index < 0:
+            self.page_map[page_key] = new_page
+            self.page_stack.addWidget(new_page)
+            return
+
+        self.page_stack.removeWidget(old_page)
+        old_page.deleteLater()
+        self.page_stack.insertWidget(index, new_page)
+        self.page_map[page_key] = new_page
 
     def _create_debug_section(self, parent, layout):
         debug_label = QLabel(_('Отладочная информация', 'Debug Information'))
@@ -720,11 +1068,16 @@ class ChatGUI(QMainWindow):
             return False
 
     def update_debug_info(self):
+        debug_info_result = self.event_bus.emit_and_wait(Events.Model.GET_DEBUG_INFO, timeout=0.5)
+        debug_info = debug_info_result[0] if debug_info_result else "Debug info not available"
+
         if hasattr(self, 'debug_window') and self.debug_window:
             self.debug_window.clear()
-            debug_info_result = self.event_bus.emit_and_wait(Events.Model.GET_DEBUG_INFO, timeout=0.5)
-            debug_info = debug_info_result[0] if debug_info_result else "Debug info not available"
             self.debug_window.insertPlainText(debug_info)
+
+        if hasattr(self, "logs_window") and self.logs_window:
+            self.logs_window.clear()
+            self.logs_window.insertPlainText(debug_info)
 
     def update_token_count(self, event=None):
         show_token_info = self._get_setting("SHOW_TOKEN_INFO", True)

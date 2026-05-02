@@ -699,6 +699,148 @@ QCheckBox#StatusIndicator::indicator:checked {
     background-color: #79e78c;
     border: 1px solid rgba(121, 231, 140, 0.85);
 }
+
+QFrame#LauncherContentHost,
+QStackedWidget#MainPageStack,
+QStackedWidget#MainPageStack > QWidget,
+QWidget#SandboxPage,
+QWidget#SettingsPageRoot,
+QWidget#SettingsRail {
+    background: transparent;
+    border: none;
+}
+
+QFrame#LauncherSpotlightCard,
+QFrame#SettingsTabsCard,
+QFrame#SettingsStatusRailCard,
+QFrame#SettingsQuickActionsCard,
+QFrame#SandboxSelectorCard,
+QFrame#SandboxInspectorCard {
+    background-color: rgba(24, 10, 32, 0.94);
+    border: 1px solid rgba(255, 92, 158, 0.18);
+    border-radius: 22px;
+}
+
+QLabel#LauncherSpotlightArt {
+    min-width: 240px;
+    min-height: 170px;
+    border-radius: 18px;
+    background-color: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    color: #fff1f9;
+    font-size: 18pt;
+    font-weight: 800;
+}
+
+QWidget#SettingsRail {
+    min-width: 300px;
+}
+
+QLabel#SettingsRailTitle,
+QLabel#SandboxInspectorTitle {
+    color: #fff1f9;
+    font-size: 11pt;
+    font-weight: 800;
+}
+
+QLabel#SettingsRailLabel,
+QLabel#SandboxInspectorLabel,
+QLabel#SandboxSelectorLabel {
+    color: #c39fb8;
+    font-size: 8.5pt;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+QLabel#SettingsRailValue,
+QLabel#SandboxInspectorValue,
+QLabel#SandboxSelectorValue {
+    color: #fff1f9;
+    font-size: 10.5pt;
+    font-weight: 700;
+}
+
+QLabel#SandboxSelectorHint,
+QLabel#SettingsOverviewText,
+QLabel#SettingsRailBrandHint,
+QLabel#SettingsRailBrandMeta,
+QLabel#SandboxInspectorMeta {
+    color: #c3a4ba;
+    font-size: 9pt;
+}
+
+QLabel#SandboxSelectorHintAccent,
+QLabel#SettingsRailBrandState {
+    color: #89f7b2;
+    font-size: 9pt;
+    font-weight: 700;
+}
+
+QLabel#SettingsOverviewTitle,
+QLabel#SettingsRailBrandTitle {
+    color: #fff1f9;
+    font-size: 12pt;
+    font-weight: 800;
+}
+
+QLabel#SettingsRailBrandIcon {
+    min-width: 64px;
+    min-height: 64px;
+    border-radius: 18px;
+    background-color: rgba(255, 92, 158, 0.10);
+    border: 1px solid rgba(255, 92, 158, 0.18);
+}
+
+QWidget#SettingsOverviewPage {
+    background: transparent;
+}
+
+QFrame#SettingsOverviewCard {
+    background-color: rgba(29, 12, 34, 0.94);
+    border: 1px solid rgba(255, 92, 158, 0.22);
+    border-radius: 20px;
+}
+
+QPushButton#SettingsQuickActionButton,
+QPushButton#SettingsOverviewShortcut,
+QPushButton#SandboxQuickAction {
+    background-color: rgba(255, 255, 255, 0.04);
+    color: #fff1f9;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 14px;
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 700;
+}
+
+QPushButton#SettingsQuickActionButton:hover,
+QPushButton#SettingsOverviewShortcut:hover,
+QPushButton#SandboxQuickAction:hover {
+    background-color: rgba(255, 92, 158, 0.16);
+    border: 1px solid rgba(255, 92, 158, 0.28);
+}
+
+QPushButton#SettingsQuickActionButton:pressed,
+QPushButton#SettingsOverviewShortcut:pressed,
+QPushButton#SandboxQuickAction:pressed {
+    background-color: rgba(255, 92, 158, 0.24);
+}
+
+QWidget#SandboxInspector {
+    background: transparent;
+}
+
+QWidget#ChatWorkspace {
+    background: transparent;
+}
+
+QWidget#SettingsPageOverlay QStackedWidget,
+QWidget#SettingsPageOverlay QStackedWidget > QWidget,
+QWidget#SettingsPageOverlay QScrollArea,
+QWidget#SettingsPageOverlay QScrollArea > QWidget > QWidget {
+    background: transparent;
+    border: none;
+}
 """
 
 def get_stylesheet(overrides: dict | None = None) -> str:

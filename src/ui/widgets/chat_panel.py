@@ -1,24 +1,34 @@
 import base64
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame,
-    QTextEdit, QGridLayout, QGraphicsOpacityEffect, QFileDialog, QComboBox,
-    QSizePolicy
-)
-from PyQt6.QtCore import Qt, QPropertyAnimation, QPoint, QTimer, QBuffer, QIODevice
+
+from PyQt6.QtCore import QBuffer, QIODevice, QPoint, QPropertyAnimation, QTimer, Qt
 from PyQt6.QtGui import QFont, QPixmap
+from PyQt6.QtWidgets import (
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QComboBox,
+    QSizePolicy,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
 import qtawesome as qta
-from styles.main_styles import get_stylesheet
-from ui.widgets.mita_status_widget import MitaStatusWidget
-from ui.widgets.image_preview_widget import ImagePreviewBar
-from ui.widgets.image_viewer_widget import ImageViewerWidget
-from ui.widgets.status_indicators_widget import create_status_indicators_inline
-from ui.chat.chat_widget import ChatWidget
-from utils import _
+
 from core.events import Events
 from main_logger import logger
+from styles.main_styles import get_stylesheet
+from ui.chat.chat_widget import ChatWidget
+from ui.widgets.image_preview_widget import ImagePreviewBar
+from ui.widgets.image_viewer_widget import ImageViewerWidget
+from ui.widgets.mita_status_widget import MitaStatusWidget
+from ui.widgets.status_indicators_widget import create_status_indicators
+from utils import _
 
 TOP_ICON_BUTTON_SIZE = 30
-CHARACTER_HISTORY_GROUP_WIDTH = 260
 
 
 def _populate_chat_character_combobox(gui):
@@ -70,117 +80,220 @@ def _open_selected_character_history(gui):
 
     try:
         from ui.settings.character_settings.logic import open_db_viewer
+
         open_db_viewer(gui)
     except Exception as e:
         logger.error(f"Failed to open character history: {e}", exc_info=True)
 
 
-def setup_chat_panel(gui, main_layout):
-    chat_widget = QWidget()
-    chat_widget.setObjectName("ChatWorkspace")
-    chat_widget.setMinimumWidth(0)
-    chat_layout = QVBoxLayout(chat_widget)
-    chat_layout.setContentsMargins(18, 18, 18, 18)
-    chat_layout.setSpacing(12)
+def _jump_to_settings(gui, category: str):
+    gui.switch_main_page("settings")
+    gui.show_settings_category(category)
 
+
+def _make_selector_card(title: str) -> tuple[QFrame, QVBoxLayout]:
+    card = QFrame()
+    card.setObjectName("SandboxSelectorCard")
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(14, 12, 14, 12)
+    layout.setSpacing(6)
+
+    label = QLabel(title)
+    label.setObjectName("SandboxSelectorLabel")
+    layout.addWidget(label)
+    return card, layout
+
+
+def _build_chat_header(gui) -> QFrame:
     hero_card = QFrame()
     hero_card.setObjectName("ChatToolbarCard")
     hero_layout = QVBoxLayout(hero_card)
     hero_layout.setContentsMargins(18, 18, 18, 18)
     hero_layout.setSpacing(12)
 
-    title_label = QLabel(_("Песочница NeuroMita", "NeuroMita Sandbox"))
+    title_row = QHBoxLayout()
+    title_row.setSpacing(16)
+
+    title_col = QVBoxLayout()
+    title_col.setSpacing(4)
+    title_label = QLabel(_("Песочница / SANDBOX", "Sandbox / SANDBOX"))
     title_label.setObjectName("ChatHeroTitle")
-    hero_layout.addWidget(title_label)
+    title_col.addWidget(title_label)
 
     subtitle_label = QLabel(
         _(
-            "Общайся, проверяй память, голос и визуальный контекст в одном окне.",
-            "Chat, inspect memory, voice and visual context in one workspace.",
+            "Экспериментируй, общайся и тестируй возможности NeuroMita в новой launcher-оболочке.",
+            "Experiment, chat and test NeuroMita inside the rebuilt launcher shell.",
         )
     )
     subtitle_label.setObjectName("ChatHeroSubtitle")
     subtitle_label.setWordWrap(True)
-    hero_layout.addWidget(subtitle_label)
+    title_col.addWidget(subtitle_label)
+    title_row.addLayout(title_col, 1)
 
-    top_panel_layout = QHBoxLayout()
-    top_panel_layout.setContentsMargins(0, 0, 0, 0)
-    top_panel_layout.setSpacing(8)
+    guide_button = QPushButton(_("Открыть руководство", "Open guide"))
+    guide_button.setObjectName("SecondaryButton")
+    guide_button.clicked.connect(gui._show_guide)
+    title_row.addWidget(guide_button, 0, Qt.AlignmentFlag.AlignTop)
+    hero_layout.addLayout(title_row)
 
-    character_history_group = QWidget()
-    character_history_group.setObjectName("ChatCharacterHistoryGroup")
-    character_history_group.setFixedWidth(CHARACTER_HISTORY_GROUP_WIDTH)
-    character_history_group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    character_history_layout = QHBoxLayout(character_history_group)
-    character_history_layout.setContentsMargins(0, 0, 0, 0)
-    character_history_layout.setSpacing(4)
+    selectors = QHBoxLayout()
+    selectors.setSpacing(10)
 
+    character_card, character_layout = _make_selector_card(_("Персонаж", "Character"))
     gui.chat_character_combobox = QComboBox()
     gui.chat_character_combobox.setObjectName("ChatCharacterCombo")
-    gui.chat_character_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     gui.chat_character_combobox.setToolTip(_("Выбрать персонажа", "Select character"))
     gui.chat_character_combobox.currentTextChanged.connect(lambda text: _on_chat_character_changed(gui, text))
-
-    gui.open_character_history_button = QPushButton(qta.icon('fa5s.table', color='#dcdcdc'), '')
-    gui.open_character_history_button.setObjectName("ChatTopIconButton")
-    gui.open_character_history_button.setFixedSize(TOP_ICON_BUTTON_SIZE, TOP_ICON_BUTTON_SIZE)
-    gui.open_character_history_button.setCursor(Qt.CursorShape.PointingHandCursor)
-    gui.open_character_history_button.setToolTip(_("Открыть историю выбранного персонажа", "Open selected character history"))
-    gui.open_character_history_button.clicked.connect(lambda: _open_selected_character_history(gui))
-
-    character_history_layout.addWidget(gui.chat_character_combobox, 4)
-    character_history_layout.addWidget(gui.open_character_history_button, 1)
+    character_layout.addWidget(gui.chat_character_combobox)
     _populate_chat_character_combobox(gui)
+    selectors.addWidget(character_card, 2)
 
-    gui.clear_chat_button = QPushButton(_("Очистить", "Clear"))
+    model_card, model_layout = _make_selector_card(_("Модель", "Model"))
+    model_value = QLabel(str(gui._get_setting("MODEL", "gpt-4o-mini")))
+    model_value.setObjectName("SandboxSelectorValue")
+    model_layout.addWidget(model_value)
+    model_hint = QLabel(str(gui._get_setting("API_TYPE", "OpenAI")))
+    model_hint.setObjectName("SandboxSelectorHint")
+    model_layout.addWidget(model_hint)
+    selectors.addWidget(model_card, 1)
+
+    tts_card, tts_layout = _make_selector_card(_("TTS", "TTS"))
+    tts_value = QLabel(str(gui._get_setting("VOICEOVER_METHOD", "TG")))
+    tts_value.setObjectName("SandboxSelectorValue")
+    tts_layout.addWidget(tts_value)
+    selectors.addWidget(tts_card, 1)
+
+    asr_card, asr_layout = _make_selector_card(_("ASR", "ASR"))
+    asr_value = QLabel(str(gui._get_setting("ASR_MODEL_NAME", _("По умолчанию", "Default"))))
+    asr_value.setObjectName("SandboxSelectorValue")
+    asr_layout.addWidget(asr_value)
+    selectors.addWidget(asr_card, 1)
+
+    mode_card, mode_layout = _make_selector_card(_("Режим", "Mode"))
+    mode_value = QLabel(_("Свободный", "Free"))
+    mode_value.setObjectName("SandboxSelectorValue")
+    mode_layout.addWidget(mode_value)
+    mode_hint = QLabel("Sandbox")
+    mode_hint.setObjectName("SandboxSelectorHintAccent")
+    mode_layout.addWidget(mode_hint)
+    selectors.addWidget(mode_card, 1)
+
+    hero_layout.addLayout(selectors)
+    return hero_card
+
+
+def _build_chat_inspector(gui) -> QWidget:
+    inspector = QWidget()
+    inspector.setObjectName("SandboxInspector")
+    inspector.setFixedWidth(320)
+    layout = QVBoxLayout(inspector)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(12)
+
+    status_card = QFrame()
+    status_card.setObjectName("SandboxInspectorCard")
+    status_layout = QVBoxLayout(status_card)
+    status_layout.setContentsMargins(16, 16, 16, 16)
+    status_layout.setSpacing(10)
+    status_title = QLabel(_("Подключения", "Connections"))
+    status_title.setObjectName("SandboxInspectorTitle")
+    status_layout.addWidget(status_title)
+    create_status_indicators(gui, status_layout)
+    layout.addWidget(status_card)
+
+    quick_card = QFrame()
+    quick_card.setObjectName("SandboxInspectorCard")
+    quick_layout = QVBoxLayout(quick_card)
+    quick_layout.setContentsMargins(16, 16, 16, 16)
+    quick_layout.setSpacing(10)
+    quick_title = QLabel(_("Быстрые действия", "Quick actions"))
+    quick_title.setObjectName("SandboxInspectorTitle")
+    quick_layout.addWidget(quick_title)
+
+    gui.clear_chat_button = QPushButton(_("Очистить чат", "Clear chat"))
+    gui.clear_chat_button.setObjectName("SandboxQuickAction")
     gui.clear_chat_button.clicked.connect(gui.clear_chat_display)
-    gui.clear_chat_button.setText("")
-    gui.clear_chat_button.setIcon(qta.icon('fa5s.broom', color='#dcdcdc'))
-    gui.clear_chat_button.setObjectName("ChatTopIconButton")
-    gui.clear_chat_button.setFixedSize(TOP_ICON_BUTTON_SIZE, TOP_ICON_BUTTON_SIZE)
-    gui.clear_chat_button.setCursor(Qt.CursorShape.PointingHandCursor)
-    gui.clear_chat_button.setToolTip(_("Очистить чат", "Clear chat"))
+    quick_layout.addWidget(gui.clear_chat_button)
 
-    gui.load_history_button = QPushButton(_("Взять из истории", "Load from history"))
+    gui.load_history_button = QPushButton(_("Загрузить историю", "Load history"))
+    gui.load_history_button.setObjectName("SandboxQuickAction")
     gui.load_history_button.clicked.connect(gui.load_chat_history)
-    gui.load_history_button.setText("")
-    gui.load_history_button.setIcon(qta.icon('fa5s.sync-alt', color='#dcdcdc'))
-    gui.load_history_button.setObjectName("ChatTopIconButton")
-    gui.load_history_button.setFixedSize(TOP_ICON_BUTTON_SIZE, TOP_ICON_BUTTON_SIZE)
-    gui.load_history_button.setCursor(Qt.CursorShape.PointingHandCursor)
-    gui.load_history_button.setToolTip(_("Взять из истории", "Load from history"))
+    quick_layout.addWidget(gui.load_history_button)
 
-    gui.guide_button = QPushButton(qta.icon('fa5s.question-circle', color='#dcdcdc'), '')
-    gui.guide_button.setObjectName("GuideButtonSmall")
-    gui.guide_button.clicked.connect(gui._show_guide)
-    gui.guide_button.setMaximumHeight(30)
-    gui.guide_button.setFixedWidth(30)
-    gui.guide_button.setToolTip(_("Открыть руководство пользователя", "Open user guide"))
+    gui.open_character_history_button = QPushButton(_("Открыть DB персонажа", "Open character DB"))
+    gui.open_character_history_button.setObjectName("SandboxQuickAction")
+    gui.open_character_history_button.clicked.connect(lambda: _open_selected_character_history(gui))
+    quick_layout.addWidget(gui.open_character_history_button)
+
+    api_button = QPushButton(_("API и пресеты", "API and presets"))
+    api_button.setObjectName("SandboxQuickAction")
+    api_button.clicked.connect(lambda: _jump_to_settings(gui, "api"))
+    quick_layout.addWidget(api_button)
+
+    memory_button = QPushButton(_("Память и RAG", "Memory and RAG"))
+    memory_button.setObjectName("SandboxQuickAction")
+    memory_button.clicked.connect(lambda: _jump_to_settings(gui, "models"))
+    quick_layout.addWidget(memory_button)
+    layout.addWidget(quick_card)
+
+    summary_card = QFrame()
+    summary_card.setObjectName("SandboxInspectorCard")
+    summary_layout = QVBoxLayout(summary_card)
+    summary_layout.setContentsMargins(16, 16, 16, 16)
+    summary_layout.setSpacing(8)
+    summary_title = QLabel(_("Контекст сессии", "Session context"))
+    summary_title.setObjectName("SandboxInspectorTitle")
+    summary_layout.addWidget(summary_title)
+
+    summary_lines = [
+        (_("Профиль памяти", "Memory profile"), str(gui._get_setting("MEMORY_PROFILE", _("По умолчанию", "Default")))),
+        (_("Голос", "Voice"), str(gui._get_setting("VOICEOVER_METHOD", "TG"))),
+        (_("Экран", "Screen"), _("Включён", "Enabled") if gui._get_setting("ENABLE_SCREEN_ANALYSIS", False) else _("Выключен", "Disabled")),
+        (_("Камера", "Camera"), _("Включена", "Enabled") if gui._get_setting("ENABLE_CAMERA_CAPTURE", False) else _("Выключена", "Disabled")),
+    ]
+    for label_text, value_text in summary_lines:
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        label = QLabel(label_text)
+        label.setObjectName("SandboxInspectorLabel")
+        row.addWidget(label)
+        row.addStretch()
+        value = QLabel(value_text)
+        value.setObjectName("SandboxInspectorValue")
+        row.addWidget(value)
+        summary_layout.addLayout(row)
+    layout.addWidget(summary_card)
+    layout.addStretch(1)
+    return inspector
 
 
-    top_panel_layout.addWidget(character_history_group)
-    top_panel_layout.addWidget(gui.load_history_button)
-    top_panel_layout.addWidget(gui.clear_chat_button)
-    top_panel_layout.addWidget(gui.guide_button)
+def setup_chat_panel(gui, main_layout):
+    page_root = QWidget()
+    page_root.setObjectName("SandboxPage")
 
-    top_panel_layout.addSpacing(8)
-    create_status_indicators_inline(gui, top_panel_layout)
-    top_panel_layout.addStretch()
-    hero_layout.addLayout(top_panel_layout)
-    chat_layout.addWidget(hero_card)
+    page_layout = QVBoxLayout(page_root)
+    page_layout.setContentsMargins(18, 18, 18, 18)
+    page_layout.setSpacing(12)
+    page_layout.addWidget(_build_chat_header(gui))
 
-    # ── Chat display: widget-based scroll area ──────────────────────────────
+    content_row = QHBoxLayout()
+    content_row.setSpacing(12)
+
+    chat_column = QWidget()
+    chat_column.setObjectName("ChatWorkspace")
+    chat_layout = QVBoxLayout(chat_column)
+    chat_layout.setContentsMargins(0, 0, 0, 0)
+    chat_layout.setSpacing(12)
+
     gui.chat_window = ChatWidget()
     gui.chat_window.setObjectName("ChatScrollArea")
     initial_font_size = int(gui._get_setting("CHAT_FONT_SIZE", 12))
     gui._chat_font_size = initial_font_size
     chat_layout.addWidget(gui.chat_window, 1)
 
-    # Scroll-to-bottom button is built into ChatWidget, expose for compat
     gui.scroll_to_bottom_btn = gui.chat_window._scroll_btn
     gui.scroll_to_bottom_anim = gui.chat_window._scroll_btn._opacity_anim
-
-    # MitaStatusWidget: bridges old API → ChatWidget typing bar
     gui.mita_status = MitaStatusWidget(gui.chat_window)
 
     input_frame = QFrame()
@@ -196,7 +309,6 @@ def setup_chat_panel(gui, main_layout):
 
     input_container = QWidget()
     input_container.setObjectName("ChatInputContainer")
-
     container_layout = QGridLayout(input_container)
     container_layout.setContentsMargins(5, 5, 5, 5)
     container_layout.setSpacing(5)
@@ -206,7 +318,8 @@ def setup_chat_panel(gui, main_layout):
     gui.user_entry.setMaximumHeight(80)
     gui.user_entry.setFixedHeight(36)
     gui.user_entry.setPlaceholderText(_("Напиши что-нибудь Mita…", "Write something to Mita…"))
-    gui.user_entry.setStyleSheet("""
+    gui.user_entry.setStyleSheet(
+        """
         QTextEdit {
             background-color: transparent;
             border: none;
@@ -217,7 +330,8 @@ def setup_chat_panel(gui, main_layout):
             background-color: transparent;
             border: none;
         }
-    """)
+        """
+    )
     gui.user_entry.textChanged.connect(lambda: adjust_input_height(gui))
     gui.user_entry.textChanged.connect(lambda: update_send_button_state(gui))
     gui.user_entry.installEventFilter(gui)
@@ -230,14 +344,14 @@ def setup_chat_panel(gui, main_layout):
     button_layout_inner.setContentsMargins(0, 0, 0, 0)
     button_layout_inner.setSpacing(4)
 
-    gui.attach_button = QPushButton(qta.icon('fa6s.paperclip', color='#b0b0b0', scale_factor=0.7), '')
+    gui.attach_button = QPushButton(qta.icon("fa6s.paperclip", color="#b0b0b0", scale_factor=0.7), "")
     gui.attach_button.setObjectName("ChatIconMini")
     gui.attach_button.clicked.connect(lambda: attach_images(gui))
     gui.attach_button.setFixedSize(20, 20)
     gui.attach_button.setCursor(Qt.CursorShape.PointingHandCursor)
     gui.attach_button.setToolTip(_("Прикрепить изображения", "Attach images"))
 
-    gui.send_screen_button = QPushButton(qta.icon('fa6s.camera', color='#b0b0b0', scale_factor=0.7), '')
+    gui.send_screen_button = QPushButton(qta.icon("fa6s.camera", color="#b0b0b0", scale_factor=0.7), "")
     gui.send_screen_button.setObjectName("ChatIconMini")
     gui.send_screen_button.clicked.connect(lambda: send_screen_capture(gui))
     gui.send_screen_button.setFixedSize(20, 20)
@@ -249,7 +363,7 @@ def setup_chat_panel(gui, main_layout):
     button_layout_inner.addStretch()
     container_layout.addWidget(button_container, 1, 0)
 
-    gui.send_button = QPushButton(qta.icon('fa6s.paper-plane', color='white', scale_factor=0.8), '')
+    gui.send_button = QPushButton(qta.icon("fa6s.paper-plane", color="white", scale_factor=0.8), "")
     gui.send_button.setObjectName("ChatSendButtonCircle")
     gui.send_button.clicked.connect(gui.send_message)
     gui.send_button.setFixedSize(28, 28)
@@ -272,28 +386,33 @@ def setup_chat_panel(gui, main_layout):
 
     chat_layout.addWidget(input_frame)
     update_send_button_state(gui)
-    main_layout.addWidget(chat_widget, 1)
 
-# ── Scroll button compat wrappers ───────────────────────────────────────────
-# ChatWidget has its own scroll button, but main_view.py still calls these
+    content_row.addWidget(chat_column, 1)
+    content_row.addWidget(_build_chat_inspector(gui))
+    page_layout.addLayout(content_row, 1)
+    main_layout.addWidget(page_root, 1)
+
 
 def create_scroll_to_bottom_button(gui):
-    """No-op: ChatWidget creates its own scroll button."""
     pass
 
+
 def handle_chat_scroll(gui):
-    """Compat wrapper — ChatWidget handles scrolling internally."""
     pass
+
 
 def fade_in_scroll_button(gui):
     pass
 
+
 def fade_out_scroll_button(gui):
     pass
 
+
 def reposition_scroll_button(gui):
-    if hasattr(gui, 'chat_window') and hasattr(gui.chat_window, '_reposition_scroll_button'):
+    if hasattr(gui, "chat_window") and hasattr(gui.chat_window, "_reposition_scroll_button"):
         gui.chat_window._reposition_scroll_button()
+
 
 def adjust_input_height(gui):
     doc = gui.user_entry.document()
@@ -302,24 +421,27 @@ def adjust_input_height(gui):
     new_height = max(36, min(new_height, 80))
     gui.user_entry.setFixedHeight(new_height)
 
+
 def update_send_button_state(gui):
     has_text = bool(gui.user_entry.toPlainText().strip())
     has_images = bool(getattr(gui, "staged_image_data", []))
 
     has_auto_images = False
     if gui._get_setting("ENABLE_SCREEN_ANALYSIS", False):
-        frames = gui.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {'limit': 1}, timeout=0.5)
+        frames = gui.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {"limit": 1}, timeout=0.5)
         has_auto_images = bool(frames and frames[0])
 
     if gui._get_setting("ENABLE_CAMERA_CAPTURE", False):
-        camera_frames = gui.event_bus.emit_and_wait(Events.Capture.GET_CAMERA_FRAMES, {'limit': 1}, timeout=0.5)
+        camera_frames = gui.event_bus.emit_and_wait(Events.Capture.GET_CAMERA_FRAMES, {"limit": 1}, timeout=0.5)
         has_auto_images = has_auto_images or bool(camera_frames and camera_frames[0])
 
     is_enabled = has_text or has_images or has_auto_images
     gui.send_button.setEnabled(is_enabled)
 
+
 def init_image_preview(gui):
     gui.staged_image_data = []
+
 
 def show_image_preview_bar(gui):
     if not getattr(gui, "image_preview_bar", None):
@@ -328,7 +450,7 @@ def show_image_preview_bar(gui):
         while widget:
             if isinstance(widget, QFrame) and widget.objectName() != "":
                 break
-            if hasattr(widget, 'layout') and widget.layout():
+            if hasattr(widget, "layout") and widget.layout():
                 for i in range(widget.layout().count()):
                     item = widget.layout().itemAt(i)
                     if item and item.widget() == gui.token_count_label:
@@ -346,6 +468,7 @@ def show_image_preview_bar(gui):
             input_frame.layout().insertWidget(1, gui.image_preview_bar)
     gui.image_preview_bar.show()
 
+
 def remove_staged_image(gui, index):
     if 0 <= index < len(gui.staged_image_data):
         gui.staged_image_data.pop(index)
@@ -354,9 +477,11 @@ def remove_staged_image(gui, index):
             hide_image_preview_bar(gui)
         update_send_button_state(gui)
 
+
 def hide_image_preview_bar(gui):
     if getattr(gui, "image_preview_bar", None):
         gui.image_preview_bar.hide()
+
 
 def show_full_image(gui, image_data):
     try:
@@ -376,9 +501,10 @@ def show_full_image(gui, image_data):
     except Exception as e:
         logger.error(f"Ошибка при показе изображения: {e}")
 
+
 def clipboard_image_to_controller(gui) -> bool:
-    cb = gui.clipboard() if hasattr(gui, "clipboard") else None
     from PyQt6.QtWidgets import QApplication
+
     cb = QApplication.clipboard()
     if not cb.mimeData().hasImage():
         return False
@@ -390,22 +516,23 @@ def clipboard_image_to_controller(gui) -> bool:
     qimg.save(buf, "PNG")
     img_bytes = buf.data().data()
     gui.staged_image_data.append(img_bytes)
-    gui.event_bus.emit(Events.Chat.STAGE_IMAGE, {'image_data': img_bytes})
+    gui.event_bus.emit(Events.Chat.STAGE_IMAGE, {"image_data": img_bytes})
     show_image_preview_bar(gui)
     gui.image_preview_bar.add_image(img_bytes)
     update_send_button_state(gui)
     return True
+
 
 def attach_images(gui):
     file_paths, __ = QFileDialog.getOpenFileNames(
         gui,
         _("Выберите изображения", "Select Images"),
         "",
-        _("Файлы изображений (*.png *.jpg *.jpeg *.bmp *.gif)", "Image Files (*.png *.jpg *.jpeg *.bmp *.gif)")
+        _("Файлы изображений (*.png *.jpg *.jpeg *.bmp *.gif)", "Image Files (*.png *.jpg *.jpeg *.bmp *.gif)"),
     )
     if file_paths:
         for file_path in file_paths:
-            gui.event_bus.emit(Events.Chat.STAGE_IMAGE, {'image_data': file_path})
+            gui.event_bus.emit(Events.Chat.STAGE_IMAGE, {"image_data": file_path})
         for file_path in file_paths:
             try:
                 with open(file_path, "rb") as f:
@@ -418,6 +545,7 @@ def attach_images(gui):
         logger.info(f"Прикреплены изображения: {file_paths}")
         update_send_button_state(gui)
 
+
 def clear_staged_images(gui):
     gui.event_bus.emit(Events.Chat.CLEAR_STAGED_IMAGES)
     gui.staged_image_data.clear()
@@ -426,23 +554,36 @@ def clear_staged_images(gui):
         hide_image_preview_bar(gui)
     update_send_button_state(gui)
 
+
 def send_screen_capture(gui):
     logger.info("Запрошена отправка скриншота.")
-    frames = gui.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {'limit': 1}, timeout=0.5)
+    frames = gui.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {"limit": 1}, timeout=0.5)
     if not frames or not frames[0]:
         from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.warning(gui, _("Ошибка", "Error"),
-                            _("Не удалось захватить экран. Убедитесь, что анализ экрана включен в настройках.",
-                              "Failed to capture the screen. Make sure screen analysis is enabled in settings."))
+
+        QMessageBox.warning(
+            gui,
+            _("Ошибка", "Error"),
+            _(
+                "Не удалось захватить экран. Убедитесь, что анализ экрана включен в настройках.",
+                "Failed to capture the screen. Make sure screen analysis is enabled in settings.",
+            ),
+        )
         return
     for frame_data in frames[0]:
         gui.staged_image_data.append(frame_data)
-        gui.event_bus.emit(Events.Chat.STAGE_IMAGE, {'image_data': frame_data})
-    show_image_preview_bar(gui)
-    for frame_data in frames[0]:
+        gui.event_bus.emit(Events.Chat.STAGE_IMAGE, {"image_data": frame_data})
+        show_image_preview_bar(gui)
         gui.image_preview_bar.add_image(frame_data)
     update_send_button_state(gui)
 
+
 def position_mita_status(gui):
-    """No-op: MitaStatusWidget is now in the layout, not absolutely positioned."""
-    pass
+    if not hasattr(gui, "mita_status") or not gui.mita_status:
+        return
+    chat_viewport = gui.chat_window.viewport().rect()
+    status_width = gui.mita_status.width()
+    status_height = gui.mita_status.height()
+    x = chat_viewport.width() - status_width - 20
+    y = chat_viewport.height() - status_height - 20
+    gui.mita_status.move(gui.chat_window.mapToParent(QPoint(x, y)))
