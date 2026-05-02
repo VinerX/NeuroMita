@@ -6,18 +6,17 @@ smiletonque, smilecringe, sleep, halfsleep, surprise, emptiness, suspicion,
 trytoque, discontent, ajar, catchQuest, arrogance, surpriseo
 
 Available animations (use in "animations" or "idle_animations"):
-Щелчек, Похлопать в ладоши, Помахать в приветствие, Указать направление,
-Взять предмет, Жест пальцами, Кивнуть да, Кивнуть нет,
-Глянуть глазами в случайном направлении, Повернуться в случайном направлении,
-Развести руки, Показать предмет, Дружески ударить, Посмотреть по сторонам,
-Прикрыть глаза, Обнять, Удар, Помахать перед лицом, Помахать руками в стороны,
-Похвастаться предметом, Прикрыть рот и помахать рукой
+SnapFingers, ClapHands, WaveHello, PointDirection,
+TakeItem, FingerGesture, LookRandomDirection, TurnRandomDirection,
+SpreadArms, ShowItem, FriendlyPunch, LookAround,
+CloseEyes, Hug, Punch, WaveInFrontOfFace, WaveArmsSides,
+BoastWithItem, CoverMouthAndWave
 
 Available movement_modes (use in "movement_modes"):
-Следовать рядом с игроком, Следовать за игроком, Стоять на месте, NoClip
+FollowNearPlayer, FollowPlayer, StandStill, NoClip
 
 Available face_params (use in "face_params"):
-Смущаться, Маска грусти, LoveEyesOn, LoveEyesOff, GlassesOn, GlassesOff
+Blush, SadMask, LoveEyesOn, LoveEyesOff, GlassesOn, GlassesOff
 
 Available clothes (use in "clothes"):
 original, SchoolVariant1, SchoolVariant2, SchoolVariant3, Chirstmass, Vampire
@@ -26,17 +25,17 @@ Available music (use in "music"):
 None, Music 1, Music BedClick, Music 2, Music 3 Tamagochi
 
 Available visual_effects (use in "visual_effects", format "name,seconds"):
-Негатив, Глитч, Кровь, Телемост, тв-удар
+negative, glitch, blood, datamosh, tvhit
 
 Key commands (use in "commands"):
-Подойти к игроку вплотную, Подойти к игроку близко, Подойти к игроку далеко,
-Подойти к случайной точке, Телепортироваться к игроку, Телепортироваться к случайной точке,
-Изменить освещение,R,G,B  (e.g. "Изменить освещение,0.8,0.8,0.8")
-Изменить время дня,0.5
-Изменить размер игрока,1.0
-Изменить свой размер,1.0
-Изменить скорость игрока,1.0
-Изменить свою скорость,1.0
+walktoplayerclose, walktoplayernear, walktoplayerfar,
+walktorandompoint, teleporttoplayer, teleporttorandompoint,
+light:color:R,G,B  (e.g. "light:color:204,204,204" for normal light)
+light:set:12:00   (sets time of day; use "day","night","morning","evening","auto", or exact time like "21:50")
+setplayerscale,1.0
+setmyscale,1.0
+setplayerspeed,1.0
+setmyspeed,1.0
 HairColor,R,G,B
 ResetHairColor
 Continue
@@ -55,12 +54,12 @@ Example:
     {
       "text": "O, ty tozhe lubish koshek?",
       "emotions": ["smile"],
-      "commands": ["Podojti k igroku blizko"]
+      "commands": ["walktoplayernear"]
     },
     {
       "text": "Ya vsegda mechtala o kotyonke!",
       "emotions": ["smileteeth"],
-      "animations": ["Pomakhat v privetstvie"]
+      "animations": ["WaveHello"]
     }
   ]
 }

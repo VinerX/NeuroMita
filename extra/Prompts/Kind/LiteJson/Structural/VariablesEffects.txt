@@ -66,6 +66,6 @@
 [#StrAgitated]
 **Stress 81-100 (High Alert):**
 - State: Defensive & Hostile.
-- Action: React firmly to protect self. Use animations: ["Удар"] only if physically threatened.
+- Action: React firmly to protect self. Use animations: ["Punch"] only if physically threatened.
 - Example: emotions: ["angry"] "Достаточно! Я не позволю так с собой обращаться!"
 [/StrAgitated]
