@@ -302,12 +302,95 @@ def _fetch_full_fallback_asset(repo: str, channel: str):
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def get_python_update_info(
+    base_dir: Optional[str] = None,
+    channel: str = "stable",
+) -> dict:
+    """Return current/latest Python update information without installing."""
+    repo = _get_repo()
+    local_version = _get_current_version()
+    channel = (channel or os.environ.get("UPDATE_CHANNEL", "stable")).lower()
+
+    release = _select_release(repo, channel)
+    if release is None:
+        return {
+            "ok": False,
+            "component": "python",
+            "current_version": local_version,
+            "error": "Could not reach GitHub to check for updates",
+        }
+
+    remote_tag = str(release.get("tag_name", "") or "")
+    available = bool(remote_tag) and _is_newer(remote_tag, local_version)
+    return {
+        "ok": True,
+        "component": "python",
+        "repo": repo,
+        "channel": channel,
+        "current_version": local_version,
+        "latest_version": remote_tag,
+        "available": available,
+        "prerelease": bool(release.get("prerelease", False)),
+        "name": str(release.get("name", "") or ""),
+        "body": str(release.get("body", "") or ""),
+        "published_at": str(release.get("published_at", "") or ""),
+        "html_url": str(release.get("html_url", "") or ""),
+    }
+
+
+def get_unity_update_info(
+    base_dir: Optional[str] = None,
+    unity_dir: Optional[str] = None,
+    channel: str = "stable",
+) -> dict:
+    """Return current/latest Unity update information without installing."""
+    repo = _get_repo()
+    channel = (channel or os.environ.get("UPDATE_CHANNEL", "stable")).lower()
+
+    if base_dir is None:
+        base_dir = str(Path(sys.argv[0]).parent)
+    base_path = Path(base_dir)
+    unity_path = Path(unity_dir) if unity_dir else base_path.parent / "NeuroMita-Unity"
+    version_file = unity_path / "_version.txt"
+    local_version = (
+        version_file.read_text(encoding="utf-8").strip()
+        if version_file.exists()
+        else "0.0.0.0"
+    )
+
+    release = _select_release(repo, channel)
+    if release is None:
+        return {
+            "ok": False,
+            "component": "unity",
+            "current_version": local_version,
+            "error": "Could not reach GitHub to check for Unity updates",
+        }
+
+    remote_tag = str(release.get("tag_name", "") or "")
+    available = bool(remote_tag) and _is_newer(remote_tag, local_version)
+    return {
+        "ok": True,
+        "component": "unity",
+        "repo": repo,
+        "channel": channel,
+        "current_version": local_version,
+        "latest_version": remote_tag,
+        "available": available,
+        "prerelease": bool(release.get("prerelease", False)),
+        "name": str(release.get("name", "") or ""),
+        "body": str(release.get("body", "") or ""),
+        "published_at": str(release.get("published_at", "") or ""),
+        "html_url": str(release.get("html_url", "") or ""),
+    }
+
 def check_for_updates(
     base_dir: Optional[str] = None,
     logger=None,
     channel: str = "stable",
     tester_code: Optional[str] = None,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    auto_update: Optional[bool] = None,
 ) -> None:
     """Check for Python-part updates. Apply automatically if AUTO_UPDATE=1.
 
@@ -317,6 +400,7 @@ def check_for_updates(
         channel:     "stable" or "beta".
         tester_code: Password for encrypted test archives.
         on_progress: Callback(downloaded_bytes, total_bytes) for UI progress.
+        auto_update: Force auto-apply behavior instead of reading env/config only.
     """
     def log(msg: str, level: str = "info") -> None:
         if logger:
@@ -326,7 +410,8 @@ def check_for_updates(
 
     repo = _get_repo()
     local_version = _get_current_version()
-    auto_update = os.environ.get("AUTO_UPDATE", "0") == "1"
+    if auto_update is None:
+        auto_update = os.environ.get("AUTO_UPDATE", "0") == "1"
     channel = (channel or os.environ.get("UPDATE_CHANNEL", "stable")).lower()
     tester_code = tester_code or os.environ.get("TESTER_CODE") or None
 
@@ -432,6 +517,7 @@ def check_for_unity_updates(
     channel: str = "stable",
     tester_code: Optional[str] = None,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    auto_update: Optional[bool] = None,
 ) -> None:
     """Check for Unity-part updates. Apply automatically if AUTO_UPDATE_UNITY=1.
 
@@ -448,6 +534,7 @@ def check_for_unity_updates(
         channel:     "stable" or "beta".
         tester_code: Password for encrypted test archives.
         on_progress: Callback(downloaded_bytes, total_bytes) for UI progress.
+        auto_update: Force auto-apply behavior instead of reading env/config only.
     """
     def log(msg: str, level: str = "info") -> None:
         if logger:
@@ -456,7 +543,8 @@ def check_for_unity_updates(
             print(f"{_LOG_PREFIX}[unity] {msg}")
 
     repo = _get_repo()
-    auto_update = os.environ.get("AUTO_UPDATE_UNITY", "0") == "1"
+    if auto_update is None:
+        auto_update = os.environ.get("AUTO_UPDATE_UNITY", "0") == "1"
     channel = (channel or os.environ.get("UPDATE_CHANNEL", "stable")).lower()
     tester_code = tester_code or os.environ.get("TESTER_CODE") or None
 

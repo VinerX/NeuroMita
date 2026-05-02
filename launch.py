@@ -44,6 +44,7 @@ _GPU_EXTRA_PKG = {
 
 REQ_FILE = OUTPUT_DIR / "requirements.txt"
 HASH_FILE = OUTPUT_DIR / ".req_hash"
+UV_EXE = GAME_PYTHON.parent / "Scripts" / "uv.exe"
 
 
 def file_hash(path: Path) -> str:
@@ -71,12 +72,50 @@ def run(cmd: list, cwd: Path = None):
         sys.exit(result.returncode)
 
 
+def run_quiet(cmd: list, cwd: Path = None) -> bool:
+    result = subprocess.run(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
+def ensure_pip():
+    if run_quiet([str(GAME_PYTHON), "-m", "pip", "--version"], cwd=OUTPUT_DIR):
+        return
+    print("pip не найден во встроенном Python, включаю ensurepip...")
+    run([str(GAME_PYTHON), "-m", "ensurepip", "--upgrade"], cwd=OUTPUT_DIR)
+
+
+def resolve_uv_cmd() -> list:
+    if run_quiet([str(GAME_PYTHON), "-m", "uv", "--version"], cwd=OUTPUT_DIR):
+        return [str(GAME_PYTHON), "-m", "uv"]
+    if UV_EXE.exists():
+        return [str(UV_EXE)]
+
+    print("uv не найден, устанавливаю его во встроенный Python...")
+    ensure_pip()
+    run([str(GAME_PYTHON), "-m", "pip", "install", "--upgrade", "uv", "--no-cache-dir"], cwd=OUTPUT_DIR)
+
+    if run_quiet([str(GAME_PYTHON), "-m", "uv", "--version"], cwd=OUTPUT_DIR):
+        return [str(GAME_PYTHON), "-m", "uv"]
+    if UV_EXE.exists():
+        return [str(UV_EXE)]
+
+    print("Не удалось подготовить uv, прерываю.")
+    sys.exit(1)
+
+
 if __name__ == "__main__":
     # 1. Сборка
     print("=" * 50)
     print("Шаг 1: сборка (fast)")
     print("=" * 50)
     run([sys.executable, str(PROJECT_DIR / "build.py")])
+
+    uv_cmd = resolve_uv_cmd()
 
     # 2. Обновление зависимостей если нужно
     if requirements_changed():
@@ -94,7 +133,7 @@ if __name__ == "__main__":
             run(["cmd", "/c", str(script_path)], cwd=OUTPUT_DIR)
         else:
             print("GPU_VENDOR=none, устанавливаю только requirements.txt")
-            run([str(GAME_PYTHON), "-m", "uv", "pip", "install",
+            run(uv_cmd + ["pip", "install",
                  "-r", str(REQ_FILE), "--no-cache-dir"], cwd=OUTPUT_DIR)
         save_hash()
     else:
@@ -102,7 +141,7 @@ if __name__ == "__main__":
 
     # 3. Запуск игры (с перезапуском после автообновления)
     # Exit code 42 означает что updater применил обновление и нужен рестарт.
-    game_cmd = [str(GAME_PYTHON), "-m", "uv", "run", "NeuroMita.pyz"]
+    game_cmd = uv_cmd + ["run", "NeuroMita.pyz"]
     while True:
         print("=" * 50)
         print("Шаг 3: запуск игры")

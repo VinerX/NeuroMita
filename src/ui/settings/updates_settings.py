@@ -1,8 +1,4 @@
-"""Settings panel - Updates section.
-
-Provides channel selection, tester code, Unity install path, and
-a "Check now" button that runs update checks in a background thread.
-"""
+"""Settings panel for Python/Unity updates."""
 from __future__ import annotations
 
 import os
@@ -19,10 +15,12 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QProgressBar,
+    QTextEdit,
     QWidget,
     QVBoxLayout,
 )
 
+from main_logger import logger
 from ui.gui_templates import create_section_header
 from utils import getTranslationVariant as _
 
@@ -38,26 +36,280 @@ def setup_updates_settings_controls(self, parent):
             self.settings.set(key, value)
             self.settings.save_settings()
         except Exception:
-            pass
+            logger.error(f"[updates_ui] Failed to persist setting {key!r}", exc_info=True)
+
+    def _current_unity_dir() -> Path:
+        base_dir = os.environ.get("NEUROMITA_BASE_DIR", "")
+        unity_path = Path(base_dir).parent / "NeuroMita-Unity"
+        unity_dir_setting = self.settings.get("UNITY_INSTALL_DIR", "")
+        if unity_dir_setting:
+            unity_path = Path(unity_dir_setting)
+        return unity_path
+
+    def _current_unity_version() -> str:
+        try:
+            ver_file = _current_unity_dir() / "_version.txt"
+            if ver_file.exists():
+                return ver_file.read_text(encoding="utf-8").strip() or "?"
+        except Exception:
+            logger.warning("[updates_ui] Failed to read Unity version", exc_info=True)
+        return "?"
+
+    def _find_unity_executable(unity_dir: Path) -> Path | None:
+        if not unity_dir.exists() or not unity_dir.is_dir():
+            return None
+
+        exe_files = list(unity_dir.glob("*.exe"))
+        if not exe_files:
+            return None
+
+        preferred_names = (
+            "NeuroMita.exe",
+            "NeuroMita-Unity.exe",
+            "Unity.exe",
+        )
+        lower_map = {path.name.lower(): path for path in exe_files}
+        for name in preferred_names:
+            found = lower_map.get(name.lower())
+            if found is not None:
+                return found
+
+        for path in exe_files:
+            low = path.name.lower()
+            if "neuromita" in low or "unity" in low:
+                return path
+
+        return exe_files[0]
+
+    def _refresh_version_labels():
+        try:
+            from _version import __version__ as py_ver
+        except Exception:
+            py_ver = "?"
+        lbl_py.setText(_("Python-часть: ", "Python part: ") + f"<b>{py_ver}</b>")
+        lbl_unity.setText(_("Unity-часть: ", "Unity part: ") + f"<b>{_current_unity_version()}</b>")
+
+    def _set_status(msg: str):
+        logger.info(f"[updates_ui] {msg}")
+        QTimer.singleShot(0, lambda: status_lbl.setText(msg))
+
+    def _set_status_level(msg: str, level: str = "info"):
+        log_fn = getattr(logger, level, logger.info)
+        log_fn(f"[updates_ui] {msg}")
+        QTimer.singleShot(0, lambda: status_lbl.setText(msg))
+
+    def _update_progress(pct: int | None, text: str, busy: bool = False):
+        def apply():
+            progress_bar.setVisible(True)
+            if busy or pct is None:
+                progress_bar.setRange(0, 0)
+            else:
+                progress_bar.setRange(0, 100)
+                progress_bar.setValue(max(0, min(100, pct)))
+            status_lbl.setText(text)
+
+        QTimer.singleShot(0, apply)
+
+    def _hide_progress():
+        QTimer.singleShot(0, lambda: progress_bar.setVisible(False))
+
+    def _set_buttons_enabled(enabled: bool):
+        QTimer.singleShot(0, lambda: btn_check.setEnabled(enabled))
+        QTimer.singleShot(0, lambda: btn_install.setEnabled(enabled))
+
+    def _render_update_info(py_info: dict | None, unity_info: dict | None):
+        chunks: list[str] = []
+        if py_info:
+            chunks.append(_format_component_info(_("Python", "Python"), py_info))
+        if unity_info:
+            chunks.append(_format_component_info(_("Unity", "Unity"), unity_info))
+        text = "\n\n".join(chunk for chunk in chunks if chunk).strip()
+        if not text:
+            text = _("Нет данных об обновлениях.", "No update information yet.")
+        QTimer.singleShot(0, lambda: release_info.setPlainText(text))
+
+    def _format_component_info(title: str, info: dict) -> str:
+        if not info.get("ok"):
+            err = info.get("error") or _("Неизвестная ошибка", "Unknown error")
+            return f"{title}\n{_('Ошибка проверки', 'Check error')}: {err}"
+
+        current_version = info.get("current_version") or "?"
+        latest_version = info.get("latest_version") or "?"
+        available = bool(info.get("available"))
+        prerelease = bool(info.get("prerelease"))
+        name = str(info.get("name") or "")
+        published_at = str(info.get("published_at") or "")
+        body = str(info.get("body") or "").strip()
+        if len(body) > 1200:
+            body = body[:1200].rstrip() + "\n..."
+
+        lines = [
+            title,
+            f"{_('Текущая версия', 'Current version')}: {current_version}",
+            f"{_('Последняя версия', 'Latest version')}: {latest_version}",
+            f"{_('Доступно обновление', 'Update available')}: {(_('да', 'yes') if available else _('нет', 'no'))}",
+        ]
+        if prerelease:
+            lines.append(_("Канал содержит prerelease.", "Channel contains prerelease."))
+        if name:
+            lines.append(f"{_('Заголовок релиза', 'Release title')}: {name}")
+        if published_at:
+            lines.append(f"{_('Дата публикации', 'Published at')}: {published_at}")
+        if body:
+            lines.extend(["", _("Что нового:", "What's new:"), body])
+        return "\n".join(lines)
+
+    def _on_progress(downloaded: int, total: int):
+        if total > 0:
+            pct = int(downloaded * 100 / total)
+            mb_done = downloaded / (1024 * 1024)
+            mb_total = total / (1024 * 1024)
+            text = f"{mb_done:.1f} / {mb_total:.1f} MB"
+            logger.info(f"[updates_ui] Download progress: {pct}% ({text})")
+            _update_progress(pct, text)
+        else:
+            mb_done = downloaded / (1024 * 1024)
+            text = f"{mb_done:.1f} MB"
+            logger.info(f"[updates_ui] Download progress: {text}")
+            _update_progress(None, text, busy=True)
+
+    def _run_check_only():
+        logger.info("[updates_ui] Check-only action started")
+        _set_buttons_enabled(False)
+        _update_progress(None, _("Проверяю релизы...", "Checking releases..."), busy=True)
+        try:
+            from updater import get_python_update_info, get_unity_update_info
+
+            channel = self.settings.get("UPDATE_CHANNEL", "stable")
+            base_dir = os.environ.get("NEUROMITA_BASE_DIR") or None
+            unity_dir = self.settings.get("UNITY_INSTALL_DIR") or None
+
+            logger.info(
+                f"[updates_ui] Check-only params: channel={channel}, base_dir={base_dir}, unity_dir={unity_dir}"
+            )
+
+            py_info = get_python_update_info(base_dir=base_dir, channel=channel)
+            unity_info = get_unity_update_info(base_dir=base_dir, unity_dir=unity_dir, channel=channel)
+            _render_update_info(py_info, unity_info)
+
+            if bool(py_info.get("available")) or bool(unity_info.get("available")):
+                _set_status_level(_("Обновления найдены. Смотри информацию ниже.", "Updates found. See details below."), "notify")
+            else:
+                _set_status(_("Новых обновлений не найдено.", "No new updates found."))
+        except Exception as e:
+            logger.error("[updates_ui] Check-only action failed", exc_info=True)
+            _set_status_level(f"{_('Ошибка проверки', 'Check error')}: {e}", "error")
+        finally:
+            _hide_progress()
+            _set_buttons_enabled(True)
+
+    def _run_install():
+        logger.info("[updates_ui] Install action started")
+        _set_buttons_enabled(False)
+        _update_progress(None, _("Подготовка к установке...", "Preparing installation..."), busy=True)
+        try:
+            from updater import (
+                check_for_unity_updates,
+                check_for_updates,
+                get_python_update_info,
+                get_unity_update_info,
+            )
+
+            channel = self.settings.get("UPDATE_CHANNEL", "stable")
+            tester_code = self.settings.get("TESTER_CODE") or None
+            base_dir = os.environ.get("NEUROMITA_BASE_DIR") or None
+            unity_dir = self.settings.get("UNITY_INSTALL_DIR") or None
+
+            logger.info(
+                f"[updates_ui] Install params: channel={channel}, base_dir={base_dir}, unity_dir={unity_dir}, "
+                f"tester_code={'set' if tester_code else 'empty'}"
+            )
+
+            py_info = get_python_update_info(base_dir=base_dir, channel=channel)
+            unity_info = get_unity_update_info(base_dir=base_dir, unity_dir=unity_dir, channel=channel)
+            _render_update_info(py_info, unity_info)
+
+            if not bool(py_info.get("available")) and not bool(unity_info.get("available")):
+                _set_status(_("Новых обновлений не найдено.", "No new updates found."))
+                return
+
+            class _UiLogger:
+                def info(self, msg):
+                    _set_status(msg)
+
+                def warning(self, msg):
+                    _set_status_level(f"⚠ {msg}", "warning")
+
+                def error(self, msg):
+                    _set_status_level(f"✗ {msg}", "error")
+
+                def success(self, msg):
+                    _set_status_level(f"✓ {msg}", "success")
+
+                def notify(self, msg):
+                    _set_status_level(f"★ {msg}", "notify")
+
+            ui_log = _UiLogger()
+
+            if bool(py_info.get("available")):
+                _set_status(_("Устанавливаю Python-обновление...", "Installing Python update..."))
+                check_for_updates(
+                    base_dir=base_dir,
+                    logger=ui_log,
+                    channel=channel,
+                    tester_code=tester_code,
+                    on_progress=_on_progress,
+                    auto_update=True,
+                )
+
+            if bool(unity_info.get("available")):
+                _set_status(_("Устанавливаю Unity-обновление...", "Installing Unity update..."))
+                check_for_unity_updates(
+                    base_dir=base_dir,
+                    logger=ui_log,
+                    unity_dir=unity_dir,
+                    channel=channel,
+                    tester_code=tester_code,
+                    on_progress=_on_progress,
+                    auto_update=True,
+                )
+
+            _refresh_version_labels()
+        except SystemExit as e:
+            logger.warning(f"[updates_ui] Install action requested process exit: code={getattr(e, 'code', None)}")
+            _set_status_level(
+                _("Python-обновление установлено. Перезапусти приложение.", "Python update installed. Restart the app."),
+                "success",
+            )
+            _refresh_version_labels()
+        except Exception as e:
+            logger.error("[updates_ui] Install action failed", exc_info=True)
+            _set_status_level(f"{_('Ошибка установки', 'Install error')}: {e}", "error")
+        finally:
+            _hide_progress()
+            _set_buttons_enabled(True)
+
+    def _launch_unity():
+        unity_dir_text = unity_entry.text().strip()
+        unity_dir = Path(unity_dir_text) if unity_dir_text else _current_unity_dir()
+        logger.info(f"[updates_ui] Unity launch requested from {unity_dir}")
+        try:
+            exe_path = _find_unity_executable(unity_dir)
+            if exe_path is None:
+                _set_status_level(_("Не найден .exe в папке Unity.", "No .exe found in the Unity folder."), "warning")
+                return
+
+            os.startfile(str(exe_path))
+            _set_status_level(_("Запускаю Unity...", "Launching Unity..."), "notify")
+        except Exception as e:
+            logger.error("[updates_ui] Failed to launch Unity", exc_info=True)
+            _set_status_level(f"{_('Ошибка запуска Unity', 'Unity launch error')}: {e}", "error")
 
     # Current versions
     try:
         from _version import __version__ as py_ver
     except Exception:
         py_ver = "?"
-
-    unity_ver = "?"
-    try:
-        base_dir = os.environ.get("NEUROMITA_BASE_DIR", "")
-        unity_path = Path(base_dir).parent / "NeuroMita-Unity"
-        unity_dir_setting = self.settings.get("UNITY_INSTALL_DIR", "")
-        if unity_dir_setting:
-            unity_path = Path(unity_dir_setting)
-        ver_file = unity_path / "_version.txt"
-        if ver_file.exists():
-            unity_ver = ver_file.read_text(encoding="utf-8").strip()
-    except Exception:
-        pass
 
     ver_widget = QWidget()
     ver_widget.setStyleSheet(
@@ -68,19 +320,14 @@ def setup_updates_settings_controls(self, parent):
     ver_layout.setSpacing(2)
 
     lbl_py = QLabel(_("Python-часть: ", "Python part: ") + f"<b>{py_ver}</b>")
-    lbl_py.setStyleSheet(
-        "QLabel { background: transparent; border: none; color: #b0b0d0; font-size: 11px; }"
-    )
+    lbl_py.setStyleSheet("QLabel { background: transparent; border: none; color: #b0b0d0; font-size: 11px; }")
     lbl_py.setTextFormat(Qt.TextFormat.RichText)
     ver_layout.addWidget(lbl_py)
 
-    lbl_unity = QLabel(_("Unity-часть: ", "Unity part: ") + f"<b>{unity_ver}</b>")
-    lbl_unity.setStyleSheet(
-        "QLabel { background: transparent; border: none; color: #b0b0d0; font-size: 11px; }"
-    )
+    lbl_unity = QLabel(_("Unity-часть: ", "Unity part: ") + f"<b>{_current_unity_version()}</b>")
+    lbl_unity.setStyleSheet("QLabel { background: transparent; border: none; color: #b0b0d0; font-size: 11px; }")
     lbl_unity.setTextFormat(Qt.TextFormat.RichText)
     ver_layout.addWidget(lbl_unity)
-
     parent.addWidget(ver_widget)
 
     # Channel
@@ -111,13 +358,10 @@ def setup_updates_settings_controls(self, parent):
     def _save_channel(text: str):
         if text == self.settings.get("UPDATE_CHANNEL", "stable"):
             return
+        logger.info(f"[updates_ui] UPDATE_CHANNEL -> {text}")
         _persist_setting("UPDATE_CHANNEL", text)
 
-    def _on_channel_activated(_index: int):
-        selected = channel_combo.currentText()
-        QTimer.singleShot(0, lambda: _save_channel(selected))
-
-    channel_combo.activated.connect(_on_channel_activated)
+    channel_combo.activated.connect(lambda _index: QTimer.singleShot(0, lambda: _save_channel(channel_combo.currentText())))
     channel_layout.addWidget(channel_combo)
     channel_layout.addStretch()
     parent.addWidget(channel_row)
@@ -125,10 +369,13 @@ def setup_updates_settings_controls(self, parent):
     # Auto-update checkboxes
     chk_auto = QCheckBox(_("Авто-обновление Python при запуске", "Auto-update Python on startup"))
     chk_auto.setToolTip(_("AUTO_UPDATE=1 в features.env", "AUTO_UPDATE=1 in features.env"))
-    chk_auto.setChecked(bool(self.settings.get("AUTO_UPDATE_CHECK", False)))
+    chk_auto.setChecked(bool(self.settings.get("AUTO_UPDATE", self.settings.get("AUTO_UPDATE_CHECK", False))))
 
     def _save_auto(state):
-        _persist_setting("AUTO_UPDATE_CHECK", bool(state))
+        enabled = bool(state)
+        logger.info(f"[updates_ui] AUTO_UPDATE -> {enabled}")
+        _persist_setting("AUTO_UPDATE", enabled)
+        _persist_setting("AUTO_UPDATE_CHECK", enabled)
 
     chk_auto.stateChanged.connect(_save_auto)
     parent.addWidget(chk_auto)
@@ -143,7 +390,9 @@ def setup_updates_settings_controls(self, parent):
     chk_unity.setChecked(bool(self.settings.get("AUTO_UPDATE_UNITY", False)))
 
     def _save_unity_auto(state):
-        _persist_setting("AUTO_UPDATE_UNITY", bool(state))
+        enabled = bool(state)
+        logger.info(f"[updates_ui] AUTO_UPDATE_UNITY -> {enabled}")
+        _persist_setting("AUTO_UPDATE_UNITY", enabled)
 
     chk_unity.stateChanged.connect(_save_unity_auto)
     parent.addWidget(chk_unity)
@@ -171,6 +420,7 @@ def setup_updates_settings_controls(self, parent):
     )
 
     def _save_tester():
+        logger.info("[updates_ui] TESTER_CODE updated")
         _persist_setting("TESTER_CODE", tester_entry.text())
 
     tester_entry.editingFinished.connect(_save_tester)
@@ -193,8 +443,8 @@ def setup_updates_settings_controls(self, parent):
     unity_entry.setText(self.settings.get("UNITY_INSTALL_DIR", ""))
     unity_layout.addWidget(unity_entry)
 
-    unity_browse = QPushButton("...")
-    unity_browse.setFixedWidth(32)
+    unity_browse = QPushButton("📁")
+    unity_browse.setFixedWidth(36)
     unity_browse.setToolTip(_("Выбрать папку", "Browse folder"))
 
     def _browse_unity():
@@ -204,17 +454,37 @@ def setup_updates_settings_controls(self, parent):
             unity_entry.text() or str(Path.home()),
         )
         if directory:
+            logger.info(f"[updates_ui] UNITY_INSTALL_DIR -> {directory}")
             unity_entry.setText(directory)
             _persist_setting("UNITY_INSTALL_DIR", directory)
+            _refresh_version_labels()
 
     unity_browse.clicked.connect(_browse_unity)
     unity_layout.addWidget(unity_browse)
 
+    unity_launch = QPushButton(_("▶ Запуск", "▶ Launch"))
+    unity_launch.setToolTip(_("Запустить Unity из выбранной папки", "Launch Unity from the selected folder"))
+    unity_launch.clicked.connect(_launch_unity)
+    unity_layout.addWidget(unity_launch)
+
     def _save_unity_dir():
+        logger.info(f"[updates_ui] UNITY_INSTALL_DIR -> {unity_entry.text()}")
         _persist_setting("UNITY_INSTALL_DIR", unity_entry.text())
+        _refresh_version_labels()
 
     unity_entry.editingFinished.connect(_save_unity_dir)
     parent.addWidget(unity_row)
+
+    # Release info
+    info_title = QLabel(_("Информация об обновлении", "Update information"))
+    info_title.setStyleSheet("QLabel { color: #c0c0d8; font-size: 12px; }")
+    parent.addWidget(info_title)
+
+    release_info = QTextEdit()
+    release_info.setReadOnly(True)
+    release_info.setMinimumHeight(180)
+    release_info.setPlaceholderText(_("Сначала нажми «Проверить».", "Press 'Check' first."))
+    parent.addWidget(release_info)
 
     # Progress + status
     progress_bar = QProgressBar()
@@ -232,102 +502,30 @@ def setup_updates_settings_controls(self, parent):
     status_lbl.setStyleSheet("QLabel { color: #a0a0c0; font-size: 11px; padding: 2px 0; }")
     parent.addWidget(status_lbl)
 
-    # Check now button
+    # Action buttons
+    buttons_row = QWidget()
+    buttons_layout = QHBoxLayout(buttons_row)
+    buttons_layout.setContentsMargins(0, 0, 0, 0)
+    buttons_layout.setSpacing(8)
+
     btn_check = QPushButton(_("Проверить обновления", "Check for updates"))
     btn_check.setStyleSheet(
+        "QPushButton { background: #2f4f74; color: #e0f0ff; border: none; border-radius: 5px; padding: 6px 12px; font-size: 12px; }"
+        "QPushButton:hover { background: #40658f; }"
+        "QPushButton:disabled { background: #24394f; color: #708090; }"
+    )
+
+    btn_install = QPushButton(_("Установить обновления", "Install updates"))
+    btn_install.setStyleSheet(
         "QPushButton { background: #3a3a7c; color: #e0e0ff; border: none; border-radius: 5px; padding: 6px 12px; font-size: 12px; }"
         "QPushButton:hover { background: #4a4a9c; }"
         "QPushButton:disabled { background: #2a2a4c; color: #606080; }"
     )
 
-    def _on_progress(downloaded: int, total: int):
-        if total > 0:
-            pct = int(downloaded * 100 / total)
-            mb_done = downloaded / (1024 * 1024)
-            mb_total = total / (1024 * 1024)
-            QTimer.singleShot(0, lambda: _update_progress(pct, f"{mb_done:.1f} / {mb_total:.1f} MB"))
-        else:
-            mb_done = downloaded / (1024 * 1024)
-            QTimer.singleShot(0, lambda: _update_progress(-1, f"{mb_done:.1f} MB"))
+    btn_check.clicked.connect(lambda: threading.Thread(target=_run_check_only, daemon=True).start())
+    btn_install.clicked.connect(lambda: threading.Thread(target=_run_install, daemon=True).start())
 
-    def _update_progress(pct: int, text: str):
-        progress_bar.setVisible(True)
-        if pct >= 0:
-            progress_bar.setRange(0, 100)
-            progress_bar.setValue(pct)
-        else:
-            progress_bar.setRange(0, 0)
-        status_lbl.setText(text)
-
-    def _set_status(msg: str):
-        QTimer.singleShot(0, lambda: status_lbl.setText(msg))
-
-    def _run_check():
-        try:
-            from updater import check_for_updates, check_for_unity_updates
-        except ImportError as e:
-            QTimer.singleShot(0, lambda: status_lbl.setText(f"Import error: {e}"))
-            QTimer.singleShot(0, lambda: btn_check.setEnabled(True))
-            return
-
-        ch = self.settings.get("UPDATE_CHANNEL", "stable")
-        tc = self.settings.get("TESTER_CODE") or None
-        bd = os.environ.get("NEUROMITA_BASE_DIR") or None
-        ud = self.settings.get("UNITY_INSTALL_DIR") or None
-
-        class _UiLogger:
-            def info(self, msg):
-                _set_status(msg)
-
-            def warning(self, msg):
-                _set_status(f"⚠ {msg}")
-
-            def error(self, msg):
-                _set_status(f"✗ {msg}")
-
-            def success(self, msg):
-                _set_status(f"✓ {msg}")
-
-            def notify(self, msg):
-                _set_status(f"★ {msg}")
-
-        ui_log = _UiLogger()
-
-        try:
-            check_for_updates(
-                base_dir=bd,
-                logger=ui_log,
-                channel=ch,
-                tester_code=tc,
-                on_progress=_on_progress,
-            )
-        except SystemExit:
-            raise
-        except Exception as e:
-            _set_status(f"Python update error: {e}")
-
-        try:
-            check_for_unity_updates(
-                base_dir=bd,
-                logger=ui_log,
-                unity_dir=ud,
-                channel=ch,
-                tester_code=tc,
-                on_progress=_on_progress,
-            )
-        except Exception as e:
-            _set_status(f"Unity update error: {e}")
-
-        QTimer.singleShot(0, lambda: progress_bar.setVisible(False))
-        QTimer.singleShot(0, lambda: btn_check.setEnabled(True))
-
-    def _on_check_clicked():
-        btn_check.setEnabled(False)
-        progress_bar.setValue(0)
-        progress_bar.setVisible(True)
-        status_lbl.setText(_("Проверяю...", "Checking ..."))
-        thread = threading.Thread(target=_run_check, daemon=True)
-        thread.start()
-
-    btn_check.clicked.connect(_on_check_clicked)
-    parent.addWidget(btn_check)
+    buttons_layout.addWidget(btn_check)
+    buttons_layout.addWidget(btn_install)
+    buttons_layout.addStretch()
+    parent.addWidget(buttons_row)

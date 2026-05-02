@@ -129,7 +129,7 @@ logger.info(libs_dir)
 
 # Check for updates (before heavy imports)
 try:
-    from updater import check_for_updates as _check_for_updates
+    from updater import check_for_updates as _check_for_updates, check_for_unity_updates as _check_for_unity_updates
     import json as _json
     _upd_settings: dict = {}
     try:
@@ -138,12 +138,29 @@ try:
             _upd_settings = _json.load(_f)
     except Exception:
         pass
-    _check_for_updates(
-        base_dir=base_dir,
-        logger=logger,
-        channel=_upd_settings.get("UPDATE_CHANNEL", "stable"),
-        tester_code=_upd_settings.get("TESTER_CODE") or None,
+    _py_startup_update = bool(
+        _upd_settings.get("AUTO_UPDATE", _upd_settings.get("AUTO_UPDATE_CHECK", False))
     )
+    _unity_startup_update = bool(_upd_settings.get("AUTO_UPDATE_UNITY", False))
+
+    if _py_startup_update:
+        _check_for_updates(
+            base_dir=base_dir,
+            logger=logger,
+            channel=_upd_settings.get("UPDATE_CHANNEL", "stable"),
+            tester_code=_upd_settings.get("TESTER_CODE") or None,
+            auto_update=True,
+        )
+
+    if _unity_startup_update:
+        _check_for_unity_updates(
+            base_dir=base_dir,
+            logger=logger,
+            unity_dir=_upd_settings.get("UNITY_INSTALL_DIR") or None,
+            channel=_upd_settings.get("UPDATE_CHANNEL", "stable"),
+            tester_code=_upd_settings.get("TESTER_CODE") or None,
+            auto_update=True,
+        )
 except Exception as _upd_err:
     logger.warning(f"Update check failed: {_upd_err}")
 
