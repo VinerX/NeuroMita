@@ -68,6 +68,7 @@ def setup_settings_panel(gui, main_layout):
         ("fa6s.bug",        _("Отладка",     "Debug"),       "debug",      "full"),
         ("fa6s.newspaper",  _("Новости",     "News"),        "news",       "full"),
         ("fa5s.database",   _("Данные",      "Data"),        "data",       "full"),
+        ("fa6s.rotate",     _("Обновления",  "Updates"),     "updates",    "advanced"),
     ]
 
     for icon_name, tooltip, category, min_mode in settings_categories:

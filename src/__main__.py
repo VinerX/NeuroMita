@@ -130,7 +130,20 @@ logger.info(libs_dir)
 # Check for updates (before heavy imports)
 try:
     from updater import check_for_updates as _check_for_updates
-    _check_for_updates(base_dir=base_dir, logger=logger)
+    import json as _json
+    _upd_settings: dict = {}
+    try:
+        _settings_path = os.path.join(base_dir, "Settings", "settings.json")
+        with open(_settings_path, encoding="utf-8") as _f:
+            _upd_settings = _json.load(_f)
+    except Exception:
+        pass
+    _check_for_updates(
+        base_dir=base_dir,
+        logger=logger,
+        channel=_upd_settings.get("UPDATE_CHANNEL", "stable"),
+        tester_code=_upd_settings.get("TESTER_CODE") or None,
+    )
 except Exception as _upd_err:
     logger.warning(f"Update check failed: {_upd_err}")
 
