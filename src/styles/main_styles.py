@@ -808,6 +808,59 @@ QLabel#SettingsRailBrandState {
     font-weight: 700;
 }
 
+QPushButton#SandboxSelectorJump {
+    background-color: rgba(255, 255, 255, 0.04);
+    color: #fff1f9;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 5px 10px;
+    text-align: left;
+    font-size: 10pt;
+    font-weight: 600;
+}
+
+QPushButton#SandboxSelectorJump:hover {
+    background-color: rgba(255, 92, 168, 0.16);
+    border: 1px solid rgba(255, 92, 168, 0.36);
+}
+
+QFrame#ChatConversationStrip {
+    background-color: rgba(28, 12, 36, 0.72);
+    border: 1px solid rgba(255, 92, 158, 0.16);
+    border-radius: 14px;
+}
+
+QLabel#ChatStripTitle {
+    color: #fff1f9;
+    font-size: 10pt;
+    font-weight: 700;
+}
+
+QLabel#ChatStripMeta {
+    color: #c39fb8;
+    font-size: 9pt;
+}
+
+QLabel#ChatStripSeparator {
+    color: rgba(255, 92, 158, 0.55);
+    font-size: 10pt;
+}
+
+QPushButton#ChatStripGhostButton {
+    background: transparent;
+    color: #ffd2ec;
+    border: 1px solid rgba(255, 92, 158, 0.24);
+    border-radius: 12px;
+    padding: 5px 12px;
+    font-size: 9pt;
+    font-weight: 600;
+}
+
+QPushButton#ChatStripGhostButton:hover {
+    background-color: rgba(255, 92, 158, 0.14);
+    border: 1px solid rgba(255, 92, 158, 0.42);
+}
+
 QLabel#SettingsOverviewTitle,
 QLabel#SettingsRailBrandTitle {
     color: #fff1f9;

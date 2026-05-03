@@ -366,6 +366,63 @@ def _build_chat_inspector(gui) -> QWidget:
     return inspector
 
 
+def _build_chat_conversation_strip(gui) -> QFrame:
+    """Тонкая полоса между шапкой и сообщениями: «Разговор с …», заглушки
+    статуса памяти/настроения и быстрые действия. Память/настроение пока
+    декоративные — туда позже подключатся реальные данные из RAG/character.
+    """
+    strip = QFrame()
+    strip.setObjectName("ChatConversationStrip")
+    layout = QHBoxLayout(strip)
+    layout.setContentsMargins(14, 8, 14, 8)
+    layout.setSpacing(14)
+
+    heart = QLabel()
+    heart.setPixmap(qta.icon("fa6s.heart", color="#ff7eb6").pixmap(14, 14))
+    layout.addWidget(heart, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    char_id = ""
+    try:
+        res = gui.event_bus.emit_and_wait(__import__("core.events", fromlist=["Events"]).Events.Character.GET_CURRENT_PROFILE, timeout=0.3)
+        profile = res[0] if res else {}
+        char_id = str((profile or {}).get("character_id") or "")
+    except Exception:
+        char_id = ""
+    char_label_text = _("Разговор с ", "Conversation with ") + (char_id or _("персонажем", "character"))
+    char_label = QLabel(char_label_text)
+    char_label.setObjectName("ChatStripTitle")
+    layout.addWidget(char_label, 0, Qt.AlignmentFlag.AlignVCenter)
+    gui.chat_strip_title = char_label
+
+    sep1 = QLabel("•")
+    sep1.setObjectName("ChatStripSeparator")
+    layout.addWidget(sep1, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    memory_label = QLabel(_("Память активна", "Memory active"))
+    memory_label.setObjectName("ChatStripMeta")
+    layout.addWidget(memory_label, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    sep2 = QLabel("•")
+    sep2.setObjectName("ChatStripSeparator")
+    layout.addWidget(sep2, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    mood_label = QLabel(_("Настроение: —", "Mood: —"))
+    mood_label.setObjectName("ChatStripMeta")
+    layout.addWidget(mood_label, 0, Qt.AlignmentFlag.AlignVCenter)
+    gui.chat_strip_mood = mood_label
+
+    layout.addStretch(1)
+
+    clear_button = QPushButton(_("Очистить чат", "Clear chat"))
+    clear_button.setObjectName("ChatStripGhostButton")
+    clear_button.setIcon(qta.icon("fa6s.trash", color="#ffd2ec"))
+    clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
+    clear_button.clicked.connect(gui.clear_chat_display)
+    layout.addWidget(clear_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    return strip
+
+
 def setup_chat_panel(gui, main_layout):
     page_root = QWidget()
     page_root.setObjectName("SandboxPage")
