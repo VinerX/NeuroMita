@@ -22,7 +22,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPlainTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
     QMessageBox, QDialog, QProgressBar, QStackedWidget,
-    QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy, QCheckBox
+    QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy, QCheckBox,
+    QMenu
 )
 from PyQt6.QtGui import QDesktopServices, QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap, QPainter, QLinearGradient, QColor
 
@@ -622,6 +623,7 @@ class ChatGUI(QMainWindow):
 
         if page_key == "logs":
             self.update_debug_info()
+            self._refresh_logs_view()
 
         if page_key == "sandbox":
             try:
@@ -639,10 +641,8 @@ class ChatGUI(QMainWindow):
     def _on_shell_social_requested(self, platform):
         urls = {
             "discord": "https://discord.gg/Tu5MPFxM4P",
-            "vk": "https://vk.com/",
-            "youtube": "https://www.youtube.com/",
             "github": "https://github.com/VinerX/NeuroMita",
-            "boosty": "https://boosty.to/",
+            "youtube": "https://www.youtube.com/@NeuroMita",
         }
         url = urls.get(platform)
         if url:
@@ -657,7 +657,7 @@ class ChatGUI(QMainWindow):
             current_profile = {}
 
         active_character = str(current_profile.get("character_id") or _("Не выбран", "Not selected"))
-        model_name = str(self._get_setting("MODEL", "gpt-4o-mini"))
+        model_name = str(self._get_setting("MODEL", "") or _("Не задана", "Not set"))
         interface_mode = str(self._get_setting("INTERFACE_MODE", _("Базовый", "Basic")))
         voice_mode = str(self._get_setting("VOICEOVER_METHOD", "TG"))
 
@@ -770,34 +770,69 @@ class ChatGUI(QMainWindow):
 
     def _build_news_page(self):
         page = create_news_page(
-            title=_("Новости Launcher Shell", "Launcher shell news"),
+            title=_("Релизы NeuroMita", "NeuroMita releases"),
             subtitle=_(
-                "Сюда вынесены changelog, заметки по сборке и быстрые переходы в блок обновлений.",
-                "Changelog, build notes and update-entry shortcuts live here.",
+                "Лента публичных релизов с GitHub: changelog, бета-сборки и ссылки на полные заметки.",
+                "Public GitHub release feed: changelog, beta builds and links to full notes.",
             ),
-            items=self._parse_news_items(self.get_news_content()),
+            items=self._build_release_news_items(),
             header_actions=[
                 DashboardAction(_("Обновить", "Refresh"), callback=self._refresh_news_page, icon_name="fa6s.rotate-right"),
-                DashboardAction(_("Апдейты", "Updates"), callback=lambda: self.show_settings_category("updates"), icon_name="fa6s.download", accent=False),
+                DashboardAction(_("Открыть на GitHub", "Open on GitHub"), callback=lambda: QDesktopServices.openUrl(QUrl("https://github.com/VinerX/NeuroMita/releases")), icon_name="fa6b.github", accent=False),
             ],
         )
         return page
+
+    def _build_release_news_items(self):
+        releases = self.get_news_releases()
+        if not releases:
+            return [
+                NewsItem(
+                    _("Релизы недоступны", "Releases unavailable"),
+                    _("Не удалось получить ленту релизов с GitHub. Проверьте подключение к сети.",
+                      "Failed to fetch releases from GitHub. Check your network connection."),
+                    tag="OFFLINE",
+                )
+            ]
+
+        items = []
+        for r in releases[:8]:
+            tag_name = r.get('tag_name') or ''
+            name = (r.get('name') or '').strip() or tag_name or _("Релиз", "Release")
+            body = (r.get('body') or '').strip()
+            summary_lines = [ln.strip("-* ").strip() for ln in body.splitlines() if ln.strip()]
+            summary = " ".join(summary_lines)[:280] if summary_lines else _("Без описания.", "No description.")
+            published = (r.get('published_at') or '')[:10]
+            tag = "PRE-RELEASE" if r.get('prerelease') else "RELEASE"
+            url = r.get('html_url') or 'https://github.com/VinerX/NeuroMita/releases'
+            items.append(
+                NewsItem(
+                    name,
+                    summary,
+                    tag=tag,
+                    timestamp=published,
+                    action=DashboardAction(
+                        _("Открыть релиз", "Open release"),
+                        callback=lambda u=url: QDesktopServices.openUrl(QUrl(u)),
+                        icon_name="fa6s.up-right-from-square",
+                        accent=False,
+                    ),
+                )
+            )
+        return items
 
     def _build_logs_page(self):
         page = create_logs_page(
             title=_("Системные логи", "System logs"),
             subtitle=_(
-                "Живой поток диагностики и быстрые действия для отладки, не выходя из launcher shell.",
-                "Live diagnostics stream and debug actions without leaving the launcher shell.",
+                "Хвост файла NeuroMitaLogs.log и быстрые действия для отладки.",
+                "Tail of NeuroMitaLogs.log plus quick debug actions.",
             ),
-            items=[
-                LogItem("INFO", _("Отладочная секция сохранена в настройках.", "Debug section is preserved inside settings."), context=_("debug", "debug")),
-                LogItem("UI", _("Левая навигация собрана в единый shell.", "Left navigation is assembled into a unified shell."), context=_("shell", "shell")),
-                LogItem("CHAT", _("Sandbox использует тот же runtime, что и основная беседа.", "Sandbox uses the same runtime as the main conversation."), context=_("sandbox", "sandbox")),
-            ],
+            items=[],
             header_actions=[
-                DashboardAction(_("Debug settings", "Debug settings"), callback=lambda: self.show_settings_category("debug"), icon_name="fa6s.bug"),
-                DashboardAction(_("Очистить чат", "Clear chat"), callback=self.clear_chat_display, icon_name="fa6s.trash", accent=False),
+                DashboardAction(_("Обновить", "Refresh"), callback=self._refresh_logs_view, icon_name="fa6s.rotate-right"),
+                DashboardAction(_("Открыть папку", "Open folder"), callback=self._open_logs_folder, icon_name="fa6s.folder-open", accent=False),
+                DashboardAction(_("Debug настройки", "Debug settings"), callback=lambda: self.show_settings_category("debug"), icon_name="fa6s.bug", accent=False),
             ],
         )
 
@@ -813,8 +848,8 @@ class ChatGUI(QMainWindow):
 
         subtitle = QLabel(
             _(
-                "Этот поток дублирует системную диагностическую строку и помогает быстро замечать сбои, не открывая hidden debug view.",
-                "This stream mirrors the system diagnostic line so issues are visible without opening the hidden debug view.",
+                "Последние строки лог-файла, обновляются раз в 2 секунды и при переходе на страницу.",
+                "Latest lines from the log file, refreshed every 2 seconds and when the page opens.",
             )
         )
         subtitle.setObjectName("LauncherShellMeta")
@@ -824,11 +859,37 @@ class ChatGUI(QMainWindow):
         self.logs_window = QPlainTextEdit()
         self.logs_window.setObjectName("DebugWindow")
         self.logs_window.setReadOnly(True)
-        self.logs_window.setMinimumHeight(280)
+        self.logs_window.setMinimumHeight(420)
         card_layout.addWidget(self.logs_window)
 
         self._append_to_shell_page(page, card)
+
+        if not hasattr(self, "_logs_refresh_timer") or self._logs_refresh_timer is None:
+            self._logs_refresh_timer = QTimer(self)
+            self._logs_refresh_timer.setInterval(2000)
+            self._logs_refresh_timer.timeout.connect(self._refresh_logs_view)
+            self._logs_refresh_timer.start()
+
+        QTimer.singleShot(0, self._refresh_logs_view)
         return page
+
+    def _refresh_logs_view(self):
+        if not hasattr(self, "logs_window") or self.logs_window is None:
+            return
+        log_path = Path("NeuroMitaLogs.log")
+        try:
+            if not log_path.exists():
+                self.logs_window.setPlainText(_("Файл логов пока не создан.", "Log file does not exist yet."))
+                return
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+            tail = "\n".join(text.splitlines()[-500:])
+        except Exception as exc:
+            tail = _("Не удалось прочитать лог: {err}", "Failed to read log: {err}").format(err=exc)
+        scrollbar = self.logs_window.verticalScrollBar()
+        at_bottom = scrollbar.value() >= scrollbar.maximum() - 4
+        self.logs_window.setPlainText(tail)
+        if at_bottom:
+            scrollbar.setValue(scrollbar.maximum())
 
     def _append_to_shell_page(self, page, widget):
         content_widget = page.findChild(QWidget, "LauncherShellPage")
@@ -896,6 +957,7 @@ class ChatGUI(QMainWindow):
         return items[:6]
 
     def _refresh_news_page(self):
+        self._news_releases_cache = None
         new_page = self._build_news_page()
         self._replace_page("news", new_page)
         if getattr(self, "current_main_page", "") == "news":
@@ -1003,13 +1065,13 @@ class ChatGUI(QMainWindow):
 
         menu_button = QPushButton("▾")
         menu_button.setObjectName("LauncherHomeMenuButton")
-        menu_button.clicked.connect(lambda: self.switch_main_page("settings"))
+        menu_button.clicked.connect(lambda: self._show_home_extra_menu(menu_button))
         button_row.addWidget(menu_button)
         left_column.addLayout(button_row)
 
-        verify_button = QPushButton(_("Проверить и обновить промпты", "Check and reload prompts"))
+        verify_button = QPushButton(_("Проверить файлы", "Verify files"))
         verify_button.setObjectName("LauncherHomeVerifyButton")
-        verify_button.clicked.connect(lambda: self.event_bus.emit(Events.Model.RELOAD_PROMPTS_ASYNC))
+        verify_button.clicked.connect(self._run_home_verify_action)
         left_column.addWidget(verify_button)
 
         status_card = QFrame()
@@ -1063,6 +1125,34 @@ class ChatGUI(QMainWindow):
 
     def _run_home_primary_action(self):
         self.switch_main_page("sandbox")
+
+    def _run_home_verify_action(self):
+        self.show_settings_category("updates")
+
+    def _show_home_extra_menu(self, anchor_widget):
+        menu = QMenu(self)
+        menu.setObjectName("LauncherHomeExtraMenu")
+        menu.addAction(
+            _("Перезагрузить промпты", "Reload prompts"),
+            lambda: self.event_bus.emit(Events.Model.RELOAD_PROMPTS_ASYNC),
+        )
+        menu.addAction(
+            _("Проверить обновления", "Check updates"),
+            lambda: self.show_settings_category("updates"),
+        )
+        menu.addAction(
+            _("Открыть папку логов", "Open logs folder"),
+            self._open_logs_folder,
+        )
+        menu.exec(anchor_widget.mapToGlobal(QPoint(0, anchor_widget.height())))
+
+    def _open_logs_folder(self):
+        log_path = Path("NeuroMitaLogs.log")
+        target = log_path.resolve().parent if log_path.exists() else Path.cwd()
+        try:
+            os.startfile(str(target))  # noqa: S606 - Windows-only launcher
+        except Exception as exc:
+            logger.info(f"Не удалось открыть папку логов: {exc}")
 
     def _build_home_update_chip(self, news_items):
         card = QFrame()
@@ -1195,13 +1285,13 @@ class ChatGUI(QMainWindow):
         except Exception:
             pass
 
-        model_name = str(self._get_setting("MODEL", "gpt-4o-mini"))
+        model_name = str(self._get_setting("MODEL", "") or "").strip()
         latest = news_items[0].title if news_items else _("Лента новостей офлайн", "News feed offline")
-        return _("Активно: {character} • {model} • {latest}", "Active: {character} • {model} • {latest}").format(
-            character=active_character,
-            model=model_name,
-            latest=latest[:48],
-        )
+        parts = [_("Активно: {character}", "Active: {character}").format(character=active_character)]
+        if model_name:
+            parts.append(model_name)
+        parts.append(latest[:48])
+        return " • ".join(parts)
 
     def _create_debug_section(self, parent, layout):
         debug_label = QLabel(_('Отладочная информация', 'Debug Information'))
@@ -1408,9 +1498,8 @@ class ChatGUI(QMainWindow):
             self.debug_window.clear()
             self.debug_window.insertPlainText(debug_info)
 
-        if hasattr(self, "logs_window") and self.logs_window:
-            self.logs_window.clear()
-            self.logs_window.insertPlainText(debug_info)
+        # logs_window больше не дублирует debug_info — в нём показывается tail файла логов,
+        # а не "Debug info not available". См. _refresh_logs_view().
 
     def update_token_count(self, event=None):
         show_token_info = self._get_setting("SHOW_TOKEN_INFO", True)
@@ -1553,15 +1642,41 @@ class ChatGUI(QMainWindow):
         return result[0] if result else "Assistant"
 
     def get_news_content(self):
+        # Backwards-compat fallback: returns plain markdown text. New code paths
+        # should call get_news_releases() to get GitHub release data directly.
+        releases = self.get_news_releases()
+        if not releases:
+            return _('Не удалось загрузить новости', 'Failed to load news')
+        chunks = []
+        for r in releases:
+            chunks.append(f"# {r.get('name') or r.get('tag_name', '')}")
+            body = (r.get('body') or '').strip()
+            if body:
+                chunks.append(body)
+        return "\n".join(chunks)
+
+    def get_news_releases(self):
+        cached = getattr(self, '_news_releases_cache', None)
+        if cached is not None:
+            return cached
         try:
             import requests
-            response = requests.get('https://raw.githubusercontent.com/VinerX/NeuroMita/main/NEWS.md', timeout=500)
-            if response.status_code == 200:
-                return response.text
-            return _('Не удалось загрузить новости', 'Failed to load news')
+            resp = requests.get(
+                'https://api.github.com/repos/VinerX/NeuroMita/releases',
+                timeout=10,
+                headers={'Accept': 'application/vnd.github+json'},
+            )
+            if resp.status_code != 200:
+                logger.info(f"Не удалось получить релизы: HTTP {resp.status_code}")
+                self._news_releases_cache = []
+                return []
+            data = resp.json() or []
+            self._news_releases_cache = data
+            return data
         except Exception as e:
-            logger.info(f"Ошибка при получении новостей: {e}")
-            return _('Ошибка при загрузке новостей', 'Error loading news')
+            logger.info(f"Ошибка при получении релизов: {e}")
+            self._news_releases_cache = []
+            return []
 
     def closeEvent(self, event):
         self.event_bus.emit(Events.Capture.STOP_SCREEN_CAPTURE)

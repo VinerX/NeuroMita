@@ -83,7 +83,9 @@ class LauncherSidebarWidget(QFrame):
         layout.addWidget(self._build_nav_card())
         layout.addStretch(1)
         layout.addWidget(self._build_social_card())
-        layout.addWidget(self._build_status_card())
+        # TODO: сюда позже зашить динамический счётчик —
+        # звёзды на GitHub / подписчики Nexus Mods / онлайн в Discord.
+        # layout.addWidget(self._build_status_card())
         layout.addWidget(self._build_promo_card())
 
     def _build_brand_card(self) -> QFrame:
@@ -113,17 +115,12 @@ class LauncherSidebarWidget(QFrame):
         title_column.setContentsMargins(0, 0, 0, 0)
         title_column.setSpacing(4)
 
-        eyebrow = QLabel("NeuroMita")
-        eyebrow.setObjectName("LauncherShellEyebrow")
-        title_column.addWidget(eyebrow)
-
-        title = QLabel("Launcher")
+        title = QLabel("NeuroMita")
         title.setObjectName("LauncherShellTitle")
         title_column.addWidget(title)
 
-        subtitle = QLabel(_("Единая панель запуска", "Project launcher"))
+        subtitle = QLabel("Launcher")
         subtitle.setObjectName("LauncherShellSubtitle")
-        subtitle.setWordWrap(True)
         title_column.addWidget(subtitle)
 
         logo_row.addLayout(title_column, 1)
@@ -174,7 +171,7 @@ class LauncherSidebarWidget(QFrame):
 
         for key, title_text, icon_name in (
             ("discord", "Discord", "fa6b.discord"),
-            ("vk", "VK", "fa6b.vk"),
+            ("github", "GitHub", "fa6b.github"),
             ("youtube", "YouTube", "fa6b.youtube"),
         ):
             button = QPushButton("")
