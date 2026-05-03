@@ -431,7 +431,11 @@ class ChatGUI(QMainWindow):
         )
         self.shell_sidebar.social_requested.connect(self._on_shell_social_requested)
         self.shell_sidebar.utility_requested.connect(self._on_shell_utility_requested)
-        self.shell_sidebar.set_language_label(_("Язык: RU / EN", "Language: RU / EN"))
+        try:
+            current_lang = str(self.settings.get("LANGUAGE", "RU") or "RU").lower()
+        except Exception:
+            current_lang = "ru"
+        self.shell_sidebar.set_active_language(current_lang)
         main_layout.addWidget(self.shell_sidebar)
 
         content_host = QFrame()
@@ -632,6 +636,23 @@ class ChatGUI(QMainWindow):
                 pass
 
     def _on_shell_utility_requested(self, action):
+        if isinstance(action, str) and action.startswith("language:"):
+            code = action.split(":", 1)[1].upper()
+            try:
+                self.settings.set("LANGUAGE", code)
+            except Exception:
+                try:
+                    self.settings["LANGUAGE"] = code
+                except Exception:
+                    pass
+            self.shell_sidebar.set_active_language(code.lower())
+            QMessageBox.information(
+                self,
+                _("Язык", "Language"),
+                _("Перезапусти программу, чтобы применить язык.",
+                  "Restart the program to apply the language."),
+            )
+            return
         if action == "language":
             self.show_settings_category("general")
             return
@@ -768,23 +789,27 @@ class ChatGUI(QMainWindow):
         layout.addWidget(logo_label, 0, Qt.AlignmentFlag.AlignCenter)
         return card
 
+    NEWS_REPO = "Atm4x/NeuroMita"
+
     def _build_news_page(self):
+        repo_url = f"https://github.com/{self.NEWS_REPO}/releases"
         page = create_news_page(
             title=_("Релизы NeuroMita", "NeuroMita releases"),
             subtitle=_(
-                "Лента публичных релизов с GitHub: changelog, бета-сборки и ссылки на полные заметки.",
-                "Public GitHub release feed: changelog, beta builds and links to full notes.",
-            ),
+                "Лента публичных релизов с GitHub ({repo}): changelog, бета-сборки и ссылки на полные заметки.",
+                "GitHub release feed ({repo}): changelog, beta builds and links to full notes.",
+            ).format(repo=self.NEWS_REPO),
             items=self._build_release_news_items(),
             header_actions=[
                 DashboardAction(_("Обновить", "Refresh"), callback=self._refresh_news_page, icon_name="fa6s.rotate-right"),
-                DashboardAction(_("Открыть на GitHub", "Open on GitHub"), callback=lambda: QDesktopServices.openUrl(QUrl("https://github.com/VinerX/NeuroMita/releases")), icon_name="fa6b.github", accent=False),
+                DashboardAction(_("Открыть на GitHub", "Open on GitHub"), callback=lambda u=repo_url: QDesktopServices.openUrl(QUrl(u)), icon_name="fa6b.github", accent=False),
             ],
         )
         return page
 
     def _build_release_news_items(self):
         releases = self.get_news_releases()
+        repo_url = f"https://github.com/{self.NEWS_REPO}/releases"
         if not releases:
             return [
                 NewsItem(
@@ -804,7 +829,7 @@ class ChatGUI(QMainWindow):
             summary = " ".join(summary_lines)[:280] if summary_lines else _("Без описания.", "No description.")
             published = (r.get('published_at') or '')[:10]
             tag = "PRE-RELEASE" if r.get('prerelease') else "RELEASE"
-            url = r.get('html_url') or 'https://github.com/VinerX/NeuroMita/releases'
+            url = r.get('html_url') or repo_url
             items.append(
                 NewsItem(
                     name,
@@ -1074,17 +1099,9 @@ class ChatGUI(QMainWindow):
         verify_button.clicked.connect(self._run_home_verify_action)
         left_column.addWidget(verify_button)
 
-        status_card = QFrame()
-        status_card.setObjectName("LauncherHomeStatusCard")
-        status_layout = QVBoxLayout(status_card)
-        status_layout.setContentsMargins(16, 14, 16, 14)
-        status_layout.setSpacing(8)
-
-        status_title = QLabel(_("Подключения", "Connections"))
-        status_title.setObjectName("LauncherHomeCardTitle")
-        status_layout.addWidget(status_title)
-        status_indicators_widget.create_status_indicators(self, status_layout)
-        left_column.addWidget(status_card)
+        # Карточка "Подключения" убрана с главной — статусы доступны в Sandbox
+        # и в настройках/Debug. Здесь они дублировали инфу и нарушали стиль
+        # старого лаунчера.
 
         status_line = QLabel(self._get_home_status_line(news_items))
         status_line.setObjectName("LauncherHomeFootnote")
@@ -1103,28 +1120,90 @@ class ChatGUI(QMainWindow):
         return page
 
     def _get_home_backend_status(self):
-        model_name = str(self._get_setting("MODEL", "") or "")
-        api_type = str(self._get_setting("API_TYPE", "") or "")
-        if model_name:
-            return _("Готов: {model}", "Ready: {model}").format(model=model_name)
-        if api_type:
-            return _("Источник: {api}", "Source: {api}").format(api=api_type)
-        return _("Не настроен", "Not configured")
+        # Бэкенд интегрирован в этот же процесс — Python всегда установлен.
+        try:
+            from _version import __version__ as ver
+            return _("Установлен v{ver}", "Installed v{ver}").format(ver=ver)
+        except Exception:
+            return _("Установлен", "Installed")
+
+    def _get_unity_install_dir(self) -> Path:
+        # Логика та же, что в ui/settings/updates_settings.py: берём явно
+        # заданный UNITY_INSTALL_DIR, иначе соседнюю папку NeuroMita-Unity.
+        unity_dir_setting = str(self.settings.get("UNITY_INSTALL_DIR", "") or "")
+        if unity_dir_setting:
+            return Path(unity_dir_setting)
+        base_dir = os.environ.get("NEUROMITA_BASE_DIR", "")
+        if base_dir:
+            return Path(base_dir).parent / "NeuroMita-Unity"
+        return Path.cwd().parent / "NeuroMita-Unity"
+
+    def _find_unity_executable(self) -> Path | None:
+        unity_dir = self._get_unity_install_dir()
+        if not unity_dir.exists() or not unity_dir.is_dir():
+            return None
+        exe_files = list(unity_dir.glob("*.exe"))
+        if not exe_files:
+            return None
+        preferred = ("NeuroMita.exe", "NeuroMita-Unity.exe", "Unity.exe")
+        lower_map = {p.name.lower(): p for p in exe_files}
+        for name in preferred:
+            hit = lower_map.get(name.lower())
+            if hit is not None:
+                return hit
+        for path in exe_files:
+            low = path.name.lower()
+            if "neuromita" in low or "unity" in low:
+                return path
+        return exe_files[0]
 
     def _get_home_unity_status(self):
-        game_connected = self.event_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
-        if game_connected and game_connected[0]:
-            return _("Подключено", "Connected")
-        return _("Не подключен", "Disconnected")
+        exe = self._find_unity_executable()
+        if exe is None:
+            return _("Не установлен", "Not installed")
+        try:
+            ver_file = self._get_unity_install_dir() / "_version.txt"
+            if ver_file.exists():
+                ver = ver_file.read_text(encoding="utf-8").strip()
+                if ver:
+                    return _("Установлен v{ver}", "Installed v{ver}").format(ver=ver)
+        except Exception:
+            pass
+        return _("Установлен", "Installed")
 
     def _get_home_primary_action_label(self):
-        game_connected = self.event_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
-        if game_connected and game_connected[0]:
-            return _("▶ Играть / Песочница", "▶ Play / Sandbox")
-        return _("▶ Открыть песочницу", "▶ Open sandbox")
+        return _("▶ Играть", "▶ Play")
 
     def _run_home_primary_action(self):
-        self.switch_main_page("sandbox")
+        exe = self._find_unity_executable()
+        if exe is None:
+            unity_dir = self._get_unity_install_dir()
+            QMessageBox.warning(
+                self,
+                _("Запуск Unity", "Unity launch"),
+                _(
+                    "Unity-сборка не найдена.\n\nИскали в:\n{path}\n\n"
+                    "Установи или укажи путь в настройках (UNITY_INSTALL_DIR).",
+                    "Unity build not found.\n\nLooked in:\n{path}\n\n"
+                    "Install it or set UNITY_INSTALL_DIR in settings.",
+                ).format(path=unity_dir),
+            )
+            return
+        try:
+            import subprocess
+            subprocess.Popen(
+                [str(exe)],
+                cwd=str(exe.parent),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            logger.info(f"Запущен Unity: {exe}")
+        except Exception as exc:
+            logger.error(f"Не удалось запустить Unity: {exc}")
+            QMessageBox.warning(
+                self,
+                _("Запуск", "Launch"),
+                _("Не удалось запустить Unity: {err}", "Failed to launch Unity: {err}").format(err=exc),
+            )
 
     def _run_home_verify_action(self):
         self.show_settings_category("updates")
@@ -1205,16 +1284,16 @@ class ChatGUI(QMainWindow):
     def _build_home_news_panel(self, news_items):
         panel = QFrame()
         panel.setObjectName("LauncherHomeNewsPanel")
-        panel.setMinimumWidth(320)
-        panel.setMinimumHeight(220)
-        panel.setMaximumHeight(250)
+        panel.setMinimumWidth(280)
         panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
 
         header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
         title = QLabel(_("Последние новости", "Latest news").upper())
         title.setObjectName("LauncherHomeNewsTitle")
         header.addWidget(title)
@@ -1231,21 +1310,24 @@ class ChatGUI(QMainWindow):
         divider.setFixedHeight(1)
         layout.addWidget(divider)
 
-        preview_items = news_items[:3] if news_items else [
-            NewsItem(_("Новости недоступны", "News unavailable"), _("Удалённая лента пока недоступна.", "Remote feed is currently unavailable."))
-        ]
-        for index, item in enumerate(preview_items):
+        # Берём релизы напрямую — они идут с датой; парсинг markdown терял её.
+        release_items = self._build_release_news_items()[:3]
+        if not release_items:
+            release_items = news_items[:3] if news_items else [
+                NewsItem(_("Новости недоступны", "News unavailable"),
+                         _("Удалённая лента пока недоступна.", "Remote feed is currently unavailable."))
+            ]
+        for index, item in enumerate(release_items):
             layout.addWidget(self._build_home_news_item(item, is_fresh=index == 0))
 
-        layout.addStretch(1)
         return panel
 
     def _build_home_news_item(self, item, is_fresh=False):
         row = QFrame()
         row.setObjectName("LauncherHomeNewsItem")
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 4, 0, 4)
-        layout.setSpacing(10)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(8)
 
         text_column = QVBoxLayout()
         text_column.setSpacing(2)
@@ -1263,18 +1345,32 @@ class ChatGUI(QMainWindow):
         top.addStretch(1)
         text_column.addLayout(top)
 
-        summary = QLabel(item.summary)
+        # Однострочное summary с многоточием — компактный вид как в старом лаунчере.
+        summary_text = (item.summary or "").splitlines()[0] if item.summary else ""
+        summary = QLabel(summary_text)
         summary.setObjectName("LauncherHomeNewsItemBody")
-        summary.setWordWrap(True)
+        summary.setWordWrap(False)
+        summary.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         text_column.addWidget(summary)
         layout.addLayout(text_column, 1)
 
         if item.timestamp:
-            stamp = QLabel(item.timestamp)
+            stamp = QLabel(self._format_news_date(item.timestamp))
             stamp.setObjectName("LauncherHomeNewsDate")
-            layout.addWidget(stamp, 0, Qt.AlignmentFlag.AlignTop)
+            layout.addWidget(stamp, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
 
         return row
+
+    @staticmethod
+    def _format_news_date(value: str) -> str:
+        if not value:
+            return ""
+        date_part = value[:10]
+        parts = date_part.split("-")
+        if len(parts) == 3:
+            y, m, d = parts
+            return f"{d}.{m}.{y}"
+        return value
 
     def _get_home_status_line(self, news_items):
         active_character = _("Без персонажа", "No character")
@@ -1662,7 +1758,7 @@ class ChatGUI(QMainWindow):
         try:
             import requests
             resp = requests.get(
-                'https://api.github.com/repos/VinerX/NeuroMita/releases',
+                f'https://api.github.com/repos/{self.NEWS_REPO}/releases',
                 timeout=10,
                 headers={'Accept': 'application/vnd.github+json'},
             )

@@ -31,6 +31,88 @@ from utils import _
 TOP_ICON_BUTTON_SIZE = 30
 
 
+def _populate_model_combobox(gui):
+    combo = getattr(gui, "chat_model_combobox", None)
+    if combo is None:
+        return
+    try:
+        result = gui.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
+        meta = result[0] if result else {}
+    except Exception:
+        meta = {}
+
+    builtins = list((meta or {}).get("builtin", []))
+    customs = list((meta or {}).get("custom", []))
+
+    combo.blockSignals(True)
+    try:
+        combo.clear()
+        for preset in builtins + customs:
+            pid = getattr(preset, "id", None)
+            name = getattr(preset, "name", str(pid))
+            if pid is None:
+                continue
+            combo.addItem(name, int(pid))
+
+        try:
+            current_res = gui.event_bus.emit_and_wait(Events.ApiPresets.GET_CURRENT_PRESET_ID, timeout=0.5)
+            current_id = current_res[0] if current_res else None
+        except Exception:
+            current_id = None
+
+        if current_id is not None:
+            for i in range(combo.count()):
+                if combo.itemData(i) == int(current_id):
+                    combo.setCurrentIndex(i)
+                    break
+    finally:
+        combo.blockSignals(False)
+
+
+def _on_chat_model_changed(gui, index: int):
+    combo = getattr(gui, "chat_model_combobox", None)
+    if combo is None or index < 0:
+        return
+    pid = combo.itemData(index)
+    if pid is None:
+        return
+    try:
+        gui.event_bus.emit(Events.ApiPresets.SET_CURRENT_PRESET_ID, {"id": int(pid)})
+    except Exception as exc:
+        logger.error(f"Failed to switch preset: {exc}")
+
+
+def _on_chat_voice_changed(gui, value: str):
+    value = (value or "").strip()
+    if not value:
+        return
+    try:
+        gui.settings.set("VOICEOVER_METHOD", value)
+    except Exception:
+        try:
+            gui.settings["VOICEOVER_METHOD"] = value
+        except Exception:
+            pass
+
+
+def _on_chat_mode_changed(gui, value: str):
+    value = (value or "").strip()
+    if not value:
+        return
+    try:
+        gui.settings.set("INTERFACE_MODE", value)
+    except Exception:
+        try:
+            gui.settings["INTERFACE_MODE"] = value
+        except Exception:
+            pass
+    try:
+        from ui.widgets.settings_panel import apply_interface_mode
+        apply_interface_mode(gui, value)
+    except Exception as exc:
+        logger.info(f"apply_interface_mode failed: {exc}")
+
+
 def _populate_chat_character_combobox(gui):
     combo = getattr(gui, "chat_character_combobox", None)
     if combo is None:
@@ -150,33 +232,49 @@ def _build_chat_header(gui) -> QFrame:
     selectors.addWidget(character_card, 2)
 
     model_card, model_layout = _make_selector_card(_("Модель", "Model"))
-    model_value = QLabel(str(gui._get_setting("MODEL", "gpt-4o-mini")))
-    model_value.setObjectName("SandboxSelectorValue")
-    model_layout.addWidget(model_value)
-    model_hint = QLabel(str(gui._get_setting("API_TYPE", "OpenAI")))
-    model_hint.setObjectName("SandboxSelectorHint")
-    model_layout.addWidget(model_hint)
-    selectors.addWidget(model_card, 1)
+    gui.chat_model_combobox = QComboBox()
+    gui.chat_model_combobox.setObjectName("ChatCharacterCombo")
+    gui.chat_model_combobox.setToolTip(_("Активный API-пресет (модель)", "Active API preset (model)"))
+    gui.chat_model_combobox.currentIndexChanged.connect(lambda idx: _on_chat_model_changed(gui, idx))
+    model_layout.addWidget(gui.chat_model_combobox)
+    _populate_model_combobox(gui)
+    selectors.addWidget(model_card, 2)
 
     tts_card, tts_layout = _make_selector_card(_("TTS", "TTS"))
-    tts_value = QLabel(str(gui._get_setting("VOICEOVER_METHOD", "TG")))
-    tts_value.setObjectName("SandboxSelectorValue")
-    tts_layout.addWidget(tts_value)
+    gui.chat_tts_combobox = QComboBox()
+    gui.chat_tts_combobox.setObjectName("ChatCharacterCombo")
+    gui.chat_tts_combobox.setToolTip(_("Способ озвучки", "Voice output method"))
+    gui.chat_tts_combobox.addItems(["TG", "Local"])
+    current_tts = str(gui._get_setting("VOICEOVER_METHOD", "TG") or "TG")
+    idx = gui.chat_tts_combobox.findText(current_tts, Qt.MatchFlag.MatchFixedString)
+    if idx >= 0:
+        gui.chat_tts_combobox.setCurrentIndex(idx)
+    gui.chat_tts_combobox.currentTextChanged.connect(lambda v: _on_chat_voice_changed(gui, v))
+    tts_layout.addWidget(gui.chat_tts_combobox)
     selectors.addWidget(tts_card, 1)
 
     asr_card, asr_layout = _make_selector_card(_("ASR", "ASR"))
-    asr_value = QLabel(str(gui._get_setting("ASR_MODEL_NAME", _("По умолчанию", "Default"))))
-    asr_value.setObjectName("SandboxSelectorValue")
+    asr_value = QPushButton(str(gui._get_setting("ASR_MODEL_NAME", _("По умолчанию", "Default"))))
+    asr_value.setObjectName("SandboxSelectorJump")
+    asr_value.setToolTip(_("Открыть настройки ASR", "Open ASR settings"))
+    asr_value.setCursor(Qt.CursorShape.PointingHandCursor)
+    asr_value.clicked.connect(lambda: _jump_to_settings(gui, "microphone"))
+    gui.chat_asr_jump_button = asr_value
     asr_layout.addWidget(asr_value)
     selectors.addWidget(asr_card, 1)
 
-    mode_card, mode_layout = _make_selector_card(_("Режим", "Mode"))
-    mode_value = QLabel(_("Свободный", "Free"))
-    mode_value.setObjectName("SandboxSelectorValue")
-    mode_layout.addWidget(mode_value)
-    mode_hint = QLabel("Sandbox")
-    mode_hint.setObjectName("SandboxSelectorHintAccent")
-    mode_layout.addWidget(mode_hint)
+    mode_card, mode_layout = _make_selector_card(_("Режим интерфейса", "UI mode"))
+    gui.chat_mode_combobox = QComboBox()
+    gui.chat_mode_combobox.setObjectName("ChatCharacterCombo")
+    gui.chat_mode_combobox.setToolTip(_("Режим интерфейса (объём настроек)", "UI mode (settings depth)"))
+    mode_options = [_("Базовый", "Basic"), _("Продвинутый", "Advanced"), _("Полный", "Full")]
+    gui.chat_mode_combobox.addItems(mode_options)
+    current_mode = str(gui._get_setting("INTERFACE_MODE", mode_options[0]) or mode_options[0])
+    idx = gui.chat_mode_combobox.findText(current_mode, Qt.MatchFlag.MatchFixedString)
+    if idx >= 0:
+        gui.chat_mode_combobox.setCurrentIndex(idx)
+    gui.chat_mode_combobox.currentTextChanged.connect(lambda v: _on_chat_mode_changed(gui, v))
+    mode_layout.addWidget(gui.chat_mode_combobox)
     selectors.addWidget(mode_card, 1)
 
     hero_layout.addLayout(selectors)
@@ -285,6 +383,8 @@ def setup_chat_panel(gui, main_layout):
     chat_layout = QVBoxLayout(chat_column)
     chat_layout.setContentsMargins(0, 0, 0, 0)
     chat_layout.setSpacing(12)
+
+    chat_layout.addWidget(_build_chat_conversation_strip(gui))
 
     gui.chat_window = ChatWidget()
     gui.chat_window.setObjectName("ChatScrollArea")

@@ -86,27 +86,27 @@ def create_status_indicators(gui, parent_layout):
     status_layout.setSpacing(14)
     status_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-    widget = _create_indicator(_("И", "G"))
+    widget = _create_indicator(_("Игра", "Game"))
     _register_indicator(gui, "game_status_checkbox", widget)
     status_layout.addWidget(widget)
 
-    widget = _create_indicator(_("О", "V"))
+    widget = _create_indicator(_("Озвучка", "Voice"))
     _register_indicator(gui, "silero_status_checkbox", widget)
     status_layout.addWidget(widget)
 
-    widget = _create_indicator("R")
+    widget = _create_indicator("RAG")
     _register_indicator(gui, "rag_status_checkbox", widget)
     status_layout.addWidget(widget)
 
-    widget = _create_indicator(_("Р", "A"))
+    widget = _create_indicator(_("Распознавание", "Recognition"))
     _register_indicator(gui, "mic_status_checkbox", widget)
     status_layout.addWidget(widget)
 
-    widget = _create_indicator(_("Э", "S"))
+    widget = _create_indicator(_("Экран", "Screen"))
     _register_indicator(gui, "screen_capture_status_checkbox", widget)
     status_layout.addWidget(widget)
 
-    widget = _create_indicator(_("К", "C"))
+    widget = _create_indicator(_("Камера", "Camera"))
     _register_indicator(gui, "camera_capture_status_checkbox", widget)
     status_layout.addWidget(widget)
 

@@ -32,7 +32,7 @@ class SidebarSection:
 
 DEFAULT_SIDEBAR_SECTIONS: tuple[SidebarSection, ...] = (
     SidebarSection("home", _("Главная", "Home"), "fa6s.house", _("Обзор лаунчера", "Launcher overview")),
-    SidebarSection("news", _("Новости", "News"), "fa6s.rectangle-list", _("Апдейты и заметки", "Updates and notes")),
+    SidebarSection("news", _("Релизы", "Releases"), "fa6s.rectangle-list", _("Лента релизов проекта", "Project release feed")),
     SidebarSection("sandbox", _("Песочница", "Sandbox"), "fa6s.flask", _("Быстрый вход в чат", "Quick chat access")),
     SidebarSection("settings", _("Настройки", "Settings"), "fa6s.gear", _("Системные параметры", "System controls")),
     SidebarSection("logs", _("Логи", "Logs"), "fa6s.list", _("События и диагностика", "Events and diagnostics")),
@@ -54,6 +54,7 @@ class LauncherSidebarWidget(QFrame):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("LauncherShellSidebar")
+        self.setFixedWidth(230)
         apply_launcher_shell_theme(self)
 
         if on_page_requested is not None:
@@ -66,65 +67,58 @@ class LauncherSidebarWidget(QFrame):
         self._button_group = QButtonGroup(self)
         self._button_group.setExclusive(True)
 
-        self._status_title_label: QLabel | None = None
-        self._status_value_label: QLabel | None = None
-        self._lang_button: QPushButton | None = None
-        self._promo_button: QPushButton | None = None
+        self._lang_buttons: dict[str, QPushButton] = {}
+        self._version_label: QLabel | None = None
 
         self._build_ui()
         self.set_active_page(initial_page)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setContentsMargins(16, 18, 16, 16)
         layout.setSpacing(14)
 
         layout.addWidget(self._build_brand_card())
         layout.addWidget(self._build_nav_card())
         layout.addStretch(1)
-        layout.addWidget(self._build_social_card())
-        # TODO: сюда позже зашить динамический счётчик —
-        # звёзды на GitHub / подписчики Nexus Mods / онлайн в Discord.
-        # layout.addWidget(self._build_status_card())
-        layout.addWidget(self._build_promo_card())
+        layout.addWidget(self._build_social_block())
+        layout.addWidget(self._build_footer_block())
 
     def _build_brand_card(self) -> QFrame:
         card = QFrame()
-        card.setObjectName("LauncherShellSectionCard")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        card.setObjectName("LauncherShellBrandRow")
 
-        logo_row = QHBoxLayout()
-        logo_row.setContentsMargins(0, 0, 0, 0)
-        logo_row.setSpacing(12)
+        row = QHBoxLayout(card)
+        row.setContentsMargins(8, 4, 8, 4)
+        row.setSpacing(12)
 
         icon_label = QLabel()
+        icon_label.setFixedSize(44, 44)
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         logo_path = resolve_launcher_asset("icon.png") or ("Icon.png" if Path("Icon.png").exists() else None)
         if logo_path:
             pixmap = QPixmap(logo_path).scaled(
-                42,
-                42,
+                44,
+                44,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
             icon_label.setPixmap(pixmap)
-        logo_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignTop)
+        row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         title_column = QVBoxLayout()
         title_column.setContentsMargins(0, 0, 0, 0)
-        title_column.setSpacing(4)
+        title_column.setSpacing(0)
 
         title = QLabel("NeuroMita")
-        title.setObjectName("LauncherShellTitle")
+        title.setObjectName("LauncherShellBrandTitle")
         title_column.addWidget(title)
 
         subtitle = QLabel("Launcher")
-        subtitle.setObjectName("LauncherShellSubtitle")
+        subtitle.setObjectName("LauncherShellBrandSubtitle")
         title_column.addWidget(subtitle)
 
-        logo_row.addLayout(title_column, 1)
-        layout.addLayout(logo_row)
+        row.addLayout(title_column, 1)
         return card
 
     def _build_nav_card(self) -> QFrame:
@@ -132,11 +126,7 @@ class LauncherSidebarWidget(QFrame):
         card.setObjectName("LauncherShellSectionCard")
         layout = QVBoxLayout(card)
         layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
-
-        nav_title = QLabel(_("Разделы", "Sections"))
-        nav_title.setObjectName("LauncherShellSectionTitle")
-        layout.addWidget(nav_title)
+        layout.setSpacing(6)
 
         for section in self._sections:
             button = QPushButton()
@@ -154,16 +144,17 @@ class LauncherSidebarWidget(QFrame):
 
         return card
 
-    def _build_social_card(self) -> QFrame:
-        card = QFrame()
-        card.setObjectName("LauncherShellSocialCard")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+    def _build_social_block(self) -> QWidget:
+        wrapper = QWidget()
+        wrapper.setObjectName("LauncherShellSocialBlock")
+        wrapper.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        layout = QVBoxLayout(wrapper)
+        layout.setContentsMargins(2, 0, 2, 0)
+        layout.setSpacing(6)
 
-        title = QLabel(_("Ссылки", "Social"))
-        title.setObjectName("LauncherShellSectionTitle")
-        layout.addWidget(title)
+        label = QLabel(_("СОЦ. СЕТИ", "SOCIAL"))
+        label.setObjectName("LauncherShellEyebrow")
+        layout.addWidget(label)
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -179,87 +170,47 @@ class LauncherSidebarWidget(QFrame):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setIcon(qta.icon(icon_name, color="#ffd2ec"))
             button.setToolTip(title_text)
-            button.setFixedSize(48, 42)
+            button.setFixedSize(40, 36)
             button.clicked.connect(lambda checked=False, value=key: self.social_requested.emit(value))
             row.addWidget(button)
 
+        row.addStretch(1)
         layout.addLayout(row)
+        return wrapper
 
-        lang_button = QPushButton(_("Язык: RU/EN", "Language: RU/EN"))
-        lang_button.setObjectName("LauncherShellChipButton")
-        lang_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        lang_button.clicked.connect(lambda: self.utility_requested.emit("language"))
-        self._lang_button = lang_button
-        layout.addWidget(lang_button)
+    def _build_footer_block(self) -> QWidget:
+        wrapper = QWidget()
+        wrapper.setObjectName("LauncherShellFooterBlock")
+        wrapper.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        layout = QHBoxLayout(wrapper)
+        layout.setContentsMargins(2, 0, 2, 0)
+        layout.setSpacing(6)
 
-        return card
+        for code, label_text in (("ru", "RU"), ("en", "EN")):
+            button = QPushButton(label_text)
+            button.setObjectName("LauncherShellLangPill")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFixedSize(40, 28)
+            button.clicked.connect(lambda checked=False, value=code: self.utility_requested.emit(f"language:{value}"))
+            self._lang_buttons[code] = button
+            layout.addWidget(button)
 
-    def _build_status_card(self) -> QFrame:
-        card = QFrame()
-        card.setObjectName("LauncherShellStatusCard")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(8)
+        layout.addStretch(1)
 
-        top_row = QHBoxLayout()
-        top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(8)
+        version_label = QLabel(self._read_version_string())
+        version_label.setObjectName("LauncherShellVersionLabel")
+        self._version_label = version_label
+        layout.addWidget(version_label, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        dot = QLabel()
-        dot.setObjectName("LauncherShellStatusDot")
-        top_row.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        return wrapper
 
-        title = QLabel(_("Статус", "Status"))
-        title.setObjectName("LauncherShellSectionTitle")
-        top_row.addWidget(title)
-        top_row.addStretch(1)
-        layout.addLayout(top_row)
-
-        value = QLabel(_("Система готова", "System ready"))
-        value.setObjectName("LauncherShellSectionValue")
-        layout.addWidget(value)
-
-        meta = QLabel(_("Все shell widgets изолированы и готовы к подключению.", "All shell widgets are isolated and ready to mount."))
-        meta.setObjectName("LauncherShellMeta")
-        meta.setWordWrap(True)
-        layout.addWidget(meta)
-
-        self._status_title_label = title
-        self._status_value_label = value
-        return card
-
-    def _build_promo_card(self) -> QFrame:
-        card = QFrame()
-        card.setObjectName("LauncherShellPromoCard")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
-
-        eyebrow = QLabel("PROMO")
-        eyebrow.setObjectName("LauncherShellEyebrow")
-        layout.addWidget(eyebrow)
-
-        title = QLabel("NeuroMita v2.0.0")
-        title.setObjectName("LauncherShellSectionTitle")
-        layout.addWidget(title)
-
-        body = QLabel(
-            _(
-                "Активная сборка лаунчера с быстрым доступом к игре, новостям и настройкам.",
-                "Active launcher build with quick access to game, news and settings.",
-            )
-        )
-        body.setObjectName("LauncherShellBody")
-        body.setWordWrap(True)
-        layout.addWidget(body)
-
-        promo_button = QPushButton(_("Открыть Home", "Open Home"))
-        promo_button.setObjectName("LauncherShellPromoButton")
-        promo_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        promo_button.clicked.connect(lambda: self.request_page("home"))
-        self._promo_button = promo_button
-        layout.addWidget(promo_button)
-        return card
+    def _read_version_string(self) -> str:
+        try:
+            from _version import __version__ as ver
+            return f"v{ver}"
+        except Exception:
+            return ""
 
     def request_page(self, page_key: str) -> None:
         self.set_active_page(page_key)
@@ -282,16 +233,18 @@ class LauncherSidebarWidget(QFrame):
             button.style().polish(button)
             button.blockSignals(False)
 
-        if self._promo_button is not None:
-            current_title = next((section.title for section in self._sections if section.key == page_key), page_key.title())
-            self._promo_button.setText(_("Открыть: ", "Open: ") + current_title)
-
-    def set_status(self, title: str, value: str) -> None:
-        if self._status_title_label is not None:
-            self._status_title_label.setText(title)
-        if self._status_value_label is not None:
-            self._status_value_label.setText(value)
+    def set_active_language(self, code: str) -> None:
+        code = (code or "").lower()
+        for key, button in self._lang_buttons.items():
+            is_active = key == code
+            button.blockSignals(True)
+            button.setChecked(is_active)
+            button.setProperty("active", is_active)
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.blockSignals(False)
 
     def set_language_label(self, text: str) -> None:
-        if self._lang_button is not None:
-            self._lang_button.setText(text)
+        # Сохранено для совместимости со старым API: новый сайдбар показывает
+        # отдельные кнопки RU/EN, поэтому label больше не используется.
+        return

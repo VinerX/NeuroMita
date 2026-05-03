@@ -869,7 +869,22 @@ QWidget#ChatWorkspace {
 QWidget#SettingsPageOverlay QStackedWidget,
 QWidget#SettingsPageOverlay QStackedWidget > QWidget,
 QWidget#SettingsPageOverlay QScrollArea,
-QWidget#SettingsPageOverlay QScrollArea > QWidget > QWidget {
+QWidget#SettingsPageOverlay QScrollArea > QWidget,
+QWidget#SettingsPageOverlay QScrollArea > QWidget > QWidget,
+QWidget#SettingsPageOverlay QAbstractScrollArea,
+QWidget#SettingsPageOverlay QAbstractScrollArea > QWidget,
+QWidget#SettingsPageOverlay QAbstractScrollArea > QWidget > QWidget {
+    background: transparent;
+    border: none;
+}
+
+/* Контейнеры страниц настроек, рендерящихся внутри SettingsOverlay,
+   не должны рисовать собственный тёмный квадрат — без этого правила
+   при переключении категорий иногда мелькала подложка. */
+QWidget[objectName^="ContentWidget_"],
+QScrollArea[objectName^="ScrollArea_"],
+QScrollArea[objectName^="ScrollArea_"] > QWidget,
+QScrollArea[objectName^="ScrollArea_"] > QWidget > QWidget {
     background: transparent;
     border: none;
 }
@@ -921,11 +936,16 @@ QLabel#LauncherHomeFootnote {
 
 QFrame#LauncherHomeUpdateChip,
 QFrame#LauncherHomeNewsPanel,
-QFrame#LauncherHomeStatusCard,
-QFrame#LauncherHomeNewsItem {
+QFrame#LauncherHomeStatusCard {
     background-color: rgba(20, 8, 13, 0.78);
     border: 1px solid rgba(255, 92, 158, 0.30);
     border-radius: 14px;
+}
+
+QFrame#LauncherHomeNewsItem {
+    background: transparent;
+    border: none;
+    border-radius: 0;
 }
 
 QLabel#LauncherHomeLogo {
@@ -1040,10 +1060,15 @@ QLabel#LauncherHomeNewsItemTitle {
     letter-spacing: 0px;
 }
 
-QLabel#LauncherHomeNewsItemBody,
-QLabel#LauncherHomeNewsDate {
+QLabel#LauncherHomeNewsItemBody {
     color: #b08a96;
     font-size: 8.5pt;
+    letter-spacing: 0px;
+}
+
+QLabel#LauncherHomeNewsDate {
+    color: #8a6271;
+    font-size: 8pt;
     letter-spacing: 0px;
 }
 

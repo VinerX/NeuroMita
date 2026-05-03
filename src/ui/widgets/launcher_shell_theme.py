@@ -37,29 +37,37 @@ def resolve_launcher_asset(name: str) -> str | None:
 
 def get_launcher_shell_stylesheet() -> str:
     p = PALETTE
-    bg_path = resolve_launcher_asset("bg.jpg")
-    bg_rule = (
-        f"border-image: url({bg_path.replace('\\', '/')}) 0 0 0 0 stretch stretch;"
-        if bg_path
-        else """
+    # Раньше тут рисовали bg.jpg как border-image — это создавало конфликт с
+    # LauncherHomeBackground (на главной он рисуется отдельно), а на остальных
+    # shell-страницах край картинки торчал из-под центральных карточек. Делаем
+    # фон сплошным градиентом — главная остаётся со своим бэкграундом.
+    bg_rule = """
         background: qlineargradient(
             x1: 0, y1: 0, x2: 1, y2: 1,
             stop: 0 #160b1c,
             stop: 0.36 #0e0915,
             stop: 1 #050409
         );
-        """
-    )
+    """
     return f"""
     QWidget#LauncherShellRoot {{
-        background-color: {p.root_bg};
+        background: transparent;
         color: {p.text};
         font-family: "Segoe UI", "Arial", sans-serif;
+    }}
+    QWidget#LauncherShellPage {{
+        background: transparent;
     }}
     QFrame#LauncherShellBackdrop {{
         {bg_rule}
         border-radius: 28px;
         border: 1px solid rgba(255, 255, 255, 0.04);
+    }}
+    QScrollArea#LauncherShellScrollArea,
+    QScrollArea#LauncherShellScrollArea > QWidget,
+    QScrollArea#LauncherShellScrollArea > QWidget > QWidget {{
+        background: transparent;
+        border: none;
     }}
     QFrame#LauncherShellSidebar,
     QFrame#LauncherShellPage,
@@ -166,7 +174,6 @@ def get_launcher_shell_stylesheet() -> str:
         background-color: {p.accent_pressed};
     }}
     QPushButton#LauncherShellGhostButton,
-    QPushButton#LauncherShellSocialButton,
     QPushButton#LauncherShellChipButton {{
         background-color: rgba(255, 255, 255, 0.04);
         color: {p.text};
@@ -179,10 +186,66 @@ def get_launcher_shell_stylesheet() -> str:
         letter-spacing: 0px;
     }}
     QPushButton#LauncherShellGhostButton:hover,
-    QPushButton#LauncherShellSocialButton:hover,
     QPushButton#LauncherShellChipButton:hover {{
         background-color: {p.accent_soft};
         border: 1px solid {p.border};
+    }}
+    QPushButton#LauncherShellSocialButton {{
+        background: transparent;
+        border: none;
+        border-radius: 10px;
+        padding: 4px;
+    }}
+    QPushButton#LauncherShellSocialButton:hover {{
+        background-color: {p.accent_soft};
+    }}
+    QWidget#LauncherShellSocialBlock,
+    QWidget#LauncherShellFooterBlock {{
+        background: transparent;
+    }}
+    QFrame#LauncherShellBrandRow {{
+        background: transparent;
+        border: none;
+    }}
+    QLabel#LauncherShellBrandTitle {{
+        color: {p.text};
+        font-family: "Segoe UI", "Arial", sans-serif;
+        font-size: 16px;
+        font-weight: 700;
+        letter-spacing: 0px;
+    }}
+    QLabel#LauncherShellBrandSubtitle {{
+        color: {p.muted};
+        font-family: "Segoe UI", "Arial", sans-serif;
+        font-size: 13px;
+        font-weight: 500;
+        letter-spacing: 0px;
+    }}
+    QPushButton#LauncherShellLangPill {{
+        background-color: rgba(255, 255, 255, 0.04);
+        color: {p.muted};
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 12px;
+        font-family: "Segoe UI", "Arial", sans-serif;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 1px;
+    }}
+    QPushButton#LauncherShellLangPill:hover {{
+        background-color: {p.accent_soft};
+        color: {p.text};
+        border: 1px solid {p.border};
+    }}
+    QPushButton#LauncherShellLangPill[active="true"] {{
+        background-color: {p.accent};
+        color: white;
+        border: 1px solid rgba(255, 92, 168, 0.42);
+    }}
+    QLabel#LauncherShellVersionLabel {{
+        color: {p.muted};
+        font-family: "Segoe UI", "Arial", sans-serif;
+        font-size: 11px;
+        letter-spacing: 0px;
     }}
     QScrollArea#LauncherShellScrollArea {{
         background: transparent;
