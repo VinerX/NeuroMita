@@ -32,15 +32,6 @@ class SidebarSection:
 
 DEFAULT_SIDEBAR_SECTIONS: tuple[SidebarSection, ...] = (
     SidebarSection("home", _("Главная", "Home"), "fa6s.house", _("Обзор лаунчера", "Launcher overview")),
-    SidebarSection("news", _("Новости", "News"), "fa6s.newspaper", _("Апдейты и заметки", "Updates and notes")),
-    SidebarSection("sandbox", _("Песочница", "Sandbox"), "fa6s.flask", _("Быстрый вход в чат", "Quick chat access")),
-    SidebarSection("settings", _("Настройки", "Settings"), "fa6s.sliders", _("Системные параметры", "System controls")),
-    SidebarSection("logs", _("Логи", "Logs"), "fa6s.wave-square", _("События и диагностика", "Events and diagnostics")),
-)
-
-
-DEFAULT_SIDEBAR_SECTIONS = (
-    SidebarSection("home", _("Главная", "Home"), "fa6s.house", _("Обзор лаунчера", "Launcher overview")),
     SidebarSection("news", _("Новости", "News"), "fa6s.rectangle-list", _("Апдейты и заметки", "Updates and notes")),
     SidebarSection("sandbox", _("Песочница", "Sandbox"), "fa6s.flask", _("Быстрый вход в чат", "Quick chat access")),
     SidebarSection("settings", _("Настройки", "Settings"), "fa6s.gear", _("Системные параметры", "System controls")),
@@ -122,15 +113,15 @@ class LauncherSidebarWidget(QFrame):
         title_column.setContentsMargins(0, 0, 0, 0)
         title_column.setSpacing(4)
 
-        eyebrow = QLabel("NEON SHELL")
+        eyebrow = QLabel("NeuroMita")
         eyebrow.setObjectName("LauncherShellEyebrow")
         title_column.addWidget(eyebrow)
 
-        title = QLabel("NeuroMita")
+        title = QLabel("Launcher")
         title.setObjectName("LauncherShellTitle")
         title_column.addWidget(title)
 
-        subtitle = QLabel(_("Лаунчер-панель проекта", "Project launcher shell"))
+        subtitle = QLabel(_("Единая панель запуска", "Project launcher"))
         subtitle.setObjectName("LauncherShellSubtitle")
         subtitle.setWordWrap(True)
         title_column.addWidget(subtitle)
@@ -251,14 +242,14 @@ class LauncherSidebarWidget(QFrame):
         eyebrow.setObjectName("LauncherShellEyebrow")
         layout.addWidget(eyebrow)
 
-        title = QLabel(_("Launcher Shell", "Launcher Shell"))
+        title = QLabel("NeuroMita v2.0.0")
         title.setObjectName("LauncherShellSectionTitle")
         layout.addWidget(title)
 
         body = QLabel(
             _(
-                "Единый вход для главной, новостей, песочницы, настроек и логов.",
-                "One entry point for home, news, sandbox, settings and logs.",
+                "Активная сборка лаунчера с быстрым доступом к игре, новостям и настройкам.",
+                "Active launcher build with quick access to game, news and settings.",
             )
         )
         body.setObjectName("LauncherShellBody")

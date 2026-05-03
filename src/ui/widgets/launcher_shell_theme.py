@@ -54,7 +54,7 @@ def get_launcher_shell_stylesheet() -> str:
     QWidget#LauncherShellRoot {{
         background-color: {p.root_bg};
         color: {p.text};
-        font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+        font-family: "Segoe UI", "Arial", sans-serif;
     }}
     QFrame#LauncherShellBackdrop {{
         {bg_rule}
@@ -80,30 +80,40 @@ def get_launcher_shell_stylesheet() -> str:
     }}
     QLabel#LauncherShellEyebrow {{
         color: {p.accent_hover};
+        font-family: "Segoe UI", "Arial", sans-serif;
         font-size: 10px;
         font-weight: 700;
+        letter-spacing: 0px;
     }}
     QLabel#LauncherShellTitle {{
         color: {p.text};
+        font-family: "Segoe UI", "Arial", sans-serif;
         font-size: 26px;
         font-weight: 700;
+        letter-spacing: 0px;
     }}
     QLabel#LauncherShellSubtitle,
     QLabel#LauncherShellMeta,
     QLabel#LauncherShellHint,
     QLabel#LauncherShellBody {{
         color: {p.muted};
+        font-family: "Segoe UI", "Arial", sans-serif;
         font-size: 13px;
+        letter-spacing: 0px;
     }}
     QLabel#LauncherShellSectionTitle {{
         color: {p.text};
+        font-family: "Segoe UI", "Arial", sans-serif;
         font-size: 15px;
         font-weight: 700;
+        letter-spacing: 0px;
     }}
     QLabel#LauncherShellSectionValue {{
         color: {p.text};
+        font-family: "Segoe UI", "Arial", sans-serif;
         font-size: 17px;
         font-weight: 700;
+        letter-spacing: 0px;
     }}
     QLabel#LauncherShellStatusDot {{
         min-width: 10px;
@@ -119,9 +129,11 @@ def get_launcher_shell_stylesheet() -> str:
         border: 1px solid transparent;
         border-radius: 18px;
         padding: 12px 14px;
+        font-family: "Segoe UI", "Arial", sans-serif;
         text-align: left;
         font-size: 13px;
         font-weight: 600;
+        letter-spacing: 0px;
     }}
     QPushButton#LauncherShellNavButton:hover {{
         background-color: {p.accent_soft};
@@ -140,8 +152,10 @@ def get_launcher_shell_stylesheet() -> str:
         border: 1px solid rgba(255, 92, 168, 0.42);
         border-radius: 14px;
         padding: 10px 14px;
+        font-family: "Segoe UI", "Arial", sans-serif;
         font-size: 13px;
         font-weight: 700;
+        letter-spacing: 0px;
     }}
     QPushButton#LauncherShellActionButton:hover,
     QPushButton#LauncherShellPromoButton:hover {{
@@ -159,8 +173,10 @@ def get_launcher_shell_stylesheet() -> str:
         border: 1px solid rgba(255, 255, 255, 0.06);
         border-radius: 14px;
         padding: 9px 12px;
+        font-family: "Segoe UI", "Arial", sans-serif;
         font-size: 12px;
         font-weight: 600;
+        letter-spacing: 0px;
     }}
     QPushButton#LauncherShellGhostButton:hover,
     QPushButton#LauncherShellSocialButton:hover,

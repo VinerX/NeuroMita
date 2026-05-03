@@ -17,14 +17,14 @@ import types
 import json
 import qtawesome as qta
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QPropertyAnimation, QBuffer, QIODevice, QEvent, QEasingCurve, QUrl
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QPropertyAnimation, QBuffer, QIODevice, QEvent, QEasingCurve, QUrl, QRectF
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPlainTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
     QMessageBox, QDialog, QProgressBar, QStackedWidget,
     QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy, QCheckBox
 )
-from PyQt6.QtGui import QDesktopServices, QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap
+from PyQt6.QtGui import QDesktopServices, QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap, QPainter, QLinearGradient, QColor
 
 from ui.settings import (
     api_settings, character_settings, game_settings,
@@ -68,6 +68,53 @@ from ui.chat import message_renderer
 from ui.chat.chat_delegate import ChatMessageDelegate
 
 from ui.windows.voice_action_windows import VoiceInstallationWindow
+
+
+class LauncherHomeBackground(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("LauncherHomeBackground")
+        self._bg = QPixmap(str(Path("assets/launcher_ui/bg.jpg")))
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        rect = QRectF(self.rect())
+        if not self._bg.isNull():
+            source = QRectF(self._bg.rect())
+            target_ratio = rect.width() / max(1.0, rect.height())
+            source_ratio = source.width() / max(1.0, source.height())
+
+            if source_ratio > target_ratio:
+                new_width = source.height() * target_ratio
+                source.setLeft(source.left() + (source.width() - new_width) * 0.68)
+                source.setWidth(new_width)
+            else:
+                new_height = source.width() / target_ratio
+                source.setTop(source.top() + (source.height() - new_height) * 0.5)
+                source.setHeight(new_height)
+
+            painter.drawPixmap(rect, self._bg, source)
+        else:
+            painter.fillRect(rect, QColor("#09050f"))
+
+        horizontal = QLinearGradient(rect.topLeft(), rect.topRight())
+        horizontal.setColorAt(0.0, QColor(10, 4, 8, 245))
+        horizontal.setColorAt(0.42, QColor(10, 4, 8, 170))
+        horizontal.setColorAt(0.74, QColor(10, 4, 8, 70))
+        horizontal.setColorAt(1.0, QColor(10, 4, 8, 10))
+        painter.fillRect(rect, horizontal)
+
+        vertical = QLinearGradient(rect.bottomLeft(), rect.topLeft())
+        vertical.setColorAt(0.0, QColor(10, 4, 8, 220))
+        vertical.setColorAt(0.38, QColor(10, 4, 8, 55))
+        vertical.setColorAt(1.0, QColor(10, 4, 8, 0))
+        painter.fillRect(rect, vertical)
+
 
 class ChatGUI(QMainWindow):
     update_chat_signal = pyqtSignal(str, object, bool, str)
@@ -873,7 +920,10 @@ class ChatGUI(QMainWindow):
         self.page_map[page_key] = new_page
 
     def _build_home_page(self):
-        page, layout = create_shell_page_container()
+        page = LauncherHomeBackground()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(44, 42, 36, 32)
+        layout.setSpacing(0)
         news_items = self._parse_news_items(self.get_news_content())
 
         content = QHBoxLayout()
@@ -897,6 +947,13 @@ class ChatGUI(QMainWindow):
         left_column.addWidget(subtitle)
         left_column.addWidget(self._build_home_update_chip(news_items))
 
+        logo_wrap = QWidget()
+        logo_wrap.setObjectName("LauncherHomeLogoZone")
+        logo_layout = QVBoxLayout(logo_wrap)
+        logo_layout.setContentsMargins(0, 0, 0, 0)
+        logo_layout.setSpacing(0)
+        logo_layout.addStretch(1)
+
         logo = QLabel()
         logo.setObjectName("LauncherHomeLogo")
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -904,15 +961,17 @@ class ChatGUI(QMainWindow):
         if logo_path.exists():
             logo.setPixmap(
                 QPixmap(str(logo_path)).scaled(
-                    360,
-                    260,
+                    420,
+                    270,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
             )
         else:
             logo.setText("NeuroMita")
-        left_column.addWidget(logo, 0, Qt.AlignmentFlag.AlignHCenter)
+        logo_layout.addWidget(logo, 0, Qt.AlignmentFlag.AlignHCenter)
+        logo_layout.addStretch(1)
+        left_column.addWidget(logo_wrap, 1)
 
         backend_row = QHBoxLayout()
         backend_row.setSpacing(12)
@@ -970,12 +1029,15 @@ class ChatGUI(QMainWindow):
         status_line.setWordWrap(True)
         left_column.addWidget(status_line)
 
-        left_column.addStretch(1)
+        right_column = QVBoxLayout()
+        right_column.setContentsMargins(0, 0, 0, 8)
+        right_column.addStretch(1)
+        right_column.addWidget(self._build_home_news_panel(news_items))
+
         content.addLayout(left_column, 5)
-        content.addWidget(self._build_home_news_panel(news_items), 2)
+        content.addLayout(right_column, 2)
 
         layout.addLayout(content)
-        layout.addStretch(1)
         return page
 
     def _get_home_backend_status(self):
@@ -1054,6 +1116,9 @@ class ChatGUI(QMainWindow):
         panel = QFrame()
         panel.setObjectName("LauncherHomeNewsPanel")
         panel.setMinimumWidth(320)
+        panel.setMinimumHeight(220)
+        panel.setMaximumHeight(250)
+        panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(18, 18, 18, 18)
