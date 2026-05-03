@@ -3,34 +3,24 @@ chcp 65001 > nul
 cd /d "%~dp0"
 
 set PY=libs\python\python.exe
-set UV_EXE=libs\python\Scripts\uv.exe
 
-if exist "%UV_EXE%" (
-    echo Найден %UV_EXE%, использую его.
-    set UV_CMD=%UV_EXE%
-    goto uv_ready
-)
+echo Проверяем наличие uv...
+%PY% -m pip show uv >nul 2>&1
 
-echo Проверяем наличие pip...
-%PY% -m pip --version >nul 2>&1
+rem  ERRORLEVEL = 0  ->  пакет найден
+rem  ERRORLEVEL = 1  ->  пакет не найден
 if errorlevel 1 (
-    echo pip не найден, включаем ensurepip...
-    %PY% -m ensurepip --upgrade || (
-        echo Ошибка включения pip && exit /b 1
+    echo uv не найден, устанавливаем...
+    %PY% -m pip install --upgrade uv || (
+        echo Ошибка установки uv && exit /b 1
     )
+) else (
+    echo uv уже установлен
 )
 
-echo uv как модуль не найден, устанавливаем...
-%PY% -m pip install --upgrade uv --no-cache-dir || (
-    echo Ошибка установки uv && exit /b 1
-)
-
-set UV_CMD=%PY% -m uv
-
-:uv_ready
 echo ----------------------------------------------
-%UV_CMD% pip install -r requirements.txt --no-cache-dir
-%UV_CMD% pip install onnxruntime --no-cache-dir
-%UV_CMD% run libs\python\Scripts\pywin32_postinstall.py -install
+%PY% -m uv pip install -r requirements.txt --no-cache-dir
+%PY% -m uv pip install onnxruntime --no-cache-dir
+%PY% -m uv run libs\python\Scripts\pywin32_postinstall.py -install
 echo ----------------------------------------------
 pause
