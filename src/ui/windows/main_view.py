@@ -1083,10 +1083,10 @@ class ChatGUI(QMainWindow):
         button_row = QHBoxLayout()
         button_row.setSpacing(8)
 
-        primary_button = QPushButton(self._get_home_primary_action_label())
-        primary_button.setObjectName("LauncherHomePrimaryButton")
-        primary_button.clicked.connect(self._run_home_primary_action)
-        button_row.addWidget(primary_button, 1)
+        self.home_primary_button = QPushButton(self._get_home_primary_action_label())
+        self.home_primary_button.setObjectName("LauncherHomePrimaryButton")
+        self.home_primary_button.clicked.connect(self._run_home_primary_action)
+        button_row.addWidget(self.home_primary_button, 1)
 
         menu_button = QPushButton("▾")
         menu_button.setObjectName("LauncherHomeMenuButton")
@@ -1094,10 +1094,21 @@ class ChatGUI(QMainWindow):
         button_row.addWidget(menu_button)
         left_column.addLayout(button_row)
 
-        verify_button = QPushButton(_("Проверить файлы", "Verify files"))
-        verify_button.setObjectName("LauncherHomeVerifyButton")
-        verify_button.clicked.connect(self._run_home_verify_action)
-        left_column.addWidget(verify_button)
+        # Прогресс-бар: показывается только во время установок/обновлений.
+        self.home_progress_bar = QProgressBar()
+        self.home_progress_bar.setObjectName("LauncherHomeProgressBar")
+        self.home_progress_bar.setRange(0, 100)
+        self.home_progress_bar.setValue(0)
+        self.home_progress_bar.setTextVisible(False)
+        self.home_progress_bar.setFixedHeight(10)
+        self.home_progress_bar.setVisible(False)
+        left_column.addWidget(self.home_progress_bar)
+
+        self.home_progress_label = QLabel("")
+        self.home_progress_label.setObjectName("LauncherHomeProgressLabel")
+        self.home_progress_label.setVisible(False)
+        left_column.addWidget(self.home_progress_label)
+        self._connect_home_install_signals()
 
         # Карточка "Подключения" убрана с главной — статусы доступны в Sandbox
         # и в настройках/Debug. Здесь они дублировали инфу и нарушали стиль
@@ -1172,22 +1183,21 @@ class ChatGUI(QMainWindow):
         return _("Установлен", "Installed")
 
     def _get_home_primary_action_label(self):
+        if self._find_unity_executable() is None:
+            return _("↓ Установить", "↓ Install")
         return _("▶ Играть", "▶ Play")
+
+    def _refresh_home_primary_label(self):
+        button = getattr(self, "home_primary_button", None)
+        if button is not None:
+            button.setText(self._get_home_primary_action_label())
 
     def _run_home_primary_action(self):
         exe = self._find_unity_executable()
         if exe is None:
-            unity_dir = self._get_unity_install_dir()
-            QMessageBox.warning(
-                self,
-                _("Запуск Unity", "Unity launch"),
-                _(
-                    "Unity-сборка не найдена.\n\nИскали в:\n{path}\n\n"
-                    "Установи или укажи путь в настройках (UNITY_INSTALL_DIR).",
-                    "Unity build not found.\n\nLooked in:\n{path}\n\n"
-                    "Install it or set UNITY_INSTALL_DIR in settings.",
-                ).format(path=unity_dir),
-            )
+            # Сборки нет — отправляем пользователя на страницу обновлений,
+            # где доступна установка/обновление и виден общий статус.
+            self.show_settings_category("updates")
             return
         try:
             import subprocess
@@ -1205,6 +1215,69 @@ class ChatGUI(QMainWindow):
                 _("Не удалось запустить Unity: {err}", "Failed to launch Unity: {err}").format(err=exc),
             )
 
+    def _connect_home_install_signals(self):
+        try:
+            self.event_bus.subscribe(Events.Install.TASK_STARTED, self._on_home_install_started, weak=False)
+            self.event_bus.subscribe(Events.Install.TASK_PROGRESS, self._on_home_install_progress, weak=False)
+            self.event_bus.subscribe(Events.Install.TASK_FINISHED, self._on_home_install_finished, weak=False)
+            self.event_bus.subscribe(Events.Install.TASK_FAILED, self._on_home_install_failed, weak=False)
+        except Exception as exc:
+            logger.info(f"Install signals subscribe skipped: {exc}")
+
+    def _on_home_install_started(self, event):
+        data = getattr(event, "data", None) or {}
+        title = str(data.get("title") or data.get("name") or _("Установка", "Installation"))
+        self._set_home_progress(title, 0, 100, busy=True)
+
+    def _on_home_install_progress(self, event):
+        data = getattr(event, "data", None) or {}
+        title = str(data.get("title") or data.get("name") or "")
+        downloaded = float(data.get("downloaded") or data.get("current") or 0)
+        total = float(data.get("total") or 0)
+        message = str(data.get("message") or "")
+        if total > 0:
+            pct = int(max(0, min(100, downloaded / total * 100)))
+            label = title or message or _("Загрузка…", "Downloading…")
+            self._set_home_progress(f"{label} — {pct}%", pct, 100, busy=False)
+        else:
+            label = title or message or _("Загрузка…", "Downloading…")
+            self._set_home_progress(label, 0, 0, busy=True)
+
+    def _on_home_install_finished(self, event):
+        self._hide_home_progress()
+        self._refresh_home_primary_label()
+
+    def _on_home_install_failed(self, event):
+        data = getattr(event, "data", None) or {}
+        err = str(data.get("error") or data.get("message") or _("ошибка", "error"))
+        if hasattr(self, "home_progress_label") and self.home_progress_label is not None:
+            self.home_progress_label.setText(_("Ошибка: {err}", "Error: {err}").format(err=err))
+        if hasattr(self, "home_progress_bar") and self.home_progress_bar is not None:
+            self.home_progress_bar.setVisible(False)
+
+    def _set_home_progress(self, text: str, value: int, maximum: int, busy: bool = False):
+        bar = getattr(self, "home_progress_bar", None)
+        label = getattr(self, "home_progress_label", None)
+        if bar is None or label is None:
+            return
+        bar.setVisible(True)
+        if busy:
+            bar.setRange(0, 0)
+        else:
+            bar.setRange(0, max(1, maximum))
+            bar.setValue(value)
+        label.setVisible(True)
+        label.setText(text)
+
+    def _hide_home_progress(self):
+        bar = getattr(self, "home_progress_bar", None)
+        label = getattr(self, "home_progress_label", None)
+        if bar is not None:
+            bar.setVisible(False)
+        if label is not None:
+            label.setVisible(False)
+            label.setText("")
+
     def _run_home_verify_action(self):
         self.show_settings_category("updates")
 
@@ -1212,12 +1285,12 @@ class ChatGUI(QMainWindow):
         menu = QMenu(self)
         menu.setObjectName("LauncherHomeExtraMenu")
         menu.addAction(
-            _("Перезагрузить промпты", "Reload prompts"),
-            lambda: self.event_bus.emit(Events.Model.RELOAD_PROMPTS_ASYNC),
+            _("Проверить файлы / обновления", "Verify files / updates"),
+            self._run_home_verify_action,
         )
         menu.addAction(
-            _("Проверить обновления", "Check updates"),
-            lambda: self.show_settings_category("updates"),
+            _("Перезагрузить промпты", "Reload prompts"),
+            lambda: self.event_bus.emit(Events.Model.RELOAD_PROMPTS_ASYNC),
         )
         menu.addAction(
             _("Открыть папку логов", "Open logs folder"),

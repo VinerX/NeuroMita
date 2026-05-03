@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QComboBox,
     QSizePolicy,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -198,7 +199,7 @@ def _build_chat_header(gui) -> QFrame:
 
     title_col = QVBoxLayout()
     title_col.setSpacing(4)
-    title_label = QLabel(_("Песочница / SANDBOX", "Sandbox / SANDBOX"))
+    title_label = QLabel(_("Песочница", "Sandbox"))
     title_label.setObjectName("ChatHeroTitle")
     title_col.addWidget(title_label)
 
@@ -287,28 +288,49 @@ def _build_chat_inspector(gui) -> QWidget:
     inspector.setFixedWidth(320)
     layout = QVBoxLayout(inspector)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(12)
+    layout.setSpacing(0)
 
-    status_card = QFrame()
-    status_card.setObjectName("SandboxInspectorCard")
-    status_layout = QVBoxLayout(status_card)
-    status_layout.setContentsMargins(16, 16, 16, 16)
-    status_layout.setSpacing(10)
-    status_title = QLabel(_("Подключения", "Connections"))
-    status_title.setObjectName("SandboxInspectorTitle")
-    status_layout.addWidget(status_title)
+    tabs = QTabWidget()
+    tabs.setObjectName("SandboxInspectorTabs")
+    tabs.setDocumentMode(True)
+    tabs.addTab(_build_inspector_params_tab(gui), _("Параметры", "Params"))
+    tabs.addTab(_build_inspector_memory_tab(gui), _("Память", "Memory"))
+    tabs.addTab(_build_inspector_debug_tab(gui), _("Отладка", "Debug"))
+    layout.addWidget(tabs, 1)
+    gui.sandbox_inspector_tabs = tabs
+    return inspector
+
+
+def _make_tab_page() -> tuple[QWidget, QVBoxLayout]:
+    page = QWidget()
+    page.setObjectName("SandboxInspectorTabPage")
+    layout = QVBoxLayout(page)
+    layout.setContentsMargins(2, 12, 2, 4)
+    layout.setSpacing(12)
+    return page, layout
+
+
+def _make_inspector_card(title_text: str | None = None) -> tuple[QFrame, QVBoxLayout]:
+    card = QFrame()
+    card.setObjectName("SandboxInspectorCard")
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(14, 14, 14, 14)
+    layout.setSpacing(8)
+    if title_text:
+        title = QLabel(title_text)
+        title.setObjectName("SandboxInspectorTitle")
+        layout.addWidget(title)
+    return card, layout
+
+
+def _build_inspector_params_tab(gui) -> QWidget:
+    page, layout = _make_tab_page()
+
+    status_card, status_layout = _make_inspector_card(_("Подключения", "Connections"))
     create_status_indicators(gui, status_layout)
     layout.addWidget(status_card)
 
-    quick_card = QFrame()
-    quick_card.setObjectName("SandboxInspectorCard")
-    quick_layout = QVBoxLayout(quick_card)
-    quick_layout.setContentsMargins(16, 16, 16, 16)
-    quick_layout.setSpacing(10)
-    quick_title = QLabel(_("Быстрые действия", "Quick actions"))
-    quick_title.setObjectName("SandboxInspectorTitle")
-    quick_layout.addWidget(quick_title)
-
+    quick_card, quick_layout = _make_inspector_card(_("Быстрые действия", "Quick actions"))
     gui.clear_chat_button = QPushButton(_("Очистить чат", "Clear chat"))
     gui.clear_chat_button.setObjectName("SandboxQuickAction")
     gui.clear_chat_button.clicked.connect(gui.clear_chat_display)
@@ -319,36 +341,100 @@ def _build_chat_inspector(gui) -> QWidget:
     gui.load_history_button.clicked.connect(gui.load_chat_history)
     quick_layout.addWidget(gui.load_history_button)
 
-    gui.open_character_history_button = QPushButton(_("Открыть DB персонажа", "Open character DB"))
-    gui.open_character_history_button.setObjectName("SandboxQuickAction")
-    gui.open_character_history_button.clicked.connect(lambda: _open_selected_character_history(gui))
-    quick_layout.addWidget(gui.open_character_history_button)
-
-    api_button = QPushButton(_("API и пресеты", "API and presets"))
+    api_button = QPushButton(_("Полные настройки API", "Full API settings"))
     api_button.setObjectName("SandboxQuickAction")
     api_button.clicked.connect(lambda: _jump_to_settings(gui, "api"))
     quick_layout.addWidget(api_button)
-
-    memory_button = QPushButton(_("Память и RAG", "Memory and RAG"))
-    memory_button.setObjectName("SandboxQuickAction")
-    memory_button.clicked.connect(lambda: _jump_to_settings(gui, "models"))
-    quick_layout.addWidget(memory_button)
     layout.addWidget(quick_card)
 
-    summary_card = QFrame()
-    summary_card.setObjectName("SandboxInspectorCard")
-    summary_layout = QVBoxLayout(summary_card)
-    summary_layout.setContentsMargins(16, 16, 16, 16)
-    summary_layout.setSpacing(8)
-    summary_title = QLabel(_("Контекст сессии", "Session context"))
-    summary_title.setObjectName("SandboxInspectorTitle")
-    summary_layout.addWidget(summary_title)
+    layout.addStretch(1)
+    return page
 
+
+def _build_inspector_memory_tab(gui) -> QWidget:
+    page, layout = _make_tab_page()
+
+    profile_card, profile_layout = _make_inspector_card(_("Профиль памяти", "Memory profile"))
+    profile_combo = QComboBox()
+    profile_combo.setObjectName("ChatCharacterCombo")
+    profile_options = [
+        _("Оптимизированный", "Optimized"),
+        _("Сбалансированный", "Balanced"),
+        _("Большой", "Large"),
+        _("Своё", "Custom"),
+    ]
+    profile_combo.addItems(profile_options)
+
+    try:
+        from ui.settings.memory_profile import (
+            detect_memory_profile,
+            apply_memory_profile,
+            KEY_TO_LABEL_RU,
+            KEY_TO_LABEL_EN,
+        )
+        lang = str(gui._get_setting("LANGUAGE", "RU") or "RU")
+        key_to_label = KEY_TO_LABEL_EN if lang == "EN" else KEY_TO_LABEL_RU
+        current_label = key_to_label.get(detect_memory_profile(gui), profile_options[1])
+    except Exception:
+        apply_memory_profile = None
+        current_label = profile_options[1]
+
+    idx = profile_combo.findText(current_label, Qt.MatchFlag.MatchFixedString)
+    if idx >= 0:
+        profile_combo.setCurrentIndex(idx)
+
+    def _on_profile_changed(label: str):
+        if apply_memory_profile is not None:
+            apply_memory_profile(gui, label)
+        try:
+            gui.settings.set("MEMORY_PROFILE", label)
+        except Exception:
+            try:
+                gui.settings["MEMORY_PROFILE"] = label
+            except Exception:
+                pass
+
+    profile_combo.currentTextChanged.connect(_on_profile_changed)
+    profile_layout.addWidget(profile_combo)
+    gui.sandbox_memory_profile_combo = profile_combo
+    layout.addWidget(profile_card)
+
+    counts_card, counts_layout = _make_inspector_card(_("Лимиты памяти", "Memory limits"))
+    for label_text, key, fallback in (
+        (_("Сообщений в окне", "Messages in window"), "MODEL_MESSAGE_LIMIT", 35),
+        (_("Долгосрочная память", "Long-term memory"), "MEMORY_CAPACITY", 50),
+        (_("Результатов RAG", "RAG results"), "RAG_MAX_RESULTS", 50),
+    ):
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        label = QLabel(label_text)
+        label.setObjectName("SandboxInspectorLabel")
+        row.addWidget(label)
+        row.addStretch()
+        value = QLabel(str(gui._get_setting(key, fallback)))
+        value.setObjectName("SandboxInspectorValue")
+        row.addWidget(value)
+        counts_layout.addLayout(row)
+
+    full_btn = QPushButton(_("Открыть RAG / память", "Open RAG / memory"))
+    full_btn.setObjectName("SandboxQuickAction")
+    full_btn.clicked.connect(lambda: _jump_to_settings(gui, "models"))
+    counts_layout.addWidget(full_btn)
+    layout.addWidget(counts_card)
+
+    layout.addStretch(1)
+    return page
+
+
+def _build_inspector_debug_tab(gui) -> QWidget:
+    page, layout = _make_tab_page()
+
+    summary_card, summary_layout = _make_inspector_card(_("Контекст сессии", "Session context"))
     summary_lines = [
-        (_("Профиль памяти", "Memory profile"), str(gui._get_setting("MEMORY_PROFILE", _("По умолчанию", "Default")))),
         (_("Голос", "Voice"), str(gui._get_setting("VOICEOVER_METHOD", "TG"))),
         (_("Экран", "Screen"), _("Включён", "Enabled") if gui._get_setting("ENABLE_SCREEN_ANALYSIS", False) else _("Выключен", "Disabled")),
         (_("Камера", "Camera"), _("Включена", "Enabled") if gui._get_setting("ENABLE_CAMERA_CAPTURE", False) else _("Выключена", "Disabled")),
+        (_("Режим", "Mode"), str(gui._get_setting("INTERFACE_MODE", _("Базовый", "Basic")))),
     ]
     for label_text, value_text in summary_lines:
         row = QHBoxLayout()
@@ -362,8 +448,26 @@ def _build_chat_inspector(gui) -> QWidget:
         row.addWidget(value)
         summary_layout.addLayout(row)
     layout.addWidget(summary_card)
+
+    actions_card, actions_layout = _make_inspector_card(_("Диагностика", "Diagnostics"))
+    db_btn = QPushButton(_("Открыть DB персонажа", "Open character DB"))
+    db_btn.setObjectName("SandboxQuickAction")
+    db_btn.clicked.connect(lambda: _open_selected_character_history(gui))
+    actions_layout.addWidget(db_btn)
+
+    debug_btn = QPushButton(_("Debug настройки", "Debug settings"))
+    debug_btn.setObjectName("SandboxQuickAction")
+    debug_btn.clicked.connect(lambda: _jump_to_settings(gui, "debug"))
+    actions_layout.addWidget(debug_btn)
+
+    logs_btn = QPushButton(_("Открыть страницу логов", "Open logs page"))
+    logs_btn.setObjectName("SandboxQuickAction")
+    logs_btn.clicked.connect(lambda: gui.switch_main_page("logs"))
+    actions_layout.addWidget(logs_btn)
+    layout.addWidget(actions_card)
+
     layout.addStretch(1)
-    return inspector
+    return page
 
 
 def _build_chat_conversation_strip(gui) -> QFrame:
@@ -394,22 +498,8 @@ def _build_chat_conversation_strip(gui) -> QFrame:
     layout.addWidget(char_label, 0, Qt.AlignmentFlag.AlignVCenter)
     gui.chat_strip_title = char_label
 
-    sep1 = QLabel("•")
-    sep1.setObjectName("ChatStripSeparator")
-    layout.addWidget(sep1, 0, Qt.AlignmentFlag.AlignVCenter)
-
-    memory_label = QLabel(_("Память активна", "Memory active"))
-    memory_label.setObjectName("ChatStripMeta")
-    layout.addWidget(memory_label, 0, Qt.AlignmentFlag.AlignVCenter)
-
-    sep2 = QLabel("•")
-    sep2.setObjectName("ChatStripSeparator")
-    layout.addWidget(sep2, 0, Qt.AlignmentFlag.AlignVCenter)
-
-    mood_label = QLabel(_("Настроение: —", "Mood: —"))
-    mood_label.setObjectName("ChatStripMeta")
-    layout.addWidget(mood_label, 0, Qt.AlignmentFlag.AlignVCenter)
-    gui.chat_strip_mood = mood_label
+    # «Память активна» / «Настроение» убраны как декоративные заглушки —
+    # вернём, когда подключим реальные данные RAG/character.
 
     layout.addStretch(1)
 

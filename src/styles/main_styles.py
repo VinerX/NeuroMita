@@ -861,6 +861,32 @@ QPushButton#ChatStripGhostButton:hover {
     border: 1px solid rgba(255, 92, 158, 0.42);
 }
 
+QTabWidget#SandboxInspectorTabs::pane {
+    border: none;
+    background: transparent;
+    top: 4px;
+}
+QTabWidget#SandboxInspectorTabs QTabBar::tab {
+    background: transparent;
+    color: #c39fb8;
+    padding: 8px 14px;
+    margin-right: 6px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    font-size: 10pt;
+    font-weight: 600;
+}
+QTabWidget#SandboxInspectorTabs QTabBar::tab:hover {
+    color: #fff1f9;
+}
+QTabWidget#SandboxInspectorTabs QTabBar::tab:selected {
+    color: #fff1f9;
+    border-bottom: 2px solid #ff5ca8;
+}
+QWidget#SandboxInspectorTabPage {
+    background: transparent;
+}
+
 QLabel#SettingsOverviewTitle,
 QLabel#SettingsRailBrandTitle {
     color: #fff1f9;
@@ -985,6 +1011,27 @@ QLabel#LauncherHomeFootnote {
 QLabel#LauncherHomeFootnote {
     font-size: 9pt;
     color: #c39aab;
+}
+
+QProgressBar#LauncherHomeProgressBar {
+    background-color: rgba(20, 8, 13, 0.78);
+    border: 1px solid rgba(255, 92, 158, 0.30);
+    border-radius: 5px;
+    text-align: center;
+}
+QProgressBar#LauncherHomeProgressBar::chunk {
+    background-color: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 #ff80a9,
+        stop: 1 #c81663
+    );
+    border-radius: 5px;
+}
+
+QLabel#LauncherHomeProgressLabel {
+    color: #ffd2ec;
+    font-size: 9pt;
+    font-weight: 600;
 }
 
 QFrame#LauncherHomeUpdateChip,
