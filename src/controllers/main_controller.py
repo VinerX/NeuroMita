@@ -76,7 +76,9 @@ class MainController:
         logger.notify("InstallController успешно инициализирован.")
 
         self.ai_engine_controller = AIEngineController()
-        logger.notify("AIEngineController успешно инициализирован (separate process).")
+        logger.notify(
+            f"AIEngineController успешно инициализирован (mode={getattr(self.ai_engine_controller, 'mode', 'unknown')})."
+        )
 
         self.local_voice_controller = LocalVoiceController()
         logger.notify("LocalVoiceController успешно инициализирован.")
