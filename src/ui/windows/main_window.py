@@ -5,7 +5,7 @@ from ui.pages.home_page import build_home_page
 from ui.pages.logs_page import build_logs_page
 from ui.pages.main_page_registry import MAIN_PAGE_ORDER, build_main_pages
 from ui.pages.news_page import build_news_page
-from ui.pages.settings.section_registry import build_settings_containers
+from ui.widgets.chat_panel import update_send_button_state
 from ui.widgets.launcher_shell_sidebar import LauncherSidebarWidget
 from ui.widgets.settings_panel import apply_interface_mode
 from ui.windows.main_view import ChatGUI as LegacyChatGUI
@@ -60,7 +60,50 @@ class MainWindow(LegacyChatGUI):
         self.resize(1560, 920)
 
     def _init_settings_containers(self):
-        return build_settings_containers(self)
+        page = getattr(self, "settings_page", None)
+        if page is None:
+            return {}
+        return page.settings_containers
+
+    def _on_hide_animation_finished(self):
+        page = getattr(self, "settings_page", None)
+        if page is not None:
+            page.show_overview()
+        try:
+            self.settings_animation.finished.disconnect(self._on_hide_animation_finished)
+        except TypeError:
+            pass
+
+    def show_settings_category(self, category):
+        page = getattr(self, "settings_page", None)
+        if page is not None:
+            page.show_category(category)
+
+    def switch_main_page(self, page_key):
+        page = getattr(self, "page_map", {}).get(page_key)
+        if page is None or not hasattr(self, "page_stack"):
+            return
+
+        self.page_stack.setCurrentWidget(page)
+        self.current_main_page = page_key
+
+        if hasattr(self, "shell_sidebar"):
+            self.shell_sidebar.set_active_page(page_key)
+
+        if page_key == "settings":
+            settings_page = getattr(self, "settings_page", None)
+            if settings_page is not None:
+                settings_page.on_activated()
+
+        if page_key == "logs":
+            self.update_debug_info()
+            self._refresh_logs_view()
+
+        if page_key == "sandbox":
+            try:
+                update_send_button_state(self)
+            except Exception:
+                pass
 
     def _build_home_page(self):
         return build_home_page(self)

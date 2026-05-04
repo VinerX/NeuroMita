@@ -39,7 +39,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
     SettingsSectionSpec(
         key="general",
         icon_name="fa6s.gear",
-        nav_label=("General", "General"),
+        nav_label=("Общие", "General"),
         title=("Общие настройки", "General settings"),
         subtitle=(
             "Базовые параметры интерфейса, приватности, памяти и языка.",
@@ -63,7 +63,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
     SettingsSectionSpec(
         key="characters",
         icon_name="fa6s.user",
-        nav_label=("Characters", "Characters"),
+        nav_label=("Персонажи", "Characters"),
         title=("Персонажи", "Characters"),
         subtitle=(
             "Профили, шаблоны поведения и история выбранного персонажа.",
@@ -75,7 +75,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
     SettingsSectionSpec(
         key="voice",
         icon_name="fa6s.volume-high",
-        nav_label=("Voice", "Voice"),
+        nav_label=("Озвучка", "Voice"),
         title=("Озвучка", "Voice"),
         subtitle=(
             "Голосовой выход, локальные голоса и параметры синтеза.",
@@ -99,7 +99,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
     SettingsSectionSpec(
         key="game",
         icon_name="fa5s.gamepad",
-        nav_label=("Game", "Game"),
+        nav_label=("Игра", "Game"),
         title=("Связь с игрой", "Game integration"),
         subtitle=(
             "Параметры подключения и обмена данными с игрой.",
@@ -111,7 +111,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
     SettingsSectionSpec(
         key="models",
         icon_name="fa6s.robot",
-        nav_label=("Models", "Models"),
+        nav_label=("Модели", "Models"),
         title=("Модели и поведение", "Models and behavior"),
         subtitle=(
             "Управление логикой ответа, памятью, мышлением и RAG.",
@@ -123,7 +123,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
     SettingsSectionSpec(
         key="screen",
         icon_name="fa6s.display",
-        nav_label=("Screen", "Screen"),
+        nav_label=("Экран", "Screen"),
         title=("Экран и камера", "Screen and camera"),
         subtitle=(
             "Захват экрана, анализ изображений и визуальный контекст.",
@@ -135,7 +135,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
     SettingsSectionSpec(
         key="debug",
         icon_name="fa6s.bug",
-        nav_label=("Debug", "Debug"),
+        nav_label=("Отладка", "Debug"),
         title=("Системная телеметрия", "System telemetry"),
         subtitle=(
             "Текущее состояние модулей, отладочная информация и индикаторы.",
@@ -147,7 +147,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
     SettingsSectionSpec(
         key="news",
         icon_name="fa6s.newspaper",
-        nav_label=("News", "News"),
+        nav_label=("Новости", "News"),
         title=("Новости проекта", "Project news"),
         subtitle=(
             "Сводка обновлений и последние заметки по сборке.",
@@ -159,7 +159,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
     SettingsSectionSpec(
         key="data",
         icon_name="fa5s.database",
-        nav_label=("Data", "Data"),
+        nav_label=("Данные", "Data"),
         title=("Данные и хранилище", "Data and storage"),
         subtitle=(
             "История, экспорт, резервные данные и локальное хранилище.",
@@ -171,7 +171,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
     SettingsSectionSpec(
         key="updates",
         icon_name="fa6s.rotate",
-        nav_label=("Updates", "Updates"),
+        nav_label=("Обновления", "Updates"),
         title=("Обновления", "Updates"),
         subtitle=(
             "Управление обновлением клиента и связанных компонентов.",
