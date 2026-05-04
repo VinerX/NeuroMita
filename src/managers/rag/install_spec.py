@@ -131,30 +131,16 @@ def _torch_status(ctx: dict[str, Any]) -> dict[str, Any]:
 
 
 def _embed_requirements() -> list[InstallRequirement]:
-    hf_name = _local_embed_model_name()
     return [
         InstallRequirement(id="transformers", kind="python_dist", spec=TRANSFORMERS_SPEC, required=True),
         InstallRequirement(id="huggingface_hub", kind="python_dist", spec=HF_HUB_SPEC, required=True),
-        InstallRequirement(
-            id="embed_model_cache",
-            kind="file",
-            required=True,
-            path=_cache_marker_path(hf_name),
-        ),
     ]
 
 
 def _reranker_requirements(ctx: dict[str, Any]) -> list[InstallRequirement]:
-    ce_model = resolve_ce_model()
     reqs = [
         InstallRequirement(id="transformers", kind="python_dist", spec=TRANSFORMERS_SPEC, required=True),
         InstallRequirement(id="huggingface_hub", kind="python_dist", spec=HF_HUB_SPEC, required=True),
-        InstallRequirement(
-            id="reranker_model_cache",
-            kind="file",
-            required=True,
-            path=_cache_marker_path(ce_model),
-        ),
     ]
 
     use_int8 = bool(SettingsManager.get("RAG_CE_INT8", False))
@@ -187,7 +173,6 @@ def get_install_status(target: str, *, ctx: dict[str, Any] | None = None) -> dic
         "gpu_vendor": ctx.get("gpu_vendor"),
     }
 
-    seen_downloads: set[str] = set()
     torch_added = False
 
     for item in resolved_targets:
@@ -211,11 +196,6 @@ def get_install_status(target: str, *, ctx: dict[str, Any] | None = None) -> dic
             if not checked.get("ok"):
                 summary["ok"] = False
 
-            model_name = _local_embed_model_name()
-            if model_name and model_name not in seen_downloads:
-                seen_downloads.add(model_name)
-                summary["download_models"].append(model_name)
-
         elif item == TARGET_RERANKER:
             ce_model = resolve_ce_model()
             if not ce_model:
@@ -236,10 +216,6 @@ def get_install_status(target: str, *, ctx: dict[str, Any] | None = None) -> dic
             _merge_requirement_status(summary, checked)
             if not checked.get("ok"):
                 summary["ok"] = False
-
-            if ce_model not in seen_downloads:
-                seen_downloads.add(ce_model)
-                summary["download_models"].append(ce_model)
 
             use_int8 = bool(SettingsManager.get("RAG_CE_INT8", False))
             if use_int8 and (not _is_lm_reranker_model(ce_model)) and str(ctx.get("gpu_vendor") or "").upper() == "NVIDIA":

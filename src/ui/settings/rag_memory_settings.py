@@ -22,7 +22,12 @@ from managers.rag.pipeline.config import list_ce_preset_names, CE_PRESETS
 from managers.rag.pipeline.config import (
     RAG_PIPELINE_PRESETS, list_pipeline_preset_names, get_pipeline_preset_settings,
 )
-from handlers.embedding_presets import list_preset_names, resolve_model_settings, resolve_full_config
+from handlers.embedding_presets import (
+    list_preset_names,
+    resolve_model_settings,
+    resolve_full_config,
+    sync_legacy_settings_to_preset,
+)
 
 # Module-level state for the running extraction (survives dialog close).
 _extr_state: dict = {'worker': None, 'stop': None, 'total': 0, 'last_status': ''}
@@ -867,6 +872,8 @@ def _on_apply_preset(gui) -> None:
             widget.setCurrentText(str(v))
         elif isinstance(widget, QLineEdit):
             widget.setText(str(v))
+    if any(k in settings for k in ("RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM", "RAG_EMBED_QUERY_PREFIX")):
+        sync_legacy_settings_to_preset(log_migration=False, force=True)
 
 
 def _on_save_preset(gui) -> bool:
@@ -1838,7 +1845,7 @@ def _ensure_rag_install_event_handlers(gui) -> None:
     gui._rag_install_events_bound = True
 
 
-def _get_model_download_status() -> str:
+def _get_embed_backend_status() -> str:
     try:
         status = get_install_status(TARGET_EMBEDDINGS)
         if not status.get("required"):
@@ -1853,7 +1860,7 @@ def _get_model_download_status() -> str:
         return "?"
 
 
-def _get_ce_download_status() -> str:
+def _get_ce_backend_status() -> str:
     try:
         status = get_install_status(TARGET_RERANKER)
         if not status.get("required"):
@@ -1868,10 +1875,28 @@ def _get_ce_download_status() -> str:
         return "?"
 
 
+def _needs_embed_backend_install() -> bool:
+    try:
+        status = get_install_status(TARGET_EMBEDDINGS)
+        return bool(status.get("required")) and not bool(status.get("ok"))
+    except Exception:
+        return False
+
+
+def _needs_ce_backend_install() -> bool:
+    try:
+        status = get_install_status(TARGET_RERANKER)
+        return bool(status.get("required")) and not bool(status.get("ok"))
+    except Exception:
+        return False
+
+
 def _refresh_ce_status(gui) -> None:
     try:
         if hasattr(gui, "_ce_dl_label"):
-            gui._ce_dl_label.setText(_("Backend:", "Backend:") + " " + _get_ce_download_status())
+            gui._ce_dl_label.setText(_("Backend:", "Backend:") + " " + _get_ce_backend_status())
+        if hasattr(gui, "_ce_model_label"):
+            gui._ce_model_label.setText(_("Модель:", "Model:") + " " + _get_ce_download_status())
         if hasattr(gui, "_ce_loaded_label"):
             gui._ce_loaded_label.setText(_("Статус:", "Status:") + " " + _get_ce_loaded_status())
         if hasattr(gui, "_ce_dl_btn"):
@@ -1879,7 +1904,13 @@ def _refresh_ce_status(gui) -> None:
                 return
             gui._ce_dl_btn.setEnabled(True)
             gui._ce_dl_btn.setText(_("Установить backend", "Install backend"))
-            gui._ce_dl_btn.setVisible(not _is_ce_model_downloaded())
+            gui._ce_dl_btn.setVisible(_needs_ce_backend_install())
+        if hasattr(gui, "_ce_model_btn"):
+            if gui._ce_model_btn.parentWidget() is None:
+                return
+            gui._ce_model_btn.setEnabled(True)
+            gui._ce_model_btn.setText(_("Скачать модель", "Download model"))
+            gui._ce_model_btn.setVisible(not _is_ce_model_downloaded())
     except Exception:
         pass
 
@@ -1887,7 +1918,7 @@ def _refresh_ce_status(gui) -> None:
 def _refresh_embed_status(gui) -> None:
     try:
         if hasattr(gui, "_embed_dl_label"):
-            gui._embed_dl_label.setText(_("Backend:", "Backend:") + " " + _get_model_download_status())
+            gui._embed_dl_label.setText(_("Backend:", "Backend:") + " " + _get_embed_backend_status())
         if hasattr(gui, "_embed_status_label"):
             gui._embed_status_label.setText(_("Индекс:", "Index:") + " " + _get_embed_status_text())
         if hasattr(gui, "_embed_dl_btn"):
@@ -1895,25 +1926,9 @@ def _refresh_embed_status(gui) -> None:
                 return
             gui._embed_dl_btn.setEnabled(True)
             gui._embed_dl_btn.setText(_("Установить backend", "Install backend"))
-            gui._embed_dl_btn.setVisible(not _is_embed_model_downloaded())
+            gui._embed_dl_btn.setVisible(_needs_embed_backend_install())
     except Exception:
         pass
-
-
-def _is_embed_model_downloaded() -> bool:
-    try:
-        status = get_install_status(TARGET_EMBEDDINGS)
-        return (not status.get("required")) or bool(status.get("ok"))
-    except Exception:
-        return True
-
-
-def _is_ce_model_downloaded() -> bool:
-    try:
-        status = get_install_status(TARGET_RERANKER)
-        return (not status.get("required")) or bool(status.get("ok"))
-    except Exception:
-        return True
 
 
 def _start_rag_backend_install(gui, target: str) -> None:
@@ -1934,12 +1949,73 @@ def _start_rag_backend_install(gui, target: str) -> None:
         _refresh_rag_install_widgets(gui)
 
 
+def _download_model_bg(gui, hf_name: str, on_done) -> None:
+    """Download *hf_name* in a background thread via HuggingFace Hub."""
+    from ui.task_worker import TaskWorker
+
+    def _do_download(*, progress_callback=None):
+        from huggingface_hub import snapshot_download
+        from managers.settings_manager import SettingsManager
+
+        token = str(SettingsManager.get("HF_TOKEN", "") or "").strip() or None
+        checkpoints_dir = _get_checkpoints_dir()
+        snapshot_download(repo_id=hf_name, cache_dir=checkpoints_dir, token=token)
+        return hf_name
+
+    worker = TaskWorker(_do_download)
+
+    def _on_finished(_result):
+        on_done(success=True)
+
+    def _on_error(msg):
+        QMessageBox.critical(
+            gui,
+            _("Ошибка", "Error"),
+            _("Не удалось скачать модель:\n{e}", "Failed to download model:\n{e}").format(e=msg),
+        )
+        on_done(success=False)
+
+    worker.finished_signal.connect(_on_finished)
+    worker.error_signal.connect(_on_error)
+    if not hasattr(gui, "_download_workers"):
+        gui._download_workers = []
+    gui._download_workers.append(worker)
+    worker.start()
+
+
 def _download_embed_model(gui) -> None:
-    _start_rag_backend_install(gui, TARGET_EMBEDDINGS)
+    cfg = resolve_full_config()
+    hf_name = str(cfg.get("hf_name") or resolve_model_settings()["hf_name"] or "")
+    provider = str(cfg.get("provider_name") or "local").strip().lower()
+    if provider != "local" or not hf_name:
+        QMessageBox.warning(
+            gui,
+            _("Ошибка", "Error"),
+            _("Локальная HuggingFace модель не выбрана.", "No local HuggingFace model selected."),
+        )
+        return
+
+    def _done(*, success):
+        _refresh_embed_status(gui)
+
+    _download_model_bg(gui, hf_name, _done)
 
 
 def _download_ce_model(gui) -> None:
-    _start_rag_backend_install(gui, TARGET_RERANKER)
+    from managers.rag.pipeline.config import resolve_ce_model
+
+    hf_name = resolve_ce_model()
+    if not hf_name:
+        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Модель не выбрана.", "No model selected."))
+        return
+    if hasattr(gui, "_ce_model_btn"):
+        gui._ce_model_btn.setEnabled(False)
+        gui._ce_model_btn.setText(_("Скачивание...", "Downloading..."))
+
+    def _done(*, success):
+        _refresh_ce_status(gui)
+
+    _download_model_bg(gui, hf_name, _done)
 
 
 def _attach_embed_downloader(gui, section) -> None:
@@ -1949,13 +2025,13 @@ def _attach_embed_downloader(gui, section) -> None:
         _content = getattr(section, "content", None)
         _parent = _content or section
 
-        _dl_label = QLabel(_("Backend:", "Backend:") + " " + _get_model_download_status(), _parent)
+        _dl_label = QLabel(_("Backend:", "Backend:") + " " + _get_embed_backend_status(), _parent)
         _dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
         _idx_label = QLabel(_("Индекс:", "Index:") + " " + _get_embed_status_text(), _parent)
         _idx_label.setStyleSheet("color: #aaa; font-size: 11px;")
         _embed_dl_btn = QPushButton(_("Установить backend", "Install backend"), _parent)
-        _embed_dl_btn.setVisible(not _is_embed_model_downloaded())
-        _embed_dl_btn.clicked.connect(lambda: _download_embed_model(gui))
+        _embed_dl_btn.setVisible(_needs_embed_backend_install())
+        _embed_dl_btn.clicked.connect(lambda: _start_rag_backend_install(gui, TARGET_EMBEDDINGS))
         _target_section = None
         if _content:
             _content_layout = _content.layout()
@@ -1991,13 +2067,18 @@ def _attach_ce_downloader(gui, section) -> None:
         _content = getattr(section, "content", None)
         _parent = _content or section
 
-        _ce_dl_label = QLabel(_("Backend:", "Backend:") + " " + _get_ce_download_status(), _parent)
+        _ce_dl_label = QLabel(_("Backend:", "Backend:") + " " + _get_ce_backend_status(), _parent)
         _ce_dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        _ce_model_label = QLabel(_("Модель:", "Model:") + " " + _get_ce_download_status(), _parent)
+        _ce_model_label.setStyleSheet("color: #aaa; font-size: 11px;")
         _ce_ld_label = QLabel(_("Статус:", "Status:") + " " + _get_ce_loaded_status(), _parent)
         _ce_ld_label.setStyleSheet("color: #aaa; font-size: 11px;")
         _ce_dl_btn = QPushButton(_("Установить backend", "Install backend"), _parent)
-        _ce_dl_btn.setVisible(not _is_ce_model_downloaded())
-        _ce_dl_btn.clicked.connect(lambda: _download_ce_model(gui))
+        _ce_dl_btn.setVisible(_needs_ce_backend_install())
+        _ce_dl_btn.clicked.connect(lambda: _start_rag_backend_install(gui, TARGET_RERANKER))
+        _ce_model_btn = QPushButton(_("Скачать модель", "Download model"), _parent)
+        _ce_model_btn.setVisible(not _is_ce_model_downloaded())
+        _ce_model_btn.clicked.connect(lambda: _download_ce_model(gui))
         _target_section = None
         if _content:
             _content_layout = _content.layout()
@@ -2016,12 +2097,16 @@ def _attach_ce_downloader(gui, section) -> None:
             _target_section = section
 
         _target_section.add_widget(_ce_dl_label)
+        _target_section.add_widget(_ce_model_label)
         _target_section.add_widget(_ce_ld_label)
         _target_section.add_widget(_ce_dl_btn)
+        _target_section.add_widget(_ce_model_btn)
 
         gui._ce_dl_label = _ce_dl_label
+        gui._ce_model_label = _ce_model_label
         gui._ce_loaded_label = _ce_ld_label
         gui._ce_dl_btn = _ce_dl_btn
+        gui._ce_model_btn = _ce_model_btn
     except Exception:
         pass
 
