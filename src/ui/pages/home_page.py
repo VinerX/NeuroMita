@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 import qtawesome as qta
-from PyQt6.QtCore import QPoint, QRectF, QSize, QTimer, Qt
+from PyQt6.QtCore import QPoint, QRectF, QSize, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
@@ -73,6 +73,8 @@ class LauncherHomeBackground(QWidget):
 
 
 class HomePage(LauncherHomeBackground):
+    _ui_call_requested = pyqtSignal(object)
+
     def __init__(self, gui):
         super().__init__(gui)
         self.gui = gui
@@ -89,6 +91,7 @@ class HomePage(LauncherHomeBackground):
         self.progress_bar = None
         self.progress_label = None
 
+        self._ui_call_requested.connect(self._execute_ui_call)
         self._sync_host_exports()
         self._build_ui()
         self._connect_install_signals()
@@ -508,6 +511,15 @@ class HomePage(LauncherHomeBackground):
             self.progress_label.setVisible(False)
             self.progress_label.setText("")
 
+    def _execute_ui_call(self, fn):
+        try:
+            fn()
+        except Exception:
+            logger.exception("Failed to execute home page UI callback")
+
+    def _queue_ui_call(self, fn):
+        self._ui_call_requested.emit(fn)
+
     def run_verify_action(self):
         self.gui.show_settings_category("updates")
 
@@ -621,7 +633,7 @@ class HomePage(LauncherHomeBackground):
                     text = _("Загрузка Unity… {done:.1f} MB", "Downloading Unity… {done:.1f} MB").format(done=mb_done)
                     self.set_progress(text, 0, 0, busy=True)
 
-            QTimer.singleShot(0, apply)
+            self._queue_ui_call(apply)
 
         class ThreadLogger:
             def __init__(self, page):
@@ -630,7 +642,7 @@ class HomePage(LauncherHomeBackground):
             def _set(self, prefix: str, message, level: str):
                 getattr(logger, level, logger.info)(f"[home_install] {message}")
                 text = f"{prefix}{message}" if prefix else str(message)
-                QTimer.singleShot(0, lambda value=text: self.page.set_progress(value, 0, 0, busy=True))
+                self.page._queue_ui_call(lambda value=text: self.page.set_progress(value, 0, 0, busy=True))
 
             def info(self, message):
                 self._set("", message, "info")
@@ -669,12 +681,21 @@ class HomePage(LauncherHomeBackground):
                 if not info or not info.get("ok"):
                     err = (info or {}).get("error") or _("неизвестная ошибка", "unknown error")
                     logger.warning(f"[home_install] check failed: {err}")
-                    QTimer.singleShot(0, lambda: self.set_progress(_("Ошибка проверки: {err}", "Check error: {err}").format(err=err), 0, 0, busy=False))
+                    self._queue_ui_call(
+                        lambda: self.set_progress(
+                            _("Ошибка проверки: {err}", "Check error: {err}").format(err=err),
+                            0,
+                            0,
+                            busy=False,
+                        )
+                    )
                     return
 
                 if not info.get("available") and self.find_unity_executable() is not None:
                     logger.info("[home_install] Unity already up-to-date and installed")
-                    QTimer.singleShot(0, lambda: self.set_progress(_("Unity уже установлен.", "Unity already installed."), 100, 100, busy=False))
+                    self._queue_ui_call(
+                        lambda: self.set_progress(_("Unity уже установлен.", "Unity already installed."), 100, 100, busy=False)
+                    )
                     return
 
                 logger.info("[home_install] Calling check_for_unity_updates(auto_update=True)")
@@ -688,10 +709,14 @@ class HomePage(LauncherHomeBackground):
                     auto_update=True,
                 )
                 logger.info("[home_install] check_for_unity_updates finished")
-                QTimer.singleShot(0, lambda: self.set_progress(_("Установка завершена.", "Installation finished."), 100, 100, busy=False))
+                self._queue_ui_call(
+                    lambda: self.set_progress(_("Установка завершена.", "Installation finished."), 100, 100, busy=False)
+                )
             except Exception as exc:
                 logger.error(f"[home_install] Unity install failed: {exc}", exc_info=True)
-                QTimer.singleShot(0, lambda: self.set_progress(_("Ошибка: {err}", "Error: {err}").format(err=exc), 0, 0, busy=False))
+                self._queue_ui_call(
+                    lambda: self.set_progress(_("Ошибка: {err}", "Error: {err}").format(err=exc), 0, 0, busy=False)
+                )
             finally:
                 logger.info("[home_install] worker finished")
 
@@ -703,7 +728,7 @@ class HomePage(LauncherHomeBackground):
                     self.refresh_status_cards()
                     QTimer.singleShot(4000, self.hide_progress)
 
-                QTimer.singleShot(0, done)
+                self._queue_ui_call(done)
 
         threading.Thread(target=worker, daemon=True).start()
 
