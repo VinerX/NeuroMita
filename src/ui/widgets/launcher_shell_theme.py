@@ -1,6 +1,11 @@
+"""Compatibility wrapper for launcher shell styles.
+
+The source of truth lives in ``styles.main_window``.
+"""
+
 from PyQt6.QtWidgets import QWidget
 
-from styles.main_window.shell_styles import (
+from styles.shell.launcher_shell import (
     PALETTE,
     LauncherShellPalette,
     get_launcher_shell_stylesheet,
