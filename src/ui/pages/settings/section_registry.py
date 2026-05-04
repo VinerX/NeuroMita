@@ -3,13 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QFrame, QLabel, QScrollArea, QVBoxLayout
+from PyQt6.QtWidgets import QVBoxLayout
 
 from ui.settings import (
     api_settings,
     character_settings,
-    data_settings,
     game_settings,
     general_settings,
     microphone_settings,
@@ -131,42 +129,6 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
         ),
         min_mode="full",
         builder_ref=screen_analysis_settings.setup_screen_analysis_controls,
-    ),
-    SettingsSectionSpec(
-        key="debug",
-        icon_name="fa6s.bug",
-        nav_label=("Отладка", "Debug"),
-        title=("Системная телеметрия", "System telemetry"),
-        subtitle=(
-            "Текущее состояние модулей, отладочная информация и индикаторы.",
-            "Current module status, debug information and live indicators.",
-        ),
-        min_mode="full",
-        builder_ref="_debug_wrapper",
-    ),
-    SettingsSectionSpec(
-        key="news",
-        icon_name="fa6s.newspaper",
-        nav_label=("Новости", "News"),
-        title=("Новости проекта", "Project news"),
-        subtitle=(
-            "Сводка обновлений и последние заметки по сборке.",
-            "Build notes and recent project updates.",
-        ),
-        min_mode="full",
-        builder_ref="_news_wrapper",
-    ),
-    SettingsSectionSpec(
-        key="data",
-        icon_name="fa5s.database",
-        nav_label=("Данные", "Data"),
-        title=("Данные и хранилище", "Data and storage"),
-        subtitle=(
-            "История, экспорт, резервные данные и локальное хранилище.",
-            "History, export, backups and local storage.",
-        ),
-        min_mode="full",
-        builder_ref=data_settings.setup_data_settings_controls,
     ),
     SettingsSectionSpec(
         key="updates",

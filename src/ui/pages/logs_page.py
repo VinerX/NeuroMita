@@ -83,11 +83,17 @@ class LogsPage(QWidget):
             header_actions=[
                 DashboardAction(_("Обновить", "Refresh"), callback=self.refresh_logs, icon_name="fa6s.rotate-right"),
                 DashboardAction(_("Открыть папку", "Open folder"), callback=self.gui._open_logs_folder, icon_name="fa6s.folder-open", accent=False),
-                DashboardAction(_("Debug настройки", "Debug settings"), callback=lambda: self.gui.show_settings_category("debug"), icon_name="fa6s.bug", accent=False),
+                DashboardAction(_("Диагностика в песочнице", "Sandbox diagnostics"), callback=self._open_sandbox_debug, icon_name="fa6s.bug", accent=False),
             ],
         )
         _append_to_shell_page(page, self._build_live_stream_card())
         self._root_layout.addWidget(page)
+
+    def _open_sandbox_debug(self):
+        self.gui.switch_main_page("sandbox")
+        page = getattr(self.gui, "sandbox_page", None)
+        if page is not None and hasattr(page, "show_debug_tab"):
+            QTimer.singleShot(0, page.show_debug_tab)
 
     def refresh_logs(self):
         if self.logs_window is None:

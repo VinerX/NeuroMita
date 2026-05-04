@@ -2,7 +2,7 @@ from pathlib import Path
 
 import qtawesome as qta
 
-from PyQt6.QtCore import QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
@@ -133,6 +133,8 @@ class SettingsCategoryCard(QFrame):
         root.addWidget(self.body)
 
         self.header.mousePressEvent = self._handle_header_press
+        self.body.setVisible(False)
+        self.body.setMaximumHeight(0)
         self.set_expanded(False)
 
     def _handle_header_press(self, event):
@@ -143,13 +145,17 @@ class SettingsCategoryCard(QFrame):
         QFrame.mousePressEvent(self.header, event)
 
     def set_expanded(self, expanded: bool):
-        self._expanded = bool(expanded)
-        self.body.setVisible(self._expanded)
+        target_state = bool(expanded)
+        if self._expanded == target_state and ((target_state and self.body.isVisible()) or (not target_state and not self.body.isVisible())):
+            return
+
+        self._expanded = target_state
         self.setProperty("expanded", self._expanded)
         self.header.setProperty("expanded", self._expanded)
         chevron = "fa6s.angle-up" if self._expanded else "fa6s.angle-down"
         self.chevron_label.setPixmap(qta.icon(chevron, color="#f6d7ea").pixmap(16, 16))
         self._repolish()
+        self._apply_body_state()
 
     def is_expanded(self) -> bool:
         return self._expanded
@@ -165,6 +171,14 @@ class SettingsCategoryCard(QFrame):
             widget.style().unpolish(widget)
             widget.style().polish(widget)
             widget.update()
+
+    def _apply_body_state(self):
+        if self._expanded:
+            self.body.setVisible(True)
+            self.body.setMaximumHeight(16777215)
+        else:
+            self.body.setMaximumHeight(0)
+            self.body.setVisible(False)
 
 
 class SettingsPage(QWidget):
@@ -183,6 +197,7 @@ class SettingsPage(QWidget):
         self._current_mode = "basic"
         self._forced_visible_categories = set()
         self._section_specs = {spec.key: spec for spec in get_settings_section_specs()}
+        self._scroll_animation = None
 
         self.SETTINGS_PANEL_WIDTH = max(920, int(getattr(gui, "SETTINGS_PANEL_WIDTH", 980) or 980))
         self.SETTINGS_SIDEBAR_WIDTH = 0
@@ -280,28 +295,31 @@ class SettingsPage(QWidget):
     def on_activated(self):
         if self.current_settings_category is None:
             first_key = self._first_available_category() or "api"
-            self._activate_category(first_key, toggle_if_active=False)
+            self._activate_category(first_key, toggle_if_active=False, smooth_scroll=False)
 
-    def show_overview(self):
+    def show_overview(self, *, scroll_to_top: bool = False):
         self._set_current_category(None)
-        for card in self.settings_containers.values():
-            card.collapse()
+        self._batch_toggle_cards(None)
         self._update_nav_state()
-        self._scroll_to_top()
+        if scroll_to_top:
+            self._scroll_to_top(smooth=False)
 
-    def show_category(self, category):
+    def show_category(self, category, *, smooth_scroll: bool = True):
         if category not in self.settings_containers:
             return
 
         was_on_settings_page = getattr(self.gui, "current_main_page", None) == "settings"
         if not was_on_settings_page:
             self.gui.switch_main_page("settings")
-            QTimer.singleShot(0, lambda cat=category: self._activate_category(cat, toggle_if_active=False))
+            QTimer.singleShot(0, lambda cat=category, smooth=smooth_scroll: self._activate_category(cat, toggle_if_active=False, smooth_scroll=smooth))
             return
 
-        self._activate_category(category, toggle_if_active=self.current_settings_category == category)
+        self._activate_category(category, toggle_if_active=self.current_settings_category == category, smooth_scroll=smooth_scroll)
 
-    def _activate_category(self, category: str, *, toggle_if_active: bool):
+    def _toggle_category_from_card(self, category: str):
+        self._activate_category(category, toggle_if_active=True, smooth_scroll=False)
+
+    def _activate_category(self, category: str, *, toggle_if_active: bool, smooth_scroll: bool):
         card = self.settings_containers.get(category)
         if card is None:
             return
@@ -311,20 +329,40 @@ class SettingsPage(QWidget):
             card.setVisible(True)
 
         if toggle_if_active and card.is_expanded():
-            self.show_overview()
+            self.show_overview(scroll_to_top=False)
             return
 
-        for key, other_card in self.settings_containers.items():
-            if key == category:
-                other_card.expand()
-            else:
-                other_card.collapse()
+        self._batch_toggle_cards(category)
 
         self._set_current_category(category)
         self._update_nav_state()
-        QTimer.singleShot(0, lambda key=category: self._scroll_to_category(key))
+        if smooth_scroll:
+            QTimer.singleShot(0, lambda key=category: self._scroll_to_category(key, smooth=True))
 
-    def _scroll_to_category(self, category: str):
+    def _batch_toggle_cards(self, expanded_key: str | None):
+        widgets = []
+        if self._workspace_content is not None:
+            widgets.append(self._workspace_content)
+        if self.settings_scroll is not None:
+            widgets.append(self.settings_scroll)
+            viewport = self.settings_scroll.viewport()
+            if viewport is not None:
+                widgets.append(viewport)
+
+        for widget in widgets:
+            widget.setUpdatesEnabled(False)
+        try:
+            for key, other_card in self.settings_containers.items():
+                if key == expanded_key:
+                    other_card.expand()
+                else:
+                    other_card.collapse()
+        finally:
+            for widget in reversed(widgets):
+                widget.setUpdatesEnabled(True)
+                widget.update()
+
+    def _scroll_to_category(self, category: str, *, smooth: bool):
         if self.settings_scroll is None or self._workspace_content is None:
             return
 
@@ -334,12 +372,35 @@ class SettingsPage(QWidget):
 
         bar = self.settings_scroll.verticalScrollBar()
         target = max(0, card.y() - 10)
-        bar.setValue(target)
+        if not smooth:
+            bar.setValue(target)
+            return
+        self._animate_scroll(bar.value(), target)
 
-    def _scroll_to_top(self):
+    def _scroll_to_top(self, *, smooth: bool):
         if self.settings_scroll is None:
             return
-        self.settings_scroll.verticalScrollBar().setValue(0)
+        bar = self.settings_scroll.verticalScrollBar()
+        if smooth:
+            self._animate_scroll(bar.value(), 0)
+        else:
+            bar.setValue(0)
+
+    def _animate_scroll(self, start_value: int, end_value: int):
+        if self.settings_scroll is None:
+            return
+        bar = self.settings_scroll.verticalScrollBar()
+        if start_value == end_value:
+            return
+        if self._scroll_animation is not None:
+            self._scroll_animation.stop()
+        anim = QPropertyAnimation(bar, b"value", self)
+        anim.setDuration(320)
+        anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        anim.setStartValue(int(start_value))
+        anim.setEndValue(int(end_value))
+        self._scroll_animation = anim
+        anim.start()
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -352,8 +413,8 @@ class SettingsPage(QWidget):
         content_row.setSpacing(16)
 
         self.settings_overlay = _make_card("SettingsWorkspaceShell")
-        self.settings_overlay.setMinimumWidth(640)
-        self.settings_overlay.setMaximumWidth(self.SETTINGS_PANEL_WIDTH)
+        self.settings_overlay.setMinimumWidth(720)
+        self.settings_overlay.setMaximumWidth(16777215)
         self.settings_overlay.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         overlay_layout = QVBoxLayout(self.settings_overlay)
         overlay_layout.setContentsMargins(14, 14, 14, 14)
@@ -368,26 +429,27 @@ class SettingsPage(QWidget):
 
         self._workspace_content = QWidget()
         self._workspace_content.setObjectName("SettingsWorkspaceContent")
+        self._workspace_content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         workspace_layout = QVBoxLayout(self._workspace_content)
         workspace_layout.setContentsMargins(0, 0, 0, 0)
         workspace_layout.setSpacing(12)
         self.settings_scroll.setWidget(self._workspace_content)
 
         overlay_layout.addWidget(self.settings_scroll, 1)
-        content_row.addWidget(self.settings_overlay, 1)
+        content_row.addWidget(self.settings_overlay, 5)
 
         rail = QWidget()
         rail.setObjectName("SettingsRail")
-        rail.setFixedWidth(308)
+        rail.setMinimumWidth(308)
+        rail.setMaximumWidth(420)
+        rail.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         rail_layout = QVBoxLayout(rail)
         rail_layout.setContentsMargins(0, 0, 0, 0)
         rail_layout.setSpacing(12)
         rail_layout.addWidget(self._build_system_card())
         rail_layout.addWidget(self._build_quick_actions())
-        rail_layout.addWidget(self._build_brand_panel())
-        rail_layout.addWidget(self._build_note_card())
         rail_layout.addStretch(1)
-        content_row.addWidget(rail)
+        content_row.addWidget(rail, 1)
 
         outer.addLayout(content_row, 1)
         self.settings_overview_container = self._workspace_content
@@ -582,7 +644,7 @@ class SettingsPage(QWidget):
         buttons = [
             (_("API и пресеты", "API and presets"), lambda: self.show_category("api")),
             (_("История персонажа", "Character history"), self._open_db_viewer),
-            (_("Экспорт данных", "Export data"), lambda: self.show_category("data")),
+            (_("Диагностика в песочнице", "Sandbox diagnostics"), self._open_sandbox_debug),
             (_("Песочница", "Sandbox"), lambda: self.gui.switch_main_page("sandbox")),
         ]
         for text, callback in buttons:
@@ -619,6 +681,12 @@ class SettingsPage(QWidget):
             self.gui.switch_main_page("settings")
             self.show_category("characters")
 
+    def _open_sandbox_debug(self):
+        self.gui.switch_main_page("sandbox")
+        page = getattr(self.gui, "sandbox_page", None)
+        if page is not None and hasattr(page, "show_debug_tab"):
+            QTimer.singleShot(0, page.show_debug_tab)
+
     def _build_section_containers(self):
         self.settings_containers = {}
         if self._workspace_content is None or self._workspace_content.layout() is None:
@@ -628,7 +696,7 @@ class SettingsPage(QWidget):
 
         for spec in get_settings_section_specs():
             card = SettingsCategoryCard(spec, self._workspace_content)
-            card.clicked.connect(lambda key=spec.key: self.show_category(key))
+            card.clicked.connect(lambda key=spec.key: self._toggle_category_from_card(key))
 
             builder = spec.builder_ref
             if isinstance(builder, str):

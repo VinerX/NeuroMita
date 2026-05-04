@@ -415,7 +415,7 @@ class SandboxPage(QWidget):
         data = combo.itemData(index)
         if data == _PROMPT_CONFIGURE_SENTINEL:
             QTimer.singleShot(0, self._populate_prompt_pack_combobox)
-            self._jump_to_settings("character")
+            self._jump_to_settings("characters")
             return
         if not data:
             return
@@ -602,6 +602,13 @@ class SandboxPage(QWidget):
         self._refresh_debug_summary()
         if self._chat_panel is not None:
             self._chat_panel.on_activated()
+
+    def show_debug_tab(self):
+        if self._inspector_collapsed:
+            self._toggle_inspector_collapsed()
+        if self._inspector_tabs is not None:
+            self._inspector_tabs.setCurrentIndex(2)
+        self._refresh_debug_summary()
 
     # --------- Building blocks -----------
     def _make_selector_card(self, title: str, icon_name: str | None = None) -> tuple[QFrame, QVBoxLayout]:
@@ -892,10 +899,10 @@ class SandboxPage(QWidget):
         db_btn.clicked.connect(self._open_selected_character_history)
         actions_layout.addWidget(db_btn)
 
-        debug_btn = QPushButton(_("Debug настройки", "Debug settings"))
-        debug_btn.setObjectName("SandboxQuickAction")
-        debug_btn.clicked.connect(lambda: self._jump_to_settings("debug"))
-        actions_layout.addWidget(debug_btn)
+        refresh_btn = QPushButton(_("Обновить сводку", "Refresh summary"))
+        refresh_btn.setObjectName("SandboxQuickAction")
+        refresh_btn.clicked.connect(self._refresh_debug_summary)
+        actions_layout.addWidget(refresh_btn)
 
         logs_btn = QPushButton(_("Открыть страницу логов", "Open logs page"))
         logs_btn.setObjectName("SandboxQuickAction")
