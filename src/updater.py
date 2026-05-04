@@ -14,16 +14,14 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import subprocess
 import sys
-import threading
 import time
 import urllib.error
 import urllib.request
-import zipfile
 from pathlib import Path
 from typing import Callable, Optional
+
+from utils.archive_utils import PasswordError, extract_archive, format_bytes, make_logger, wipe_dir
 
 _USER_AGENT = "NeuroMita-Updater/2.0"
 _LOG_PREFIX = "[updater]"
@@ -79,119 +77,6 @@ def _find_unity_executable(unity_dir: Path) -> Optional[Path]:
         if "neuromita" in low or "unity" in low:
             return path
     return exe_files[0]
-
-
-def _format_bytes(size: int) -> str:
-    units = ("B", "KB", "MB", "GB", "TB")
-    value = float(max(0, size))
-    for unit in units:
-        if value < 1024.0 or unit == units[-1]:
-            if unit == "B":
-                return f"{int(value)} {unit}"
-            return f"{value:.1f} {unit}"
-        value /= 1024.0
-
-
-def _make_logger(logger):
-    def log(msg: str, level: str = "info") -> None:
-        if logger:
-            getattr(logger, level, logger.info)(msg)
-        else:
-            print(f"{_LOG_PREFIX} {msg}")
-
-    return log
-
-
-def _find_7z_executable() -> Optional[Path]:
-    candidates: list[str] = []
-    for name in ("7z", "7z.exe", "7za", "7za.exe"):
-        found = shutil.which(name)
-        if found:
-            candidates.append(found)
-
-    for env_name in ("ProgramFiles", "ProgramFiles(x86)"):
-        base = os.environ.get(env_name)
-        if not base:
-            continue
-        for rel in ("7-Zip\\7z.exe", "7-Zip\\7za.exe"):
-            candidates.append(str(Path(base) / rel))
-
-    seen: set[str] = set()
-    for candidate in candidates:
-        norm = os.path.normcase(os.path.abspath(candidate))
-        if norm in seen:
-            continue
-        seen.add(norm)
-        path = Path(candidate)
-        if path.exists() and path.is_file():
-            return path
-    return None
-
-
-def _extract_7z_external(
-    archive: Path,
-    target: Path,
-    password: Optional[str] = None,
-    logger=None,
-) -> bool:
-    log = _make_logger(logger)
-    exe = _find_7z_executable()
-    if exe is None:
-        log("External 7z executable not found, falling back to Python extractor.")
-        return False
-
-    stage_dir = target.parent / f".{target.name}.7z_tmp"
-    shutil.rmtree(stage_dir, ignore_errors=True)
-    stage_dir.mkdir(parents=True, exist_ok=True)
-
-    cmd = [
-        str(exe),
-        "x",
-        str(archive),
-        f"-o{stage_dir}",
-        "-y",
-        "-bb0",
-        "-bso0",
-        "-bsp0",
-    ]
-    if password:
-        cmd.append(f"-p{password}")
-
-    log(f"Using external 7z extractor: {exe}")
-    started = time.monotonic()
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-
-    try:
-        while proc.poll() is None:
-            time.sleep(10.0)
-            elapsed = int(time.monotonic() - started)
-            log(f"External 7z extraction still running: {archive.name}, elapsed={elapsed}s")
-
-        output, _ = proc.communicate()
-        if proc.returncode != 0:
-            summary = (output or "").strip().splitlines()
-            tail = summary[-1] if summary else f"exit code {proc.returncode}"
-            log(f"External 7z extractor failed: {tail}. Falling back to Python extractor.", "warning")
-            shutil.rmtree(stage_dir, ignore_errors=True)
-            return False
-
-        for child in list(stage_dir.iterdir()):
-            shutil.move(str(child), str(target / child.name))
-        log(f"External 7z extraction finished: {archive.name}")
-        return True
-    except Exception as exc:
-        log(f"External 7z extractor failed with exception: {exc}. Falling back to Python extractor.", "warning")
-        shutil.rmtree(stage_dir, ignore_errors=True)
-        return False
-    finally:
-        shutil.rmtree(stage_dir, ignore_errors=True)
 
 
 # ── GitHub API ────────────────────────────────────────────────────────────────
@@ -278,199 +163,10 @@ def _download(
 
 # ── Archive extraction ────────────────────────────────────────────────────────
 
-class _PasswordError(Exception):
-    """Archive is encrypted and the provided password is missing or wrong."""
-
-
-def _extract_zip(
-    archive: Path,
-    target: Path,
-    password: Optional[str] = None,
-    logger=None,
-) -> None:
-    pwd = password.encode("utf-8") if password else None
-    log = _make_logger(logger)
-    try:
-        with zipfile.ZipFile(archive) as z:
-            members = [m for m in z.infolist() if not m.is_dir()]
-            total_members = len(members)
-            total_size = sum(max(0, int(m.file_size or 0)) for m in members)
-            extracted_size = 0
-            last_log = time.monotonic()
-
-            log(
-                f"ZIP extraction started: {archive.name}, files={total_members}, "
-                f"uncompressed={_format_bytes(total_size)}"
-            )
-            try:
-                for index, member in enumerate(z.infolist(), start=1):
-                    out_path = target / member.filename
-                    if member.is_dir():
-                        out_path.mkdir(parents=True, exist_ok=True)
-                        continue
-
-                    out_path.parent.mkdir(parents=True, exist_ok=True)
-                    with z.open(member, pwd=pwd) as src, open(out_path, "wb") as dst:
-                        shutil.copyfileobj(src, dst, length=1024 * 1024)
-
-                    extracted_size += max(0, int(member.file_size or 0))
-                    now = time.monotonic()
-                    if index == 1 or index == len(z.infolist()) or (now - last_log) >= 5.0:
-                        pct = int(extracted_size * 100 / total_size) if total_size > 0 else 0
-                        log(
-                            f"ZIP extraction progress: {index}/{len(z.infolist())} entries, "
-                            f"{_format_bytes(extracted_size)} / {_format_bytes(total_size)} ({pct}%)"
-                        )
-                        last_log = now
-            except RuntimeError as e:
-                msg = str(e).lower()
-                if "password" in msg or "encrypted" in msg:
-                    raise _PasswordError(str(e)) from e
-                raise
-            log(f"ZIP extraction finished: {archive.name}")
-    except zipfile.BadZipFile as e:
-        raise ValueError(f"Bad zip: {archive.name}") from e
-
-
-def _extract_7z(
-    archive: Path,
-    target: Path,
-    password: Optional[str] = None,
-    logger=None,
-) -> None:
-    try:
-        import py7zr
-    except ImportError as e:
-        raise RuntimeError("py7zr is not installed; cannot open .7z archives") from e
-
-    log = _make_logger(logger)
-    stop_event = threading.Event()
-
-    def heartbeat():
-        started = time.monotonic()
-        while not stop_event.wait(10.0):
-            elapsed = int(time.monotonic() - started)
-            log(f"7z extraction still running: {archive.name}, elapsed={elapsed}s")
-
-    try:
-        hb = threading.Thread(target=heartbeat, daemon=True)
-        hb.start()
-        with py7zr.SevenZipFile(archive, mode="r", password=password or None) as z:
-            if z.needs_password() and not password:
-                raise _PasswordError("Archive is password-protected")
-            try:
-                entries = z.list()
-                file_entries = [e for e in entries if not getattr(e, "is_directory", False)]
-                total_size = sum(max(0, int(getattr(e, "uncompressed", 0) or 0)) for e in file_entries)
-                log(
-                    f"7z extraction started: {archive.name}, files={len(file_entries)}, "
-                    f"uncompressed={_format_bytes(total_size)}"
-                )
-            except Exception:
-                log(f"7z extraction started: {archive.name}")
-            z.extractall(path=target)
-        log(f"7z extraction finished: {archive.name}")
-    except py7zr.exceptions.PasswordRequired as e:
-        raise _PasswordError(str(e)) from e
-    except py7zr.exceptions.Bad7zFile as e:
-        if password:
-            raise _PasswordError("Wrong tester code") from e
-        raise ValueError(f"Bad 7z: {archive.name}") from e
-    finally:
-        stop_event.set()
-
-
-def _extract_archive(
-    archive: Path,
-    target: Path,
-    password: Optional[str] = None,
-    logger=None,
-) -> None:
-    """Dispatch extraction to zip or 7z handler, then flatten single root."""
-    target.mkdir(parents=True, exist_ok=True)
-    suffix = archive.suffix.lower()
-    if suffix == ".zip":
-        _extract_zip(archive, target, password, logger=logger)
-    elif suffix == ".7z":
-        if not _extract_7z_external(archive, target, password, logger=logger):
-            _extract_7z(archive, target, password, logger=logger)
-    else:
-        raise ValueError(f"Unsupported archive type: {archive.name}")
-    _flatten_single_root(target, logger=logger)
-
-
-def _flatten_single_root(dest: Path, logger=None) -> None:
-    """If archive extracted into a single root folder, move its contents up."""
-    log = _make_logger(logger)
-    try:
-        children = list(dest.iterdir())
-    except OSError:
-        return
-    if len(children) != 1 or not children[0].is_dir():
-        return
-    only = children[0]
-    log(f"Flattening extracted root folder: {only.name}")
-    tmp = dest.parent / f".{dest.name}.unwrap"
-    if tmp.exists():
-        shutil.rmtree(tmp, ignore_errors=True)
-    shutil.move(str(only), str(tmp))
-    try:
-        for item in tmp.iterdir():
-            tgt = dest / item.name
-            if tgt.exists():
-                if tgt.is_dir():
-                    shutil.rmtree(tgt, ignore_errors=True)
-                else:
-                    try:
-                        tgt.unlink()
-                    except OSError:
-                        pass
-            shutil.move(str(item), str(tgt))
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-    log(f"Flattening finished for: {dest}")
 
 
 # ── Directory wipe (with user_data backup) ────────────────────────────────────
 
-def _wipe_dir(target: Path, logger=None) -> None:
-    """Remove everything in target, backing up user_data/ if present."""
-    log = _make_logger(logger)
-    if not target.exists():
-        log(f"Unity target directory does not exist yet, creating: {target}")
-        target.mkdir(parents=True, exist_ok=True)
-        return
-
-    user_data = target / "user_data"
-    backup: Optional[Path] = None
-    if user_data.exists():
-        backup = target.parent / f".{target.name}.user_data.bak"
-        if backup.exists():
-            shutil.rmtree(backup, ignore_errors=True)
-        log(f"Preserving user_data backup: {backup}")
-        shutil.move(str(user_data), str(backup))
-
-    children = list(target.iterdir())
-    total_children = len(children)
-    log(f"Cleaning Unity target directory: {target} ({total_children} top-level entries)")
-    for index, child in enumerate(children, start=1):
-        if index == 1 or index == total_children or index % 10 == 0:
-            log(f"Removing {index}/{total_children}: {child.name}")
-        if child.is_dir():
-            try:
-                shutil.rmtree(child)
-            except Exception as exc:
-                log(f"Failed to remove directory {child}: {exc}", "warning")
-        else:
-            try:
-                child.unlink()
-            except OSError as exc:
-                log(f"Failed to remove file {child}: {exc}", "warning")
-
-    if backup and backup.exists():
-        log(f"Restoring preserved user_data to {user_data}")
-        shutil.move(str(backup), str(user_data))
-    log(f"Unity target directory cleanup finished: {target}")
 
 
 # ── Asset selection ───────────────────────────────────────────────────────────
@@ -615,7 +311,7 @@ def check_for_updates(
         on_progress: Callback(downloaded_bytes, total_bytes) for UI progress.
         auto_update: Force auto-apply behavior instead of reading env/config only.
     """
-    log = _make_logger(logger)
+    log = make_logger(logger, _LOG_PREFIX)
 
     repo = _get_repo()
     local_version = _get_current_version()
@@ -690,7 +386,7 @@ def check_for_updates(
     try:
         if is_patch:
             try:
-                _extract_archive(temp_archive, base_path, tester_code)
+                extract_archive(temp_archive, base_path, tester_code)
             except Exception as e:
                 log(f"Patch failed ({e}), falling back to full update ...", "warning")
                 temp_archive.unlink(missing_ok=True)
@@ -701,12 +397,12 @@ def check_for_updates(
                 full_archive = dl_dir / full_asset.name
                 log(f"Downloading full release {full_asset.name} ...")
                 _download(full_asset.url, full_archive, on_progress=on_progress)
-                _wipe_dir(base_path)
-                _extract_archive(full_archive, base_path, tester_code)
+                wipe_dir(base_path)
+                extract_archive(full_archive, base_path, tester_code)
                 full_archive.unlink(missing_ok=True)
         else:
-            _wipe_dir(base_path)
-            _extract_archive(temp_archive, base_path, tester_code)
+            wipe_dir(base_path)
+            extract_archive(temp_archive, base_path, tester_code)
             temp_archive.unlink(missing_ok=True)
 
         log(f"Update {remote_tag} installed successfully. Restarting ...", "success")
@@ -714,7 +410,7 @@ def check_for_updates(
         # Continuing from stale .pyz offsets would cause ZipImportError.
         sys.exit(42)
 
-    except _PasswordError:
+    except PasswordError:
         # Архив валидный, пароль не установлен — не выкидываем, юзер вернётся
         # с TESTER_CODE и не качает заново.
         log("Archive is password-protected. Set TESTER_CODE in settings to unlock.", "error")
@@ -750,7 +446,7 @@ def check_for_unity_updates(
         on_progress: Callback(downloaded_bytes, total_bytes) for UI progress.
         auto_update: Force auto-apply behavior instead of reading env/config only.
     """
-    log = _make_logger(logger)
+    log = make_logger(logger, _LOG_PREFIX)
 
     repo = _get_repo()
     if auto_update is None:
@@ -825,7 +521,7 @@ def check_for_unity_updates(
     if temp_archive.exists() and temp_archive.stat().st_size > 0:
         log(
             f"Cached archive found, skipping download: {temp_archive} "
-            f"({_format_bytes(temp_archive.stat().st_size)})"
+            f"({format_bytes(temp_archive.stat().st_size)})"
         )
     else:
         log(f"Downloading Unity {unity_name} to {temp_archive} ...")
@@ -839,19 +535,19 @@ def check_for_unity_updates(
     archive_size = temp_archive.stat().st_size if temp_archive.exists() else 0
     log(
         f"Installing Unity update to {unity_path} "
-        f"from {temp_archive.name} ({_format_bytes(archive_size)}, suffix={temp_archive.suffix.lower()}) ..."
+        f"from {temp_archive.name} ({format_bytes(archive_size)}, suffix={temp_archive.suffix.lower()}) ..."
     )
     try:
         log("Stage 1/3: cleaning target directory")
-        _wipe_dir(unity_path, logger=logger)
+        wipe_dir(unity_path, logger=logger)
         log("Stage 2/3: extracting archive")
-        _extract_archive(temp_archive, unity_path, tester_code, logger=logger)
+        extract_archive(temp_archive, unity_path, tester_code, logger=logger)
         log("Stage 3/3: writing installed version marker")
         unity_path.mkdir(parents=True, exist_ok=True)
         version_file.write_text(remote_tag, encoding="utf-8")
         temp_archive.unlink(missing_ok=True)
         log(f"Unity update {remote_tag} installed successfully.", "success")
-    except _PasswordError:
+    except PasswordError:
         # Архив валидный, просто нет пароля — оставляем для следующей попытки.
         log("Unity archive is password-protected. Set TESTER_CODE in settings.", "error")
         log(f"Archive kept for retry: {temp_archive}")
