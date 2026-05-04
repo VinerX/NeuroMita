@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -99,6 +100,98 @@ def _make_logger(logger):
             print(f"{_LOG_PREFIX} {msg}")
 
     return log
+
+
+def _find_7z_executable() -> Optional[Path]:
+    candidates: list[str] = []
+    for name in ("7z", "7z.exe", "7za", "7za.exe"):
+        found = shutil.which(name)
+        if found:
+            candidates.append(found)
+
+    for env_name in ("ProgramFiles", "ProgramFiles(x86)"):
+        base = os.environ.get(env_name)
+        if not base:
+            continue
+        for rel in ("7-Zip\\7z.exe", "7-Zip\\7za.exe"):
+            candidates.append(str(Path(base) / rel))
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        norm = os.path.normcase(os.path.abspath(candidate))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        path = Path(candidate)
+        if path.exists() and path.is_file():
+            return path
+    return None
+
+
+def _extract_7z_external(
+    archive: Path,
+    target: Path,
+    password: Optional[str] = None,
+    logger=None,
+) -> bool:
+    log = _make_logger(logger)
+    exe = _find_7z_executable()
+    if exe is None:
+        log("External 7z executable not found, falling back to Python extractor.")
+        return False
+
+    stage_dir = target.parent / f".{target.name}.7z_tmp"
+    shutil.rmtree(stage_dir, ignore_errors=True)
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        str(exe),
+        "x",
+        str(archive),
+        f"-o{stage_dir}",
+        "-y",
+        "-bb0",
+        "-bso0",
+        "-bsp0",
+    ]
+    if password:
+        cmd.append(f"-p{password}")
+
+    log(f"Using external 7z extractor: {exe}")
+    started = time.monotonic()
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    try:
+        while proc.poll() is None:
+            time.sleep(10.0)
+            elapsed = int(time.monotonic() - started)
+            log(f"External 7z extraction still running: {archive.name}, elapsed={elapsed}s")
+
+        output, _ = proc.communicate()
+        if proc.returncode != 0:
+            summary = (output or "").strip().splitlines()
+            tail = summary[-1] if summary else f"exit code {proc.returncode}"
+            log(f"External 7z extractor failed: {tail}. Falling back to Python extractor.", "warning")
+            shutil.rmtree(stage_dir, ignore_errors=True)
+            return False
+
+        for child in list(stage_dir.iterdir()):
+            shutil.move(str(child), str(target / child.name))
+        log(f"External 7z extraction finished: {archive.name}")
+        return True
+    except Exception as exc:
+        log(f"External 7z extractor failed with exception: {exc}. Falling back to Python extractor.", "warning")
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        return False
+    finally:
+        shutil.rmtree(stage_dir, ignore_errors=True)
 
 
 # ── GitHub API ────────────────────────────────────────────────────────────────
@@ -299,7 +392,8 @@ def _extract_archive(
     if suffix == ".zip":
         _extract_zip(archive, target, password, logger=logger)
     elif suffix == ".7z":
-        _extract_7z(archive, target, password, logger=logger)
+        if not _extract_7z_external(archive, target, password, logger=logger):
+            _extract_7z(archive, target, password, logger=logger)
     else:
         raise ValueError(f"Unsupported archive type: {archive.name}")
     _flatten_single_root(target, logger=logger)
