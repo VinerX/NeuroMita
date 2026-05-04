@@ -57,42 +57,8 @@ def create_settings_section(gui, parent_layout, title, cfg_list, *, icon_name=No
     return root
 
 def create_settings_direct(gui, parent_layout, cfg_list, title=None):
-    # Если передан заголовок, создаём его с разделителем
     if title:
-        # Создаём контейнер для заголовка
-        header_widget = QWidget()
-        header_layout = QVBoxLayout(header_widget)
-        header_layout.setContentsMargins(0, 0, 0, 10)
-        header_layout.setSpacing(5)
-        
-        # Создаём заголовок
-        title_label = QLabel(title)
-        title_label.setObjectName('SectionTitle')
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label.setStyleSheet('''
-            QLabel#SectionTitle {
-                font-size: 14px;
-                font-weight: bold;
-                color: #ffffff;
-                padding: 5px 0;
-            }
-        ''')
-        header_layout.addWidget(title_label)
-        
-        # Создаём разделитель
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setFrameShadow(QFrame.Shadow.Sunken)
-        separator.setStyleSheet('''
-            QFrame {
-                background-color: #4a4a4a;
-                max-height: 2px;
-                margin: 0 10px;
-            }
-        ''')
-        header_layout.addWidget(separator)
-        
-        parent_layout.addWidget(header_widget)
+        create_section_header(parent_layout, title)
     
     current_sub = None
     
@@ -151,37 +117,23 @@ def create_settings_direct(gui, parent_layout, cfg_list, title=None):
                 parent_layout.addWidget(w)
 
 def create_section_header(parent_layout, title):
-    """Создаёт заголовок секции с разделителем"""
+    """Создаёт компактный заголовок внутренней группы."""
     header_widget = QWidget()
+    header_widget.setObjectName("SettingsSubsectionHeader")
     header_layout = QVBoxLayout(header_widget)
-    header_layout.setContentsMargins(0, 0, 0, 10)
-    header_layout.setSpacing(5)
-    
+    header_layout.setContentsMargins(0, 4, 0, 8)
+    header_layout.setSpacing(6)
+
     title_label = QLabel(title)
-    title_label.setObjectName('SectionTitle')
-    title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    title_label.setStyleSheet('''
-        QLabel#SectionTitle {
-            font-size: 14px;
-            font-weight: bold;
-            color: #ffffff;
-            padding: 5px 0;
-        }
-    ''')
+    title_label.setObjectName("SettingsSubsectionTitle")
+    title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     header_layout.addWidget(title_label)
-    
+
     separator = QFrame()
-    separator.setFrameShape(QFrame.Shape.HLine)
-    separator.setFrameShadow(QFrame.Shadow.Sunken)
-    separator.setStyleSheet('''
-        QFrame {
-            background-color: #4a4a4a;
-            max-height: 2px;
-            margin: 0 10px;
-        }
-    ''')
+    separator.setObjectName("SettingsSubsectionLine")
+    separator.setFixedHeight(1)
     header_layout.addWidget(separator)
-    
+
     parent_layout.addWidget(header_widget)
 
 def create_button_group(gui, parent, buttons_config):

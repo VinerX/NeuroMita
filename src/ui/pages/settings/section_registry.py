@@ -199,48 +199,8 @@ def iter_settings_button_specs() -> tuple[tuple[str, str, str, str], ...]:
     )
 
 
-def build_settings_containers(gui) -> dict[str, QScrollArea]:
-    gui.settings_containers = {}
-
-    for spec in SETTINGS_SECTION_SPECS:
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        scroll_area.setObjectName(f"ScrollArea_{spec.key}")
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-
-        content_widget = QFrame()
-        content_widget.setObjectName(f"ContentWidget_{spec.key}")
-        content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(10, 10, 10, 10)
-        content_layout.setSpacing(12)
-
-        header_card = QFrame()
-        header_card.setObjectName("SettingsHeroCard")
-        header_layout = QVBoxLayout(header_card)
-        header_layout.setContentsMargins(18, 18, 18, 18)
-        header_layout.setSpacing(6)
-
-        title_label = QLabel(_(spec.title[0], spec.title[1]))
-        title_label.setObjectName("SettingsHeroTitle")
-        header_layout.addWidget(title_label)
-
-        subtitle_label = QLabel(_(spec.subtitle[0], spec.subtitle[1]))
-        subtitle_label.setObjectName("SettingsHeroSubtitle")
-        subtitle_label.setWordWrap(True)
-        header_layout.addWidget(subtitle_label)
-
-        content_layout.addWidget(header_card)
-
-        builder = spec.builder_ref
-        if isinstance(builder, str):
-            getattr(gui, builder)(content_layout)
-        else:
-            builder(gui, content_layout)
-
-        content_layout.addStretch()
-        scroll_area.setWidget(content_widget)
-        gui.settings_containers[spec.key] = scroll_area
-        gui.settings_overlay.add_container(scroll_area)
-
-    return gui.settings_containers
+def build_settings_containers(gui) -> dict[str, object]:
+    page = getattr(gui, "settings_page", None)
+    if page is not None and hasattr(page, "settings_containers"):
+        return page.settings_containers
+    return {}

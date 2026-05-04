@@ -1,207 +1,362 @@
 from __future__ import annotations
 
 SETTINGS_PAGE_QSS = r"""
-/* ========= Settings Sidebar ========= */
-QWidget#SettingsSidebar {
-    background-color: {card_bg};
-    border-right: 1px solid {card_border};
-}
-
 /* ========= API Presets ========= */
 QFrame#PresetsPanel {
-    background-color: {card_bg};
-    border: 1px solid {card_border};
-    border-radius: 12px;
+    background-color: rgba(18, 9, 25, 0.82);
+    border: 1px solid rgba(255, 120, 181, 0.14);
+    border-radius: 16px;
 }
 QListWidget#PresetsList {
-    background: {panel_bg};
-    border: 1px solid {border_soft};
-    border-radius: 10px;
+    background: rgba(11, 7, 17, 0.88);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
     padding: 6px;
     color: {text};
     outline: 0;
 }
 QListWidget#PresetsList::item { padding: 6px 6px; color: {text}; }
-QListWidget#PresetsList::item:hover { background: {chip_bg}; border-radius: 6px; }
-QListWidget#PresetsList::item:selected { background: {chip_hover}; border-radius: 6px; color: #ffffff; }
+QListWidget#PresetsList::item:hover {
+    background: rgba(255, 92, 158, 0.10);
+    border-radius: 8px;
+}
+QListWidget#PresetsList::item:selected {
+    background: rgba(255, 92, 158, 0.18);
+    border-radius: 8px;
+    color: #ffffff;
+}
 
 QPushButton#AddPresetButton,
 QPushButton#RemovePresetButton,
 QPushButton#MoveUpButton,
 QPushButton#MoveDownButton {
-    background-color: {chip_bg};
-    border: 1px solid {outline};
+    background-color: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.10);
     color: {text};
     padding: 0px;
-    min-width: 28px; min-height: 28px;
+    min-width: 28px;
+    min-height: 28px;
     border-radius: 8px;
 }
 QPushButton#AddPresetButton:hover,
 QPushButton#RemovePresetButton:hover,
 QPushButton#MoveUpButton:hover,
 QPushButton#MoveDownButton:hover {
-    background-color: {chip_hover};
+    background-color: rgba(255, 92, 158, 0.16);
+    border: 1px solid rgba(255, 92, 158, 0.24);
 }
 QPushButton#AddPresetButton:pressed,
 QPushButton#RemovePresetButton:pressed,
 QPushButton#MoveUpButton:pressed,
 QPushButton#MoveDownButton:pressed {
-    background-color: {chip_pressed};
+    background-color: rgba(255, 92, 158, 0.24);
 }
-QPushButton#RemovePresetButton:disabled { color: {muted}; border-color: {outline}; }
+QPushButton#RemovePresetButton:disabled {
+    color: {muted};
+    border-color: {outline};
+}
 
+/* ========= Settings Page ========= */
 QWidget#SettingsPageRoot,
-QWidget#SettingsRail {
+QWidget#SettingsRail,
+QWidget#SettingsWorkspaceContent {
     background: transparent;
     border: none;
 }
 
-QFrame#SettingsHeroCard {
-    background-color: rgba(29, 12, 34, 0.94);
-    border: 1px solid rgba(255, 92, 158, 0.22);
-    border-radius: 20px;
-}
-
-QLabel#SettingsHeroTitle {
-    font-size: 18pt;
-    font-weight: 800;
-    color: #fff1f9;
-}
-
-QLabel#SettingsHeroSubtitle {
-    color: #c5a8bf;
-    font-size: 9pt;
-}
-
+QFrame#SettingsHeroCard,
+QFrame#SettingsWorkspaceShell,
 QFrame#SettingsTabsCard,
 QFrame#SettingsStatusRailCard,
 QFrame#SettingsQuickActionsCard,
-QFrame#SettingsOverviewCard {
-    background-color: rgba(24, 10, 32, 0.94);
-    border: 1px solid rgba(255, 92, 158, 0.18);
-    border-radius: 22px;
+QFrame#SettingsNoteCard {
+    background-color: rgba(17, 8, 23, 0.94);
+    border: 1px solid rgba(255, 92, 158, 0.16);
+    border-radius: 24px;
+}
+
+QFrame#SettingsWorkspaceShell {
+    background-color: rgba(12, 6, 18, 0.92);
+}
+
+QLabel#SettingsHeroIcon {
+    min-width: 54px;
+    min-height: 54px;
+    border-radius: 18px;
+    background-color: rgba(255, 92, 158, 0.12);
+    border: 1px solid rgba(255, 92, 158, 0.30);
+}
+
+QLabel#SettingsHeroTitle {
+    font-size: 20pt;
+    font-weight: 800;
+    color: #fff4fb;
+}
+
+QLabel#SettingsHeroSubtitle {
+    color: #c9aac1;
+    font-size: 9.25pt;
+}
+
+QPushButton#SettingsHeaderButton,
+QPushButton#SettingsHeaderPrimaryButton {
+    padding: 10px 16px;
+    border-radius: 12px;
+    font-weight: 700;
+}
+QPushButton#SettingsHeaderButton {
+    background-color: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: #f3d8e8;
+}
+QPushButton#SettingsHeaderButton:hover {
+    background-color: rgba(255, 92, 158, 0.12);
+    border: 1px solid rgba(255, 92, 158, 0.24);
+}
+QPushButton#SettingsHeaderButton:pressed {
+    background-color: rgba(255, 92, 158, 0.20);
+}
+QPushButton#SettingsHeaderPrimaryButton {
+    background-color: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 rgba(255, 96, 162, 0.94),
+        stop: 1 rgba(244, 74, 146, 0.98)
+    );
+    border: 1px solid rgba(255, 135, 190, 0.70);
+    color: #ffffff;
+}
+QPushButton#SettingsHeaderPrimaryButton:hover {
+    background-color: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 rgba(255, 112, 173, 0.96),
+        stop: 1 rgba(250, 88, 156, 1.0)
+    );
+}
+QPushButton#SettingsHeaderPrimaryButton:pressed {
+    background-color: rgba(247, 75, 146, 0.90);
 }
 
 QWidget#SettingsRail {
-    min-width: 300px;
+    min-width: 308px;
 }
 
 QLabel#SettingsRailTitle,
-QLabel#SettingsOverviewTitle,
 QLabel#SettingsRailBrandTitle {
-    color: #fff1f9;
-    font-size: 12pt;
+    color: #fff3fa;
+    font-size: 11.5pt;
     font-weight: 800;
 }
 
 QLabel#SettingsRailLabel {
-    color: #c39fb8;
+    color: #c09eb8;
     font-size: 8.5pt;
     font-weight: 700;
     text-transform: uppercase;
 }
 
 QLabel#SettingsRailValue {
-    color: #fff1f9;
-    font-size: 10.5pt;
+    color: #fff3fa;
+    font-size: 10pt;
     font-weight: 700;
 }
 
-QLabel#SettingsRailBrandHint,
 QLabel#SettingsRailBrandMeta,
-QLabel#SettingsOverviewText {
-    color: #c3a4ba;
+QLabel#SettingsRailBrandHint,
+QLabel#SettingsNoteText {
+    color: #c3a6bb;
     font-size: 9pt;
 }
 
 QLabel#SettingsRailBrandState {
-    color: #89f7b2;
+    color: #82e996;
     font-size: 9pt;
-    font-weight: 700;
+    font-weight: 800;
 }
 
 QLabel#SettingsRailBrandIcon {
     min-width: 64px;
     min-height: 64px;
     border-radius: 18px;
-    background-color: rgba(255, 92, 158, 0.10);
-    border: 1px solid rgba(255, 92, 158, 0.18);
+    background-color: rgba(255, 92, 158, 0.08);
+    border: 1px solid rgba(255, 92, 158, 0.16);
 }
 
-QWidget#SettingsOverviewPage {
-    background: transparent;
-}
-
-QPushButton#SettingsQuickActionButton,
-QPushButton#SettingsOverviewShortcut {
-    background-color: rgba(255, 255, 255, 0.04);
-    color: #fff1f9;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 14px;
+QPushButton#SettingsQuickActionButton {
+    background-color: rgba(255,255,255,0.035);
+    color: #fff2f9;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
     padding: 10px 12px;
     text-align: left;
     font-weight: 700;
 }
-
-QPushButton#SettingsQuickActionButton:hover,
-QPushButton#SettingsOverviewShortcut:hover {
-    background-color: rgba(255, 92, 158, 0.16);
-    border: 1px solid rgba(255, 92, 158, 0.28);
+QPushButton#SettingsQuickActionButton:hover {
+    background-color: rgba(255, 92, 158, 0.13);
+    border: 1px solid rgba(255, 92, 158, 0.26);
+}
+QPushButton#SettingsQuickActionButton:pressed {
+    background-color: rgba(255, 92, 158, 0.20);
 }
 
-QPushButton#SettingsQuickActionButton:pressed,
-QPushButton#SettingsOverviewShortcut:pressed {
-    background-color: rgba(255, 92, 158, 0.24);
-}
-
-QWidget#SettingsPageOverlay QStackedWidget,
-QWidget#SettingsPageOverlay QStackedWidget > QWidget,
-QWidget#SettingsPageOverlay QScrollArea,
-QWidget#SettingsPageOverlay QScrollArea > QWidget,
-QWidget#SettingsPageOverlay QScrollArea > QWidget > QWidget,
-QWidget#SettingsPageOverlay QAbstractScrollArea,
-QWidget#SettingsPageOverlay QAbstractScrollArea > QWidget,
-QWidget#SettingsPageOverlay QAbstractScrollArea > QWidget > QWidget,
-QWidget[objectName^="ContentWidget_"],
-QScrollArea[objectName^="ScrollArea_"],
-QScrollArea[objectName^="ScrollArea_"] > QWidget,
-QScrollArea[objectName^="ScrollArea_"] > QWidget > QWidget {
+QScrollArea#SettingsWorkspaceScroll,
+QScrollArea#SettingsWorkspaceScroll > QWidget,
+QScrollArea#SettingsWorkspaceScroll > QWidget > QWidget {
     background: transparent;
     border: none;
 }
 
-QWidget[objectName^="ContentWidget_"] QWidget,
-QWidget#SettingsPageOverlay QStackedWidget QWidget {
-    background-color: transparent;
+QFrame#SettingsSectionCard {
+    background-color: rgba(20, 10, 27, 0.94);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 22px;
+}
+QFrame#SettingsSectionCard[expanded="true"] {
+    background-color: rgba(23, 11, 30, 0.98);
+    border: 1px solid rgba(255, 92, 158, 0.26);
 }
 
-QWidget[objectName^="ContentWidget_"] QLineEdit,
-QWidget[objectName^="ContentWidget_"] QTextEdit,
-QWidget[objectName^="ContentWidget_"] QPlainTextEdit,
-QWidget[objectName^="ContentWidget_"] QComboBox,
-QWidget[objectName^="ContentWidget_"] QPushButton,
-QWidget[objectName^="ContentWidget_"] QSpinBox,
-QWidget[objectName^="ContentWidget_"] QDoubleSpinBox,
-QWidget[objectName^="ContentWidget_"] QListWidget,
-QWidget[objectName^="ContentWidget_"] QTreeWidget,
-QWidget#SettingsPageOverlay QStackedWidget QLineEdit,
-QWidget#SettingsPageOverlay QStackedWidget QTextEdit,
-QWidget#SettingsPageOverlay QStackedWidget QPlainTextEdit,
-QWidget#SettingsPageOverlay QStackedWidget QComboBox,
-QWidget#SettingsPageOverlay QStackedWidget QPushButton,
-QWidget#SettingsPageOverlay QStackedWidget QSpinBox,
-QWidget#SettingsPageOverlay QStackedWidget QDoubleSpinBox,
-QWidget#SettingsPageOverlay QStackedWidget QListWidget,
-QWidget#SettingsPageOverlay QStackedWidget QTreeWidget {
-    background-color: {panel_bg};
+QFrame#SettingsSectionHeader {
+    background: transparent;
+    border-radius: 22px;
+}
+QFrame#SettingsSectionHeader[expanded="true"] {
+    background-color: rgba(255,255,255,0.015);
 }
 
-QWidget[objectName^="ContentWidget_"] QPushButton,
-QWidget#SettingsPageOverlay QStackedWidget QPushButton {
-    background-color: {accent};
+QLabel#SettingsSectionIcon {
+    background-color: rgba(255, 92, 158, 0.10);
+    border: 1px solid rgba(255, 92, 158, 0.22);
+    border-radius: 12px;
 }
 
-QWidget#CollapsibleHeader {
-    background-color: {chip_bg};
+QLabel#SettingsSectionTitle {
+    color: #fff4fb;
+    font-size: 12pt;
+    font-weight: 800;
+}
+
+QLabel#SettingsSectionSubtitle {
+    color: #c2a4bc;
+    font-size: 9pt;
+}
+
+QLabel#SettingsSectionBadge {
+    color: #ffd5e9;
+    background-color: rgba(255, 92, 158, 0.10);
+    border: 1px solid rgba(255, 92, 158, 0.22);
+    border-radius: 10px;
+    padding: 4px 10px;
+    font-size: 8.5pt;
+    font-weight: 800;
+}
+
+QFrame#SettingsSectionBody {
+    background: transparent;
+    border-top: 1px solid rgba(255,255,255,0.06);
+}
+
+QFrame#SettingsSectionBodyHost {
+    background: transparent;
+}
+
+/* ========= Inner Groups / Rows ========= */
+QWidget#SettingsSubsectionHeader {
+    background: transparent;
+}
+
+QLabel#SettingsSubsectionTitle {
+    color: #ffe8f4;
+    font-size: 10pt;
+    font-weight: 800;
+}
+
+QFrame#SettingsSubsectionLine {
+    background-color: rgba(255,255,255,0.08);
+    border-radius: 1px;
+}
+
+QWidget#SettingsPageRoot QWidget#CollapsibleSection {
+    background: transparent;
+}
+
+QWidget#SettingsPageRoot QWidget#CollapsibleHeader {
+    background-color: rgba(255,255,255,0.035);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px;
+}
+
+QWidget#SettingsPageRoot QWidget#CollapsibleHeader:hover {
+    background-color: rgba(255, 92, 158, 0.10);
+    border: 1px solid rgba(255, 92, 158, 0.22);
+}
+
+QWidget#SettingsPageRoot QWidget#InnerCollapsibleHeader {
+    background: transparent;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    padding-bottom: 6px;
+}
+
+QWidget#SettingsPageRoot QLabel#CollapsibleArrow,
+QWidget#SettingsPageRoot QLabel#CollapsibleTitle {
+    color: #fff0f8;
+    font-weight: 700;
+    padding: 4px 2px;
+}
+
+QWidget#SettingsPageRoot QWidget#CollapsibleContent {
+    background: transparent;
+    padding-top: 8px;
+}
+
+QWidget#SettingsPageRoot QWidget#SettingRow {
+    background-color: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.05);
+    border-radius: 14px;
+    padding: 8px 10px;
+}
+
+QWidget#SettingsPageRoot QLabel#SeparatorLabel {
+    margin-top: 10px;
+    padding: 8px 2px 6px 2px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    font-weight: 800;
+    color: #fff0f8;
+}
+
+QWidget#SettingsPageRoot QLineEdit,
+QWidget#SettingsPageRoot QTextEdit,
+QWidget#SettingsPageRoot QPlainTextEdit,
+QWidget#SettingsPageRoot QComboBox,
+QWidget#SettingsPageRoot QSpinBox,
+QWidget#SettingsPageRoot QDoubleSpinBox,
+QWidget#SettingsPageRoot QListWidget,
+QWidget#SettingsPageRoot QTreeWidget {
+    background-color: rgba(11, 7, 17, 0.92);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 10px;
+    color: {text};
+    padding: 7px 10px;
+    selection-background-color: rgba(255, 92, 158, 0.30);
+}
+
+QWidget#SettingsPageRoot QLineEdit:focus,
+QWidget#SettingsPageRoot QTextEdit:focus,
+QWidget#SettingsPageRoot QPlainTextEdit:focus,
+QWidget#SettingsPageRoot QComboBox:focus,
+QWidget#SettingsPageRoot QSpinBox:focus,
+QWidget#SettingsPageRoot QDoubleSpinBox:focus,
+QWidget#SettingsPageRoot QListWidget:focus,
+QWidget#SettingsPageRoot QTreeWidget:focus {
+    border: 1px solid rgba(255, 92, 158, 0.30);
+}
+
+QWidget#SettingsPageRoot QComboBox::drop-down {
+    border: none;
+    width: 26px;
+}
+
+QWidget#SettingsPageRoot QPushButton#SecondaryButton,
+QWidget#SettingsPageRoot QPushButton#CancelButton {
+    border-radius: 10px;
 }
 """

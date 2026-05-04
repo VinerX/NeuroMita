@@ -1,28 +1,29 @@
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+import qtawesome as qta
+
+from PyQt6.QtCore import QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from ui.pages.settings.section_registry import get_settings_section_specs, iter_settings_button_specs
+from ui.pages.settings.section_registry import SettingsSectionSpec, get_settings_section_specs
 from ui.widgets.settings_icon_button import SettingsIconButton
-from ui.widgets.settings_overlay_widget import SettingsOverlay
 from utils import _
 
 _MODE_RANK = {"basic": 0, "advanced": 1, "full": 2}
 _MODE_ALIASES = {
-    "basic": {"basic", "базовый", "standard", "стандартный", "Р‘Р°Р·РѕРІС‹Р№"},
-    "advanced": {"advanced", "продвинутый", "expanded", "расширенный", "РџСЂРѕРґРІРёРЅСѓС‚С‹Р№"},
-    "full": {"full", "полный", "maximum", "максимальный", "РџРѕР»РЅС‹Р№"},
+    "basic": {"basic", "базовый", "standard", "стандартный"},
+    "advanced": {"advanced", "продвинутый", "expanded", "расширенный"},
+    "full": {"full", "полный", "maximum", "максимальный"},
 }
 
 
@@ -53,6 +54,119 @@ def _make_card(name: str) -> QFrame:
     return card
 
 
+class SettingsCategoryCard(QFrame):
+    clicked = pyqtSignal()
+
+    def __init__(self, spec: SettingsSectionSpec, parent=None):
+        super().__init__(parent)
+        self.spec = spec
+        self._expanded = False
+
+        self.setObjectName("SettingsSectionCard")
+        self.setProperty("expanded", False)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self.header = QFrame()
+        self.header.setObjectName("SettingsSectionHeader")
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
+        header_layout = QHBoxLayout(self.header)
+        header_layout.setContentsMargins(18, 16, 18, 16)
+        header_layout.setSpacing(14)
+
+        self.icon_box = QLabel()
+        self.icon_box.setObjectName("SettingsSectionIcon")
+        self.icon_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.icon_box.setFixedSize(38, 38)
+        self.icon_box.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.icon_box.setPixmap(qta.icon(spec.icon_name, color="#ffd7eb").pixmap(18, 18))
+        header_layout.addWidget(self.icon_box, 0, Qt.AlignmentFlag.AlignTop)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(3)
+
+        self.title_label = QLabel(_(spec.nav_label[0], spec.nav_label[1]))
+        self.title_label.setObjectName("SettingsSectionTitle")
+        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        text_col.addWidget(self.title_label)
+
+        self.subtitle_label = QLabel(_(spec.subtitle[0], spec.subtitle[1]))
+        self.subtitle_label.setObjectName("SettingsSectionSubtitle")
+        self.subtitle_label.setWordWrap(True)
+        self.subtitle_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        text_col.addWidget(self.subtitle_label)
+
+        header_layout.addLayout(text_col, 1)
+
+        meta_col = QVBoxLayout()
+        meta_col.setSpacing(6)
+        meta_col.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        self.mode_badge = QLabel(get_mode_label(spec.min_mode))
+        self.mode_badge.setObjectName("SettingsSectionBadge")
+        self.mode_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        meta_col.addWidget(self.mode_badge, 0, Qt.AlignmentFlag.AlignRight)
+
+        self.chevron_label = QLabel()
+        self.chevron_label.setObjectName("SettingsSectionChevron")
+        self.chevron_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        meta_col.addWidget(self.chevron_label, 0, Qt.AlignmentFlag.AlignRight)
+
+        header_layout.addLayout(meta_col)
+
+        self.body = QFrame()
+        self.body.setObjectName("SettingsSectionBody")
+        body_layout = QVBoxLayout(self.body)
+        body_layout.setContentsMargins(18, 0, 18, 18)
+        body_layout.setSpacing(12)
+
+        self.body_host = QFrame()
+        self.body_host.setObjectName("SettingsSectionBodyHost")
+        self.body_layout = QVBoxLayout(self.body_host)
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
+        self.body_layout.setSpacing(12)
+        body_layout.addWidget(self.body_host)
+
+        root.addWidget(self.header)
+        root.addWidget(self.body)
+
+        self.header.mousePressEvent = self._handle_header_press
+        self.set_expanded(False)
+
+    def _handle_header_press(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+        QFrame.mousePressEvent(self.header, event)
+
+    def set_expanded(self, expanded: bool):
+        self._expanded = bool(expanded)
+        self.body.setVisible(self._expanded)
+        self.setProperty("expanded", self._expanded)
+        self.header.setProperty("expanded", self._expanded)
+        chevron = "fa6s.angle-up" if self._expanded else "fa6s.angle-down"
+        self.chevron_label.setPixmap(qta.icon(chevron, color="#f6d7ea").pixmap(16, 16))
+        self._repolish()
+
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def expand(self):
+        self.set_expanded(True)
+
+    def collapse(self):
+        self.set_expanded(False)
+
+    def _repolish(self):
+        for widget in (self, self.header):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+            widget.update()
+
+
 class SettingsPage(QWidget):
     def __init__(self, gui):
         super().__init__(gui)
@@ -66,10 +180,15 @@ class SettingsPage(QWidget):
         self.settings_overlay = None
         self.current_settings_category = None
         self._mode_status_value = None
+        self._current_mode = "basic"
+        self._forced_visible_categories = set()
+        self._section_specs = {spec.key: spec for spec in get_settings_section_specs()}
 
-        self.SETTINGS_PANEL_WIDTH = 920
+        self.SETTINGS_PANEL_WIDTH = max(920, int(getattr(gui, "SETTINGS_PANEL_WIDTH", 980) or 980))
         self.SETTINGS_SIDEBAR_WIDTH = 0
         self.settings_resize_handle = None
+        self.settings_scroll = None
+        self._workspace_content = None
 
         self._build_ui()
         self._build_section_containers()
@@ -109,24 +228,47 @@ class SettingsPage(QWidget):
             finally:
                 widget.blockSignals(False)
 
+    def _first_available_category(self, rank: int | None = None) -> str | None:
+        cur_rank = _MODE_RANK[self._current_mode] if rank is None else rank
+        for spec in get_settings_section_specs():
+            need = _MODE_RANK[self._category_modes.get(spec.key, "basic")]
+            if need <= cur_rank:
+                return spec.key
+        return None
+
+    def _update_nav_state(self):
+        active = self.current_settings_category
+        for key, button in self.settings_buttons.items():
+            button.set_active(key == active)
+
     def apply_interface_mode(self, mode_value):
         mode = normalize_mode(mode_value)
         cur_rank = _MODE_RANK[mode]
+        self._current_mode = mode
 
         for category, button in self.settings_buttons.items():
             need = _MODE_RANK[self._category_modes.get(category, "basic")]
             button.setVisible(need <= cur_rank)
 
+        for category, card in self.settings_containers.items():
+            need = _MODE_RANK[self._category_modes.get(category, "basic")]
+            card.setVisible(need <= cur_rank or category in self._forced_visible_categories)
+
         active = self.current_settings_category
         if active:
             active_rank = _MODE_RANK[self._category_modes.get(active, "basic")]
-            if active_rank > cur_rank:
-                self.show_overview()
+            if active_rank > cur_rank and active not in self._forced_visible_categories:
+                fallback = self._first_available_category(cur_rank)
+                if fallback is not None:
+                    self._activate_category(fallback, toggle_if_active=False)
+                else:
+                    self.show_overview()
 
         if self._mode_status_value is not None:
             self._mode_status_value.setText(get_mode_label(mode))
 
         self._sync_mode_widgets(mode)
+        self._update_nav_state()
 
         try:
             from ui.widgets.status_indicators_widget import apply_capture_visibility
@@ -137,34 +279,67 @@ class SettingsPage(QWidget):
 
     def on_activated(self):
         if self.current_settings_category is None:
-            self.show_overview()
+            first_key = self._first_available_category() or "api"
+            self._activate_category(first_key, toggle_if_active=False)
 
     def show_overview(self):
-        for button in self.settings_buttons.values():
-            button.set_active(False)
         self._set_current_category(None)
-        if self.settings_overview_container is not None:
-            self.settings_overlay.show_category(self.settings_overview_container)
+        for card in self.settings_containers.values():
+            card.collapse()
+        self._update_nav_state()
+        self._scroll_to_top()
 
     def show_category(self, category):
-        container = self.settings_containers.get(category)
-        if container is None:
+        if category not in self.settings_containers:
             return
 
         was_on_settings_page = getattr(self.gui, "current_main_page", None) == "settings"
         if not was_on_settings_page:
             self.gui.switch_main_page("settings")
+            QTimer.singleShot(0, lambda cat=category: self._activate_category(cat, toggle_if_active=False))
+            return
 
-        is_hiding = was_on_settings_page and self.current_settings_category == category
-        for cat, button in self.settings_buttons.items():
-            button.set_active(cat == category and not is_hiding)
+        self._activate_category(category, toggle_if_active=self.current_settings_category == category)
 
-        if is_hiding:
+    def _activate_category(self, category: str, *, toggle_if_active: bool):
+        card = self.settings_containers.get(category)
+        if card is None:
+            return
+
+        if not card.isVisible():
+            self._forced_visible_categories.add(category)
+            card.setVisible(True)
+
+        if toggle_if_active and card.is_expanded():
             self.show_overview()
             return
 
+        for key, other_card in self.settings_containers.items():
+            if key == category:
+                other_card.expand()
+            else:
+                other_card.collapse()
+
         self._set_current_category(category)
-        self.settings_overlay.show_category(container)
+        self._update_nav_state()
+        QTimer.singleShot(0, lambda key=category: self._scroll_to_category(key))
+
+    def _scroll_to_category(self, category: str):
+        if self.settings_scroll is None or self._workspace_content is None:
+            return
+
+        card = self.settings_containers.get(category)
+        if card is None:
+            return
+
+        bar = self.settings_scroll.verticalScrollBar()
+        target = max(0, card.y() - 10)
+        bar.setValue(target)
+
+    def _scroll_to_top(self):
+        if self.settings_scroll is None:
+            return
+        self.settings_scroll.verticalScrollBar().setValue(0)
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -173,55 +348,79 @@ class SettingsPage(QWidget):
 
         outer.addWidget(self._build_settings_hero())
 
-        tabs_card = _make_card("SettingsTabsCard")
-        tabs_layout = QGridLayout(tabs_card)
-        tabs_layout.setContentsMargins(14, 14, 14, 14)
-        tabs_layout.setHorizontalSpacing(10)
-        tabs_layout.setVerticalSpacing(10)
-        outer.addWidget(tabs_card)
-
         content_row = QHBoxLayout()
-        content_row.setSpacing(14)
+        content_row.setSpacing(16)
 
-        self.settings_overlay = SettingsOverlay(self)
-        self.settings_overlay.setObjectName("SettingsPageOverlay")
+        self.settings_overlay = _make_card("SettingsWorkspaceShell")
         self.settings_overlay.setMinimumWidth(640)
-        self.settings_overlay.setMaximumWidth(1400)
+        self.settings_overlay.setMaximumWidth(self.SETTINGS_PANEL_WIDTH)
+        self.settings_overlay.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        overlay_layout = QVBoxLayout(self.settings_overlay)
+        overlay_layout.setContentsMargins(14, 14, 14, 14)
+        overlay_layout.setSpacing(14)
+        overlay_layout.addWidget(self._build_tabs_row())
+
+        self.settings_scroll = QScrollArea()
+        self.settings_scroll.setObjectName("SettingsWorkspaceScroll")
+        self.settings_scroll.setWidgetResizable(True)
+        self.settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._workspace_content = QWidget()
+        self._workspace_content.setObjectName("SettingsWorkspaceContent")
+        workspace_layout = QVBoxLayout(self._workspace_content)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_layout.setSpacing(12)
+        self.settings_scroll.setWidget(self._workspace_content)
+
+        overlay_layout.addWidget(self.settings_scroll, 1)
         content_row.addWidget(self.settings_overlay, 1)
 
         rail = QWidget()
         rail.setObjectName("SettingsRail")
-        rail.setFixedWidth(300)
+        rail.setFixedWidth(308)
         rail_layout = QVBoxLayout(rail)
         rail_layout.setContentsMargins(0, 0, 0, 0)
         rail_layout.setSpacing(12)
-        rail_layout.addWidget(self._build_brand_panel())
         rail_layout.addWidget(self._build_system_card())
         rail_layout.addWidget(self._build_quick_actions())
+        rail_layout.addWidget(self._build_brand_panel())
+        rail_layout.addWidget(self._build_note_card())
         rail_layout.addStretch(1)
         content_row.addWidget(rail)
 
         outer.addLayout(content_row, 1)
+        self.settings_overview_container = self._workspace_content
 
-        for index, (icon_name, label, category, min_mode) in enumerate(iter_settings_button_specs()):
-            button = SettingsIconButton(icon_name, label, category_key=category)
-            button.clicked.connect(lambda checked=False, cat=category: self.show_category(cat))
-            tabs_layout.addWidget(button, index // 4, index % 4)
-            self.settings_buttons[category] = button
-            self._category_modes[category] = min_mode
+    def _build_tabs_row(self) -> QFrame:
+        card = _make_card("SettingsTabsCard")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
 
-        self.settings_overview_container = self._build_overview_card()
-        self.settings_overlay.add_container(self.settings_overview_container)
-        self.settings_overlay.show_category(self.settings_overview_container)
+        for spec in get_settings_section_specs():
+            label = _(spec.nav_label[0], spec.nav_label[1])
+            button = SettingsIconButton(spec.icon_name, label, category_key=spec.key)
+            button.clicked.connect(lambda checked=False, cat=spec.key: self.show_category(cat))
+            layout.addWidget(button)
+            self.settings_buttons[spec.key] = button
+            self._category_modes[spec.key] = spec.min_mode
+
+        layout.addStretch(1)
+        return card
 
     def _build_settings_hero(self) -> QFrame:
         card = _make_card("SettingsHeroCard")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(22, 20, 22, 20)
-        layout.setSpacing(12)
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(18)
 
-        top_row = QHBoxLayout()
-        top_row.setSpacing(16)
+        icon_box = QLabel()
+        icon_box.setObjectName("SettingsHeroIcon")
+        icon_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_box.setFixedSize(54, 54)
+        icon_box.setPixmap(qta.icon("fa6s.gear", color="#ff69ad").pixmap(26, 26))
+        layout.addWidget(icon_box, 0, Qt.AlignmentFlag.AlignTop)
 
         title_col = QVBoxLayout()
         title_col.setSpacing(4)
@@ -232,42 +431,41 @@ class SettingsPage(QWidget):
 
         subtitle = QLabel(
             _(
-                "Центр конфигурации NeuroMita. Сохраняем функционал, меняем форму подачи.",
-                "NeuroMita configuration hub. Same functionality, new presentation layer.",
+                "Центр конфигурации NeuroMita. Сохраняем логику, переводим интерфейс в компактный рабочий формат.",
+                "NeuroMita configuration hub. Same logic, now presented as a compact workspace.",
             )
         )
         subtitle.setObjectName("SettingsHeroSubtitle")
         subtitle.setWordWrap(True)
         title_col.addWidget(subtitle)
-        top_row.addLayout(title_col, 1)
+        layout.addLayout(title_col, 1)
 
         actions = QHBoxLayout()
-        actions.setSpacing(8)
+        actions.setSpacing(10)
 
         guide_button = QPushButton(_("Руководство", "Guide"))
-        guide_button.setObjectName("SecondaryButton")
+        guide_button.setObjectName("SettingsHeaderButton")
         guide_button.clicked.connect(self.gui._show_guide)
         actions.addWidget(guide_button)
 
-        updates_button = QPushButton(_("Обновления", "Updates"))
-        updates_button.setObjectName("SecondaryButton")
-        updates_button.clicked.connect(lambda: self.show_category("updates"))
-        actions.addWidget(updates_button)
-
         home_button = QPushButton(_("На главную", "Home"))
-        home_button.setObjectName("SecondaryButton")
+        home_button.setObjectName("SettingsHeaderButton")
         home_button.clicked.connect(lambda: self.gui.switch_main_page("home"))
         actions.addWidget(home_button)
 
-        top_row.addLayout(actions)
-        layout.addLayout(top_row)
+        updates_button = QPushButton(_("Открыть обновления", "Open updates"))
+        updates_button.setObjectName("SettingsHeaderPrimaryButton")
+        updates_button.clicked.connect(lambda: self.show_category("updates"))
+        actions.addWidget(updates_button)
+
+        layout.addLayout(actions)
         return card
 
     def _build_brand_panel(self) -> QFrame:
         card = _make_card("SettingsStatusRailCard")
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
 
         brand_row = QHBoxLayout()
         brand_row.setSpacing(12)
@@ -289,36 +487,46 @@ class SettingsPage(QWidget):
 
         brand_col = QVBoxLayout()
         brand_col.setSpacing(2)
+
         brand_title = QLabel("NeuroMita Launcher")
         brand_title.setObjectName("SettingsRailBrandTitle")
         brand_col.addWidget(brand_title)
+
         brand_ver = QLabel("v2.0.0")
         brand_ver.setObjectName("SettingsRailBrandMeta")
         brand_col.addWidget(brand_ver)
-        brand_state = QLabel(_("АКТИВНО", "ACTIVE"))
+
+        brand_state = QLabel(_("Актуально", "Current"))
         brand_state.setObjectName("SettingsRailBrandState")
         brand_col.addWidget(brand_state)
+
         brand_row.addLayout(brand_col, 1)
         layout.addLayout(brand_row)
 
-        note = QLabel(
+        build_meta = QLabel(
             _(
-                "Стиль этой страницы строится от launcher shell и не завязан на фиксированную палитру.",
-                "This page inherits the launcher shell language and stays palette-replaceable.",
+                "Сборка: launcher shell + модульные settings builders. Этот блок теперь служит правой стойкой статуса, а не отдельной страницей.",
+                "Build: launcher shell + modular settings builders. This block now acts as a status rail rather than a separate page.",
             )
         )
-        note.setObjectName("SettingsRailBrandHint")
-        note.setWordWrap(True)
-        layout.addWidget(note)
+        build_meta.setObjectName("SettingsRailBrandHint")
+        build_meta.setWordWrap(True)
+        layout.addWidget(build_meta)
+
+        check_button = QPushButton(_("Проверить обновления", "Check updates"))
+        check_button.setObjectName("SettingsQuickActionButton")
+        check_button.clicked.connect(lambda: self.show_category("updates"))
+        layout.addWidget(check_button)
+
         return card
 
     def _build_system_card(self) -> QFrame:
         card = _make_card("SettingsStatusRailCard")
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
 
-        title = QLabel(_("Состояние конфигурации", "Configuration status"))
+        title = QLabel(_("Статус конфигурации", "Configuration status"))
         title.setObjectName("SettingsRailTitle")
         layout.addWidget(title)
 
@@ -340,13 +548,17 @@ class SettingsPage(QWidget):
                 _("Локально", "Local") if str(self.gui._get_setting("VOICEOVER_METHOD", "TG")).lower() == "local" else "Telegram",
             ),
         ]
+
         for key, label_text, value_text in items:
             row = QHBoxLayout()
             row.setSpacing(8)
+
             label = QLabel(label_text)
             label.setObjectName("SettingsRailLabel")
             row.addWidget(label)
+
             row.addStretch()
+
             value = QLabel(value_text)
             value.setObjectName("SettingsRailValue")
             row.addWidget(value)
@@ -381,6 +593,23 @@ class SettingsPage(QWidget):
 
         return card
 
+    def _build_note_card(self) -> QFrame:
+        card = _make_card("SettingsNoteCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(8)
+
+        quote = QLabel(
+            _(
+                "Настраивай систему как рабочий пульт: секции сверху дают быстрое переключение, а внутри остались те же проверенные builders.",
+                "Treat the page like a control console: top chips switch context quickly while the proven builders stay intact underneath.",
+            )
+        )
+        quote.setObjectName("SettingsNoteText")
+        quote.setWordWrap(True)
+        layout.addWidget(quote)
+        return card
+
     def _open_db_viewer(self):
         try:
             from ui.settings.character_settings.logic import open_db_viewer
@@ -390,91 +619,24 @@ class SettingsPage(QWidget):
             self.gui.switch_main_page("settings")
             self.show_category("characters")
 
-    def _build_overview_card(self) -> QWidget:
-        wrapper = QWidget()
-        wrapper.setObjectName("SettingsOverviewPage")
-        layout = QVBoxLayout(wrapper)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(14)
-
-        hero = _make_card("SettingsOverviewCard")
-        hero_layout = QVBoxLayout(hero)
-        hero_layout.setContentsMargins(18, 18, 18, 18)
-        hero_layout.setSpacing(8)
-
-        heading = QLabel(_("Выбери раздел для тонкой настройки", "Pick a section to fine-tune"))
-        heading.setObjectName("SettingsOverviewTitle")
-        hero_layout.addWidget(heading)
-
-        text = QLabel(
-            _(
-                "Секции ниже сохраняют всю текущую логику: API, память, экран, голос, RAG, данные и обслуживание.",
-                "The sections below preserve the existing logic: API, memory, screen, voice, RAG, data and maintenance.",
-            )
-        )
-        text.setWordWrap(True)
-        text.setObjectName("SettingsOverviewText")
-        hero_layout.addWidget(text)
-        layout.addWidget(hero)
-
-        shortcuts = QGridLayout()
-        shortcuts.setHorizontalSpacing(10)
-        shortcuts.setVerticalSpacing(10)
-        featured = [
-            ("api", _("API и ключи", "API and keys")),
-            ("models", _("Модели и память", "Models and memory")),
-            ("voice", _("Озвучка", "Voice")),
-            ("screen", _("Экран и камера", "Screen and camera")),
-        ]
-        for index, (key, label_text) in enumerate(featured):
-            button = QPushButton(label_text)
-            button.setObjectName("SettingsOverviewShortcut")
-            button.clicked.connect(lambda checked=False, cat=key: self.show_category(cat))
-            shortcuts.addWidget(button, index // 2, index % 2)
-        layout.addLayout(shortcuts)
-        layout.addStretch(1)
-        return wrapper
-
     def _build_section_containers(self):
         self.settings_containers = {}
+        if self._workspace_content is None or self._workspace_content.layout() is None:
+            return
+
+        workspace_layout = self._workspace_content.layout()
 
         for spec in get_settings_section_specs():
-            scroll_area = QScrollArea()
-            scroll_area.setWidgetResizable(True)
-            scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-            scroll_area.setObjectName(f"ScrollArea_{spec.key}")
-            scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-
-            content_widget = QFrame()
-            content_widget.setObjectName(f"ContentWidget_{spec.key}")
-            content_layout = QVBoxLayout(content_widget)
-            content_layout.setContentsMargins(10, 10, 10, 10)
-            content_layout.setSpacing(12)
-
-            header_card = QFrame()
-            header_card.setObjectName("SettingsHeroCard")
-            header_layout = QVBoxLayout(header_card)
-            header_layout.setContentsMargins(18, 18, 18, 18)
-            header_layout.setSpacing(6)
-
-            title_label = QLabel(_(spec.title[0], spec.title[1]))
-            title_label.setObjectName("SettingsHeroTitle")
-            header_layout.addWidget(title_label)
-
-            subtitle_label = QLabel(_(spec.subtitle[0], spec.subtitle[1]))
-            subtitle_label.setObjectName("SettingsHeroSubtitle")
-            subtitle_label.setWordWrap(True)
-            header_layout.addWidget(subtitle_label)
-
-            content_layout.addWidget(header_card)
+            card = SettingsCategoryCard(spec, self._workspace_content)
+            card.clicked.connect(lambda key=spec.key: self.show_category(key))
 
             builder = spec.builder_ref
             if isinstance(builder, str):
-                getattr(self.gui, builder)(content_layout)
+                getattr(self.gui, builder)(card.body_layout)
             else:
-                builder(self.gui, content_layout)
+                builder(self.gui, card.body_layout)
 
-            content_layout.addStretch()
-            scroll_area.setWidget(content_widget)
-            self.settings_containers[spec.key] = scroll_area
-            self.settings_overlay.add_container(scroll_area)
+            self.settings_containers[spec.key] = card
+            workspace_layout.addWidget(card)
+
+        workspace_layout.addStretch(1)

@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QPushButton, QApplication, QLabel
+from PyQt6.QtWidgets import QPushButton, QApplication, QLabel, QSizePolicy
 from PyQt6.QtCore import QSize, Qt, QVariantAnimation
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient
 import qtawesome as qta
@@ -20,8 +20,9 @@ class SettingsIconButton(QPushButton):
         self.setText(self._base_tooltip)
         self.setToolTip(self._base_tooltip)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(42)
-        self.setFixedHeight(42)
+        self.setMinimumHeight(40)
+        self.setFixedHeight(40)
+        self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.setCheckable(False)
 
         self.is_active = False
@@ -160,15 +161,15 @@ class SettingsIconButton(QPushButton):
                 QPushButton {
                     background-color: qlineargradient(
                         x1: 0, y1: 0, x2: 1, y2: 0,
-                        stop: 0 rgba(255, 93, 159, 0.30),
-                        stop: 1 rgba(255, 54, 126, 0.60)
+                        stop: 0 rgba(255, 93, 159, 0.32),
+                        stop: 1 rgba(255, 54, 126, 0.62)
                     );
                     color: #ffffff;
-                    border: 1px solid rgba(255, 92, 158, 0.80);
-                    padding: 10px 14px;
-                    border-radius: 14px;
+                    border: 1px solid rgba(255, 92, 158, 0.72);
+                    padding: 8px 12px;
+                    border-radius: 12px;
                     text-align: left;
-                    font-size: 10pt;
+                    font-size: 9.5pt;
                     font-weight: 700;
                 }
                 QPushButton:hover {
@@ -185,21 +186,21 @@ class SettingsIconButton(QPushButton):
         else:
             self.setStyleSheet("""
                 QPushButton {
-                    background-color: rgba(255, 255, 255, 0.03);
+                    background-color: rgba(255, 255, 255, 0.035);
                     color: #d5b6cb;
-                    border: 1px solid rgba(255, 255, 255, 0.05);
-                    padding: 10px 14px;
-                    border-radius: 14px;
+                    border: 1px solid rgba(255, 255, 255, 0.07);
+                    padding: 8px 12px;
+                    border-radius: 12px;
                     text-align: left;
-                    font-size: 10pt;
+                    font-size: 9.5pt;
                     font-weight: 600;
                 }
                 QPushButton:hover {
-                    background-color: rgba(255, 92, 158, 0.12);
-                    border: 1px solid rgba(255, 92, 158, 0.26);
+                    background-color: rgba(255, 92, 158, 0.16);
+                    border: 1px solid rgba(255, 92, 158, 0.30);
                     color: #f5d6ea;
                 }
                 QPushButton:pressed {
-                    background-color: rgba(255, 92, 158, 0.18);
+                    background-color: rgba(255, 92, 158, 0.22);
                 }
             """)

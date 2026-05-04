@@ -179,7 +179,7 @@ class CollapsibleSection(QWidget):
         super().__init__(parent)
         self.setObjectName('CollapsibleSection')
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.is_collapsed = False
+        self.is_collapsed = True
 
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
@@ -193,6 +193,7 @@ class CollapsibleSection(QWidget):
         h.setSpacing(3)
 
         self.arrow_label = QLabel(self.header)
+        self.arrow_label.setObjectName('CollapsibleArrow')
         self.arrow_pix_right = _angle_icon('right', 10)
         self.arrow_pix_down  = _angle_icon('down',  10)
         self.arrow_label.setPixmap(self.arrow_pix_right)
@@ -209,6 +210,7 @@ class CollapsibleSection(QWidget):
             h.addWidget(self._make_icon(icon_name))
             h.addSpacing(8)
 
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
         self.header.mousePressEvent = self.toggle
 
         # Content
