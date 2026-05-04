@@ -9,11 +9,11 @@ from ui.pages.news_support import get_news_content as load_news_content
 from ui.pages.news_support import get_news_releases as load_news_releases
 from ui.widgets.launcher_shell_sidebar import LauncherSidebarWidget
 from ui.widgets.settings_panel import apply_interface_mode
-from ui.windows.main_view import ChatGUI as LegacyChatGUI
+from ui.windows.app_window_base import AppWindowBase
 from utils import _
 
 
-class MainWindow(LegacyChatGUI):
+class MainWindow(AppWindowBase):
     def setup_ui(self):
         central_widget = QWidget()
         central_widget.setObjectName("LauncherRoot")
@@ -158,4 +158,4 @@ class MainWindow(LegacyChatGUI):
         page = getattr(self, "home_page", None)
         if page is not None:
             return page.find_unity_executable()
-        return super()._find_unity_executable()
+        return None
