@@ -466,13 +466,16 @@ def check_for_updates(
     dl_dir.mkdir(parents=True, exist_ok=True)
     temp_archive = dl_dir / python_asset.name
 
-    log(f"Downloading {python_asset.name} ...")
-    try:
-        _download(python_asset.url, temp_archive, on_progress=on_progress)
-    except Exception as e:
-        log(f"Download failed: {e}", "error")
-        temp_archive.unlink(missing_ok=True)
-        return
+    if temp_archive.exists() and temp_archive.stat().st_size > 0:
+        log(f"Cached archive found, skipping download: {temp_archive}")
+    else:
+        log(f"Downloading {python_asset.name} ...")
+        try:
+            _download(python_asset.url, temp_archive, on_progress=on_progress)
+        except Exception as e:
+            log(f"Download failed: {e}", "error")
+            temp_archive.unlink(missing_ok=True)
+            return
 
     log(f"Applying update to {base_path} ...")
     try:
@@ -503,8 +506,10 @@ def check_for_updates(
         sys.exit(42)
 
     except _PasswordError:
+        # Архив валидный, пароль не установлен — не выкидываем, юзер вернётся
+        # с TESTER_CODE и не качает заново.
         log("Archive is password-protected. Set TESTER_CODE in settings to unlock.", "error")
-        temp_archive.unlink(missing_ok=True)
+        log(f"Archive kept for retry: {temp_archive}")
     except Exception as e:
         log(f"Update failed: {e}", "error")
         temp_archive.unlink(missing_ok=True)
@@ -607,13 +612,18 @@ def check_for_unity_updates(
     dl_dir.mkdir(parents=True, exist_ok=True)
     temp_archive = dl_dir / unity_name
 
-    log(f"Downloading Unity {unity_name} ...")
-    try:
-        _download(unity_url, temp_archive, on_progress=on_progress)
-    except Exception as e:
-        log(f"Unity download failed: {e}", "error")
-        temp_archive.unlink(missing_ok=True)
-        return
+    # Если архив уже скачан (например прошлый запуск свалился из-за
+    # отсутствия TESTER_CODE) — переиспользуем его, не качаем 392 МБ повторно.
+    if temp_archive.exists() and temp_archive.stat().st_size > 0:
+        log(f"Cached archive found, skipping download: {temp_archive}")
+    else:
+        log(f"Downloading Unity {unity_name} ...")
+        try:
+            _download(unity_url, temp_archive, on_progress=on_progress)
+        except Exception as e:
+            log(f"Unity download failed: {e}", "error")
+            temp_archive.unlink(missing_ok=True)
+            return
 
     log(f"Installing Unity update to {unity_path} ...")
     try:
@@ -624,8 +634,9 @@ def check_for_unity_updates(
         temp_archive.unlink(missing_ok=True)
         log(f"Unity update {remote_tag} installed successfully.", "success")
     except _PasswordError:
+        # Архив валидный, просто нет пароля — оставляем для следующей попытки.
         log("Unity archive is password-protected. Set TESTER_CODE in settings.", "error")
-        temp_archive.unlink(missing_ok=True)
+        log(f"Archive kept for retry: {temp_archive}")
     except Exception as e:
         log(f"Unity update failed: {e}", "error")
         temp_archive.unlink(missing_ok=True)

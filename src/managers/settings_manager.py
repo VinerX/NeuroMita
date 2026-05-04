@@ -177,6 +177,8 @@ class CollapsibleSection(QWidget):
     """Внешняя секция"""
     def __init__(self, title, parent=None, *, icon_name=None):
         super().__init__(parent)
+        self.setObjectName('CollapsibleSection')
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.is_collapsed = False
 
         v = QVBoxLayout(self)

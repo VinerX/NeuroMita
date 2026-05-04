@@ -331,8 +331,8 @@ class SettingsPage(QWidget):
             ("language", _("Язык", "Language"), str(self.gui._get_setting("LANGUAGE", "ru")).upper()),
             (
                 "memory",
-                _("Память", "Memory"),
-                _("Включена", "Enabled") if self.gui._get_setting("RAG_ENABLED", False) else _("Выключена", "Disabled"),
+                _("RAG", "RAG"),
+                _("Включён", "Enabled") if self.gui._get_setting("RAG_ENABLED", False) else _("Выключен", "Disabled"),
             ),
             (
                 "voice",

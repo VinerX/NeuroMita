@@ -1195,9 +1195,9 @@ class ChatGUI(QMainWindow):
     def _run_home_primary_action(self):
         exe = self._find_unity_executable()
         if exe is None:
-            # Сборки нет — отправляем пользователя на страницу обновлений,
-            # где доступна установка/обновление и виден общий статус.
-            self.show_settings_category("updates")
+            # Сборки нет — запускаем установку прямо отсюда. Альтернативный
+            # вариант (полная страница обновлений) доступен через ▾-меню.
+            self._run_home_install_unity()
             return
         try:
             import subprocess
@@ -1289,6 +1289,10 @@ class ChatGUI(QMainWindow):
             self._run_home_verify_action,
         )
         menu.addAction(
+            _("Открыть страницу обновлений", "Open updates page"),
+            lambda: self.show_settings_category("updates"),
+        )
+        menu.addAction(
             _("Перезагрузить промпты", "Reload prompts"),
             lambda: self.event_bus.emit(Events.Model.RELOAD_PROMPTS_ASYNC),
         )
@@ -1297,6 +1301,112 @@ class ChatGUI(QMainWindow):
             self._open_logs_folder,
         )
         menu.exec(anchor_widget.mapToGlobal(QPoint(0, anchor_widget.height())))
+
+    def _run_home_install_unity(self):
+        if getattr(self, "_home_install_thread_running", False):
+            return
+        self._home_install_thread_running = True
+
+        button = getattr(self, "home_primary_button", None)
+        if button is not None:
+            button.setEnabled(False)
+
+        self._set_home_progress(_("Подготовка к установке…", "Preparing installation…"), 0, 0, busy=True)
+
+        import threading
+
+        def _on_progress(downloaded: int, total: int):
+            def apply():
+                if total > 0:
+                    pct = int(max(0, min(100, downloaded * 100 / total)))
+                    mb_done = downloaded / (1024 * 1024)
+                    mb_total = total / (1024 * 1024)
+                    text = _("Загрузка Unity… {done:.1f} / {total:.1f} MB", "Downloading Unity… {done:.1f} / {total:.1f} MB").format(done=mb_done, total=mb_total)
+                    self._set_home_progress(text, pct, 100, busy=False)
+                else:
+                    mb_done = downloaded / (1024 * 1024)
+                    text = _("Загрузка Unity… {done:.1f} MB", "Downloading Unity… {done:.1f} MB").format(done=mb_done)
+                    self._set_home_progress(text, 0, 0, busy=True)
+            QTimer.singleShot(0, apply)
+
+        class _ThreadLogger:
+            """Дублирует сообщения апдейтера в основной логгер и в UI-статус.
+
+            Раньше использовался только UI-канал, и в `NeuroMitaLogs.log` не
+            попадало ничего о ходе установки — пользователь видел спиннер,
+            но не видел причин/прогресса в логе.
+            """
+
+            def __init__(self, gui):
+                self.gui = gui
+
+            def _set(self, prefix: str, msg, level: str):
+                getattr(logger, level, logger.info)(f"[home_install] {msg}")
+                text = f"{prefix}{msg}" if prefix else str(msg)
+                QTimer.singleShot(0, lambda t=text: self.gui._set_home_progress(t, 0, 0, busy=True))
+
+            def info(self, msg): self._set("", msg, "info")
+            def warning(self, msg): self._set("⚠ ", msg, "warning")
+            def error(self, msg): self._set("✗ ", msg, "error")
+            def success(self, msg): self._set("✓ ", msg, "info")
+            def notify(self, msg): self._set("★ ", msg, "info")
+
+        ui_log = _ThreadLogger(self)
+
+        def worker():
+            logger.info("[home_install] Unity install action started")
+            try:
+                from updater import check_for_unity_updates, get_unity_update_info
+
+                channel = self.settings.get("UPDATE_CHANNEL", "stable")
+                tester_code = self.settings.get("TESTER_CODE") or None
+                base_dir = os.environ.get("NEUROMITA_BASE_DIR") or None
+                unity_dir = self.settings.get("UNITY_INSTALL_DIR") or None
+
+                logger.info(
+                    f"[home_install] params: channel={channel}, base_dir={base_dir}, "
+                    f"unity_dir={unity_dir}, tester_code={'set' if tester_code else 'empty'}"
+                )
+
+                info = get_unity_update_info(base_dir=base_dir, unity_dir=unity_dir, channel=channel)
+                logger.info(f"[home_install] update info: {info}")
+                if not info or not info.get("ok"):
+                    err = (info or {}).get("error") or _("неизвестная ошибка", "unknown error")
+                    logger.warning(f"[home_install] check failed: {err}")
+                    QTimer.singleShot(0, lambda: self._set_home_progress(_("Ошибка проверки: {err}", "Check error: {err}").format(err=err), 0, 0, busy=False))
+                    return
+
+                if not info.get("available") and self._find_unity_executable() is not None:
+                    logger.info("[home_install] Unity already up-to-date and installed")
+                    QTimer.singleShot(0, lambda: self._set_home_progress(_("Unity уже установлен.", "Unity already installed."), 100, 100, busy=False))
+                    return
+
+                logger.info("[home_install] Calling check_for_unity_updates(auto_update=True)")
+                check_for_unity_updates(
+                    base_dir=base_dir,
+                    logger=ui_log,
+                    unity_dir=unity_dir,
+                    channel=channel,
+                    tester_code=tester_code,
+                    on_progress=_on_progress,
+                    auto_update=True,
+                )
+                logger.info("[home_install] check_for_unity_updates finished")
+                QTimer.singleShot(0, lambda: self._set_home_progress(_("Установка завершена.", "Installation finished."), 100, 100, busy=False))
+            except Exception as exc:
+                logger.error(f"[home_install] Unity install failed: {exc}", exc_info=True)
+                QTimer.singleShot(0, lambda: self._set_home_progress(_("Ошибка: {err}", "Error: {err}").format(err=exc), 0, 0, busy=False))
+            finally:
+                logger.info("[home_install] worker finished")
+                def _done():
+                    self._home_install_thread_running = False
+                    if button is not None:
+                        button.setEnabled(True)
+                    self._refresh_home_primary_label()
+                    QTimer.singleShot(4000, self._hide_home_progress)
+                QTimer.singleShot(0, _done)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _open_logs_folder(self):
         log_path = Path("NeuroMitaLogs.log")
