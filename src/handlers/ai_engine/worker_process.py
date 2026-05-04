@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 
 _SHARED_WORKER = "shared"
-_SHARED_SERVICES = ("tts", "asr")
+_SHARED_SERVICES = ("tts", "asr", "rag")
 
 
 def _ensure_lib_on_path() -> None:
@@ -231,4 +231,8 @@ def _load_service(service_name: str, emit_event: Callable[[str, Any], None]):
         from handlers.ai_engine.services.asr_service import ASRService
 
         return ASRService(emit_event=emit_event)
+    if sn == "rag":
+        from handlers.ai_engine.services.rag_service import RAGService
+
+        return RAGService(emit_event=emit_event)
     raise RuntimeError(f"Unknown service_name: {service_name}")

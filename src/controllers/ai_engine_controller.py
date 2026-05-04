@@ -14,7 +14,7 @@ from main_logger import logger
 
 _VALID_MODES = frozenset(("auto", "shared", "split"))
 _SHARED_WORKER = "shared"
-_DEFAULT_SERVICES = ("tts", "asr")
+_DEFAULT_SERVICES = ("tts", "asr", "rag")
 
 
 def _detect_gpu_vendor() -> str:
@@ -412,6 +412,32 @@ class AIEngineController:
             self._service_to_worker[s] = s
             nw.start()
             return nw.wait_ready(s, timeout=max(1.0, float(timeout or 0.0)))
+
+    def restart_worker_for_service(self, service: str, timeout: float = 8.0) -> bool:
+        s = str(service or "").strip().lower()
+        with self._lock:
+            worker_name = self._service_to_worker.get(s)
+            w = self._worker_for_service(s)
+            if not worker_name or not w:
+                return False
+
+            service_names = tuple(w.service_names)
+            if not service_names:
+                service_names = (s,)
+
+            try:
+                w.stop(timeout=timeout)
+            except Exception:
+                pass
+
+            nw = _Worker(self._ctx, worker_name, service_names)
+            self._workers[worker_name] = nw
+            for service_name in service_names:
+                self._service_to_worker[service_name] = worker_name
+            nw.start()
+
+            ready_timeout = max(1.0, float(timeout or 0.0))
+            return all(nw.wait_ready(service_name, timeout=ready_timeout) for service_name in service_names)
 
     def shutdown(self, timeout: float = 5.0) -> None:
         with self._lock:

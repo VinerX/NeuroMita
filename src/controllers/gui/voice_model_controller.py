@@ -33,6 +33,8 @@ class VoiceModelGuiController(BaseController):
         self.event_bus.subscribe(Events.VoiceModel.MODEL_INSTALL_FINISHED, self._on_install_finished, weak=False)
         self.event_bus.subscribe(Events.VoiceModel.MODEL_UNINSTALL_STARTED, self._on_uninstall_started, weak=False)
         self.event_bus.subscribe(Events.VoiceModel.MODEL_UNINSTALL_FINISHED, self._on_uninstall_finished, weak=False)
+        self.event_bus.subscribe(Events.VoiceModel.REFRESH_MODEL_PANELS, self._on_refresh_panels_requested, weak=False)
+        self.event_bus.subscribe(Events.VoiceModel.REFRESH_SETTINGS_DISPLAY, self._on_refresh_settings_requested, weak=False)
 
         self.event_bus.subscribe(Events.VoiceModel.UPDATE_DESCRIPTION, self._on_update_description, weak=False)
         self.event_bus.subscribe(Events.VoiceModel.CLEAR_DESCRIPTION, self._on_clear_description, weak=False)
@@ -217,6 +219,14 @@ class VoiceModelGuiController(BaseController):
         self._vm_view.uninstall_finished_signal.emit(payload)
         if bool(payload.get("success")):
             self._after_models_changed()
+
+    def _on_refresh_panels_requested(self, _event: Event):
+        if self._vm_view:
+            self._vm_view.refresh_panels_signal.emit()
+
+    def _on_refresh_settings_requested(self, _event: Event):
+        if self._vm_view:
+            self._vm_view.refresh_settings_signal.emit()
 
     def _on_save_settings(self, event: Event):
         backend = self._backend()
