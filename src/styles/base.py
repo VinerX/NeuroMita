@@ -135,7 +135,6 @@ QPushButton#DangerButton:pressed { background-color: {danger_pressed}; }
 
 QPushButton:focus {
     outline: none;
-    border: 1px solid {accent};
 }
 
 QPushButton:disabled {

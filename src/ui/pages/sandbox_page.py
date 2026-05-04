@@ -3,7 +3,7 @@ import threading
 
 import qtawesome as qta
 
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QSize, QTimer, Qt
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QTabWidget,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -59,8 +59,10 @@ class SandboxPage(QWidget):
         self._chat_panel = None
         self._inspector_collapsed = False
         self._inspector_widget = None
-        self._inspector_tabs = None
+        self._inspector_stack = None
+        self._inspector_tab_host = None
         self._inspector_collapse_btn = None
+        self._inspector_tab_buttons = {}
         self._character_avatar_label = None
         self._asr_retries = 0
         self._inspector_expanded_width = 392
@@ -610,10 +612,44 @@ class SandboxPage(QWidget):
     def show_debug_tab(self):
         if self._inspector_collapsed:
             self._toggle_inspector_collapsed()
-        if self._inspector_tabs is not None:
-            debug_index = self._inspector_tab_indexes.get("debug", self._inspector_tabs.count() - 1)
-            self._inspector_tabs.setCurrentIndex(debug_index)
+        self._set_inspector_tab("debug")
         self._refresh_debug_summary()
+
+    def _repolish(self, widget: QWidget | None) -> None:
+        if widget is None:
+            return
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+        widget.update()
+
+    def _set_inspector_tab(self, tab_key: str) -> None:
+        if self._inspector_stack is None:
+            return
+        index = self._inspector_tab_indexes.get(tab_key)
+        if index is None:
+            return
+        self._inspector_stack.setCurrentIndex(index)
+        for key, button in self._inspector_tab_buttons.items():
+            active = key == tab_key
+            button.setProperty("active", active)
+            button.setChecked(active)
+            self._repolish(button)
+
+    def _make_inspector_tab_button(self, tab_key: str, label: str) -> QPushButton:
+        button = QPushButton(label)
+        button.setObjectName("SandboxInspectorTabButton")
+        button.setCheckable(True)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.clicked.connect(lambda checked=False, key=tab_key: self._set_inspector_tab(key))
+        self._inspector_tab_buttons[tab_key] = button
+        return button
+
+    def _update_inspector_collapse_icon(self) -> None:
+        if self._inspector_collapse_btn is None:
+            return
+        icon_name = "fa6s.angles-left" if self._inspector_collapsed else "fa6s.angles-right"
+        self._inspector_collapse_btn.setIcon(qta.icon(icon_name, color="#ffd6ee"))
+        self._inspector_collapse_btn.setIconSize(QSize(14, 14))
 
     # --------- Building blocks -----------
     def _make_selector_card(self, title: str, icon_name: str | None = None) -> tuple[QFrame, QVBoxLayout]:
@@ -672,9 +708,9 @@ class SandboxPage(QWidget):
 
     def _build_title_bar(self) -> QFrame:
         title_card = QFrame()
-        title_card.setObjectName("SandboxTitleCard")
+        title_card.setObjectName("SandboxWorkspaceHeader")
         title_layout = QHBoxLayout(title_card)
-        title_layout.setContentsMargins(20, 18, 20, 18)
+        title_layout.setContentsMargins(4, 2, 4, 10)
         title_layout.setSpacing(18)
 
         title_col = QVBoxLayout()
@@ -683,6 +719,11 @@ class SandboxPage(QWidget):
         headline_row = QHBoxLayout()
         headline_row.setSpacing(10)
         headline_row.setContentsMargins(0, 0, 0, 0)
+
+        icon_label = QLabel()
+        icon_label.setObjectName("SandboxHeroIcon")
+        icon_label.setPixmap(qta.icon("fa6s.gear", color="#ff6db7").pixmap(22, 22))
+        headline_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         title_label = QLabel(_("Песочница / Sandbox", "Sandbox"))
         title_label.setObjectName("ChatHeroTitle")
@@ -954,71 +995,100 @@ class SandboxPage(QWidget):
 
         layout = QVBoxLayout(inspector)
         layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(8)
+        layout.setSpacing(10)
 
-        # Toolbar with collapse button
-        toolbar = QHBoxLayout()
-        toolbar.setContentsMargins(0, 0, 0, 0)
-        toolbar.setSpacing(0)
-        toolbar.addStretch(1)
-        collapse_btn = QPushButton("»")
-        collapse_btn.setObjectName("SandboxInspectorCollapseBtn")
-        collapse_btn.setFixedSize(28, 28)
-        collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        collapse_btn.setToolTip(_("Свернуть панель", "Collapse panel"))
-        collapse_btn.clicked.connect(self._toggle_inspector_collapsed)
-        toolbar.addWidget(collapse_btn, 0, Qt.AlignmentFlag.AlignRight)
-        self._inspector_collapse_btn = collapse_btn
-        layout.addLayout(toolbar)
+        header = QFrame()
+        header.setObjectName("SandboxInspectorTabHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
 
-        tabs = QTabWidget()
-        tabs.setObjectName("SandboxInspectorTabs")
-        tabs.setDocumentMode(True)
-        self._inspector_tab_indexes = {}
+        tab_host = QWidget()
+        tab_host.setObjectName("SandboxInspectorTabHost")
+        tab_host_layout = QHBoxLayout(tab_host)
+        tab_host_layout.setContentsMargins(0, 0, 0, 0)
+        tab_host_layout.setSpacing(8)
+        self._inspector_tab_host = tab_host
 
         params_page = self._build_inspector_params_tab()
         tools_page = self._build_inspector_tools_tab()
         memory_page = self._build_inspector_memory_tab()
         debug_page = self._build_inspector_debug_tab()
 
-        self._inspector_tab_indexes["params"] = tabs.addTab(params_page, _("Параметры", "Params"))
-        self._inspector_tab_indexes["tools"] = tabs.addTab(tools_page, _("Инструменты", "Tools"))
-        self._inspector_tab_indexes["memory"] = tabs.addTab(memory_page, _("Память", "Memory"))
-        self._inspector_tab_indexes["debug"] = tabs.addTab(debug_page, _("Отладка", "Debug"))
-        layout.addWidget(tabs, 1)
-        self.gui.sandbox_inspector_tabs = tabs
-        self._inspector_tabs = tabs
+        self._inspector_tab_buttons = {}
+        for key, label in (
+            ("params", _("Параметры", "Params")),
+            ("tools", _("Инструменты", "Tools")),
+            ("memory", _("Память", "Memory")),
+            ("debug", _("Отладка", "Debug")),
+        ):
+            tab_host_layout.addWidget(self._make_inspector_tab_button(key, label))
+        tab_host_layout.addStretch(1)
+        header_layout.addWidget(tab_host, 1)
+
+        collapse_btn = QPushButton()
+        collapse_btn.setObjectName("SandboxInspectorCollapseBtn")
+        collapse_btn.setFixedSize(34, 34)
+        collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        collapse_btn.setToolTip(_("Свернуть панель", "Collapse panel"))
+        collapse_btn.clicked.connect(self._toggle_inspector_collapsed)
+        header_layout.addWidget(collapse_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._inspector_collapse_btn = collapse_btn
+        self._update_inspector_collapse_icon()
+        layout.addWidget(header)
+
+        stack = QStackedWidget()
+        stack.setObjectName("SandboxInspectorStack")
+        self._inspector_tab_indexes = {
+            "params": stack.addWidget(params_page),
+            "tools": stack.addWidget(tools_page),
+            "memory": stack.addWidget(memory_page),
+            "debug": stack.addWidget(debug_page),
+        }
+        layout.addWidget(stack, 1)
+        self.gui.sandbox_inspector_tabs = stack
+        self._inspector_stack = stack
+        self._set_inspector_tab("params")
         return inspector
 
     def _toggle_inspector_collapsed(self):
         self._inspector_collapsed = not self._inspector_collapsed
-        if self._inspector_widget is None or self._inspector_tabs is None:
+        if self._inspector_widget is None or self._inspector_stack is None:
             return
         if self._inspector_collapsed:
-            self._inspector_tabs.hide()
+            self._inspector_stack.hide()
+            if self._inspector_tab_host is not None:
+                self._inspector_tab_host.hide()
             self._inspector_widget.setMinimumWidth(self._inspector_collapsed_width)
             self._inspector_widget.setMaximumWidth(self._inspector_collapsed_width)
-            if self._inspector_collapse_btn is not None:
-                self._inspector_collapse_btn.setText("«")
-                self._inspector_collapse_btn.setToolTip(_("Развернуть панель", "Expand panel"))
         else:
-            self._inspector_tabs.show()
+            self._inspector_stack.show()
+            if self._inspector_tab_host is not None:
+                self._inspector_tab_host.show()
             self._inspector_widget.setMinimumWidth(self._inspector_expanded_width)
             self._inspector_widget.setMaximumWidth(self._inspector_expanded_width)
-            if self._inspector_collapse_btn is not None:
-                self._inspector_collapse_btn.setText("»")
-                self._inspector_collapse_btn.setToolTip(_("Свернуть панель", "Collapse panel"))
+        if self._inspector_collapse_btn is not None:
+            self._inspector_collapse_btn.setToolTip(
+                _("Развернуть панель", "Expand panel") if self._inspector_collapsed else _("Свернуть панель", "Collapse panel")
+            )
+        self._update_inspector_collapse_icon()
 
     def _build_ui(self):
-        page_layout = QGridLayout(self)
+        page_layout = QVBoxLayout(self)
         page_layout.setContentsMargins(18, 18, 18, 18)
-        page_layout.setHorizontalSpacing(14)
-        page_layout.setVerticalSpacing(12)
-        page_layout.setColumnStretch(0, 1)
-        page_layout.setColumnStretch(1, 0)
-        page_layout.setRowStretch(1, 1)
+        page_layout.setSpacing(0)
 
-        page_layout.addWidget(self._build_title_bar(), 0, 0, 1, 2)
+        workspace_shell = QFrame()
+        workspace_shell.setObjectName("SandboxWorkspaceShell")
+        shell_layout = QGridLayout(workspace_shell)
+        shell_layout.setContentsMargins(18, 18, 18, 18)
+        shell_layout.setHorizontalSpacing(14)
+        shell_layout.setVerticalSpacing(12)
+        shell_layout.setColumnStretch(0, 1)
+        shell_layout.setColumnStretch(1, 0)
+        shell_layout.setRowStretch(1, 1)
+
+        shell_layout.addWidget(self._build_title_bar(), 0, 0, 1, 2)
 
         left_column = QWidget()
         left_column.setObjectName("SandboxLeftColumn")
@@ -1036,8 +1106,9 @@ class SandboxPage(QWidget):
         chat_host_layout.addWidget(self._chat_panel)
         left_layout.addWidget(chat_host, 1)
 
-        page_layout.addWidget(left_column, 1, 0)
-        page_layout.addWidget(self._build_inspector(), 1, 1)
+        shell_layout.addWidget(left_column, 1, 0)
+        shell_layout.addWidget(self._build_inspector(), 1, 1)
+        page_layout.addWidget(workspace_shell, 1)
 
 
 def build_sandbox_page(window) -> QWidget:
