@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 import qtawesome as qta
-from PyQt6.QtCore import QPoint, QRectF, QTimer, Qt
+from PyQt6.QtCore import QPoint, QRectF, QSize, QTimer, Qt
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
@@ -169,15 +169,17 @@ class HomePage(LauncherHomeBackground):
         left_column.addLayout(backend_row)
 
         button_row = QHBoxLayout()
-        button_row.setSpacing(8)
+        button_row.setSpacing(0)
 
         self.primary_button = QPushButton("")
         self.primary_button.setObjectName("LauncherHomePrimaryButton")
         self.primary_button.clicked.connect(self.run_primary_action)
         button_row.addWidget(self.primary_button, 1)
 
-        menu_button = QPushButton("▾")
+        menu_button = QPushButton("")
         menu_button.setObjectName("LauncherHomeMenuButton")
+        menu_button.setIcon(qta.icon("fa6s.chevron-down", color="#ffd2ec"))
+        menu_button.setIconSize(QSize(14, 14))
         menu_button.clicked.connect(lambda: self.show_extra_menu(menu_button))
         button_row.addWidget(menu_button)
         left_column.addLayout(button_row)
@@ -585,6 +587,11 @@ class HomePage(LauncherHomeBackground):
             self.progress_label.setVisible(True)
         if self.progress_bar is not None:
             self.progress_bar.setVisible(False)
+        self._home_install_thread_running = False
+        if self.primary_button is not None:
+            self.primary_button.setEnabled(True)
+        self.refresh_primary_label()
+        QTimer.singleShot(4000, self.hide_progress)
 
     def run_install_unity(self):
         if self._home_install_thread_running:

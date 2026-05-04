@@ -299,4 +299,61 @@ QTabWidget#SandboxInspectorTabs QTabBar::tab:selected {
 QWidget#SandboxInspectorTabPage {
     background: transparent;
 }
+
+QPushButton#SandboxInspectorCollapseBtn {
+    background: transparent;
+    color: #ffd2ec;
+    border: 1px solid rgba(255, 92, 158, 0.32);
+    border-radius: 14px;
+    min-width: 28px;
+    min-height: 28px;
+    max-width: 28px;
+    max-height: 28px;
+    font-size: 11pt;
+    font-weight: 700;
+    padding: 0;
+}
+QPushButton#SandboxInspectorCollapseBtn:hover {
+    background-color: rgba(255, 92, 168, 0.16);
+    border: 1px solid rgba(255, 92, 168, 0.52);
+}
+QPushButton#SandboxInspectorCollapseBtn:pressed {
+    background-color: rgba(255, 92, 158, 0.24);
+}
+
+QLabel#SandboxCharacterAvatar {
+    border-radius: 16px;
+    min-width: 32px;
+    min-height: 32px;
+    max-width: 32px;
+    max-height: 32px;
+    background: transparent;
+}
+
+QLabel#SandboxSelectorIcon {
+    background: transparent;
+    border: none;
+}
+
+QCheckBox#SandboxCaptureToggle {
+    color: #fff1f9;
+    spacing: 8px;
+    font-size: 10pt;
+    background: transparent;
+    border: none;
+    padding: 2px 0;
+}
+
+QCheckBox#SandboxCaptureToggle::indicator {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 92, 158, 0.36);
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+QCheckBox#SandboxCaptureToggle::indicator:checked {
+    background-color: #ff5ca8;
+    border: 1px solid rgba(255, 92, 168, 0.85);
+}
 """

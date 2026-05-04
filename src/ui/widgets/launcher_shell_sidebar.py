@@ -156,8 +156,11 @@ class LauncherSidebarWidget(QFrame):
         label.setObjectName("LauncherShellEyebrow")
         layout.addWidget(label)
 
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
+        icon_card = QFrame()
+        icon_card.setObjectName("LauncherShellSocialIconCard")
+        icon_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        row = QHBoxLayout(icon_card)
+        row.setContentsMargins(6, 6, 6, 6)
         row.setSpacing(8)
 
         for key, title_text, icon_name in (
@@ -175,7 +178,7 @@ class LauncherSidebarWidget(QFrame):
             row.addWidget(button)
 
         row.addStretch(1)
-        layout.addLayout(row)
+        layout.addWidget(icon_card)
         return wrapper
 
     def _build_footer_block(self) -> QWidget:

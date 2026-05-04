@@ -1,5 +1,12 @@
+import os
+import threading
+
+import qtawesome as qta
+
 from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -12,14 +19,32 @@ from PyQt6.QtWidgets import (
 
 from core.events import Events
 from main_logger import logger
-from ui.pages.settings.settings_page_widget import get_mode_label
+from ui.chat.message_widget import AVATAR_MAP, _get_avatar_dir
 from ui.widgets.chat_panel import ChatPanel
-from ui.widgets.status_indicators_widget import create_status_indicators
 from utils import _
 
 _MODEL_CONFIGURE_SENTINEL = "__configure_models__"
 _TTS_CONFIGURE_SENTINEL = "__configure_tts__"
 _ASR_CONFIGURE_SENTINEL = "__configure_asr__"
+_PROMPT_CONFIGURE_SENTINEL = "__configure_prompts__"
+
+
+def _round_pixmap(src: QPixmap, size: int) -> QPixmap:
+    from PyQt6.QtGui import QPainter, QPainterPath
+    scaled = src.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                        Qt.TransformationMode.SmoothTransformation)
+    out = QPixmap(size, size)
+    out.fill(Qt.GlobalColor.transparent)
+    p = QPainter(out)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.addEllipse(0, 0, size, size)
+    p.setClipPath(path)
+    x = (size - scaled.width()) // 2
+    y = (size - scaled.height()) // 2
+    p.drawPixmap(x, y, scaled)
+    p.end()
+    return out
 
 
 class SandboxPage(QWidget):
@@ -31,6 +56,12 @@ class SandboxPage(QWidget):
         self._memory_limit_values = {}
         self._debug_summary_values = {}
         self._chat_panel = None
+        self._inspector_collapsed = False
+        self._inspector_widget = None
+        self._inspector_tabs = None
+        self._inspector_collapse_btn = None
+        self._character_avatar_label = None
+        self._asr_retries = 0
 
         self._build_ui()
         self._sync_host_exports()
@@ -42,11 +73,9 @@ class SandboxPage(QWidget):
     def _sync_combobox_text(self, combo, value: str):
         if combo is None:
             return
-
         index = combo.findText(value, Qt.MatchFlag.MatchFixedString)
         if index < 0 or combo.currentIndex() == index:
             return
-
         combo.blockSignals(True)
         try:
             combo.setCurrentIndex(index)
@@ -65,6 +94,38 @@ class SandboxPage(QWidget):
         self.gui.switch_main_page("settings")
         self.gui.show_settings_category(category)
 
+    # --------- Avatar -----------
+    def _resolve_avatar_pixmap(self, character_id: str, size: int = 32) -> QPixmap:
+        char_id = (character_id or "").strip()
+        candidates = []
+        if char_id:
+            # Direct match in AVATAR_MAP keys (e.g. "Crazy Mita")
+            for key, fn in AVATAR_MAP.items():
+                if key.lower().startswith(char_id.lower()) or char_id.lower().startswith(key.lower().split()[0]):
+                    candidates.append(fn)
+            candidates.append(f"{char_id.lower()}.png")
+        avatar_dir = _get_avatar_dir()
+        for fn in candidates:
+            path = os.path.join(avatar_dir, fn)
+            if os.path.isfile(path):
+                pm = QPixmap(path)
+                if not pm.isNull():
+                    return _round_pixmap(pm, size)
+        # Fallback icon
+        icon_pm = qta.icon("fa6s.user", color="#ffd2ec").pixmap(size - 4, size - 4)
+        return _round_pixmap(icon_pm, size)
+
+    def _refresh_character_avatar(self):
+        if self._character_avatar_label is None:
+            return
+        char_id = self._get_current_character_id()
+        if not char_id:
+            combo = getattr(self.gui, "chat_character_combobox", None)
+            if combo is not None:
+                char_id = combo.currentText().strip()
+        self._character_avatar_label.setPixmap(self._resolve_avatar_pixmap(char_id, 32))
+
+    # --------- Model -----------
     def _populate_model_combobox(self):
         combo = getattr(self.gui, "chat_model_combobox", None)
         if combo is None:
@@ -114,21 +175,34 @@ class SandboxPage(QWidget):
         combo = getattr(self.gui, "chat_model_combobox", None)
         if combo is None or index < 0:
             return
-
         data = combo.itemData(index)
         if data == _MODEL_CONFIGURE_SENTINEL:
             QTimer.singleShot(0, self._populate_model_combobox)
             self._jump_to_settings("api")
             return
-
         if data is None:
             return
-
         try:
             self.gui.event_bus.emit(Events.ApiPresets.SET_CURRENT_PRESET_ID, {"id": int(data)})
         except Exception as exc:
             logger.error(f"Failed to switch preset: {exc}")
+        self._refresh_debug_summary()
 
+    def _current_preset_name(self) -> str:
+        try:
+            cur = self.gui.event_bus.emit_and_wait(Events.ApiPresets.GET_CURRENT_PRESET_ID, timeout=0.5)
+            cur_id = cur[0] if cur else None
+            lst = self.gui.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=0.5)
+            meta = lst[0] if lst else {}
+            for preset in (meta or {}).get("custom", []) or []:
+                pid = getattr(preset, "id", None)
+                if pid is not None and cur_id is not None and int(pid) == int(cur_id):
+                    return str(getattr(preset, "name", "") or "")
+        except Exception:
+            pass
+        return ""
+
+    # --------- TTS -----------
     def _populate_tts_combobox(self):
         combo = getattr(self.gui, "chat_tts_combobox", None)
         if combo is None:
@@ -185,11 +259,9 @@ class SandboxPage(QWidget):
         combo = getattr(self.gui, "chat_tts_combobox", None)
         if combo is None or index < 0:
             return
-
         data = combo.itemData(index)
         if not isinstance(data, tuple):
             return
-
         kind, model_id = data
         if kind == _TTS_CONFIGURE_SENTINEL:
             QTimer.singleShot(0, self._populate_tts_combobox)
@@ -212,6 +284,7 @@ class SandboxPage(QWidget):
 
         self._refresh_debug_summary()
 
+    # --------- ASR -----------
     def _populate_asr_combobox(self):
         combo = getattr(self.gui, "chat_asr_combobox", None)
         if combo is None:
@@ -239,9 +312,15 @@ class SandboxPage(QWidget):
                     for engine in engines:
                         combo.addItem(engine, engine)
                     combo.insertSeparator(combo.count())
-                combo.setEnabled(True)
+                    self._asr_retries = 0
+                else:
+                    if self._asr_retries < 1:
+                        self._asr_retries += 1
+                        QTimer.singleShot(1500, self._populate_asr_combobox)
 
                 combo.addItem(_("Настроить…", "Configure…"), _ASR_CONFIGURE_SENTINEL)
+                combo.setEnabled(True)
+
                 current = str(self.gui._get_setting("RECOGNIZER_TYPE", "") or "")
                 for index in range(combo.count()):
                     if combo.itemData(index) == current:
@@ -249,12 +328,21 @@ class SandboxPage(QWidget):
                         break
             finally:
                 combo.blockSignals(False)
+            self._refresh_debug_summary()
 
-        def callback(result, error=None):
-            QTimer.singleShot(0, lambda r=result: _apply(r if isinstance(r, list) else []))
+        def _worker():
+            try:
+                res = self.gui.event_bus.emit_and_wait(Events.Speech.GET_ASR_MODELS_GLOSSARY, timeout=5.0)
+                items = res[0] if res else []
+                if not isinstance(items, list):
+                    items = []
+            except Exception:
+                items = []
+            QTimer.singleShot(0, lambda r=items: _apply(r))
 
         try:
-            self.gui.event_bus.emit(Events.Speech.GET_ASR_MODELS_GLOSSARY, {"callback": callback})
+            t = threading.Thread(target=_worker, daemon=True)
+            t.start()
         except Exception:
             _apply([])
 
@@ -262,16 +350,13 @@ class SandboxPage(QWidget):
         combo = getattr(self.gui, "chat_asr_combobox", None)
         if combo is None or index < 0:
             return
-
         data = combo.itemData(index)
         if data == _ASR_CONFIGURE_SENTINEL:
             QTimer.singleShot(0, self._populate_asr_combobox)
             self._jump_to_settings("microphone")
             return
-
         if not data:
             return
-
         try:
             self.gui.settings.set("RECOGNIZER_TYPE", str(data))
         except Exception:
@@ -279,29 +364,80 @@ class SandboxPage(QWidget):
                 self.gui.settings["RECOGNIZER_TYPE"] = str(data)
             except Exception:
                 pass
-
-    def _on_chat_mode_changed(self, value: str):
-        value = (value or "").strip()
-        if not value:
-            return
-
-        try:
-            self.gui.settings.set("INTERFACE_MODE", value)
-        except Exception:
-            try:
-                self.gui.settings["INTERFACE_MODE"] = value
-            except Exception:
-                pass
-
-        try:
-            from ui.widgets.settings_panel import apply_interface_mode
-
-            apply_interface_mode(self.gui, value)
-        except Exception as exc:
-            logger.info(f"apply_interface_mode failed: {exc}")
-
         self._refresh_debug_summary()
 
+    # --------- Prompt set -----------
+    def _populate_prompt_pack_combobox(self):
+        combo = getattr(self.gui, "chat_prompt_pack_combobox", None)
+        if combo is None:
+            return
+        char_id = self._get_current_character_id()
+        if not char_id:
+            char_combo = getattr(self.gui, "chat_character_combobox", None)
+            if char_combo is not None:
+                char_id = char_combo.currentText().strip()
+
+        try:
+            from managers.prompt_catalogue_manager import list_prompt_sets
+            options = list_prompt_sets("Prompts", char_id) or []
+        except Exception:
+            options = []
+
+        current = ""
+        if char_id:
+            try:
+                current = str(self.gui._get_setting(f"PROMPT_SET_{char_id}", "") or "")
+            except Exception:
+                current = ""
+
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            if options:
+                for name in options:
+                    combo.addItem(str(name), str(name))
+            else:
+                combo.addItem(_("Нет наборов", "No sets"), None)
+            combo.insertSeparator(combo.count())
+            combo.addItem(_("Настроить…", "Configure…"), _PROMPT_CONFIGURE_SENTINEL)
+
+            if current:
+                idx = combo.findText(current, Qt.MatchFlag.MatchFixedString)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+        finally:
+            combo.blockSignals(False)
+
+    def _on_chat_prompt_pack_changed(self, index: int):
+        combo = getattr(self.gui, "chat_prompt_pack_combobox", None)
+        if combo is None or index < 0:
+            return
+        data = combo.itemData(index)
+        if data == _PROMPT_CONFIGURE_SENTINEL:
+            QTimer.singleShot(0, self._populate_prompt_pack_combobox)
+            self._jump_to_settings("character")
+            return
+        if not data:
+            return
+        char_id = self._get_current_character_id()
+        if not char_id:
+            char_combo = getattr(self.gui, "chat_character_combobox", None)
+            if char_combo is not None:
+                char_id = char_combo.currentText().strip()
+        if not char_id:
+            return
+        try:
+            self.gui.settings.set(f"PROMPT_SET_{char_id}", str(data))
+            try:
+                self.gui.settings.save_settings()
+            except Exception:
+                pass
+            self.gui.event_bus.emit(Events.Character.RELOAD_DATA)
+        except Exception as exc:
+            logger.error(f"Failed to switch prompt set: {exc}")
+        self._refresh_debug_summary()
+
+    # --------- Character -----------
     def _populate_chat_character_combobox(self):
         combo = getattr(self.gui, "chat_character_combobox", None)
         if combo is None:
@@ -336,40 +472,46 @@ class SandboxPage(QWidget):
                 settings_combo.setCurrentIndex(index)
                 if self._chat_panel is not None:
                     self._chat_panel.on_activated()
+                self._refresh_character_avatar()
+                self._populate_prompt_pack_combobox()
+                self._refresh_debug_summary()
                 return
 
         self.gui.event_bus.emit(Events.Character.SET_CURRENT, {"character_id": character_id})
         self.gui.event_bus.emit(Events.Character.RELOAD_DATA)
         if self._chat_panel is not None:
             self._chat_panel.on_activated()
+        self._refresh_character_avatar()
+        self._populate_prompt_pack_combobox()
+        self._refresh_debug_summary()
 
     def _open_selected_character_history(self):
         combo = getattr(self.gui, "chat_character_combobox", None)
         character_id = combo.currentText().strip() if combo is not None else ""
         if character_id:
             self.gui.event_bus.emit(Events.Character.SET_CURRENT, {"character_id": character_id})
-
         try:
             from ui.settings.character_settings.logic import open_db_viewer
-
             open_db_viewer(self.gui)
         except Exception as exc:
             logger.error(f"Failed to open character history: {exc}", exc_info=True)
 
-    def _refresh_memory_profile_combo(self):
-        combo = getattr(self.gui, "sandbox_memory_profile_combo", None)
+    # --------- RAG / memory profile -----------
+    def _memory_profile_labels(self):
+        from ui.settings.memory_profile import KEY_TO_LABEL_EN, KEY_TO_LABEL_RU
+        lang = str(self.gui._get_setting("LANGUAGE", "RU") or "RU").upper()
+        return KEY_TO_LABEL_EN if lang == "EN" else KEY_TO_LABEL_RU
+
+    def _refresh_rag_combo(self):
+        combo = getattr(self.gui, "chat_rag_combobox", None)
         if combo is None:
             return
-
         try:
-            from ui.settings.memory_profile import KEY_TO_LABEL_EN, KEY_TO_LABEL_RU, detect_memory_profile
-
-            lang = str(self.gui._get_setting("LANGUAGE", "RU") or "RU").upper()
-            key_to_label = KEY_TO_LABEL_EN if lang == "EN" else KEY_TO_LABEL_RU
+            from ui.settings.memory_profile import detect_memory_profile
+            key_to_label = self._memory_profile_labels()
             current_label = key_to_label.get(detect_memory_profile(self.gui))
         except Exception:
             current_label = None
-
         if current_label:
             self._sync_combobox_text(combo, current_label)
 
@@ -383,62 +525,107 @@ class SandboxPage(QWidget):
             if value_label is not None:
                 value_label.setText(str(self.gui._get_setting(key, fallback)))
 
-    def _refresh_debug_summary(self):
-        values = {
-            "voice": str(self.gui._get_setting("VOICEOVER_METHOD", "TG")),
-            "screen": _("Включён", "Enabled") if self.gui._get_setting("ENABLE_SCREEN_ANALYSIS", False) else _("Выключен", "Disabled"),
-            "camera": _("Включена", "Enabled") if self.gui._get_setting("ENABLE_CAMERA_CAPTURE", False) else _("Выключена", "Disabled"),
-            "mode": get_mode_label(self.gui._get_setting("INTERFACE_MODE", _("Базовый", "Basic"))),
-        }
-        for key, text in values.items():
-            label = self._debug_summary_values.get(key)
-            if label is not None:
-                label.setText(text)
-
-    def _on_memory_profile_changed(self, label: str):
+    def _on_rag_changed(self, label: str):
         try:
             from ui.settings.memory_profile import apply_memory_profile
         except Exception:
             apply_memory_profile = None
-
         if apply_memory_profile is not None:
             apply_memory_profile(self.gui, label)
-
         try:
             self.gui.settings.set("MEMORY_PROFILE", label)
+            try:
+                self.gui.settings.save_settings()
+            except Exception:
+                pass
         except Exception:
             try:
                 self.gui.settings["MEMORY_PROFILE"] = label
             except Exception:
                 pass
-
         self._refresh_memory_summary()
+        self._refresh_debug_summary()
 
+    # --------- Debug summary -----------
+    def _refresh_debug_summary(self):
+        get = self.gui._get_setting
+        on_off = lambda v: (_("Вкл", "On") if v else _("Выкл", "Off"))
+
+        def safe(key, fn):
+            try:
+                self._debug_summary_values[key].setText(str(fn()))
+            except Exception:
+                try:
+                    self._debug_summary_values[key].setText("—")
+                except Exception:
+                    pass
+
+        if "character" in self._debug_summary_values:
+            safe("character", lambda: self._get_current_character_id() or "—")
+        if "prompts" in self._debug_summary_values:
+            def _prompts():
+                cid = self._get_current_character_id()
+                return get(f"PROMPT_SET_{cid}", "") or "—" if cid else "—"
+            safe("prompts", _prompts)
+        if "model" in self._debug_summary_values:
+            safe("model", lambda: self._current_preset_name() or "—")
+        if "voice" in self._debug_summary_values:
+            safe("voice", lambda: str(get("VOICEOVER_METHOD", "TG")))
+        if "asr" in self._debug_summary_values:
+            safe("asr", lambda: str(get("RECOGNIZER_TYPE", "") or "—"))
+        if "rag" in self._debug_summary_values:
+            def _rag():
+                from ui.settings.memory_profile import detect_memory_profile
+                key_to_label = self._memory_profile_labels()
+                return key_to_label.get(detect_memory_profile(self.gui), "—")
+            safe("rag", _rag)
+        if "messages" in self._debug_summary_values:
+            safe("messages", lambda: str(get("MODEL_MESSAGE_LIMIT", 35)))
+        if "memory" in self._debug_summary_values:
+            safe("memory", lambda: str(get("MEMORY_CAPACITY", 50)))
+        if "screen" in self._debug_summary_values:
+            safe("screen", lambda: on_off(get("ENABLE_SCREEN_ANALYSIS", False)))
+        if "camera" in self._debug_summary_values:
+            safe("camera", lambda: on_off(get("ENABLE_CAMERA_CAPTURE", False)))
+
+    # --------- Activation -----------
     def on_activated(self):
         self._populate_chat_character_combobox()
         self._populate_model_combobox()
         self._populate_tts_combobox()
+        self._asr_retries = 0
         self._populate_asr_combobox()
-        self._sync_combobox_text(
-            getattr(self.gui, "chat_mode_combobox", None),
-            get_mode_label(self.gui._get_setting("INTERFACE_MODE", _("Базовый", "Basic"))),
-        )
-        self._refresh_memory_profile_combo()
+        self._populate_prompt_pack_combobox()
+        self._refresh_character_avatar()
+        self._refresh_rag_combo()
         self._refresh_memory_summary()
         self._refresh_debug_summary()
         if self._chat_panel is not None:
             self._chat_panel.on_activated()
 
-    def _make_selector_card(self, title: str) -> tuple[QFrame, QVBoxLayout]:
+    # --------- Building blocks -----------
+    def _make_selector_card(self, title: str, icon_name: str | None = None) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
         card.setObjectName("SandboxSelectorCard")
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(6)
 
+        title_row = QHBoxLayout()
+        title_row.setSpacing(6)
+        title_row.setContentsMargins(0, 0, 0, 0)
+
+        if icon_name:
+            icon_label = QLabel()
+            icon_label.setObjectName("SandboxSelectorIcon")
+            icon_label.setPixmap(qta.icon(icon_name, color="#ffd2ec").pixmap(14, 14))
+            title_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
+
         label = QLabel(title)
         label.setObjectName("SandboxSelectorLabel")
-        layout.addWidget(label)
+        title_row.addWidget(label, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addStretch(1)
+        layout.addLayout(title_row)
         return card, layout
 
     def _make_tab_page(self) -> tuple[QWidget, QVBoxLayout]:
@@ -449,16 +636,26 @@ class SandboxPage(QWidget):
         layout.setSpacing(12)
         return page, layout
 
-    def _make_inspector_card(self, title_text: str | None = None) -> tuple[QFrame, QVBoxLayout]:
+    def _make_inspector_card(self, title_text: str | None = None, icon_name: str | None = None) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
         card.setObjectName("SandboxInspectorCard")
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(8)
         if title_text:
+            title_row = QHBoxLayout()
+            title_row.setSpacing(6)
+            title_row.setContentsMargins(0, 0, 0, 0)
+            if icon_name:
+                icon_label = QLabel()
+                icon_label.setObjectName("SandboxSelectorIcon")
+                icon_label.setPixmap(qta.icon(icon_name, color="#ffd2ec").pixmap(14, 14))
+                title_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
             title = QLabel(title_text)
             title.setObjectName("SandboxInspectorTitle")
-            layout.addWidget(title)
+            title_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
+            title_row.addStretch(1)
+            layout.addLayout(title_row)
         return card, layout
 
     def _build_header(self) -> QFrame:
@@ -497,15 +694,36 @@ class SandboxPage(QWidget):
         selectors = QHBoxLayout()
         selectors.setSpacing(10)
 
-        character_card, character_layout = self._make_selector_card(_("Персонаж", "Character"))
+        # ----- Character (smaller, with avatar) -----
+        character_card, character_layout = self._make_selector_card(_("Персонаж", "Character"), "fa6s.user")
+        char_row = QHBoxLayout()
+        char_row.setSpacing(8)
+        char_row.setContentsMargins(0, 0, 0, 0)
+
+        self._character_avatar_label = QLabel()
+        self._character_avatar_label.setObjectName("SandboxCharacterAvatar")
+        self._character_avatar_label.setFixedSize(32, 32)
+        char_row.addWidget(self._character_avatar_label, 0, Qt.AlignmentFlag.AlignVCenter)
+
         self.gui.chat_character_combobox = QComboBox()
         self.gui.chat_character_combobox.setObjectName("ChatCharacterCombo")
         self.gui.chat_character_combobox.setToolTip(_("Выбрать персонажа", "Select character"))
         self.gui.chat_character_combobox.currentTextChanged.connect(self._on_chat_character_changed)
-        character_layout.addWidget(self.gui.chat_character_combobox)
+        char_row.addWidget(self.gui.chat_character_combobox, 1)
+        character_layout.addLayout(char_row)
         selectors.addWidget(character_card, 2)
 
-        model_card, model_layout = self._make_selector_card(_("Модель", "Model"))
+        # ----- Prompt set -----
+        prompt_card, prompt_layout = self._make_selector_card(_("Набор промптов", "Prompt set"), "fa6s.scroll")
+        self.gui.chat_prompt_pack_combobox = QComboBox()
+        self.gui.chat_prompt_pack_combobox.setObjectName("ChatCharacterCombo")
+        self.gui.chat_prompt_pack_combobox.setToolTip(_("Активный набор промптов", "Active prompt set"))
+        self.gui.chat_prompt_pack_combobox.currentIndexChanged.connect(self._on_chat_prompt_pack_changed)
+        prompt_layout.addWidget(self.gui.chat_prompt_pack_combobox)
+        selectors.addWidget(prompt_card, 2)
+
+        # ----- Model -----
+        model_card, model_layout = self._make_selector_card(_("Модель", "Model"), "fa6s.microchip")
         self.gui.chat_model_combobox = QComboBox()
         self.gui.chat_model_combobox.setObjectName("ChatCharacterCombo")
         self.gui.chat_model_combobox.setToolTip(_("Активный API-пресет (модель)", "Active API preset (model)"))
@@ -513,15 +731,17 @@ class SandboxPage(QWidget):
         model_layout.addWidget(self.gui.chat_model_combobox)
         selectors.addWidget(model_card, 2)
 
-        tts_card, tts_layout = self._make_selector_card(_("TTS", "TTS"))
+        # ----- TTS -----
+        tts_card, tts_layout = self._make_selector_card(_("TTS", "TTS"), "fa6s.volume-high")
         self.gui.chat_tts_combobox = QComboBox()
         self.gui.chat_tts_combobox.setObjectName("ChatCharacterCombo")
-        self.gui.chat_tts_combobox.setToolTip(_("Способ озвучки: TG или установленные локальные модели", "Voice output: TG or installed local models"))
+        self.gui.chat_tts_combobox.setToolTip(_("Способ озвучки", "Voice output"))
         self.gui.chat_tts_combobox.currentIndexChanged.connect(self._on_chat_voice_changed)
         tts_layout.addWidget(self.gui.chat_tts_combobox)
         selectors.addWidget(tts_card, 1)
 
-        asr_card, asr_layout = self._make_selector_card(_("ASR", "ASR"))
+        # ----- ASR -----
+        asr_card, asr_layout = self._make_selector_card(_("ASR", "ASR"), "fa6s.microphone")
         self.gui.chat_asr_combobox = QComboBox()
         self.gui.chat_asr_combobox.setObjectName("ChatCharacterCombo")
         self.gui.chat_asr_combobox.setToolTip(_("Установленные модели распознавания речи", "Installed speech recognition models"))
@@ -529,31 +749,49 @@ class SandboxPage(QWidget):
         asr_layout.addWidget(self.gui.chat_asr_combobox)
         selectors.addWidget(asr_card, 1)
 
-        mode_card, mode_layout = self._make_selector_card(_("Режим интерфейса", "UI mode"))
-        self.gui.chat_mode_combobox = QComboBox()
-        self.gui.chat_mode_combobox.setObjectName("ChatCharacterCombo")
-        self.gui.chat_mode_combobox.setToolTip(_("Режим интерфейса (объём настроек)", "UI mode (settings depth)"))
-        self.gui.chat_mode_combobox.addItems(
-            [
-                _("Базовый", "Basic"),
-                _("Продвинутый", "Advanced"),
-                _("Полный", "Full"),
-            ]
-        )
-        self.gui.chat_mode_combobox.currentTextChanged.connect(self._on_chat_mode_changed)
-        mode_layout.addWidget(self.gui.chat_mode_combobox)
-        selectors.addWidget(mode_card, 1)
+        # ----- RAG mode -----
+        rag_card, rag_layout = self._make_selector_card(_("Режим RAG", "RAG mode"), "fa6s.brain")
+        self.gui.chat_rag_combobox = QComboBox()
+        self.gui.chat_rag_combobox.setObjectName("ChatCharacterCombo")
+        self.gui.chat_rag_combobox.setToolTip(_("Профиль памяти / RAG", "Memory / RAG profile"))
+        labels = self._memory_profile_labels()
+        self.gui.chat_rag_combobox.addItems([
+            labels.get("optimized", "Optimized"),
+            labels.get("balanced", "Balanced"),
+            labels.get("large", "Large"),
+            labels.get("custom", "Custom"),
+        ])
+        self.gui.chat_rag_combobox.currentTextChanged.connect(self._on_rag_changed)
+        rag_layout.addWidget(self.gui.chat_rag_combobox)
+        selectors.addWidget(rag_card, 1)
 
         hero_layout.addLayout(selectors)
         return hero_card
 
+    # --------- Inspector tabs -----------
     def _build_inspector_params_tab(self) -> QWidget:
         page, layout = self._make_tab_page()
 
-        status_card, status_layout = self._make_inspector_card(_("Подключения", "Connections"))
-        create_status_indicators(self.gui, status_layout)
-        layout.addWidget(status_card)
+        # Capture card
+        capture_card, capture_layout = self._make_inspector_card(_("Захват / Capture", "Capture"), "fa6s.camera-retro")
 
+        screen_cb = QCheckBox(_("Захват экрана", "Screen capture"))
+        screen_cb.setObjectName("SandboxCaptureToggle")
+        screen_cb.setChecked(bool(self.gui._get_setting("ENABLE_SCREEN_ANALYSIS", False)))
+        screen_cb.toggled.connect(lambda v: self._on_capture_toggle("ENABLE_SCREEN_ANALYSIS", v))
+        capture_layout.addWidget(screen_cb)
+        self._capture_screen_cb = screen_cb
+
+        camera_cb = QCheckBox(_("Захват с камеры", "Camera capture"))
+        camera_cb.setObjectName("SandboxCaptureToggle")
+        camera_cb.setChecked(bool(self.gui._get_setting("ENABLE_CAMERA_CAPTURE", False)))
+        camera_cb.toggled.connect(lambda v: self._on_capture_toggle("ENABLE_CAMERA_CAPTURE", v))
+        capture_layout.addWidget(camera_cb)
+        self._capture_camera_cb = camera_cb
+
+        layout.addWidget(capture_card)
+
+        # Quick actions
         quick_card, quick_layout = self._make_inspector_card(_("Быстрые действия", "Quick actions"))
         self.gui.clear_chat_button = QPushButton(_("Очистить чат", "Clear chat"))
         self.gui.clear_chat_button.setObjectName("SandboxQuickAction")
@@ -574,23 +812,22 @@ class SandboxPage(QWidget):
         layout.addStretch(1)
         return page
 
+    def _on_capture_toggle(self, key: str, value: bool):
+        try:
+            self.gui.settings.set(key, bool(value))
+            try:
+                self.gui.settings.save_settings()
+            except Exception:
+                pass
+        except Exception:
+            try:
+                self.gui.settings[key] = bool(value)
+            except Exception:
+                pass
+        self._refresh_debug_summary()
+
     def _build_inspector_memory_tab(self) -> QWidget:
         page, layout = self._make_tab_page()
-
-        profile_card, profile_layout = self._make_inspector_card(_("Профиль памяти", "Memory profile"))
-        self.gui.sandbox_memory_profile_combo = QComboBox()
-        self.gui.sandbox_memory_profile_combo.setObjectName("ChatCharacterCombo")
-        self.gui.sandbox_memory_profile_combo.addItems(
-            [
-                _("Оптимизированный", "Optimized"),
-                _("Сбалансированный", "Balanced"),
-                _("Большой", "Large"),
-                _("Своё", "Custom"),
-            ]
-        )
-        self.gui.sandbox_memory_profile_combo.currentTextChanged.connect(self._on_memory_profile_changed)
-        profile_layout.addWidget(self.gui.sandbox_memory_profile_combo)
-        layout.addWidget(profile_card)
 
         counts_card, counts_layout = self._make_inspector_card(_("Лимиты памяти", "Memory limits"))
         for label_text, key, fallback in (
@@ -623,28 +860,26 @@ class SandboxPage(QWidget):
         page, layout = self._make_tab_page()
 
         summary_card, summary_layout = self._make_inspector_card(_("Контекст сессии", "Session context"))
-        summary_lines = [
-            ("voice", _("Голос", "Voice"), str(self.gui._get_setting("VOICEOVER_METHOD", "TG"))),
-            (
-                "screen",
-                _("Экран", "Screen"),
-                _("Включён", "Enabled") if self.gui._get_setting("ENABLE_SCREEN_ANALYSIS", False) else _("Выключен", "Disabled"),
-            ),
-            (
-                "camera",
-                _("Камера", "Camera"),
-                _("Включена", "Enabled") if self.gui._get_setting("ENABLE_CAMERA_CAPTURE", False) else _("Выключена", "Disabled"),
-            ),
-            ("mode", _("Режим", "Mode"), get_mode_label(self.gui._get_setting("INTERFACE_MODE", _("Базовый", "Basic")))),
+        rows = [
+            ("character", _("Персонаж", "Character")),
+            ("prompts", _("Промпты", "Prompts")),
+            ("model", _("Модель", "Model")),
+            ("voice", _("Голос", "Voice")),
+            ("asr", _("ASR", "ASR")),
+            ("rag", _("RAG-режим", "RAG mode")),
+            ("messages", _("Сообщений в окне", "Messages")),
+            ("memory", _("Память", "Memory")),
+            ("screen", _("Захват экрана", "Screen capture")),
+            ("camera", _("Камера", "Camera")),
         ]
-        for key, label_text, value_text in summary_lines:
+        for key, label_text in rows:
             row = QHBoxLayout()
             row.setSpacing(8)
             label = QLabel(label_text)
             label.setObjectName("SandboxInspectorLabel")
             row.addWidget(label)
             row.addStretch()
-            value = QLabel(value_text)
+            value = QLabel("—")
             value.setObjectName("SandboxInspectorValue")
             row.addWidget(value)
             summary_layout.addLayout(row)
@@ -674,11 +909,28 @@ class SandboxPage(QWidget):
     def _build_inspector(self) -> QWidget:
         inspector = QWidget()
         inspector.setObjectName("SandboxInspector")
-        inspector.setFixedWidth(320)
+        inspector.setMinimumWidth(320)
+        inspector.setMaximumWidth(320)
+        self._inspector_widget = inspector
 
         layout = QVBoxLayout(inspector)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setSpacing(4)
+
+        # Toolbar with collapse button
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(0)
+        toolbar.addStretch(1)
+        collapse_btn = QPushButton("»")
+        collapse_btn.setObjectName("SandboxInspectorCollapseBtn")
+        collapse_btn.setFixedSize(28, 28)
+        collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        collapse_btn.setToolTip(_("Свернуть панель", "Collapse panel"))
+        collapse_btn.clicked.connect(self._toggle_inspector_collapsed)
+        toolbar.addWidget(collapse_btn, 0, Qt.AlignmentFlag.AlignRight)
+        self._inspector_collapse_btn = collapse_btn
+        layout.addLayout(toolbar)
 
         tabs = QTabWidget()
         tabs.setObjectName("SandboxInspectorTabs")
@@ -688,7 +940,27 @@ class SandboxPage(QWidget):
         tabs.addTab(self._build_inspector_debug_tab(), _("Отладка", "Debug"))
         layout.addWidget(tabs, 1)
         self.gui.sandbox_inspector_tabs = tabs
+        self._inspector_tabs = tabs
         return inspector
+
+    def _toggle_inspector_collapsed(self):
+        self._inspector_collapsed = not self._inspector_collapsed
+        if self._inspector_widget is None or self._inspector_tabs is None:
+            return
+        if self._inspector_collapsed:
+            self._inspector_tabs.hide()
+            self._inspector_widget.setMinimumWidth(36)
+            self._inspector_widget.setMaximumWidth(36)
+            if self._inspector_collapse_btn is not None:
+                self._inspector_collapse_btn.setText("«")
+                self._inspector_collapse_btn.setToolTip(_("Развернуть панель", "Expand panel"))
+        else:
+            self._inspector_tabs.show()
+            self._inspector_widget.setMinimumWidth(320)
+            self._inspector_widget.setMaximumWidth(320)
+            if self._inspector_collapse_btn is not None:
+                self._inspector_collapse_btn.setText("»")
+                self._inspector_collapse_btn.setToolTip(_("Свернуть панель", "Collapse panel"))
 
     def _build_ui(self):
         page_layout = QVBoxLayout(self)

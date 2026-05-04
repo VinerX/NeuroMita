@@ -79,6 +79,14 @@ class ChatPanel(QWidget):
 
         layout.addStretch(1)
 
+        history_button = QPushButton(_("История", "History"))
+        history_button.setObjectName("ChatStripGhostButton")
+        history_button.setIcon(qta.icon("fa6s.database", color="#ffd2ec"))
+        history_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        history_button.setToolTip(_("Открыть базу истории персонажа", "Open character history database"))
+        history_button.clicked.connect(self._open_character_history)
+        layout.addWidget(history_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
         clear_button = QPushButton(_("Очистить чат", "Clear chat"))
         clear_button.setObjectName("ChatStripGhostButton")
         clear_button.setIcon(qta.icon("fa6s.trash", color="#ffd2ec"))
@@ -87,6 +95,17 @@ class ChatPanel(QWidget):
         layout.addWidget(clear_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
         return strip
+
+    def _open_character_history(self):
+        try:
+            combo = getattr(self.gui, "chat_character_combobox", None)
+            character_id = combo.currentText().strip() if combo is not None else ""
+            if character_id:
+                self.gui.event_bus.emit(Events.Character.SET_CURRENT, {"character_id": character_id})
+            from ui.settings.character_settings.logic import open_db_viewer
+            open_db_viewer(self.gui)
+        except Exception as exc:
+            logger.error(f"Failed to open character history: {exc}", exc_info=True)
 
     def _build_composer(self) -> QFrame:
         input_frame = QFrame()

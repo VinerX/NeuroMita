@@ -197,6 +197,12 @@ def get_launcher_shell_stylesheet() -> str:
     QWidget#LauncherShellFooterBlock {{
         background: transparent;
     }}
+    QFrame#LauncherShellSocialIconCard {{
+        background-color: rgba(255, 92, 168, 0.06);
+        border: 1px solid rgba(255, 92, 168, 0.18);
+        border-radius: 14px;
+        padding: 6px;
+    }}
     QFrame#LauncherShellBrandRow {{
         background: transparent;
         border: none;

@@ -135,7 +135,10 @@ QPushButton#LauncherHomePrimaryButton {
         stop: 1 #c81663
     );
     border: 1px solid rgba(255, 179, 212, 0.42);
-    border-radius: 16px;
+    border-top-left-radius: 16px;
+    border-bottom-left-radius: 16px;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
     color: #ffffff;
     padding: 16px 22px;
     font-size: 16pt;
@@ -152,18 +155,31 @@ QPushButton#LauncherHomePrimaryButton:hover {
 }
 
 QPushButton#LauncherHomeMenuButton {
-    min-width: 56px;
+    min-width: 44px;
     min-height: 56px;
     background-color: rgba(34, 16, 26, 0.96);
     border: 1px solid rgba(255, 92, 158, 0.22);
-    border-radius: 16px;
+    border-left: 1px solid rgba(255, 255, 255, 0.10);
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-top-right-radius: 16px;
+    border-bottom-right-radius: 16px;
     color: #ffd6e1;
     font-size: 16pt;
     font-weight: 700;
     letter-spacing: 0px;
 }
 
-QPushButton#LauncherHomeMenuButton:hover,
+QPushButton#LauncherHomeMenuButton:hover {
+    background-color: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 rgba(60, 22, 38, 0.96),
+        stop: 1 rgba(80, 28, 50, 0.96)
+    );
+    border: 1px solid rgba(255, 92, 158, 0.42);
+    border-left: 1px solid rgba(255, 255, 255, 0.14);
+}
+
 QPushButton#LauncherHomeVerifyButton:hover {
     background-color: rgba(42, 16, 25, 0.96);
     border: 1px solid rgba(255, 92, 158, 0.32);
