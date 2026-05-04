@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ui.pages.settings.section_registry import iter_settings_button_specs
 from ui.widgets.settings_icon_button import SettingsIconButton
 from ui.widgets.settings_overlay_widget import SettingsOverlay
 from utils import _
@@ -315,22 +316,7 @@ def create_settings_page(gui) -> QWidget:
     gui.settings_buttons = {}
     gui._category_modes = {}
 
-    settings_categories = [
-        ("fa6s.gear", _("General", "General"), "general", "basic"),
-        ("fa6s.plug", _("API", "API"), "api", "basic"),
-        ("fa6s.user", _("Characters", "Characters"), "characters", "basic"),
-        ("fa6s.volume-high", _("Voice", "Voice"), "voice", "advanced"),
-        ("fa6s.microphone", _("ASR", "ASR"), "microphone", "advanced"),
-        ("fa5s.gamepad", _("Game", "Game"), "game", "advanced"),
-        ("fa6s.robot", _("Models", "Models"), "models", "full"),
-        ("fa6s.display", _("Screen", "Screen"), "screen", "full"),
-        ("fa6s.bug", _("Debug", "Debug"), "debug", "full"),
-        ("fa6s.newspaper", _("News", "News"), "news", "full"),
-        ("fa5s.database", _("Data", "Data"), "data", "full"),
-        ("fa6s.rotate", _("Updates", "Updates"), "updates", "advanced"),
-    ]
-
-    for index, (icon_name, label, category, min_mode) in enumerate(settings_categories):
+    for index, (icon_name, label, category, min_mode) in enumerate(iter_settings_button_specs()):
         btn = SettingsIconButton(icon_name, label, category_key=category)
         btn.clicked.connect(lambda checked=False, cat=category: gui.show_settings_category(cat))
         tabs_layout.addWidget(btn, index // 4, index % 4)

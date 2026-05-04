@@ -370,7 +370,7 @@ ensure_project_root()
 
 import threading
 
-from ui.windows.main_view import ChatGUI
+from ui.windows.main_window import MainWindow
 from controllers.main_controller import MainController
 from core.events import get_event_bus
 from main_logger import logger
@@ -401,9 +401,9 @@ if __name__ == "__main__":
         except Exception as _ft_init_err:
             logger.warning(f"FineTuneCollector не инициализирован: {_ft_init_err}")
     
-        logger.info("Создаю ChatGUI...")
-        main_win = ChatGUI(controller.settings)  # Передаем controller  settings
-        logger.info("ChatGUI создан")
+        logger.info("Создаю MainWindow...")
+        main_win = MainWindow(controller.settings)
+        logger.info("MainWindow создан")
         
         # Обновляем ссылку на реальный view в контроллере
         controller.update_view(main_win)
