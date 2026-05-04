@@ -31,6 +31,7 @@ class F5TTSInstallSpec:
 
         req = [
             InstallRequirement(id="f5_tts", kind="python_dist", spec="f5-tts", required=True),
+            InstallRequirement(id="pyarrow", kind="python_dist", spec="pyarrow<21.0.0", required=True),
             InstallRequirement(id="ckpt", kind="file", path=ckpt, required=True),
             InstallRequirement(id="vocab", kind="file", path=vocab, required=True),
         ]
@@ -65,6 +66,7 @@ class F5TTSInstallSpec:
 
         pkgs = [
             "f5-tts",
+            "pyarrow<21.0.0",
             "cached_path",
             "google-api-core",
             "numpy==1.26.0",
