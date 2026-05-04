@@ -18,7 +18,6 @@ from PyQt6.QtWidgets import (
 
 from core.events import Events
 from main_logger import logger
-from styles.main_styles import get_stylesheet
 from ui.chat.chat_widget import ChatWidget
 from ui.widgets.image_preview_widget import ImagePreviewBar
 from ui.widgets.image_viewer_widget import ImageViewerWidget
@@ -110,7 +109,6 @@ class ChatPanel(QWidget):
     def _build_composer(self) -> QFrame:
         input_frame = QFrame()
         input_frame.setObjectName("ChatComposerCard")
-        input_frame.setStyleSheet(get_stylesheet())
 
         input_layout = QVBoxLayout(input_frame)
         input_layout.setContentsMargins(18, 16, 18, 16)

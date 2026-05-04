@@ -82,12 +82,17 @@ QWidget#ChatContainer {
 SANDBOX_PAGE_QSS = r"""
 QWidget#SandboxPage,
 QWidget#ChatWorkspace,
-QWidget#SandboxInspector {
+QWidget#SandboxInspector,
+QWidget#SandboxLeftColumn {
     background: transparent;
     border: none;
 }
 
 QFrame#ChatToolbarCard,
+QFrame#SandboxTitleCard,
+QFrame#SandboxSelectorDeck,
+QFrame#SandboxChatHost,
+QFrame#SandboxInspector,
 QFrame#ChatComposerCard {
     background-color: rgba(29, 12, 34, 0.94);
     border: 1px solid rgba(255, 92, 158, 0.22);
@@ -99,6 +104,17 @@ QFrame#SandboxInspectorCard {
     background-color: rgba(24, 10, 32, 0.94);
     border: 1px solid rgba(255, 92, 158, 0.18);
     border-radius: 22px;
+}
+
+QLabel#SandboxHeroBadge {
+    color: #ffe7f4;
+    background-color: rgba(255, 92, 168, 0.16);
+    border: 1px solid rgba(255, 92, 168, 0.36);
+    border-radius: 10px;
+    padding: 3px 9px;
+    font-size: 8pt;
+    font-weight: 800;
+    letter-spacing: 0.08em;
 }
 
 QLabel#ChatHeroTitle {
@@ -273,7 +289,7 @@ QPushButton#ChatStripGhostButton:hover {
 QTabWidget#SandboxInspectorTabs::pane {
     border: none;
     background: transparent;
-    top: 4px;
+    top: 6px;
 }
 
 QTabWidget#SandboxInspectorTabs QTabBar::tab {
