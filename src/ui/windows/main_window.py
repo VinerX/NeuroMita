@@ -84,6 +84,10 @@ class MainWindow(AppWindowBase):
         page = getattr(self, "page_map", {}).get(page_key)
         if page is None or not hasattr(self, "page_stack"):
             return
+        current_page = self.page_stack.currentWidget()
+
+        if current_page is not None and current_page is not page and hasattr(current_page, "on_deactivated"):
+            current_page.on_deactivated()
 
         self.page_stack.setCurrentWidget(page)
         self.current_main_page = page_key

@@ -8,6 +8,9 @@ from PyQt6.QtWidgets import QLabel, QFrame, QPlainTextEdit, QVBoxLayout, QWidget
 from ui.widgets.launcher_dashboard_helpers import DashboardAction, create_logs_page
 from utils import _
 
+_LOG_TAIL_BYTES = 64 * 1024
+_LOG_TAIL_LINES = 500
+
 
 def _append_to_shell_page(page: QWidget, widget: QWidget) -> None:
     content_widget = page.findChild(QWidget, "LauncherShellPage")
@@ -28,7 +31,7 @@ class LogsPage(QWidget):
         self._logs_timer = QTimer(self)
         self._logs_timer.setInterval(2000)
         self._logs_timer.timeout.connect(self.refresh_logs)
-        self._logs_timer.start()
+        self._last_tail = None
 
         self.logs_window = None
         self._root_layout = QVBoxLayout(self)
@@ -37,10 +40,26 @@ class LogsPage(QWidget):
 
         self._sync_host_exports()
         self._build_ui()
-        QTimer.singleShot(0, self.refresh_logs)
 
     def _sync_host_exports(self):
         self.gui.logs_page = self
+
+    def _is_active(self) -> bool:
+        return getattr(self.gui, "current_main_page", None) == "logs"
+
+    def _read_log_tail(self, log_path: Path) -> str:
+        with log_path.open("rb") as handle:
+            handle.seek(0, 2)
+            file_size = handle.tell()
+            read_from = max(0, file_size - _LOG_TAIL_BYTES)
+            handle.seek(read_from)
+            chunk = handle.read()
+
+        text = chunk.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        if read_from > 0 and lines:
+            lines = lines[1:]
+        return "\n".join(lines[-_LOG_TAIL_LINES:])
 
     def _build_live_stream_card(self) -> QFrame:
         card = QFrame()
@@ -55,8 +74,8 @@ class LogsPage(QWidget):
 
         subtitle = QLabel(
             _(
-                "Последние строки лог-файла, обновляются раз в 2 секунды и при переходе на страницу.",
-                "Latest lines from the log file, refreshed every 2 seconds and when the page opens.",
+                "Последние строки лог-файла. Обновляются раз в 2 секунды только пока открыта страница логов.",
+                "Latest lines from the log file. Refreshed every 2 seconds only while the logs page is open.",
             )
         )
         subtitle.setObjectName("LauncherShellMeta")
@@ -90,6 +109,8 @@ class LogsPage(QWidget):
         self._root_layout.addWidget(page)
 
     def _open_sandbox_debug(self):
+        if self._logs_timer.isActive():
+            self._logs_timer.stop()
         self.gui.switch_main_page("sandbox")
         page = getattr(self.gui, "sandbox_page", None)
         if page is not None and hasattr(page, "show_debug_tab"):
@@ -98,26 +119,39 @@ class LogsPage(QWidget):
     def refresh_logs(self):
         if self.logs_window is None:
             return
+        if not self._is_active():
+            if self._logs_timer.isActive():
+                self._logs_timer.stop()
+            return
 
         log_path = Path("NeuroMitaLogs.log")
         try:
             if not log_path.exists():
-                self.logs_window.setPlainText(_("Файл логов пока не создан.", "Log file does not exist yet."))
-                return
-            text = log_path.read_text(encoding="utf-8", errors="replace")
-            tail = "\n".join(text.splitlines()[-500:])
+                tail = _("Файл логов пока не создан.", "Log file does not exist yet.")
+            else:
+                tail = self._read_log_tail(log_path)
         except Exception as exc:
             tail = _("Не удалось прочитать лог: {err}", "Failed to read log: {err}").format(err=exc)
+
+        if tail == self._last_tail:
+            return
 
         scrollbar = self.logs_window.verticalScrollBar()
         at_bottom = scrollbar.value() >= scrollbar.maximum() - 4
         self.logs_window.setPlainText(tail)
+        self._last_tail = tail
         if at_bottom:
             scrollbar.setValue(scrollbar.maximum())
 
     def on_activated(self):
+        if not self._logs_timer.isActive():
+            self._logs_timer.start()
         self.gui.update_debug_info()
         self.refresh_logs()
+
+    def on_deactivated(self):
+        if self._logs_timer.isActive():
+            self._logs_timer.stop()
 
 
 def build_logs_page(window) -> QWidget:
