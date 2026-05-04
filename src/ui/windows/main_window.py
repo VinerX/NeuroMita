@@ -100,10 +100,14 @@ class MainWindow(LegacyChatGUI):
             self._refresh_logs_view()
 
         if page_key == "sandbox":
-            try:
-                update_send_button_state(self)
-            except Exception:
-                pass
+            sandbox_page = getattr(self, "sandbox_page", None)
+            if sandbox_page is not None and hasattr(sandbox_page, "on_activated"):
+                sandbox_page.on_activated()
+            else:
+                try:
+                    update_send_button_state(self)
+                except Exception:
+                    pass
 
     def _build_home_page(self):
         return build_home_page(self)

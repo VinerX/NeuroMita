@@ -514,6 +514,13 @@ def _build_chat_conversation_strip(gui) -> QFrame:
 
 
 def setup_chat_panel(gui, main_layout):
+    from ui.pages.sandbox.sandbox_page_widget import SandboxPage
+
+    page = SandboxPage(gui)
+    gui.sandbox_page = page
+    main_layout.addWidget(page, 1)
+    return page
+
     page_root = QWidget()
     page_root.setObjectName("SandboxPage")
 
