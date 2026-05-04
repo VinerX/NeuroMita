@@ -27,7 +27,7 @@ BUILTIN_EMBED_PROVIDER_PRESETS: List[Dict[str, Any]] = [
         "provider": "local",
         "auth_mode": "none",
         "default_url": "",
-        "default_model": "GTE multilingual base (620M, 2024)",
+        "default_model": "Qwen3-Embedding-0.6B (600M, 2025)",
         "known_models": [],
         "default_dimensions": 0,
         "default_headers": {},

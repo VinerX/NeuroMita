@@ -32,6 +32,11 @@ from utils import _
 TOP_ICON_BUTTON_SIZE = 30
 
 
+_MODEL_CONFIGURE_SENTINEL = "__configure_models__"
+_TTS_CONFIGURE_SENTINEL = "__configure_tts__"
+_ASR_CONFIGURE_SENTINEL = "__configure_asr__"
+
+
 def _populate_model_combobox(gui):
     combo = getattr(gui, "chat_model_combobox", None)
     if combo is None:
@@ -42,18 +47,28 @@ def _populate_model_combobox(gui):
     except Exception:
         meta = {}
 
-    builtins = list((meta or {}).get("builtin", []))
     customs = list((meta or {}).get("custom", []))
 
     combo.blockSignals(True)
     try:
         combo.clear()
-        for preset in builtins + customs:
-            pid = getattr(preset, "id", None)
-            name = getattr(preset, "name", str(pid))
-            if pid is None:
-                continue
-            combo.addItem(name, int(pid))
+
+        # Показываем только настроенные (custom) пресеты — голые шаблоны
+        # без api-ключей в саб-меню не нужны. Создание/настройка — через
+        # пункт «Настроить…», который уводит в API-страницу.
+        if customs:
+            for preset in customs:
+                pid = getattr(preset, "id", None)
+                name = getattr(preset, "name", "")
+                if pid is None:
+                    continue
+                combo.addItem(str(name), int(pid))
+            combo.insertSeparator(combo.count())
+        else:
+            combo.addItem(_("Нет настроенных моделей", "No configured models"), None)
+            combo.insertSeparator(combo.count())
+
+        combo.addItem(_("Настроить…", "Configure…"), _MODEL_CONFIGURE_SENTINEL)
 
         try:
             current_res = gui.event_bus.emit_and_wait(Events.ApiPresets.GET_CURRENT_PRESET_ID, timeout=0.5)
@@ -74,24 +89,166 @@ def _on_chat_model_changed(gui, index: int):
     combo = getattr(gui, "chat_model_combobox", None)
     if combo is None or index < 0:
         return
-    pid = combo.itemData(index)
-    if pid is None:
+    data = combo.itemData(index)
+    if data == _MODEL_CONFIGURE_SENTINEL:
+        # Возвращаем выделение к актуальному пресету и открываем API-настройки.
+        QTimer.singleShot(0, lambda: _populate_model_combobox(gui))
+        _jump_to_settings(gui, "api")
+        return
+    if data is None:
         return
     try:
-        gui.event_bus.emit(Events.ApiPresets.SET_CURRENT_PRESET_ID, {"id": int(pid)})
+        gui.event_bus.emit(Events.ApiPresets.SET_CURRENT_PRESET_ID, {"id": int(data)})
     except Exception as exc:
         logger.error(f"Failed to switch preset: {exc}")
 
 
-def _on_chat_voice_changed(gui, value: str):
-    value = (value or "").strip()
-    if not value:
+def _populate_tts_combobox(gui):
+    combo = getattr(gui, "chat_tts_combobox", None)
+    if combo is None:
+        return
+
+    # Список установленных локальных голосов.
+    installed_local: set[str] = set()
+    try:
+        from core.events import Events as _Events
+        res = gui.event_bus.emit_and_wait(_Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.5)
+        got = res[0] if res else None
+        if isinstance(got, (set, list, tuple)):
+            installed_local = set(str(x) for x in got)
+    except Exception:
+        installed_local = set()
+
+    try:
+        from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
+    except Exception:
+        LOCAL_VOICE_MODELS = []
+
+    method = str(gui._get_setting("VOICEOVER_METHOD", "TG") or "TG")
+    selected_local_id = str(gui._get_setting("LOCAL_VOICE_MODEL_ID", "") or "")
+
+    combo.blockSignals(True)
+    try:
+        combo.clear()
+        # data = ("TG", None) для Telegram, ("Local", model_id) для локалок.
+        combo.addItem("Telegram (TG)", ("TG", None))
+
+        for model in LOCAL_VOICE_MODELS:
+            mid = str(model.get("id") or "")
+            name = str(model.get("name") or mid)
+            if mid in installed_local:
+                combo.addItem(name, ("Local", mid))
+
+        combo.insertSeparator(combo.count())
+        combo.addItem(_("Настроить…", "Configure…"), (_TTS_CONFIGURE_SENTINEL, None))
+
+        active_index = 0
+        for i in range(combo.count()):
+            data = combo.itemData(i)
+            if not isinstance(data, tuple):
+                continue
+            kind, mid = data
+            if method == "TG" and kind == "TG":
+                active_index = i
+                break
+            if method == "Local" and kind == "Local" and mid == selected_local_id:
+                active_index = i
+                break
+        combo.setCurrentIndex(active_index)
+    finally:
+        combo.blockSignals(False)
+
+
+def _on_chat_voice_changed(gui, index: int):
+    combo = getattr(gui, "chat_tts_combobox", None)
+    if combo is None or index < 0:
+        return
+    data = combo.itemData(index)
+    if not isinstance(data, tuple):
+        return
+    kind, mid = data
+    if kind == _TTS_CONFIGURE_SENTINEL:
+        QTimer.singleShot(0, lambda: _populate_tts_combobox(gui))
+        _jump_to_settings(gui, "voice")
         return
     try:
-        gui.settings.set("VOICEOVER_METHOD", value)
+        gui.settings.set("VOICEOVER_METHOD", kind)
+        if kind == "Local" and mid:
+            gui.settings.set("LOCAL_VOICE_MODEL_ID", mid)
+            try:
+                gui.event_bus.emit(Events.GUI.VOICEOVER_MODEL_SELECTED, {"model_id": mid})
+            except Exception:
+                pass
     except Exception:
         try:
-            gui.settings["VOICEOVER_METHOD"] = value
+            gui.settings["VOICEOVER_METHOD"] = kind
+        except Exception:
+            pass
+
+
+def _populate_asr_combobox(gui):
+    combo = getattr(gui, "chat_asr_combobox", None)
+    if combo is None:
+        return
+
+    combo.blockSignals(True)
+    combo.clear()
+    combo.addItem(_("Загрузка…", "Loading…"), None)
+    combo.setEnabled(False)
+    combo.blockSignals(False)
+
+    def _apply(items):
+        if combo is None:
+            return
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            engines = []
+            for item in items or []:
+                try:
+                    if item.get("installed", False) and item.get("id"):
+                        engines.append(str(item["id"]))
+                except Exception:
+                    pass
+            if engines:
+                for engine in engines:
+                    combo.addItem(engine, engine)
+                combo.insertSeparator(combo.count())
+                combo.setEnabled(True)
+            combo.addItem(_("Настроить…", "Configure…"), _ASR_CONFIGURE_SENTINEL)
+            current = str(gui._get_setting("RECOGNIZER_TYPE", "") or "")
+            for i in range(combo.count()):
+                if combo.itemData(i) == current:
+                    combo.setCurrentIndex(i)
+                    break
+        finally:
+            combo.blockSignals(False)
+
+    def cb(result, error=None):
+        QTimer.singleShot(0, lambda r=result: _apply(r if isinstance(r, list) else []))
+
+    try:
+        gui.event_bus.emit(Events.Speech.GET_ASR_MODELS_GLOSSARY, {"callback": cb})
+    except Exception:
+        _apply([])
+
+
+def _on_chat_asr_changed(gui, index: int):
+    combo = getattr(gui, "chat_asr_combobox", None)
+    if combo is None or index < 0:
+        return
+    data = combo.itemData(index)
+    if data == _ASR_CONFIGURE_SENTINEL:
+        QTimer.singleShot(0, lambda: _populate_asr_combobox(gui))
+        _jump_to_settings(gui, "microphone")
+        return
+    if not data:
+        return
+    try:
+        gui.settings.set("RECOGNIZER_TYPE", str(data))
+    except Exception:
+        try:
+            gui.settings["RECOGNIZER_TYPE"] = str(data)
         except Exception:
             pass
 
@@ -244,24 +401,19 @@ def _build_chat_header(gui) -> QFrame:
     tts_card, tts_layout = _make_selector_card(_("TTS", "TTS"))
     gui.chat_tts_combobox = QComboBox()
     gui.chat_tts_combobox.setObjectName("ChatCharacterCombo")
-    gui.chat_tts_combobox.setToolTip(_("Способ озвучки", "Voice output method"))
-    gui.chat_tts_combobox.addItems(["TG", "Local"])
-    current_tts = str(gui._get_setting("VOICEOVER_METHOD", "TG") or "TG")
-    idx = gui.chat_tts_combobox.findText(current_tts, Qt.MatchFlag.MatchFixedString)
-    if idx >= 0:
-        gui.chat_tts_combobox.setCurrentIndex(idx)
-    gui.chat_tts_combobox.currentTextChanged.connect(lambda v: _on_chat_voice_changed(gui, v))
+    gui.chat_tts_combobox.setToolTip(_("Способ озвучки: TG или установленные локальные модели", "Voice output: TG or installed local models"))
+    gui.chat_tts_combobox.currentIndexChanged.connect(lambda idx: _on_chat_voice_changed(gui, idx))
+    _populate_tts_combobox(gui)
     tts_layout.addWidget(gui.chat_tts_combobox)
     selectors.addWidget(tts_card, 1)
 
     asr_card, asr_layout = _make_selector_card(_("ASR", "ASR"))
-    asr_value = QPushButton(str(gui._get_setting("ASR_MODEL_NAME", _("По умолчанию", "Default"))))
-    asr_value.setObjectName("SandboxSelectorJump")
-    asr_value.setToolTip(_("Открыть настройки ASR", "Open ASR settings"))
-    asr_value.setCursor(Qt.CursorShape.PointingHandCursor)
-    asr_value.clicked.connect(lambda: _jump_to_settings(gui, "microphone"))
-    gui.chat_asr_jump_button = asr_value
-    asr_layout.addWidget(asr_value)
+    gui.chat_asr_combobox = QComboBox()
+    gui.chat_asr_combobox.setObjectName("ChatCharacterCombo")
+    gui.chat_asr_combobox.setToolTip(_("Установленные модели распознавания речи", "Installed speech recognition models"))
+    gui.chat_asr_combobox.currentIndexChanged.connect(lambda idx: _on_chat_asr_changed(gui, idx))
+    _populate_asr_combobox(gui)
+    asr_layout.addWidget(gui.chat_asr_combobox)
     selectors.addWidget(asr_card, 1)
 
     mode_card, mode_layout = _make_selector_card(_("Режим интерфейса", "UI mode"))

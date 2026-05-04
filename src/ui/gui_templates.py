@@ -186,6 +186,8 @@ def create_section_header(parent_layout, title):
 
 def create_button_group(gui, parent, buttons_config):
     frame = QWidget(parent)
+    frame.setObjectName('SettingRow')
+    frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
     layout = QHBoxLayout(frame)
     layout.setContentsMargins(0, 2, 0, 2)
     layout.setSpacing(10)
@@ -243,6 +245,8 @@ def create_setting_widget(
         
     if widget_type in ('textarea', 'textedit'):
         frame = QWidget(parent)
+        frame.setObjectName('SettingRow')
+        frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         vlay = QVBoxLayout(frame)
         vlay.setContentsMargins(0, 2, 0, 2)
         vlay.setSpacing(4)
@@ -274,6 +278,8 @@ def create_setting_widget(
         return frame
 
     frame = QWidget(parent)
+    frame.setObjectName('SettingRow')
+    frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
     layout = QHBoxLayout(frame)
     layout.setContentsMargins(0, 2, 0, 2)
     layout.setSpacing(10)

@@ -193,10 +193,10 @@ QPushButton:disabled {
 QLabel { background-color: transparent; padding: 0px; }
 QLabel#TokenCountLabel {
     font-size: 8pt;
-    color: #b8b8c2;
-    padding: 2px 6px;
-    border-radius: 6px;
-    background-color: {chip_bg};
+    color: #b89bb3;
+    padding: 0 4px;
+    background: transparent;
+    border: none;
 }
 QLabel#SeparatorLabel {
     margin-top: 8px;
@@ -320,6 +320,8 @@ QLabel#CollapsibleArrow, QLabel#CollapsibleTitle {
     font-weight: 700; color: #f5f5f7; padding: 3px;
 }
 QWidget#CollapsibleContent { background-color: transparent; padding-top: 6px; }
+QWidget#CollapsibleSection { background-color: transparent; background: transparent; }
+QWidget#SettingRow { background-color: transparent; background: transparent; }
 
 /* ========= Settings Sidebar ========= */
 QWidget#SettingsSidebar {
@@ -642,11 +644,11 @@ QLabel#SettingsHeroTitle {
 }
 
 QLabel#TokenCountLabel {
-    color: #d6b3c7;
-    padding: 4px 10px;
-    border-radius: 999px;
-    background-color: rgba(255,255,255,0.05);
-    border: 1px solid rgba(255,255,255,0.05);
+    color: #b89bb3;
+    padding: 0 4px;
+    background: transparent;
+    border: none;
+    font-size: 8pt;
 }
 
 QWidget#ChatCharacterHistoryGroup,
@@ -967,6 +969,40 @@ QScrollArea[objectName^="ScrollArea_"] > QWidget > QWidget {
     background: transparent;
     border: none;
 }
+
+/* В контентной области настроек глобальный QWidget {bg=bg_root} даёт
+   чёрные подложки за каждым row/wrapper. Делаем transparent — поверх
+   карточек CollapsibleHeader/SettingsHeroCard, у которых свои фоны. */
+QWidget[objectName^="ContentWidget_"] QWidget,
+QWidget#SettingsPageOverlay QStackedWidget QWidget {
+    background-color: transparent;
+}
+/* Возвращаем фон вводам и панелям, у которых он должен быть. */
+QWidget[objectName^="ContentWidget_"] QLineEdit,
+QWidget[objectName^="ContentWidget_"] QTextEdit,
+QWidget[objectName^="ContentWidget_"] QPlainTextEdit,
+QWidget[objectName^="ContentWidget_"] QComboBox,
+QWidget[objectName^="ContentWidget_"] QPushButton,
+QWidget[objectName^="ContentWidget_"] QSpinBox,
+QWidget[objectName^="ContentWidget_"] QDoubleSpinBox,
+QWidget[objectName^="ContentWidget_"] QListWidget,
+QWidget[objectName^="ContentWidget_"] QTreeWidget,
+QWidget#SettingsPageOverlay QStackedWidget QLineEdit,
+QWidget#SettingsPageOverlay QStackedWidget QTextEdit,
+QWidget#SettingsPageOverlay QStackedWidget QPlainTextEdit,
+QWidget#SettingsPageOverlay QStackedWidget QComboBox,
+QWidget#SettingsPageOverlay QStackedWidget QPushButton,
+QWidget#SettingsPageOverlay QStackedWidget QSpinBox,
+QWidget#SettingsPageOverlay QStackedWidget QDoubleSpinBox,
+QWidget#SettingsPageOverlay QStackedWidget QListWidget,
+QWidget#SettingsPageOverlay QStackedWidget QTreeWidget {
+    background-color: {panel_bg};
+}
+QWidget[objectName^="ContentWidget_"] QPushButton,
+QWidget#SettingsPageOverlay QStackedWidget QPushButton {
+    background-color: {accent};
+}
+QWidget#CollapsibleHeader { background-color: {chip_bg}; }
 
 QWidget#LauncherHomeBackground,
 QWidget#LauncherHomeLogoZone {

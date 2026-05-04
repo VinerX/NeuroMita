@@ -220,10 +220,11 @@ def get_launcher_shell_stylesheet() -> str:
         color: {p.muted};
         border: 1px solid rgba(255, 255, 255, 0.06);
         border-radius: 12px;
+        padding: 0;
         font-family: "Segoe UI", "Arial", sans-serif;
         font-size: 12px;
         font-weight: 700;
-        letter-spacing: 1px;
+        letter-spacing: 0px;
     }}
     QPushButton#LauncherShellLangPill:hover {{
         background-color: {p.accent_soft};
