@@ -7,7 +7,6 @@ from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QFileDialog,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -106,96 +105,73 @@ class ChatPanel(QWidget):
         except Exception as exc:
             logger.error(f"Failed to open character history: {exc}", exc_info=True)
 
-    def _build_composer(self) -> QFrame:
-        input_frame = QFrame()
-        input_frame.setObjectName("ChatComposerCard")
+    def _build_composer(self) -> QWidget:
+        wrapper = QWidget()
+        wrapper.setObjectName("ChatComposerWrapper")
+        wrapper_layout = QVBoxLayout(wrapper)
+        wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        wrapper_layout.setSpacing(4)
 
-        input_layout = QVBoxLayout(input_frame)
-        input_layout.setContentsMargins(18, 16, 18, 16)
-        input_layout.setSpacing(8)
+        bar = QFrame()
+        bar.setObjectName("ChatComposerBar")
+        bar_layout = QHBoxLayout(bar)
+        bar_layout.setContentsMargins(12, 6, 6, 6)
+        bar_layout.setSpacing(4)
 
-        self.gui.token_count_label = QLabel(_("Токены: 0/0 | Стоимость: 0.00 ₽", "Tokens: 0/0 | Cost: 0.00 ₽"))
-        self.gui.token_count_label.setObjectName("TokenCountLabel")
-        input_layout.addWidget(self.gui.token_count_label)
-
-        input_container = QWidget()
-        input_container.setObjectName("ChatInputContainer")
-        container_layout = QGridLayout(input_container)
-        container_layout.setContentsMargins(5, 5, 5, 5)
-        container_layout.setSpacing(5)
+        self.gui.attach_button = QPushButton(qta.icon("fa6s.paperclip", color="#a0a0b4", scale_factor=0.75), "")
+        self.gui.attach_button.setObjectName("ChatComposerIconBtn")
+        self.gui.attach_button.clicked.connect(lambda: attach_images(self.gui))
+        self.gui.attach_button.setFixedSize(32, 32)
+        self.gui.attach_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.gui.attach_button.setToolTip(_("Прикрепить изображения", "Attach images"))
+        bar_layout.addWidget(self.gui.attach_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.gui.user_entry = QTextEdit()
         self.gui.user_entry.setMinimumHeight(24)
         self.gui.user_entry.setMaximumHeight(80)
         self.gui.user_entry.setFixedHeight(36)
-        self.gui.user_entry.setPlaceholderText(_("Напиши что-нибудь Mita…", "Write something to Mita…"))
+        self.gui.user_entry.setPlaceholderText(_("Напиши что-нибудь Crazy Mita…", "Write something to Mita…"))
         self.gui.user_entry.setStyleSheet(
-            """
-            QTextEdit {
-                background-color: transparent;
-                border: none;
-                color: #f7edf5;
-                padding: 4px 2px;
-            }
-            QTextEdit:focus {
-                background-color: transparent;
-                border: none;
-            }
-            """
+            "QTextEdit { background-color: transparent; border: none; color: #f7edf5; padding: 4px 2px; }"
+            "QTextEdit:focus { background-color: transparent; border: none; }"
         )
         self.gui.user_entry.textChanged.connect(lambda: adjust_input_height(self.gui))
         self.gui.user_entry.textChanged.connect(lambda: update_send_button_state(self.gui))
         self.gui.user_entry.installEventFilter(self.gui)
-        container_layout.addWidget(self.gui.user_entry, 0, 0, 1, 2)
+        bar_layout.addWidget(self.gui.user_entry, 1)
 
-        button_container = QWidget()
-        button_container.setFixedHeight(24)
-        button_container.setStyleSheet("background-color: transparent; border: none;")
-        button_layout_inner = QHBoxLayout(button_container)
-        button_layout_inner.setContentsMargins(0, 0, 0, 0)
-        button_layout_inner.setSpacing(4)
-
-        self.gui.attach_button = QPushButton(qta.icon("fa6s.paperclip", color="#b0b0b0", scale_factor=0.7), "")
-        self.gui.attach_button.setObjectName("ChatIconMini")
-        self.gui.attach_button.clicked.connect(lambda: attach_images(self.gui))
-        self.gui.attach_button.setFixedSize(20, 20)
-        self.gui.attach_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.gui.attach_button.setToolTip(_("Прикрепить изображения", "Attach images"))
-
-        self.gui.send_screen_button = QPushButton(qta.icon("fa6s.camera", color="#b0b0b0", scale_factor=0.7), "")
-        self.gui.send_screen_button.setObjectName("ChatIconMini")
+        self.gui.send_screen_button = QPushButton(qta.icon("fa6s.camera", color="#a0a0b4", scale_factor=0.75), "")
+        self.gui.send_screen_button.setObjectName("ChatComposerIconBtn")
         self.gui.send_screen_button.clicked.connect(lambda: send_screen_capture(self.gui))
-        self.gui.send_screen_button.setFixedSize(20, 20)
+        self.gui.send_screen_button.setFixedSize(32, 32)
         self.gui.send_screen_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.gui.send_screen_button.setToolTip(_("Сделать скриншот экрана", "Take screenshot"))
+        bar_layout.addWidget(self.gui.send_screen_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        button_layout_inner.addWidget(self.gui.attach_button)
-        button_layout_inner.addWidget(self.gui.send_screen_button)
-        button_layout_inner.addStretch()
-        container_layout.addWidget(button_container, 1, 0)
-
-        self.gui.send_button = QPushButton(qta.icon("fa6s.paper-plane", color="white", scale_factor=0.8), "")
-        self.gui.send_button.setObjectName("ChatSendButtonCircle")
+        self.gui.send_button = QPushButton(qta.icon("fa6s.paper-plane", color="white", scale_factor=0.85), "")
+        self.gui.send_button.setObjectName("ChatSendButtonPill")
         self.gui.send_button.clicked.connect(self.gui.send_message)
-        self.gui.send_button.setFixedSize(28, 28)
+        self.gui.send_button.setFixedSize(38, 38)
         self.gui.send_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.gui.send_button.setToolTip(_("Отправить сообщение", "Send message"))
+        bar_layout.addWidget(self.gui.send_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        send_container = QWidget()
-        send_container.setStyleSheet("background-color: transparent; border: none;")
-        send_layout = QHBoxLayout(send_container)
-        send_layout.setContentsMargins(0, 0, 0, 0)
-        send_layout.addStretch()
-        send_layout.addWidget(self.gui.send_button)
-        container_layout.addWidget(send_container, 1, 1)
+        wrapper_layout.addWidget(bar)
 
-        input_layout.addWidget(input_container)
+        token_row = QHBoxLayout()
+        token_row.setContentsMargins(6, 0, 8, 0)
+        token_row.addStretch()
+        self.gui.token_count_label = QLabel(_("Токены: 0/0 | Стоимость: 0.00 ₽", "Tokens: 0/0 | Cost: 0.00 ₽"))
+        self.gui.token_count_label.setObjectName("TokenCountLabel")
+        token_row.addWidget(self.gui.token_count_label)
+        wrapper_layout.addLayout(token_row)
+
         self.gui.attachment_label = QLabel("")
         self.gui.attachment_label.setVisible(False)
         self.gui.clear_attach_btn = QPushButton("")
         self.gui.clear_attach_btn.setVisible(False)
 
-        return input_frame
+        return wrapper
 
     def _build_ui(self):
         if not hasattr(self.gui, "staged_image_data"):

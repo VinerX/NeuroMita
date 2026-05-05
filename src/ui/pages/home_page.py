@@ -122,8 +122,8 @@ class HomePage(LauncherHomeBackground):
 
         subtitle = QLabel(
             _(
-                'Погрузись в "мисаид" по-новому с NeuroMita.',
-                "Dive into NeuroMita with the rebuilt launcher shell.",
+                'Погрузись Miside по-новому с NeuroMita.',
+                "Experience Miside in a new way with NeuroMita.",
             )
         )
         subtitle.setObjectName("LauncherHomeSubtitle")

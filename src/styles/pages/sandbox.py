@@ -3,9 +3,8 @@ from __future__ import annotations
 CHAT_WIDGETS_QSS = r"""
 /* ========= Chat widgets ========= */
 QWidget#ChatInputContainer {
-    background-color: {panel_bg};
-    border: 1px solid {border_soft};
-    border-radius: 12px;
+    background: transparent;
+    border: none;
 }
 
 QPushButton#GuideButtonSmall {
@@ -46,6 +45,15 @@ QPushButton#ChatIconMini {
 QPushButton#ChatIconMini:hover { background-color: rgba({accent_rgb}, 0.24); }
 QPushButton#ChatIconMini:pressed { background-color: rgba({accent_rgb}, 0.36); }
 
+QPushButton#ChatComposerIconBtn {
+    background-color: transparent;
+    border: none;
+    border-radius: 10px;
+    padding: 4px;
+}
+QPushButton#ChatComposerIconBtn:hover { background-color: rgba({accent_rgb}, 0.14); }
+QPushButton#ChatComposerIconBtn:pressed { background-color: rgba({accent_rgb}, 0.26); }
+
 QPushButton#ChatSendButtonCircle {
     background-color: {accent};
     border: 0px; border-radius: 14px; padding: 5px;
@@ -53,6 +61,18 @@ QPushButton#ChatSendButtonCircle {
 QPushButton#ChatSendButtonCircle:hover { background-color: {accent_hover}; }
 QPushButton#ChatSendButtonCircle:pressed { background-color: {accent_pressed}; }
 QPushButton#ChatSendButtonCircle:disabled {
+    background-color: {btn_disabled_bg}; color: {btn_disabled_fg};
+}
+
+QPushButton#ChatSendButtonPill {
+    background-color: {accent};
+    border: 0px;
+    border-radius: 14px;
+    padding: 5px;
+}
+QPushButton#ChatSendButtonPill:hover { background-color: {accent_hover}; }
+QPushButton#ChatSendButtonPill:pressed { background-color: {accent_pressed}; }
+QPushButton#ChatSendButtonPill:disabled {
     background-color: {btn_disabled_bg}; color: {btn_disabled_fg};
 }
 
@@ -101,10 +121,20 @@ QFrame#SandboxWorkspaceHeader {
 }
 
 QFrame#SandboxSelectorDeck,
-QFrame#SandboxChatHost,
-QFrame#ChatComposerCard {
+QFrame#SandboxChatHost {
     background-color: rgba({settings_panel_rgb}, 0.97);
     border: 1px solid rgba({accent_rgb}, 0.16);
+    border-radius: 20px;
+}
+
+QWidget#ChatComposerWrapper {
+    background: transparent;
+    border: none;
+}
+
+QFrame#ChatComposerBar {
+    background-color: rgba({settings_panel_rgb}, 0.97);
+    border: 1px solid rgba({accent_rgb}, 0.22);
     border-radius: 20px;
 }
 
@@ -206,8 +236,7 @@ QLabel#TokenCountLabel {
     font-size: 8pt;
 }
 
-QWidget#ChatCharacterHistoryGroup,
-QWidget#ChatInputContainer {
+QWidget#ChatCharacterHistoryGroup {
     background-color: rgba({settings_panel_rgb}, 0.97);
     border: 1px solid rgba({accent_rgb}, 0.14);
     border-radius: 14px;
