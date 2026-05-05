@@ -28,6 +28,7 @@ class SidebarSection:
     title: str
     icon_name: str
     subtitle: str = ""
+    min_mode: str = "basic"
 
 
 DEFAULT_SIDEBAR_SECTIONS: tuple[SidebarSection, ...] = (
@@ -35,6 +36,7 @@ DEFAULT_SIDEBAR_SECTIONS: tuple[SidebarSection, ...] = (
     SidebarSection("news", _("Релизы", "Releases"), "fa6s.rectangle-list", _("Лента релизов проекта", "Project release feed")),
     SidebarSection("sandbox", _("Песочница", "Sandbox"), "fa6s.flask", _("Быстрый вход в чат", "Quick chat access")),
     SidebarSection("settings", _("Настройки", "Settings"), "fa6s.gear", _("Системные параметры", "System controls")),
+    SidebarSection("developer", _("Дев", "Dev"), "fa6s.bug", _("Отладка и дообучение", "Debug & fine-tuning"), min_mode="full"),
     SidebarSection("logs", _("Логи", "Logs"), "fa6s.list", _("События и диагностика", "Events and diagnostics")),
 )
 
@@ -253,6 +255,15 @@ class LauncherSidebarWidget(QFrame):
             button.style().unpolish(button)
             button.style().polish(button)
             button.blockSignals(False)
+
+    def apply_nav_mode(self, mode_rank: int) -> None:
+        _rank = {"basic": 0, "advanced": 1, "full": 2}
+        for section in self._sections:
+            button = self._nav_buttons.get(section.key)
+            if button is None:
+                continue
+            need = _rank.get(section.min_mode, 0)
+            button.setVisible(need <= mode_rank)
 
     def set_language_label(self, text: str) -> None:
         # Сохранено для совместимости со старым API: новый сайдбар показывает

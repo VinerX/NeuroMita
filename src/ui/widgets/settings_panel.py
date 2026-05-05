@@ -31,6 +31,10 @@ def apply_interface_mode(gui, mode_value):
     except Exception:
         pass
 
+    sidebar = getattr(gui, "shell_sidebar", None)
+    if sidebar is not None and hasattr(sidebar, "apply_nav_mode"):
+        sidebar.apply_nav_mode(cur_rank)
+
 
 def create_settings_page(gui) -> QWidget:
     page = SettingsPage(gui)

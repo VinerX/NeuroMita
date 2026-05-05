@@ -292,6 +292,10 @@ class SettingsPage(QWidget):
         except Exception:
             pass
 
+        sidebar = getattr(self.gui, "shell_sidebar", None)
+        if sidebar is not None and hasattr(sidebar, "apply_nav_mode"):
+            sidebar.apply_nav_mode(cur_rank)
+
     def on_activated(self):
         if self.current_settings_category is None:
             first_key = self._first_available_category() or "api"

@@ -30,7 +30,7 @@ from PyQt6.QtGui import QDesktopServices, QFont, QImage, QIcon, QPalette, QKeyEv
 from ui.settings import (
     api_settings, character_settings, game_settings,
     microphone_settings, screen_analysis_settings, voiceover_settings,
-    model_interaction_settings, general_settings, data_settings, updates_settings
+    model_interaction_settings, general_settings, updates_settings
 )
 
 from ui.widgets import (status_indicators_widget)

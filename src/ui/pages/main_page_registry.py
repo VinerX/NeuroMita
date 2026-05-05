@@ -5,6 +5,7 @@ from typing import Callable
 
 from PyQt6.QtWidgets import QWidget
 
+from .developer_page import build_developer_page
 from .home_page import build_home_page
 from .logs_page import build_logs_page
 from .news_page import build_news_page
@@ -25,6 +26,7 @@ MAIN_PAGE_SPECS: tuple[MainPageSpec, ...] = (
     MainPageSpec("news", build_news_page),
     MainPageSpec("sandbox", build_sandbox_page),
     MainPageSpec("settings", build_settings_page),
+    MainPageSpec("developer", build_developer_page),
     MainPageSpec("logs", build_logs_page),
 )
 
