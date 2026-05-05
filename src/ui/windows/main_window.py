@@ -40,7 +40,7 @@ class MainWindow(AppWindowBase):
         content_host = QFrame()
         content_host.setObjectName("LauncherContentHost")
         content_layout = QVBoxLayout(content_host)
-        content_layout.setContentsMargins(18, 18, 18, 18)
+        content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
 
         self.page_stack = QStackedWidget()
