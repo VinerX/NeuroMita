@@ -403,16 +403,22 @@ class SettingsPage(QWidget):
         anim.start()
 
     def _build_ui(self):
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(22, 18, 22, 18)
-        outer.setSpacing(14)
+        page_layout = QVBoxLayout(self)
+        page_layout.setContentsMargins(18, 18, 18, 18)
+        page_layout.setSpacing(0)
 
-        outer.addWidget(self._build_settings_hero())
+        workspace_shell = QFrame()
+        workspace_shell.setObjectName("SettingsWorkspaceRootShell")
+        shell_layout = QVBoxLayout(workspace_shell)
+        shell_layout.setContentsMargins(18, 18, 18, 18)
+        shell_layout.setSpacing(12)
+
+        shell_layout.addWidget(self._build_settings_hero())
 
         content_row = QHBoxLayout()
-        content_row.setSpacing(16)
+        content_row.setSpacing(14)
 
-        self.settings_overlay = _make_card("SettingsWorkspaceShell")
+        self.settings_overlay = _make_card("SettingsWorkspacePanel")
         self.settings_overlay.setMinimumWidth(720)
         self.settings_overlay.setMaximumWidth(16777215)
         self.settings_overlay.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -451,7 +457,8 @@ class SettingsPage(QWidget):
         rail_layout.addStretch(1)
         content_row.addWidget(rail, 1)
 
-        outer.addLayout(content_row, 1)
+        shell_layout.addLayout(content_row, 1)
+        page_layout.addWidget(workspace_shell, 1)
         self.settings_overview_container = self._workspace_content
 
     def _build_tabs_row(self) -> QFrame:
@@ -472,9 +479,10 @@ class SettingsPage(QWidget):
         return card
 
     def _build_settings_hero(self) -> QFrame:
-        card = _make_card("SettingsHeroCard")
+        card = QFrame()
+        card.setObjectName("SettingsWorkspaceHeader")
         layout = QHBoxLayout(card)
-        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setContentsMargins(4, 2, 4, 10)
         layout.setSpacing(18)
 
         icon_box = QLabel()

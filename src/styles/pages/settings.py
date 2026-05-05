@@ -64,8 +64,7 @@ QWidget#SettingsWorkspaceContent {
     border: none;
 }
 
-QFrame#SettingsHeroCard,
-QFrame#SettingsWorkspaceShell,
+QFrame#SettingsWorkspacePanel,
 QFrame#SettingsTabsCard,
 QFrame#SettingsStatusRailCard,
 QFrame#SettingsQuickActionsCard,
@@ -75,7 +74,18 @@ QFrame#SettingsNoteCard {
     border-radius: 24px;
 }
 
-QFrame#SettingsWorkspaceShell {
+QFrame#SettingsWorkspaceRootShell {
+    background-color: rgba({sandbox_bg_rgb}, 0.98);
+    border: 1px solid rgba({accent_rgb}, 0.14);
+    border-radius: 24px;
+}
+
+QFrame#SettingsWorkspaceHeader {
+    background: transparent;
+    border: none;
+}
+
+QFrame#SettingsWorkspacePanel {
     background-color: rgba({sandbox_bg_rgb}, 0.92);
 }
 
