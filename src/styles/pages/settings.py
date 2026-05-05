@@ -319,10 +319,10 @@ QWidget#SettingsPageRoot QWidget#CollapsibleContent {
 }
 
 QWidget#SettingsPageRoot QWidget#SettingRow {
-    background-color: rgba(255,255,255,0.02);
-    border: 1px solid rgba(255,255,255,0.05);
-    border-radius: 14px;
-    padding: 8px 10px;
+    background: transparent;
+    border: none;
+    border-radius: 0px;
+    padding: 2px 0px;
 }
 
 QWidget#SettingsPageRoot QLabel#SeparatorLabel {
@@ -341,8 +341,8 @@ QWidget#SettingsPageRoot QSpinBox,
 QWidget#SettingsPageRoot QDoubleSpinBox,
 QWidget#SettingsPageRoot QListWidget,
 QWidget#SettingsPageRoot QTreeWidget {
-    background-color: rgba({sandbox_bg_rgb}, 0.92);
-    border: 1px solid rgba(255,255,255,0.10);
+    background-color: rgba({settings_panel_rgb}, 0.76);
+    border: 1px solid rgba(255,255,255,0.05);
     border-radius: 10px;
     color: {text};
     padding: 7px 10px;
@@ -357,12 +357,42 @@ QWidget#SettingsPageRoot QSpinBox:focus,
 QWidget#SettingsPageRoot QDoubleSpinBox:focus,
 QWidget#SettingsPageRoot QListWidget:focus,
 QWidget#SettingsPageRoot QTreeWidget:focus {
-    border: 1px solid rgba({accent_rgb}, 0.30);
+    border: 1px solid rgba({accent_rgb}, 0.24);
 }
 
 QWidget#SettingsPageRoot QComboBox::drop-down {
     border: none;
     width: 26px;
+}
+
+QWidget#SettingsPageRoot QCheckBox {
+    background: transparent;
+    border: none;
+    color: {text};
+    spacing: 8px;
+    padding: 2px 0;
+}
+
+QWidget#SettingsPageRoot QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 5px;
+    border: none;
+    background-color: rgba(255,255,255,0.08);
+}
+
+QWidget#SettingsPageRoot QCheckBox::indicator:hover {
+    background-color: rgba({accent_rgb}, 0.14);
+}
+
+QWidget#SettingsPageRoot QCheckBox::indicator:checked {
+    border: none;
+    background-color: {accent_alt};
+}
+
+QWidget#SettingsPageRoot QCheckBox::indicator:disabled {
+    border: none;
+    background-color: rgba(255,255,255,0.04);
 }
 
 QWidget#SettingsPageRoot QPushButton#SecondaryButton,

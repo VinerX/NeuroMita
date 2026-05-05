@@ -121,7 +121,7 @@ def create_section_header(parent_layout, title):
     header_widget = QWidget()
     header_widget.setObjectName("SettingsSubsectionHeader")
     header_layout = QVBoxLayout(header_widget)
-    header_layout.setContentsMargins(0, 4, 0, 8)
+    header_layout.setContentsMargins(0, 8, 0, 8)
     header_layout.setSpacing(6)
 
     title_label = QLabel(title)

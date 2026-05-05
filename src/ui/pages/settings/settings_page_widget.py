@@ -73,7 +73,7 @@ class SettingsCategoryCard(QFrame):
         self.header.setObjectName("SettingsSectionHeader")
         self.header.setCursor(Qt.CursorShape.PointingHandCursor)
         header_layout = QHBoxLayout(self.header)
-        header_layout.setContentsMargins(18, 16, 18, 16)
+        header_layout.setContentsMargins(18, 19, 18, 14)
         header_layout.setSpacing(14)
 
         self.icon_box = QLabel()
