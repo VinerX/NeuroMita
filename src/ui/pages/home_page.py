@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import sys
+import threading
 from pathlib import Path
 
 import qtawesome as qta
@@ -90,6 +92,8 @@ class HomePage(LauncherHomeBackground):
         self.primary_button = None
         self.progress_bar = None
         self.progress_label = None
+        self._cancel_button = None
+        self._cancel_event: threading.Event | None = None
 
         self._ui_call_requested.connect(self._execute_ui_call)
         self._sync_host_exports()
@@ -196,10 +200,22 @@ class HomePage(LauncherHomeBackground):
         self.progress_bar.setVisible(False)
         left_column.addWidget(self.progress_bar)
 
+        _progress_row = QHBoxLayout()
+        _progress_row.setSpacing(8)
+        _progress_row.setContentsMargins(0, 0, 0, 0)
+
         self.progress_label = QLabel("")
         self.progress_label.setObjectName("LauncherHomeProgressLabel")
         self.progress_label.setVisible(False)
-        left_column.addWidget(self.progress_label)
+        _progress_row.addWidget(self.progress_label, 1)
+
+        self._cancel_button = QPushButton(_("✕ Отменить", "✕ Cancel"))
+        self._cancel_button.setObjectName("LauncherHomeCancelButton")
+        self._cancel_button.setVisible(False)
+        self._cancel_button.clicked.connect(self._cancel_installation)
+        _progress_row.addWidget(self._cancel_button)
+
+        left_column.addLayout(_progress_row)
 
         self._status_line_label = QLabel("")
         self._status_line_label.setObjectName("LauncherHomeFootnote")
@@ -385,7 +401,9 @@ class HomePage(LauncherHomeBackground):
         base_dir = os.environ.get("NEUROMITA_BASE_DIR", "")
         if base_dir:
             return Path(base_dir).parent / "NeuroMita-Unity"
-        return Path.cwd().parent / "NeuroMita-Unity"
+        # Совпадает с логикой updater.check_for_unity_updates чтобы обнаружение
+        # работало после установки без NEUROMITA_BASE_DIR.
+        return Path(sys.argv[0]).resolve().parent.parent / "NeuroMita-Unity"
 
     def find_unity_executable(self) -> Path | None:
         unity_dir = self._get_unity_install_dir()
@@ -520,29 +538,87 @@ class HomePage(LauncherHomeBackground):
     def _queue_ui_call(self, fn):
         self._ui_call_requested.emit(fn)
 
-    def run_verify_action(self):
-        self.gui.show_settings_category("updates")
-
     def show_extra_menu(self, anchor_widget):
         menu = QMenu(self)
         menu.setObjectName("LauncherHomeExtraMenu")
         menu.addAction(
             _("Проверить файлы / обновления", "Verify files / updates"),
-            self.run_verify_action,
+            self.run_check_updates_action,
         )
         menu.addAction(
-            _("Открыть страницу обновлений", "Open updates page"),
+            _("Настройки обновлений", "Update settings"),
             lambda: self.gui.show_settings_category("updates"),
         )
         menu.addAction(
-            _("Перезагрузить промпты", "Reload prompts"),
-            lambda: self.gui.event_bus.emit(Events.Model.RELOAD_PROMPTS_ASYNC),
-        )
-        menu.addAction(
-            _("Открыть папку логов", "Open logs folder"),
-            self.gui._open_logs_folder,
+            _("Открыть папку Unity", "Open Unity folder"),
+            self._open_unity_folder,
         )
         menu.exec(anchor_widget.mapToGlobal(QPoint(0, anchor_widget.height())))
+
+    def _cancel_installation(self):
+        """Отменяет текущую загрузку (устанавливает cancel_event)."""
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+        if self._cancel_button is not None:
+            self._cancel_button.setEnabled(False)
+        if self.progress_label is not None:
+            self.progress_label.setText(_("Отмена…", "Cancelling…"))
+
+    def _open_unity_folder(self):
+        """Открывает папку установки Unity в проводнике."""
+        unity_dir = self._get_unity_install_dir()
+        try:
+            unity_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        try:
+            import subprocess
+            subprocess.Popen(["explorer", str(unity_dir)])
+        except Exception as exc:
+            logger.error(f"Не удалось открыть папку Unity: {exc}")
+
+    def run_check_updates_action(self):
+        """Запускает проверку обновлений в фоне и показывает результат."""
+        if self._home_install_thread_running:
+            return
+        self.set_progress(_("Проверка обновлений…", "Checking for updates…"), 0, 0, busy=True)
+
+        def check_worker():
+            try:
+                from updater import get_python_update_info, get_unity_update_info
+                channel = self.gui.settings.get("UPDATE_CHANNEL", "stable")
+                base_dir = os.environ.get("NEUROMITA_BASE_DIR") or None
+                unity_dir = self.gui.settings.get("UNITY_INSTALL_DIR") or None
+
+                py_info = get_python_update_info(base_dir=base_dir, channel=channel)
+                unity_info = get_unity_update_info(base_dir=base_dir, unity_dir=unity_dir, channel=channel)
+
+                parts = []
+                if py_info.get("available"):
+                    parts.append(
+                        _("Python: {ver}", "Python: {ver}").format(ver=py_info.get("latest_version", ""))
+                    )
+                if unity_info.get("available"):
+                    parts.append(
+                        _("Unity: {ver}", "Unity: {ver}").format(ver=unity_info.get("latest_version", ""))
+                    )
+
+                if parts:
+                    msg = _("Доступны обновления: {p}", "Updates available: {p}").format(p=", ".join(parts))
+                else:
+                    msg = _("Обновлений нет.", "No updates available.")
+
+                self._queue_ui_call(lambda m=msg: self.set_progress(m, 100, 100, busy=False))
+            except Exception as exc:
+                self._queue_ui_call(
+                    lambda e=exc: self.set_progress(
+                        _("Ошибка проверки: {err}", "Check error: {err}").format(err=e), 0, 0, busy=False
+                    )
+                )
+            finally:
+                self._queue_ui_call(lambda: QTimer.singleShot(4000, self.hide_progress))
+
+        threading.Thread(target=check_worker, daemon=True).start()
 
     def run_primary_action(self):
         exe = self.find_unity_executable()
@@ -610,12 +686,17 @@ class HomePage(LauncherHomeBackground):
             return
         self._home_install_thread_running = True
 
+        # Создаём событие отмены и показываем кнопку «Отменить»
+        self._cancel_event = threading.Event()
         if self.primary_button is not None:
             self.primary_button.setEnabled(False)
+        if self._cancel_button is not None:
+            self._cancel_button.setEnabled(True)
+            self._cancel_button.setVisible(True)
 
         self.set_progress(_("Подготовка к установке…", "Preparing installation…"), 0, 0, busy=True)
 
-        import threading
+        cancel_event = self._cancel_event  # локальная ссылка для потока
 
         def on_progress(downloaded: int, total: int):
             def apply():
@@ -632,7 +713,21 @@ class HomePage(LauncherHomeBackground):
                     mb_done = downloaded / (1024 * 1024)
                     text = _("Загрузка Unity… {done:.1f} MB", "Downloading Unity… {done:.1f} MB").format(done=mb_done)
                     self.set_progress(text, 0, 0, busy=True)
+            self._queue_ui_call(apply)
 
+        def on_extract_progress(extracted: int, total: int):
+            def apply():
+                if total > 0:
+                    pct = int(max(0, min(100, extracted * 100 / total)))
+                    mb_done = extracted / (1024 * 1024)
+                    mb_total = total / (1024 * 1024)
+                    text = _("Распаковка… {done:.1f} / {total:.1f} MB", "Extracting… {done:.1f} / {total:.1f} MB").format(
+                        done=mb_done,
+                        total=mb_total,
+                    )
+                    self.set_progress(text, pct, 100, busy=False)
+                else:
+                    self.set_progress(_("Распаковка…", "Extracting…"), 0, 0, busy=True)
             self._queue_ui_call(apply)
 
         class ThreadLogger:
@@ -682,11 +777,9 @@ class HomePage(LauncherHomeBackground):
                     err = (info or {}).get("error") or _("неизвестная ошибка", "unknown error")
                     logger.warning(f"[home_install] check failed: {err}")
                     self._queue_ui_call(
-                        lambda: self.set_progress(
-                            _("Ошибка проверки: {err}", "Check error: {err}").format(err=err),
-                            0,
-                            0,
-                            busy=False,
+                        lambda e=err: self.set_progress(
+                            _("Ошибка проверки: {err}", "Check error: {err}").format(err=e),
+                            0, 0, busy=False,
                         )
                     )
                     return
@@ -706,22 +799,34 @@ class HomePage(LauncherHomeBackground):
                     channel=channel,
                     tester_code=tester_code,
                     on_progress=on_progress,
+                    on_extract_progress=on_extract_progress,
                     auto_update=True,
+                    stop_event=cancel_event,
                 )
                 logger.info("[home_install] check_for_unity_updates finished")
-                self._queue_ui_call(
-                    lambda: self.set_progress(_("Установка завершена.", "Installation finished."), 100, 100, busy=False)
-                )
+
+                if cancel_event.is_set():
+                    self._queue_ui_call(
+                        lambda: self.set_progress(_("Установка отменена.", "Installation cancelled."), 0, 100, busy=False)
+                    )
+                else:
+                    self._queue_ui_call(
+                        lambda: self.set_progress(_("Установка завершена.", "Installation finished."), 100, 100, busy=False)
+                    )
             except Exception as exc:
                 logger.error(f"[home_install] Unity install failed: {exc}", exc_info=True)
                 self._queue_ui_call(
-                    lambda: self.set_progress(_("Ошибка: {err}", "Error: {err}").format(err=exc), 0, 0, busy=False)
+                    lambda e=exc: self.set_progress(_("Ошибка: {err}", "Error: {err}").format(err=e), 0, 0, busy=False)
                 )
             finally:
                 logger.info("[home_install] worker finished")
 
                 def done():
                     self._home_install_thread_running = False
+                    self._cancel_event = None
+                    if self._cancel_button is not None:
+                        self._cancel_button.setVisible(False)
+                        self._cancel_button.setEnabled(True)
                     if self.primary_button is not None:
                         self.primary_button.setEnabled(True)
                     self.refresh_primary_label()

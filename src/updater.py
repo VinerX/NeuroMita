@@ -117,10 +117,12 @@ def _download(
     dest: Path,
     on_progress: Optional[Callable[[int, int], None]] = None,
     retries: int = 3,
+    stop_event=None,
 ) -> None:
     """Stream url to dest (atomic replace via .part file).
 
     on_progress(downloaded_bytes, total_bytes) is called periodically.
+    stop_event: threading.Event — set it to cancel the download.
     """
     import requests  # already in requirements.txt
 
@@ -140,6 +142,8 @@ def _download(
                 last_report = time.monotonic()
                 with open(tmp, "wb") as f:
                     for piece in r.iter_content(chunk_size=chunk_size):
+                        if stop_event is not None and stop_event.is_set():
+                            raise RuntimeError("Cancelled")
                         if not piece:
                             continue
                         f.write(piece)
@@ -155,6 +159,8 @@ def _download(
         except Exception as e:
             last_err = e
             tmp.unlink(missing_ok=True)
+            if stop_event is not None and stop_event.is_set():
+                raise RuntimeError("Cancelled") from e
             if attempt < retries:
                 time.sleep(1.5 * attempt)
 
@@ -427,7 +433,9 @@ def check_for_unity_updates(
     channel: str = "stable",
     tester_code: Optional[str] = None,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    on_extract_progress: Optional[Callable[[int, int], None]] = None,
     auto_update: Optional[bool] = None,
+    stop_event=None,
 ) -> None:
     """Check for Unity-part updates. Apply automatically if AUTO_UPDATE_UNITY=1.
 
@@ -438,13 +446,15 @@ def check_for_unity_updates(
     restart is needed after a Unity update.
 
     Args:
-        base_dir:    Game root directory (Python part).
-        logger:      Logger with info/warning/success/notify methods.
-        unity_dir:   Override path for the Unity install directory.
-        channel:     "stable" or "beta".
-        tester_code: Password for encrypted test archives.
-        on_progress: Callback(downloaded_bytes, total_bytes) for UI progress.
-        auto_update: Force auto-apply behavior instead of reading env/config only.
+        base_dir:           Game root directory (Python part).
+        logger:             Logger with info/warning/success/notify methods.
+        unity_dir:          Override path for the Unity install directory.
+        channel:            "stable" or "beta".
+        tester_code:        Password for encrypted test archives.
+        on_progress:        Callback(downloaded_bytes, total_bytes) for download progress.
+        on_extract_progress: Callback(extracted_bytes, total_bytes) for extraction progress.
+        auto_update:        Force auto-apply behavior instead of reading env/config only.
+        stop_event:         threading.Event — set to cancel download.
     """
     log = make_logger(logger, _LOG_PREFIX)
 
@@ -526,7 +536,15 @@ def check_for_unity_updates(
     else:
         log(f"Downloading Unity {unity_name} to {temp_archive} ...")
         try:
-            _download(unity_url, temp_archive, on_progress=on_progress)
+            _download(unity_url, temp_archive, on_progress=on_progress, stop_event=stop_event)
+        except RuntimeError as e:
+            if stop_event is not None and stop_event.is_set():
+                log("Unity download cancelled by user.", "warning")
+                temp_archive.unlink(missing_ok=True)
+                return
+            log(f"Unity download failed: {e}", "error")
+            temp_archive.unlink(missing_ok=True)
+            return
         except Exception as e:
             log(f"Unity download failed: {e}", "error")
             temp_archive.unlink(missing_ok=True)
@@ -541,7 +559,7 @@ def check_for_unity_updates(
         log("Stage 1/3: cleaning target directory")
         wipe_dir(unity_path, logger=logger)
         log("Stage 2/3: extracting archive")
-        extract_archive(temp_archive, unity_path, tester_code, logger=logger)
+        extract_archive(temp_archive, unity_path, tester_code, logger=logger, on_extract_progress=on_extract_progress)
         log("Stage 3/3: writing installed version marker")
         unity_path.mkdir(parents=True, exist_ok=True)
         version_file.write_text(remote_tag, encoding="utf-8")

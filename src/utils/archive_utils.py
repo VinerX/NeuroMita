@@ -7,7 +7,7 @@ import threading
 import time
 import zipfile
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 
 class PasswordError(Exception):
@@ -297,6 +297,7 @@ def _extract_zip_python(
     target: Path,
     password: Optional[str] = None,
     logger=None,
+    on_progress: Optional[Callable[[int, int], None]] = None,
 ) -> None:
     pwd = password.encode("utf-8") if password else None
     log = make_logger(logger)
@@ -325,6 +326,8 @@ def _extract_zip_python(
 
                     extracted_size += max(0, int(member.file_size or 0))
                     now = time.monotonic()
+                    if on_progress and total_size > 0:
+                        on_progress(extracted_size, total_size)
                     if index == 1 or index == total_entries or (now - last_log) >= 5.0:
                         pct = int(extracted_size * 100 / total_size) if total_size > 0 else 0
                         log(
@@ -426,6 +429,7 @@ def extract_archive(
     target: Path,
     password: Optional[str] = None,
     logger=None,
+    on_extract_progress: Optional[Callable[[int, int], None]] = None,
 ) -> None:
     target.mkdir(parents=True, exist_ok=True)
     suffix = archive.suffix.lower()
@@ -434,7 +438,7 @@ def extract_archive(
         if not _extract_with_7z(archive, target, password, logger=logger):
             if not _extract_with_winrar(archive, target, password, logger=logger):
                 if not _extract_zip_with_expand_archive(archive, target, logger=logger):
-                    _extract_zip_python(archive, target, password, logger=logger)
+                    _extract_zip_python(archive, target, password, logger=logger, on_progress=on_extract_progress)
     elif suffix == ".7z":
         if not _extract_with_7z(archive, target, password, logger=logger):
             if not _extract_with_winrar(archive, target, password, logger=logger):

@@ -156,7 +156,7 @@ QPushButton#LauncherHomePrimaryButton:hover {
 
 QPushButton#LauncherHomeMenuButton {
     min-width: 44px;
-    min-height: 56px;
+    padding: 16px 12px;
     background-color: rgba({sidebar_panel_rgb}, 0.96);
     border: 1px solid rgba({accent_rgb}, 0.18);
     border-left: 1px solid rgba(255, 255, 255, 0.10);
@@ -229,5 +229,26 @@ QLabel#LauncherHomeNewsBadge {
     font-size: 7.5pt;
     font-weight: 800;
     letter-spacing: 0px;
+}
+
+QPushButton#LauncherHomeCancelButton {
+    background: transparent;
+    border: 1px solid rgba({accent_rgb}, 0.28);
+    border-radius: 8px;
+    color: {muted};
+    font-size: 8.5pt;
+    font-weight: 600;
+    padding: 2px 12px;
+    letter-spacing: 0px;
+}
+
+QPushButton#LauncherHomeCancelButton:hover {
+    border-color: rgba({accent_rgb}, 0.55);
+    color: {text};
+}
+
+QPushButton#LauncherHomeCancelButton:disabled {
+    color: rgba(255, 255, 255, 0.25);
+    border-color: rgba({accent_rgb}, 0.10);
 }
 """
