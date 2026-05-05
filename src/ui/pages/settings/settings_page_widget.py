@@ -485,19 +485,23 @@ class SettingsPage(QWidget):
         layout.setContentsMargins(4, 2, 4, 10)
         layout.setSpacing(18)
 
-        icon_box = QLabel()
-        icon_box.setObjectName("SettingsHeroIcon")
-        icon_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_box.setFixedSize(54, 54)
-        icon_box.setPixmap(qta.icon("fa6s.gear", color="#ff69ad").pixmap(26, 26))
-        layout.addWidget(icon_box, 0, Qt.AlignmentFlag.AlignTop)
-
         title_col = QVBoxLayout()
-        title_col.setSpacing(4)
+        title_col.setSpacing(5)
+
+        headline_row = QHBoxLayout()
+        headline_row.setSpacing(10)
+        headline_row.setContentsMargins(0, 0, 0, 0)
+
+        icon_label = QLabel()
+        icon_label.setObjectName("SettingsHeroIcon")
+        icon_label.setPixmap(qta.icon("fa6s.gear", color="#ff6db7").pixmap(22, 22))
+        headline_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         title = QLabel(_("Настройки", "Settings"))
         title.setObjectName("SettingsHeroTitle")
-        title_col.addWidget(title)
+        headline_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
+        headline_row.addStretch(1)
+        title_col.addLayout(headline_row)
 
         subtitle = QLabel(
             _(

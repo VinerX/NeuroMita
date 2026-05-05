@@ -90,22 +90,19 @@ QFrame#SettingsWorkspacePanel {
 }
 
 QLabel#SettingsHeroIcon {
-    min-width: 54px;
-    min-height: 54px;
-    border-radius: 18px;
-    background-color: rgba({accent_rgb}, 0.12);
-    border: 1px solid rgba({accent_rgb}, 0.30);
+    background: transparent;
+    border: none;
 }
 
 QLabel#SettingsHeroTitle {
-    font-size: 20pt;
+    font-size: 18pt;
     font-weight: 800;
     color: {text};
 }
 
 QLabel#SettingsHeroSubtitle {
     color: {muted};
-    font-size: 9.25pt;
+    font-size: 9pt;
 }
 
 QPushButton#SettingsHeaderButton,

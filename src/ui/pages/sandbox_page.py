@@ -722,7 +722,7 @@ class SandboxPage(QWidget):
 
         icon_label = QLabel()
         icon_label.setObjectName("SandboxHeroIcon")
-        icon_label.setPixmap(qta.icon("fa6s.gear", color="#ff6db7").pixmap(22, 22))
+        icon_label.setPixmap(qta.icon("fa6s.flask", color="#ff6db7").pixmap(22, 22))
         headline_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         title_label = QLabel(_("Песочница / Sandbox", "Sandbox"))
