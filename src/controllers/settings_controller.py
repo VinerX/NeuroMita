@@ -91,6 +91,7 @@ class SettingsController:
 
     def _on_get_app_vars(self, event: Event):
         bool_keys = [
+            "ENABLE_IMAGE_ANALYSIS",
             "ENABLE_CAMERA_CAPTURE",
             "ENABLE_SCREEN_ANALYSIS",
             "MIC_ACTIVE",

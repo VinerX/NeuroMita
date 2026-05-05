@@ -575,8 +575,10 @@ class ScreenAnalysisGuidePage(IGuidePage):
         return """NeuroMita может "видеть" то, что происходит на вашем экране или что показывает ваша веб-камера. Это полезно, чтобы задавать вопросы о происходящем в игре или приложении.
 
 В настройках Экрана (иконка <b>монитора</b>):
-• Включите <b>"Анализ экрана"</b> или <b>"Захват с камеры"</b>.
-• После этого AI сможет получать скриншоты. Вы можете отправлять их вместе с текстовым сообщением.
+• Включите <b>"Разрешить обработку изображений"</b> — мастер-переключатель.
+• Затем включите <b>"Включить захват экрана"</b> или <b>"Захват с камеры"</b>.
+• Чтобы кадры прикреплялись автоматически при каждом сообщении — включите <b>"Прикладывать кадры к сообщениям"</b>.
+• Кнопка <b>📷</b> в чате делает скриншот вручную (работает, если включена обработка изображений).
 
 <b>Важно:</b> Эта функция работает только с моделями, которые поддерживают анализ изображений (например, GPT-4o, Claude 3, Gemini)."""
         
@@ -584,8 +586,10 @@ class ScreenAnalysisGuidePage(IGuidePage):
         return """NeuroMita can "see" what's on your screen or what your webcam is showing. This is useful for asking questions about what's happening in a game or application.
 
 In the Screen settings (<b>desktop</b> icon):
-• Enable <b>"Screen Analysis"</b> or <b>"Camera Capture"</b>.
-• After this, the AI will be able to receive screenshots. You can send them along with a text message.
+• Enable <b>"Enable Image Analysis"</b> — the master toggle.
+• Then enable <b>"Enable Screen Capture"</b> or <b>"Camera Capture"</b>.
+• To auto-attach frames to every message — enable <b>"Auto-attach frames"</b>.
+• The <b>📷</b> button in chat takes a manual screenshot (works when image analysis is enabled).
 
 <b>Important:</b> This feature only works with models that support image analysis (e.g., GPT-4o, Claude 3, Gemini)."""
         

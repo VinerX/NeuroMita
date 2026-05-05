@@ -858,6 +858,13 @@ class SandboxPage(QWidget):
         capture_layout.addWidget(screen_cb)
         self._capture_screen_cb = screen_cb
 
+        auto_attach_cb = QCheckBox(_("Авто-прикрепление", "Auto-attach"))
+        auto_attach_cb.setObjectName("SandboxCaptureToggle")
+        auto_attach_cb.setChecked(bool(self.gui._get_setting("AUTO_ATTACH_IMAGES", False)))
+        auto_attach_cb.toggled.connect(lambda v: self._on_capture_toggle("AUTO_ATTACH_IMAGES", v))
+        capture_layout.addWidget(auto_attach_cb)
+        self._capture_auto_attach_cb = auto_attach_cb
+
         camera_cb = QCheckBox(_("Захват с камеры", "Camera capture"))
         camera_cb.setObjectName("SandboxCaptureToggle")
         camera_cb.setChecked(bool(self.gui._get_setting("ENABLE_CAMERA_CAPTURE", False)))

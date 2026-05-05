@@ -240,6 +240,41 @@ class ScreenCapture:
         with self._lock:
             return self._running
 
+    def capture_one_shot(self, quality: int = 25, width: int = 1024, height: int = 768) -> bytes | None:
+        try:
+            from PIL import Image
+            from io import BytesIO
+
+            with mss.mss() as sct:
+                if not sct.monitors:
+                    logger.error("mss: Мониторы не найдены для one-shot захвата.")
+                    return None
+
+                monitor_to_capture = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
+                sct_img = sct.grab(monitor_to_capture)
+                img = Image.frombytes("RGB", (sct_img.width, sct_img.height), sct_img.rgb)
+
+                if self.exclude_gui_window and self.hwnd_to_exclude:
+                    try:
+                        left, top, right, bottom = win32gui.GetWindowRect(self.hwnd_to_exclude)
+                        black_patch = Image.new('RGB', (right - left, bottom - top), (0, 0, 0))
+                        paste_x = left - monitor_to_capture['left']
+                        paste_y = top - monitor_to_capture['top']
+                        if 0 <= paste_x < img.width and 0 <= paste_y < img.height:
+                            img.paste(black_patch, (paste_x, paste_y))
+                    except Exception as e:
+                        logger.error(f"Ошибка при исключении окна GUI в one-shot: {e}")
+
+                max_size = (width, height)
+                img.thumbnail(max_size, Image.Resampling.LANCZOS)
+
+                byte_arr = BytesIO()
+                img.save(byte_arr, format='JPEG', quality=quality)
+                return byte_arr.getvalue()
+        except Exception as e:
+            logger.error(f"Ошибка при one-shot захвате экрана: {e}")
+            return None
+
     def set_exclusion_parameters(self, hwnd: int | None, title: str | None, exclude: bool):
         """
         Устанавливает параметры для исключения окна из захвата.

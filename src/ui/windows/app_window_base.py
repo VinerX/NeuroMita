@@ -626,13 +626,13 @@ class AppWindowBase(QMainWindow):
         except Exception:
             character_id = ""
 
-        if self._get_setting("ENABLE_SCREEN_ANALYSIS", False):
+        if self._get_setting("AUTO_ATTACH_IMAGES", False):
             history_limit = int(self._get_setting("SCREEN_CAPTURE_HISTORY_LIMIT", 1))
             frames = self.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {'limit': history_limit}, timeout=0.5)
             if frames and frames[0]:
                 current_image_data.extend(frames[0])
             else:
-                logger.info("Анализ экрана включен, но кадры не готовы или история пуста.")
+                logger.info("Авто-прикрепление кадров включено, но кадры не готовы или история пуста.")
 
         all_image_data = (image_data or []) + current_image_data + staged_image_data
 

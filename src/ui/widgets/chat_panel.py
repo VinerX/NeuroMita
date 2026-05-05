@@ -243,7 +243,7 @@ def update_send_button_state(gui):
     has_images = bool(getattr(gui, "staged_image_data", []))
 
     has_auto_images = False
-    if gui._get_setting("ENABLE_SCREEN_ANALYSIS", False):
+    if gui._get_setting("AUTO_ATTACH_IMAGES", False):
         frames = gui.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {"limit": 1}, timeout=0.5)
         has_auto_images = bool(frames and frames[0])
 
@@ -390,8 +390,8 @@ def send_screen_capture(gui):
             gui,
             _("Ошибка", "Error"),
             _(
-                "Не удалось захватить экран. Убедитесь, что анализ экрана включен в настройках.",
-                "Failed to capture the screen. Make sure screen analysis is enabled in settings.",
+                "Не удалось захватить экран. Убедитесь, что обработка изображений включена в настройках.",
+                "Failed to capture the screen. Make sure image analysis is enabled in settings.",
             ),
         )
         return
