@@ -56,7 +56,7 @@ Translation (DeepSeek) [English readme](README_EN.md)
 В будущих версиях постараемся завезти лаунчер.
 
 Релизы, то есть файлы, которые нужны обычному игроку - https://github.com/VinerX/NeuroMita/releases
-Актуальная версия: https://github.com/VinerX/NeuroMita/releases/download/v0.011/NeuroMita.0.011.MitaWorld.7z
+[Актуальная версия v0.011 здесь](https://github.com/VinerX/NeuroMita/releases/download/v0.011/NeuroMita.0.011.MitaWorld.7z)
     
 	
 Кнопка, чтобы начать писать в игре - Tab 
@@ -164,7 +164,7 @@ API ссылка - https://openrouter.ai/api/v1
      qwen/qwen3-coder-next  
      z-ai/glm-4.7-flash  
 
-[Список моделей тут](https://openrouter.ai/models?max_price=1  ) (Как платных до 1$/млн. токенов, так и бесплатных)
+[Список моделей тут](https://openrouter.ai/models?max_price=1) (Как платных до 1$/млн. токенов, так и бесплатных)
 
 
 ### Ai.iO
@@ -248,15 +248,16 @@ API ссылка - https://openrouter.ai/api/v1
   
   Обратите внимание на вид ссылки моделей Gemini. Эти модели - самые дешевые. 
     ![img_3.png](ReadmeFiles/img_3.png)
-  - https://api.proxyapi.ru/google/v1/models/gemini-2.0-flash-lite:generateContent - gemini-2.0-flash-lite
-  - https://api.proxyapi.ru/google/v1/models/gemini-1.5-flash:generateContent - gemini-1.5-flash (устаревшая модель на 2026 год)
+  - https://api.proxyapi.ru/google/v1/models/gemini-2.0-flash-lite:generateContent - gemini-2.0-flash-lite  
+  - https://api.proxyapi.ru/google/v1/models/gemini-3.1-flash-lite-preview:generateContent - gemini-3.1-flash-lite-preview  
+  - https://api.proxyapi.ru/google/v1/models/gemini-3.1-pro-preview:generateContent - gemini-3.1-pro-preview (дорогая модель)  
   
   gpt и deepseek имеют ссылки такого типа - https://api.proxyapi.ru/openai/v1, галок не нужно:
 
 ![img_4.png](ReadmeFiles/img_4.png)
 
-  - https://api.proxyapi.ru/openai/v1 - модель gpt-4o-mini (дороже)
-  - https://api.proxyapi.ru/deepseek - модель deepseek-chat (осторожно, ещё дороже)
+  - https://api.proxyapi.ru/openai/v1 - модели gpt-4o-mini и gpt-5.4-nano 
+  - https://api.proxyapi.ru/deepseek - модель deepseek-chat (осторожно, ещё дороже)  
 
   Есть и другие модели, если вам позволяют финансы, но будьте аккуратны: https://proxyapi.ru/pricing/list
   
@@ -268,7 +269,7 @@ API ссылка - https://openrouter.ai/api/v1
 ### Telegram 
 
 Для использования ТГ озвучек используется Telegram API, то есть ваш акк (желательно не основной) превращается в бота в том плане, что им можно управлять из кода. Сделал так со своим, но оцените риски сами, либо спросите у остальных.
-Нужны api_id and api_hash, тут гайд как их получить](https://core.telegram.org/api/obtaining_api_id).  
+Нужны api_id and api_hash, [тут гайд как их получить](https://core.telegram.org/api/obtaining_api_id).  
 
 Исходный код есть, риски я указал.  
 Когда все введете, нужно будет перезапуститься и ввести код подтверждения, который придет на Telegram аккаунт.  
