@@ -746,10 +746,25 @@ class SandboxPage(QWidget):
         title_col.addWidget(subtitle_label)
         title_layout.addLayout(title_col, 1)
 
-        guide_button = QPushButton(_("Открыть руководство", "Open guide"))
-        guide_button.setObjectName("SandboxSelectorJump")
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+
+        guide_button = QPushButton(_("Руководство", "Guide"))
+        guide_button.setObjectName("SandboxHeaderButton")
         guide_button.clicked.connect(self.gui._show_guide)
-        title_layout.addWidget(guide_button, 0, Qt.AlignmentFlag.AlignTop)
+        actions.addWidget(guide_button)
+
+        settings_button = QPushButton(_("Настройки", "Settings"))
+        settings_button.setObjectName("SandboxHeaderButton")
+        settings_button.clicked.connect(lambda: self.gui.switch_main_page("settings"))
+        actions.addWidget(settings_button)
+
+        home_button = QPushButton(_("На главную", "Home"))
+        home_button.setObjectName("SandboxHeaderPrimaryButton")
+        home_button.clicked.connect(lambda: self.gui.switch_main_page("home"))
+        actions.addWidget(home_button)
+
+        title_layout.addLayout(actions, 0)
         return title_card
 
     def _build_selector_deck(self) -> QFrame:

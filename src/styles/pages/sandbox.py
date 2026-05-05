@@ -90,8 +90,8 @@ QWidget#SandboxInspectorTabCorner {
 }
 
 QFrame#SandboxWorkspaceShell {
-    background-color: rgba({sandbox_bg_rgb}, 0.98);
-    border: 1px solid rgba({accent_rgb}, 0.14);
+    background-color: rgba({sandbox_bg_rgb}, 0.995);
+    border: 1px solid rgba({accent_rgb}, 0.12);
     border-radius: 24px;
 }
 
@@ -102,23 +102,28 @@ QFrame#SandboxWorkspaceHeader {
 
 QFrame#SandboxSelectorDeck,
 QFrame#SandboxChatHost,
-QFrame#SandboxInspector,
 QFrame#ChatComposerCard {
-    background-color: rgba({sidebar_panel_rgb}, 0.92);
-    border: 1px solid rgba({accent_rgb}, 0.14);
+    background-color: rgba({settings_panel_rgb}, 0.97);
+    border: 1px solid rgba({accent_rgb}, 0.16);
+    border-radius: 20px;
+}
+
+QFrame#SandboxInspector {
+    background-color: rgba({sandbox_bg_rgb}, 0.94);
+    border: 1px solid rgba({accent_rgb}, 0.12);
     border-radius: 20px;
 }
 
 QFrame#ChatToolbarCard,
 QFrame#SandboxSelectorCard {
-    background-color: rgba({settings_panel_rgb}, 0.96);
-    border: 1px solid rgba({accent_rgb}, 0.16);
+    background-color: rgba({settings_panel_rgb}, 0.985);
+    border: 1px solid rgba({accent_rgb}, 0.18);
     border-radius: 18px;
 }
 
 QFrame#SandboxInspectorCard {
-    background-color: rgba(255, 255, 255, 0.02);
-    border: 1px solid rgba(255, 255, 255, 0.045);
+    background-color: rgba({settings_panel_rgb}, 0.95);
+    border: 1px solid rgba({accent_rgb}, 0.14);
     border-radius: 16px;
 }
 
@@ -145,12 +150,56 @@ QLabel#ChatHeroTitle {
 }
 
 QLabel#ChatHeroSubtitle {
-    color: #9da5c7;
+    color: {muted};
     font-size: 9pt;
 }
 
+QPushButton#SandboxHeaderButton,
+QPushButton#SandboxHeaderPrimaryButton {
+    padding: 10px 16px;
+    border-radius: 12px;
+    font-weight: 700;
+}
+
+QPushButton#SandboxHeaderButton {
+    background-color: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: {text};
+}
+
+QPushButton#SandboxHeaderButton:hover {
+    background-color: rgba({accent_rgb}, 0.12);
+    border: 1px solid rgba({accent_rgb}, 0.24);
+}
+
+QPushButton#SandboxHeaderButton:pressed {
+    background-color: rgba({accent_rgb}, 0.20);
+}
+
+QPushButton#SandboxHeaderPrimaryButton {
+    background-color: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 rgba({accent_rgb_alt}, 0.94),
+        stop: 1 rgba({slider_progress_rgb}, 0.98)
+    );
+    border: 1px solid rgba({accent_rgb_alt}, 0.70);
+    color: #ffffff;
+}
+
+QPushButton#SandboxHeaderPrimaryButton:hover {
+    background-color: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 rgba({accent_rgb_alt}, 0.98),
+        stop: 1 rgba({accent_rgb}, 0.98)
+    );
+}
+
+QPushButton#SandboxHeaderPrimaryButton:pressed {
+    background-color: rgba({slider_progress_rgb}, 0.90);
+}
+
 QLabel#TokenCountLabel {
-    color: #7e86a7;
+    color: {muted};
     padding: 0 4px;
     background: transparent;
     border: none;
@@ -159,13 +208,13 @@ QLabel#TokenCountLabel {
 
 QWidget#ChatCharacterHistoryGroup,
 QWidget#ChatInputContainer {
-    background-color: rgba({settings_panel_rgb}, 0.94);
-    border: 1px solid rgba({accent_rgb}, 0.12);
+    background-color: rgba({settings_panel_rgb}, 0.97);
+    border: 1px solid rgba({accent_rgb}, 0.14);
     border-radius: 14px;
 }
 
 QCheckBox#StatusIndicator {
-    color: #bcc4e4;
+    color: {muted};
     spacing: 6px;
     padding: 2px 6px 2px 0;
 }
@@ -185,8 +234,8 @@ QCheckBox#StatusIndicator::indicator:checked {
 
 QWidget#StatusIndicatorStrip,
 QWidget#InlineStatusIndicators {
-    background-color: rgba({sidebar_panel_rgb}, 0.95);
-    border: 1px solid rgba({accent_rgb}, 0.12);
+    background-color: rgba({settings_panel_rgb}, 0.95);
+    border: 1px solid rgba({accent_rgb}, 0.14);
     border-radius: 18px;
 }
 
@@ -206,24 +255,24 @@ QLabel#StatusIndicatorDot[active="true"] {
 }
 
 QLabel#StatusIndicatorText {
-    color: #bcc4e4;
+    color: {muted};
     font-size: 9pt;
     font-weight: 600;
 }
 
 QLabel#StatusIndicatorText[active="true"] {
-    color: #f5f2ff;
+    color: {text};
 }
 
 QLabel#SandboxInspectorTitle {
-    color: #f2efff;
+    color: {text};
     font-size: 10.5pt;
     font-weight: 800;
 }
 
 QLabel#SandboxInspectorLabel,
 QLabel#SandboxSelectorLabel {
-    color: #8f97bb;
+    color: {muted};
     font-size: 8.5pt;
     font-weight: 700;
     text-transform: uppercase;
@@ -231,14 +280,14 @@ QLabel#SandboxSelectorLabel {
 
 QLabel#SandboxInspectorValue,
 QLabel#SandboxSelectorValue {
-    color: #f5f2ff;
+    color: {text};
     font-size: 10.5pt;
     font-weight: 700;
 }
 
 QLabel#SandboxSelectorHint,
 QLabel#SandboxInspectorMeta {
-    color: #9aa2c3;
+    color: {muted};
     font-size: 9pt;
 }
 
@@ -250,9 +299,9 @@ QLabel#SandboxSelectorHintAccent {
 
 QPushButton#SandboxSelectorJump,
 QPushButton#SandboxQuickAction {
-    background-color: rgba(18, 24, 40, 0.90);
-    color: #eff0ff;
-    border: 1px solid rgba(86, 99, 163, 0.18);
+    background-color: rgba({sandbox_bg_rgb}, 0.72);
+    color: {text};
+    border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 8px;
     padding: 5px 10px;
     text-align: left;
@@ -271,19 +320,19 @@ QPushButton#SandboxQuickAction:pressed {
 }
 
 QFrame#ChatConversationStrip {
-    background-color: rgba({sidebar_panel_rgb}, 0.78);
-    border: 1px solid rgba({accent_rgb}, 0.12);
+    background-color: rgba({settings_panel_rgb}, 0.95);
+    border: 1px solid rgba({accent_rgb}, 0.14);
     border-radius: 14px;
 }
 
 QLabel#ChatStripTitle {
-    color: #eef1ff;
+    color: {text};
     font-size: 10pt;
     font-weight: 700;
 }
 
 QLabel#ChatStripMeta {
-    color: #97a0c4;
+    color: {muted};
     font-size: 9pt;
 }
 
@@ -293,9 +342,9 @@ QLabel#ChatStripSeparator {
 }
 
 QPushButton#ChatStripGhostButton {
-    background-color: rgba(18, 24, 40, 0.68);
-    color: #ebedff;
-    border: 1px solid rgba(85, 99, 165, 0.16);
+    background-color: rgba({sandbox_bg_rgb}, 0.62);
+    color: {text};
+    border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 12px;
     padding: 5px 12px;
     font-size: 9pt;
@@ -314,9 +363,14 @@ QWidget#SandboxInspectorTabPage {
     background: transparent;
 }
 
+QFrame#SandboxInspectorTabHeader {
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    padding-bottom: 6px;
+}
+
 QPushButton#SandboxInspectorTabButton {
     background: transparent;
-    color: #9ba3c6;
+    color: {muted};
     border: none;
     border-radius: 14px;
     padding: 8px 16px;
@@ -326,12 +380,12 @@ QPushButton#SandboxInspectorTabButton {
 }
 
 QPushButton#SandboxInspectorTabButton:hover {
-    color: #eef1ff;
+    color: {text};
     background-color: rgba(255, 255, 255, 0.03);
 }
 
 QPushButton#SandboxInspectorTabButton[active="true"] {
-    color: #f5f2ff;
+    color: {text};
     background-color: rgba({accent_rgb}, 0.10);
     border-bottom: 2px solid {accent_alt};
     border-bottom-left-radius: 0px;
@@ -372,7 +426,7 @@ QLabel#SandboxSelectorIcon {
 }
 
 QCheckBox#SandboxCaptureToggle {
-    color: #eef1ff;
+    color: {text};
     spacing: 8px;
     font-size: 10pt;
     background: transparent;
@@ -384,7 +438,7 @@ QCheckBox#SandboxCaptureToggle::indicator {
     width: 14px;
     height: 14px;
     border-radius: 4px;
-    border: 1px solid rgba(89, 103, 166, 0.34);
+    border: 1px solid rgba(255,255,255,0.12);
     background-color: rgba(255, 255, 255, 0.06);
 }
 
