@@ -106,7 +106,7 @@ def resolve_model_settings() -> dict:
     """
     cfg = resolve_full_config()
     return {
-        "hf_name": cfg.get("model") or cfg.get("hf_name") or "",
+        "hf_name": cfg.get("hf_name") or cfg.get("model") or "",
         "query_prefix": cfg.get("query_prefix") or "",
         "dimensions": int(cfg.get("dimensions") or 0),
     }
