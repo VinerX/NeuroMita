@@ -6,6 +6,8 @@ import qtawesome as qta
 from abc import ABC, abstractmethod
 from core.events import get_event_bus, Events
 import os
+from styles.theme import get_theme
+from utils import render_qss
 
 class IGuidePage(ABC):
     min_mode: str = "basic"
@@ -60,85 +62,85 @@ class GuideWidget(QWidget):
         self._init_pages()
     
     def setup_ui(self):
-        self.setStyleSheet("""
+        self.setStyleSheet(render_qss("""
             #GuideWidget {
                 background-color: transparent;
             }
             #GuideContainer {
-                background-color: rgba(24,24,28,0.95);
-                border: 1px solid rgba(255,255,255,0.08);
+                background-color: rgba({settings_panel_rgb}, 0.95);
+                border: 1px solid {border_soft};
                 border-radius: 16px;
             }
             #GuideTitle {
                 font-size: 18px;
                 font-weight: 700;
-                color: #f5f5f7;
+                color: {text};
                 padding: 6px 8px;
                 border-radius: 8px;
-                background-color: rgba(255,255,255,0.04);
+                background-color: {chip_bg};
             }
             #GuideDescription {
                 font-size: 13px;
-                color: #e6e6eb;
+                color: {text};
                 padding: 10px;
                 line-height: 1.55;
                 border-radius: 8px;
-                background-color: rgba(255,255,255,0.02);
+                background-color: rgba({sidebar_panel_rgb}, 0.52);
             }
             #NavigationButton {
-                background-color: #8a2be2;
+                background-color: {accent};
                 color: #ffffff;
-                border: 1px solid rgba(138,43,226,0.35);
+                border: 1px solid {accent_border};
                 padding: 8px 16px;
                 font-weight: 600;
                 border-radius: 10px;
                 min-width: 80px;
             }
             #NavigationButton:hover {
-                background-color: #9b47ea;
+                background-color: {accent_alt};
             }
             #NavigationButton:pressed {
-                background-color: #7a1fda;
+                background-color: {accent_pressed};
             }
             #NavigationButton:disabled {
-                background-color: #3a3a3f;
-                color: #9a9aa2;
-                border: 1px solid rgba(255,255,255,0.06);
+                background-color: {btn_disabled_bg};
+                color: {btn_disabled_fg};
+                border: 1px solid {outline};
             }
             #SkipButton {
-                background-color: rgba(255,255,255,0.05);
-                color: #ffffff;
-                border: 1px solid rgba(255,255,255,0.10);
+                background-color: {chip_bg};
+                color: {text};
+                border: 1px solid {outline};
                 padding: 8px 16px;
                 font-weight: 600;
                 border-radius: 10px;
             }
             #SkipButton:hover {
-                background-color: rgba(255,255,255,0.09);
+                background-color: {chip_hover};
             }
             #SkipButton:pressed {
-                background-color: rgba(255,255,255,0.12);
+                background-color: {chip_pressed};
             }
             #PageIndicator {
-                color: #c2c2c9;
+                color: {muted};
                 font-size: 11px;
                 padding: 4px 8px;
                 border-radius: 6px;
-                background-color: rgba(255,255,255,0.04);
+                background-color: {chip_bg};
             }
             #ImageFrame {
-                background-color: rgba(16,16,20,0.92);
-                border: 1px solid rgba(255,255,255,0.06);
+                background-color: rgba({sandbox_bg_rgb}, 0.92);
+                border: 1px solid {outline};
                 border-radius: 12px;
             }
             #ImageLabel {
-                color: #a9a9b2;
+                color: {muted};
                 background-color: transparent;
             }
             QRadioButton {
-                background-color: rgba(255,255,255,0.06);
-                color: #e6e6eb;
-                border: 1px solid rgba(255,255,255,0.12);
+                background-color: {chip_bg};
+                color: {text};
+                border: 1px solid {outline};
                 border-radius: 14px;
                 padding: 5px 8px;
                 font-size: 12px;
@@ -148,14 +150,14 @@ class GuideWidget(QWidget):
                 height: 16px;
                 border-radius: 8px;
                 border: 1px solid rgba(255,255,255,0.18);
-                background-color: rgba(24,24,28,1);
+                background-color: rgba({sidebar_panel_rgb}, 1.0);
                 margin-right: 6px;
             }
             QRadioButton::indicator:checked {
-                background-color: #8a2be2;
-                border: 1px solid #a270ff;
+                background-color: {accent};
+                border: 1px solid {accent_alt};
             }
-        """)
+        """, get_theme()))
         
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)

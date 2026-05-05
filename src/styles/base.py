@@ -11,12 +11,7 @@ QWidget {
 }
 QMainWindow { background-color: {bg_window}; }
 QWidget#LauncherRoot {
-    background-color: qlineargradient(
-        x1: 0, y1: 0, x2: 1, y2: 1,
-        stop: 0 #140913,
-        stop: 0.45 #0c0813,
-        stop: 1 #07060d
-    );
+    background-color: {app_bg};
 }
 QDialog { background-color: {bg_root}; }
 QFrame { border: none; background: transparent; }
@@ -41,7 +36,7 @@ QTextEdit#DebugWindow {
     font-family: "Consolas", "Courier New", monospace;
     font-size: 8pt;
     min-height: 80px;
-    background-color: rgba(12,12,16,0.92);
+    background-color: rgba({sandbox_bg_rgb}, 0.92);
     border-radius: 10px;
 }
 
@@ -58,7 +53,7 @@ QSpinBox:focus, QDoubleSpinBox:focus {
     border: 1px solid {accent};
 }
 QSpinBox:disabled, QDoubleSpinBox:disabled {
-    background-color: rgba(14,14,18,0.85);
+    background-color: rgba({sandbox_bg_rgb}, 0.85);
     color: #8d8d96;
 }
 
@@ -101,7 +96,7 @@ QPushButton {
 QPushButton:hover { background-color: {accent_hover}; }
 QPushButton:pressed { background-color: {accent_pressed}; }
 QPushButton:disabled {
-    background-color: #3a3a3f;
+    background-color: {btn_disabled_bg};
     color: {muted};
     border: 1px solid {outline};
 }
@@ -138,7 +133,7 @@ QPushButton:focus {
 }
 
 QPushButton:disabled {
-    background-color: #3a3a3f;
+    background-color: {btn_disabled_bg};
     color: {muted};
     border: 1px solid {outline};
 }
@@ -147,7 +142,7 @@ QPushButton:disabled {
 QLabel { background-color: transparent; padding: 0px; }
 QLabel#TokenCountLabel {
     font-size: 8pt;
-    color: #b89bb3;
+    color: {muted};
     padding: 0 4px;
     background: transparent;
     border: none;
@@ -183,16 +178,16 @@ QCheckBox { spacing: 8px; color: {text}; padding: 2px 0; }
 QCheckBox::indicator {
     width: 16px; height: 16px; border-radius: 5px;
     border: 1px solid rgba(255,255,255,0.18);
-    background-color: rgba(24,24,28,1);
+    background-color: rgba({sidebar_panel_rgb}, 0.96);
 }
 QCheckBox::indicator:hover { border-color: {accent}; }
 QCheckBox::indicator:checked {
     background-color: {accent};
-    border: 1px solid #a270ff;
+    border: 1px solid {accent_alt};
 }
 QCheckBox::indicator:checked:disabled {
     background-color: {accent};
-    border: 1px solid #a270ff;
+    border: 1px solid {accent_alt};
 }
 QCheckBox:disabled { color: {muted}; }
 QCheckBox::indicator:disabled {
@@ -225,7 +220,7 @@ QScrollBar::handle:vertical {
     border-radius: 6px;
 }
 QScrollBar::handle:vertical:hover {
-    background: rgba(255,255,255,0.18);
+    background: rgba({accent_rgb}, 0.34);
 }
 QScrollBar::add-line:vertical,
 QScrollBar::sub-line:vertical {
@@ -249,7 +244,7 @@ QScrollBar::handle:horizontal {
     border-radius: 6px;
 }
 QScrollBar::handle:horizontal:hover {
-    background: rgba(255,255,255,0.18);
+    background: rgba({accent_rgb}, 0.34);
 }
 QScrollBar::add-line:horizontal,
 QScrollBar::sub-line:horizontal {

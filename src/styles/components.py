@@ -16,11 +16,11 @@ QProgressBar {
     height: 20px;
     padding: 2px;
 }
-QProgressBar::chunk { background-color: {accent}; border-radius: 8px; }
+QProgressBar::chunk { background-color: {slider_progress}; border-radius: 8px; }
 
 /* ========= Disabled ========= */
 QLineEdit:disabled, QTextEdit:disabled, QComboBox:disabled {
-    background-color: rgba(14,14,18,0.85);
+    background-color: rgba({sandbox_bg_rgb}, 0.85);
     color: #8d8d96;
     border: 1px solid {outline};
 }
@@ -59,7 +59,7 @@ QTableView {
     border: 1px solid {border_soft};
     gridline-color: {outline};
 
-    selection-background-color: rgba(138,43,226,0.25); /* на всякий случай */
+    selection-background-color: rgba({accent_rgb}, 0.25);
     selection-color: #ffffff;
 
     outline: 0;
@@ -75,12 +75,12 @@ QTableView::item:hover {
 }
 
 QTableView::item:selected:active {
-    background-color: rgba(138,43,226,0.35);
+    background-color: rgba({accent_rgb}, 0.35);
     color: #ffffff;
 }
 
 QTableView::item:selected:!active {
-    background-color: rgba(138,43,226,0.22);
+    background-color: rgba({accent_rgb}, 0.22);
     color: #ffffff;
 }
 

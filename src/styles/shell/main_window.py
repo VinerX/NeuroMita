@@ -10,29 +10,29 @@ QStackedWidget#MainPageStack > QWidget {
 
 QFrame#LauncherBrandCard,
 QFrame#LauncherFooterCard {
-    background-color: rgba(29, 12, 34, 0.94);
-    border: 1px solid rgba(255, 92, 158, 0.22);
+    background-color: rgba({sidebar_panel_rgb}, 0.94);
+    border: 1px solid rgba({accent_rgb}, 0.20);
     border-radius: 20px;
 }
 
 QFrame#LauncherBrandCard {
-    background-color: rgba(34, 13, 36, 0.98);
+    background-color: rgba({settings_panel_rgb}, 0.98);
 }
 
 QLabel#LauncherBrandTitle {
     font-size: 17pt;
     font-weight: 800;
-    color: #fff1f9;
+    color: {text};
 }
 
 QLabel#LauncherBrandSubtitle,
 QLabel#LauncherFooterHint {
-    color: #c5a8bf;
+    color: {muted};
     font-size: 9pt;
 }
 
 QLabel#LauncherFooterStatus {
-    color: #ff84bd;
+    color: {accent_alt};
     font-size: 8.5pt;
     font-weight: 700;
     letter-spacing: 0.08em;
@@ -40,8 +40,8 @@ QLabel#LauncherFooterStatus {
 }
 
 QFrame#LauncherSpotlightCard {
-    background-color: rgba(24, 10, 32, 0.94);
-    border: 1px solid rgba(255, 92, 158, 0.18);
+    background-color: rgba({settings_panel_rgb}, 0.94);
+    border: 1px solid rgba({accent_rgb}, 0.18);
     border-radius: 22px;
 }
 
@@ -51,7 +51,7 @@ QLabel#LauncherSpotlightArt {
     border-radius: 18px;
     background-color: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.06);
-    color: #fff1f9;
+    color: {text};
     font-size: 18pt;
     font-weight: 800;
 }

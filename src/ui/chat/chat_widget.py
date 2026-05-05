@@ -12,9 +12,11 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QPropertyAnimation, QPoint, QTimer, QRectF
 from PyQt6.QtGui import QPainter, QPainterPath, QColor, QBrush, QBitmap, QRegion, QLinearGradient, QPen
 import qtawesome as qta
+from styles.main_styles import get_theme
 
-_PANEL_BG = "rgba(17,10,21,0.96)"
-_PANEL_BG_COLOR = QColor(17, 10, 21, 245)
+_THEME = get_theme()
+_PANEL_BG = f"rgba({_THEME['sandbox_bg_rgb']}, 0.96)"
+_PANEL_BG_COLOR = QColor(8, 8, 18, 245)
 
 MAX_DISPLAYED_MESSAGES = 100  # older widgets are deleted when this limit is exceeded
 
@@ -132,14 +134,14 @@ class ChatWidget(QFrame):
         path.addRoundedRect(rect, 18, 18)
 
         gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        gradient.setColorAt(0.0, QColor(28, 12, 32, 245))
-        gradient.setColorAt(0.55, QColor(16, 9, 23, 248))
-        gradient.setColorAt(1.0, QColor(10, 8, 17, 250))
+        gradient.setColorAt(0.0, QColor(16, 13, 25, 245))
+        gradient.setColorAt(0.55, QColor(12, 9, 21, 248))
+        gradient.setColorAt(1.0, QColor(8, 8, 18, 250))
         painter.fillPath(path, gradient)
 
         painter.save()
         painter.setClipPath(path)
-        painter.setPen(QPen(QColor(255, 92, 158, 14), 1))
+        painter.setPen(QPen(QColor(219, 101, 150, 14), 1))
         step = 32
         rl, rt, rr, rb = int(rect.left()), int(rect.top()), int(rect.right()), int(rect.bottom())
         for x in range(rl, rr, step):
@@ -148,7 +150,7 @@ class ChatWidget(QFrame):
             painter.drawLine(rl, y, rr, y)
         painter.restore()
 
-        painter.setPen(QPen(QColor(255, 92, 158, 105), 1.15))
+        painter.setPen(QPen(QColor(219, 101, 150, 105), 1.15))
         painter.drawPath(path)
 
     # ── Public API ──────────────────────────────────────────────────────────

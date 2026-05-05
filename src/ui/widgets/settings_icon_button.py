@@ -2,6 +2,7 @@ from PyQt6.QtWidgets import QPushButton, QApplication, QLabel, QSizePolicy
 from PyQt6.QtCore import QSize, Qt, QVariantAnimation
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient
 import qtawesome as qta
+from styles.theme import get_theme
 
 
 class SettingsIconButton(QPushButton):
@@ -13,8 +14,9 @@ class SettingsIconButton(QPushButton):
         self._indicator_tooltip = ""
         self._indicator_state: str | None = None
         self._icon_name = icon_name
+        self._theme = get_theme()
 
-        self.setIcon(qta.icon(icon_name, color='#f7d7ee'))
+        self.setIcon(qta.icon(icon_name, color=self._theme["text"]))
         icon_size = QApplication.style().pixelMetric(QApplication.style().PixelMetric.PM_SmallIconSize)
         self.setIconSize(QSize(icon_size, icon_size))
         self.setText(self._base_tooltip)
@@ -75,7 +77,7 @@ class SettingsIconButton(QPushButton):
         return (
             "QLabel {"
             f"background-color: {color_hex};"
-            "border: 2px solid rgba(28, 7, 28, 235);"
+            f"border: 2px solid rgba({self._theme['settings_panel_rgb']}, 0.92);"
             "border-radius: 5px;"
             "}"
         )
@@ -153,54 +155,57 @@ class SettingsIconButton(QPushButton):
         p.end()
 
     def update_style(self):
-        icon_color = '#ffffff' if self.is_active else '#f0cfe7'
+        accent_rgb = self._theme["accent_rgb"]
+        accent_rgb_alt = self._theme["accent_rgb_alt"]
+        slider_progress_rgb = self._theme["slider_progress_rgb"]
+        icon_color = "#ffffff" if self.is_active else self._theme["muted"]
         self.setIcon(qta.icon(self._icon_name, color=icon_color))
 
         if self.is_active:
-            self.setStyleSheet("""
-                QPushButton {
+            self.setStyleSheet(f"""
+                QPushButton {{
                     background-color: qlineargradient(
                         x1: 0, y1: 0, x2: 1, y2: 0,
-                        stop: 0 rgba(255, 93, 159, 0.32),
-                        stop: 1 rgba(255, 54, 126, 0.62)
+                        stop: 0 rgba({accent_rgb_alt}, 0.22),
+                        stop: 1 rgba({slider_progress_rgb}, 0.48)
                     );
                     color: #ffffff;
-                    border: 1px solid rgba(255, 92, 158, 0.72);
+                    border: 1px solid rgba({accent_rgb}, 0.46);
                     padding: 8px 12px;
                     border-radius: 12px;
                     text-align: left;
                     font-size: 9.5pt;
                     font-weight: 700;
-                }
-                QPushButton:hover {
+                }}
+                QPushButton:hover {{
                     background-color: qlineargradient(
                         x1: 0, y1: 0, x2: 1, y2: 0,
-                        stop: 0 rgba(255, 103, 170, 0.34),
-                        stop: 1 rgba(255, 68, 140, 0.68)
+                        stop: 0 rgba({accent_rgb_alt}, 0.28),
+                        stop: 1 rgba({slider_progress_rgb}, 0.56)
                     );
-                }
-                QPushButton:pressed {
-                    background-color: rgba(255, 74, 144, 0.75);
-                }
+                }}
+                QPushButton:pressed {{
+                    background-color: rgba({slider_progress_rgb}, 0.64);
+                }}
             """)
         else:
-            self.setStyleSheet("""
-                QPushButton {
+            self.setStyleSheet(f"""
+                QPushButton {{
                     background-color: rgba(255, 255, 255, 0.035);
-                    color: #d5b6cb;
+                    color: {self._theme["muted"]};
                     border: 1px solid rgba(255, 255, 255, 0.07);
                     padding: 8px 12px;
                     border-radius: 12px;
                     text-align: left;
                     font-size: 9.5pt;
                     font-weight: 600;
-                }
-                QPushButton:hover {
-                    background-color: rgba(255, 92, 158, 0.16);
-                    border: 1px solid rgba(255, 92, 158, 0.30);
-                    color: #f5d6ea;
-                }
-                QPushButton:pressed {
-                    background-color: rgba(255, 92, 158, 0.22);
-                }
+                }}
+                QPushButton:hover {{
+                    background-color: rgba({accent_rgb}, 0.12);
+                    border: 1px solid rgba({accent_rgb}, 0.24);
+                    color: {self._theme["text"]};
+                }}
+                QPushButton:pressed {{
+                    background-color: rgba({accent_rgb}, 0.18);
+                }}
             """)

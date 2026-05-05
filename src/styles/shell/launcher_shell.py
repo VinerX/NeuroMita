@@ -6,19 +6,19 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class LauncherShellPalette:
-    root_bg: str = "#07050d"
-    panel_bg: str = "rgba(12, 10, 20, 0.985)"
-    panel_soft: str = "rgba(18, 14, 30, 0.96)"
-    card_bg: str = "rgba(24, 16, 38, 0.90)"
-    card_alt_bg: str = "rgba(20, 13, 31, 0.94)"
-    border: str = "rgba(255, 120, 188, 0.16)"
-    border_strong: str = "rgba(255, 120, 188, 0.30)"
-    text: str = "#f5e8f7"
-    muted: str = "#c8aac6"
-    accent: str = "#ff5ca8"
-    accent_soft: str = "rgba(255, 92, 168, 0.14)"
-    accent_hover: str = "#ff74b8"
-    accent_pressed: str = "#ea4c96"
+    root_bg: str = "#0c0915"
+    panel_bg: str = "rgba(13, 13, 26, 0.995)"
+    panel_soft: str = "rgba(15, 16, 31, 0.98)"
+    card_bg: str = "rgba(15, 16, 31, 0.92)"
+    card_alt_bg: str = "rgba(16, 13, 25, 0.94)"
+    border: str = "rgba(219, 101, 150, 0.16)"
+    border_strong: str = "rgba(219, 101, 150, 0.30)"
+    text: str = "#f3edf6"
+    muted: str = "#bca9bb"
+    accent: str = "#db6596"
+    accent_soft: str = "rgba(219, 101, 150, 0.14)"
+    accent_hover: str = "#e26e9e"
+    accent_pressed: str = "#cb5b89"
     success: str = "#89f7b2"
     warning: str = "#ffcf7d"
     danger: str = "#ff7a98"
@@ -38,9 +38,9 @@ def get_launcher_shell_stylesheet() -> str:
     bg_rule = """
         background: qlineargradient(
             x1: 0, y1: 0, x2: 1, y2: 1,
-            stop: 0 #160b1c,
-            stop: 0.36 #0e0915,
-            stop: 1 #050409
+            stop: 0 #110d1b,
+            stop: 0.42 #0c0915,
+            stop: 1 #080812
         );
     """
     return f"""
@@ -79,11 +79,11 @@ def get_launcher_shell_stylesheet() -> str:
     QFrame#LauncherShellSidebar {{
         background: qlineargradient(
             x1: 0, y1: 0, x2: 0, y2: 1,
-            stop: 0 rgba(15, 11, 24, 0.99),
-            stop: 1 rgba(10, 8, 18, 0.995)
+            stop: 0 rgba(13, 13, 26, 0.995),
+            stop: 1 rgba(12, 9, 21, 0.995)
         );
         border: none;
-        border-right: 1px solid rgba(255, 120, 188, 0.14);
+        border-right: 1px solid rgba(219, 101, 150, 0.14);
         border-radius: 0px;
     }}
     QFrame#LauncherShellNavHost,
@@ -161,7 +161,7 @@ def get_launcher_shell_stylesheet() -> str:
         color: {p.text};
     }}
     QPushButton#LauncherShellNavButton[active="true"] {{
-        background-color: rgba(255, 92, 168, 0.72);
+        background-color: rgba(219, 101, 150, 0.72);
         border: 1px solid {p.border_strong};
         color: {p.text};
     }}
@@ -169,7 +169,7 @@ def get_launcher_shell_stylesheet() -> str:
     QPushButton#LauncherShellPromoButton {{
         background-color: {p.accent};
         color: white;
-        border: 1px solid rgba(255, 92, 168, 0.42);
+        border: 1px solid rgba(219, 101, 150, 0.42);
         border-radius: 14px;
         padding: 10px 14px;
         font-family: "Segoe UI", "Arial", sans-serif;
@@ -242,7 +242,7 @@ def get_launcher_shell_stylesheet() -> str:
     QPushButton#LauncherShellLangPill {{
         background-color: rgba(255, 255, 255, 0.02);
         color: {p.text};
-        border: 1px solid rgba(255, 120, 188, 0.26);
+        border: 1px solid rgba(219, 101, 150, 0.26);
         border-radius: 12px;
         padding: 0;
         font-family: "Segoe UI", "Arial", sans-serif;
@@ -258,7 +258,7 @@ def get_launcher_shell_stylesheet() -> str:
     QPushButton#LauncherShellLangPill[active="true"] {{
         background-color: {p.accent};
         color: white;
-        border: 1px solid rgba(255, 92, 168, 0.42);
+        border: 1px solid rgba(219, 101, 150, 0.42);
     }}
     QLabel#LauncherShellVersionLabel {{
         color: {p.muted};
@@ -276,7 +276,7 @@ def get_launcher_shell_stylesheet() -> str:
         margin: 4px 0;
     }}
     QScrollBar::handle:vertical {{
-        background: rgba(255, 167, 214, 0.22);
+        background: rgba(219, 101, 150, 0.22);
         border-radius: 5px;
         min-height: 28px;
     }}

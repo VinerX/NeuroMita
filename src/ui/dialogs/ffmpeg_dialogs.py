@@ -43,7 +43,7 @@ QLabel#LauncherShellPath {{
 QPushButton#LauncherShellActionButton {{
     background-color: {PALETTE.accent};
     color: white;
-    border: 1px solid rgba(255, 92, 168, 0.42);
+    border: 1px solid {PALETTE.border_strong};
     border-radius: 14px;
     padding: 10px 16px;
     font-size: 13px;
