@@ -75,10 +75,11 @@ class LauncherSidebarWidget(QFrame):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 18, 16, 16)
-        layout.setSpacing(14)
+        layout.setContentsMargins(18, 20, 18, 18)
+        layout.setSpacing(12)
 
         layout.addWidget(self._build_brand_card())
+        layout.addWidget(self._build_brand_divider())
         layout.addWidget(self._build_nav_card())
         layout.addStretch(1)
         layout.addWidget(self._build_social_block())
@@ -121,12 +122,18 @@ class LauncherSidebarWidget(QFrame):
         row.addLayout(title_column, 1)
         return card
 
+    def _build_brand_divider(self) -> QFrame:
+        divider = QFrame()
+        divider.setObjectName("LauncherShellDivider")
+        divider.setFixedHeight(1)
+        return divider
+
     def _build_nav_card(self) -> QFrame:
         card = QFrame()
-        card.setObjectName("LauncherShellSectionCard")
+        card.setObjectName("LauncherShellNavHost")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(6)
+        layout.setContentsMargins(0, 6, 0, 6)
+        layout.setSpacing(8)
 
         for section in self._sections:
             button = QPushButton()

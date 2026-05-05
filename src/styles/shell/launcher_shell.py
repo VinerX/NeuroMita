@@ -7,14 +7,14 @@ from pathlib import Path
 @dataclass(frozen=True)
 class LauncherShellPalette:
     root_bg: str = "#07050d"
-    panel_bg: str = "rgba(18, 10, 28, 0.96)"
-    panel_soft: str = "rgba(31, 16, 43, 0.94)"
-    card_bg: str = "rgba(29, 13, 40, 0.92)"
-    card_alt_bg: str = "rgba(24, 10, 34, 0.94)"
-    border: str = "rgba(255, 120, 188, 0.20)"
-    border_strong: str = "rgba(255, 120, 188, 0.34)"
-    text: str = "#faedf7"
-    muted: str = "#b89bb3"
+    panel_bg: str = "rgba(12, 10, 20, 0.985)"
+    panel_soft: str = "rgba(18, 14, 30, 0.96)"
+    card_bg: str = "rgba(24, 16, 38, 0.90)"
+    card_alt_bg: str = "rgba(20, 13, 31, 0.94)"
+    border: str = "rgba(255, 120, 188, 0.16)"
+    border_strong: str = "rgba(255, 120, 188, 0.30)"
+    text: str = "#f5e8f7"
+    muted: str = "#c8aac6"
     accent: str = "#ff5ca8"
     accent_soft: str = "rgba(255, 92, 168, 0.14)"
     accent_hover: str = "#ff74b8"
@@ -63,7 +63,6 @@ def get_launcher_shell_stylesheet() -> str:
         background: transparent;
         border: none;
     }}
-    QFrame#LauncherShellSidebar,
     QFrame#LauncherShellPage,
     QFrame#LauncherShellSectionCard,
     QFrame#LauncherShellPromoCard,
@@ -78,7 +77,26 @@ def get_launcher_shell_stylesheet() -> str:
         border-radius: 22px;
     }}
     QFrame#LauncherShellSidebar {{
-        background-color: {p.panel_bg};
+        background: qlineargradient(
+            x1: 0, y1: 0, x2: 0, y2: 1,
+            stop: 0 rgba(15, 11, 24, 0.99),
+            stop: 1 rgba(10, 8, 18, 0.995)
+        );
+        border: none;
+        border-right: 1px solid rgba(255, 120, 188, 0.14);
+        border-radius: 0px;
+    }}
+    QFrame#LauncherShellNavHost,
+    QFrame#LauncherShellBrandRow,
+    QFrame#LauncherShellDivider {{
+        background: transparent;
+        border: none;
+        border-radius: 0px;
+    }}
+    QFrame#LauncherShellDivider {{
+        min-height: 1px;
+        max-height: 1px;
+        background-color: rgba(255, 255, 255, 0.12);
     }}
     QLabel#LauncherShellEyebrow {{
         color: {p.accent_hover};
@@ -129,21 +147,21 @@ def get_launcher_shell_stylesheet() -> str:
         background-color: transparent;
         color: {p.muted};
         border: 1px solid transparent;
-        border-radius: 18px;
-        padding: 12px 14px;
+        border-radius: 16px;
+        padding: 13px 14px;
         font-family: "Segoe UI", "Arial", sans-serif;
         text-align: left;
-        font-size: 13px;
+        font-size: 14px;
         font-weight: 600;
         letter-spacing: 0px;
     }}
     QPushButton#LauncherShellNavButton:hover {{
-        background-color: {p.accent_soft};
-        border: 1px solid rgba(255, 255, 255, 0.05);
+        background-color: rgba(255, 255, 255, 0.03);
+        border: 1px solid transparent;
         color: {p.text};
     }}
     QPushButton#LauncherShellNavButton[active="true"] {{
-        background-color: rgba(255, 92, 168, 0.18);
+        background-color: rgba(255, 92, 168, 0.72);
         border: 1px solid {p.border_strong};
         color: {p.text};
     }}
@@ -198,9 +216,9 @@ def get_launcher_shell_stylesheet() -> str:
         background: transparent;
     }}
     QFrame#LauncherShellSocialIconCard {{
-        background-color: rgba(255, 92, 168, 0.06);
-        border: 1px solid rgba(255, 92, 168, 0.18);
-        border-radius: 14px;
+        background-color: rgba(255, 255, 255, 0.02);
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        border-radius: 16px;
         padding: 6px;
     }}
     QFrame#LauncherShellBrandRow {{
@@ -222,9 +240,9 @@ def get_launcher_shell_stylesheet() -> str:
         letter-spacing: 0px;
     }}
     QPushButton#LauncherShellLangPill {{
-        background-color: rgba(255, 255, 255, 0.04);
-        color: {p.muted};
-        border: 1px solid rgba(255, 255, 255, 0.06);
+        background-color: rgba(255, 255, 255, 0.02);
+        color: {p.text};
+        border: 1px solid rgba(255, 120, 188, 0.26);
         border-radius: 12px;
         padding: 0;
         font-family: "Segoe UI", "Arial", sans-serif;
