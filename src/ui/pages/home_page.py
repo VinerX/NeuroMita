@@ -187,6 +187,7 @@ class HomePage(LauncherHomeBackground):
         menu_button.setObjectName("LauncherHomeMenuButton")
         menu_button.setIcon(qta.icon("fa6s.chevron-down", color="#ffd2ec"))
         menu_button.setIconSize(QSize(14, 14))
+        menu_button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         menu_button.clicked.connect(lambda: self.show_extra_menu(menu_button))
         button_row.addWidget(menu_button)
         left_column.addLayout(button_row)
@@ -410,7 +411,8 @@ class HomePage(LauncherHomeBackground):
         if not unity_dir.exists() or not unity_dir.is_dir():
             return None
 
-        exe_files = list(unity_dir.glob("*.exe"))
+        # Ищем в корне и на один уровень вглубь (например UnityBuild/).
+        exe_files = list(unity_dir.glob("*.exe")) + list(unity_dir.glob("*/*.exe"))
         if not exe_files:
             return None
 

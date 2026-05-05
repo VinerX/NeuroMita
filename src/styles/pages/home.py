@@ -156,7 +156,6 @@ QPushButton#LauncherHomePrimaryButton:hover {
 
 QPushButton#LauncherHomeMenuButton {
     min-width: 44px;
-    padding: 16px 12px;
     background-color: rgba({sidebar_panel_rgb}, 0.96);
     border: 1px solid rgba({accent_rgb}, 0.18);
     border-left: 1px solid rgba(255, 255, 255, 0.10);

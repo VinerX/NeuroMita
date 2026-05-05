@@ -61,7 +61,8 @@ def _find_unity_executable(unity_dir: Path) -> Optional[Path]:
     if not unity_dir.exists() or not unity_dir.is_dir():
         return None
 
-    exe_files = list(unity_dir.glob("*.exe"))
+    # Ищем в корне и на один уровень вглубь (например UnityBuild/).
+    exe_files = list(unity_dir.glob("*.exe")) + list(unity_dir.glob("*/*.exe"))
     if not exe_files:
         return None
 
