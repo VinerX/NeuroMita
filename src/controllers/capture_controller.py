@@ -309,6 +309,10 @@ class CaptureController:
         delta = current_time - self.last_image_request_time
         
         if delta >= interval:
+            if not self.settings.get("ENABLE_IMAGE_ANALYSIS", True):
+                self.last_image_request_time = current_time
+                return
+
             image_data = []
             if self.settings.get("ENABLE_SCREEN_ANALYSIS", False):
                 logger.info(f"Отправка периодического запроса с изображением ({current_time - self.last_image_request_time:.2f}/{interval:.2f} сек).")

@@ -645,6 +645,10 @@ class AppWindowBase(QMainWindow):
             else:
                 logger.info("Захват с камеры включен, но кадры не готовы или история пуста.")
 
+        if not self._get_setting("ENABLE_IMAGE_ANALYSIS", True):
+            all_image_data = []
+            logger.info("ENABLE_IMAGE_ANALYSIS отключен — изображения не отправляются.")
+
         if not user_input and not system_input and not all_image_data:
             return
 
