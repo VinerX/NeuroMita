@@ -114,11 +114,10 @@ class _EmbedProviderWidget(QWidget):
         self._model_label = QLabel(_("Модель:", "Model:"))
         model_row.addWidget(self._model_label)
         self._model_combo = QComboBox()
-        self._model_combo.setEditable(True)
         self._model_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._model_combo.setMinimumContentsLength(8)
         self._model_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self._model_combo.lineEdit().textChanged.connect(self._mark_dirty)
+        self._model_combo.currentTextChanged.connect(self._mark_dirty)
         model_row.addWidget(self._model_combo, 1)
         root.addLayout(model_row)
 
@@ -355,6 +354,7 @@ class _EmbedProviderWidget(QWidget):
             self._manual_path_check.setChecked(manual_path)
             self._manual_path_check.blockSignals(False)
             self._model_combo.blockSignals(True)
+            self._model_combo.setEditable(bool(not is_local or manual_path))
             self._model_combo.clear()
             if is_local and manual_path:
                 self._model_combo.addItem(model)
@@ -364,6 +364,8 @@ class _EmbedProviderWidget(QWidget):
                 self._model_combo.insertItem(0, model)
             mi = self._model_combo.findText(model) if model else -1
             self._model_combo.setCurrentIndex(mi if mi >= 0 else 0)
+            if self._model_combo.isEditable() and self._model_combo.lineEdit():
+                self._model_combo.lineEdit().textChanged.connect(self._mark_dirty)
             self._model_combo.blockSignals(False)
 
             self._model_label.setText(
@@ -456,6 +458,7 @@ class _EmbedProviderWidget(QWidget):
             return
         current = self._model_combo.currentText().strip()
         self._model_combo.blockSignals(True)
+        self._model_combo.setEditable(checked)
         self._model_combo.clear()
         if checked:
             self._model_combo.addItem(current)
@@ -470,6 +473,8 @@ class _EmbedProviderWidget(QWidget):
             if current in names:
                 self._model_combo.setCurrentText(current)
             self._model_label.setText(_("Модель:", "Model:"))
+        if self._model_combo.isEditable() and self._model_combo.lineEdit():
+            self._model_combo.lineEdit().textChanged.connect(self._mark_dirty)
         self._model_combo.blockSignals(False)
         self._download_btn.setEnabled(not checked)
         self._mark_dirty()

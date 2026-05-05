@@ -31,11 +31,6 @@ EMBED_MODEL_PRESETS: Dict[str, dict] = {
         "dimensions": 384,
     },
     # ── Medium (~300-700MB, recommended) ─────────────────────────────────
-    "GTE multilingual base (620M, 2024)": {
-        "hf_name": "Alibaba-NLP/gte-multilingual-base",
-        "query_prefix": "",
-        "dimensions": 768,
-    },
     "BAAI/bge-m3 (570M, 2024)": {
         "hf_name": "BAAI/bge-m3",
         "query_prefix": "",
