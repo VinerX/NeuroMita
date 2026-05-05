@@ -170,8 +170,10 @@ class LauncherSidebarWidget(QFrame):
         icon_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         row = QHBoxLayout(icon_card)
         row.setContentsMargins(6, 6, 6, 6)
-        row.setSpacing(8)
+        row.setSpacing(12)
 
+        # Пружина слева (оттолкнет кнопки к центру)
+        row.addStretch(1)
         for key, title_text, icon_name in (
             ("discord", "Discord", "fa6b.discord"),
             ("github", "GitHub", "fa6b.github"),
@@ -182,7 +184,18 @@ class LauncherSidebarWidget(QFrame):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setIcon(qta.icon(icon_name, color="#ffd2ec"))
             button.setToolTip(title_text)
-            button.setFixedSize(40, 36)
+            button.setFixedSize(36, 36)
+            button.setStyleSheet("""
+                QPushButton#LauncherShellSocialButton {
+                    background-color: rgba(255, 255, 255, 0.04);
+                    border: 1px solid rgba(255, 255, 255, 0.05);
+                    border-radius: 6px;
+                }
+                QPushButton#LauncherShellSocialButton:hover {
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba(255, 210, 236, 0.3);
+                }
+            """)
             button.clicked.connect(lambda checked=False, value=key: self.social_requested.emit(value))
             row.addWidget(button)
 
