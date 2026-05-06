@@ -372,10 +372,6 @@ QLabel#CharacterStatValue {
     font-weight: 700;
 }
 
-QLabel#CharacterMoodValue {
-    font-size: 10pt;
-    font-weight: 700;
-}
 
 QLabel#CharacterStateBadge {
     color: #ffd1dc;

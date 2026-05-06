@@ -10,7 +10,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QProgressBar,
-    QPushButton,
     QSizePolicy,
     QToolButton,
     QVBoxLayout,
@@ -21,21 +20,6 @@ from core.events import Events
 from main_logger import logger
 from utils import _
 
-
-_MOOD_LABELS = (
-    (80, _("Радостное", "Joyful"), "#7be29c"),
-    (55, _("Спокойное", "Calm"), "#9ed4ff"),
-    (35, _("Унылое", "Down"), "#ffd27a"),
-    (0, _("Мрачное", "Gloomy"), "#ff7aa1"),
-)
-
-
-def _mood_for(attitude: float, boredom: float, stress: float) -> tuple[str, str]:
-    score = float(attitude) - 0.6 * float(boredom) - 0.8 * float(stress)
-    for threshold, label, color in _MOOD_LABELS:
-        if score >= threshold:
-            return label, color
-    return _MOOD_LABELS[-1][1], _MOOD_LABELS[-1][2]
 
 
 class _StatBar(QWidget):
@@ -147,19 +131,6 @@ class CharacterStatePanel(QWidget):
         title_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addStretch(1)
         core_layout.addLayout(title_row)
-
-        # Mood line
-        mood_row = QHBoxLayout()
-        mood_row.setContentsMargins(0, 0, 0, 0)
-        mood_row.setSpacing(8)
-        mood_label_caption = QLabel(_("Настроение", "Mood"))
-        mood_label_caption.setObjectName("SandboxInspectorLabel")
-        mood_row.addWidget(mood_label_caption, 0, Qt.AlignmentFlag.AlignLeft)
-        self._mood_value = QLabel("—")
-        self._mood_value.setObjectName("CharacterMoodValue")
-        mood_row.addStretch(1)
-        mood_row.addWidget(self._mood_value, 0, Qt.AlignmentFlag.AlignRight)
-        core_layout.addLayout(mood_row)
 
         self._attitude_bar = _StatBar(_("Отношение", "Attitude"), "#ff5ca8")
         self._boredom_bar = _StatBar(_("Скука", "Boredom"), "#9d6cff")
@@ -404,10 +375,6 @@ class CharacterStatePanel(QWidget):
         self._attitude_bar.set_value(attitude)
         self._boredom_bar.set_value(boredom)
         self._stress_bar.set_value(stress)
-
-        mood_text, mood_color = _mood_for(attitude, boredom, stress)
-        self._mood_value.setText(mood_text)
-        self._mood_value.setStyleSheet(f"color: {mood_color}; font-weight: 600;")
 
         # Secret exposed (only show if the variable exists in the character's state)
         try:
