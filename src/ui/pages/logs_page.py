@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QRegularExpression, QTimer
+from PyQt6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
 from PyQt6.QtWidgets import QLabel, QFrame, QPlainTextEdit, QVBoxLayout, QWidget
 
 from ui.widgets.launcher_dashboard_helpers import DashboardAction, create_logs_page
@@ -10,6 +11,51 @@ from utils import _
 
 _LOG_TAIL_BYTES = 64 * 1024
 _LOG_TAIL_LINES = 500
+
+
+_LOG_LEVEL_COLORS: dict[str, str] = {
+    "DEBUG":    "#888888",
+    "PROGRESS": "#87CEEB",
+    "INFO":     "#E0E0E0",
+    "NOTIFY":   "#E8C8F0",
+    "WARNING":  "#FFD700",
+    "SUCCESS":  "#90EE90",
+    "ERROR":    "#FF6B6B",
+    "CRITICAL": "#FF4444",
+}
+
+_LOG_LEVEL_BOLD: set[str] = {
+    "CRITICAL",
+}
+
+_LOG_LEVEL_BG: dict[str, str] = {
+    "CRITICAL": "#770000",
+}
+
+
+class _LogHighlighter(QSyntaxHighlighter):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._default_fmt = QTextCharFormat()
+        self._default_fmt.setForeground(QColor("#BBBBBB"))
+        self._rules: list[tuple[QRegularExpression, QTextCharFormat]] = []
+        for level, color in _LOG_LEVEL_COLORS.items():
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(color))
+            if level in _LOG_LEVEL_BOLD:
+                fmt.setFontWeight(QFont.Weight.Bold)
+            if level in _LOG_LEVEL_BG:
+                fmt.setBackground(QColor(_LOG_LEVEL_BG[level]))
+            rx = QRegularExpression(f"- +{level}\\b")
+            self._rules.append((rx, fmt))
+
+    def highlightBlock(self, text: str) -> None:
+        self.setFormat(0, len(text), self._default_fmt)
+        for rx, fmt in self._rules:
+            m = rx.match(text)
+            if m.hasMatch():
+                self.setFormat(0, len(text), fmt)
+                return
 
 
 def _append_to_shell_page(page: QWidget, widget: QWidget) -> None:
@@ -86,6 +132,7 @@ class LogsPage(QWidget):
         self.logs_window.setObjectName("DebugWindow")
         self.logs_window.setReadOnly(True)
         self.logs_window.setMinimumHeight(420)
+        self._log_highlighter = _LogHighlighter(self.logs_window.document())
         card_layout.addWidget(self.logs_window)
 
         self.gui.logs_window = self.logs_window
