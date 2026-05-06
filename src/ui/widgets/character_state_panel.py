@@ -98,8 +98,6 @@ class CharacterStatePanel(QWidget):
     a mood label, and a collapsible textarea with all variables.
     """
 
-    REFRESH_MS = 1500
-
     def __init__(self, gui, parent: QWidget | None = None):
         super().__init__(parent)
         self.gui = gui
@@ -194,18 +192,21 @@ class CharacterStatePanel(QWidget):
         root.addWidget(all_card)
         root.addStretch(1)
 
-        # Auto-refresh
-        self._timer = QTimer(self)
-        self._timer.setInterval(self.REFRESH_MS)
-        self._timer.timeout.connect(self.refresh)
-        self._timer.start()
-
         # Subscribe to events
         try:
             eb = self.gui.event_bus
             eb.subscribe(Events.Character.CURRENT_CHANGED, lambda e: self._schedule_refresh(rebuild=True), weak=False)
             try:
                 eb.subscribe(Events.Character.RELOAD_DATA, lambda e: self._schedule_refresh(rebuild=True), weak=False)
+            except Exception:
+                pass
+            try:
+                from core.events import Events as _Ev
+                def _on_response(e):
+                    self._schedule_refresh(rebuild=False)
+                    if self._all_text.isVisible():
+                        QTimer.singleShot(100, self._refresh_all_text)
+                eb.subscribe(_Ev.LLM.ON_SUCCESSFUL_RESPONSE, _on_response, weak=False)
             except Exception:
                 pass
         except Exception:
@@ -319,6 +320,9 @@ class CharacterStatePanel(QWidget):
         self._custom_card.setVisible(any_widget)
 
     def _refresh_all_text(self) -> None:
+        # Don't interrupt user while they are interacting with the field
+        if self._all_text.hasFocus():
+            return
         character = self._get_current_character()
         if character is None:
             self._all_text.setPlainText("—")
@@ -340,20 +344,22 @@ class CharacterStatePanel(QWidget):
             if len(v_text) > 200:
                 v_text = v_text[:197] + "…"
             lines.append(f"{k}: {v_text}")
-        self._all_text.setPlainText("\n".join(lines) if lines else "—")
+        new_text = "\n".join(lines) if lines else "—"
+        scrollbar = self._all_text.verticalScrollBar()
+        scroll_val = scrollbar.value() if scrollbar else 0
+        self._all_text.setPlainText(new_text)
+        if scrollbar:
+            scrollbar.setValue(scroll_val)
 
     # ─────────────────────────────────────────────────────────────
     def refresh(self, *, rebuild: bool = False) -> None:
         character = self._get_current_character()
         if character is None:
-            self._mood_value.setText("—")
             self._attitude_bar.set_value(0)
             self._boredom_bar.set_value(0)
             self._stress_bar.set_value(0)
             self._secret_badge.setVisible(False)
             self._custom_card.setVisible(False)
-            if self._all_text.isVisible():
-                self._refresh_all_text()
             return
 
         char_id = str(getattr(character, "char_id", "") or "")
@@ -408,5 +414,4 @@ class CharacterStatePanel(QWidget):
                 badge.style().unpolish(badge)
                 badge.style().polish(badge)
 
-        if self._all_text.isVisible():
-            self._refresh_all_text()
+        # all_text refreshes only on response events, not on timer tick

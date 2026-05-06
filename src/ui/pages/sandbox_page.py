@@ -854,7 +854,7 @@ class SandboxPage(QWidget):
         layout.addWidget(session_card)
 
         # ── Capture ──
-        capture_card, capture_layout = self._make_inspector_card(_("Захват / Capture", "Capture"), "fa6s.camera-retro")
+        capture_card, capture_layout = self._make_inspector_card(_("Захват", "Capture"), "fa6s.camera-retro")
         screen_cb = QCheckBox(_("Захват экрана", "Screen capture"))
         screen_cb.setObjectName("SandboxCaptureToggle")
         screen_cb.setChecked(bool(self.gui._get_setting("ENABLE_SCREEN_ANALYSIS", False)))
