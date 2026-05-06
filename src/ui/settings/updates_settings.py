@@ -5,7 +5,7 @@ import os
 import threading
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -27,6 +27,18 @@ from utils import getTranslationVariant as _
 
 def setup_updates_settings_controls(self, parent):
     create_section_header(parent, _("Обновления", "Updates"))
+
+    class _Dispatch(QObject):
+        _go = pyqtSignal(object)
+
+        def __init__(self):
+            super().__init__()
+            self._go.connect(lambda fn: fn())
+
+        def schedule(self, fn):
+            self._go.emit(fn)
+
+    _dispatch = _Dispatch()
 
     def _persist_setting(key: str, value):
         if hasattr(self, "_save_setting"):
@@ -91,12 +103,12 @@ def setup_updates_settings_controls(self, parent):
 
     def _set_status(msg: str):
         logger.info(f"[updates_ui] {msg}")
-        QTimer.singleShot(0, lambda: status_lbl.setText(msg))
+        _dispatch.schedule(lambda: status_lbl.setText(msg))
 
     def _set_status_level(msg: str, level: str = "info"):
         log_fn = getattr(logger, level, logger.info)
         log_fn(f"[updates_ui] {msg}")
-        QTimer.singleShot(0, lambda: status_lbl.setText(msg))
+        _dispatch.schedule(lambda: status_lbl.setText(msg))
 
     def _update_progress(pct: int | None, text: str, busy: bool = False):
         def apply():
@@ -108,14 +120,14 @@ def setup_updates_settings_controls(self, parent):
                 progress_bar.setValue(max(0, min(100, pct)))
             status_lbl.setText(text)
 
-        QTimer.singleShot(0, apply)
+        _dispatch.schedule(apply)
 
     def _hide_progress():
-        QTimer.singleShot(0, lambda: progress_bar.setVisible(False))
+        _dispatch.schedule(lambda: progress_bar.setVisible(False))
 
     def _set_buttons_enabled(enabled: bool):
-        QTimer.singleShot(0, lambda: btn_check.setEnabled(enabled))
-        QTimer.singleShot(0, lambda: btn_install.setEnabled(enabled))
+        _dispatch.schedule(lambda: btn_check.setEnabled(enabled))
+        _dispatch.schedule(lambda: btn_install.setEnabled(enabled))
 
     def _render_update_info(py_info: dict | None, unity_info: dict | None):
         chunks: list[str] = []
@@ -126,7 +138,7 @@ def setup_updates_settings_controls(self, parent):
         text = "\n\n".join(chunk for chunk in chunks if chunk).strip()
         if not text:
             text = _("Нет данных об обновлениях.", "No update information yet.")
-        QTimer.singleShot(0, lambda: release_info.setPlainText(text))
+        _dispatch.schedule(lambda: release_info.setPlainText(text))
 
     def _format_component_info(title: str, info: dict) -> str:
         if not info.get("ok"):
@@ -313,19 +325,19 @@ def setup_updates_settings_controls(self, parent):
 
     ver_widget = QWidget()
     ver_widget.setStyleSheet(
-        "QWidget { background: #1e1e2e; border: 1px solid #3a3a5c; border-radius: 6px; }"
+        "QWidget { background: rgba(16,13,25,0.96); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; }"
     )
     ver_layout = QVBoxLayout(ver_widget)
     ver_layout.setContentsMargins(10, 8, 10, 8)
     ver_layout.setSpacing(2)
 
     lbl_py = QLabel(_("Python-часть: ", "Python part: ") + f"<b>{py_ver}</b>")
-    lbl_py.setStyleSheet("QLabel { background: transparent; border: none; color: #b0b0d0; font-size: 11px; }")
+    lbl_py.setStyleSheet("QLabel { background: transparent; border: none; color: #bca9bb; font-size: 11px; }")
     lbl_py.setTextFormat(Qt.TextFormat.RichText)
     ver_layout.addWidget(lbl_py)
 
     lbl_unity = QLabel(_("Unity-часть: ", "Unity part: ") + f"<b>{_current_unity_version()}</b>")
-    lbl_unity.setStyleSheet("QLabel { background: transparent; border: none; color: #b0b0d0; font-size: 11px; }")
+    lbl_unity.setStyleSheet("QLabel { background: transparent; border: none; color: #bca9bb; font-size: 11px; }")
     lbl_unity.setTextFormat(Qt.TextFormat.RichText)
     ver_layout.addWidget(lbl_unity)
     parent.addWidget(ver_widget)
@@ -337,7 +349,7 @@ def setup_updates_settings_controls(self, parent):
     channel_layout.setSpacing(8)
 
     channel_lbl = QLabel(_("Канал обновлений:", "Update channel:"))
-    channel_lbl.setStyleSheet("QLabel { color: #c0c0d8; font-size: 12px; }")
+    channel_lbl.setStyleSheet("QLabel { color: #bca9bb; font-size: 12px; }")
     channel_layout.addWidget(channel_lbl)
 
     channel_combo = QComboBox()
@@ -404,7 +416,7 @@ def setup_updates_settings_controls(self, parent):
     tester_layout.setSpacing(8)
 
     tester_lbl = QLabel(_("Код тестера:", "Tester code:"))
-    tester_lbl.setStyleSheet("QLabel { color: #c0c0d8; font-size: 12px; }")
+    tester_lbl.setStyleSheet("QLabel { color: #bca9bb; font-size: 12px; }")
     tester_lbl.setFixedWidth(100)
     tester_layout.addWidget(tester_lbl)
 
@@ -434,7 +446,7 @@ def setup_updates_settings_controls(self, parent):
     unity_layout.setSpacing(4)
 
     unity_lbl = QLabel(_("Папка Unity:", "Unity folder:"))
-    unity_lbl.setStyleSheet("QLabel { color: #c0c0d8; font-size: 12px; }")
+    unity_lbl.setStyleSheet("QLabel { color: #bca9bb; font-size: 12px; }")
     unity_lbl.setFixedWidth(100)
     unity_layout.addWidget(unity_lbl)
 
@@ -477,7 +489,7 @@ def setup_updates_settings_controls(self, parent):
 
     # Release info
     info_title = QLabel(_("Информация об обновлении", "Update information"))
-    info_title.setStyleSheet("QLabel { color: #c0c0d8; font-size: 12px; }")
+    info_title.setStyleSheet("QLabel { color: #bca9bb; font-size: 12px; }")
     parent.addWidget(info_title)
 
     release_info = QTextEdit()
@@ -492,14 +504,14 @@ def setup_updates_settings_controls(self, parent):
     progress_bar.setValue(0)
     progress_bar.setVisible(False)
     progress_bar.setStyleSheet(
-        "QProgressBar { border: 1px solid #3a3a5c; border-radius: 4px; background: #1a1a2e; height: 14px; text-align: center; color: #c0c0d8; font-size: 10px; }"
-        "QProgressBar::chunk { background: #6060c0; border-radius: 3px; }"
+        "QProgressBar { border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; background: rgba(16,13,25,0.96); height: 14px; text-align: center; color: #bca9bb; font-size: 10px; }"
+        "QProgressBar::chunk { background: #db6596; border-radius: 3px; }"
     )
     parent.addWidget(progress_bar)
 
     status_lbl = QLabel("")
     status_lbl.setWordWrap(True)
-    status_lbl.setStyleSheet("QLabel { color: #a0a0c0; font-size: 11px; padding: 2px 0; }")
+    status_lbl.setStyleSheet("QLabel { color: #bca9bb; font-size: 11px; padding: 2px 0; }")
     parent.addWidget(status_lbl)
 
     # Action buttons
@@ -510,16 +522,16 @@ def setup_updates_settings_controls(self, parent):
 
     btn_check = QPushButton(_("Проверить обновления", "Check for updates"))
     btn_check.setStyleSheet(
-        "QPushButton { background: #2f4f74; color: #e0f0ff; border: none; border-radius: 5px; padding: 6px 12px; font-size: 12px; }"
-        "QPushButton:hover { background: #40658f; }"
-        "QPushButton:disabled { background: #24394f; color: #708090; }"
+        "QPushButton { background: #db6596; color: #ffffff; border: none; border-radius: 10px; padding: 7px 14px; font-weight: 600; }"
+        "QPushButton:hover { background: #e26e9e; }"
+        "QPushButton:disabled { background: #2b2230; color: #bca9bb; }"
     )
 
     btn_install = QPushButton(_("Установить обновления", "Install updates"))
     btn_install.setStyleSheet(
-        "QPushButton { background: #3a3a7c; color: #e0e0ff; border: none; border-radius: 5px; padding: 6px 12px; font-size: 12px; }"
-        "QPushButton:hover { background: #4a4a9c; }"
-        "QPushButton:disabled { background: #2a2a4c; color: #606080; }"
+        "QPushButton { background: #db6596; color: #ffffff; border: none; border-radius: 10px; padding: 7px 14px; font-weight: 600; }"
+        "QPushButton:hover { background: #e26e9e; }"
+        "QPushButton:disabled { background: #2b2230; color: #bca9bb; }"
     )
 
     btn_check.clicked.connect(lambda: threading.Thread(target=_run_check_only, daemon=True).start())
