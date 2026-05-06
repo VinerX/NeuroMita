@@ -918,7 +918,7 @@ class VoiceModelSettingsView(QWidget):
                 sub.setSpacing(6)
                 lab = QLabel(text)
                 val = QLabel(_("Найден", "Found") if ok else _("Не найден", "Not Found"))
-                val.setStyleSheet(f"color: {'lightgreen' if ok else '#FF6A6A'};")
+                val.setStyleSheet(f"color: {'#7fe38c' if ok else '#FF6A6A'};")
                 sub.addWidget(lab)
                 sub.addWidget(val)
                 row.addLayout(sub)

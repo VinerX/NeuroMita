@@ -23,7 +23,7 @@ def setup_data_settings_controls(self, parent):
     # ── Explanatory info block ────────────────────────────────────────────────
     info_widget = QWidget()
     info_widget.setStyleSheet(
-        "QWidget { background: #1e2a1e; border: 1px solid #2d5a2d; border-radius: 6px; }"
+        "QWidget { background: transparent; border: none; }"
     )
     info_layout = QVBoxLayout(info_widget)
     info_layout.setContentsMargins(10, 8, 10, 8)
@@ -46,21 +46,21 @@ def setup_data_settings_controls(self, parent):
     ))
     desc_label.setWordWrap(True)
     desc_label.setStyleSheet(
-        "QLabel { background: transparent; border: none; color: #b0c4b0; font-size: 11px; }"
+        "QLabel { background: transparent; border: none; color: #bca9bb; font-size: 11px; }"
     )
     info_layout.addWidget(desc_label)
 
     link_label = QLabel(_(
         '📤 Загружать данные сюда: <a href="https://drive.google.com/drive/folders/1_RZPS7nTrHI60ZCLTglKNKc1ijG_Wg7X?usp=drive_link" '
-        'style="color:#7ecf7e;">Google Drive — NeuroMita Finetune</a>',
+        'style="color:#7bc6ff;">Google Drive — NeuroMita Finetune</a>',
 
         '📤 Upload data here: <a href="https://drive.google.com/drive/folders/1_RZPS7nTrHI60ZCLTglKNKc1ijG_Wg7X?usp=drive_link" '
-        'style="color:#7ecf7e;">Google Drive — NeuroMita Finetune</a>'
+        'style="color:#7bc6ff;">Google Drive — NeuroMita Finetune</a>'
     ))
     link_label.setOpenExternalLinks(True)
     link_label.setWordWrap(True)
     link_label.setStyleSheet(
-        "QLabel { background: transparent; border: none; color: #b0c4b0; font-size: 11px; }"
+        "QLabel { background: transparent; border: none; color: #bca9bb; font-size: 11px; }"
     )
     info_layout.addWidget(link_label)
 
@@ -68,6 +68,7 @@ def setup_data_settings_controls(self, parent):
 
     # ── Collection toggle ─────────────────────────────────────────────────────
     chk = QCheckBox(_("Включить сбор данных", "Enable data collection"))
+    chk.setStyleSheet("background: transparent; border: none;")
     chk.setToolTip(_(
         "При включении каждый запрос к модели и ответ сохраняются "
         "в FineTuneData/ для последующего дообучения.",
@@ -102,24 +103,24 @@ def setup_data_settings_controls(self, parent):
     path_row.setContentsMargins(0, 2, 0, 2)
 
     path_lbl = QLabel(_("📁 Папка:", "📁 Folder:"))
-    path_lbl.setStyleSheet("color: #a0a0a0; font-size: 11px; background: transparent; border: none;")
+    path_lbl.setStyleSheet("color: #bca9bb; font-size: 11px; background: transparent; border: none;")
     path_lbl.setFixedWidth(60)
     path_row.addWidget(path_lbl)
 
     path_edit = QLineEdit(_get_current_data_dir())
     path_edit.setReadOnly(True)
     path_edit.setStyleSheet(
-        "QLineEdit { background: #2a2a2a; border: 1px solid #555; border-radius: 4px; "
-        "color: #b0b0b0; font-size: 11px; padding: 3px 6px; }"
+        "QLineEdit { background: transparent; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; "
+        "color: #bca9bb; font-size: 11px; padding: 6px 10px; }"
     )
     path_row.addWidget(path_edit, stretch=1)
 
     browse_btn = QPushButton(_("Обзор...", "Browse..."))
     browse_btn.setFixedWidth(80)
     browse_btn.setStyleSheet(
-        "QPushButton { background: #2a3a2a; border: 1px solid #3a5a3a; border-radius: 4px; "
-        "color: #7ecf7e; font-size: 11px; padding: 3px 8px; }"
-        "QPushButton:hover { background: #334a33; }"
+        "QPushButton { background: #db6596; color: #ffffff; font-weight: 600; border: 1px solid rgba(219,101,150,0.46); border-radius: 10px; "
+        "font-size: 11px; padding: 7px 14px; }"
+        "QPushButton:hover { background: #e26e9e; }"
     )
 
     def _on_browse():
@@ -158,7 +159,7 @@ def setup_data_settings_controls(self, parent):
     # ── Separator ─────────────────────────────────────────────────────────────
     sep1 = QFrame()
     sep1.setFrameShape(QFrame.Shape.HLine)
-    sep1.setStyleSheet("border: none; border-top: 1px solid #333; margin: 4px 0;")
+    sep1.setStyleSheet("border: none; border-top: 1px solid rgba(255,255,255,0.08); margin: 4px 0;")
     parent.addWidget(sep1)
 
     # ── Stats section ─────────────────────────────────────────────────────────
@@ -167,7 +168,7 @@ def setup_data_settings_controls(self, parent):
     # ── Separator ─────────────────────────────────────────────────────────────
     sep2 = QFrame()
     sep2.setFrameShape(QFrame.Shape.HLine)
-    sep2.setStyleSheet("border: none; border-top: 1px solid #333; margin: 4px 0;")
+    sep2.setStyleSheet("border: none; border-top: 1px solid rgba(255,255,255,0.08); margin: 4px 0;")
     parent.addWidget(sep2)
 
     # ── Export + Clear buttons in one row ─────────────────────────────────────
@@ -210,7 +211,7 @@ class _LiveStatsWidget(QFrame):
         super().__init__(parent)
         self.setStyleSheet(
             "QFrame { background: transparent; border: none; }"
-            "QLabel { background: transparent; border: none; color: #c8c8c8; font-size: 11px; }"
+            "QLabel { background: transparent; border: none; color: #bca9bb; font-size: 11px; }"
         )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -221,7 +222,7 @@ class _LiveStatsWidget(QFrame):
 
         header = QLabel(_("Статистика", "Statistics"))
         header.setStyleSheet(
-            "font-size: 12px; font-weight: bold; color: #dcdcdc; "
+            "font-size: 12px; font-weight: bold; color: #f3edf6; "
             "padding: 2px 0; background: transparent; border: none;"
         )
         header_row.addWidget(header)
@@ -230,9 +231,9 @@ class _LiveStatsWidget(QFrame):
         refresh_btn = QPushButton(_("↻ Обновить", "↻ Refresh"))
         refresh_btn.setFixedHeight(22)
         refresh_btn.setStyleSheet(
-            "QPushButton { background: #2a3a2a; border: 1px solid #3a5a3a; border-radius: 4px; "
-            "color: #7ecf7e; font-size: 10px; padding: 1px 8px; }"
-            "QPushButton:hover { background: #334a33; }"
+            "QPushButton { background: #db6596; color: #ffffff; font-weight: 600; border: 1px solid rgba(219,101,150,0.46); border-radius: 10px; "
+            "font-size: 10px; padding: 4px 10px; }"
+            "QPushButton:hover { background: #e26e9e; }"
         )
         refresh_btn.clicked.connect(self._refresh)
         header_row.addWidget(refresh_btn)
@@ -255,7 +256,7 @@ class _LiveStatsWidget(QFrame):
         for text in self._build_lines():
             lbl = QLabel(text)
             lbl.setStyleSheet(
-                "background: transparent; border: none; color: #c8c8c8; font-size: 11px;"
+                "background: transparent; border: none; color: #bca9bb; font-size: 11px;"
             )
             lbl.setWordWrap(True)
             self._stats_layout.addWidget(lbl)

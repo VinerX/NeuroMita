@@ -493,9 +493,9 @@ class MessageWidget(QWidget):
     def contextMenuEvent(self, event):
         menu = QMenu(self)
         menu.setStyleSheet("""
-            QMenu { background-color: #1E1E24; color: #EAEAEA; border: 1px solid #3A3A4A; border-radius: 6px; padding: 4px; }
+            QMenu { background-color: rgba(16,13,25,0.96); color: #f3edf6; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 4px; }
             QMenu::item { padding: 6px 20px; border-radius: 4px; }
-            QMenu::item:selected { background-color: #383A59; }
+            QMenu::item:selected { background-color: rgba(219,101,150,0.20); }
         """)
 
         if self._role == "user":

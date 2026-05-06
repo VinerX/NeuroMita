@@ -639,7 +639,7 @@ class _EmbedProviderWidget(QWidget):
         self._test_btn.setEnabled(True)
         if data.get("success"):
             self._status_label.setText("✓ " + (data.get("message") or "OK"))
-            self._status_label.setStyleSheet("color: green;")
+            self._status_label.setStyleSheet("color: #7fe38c;")
         else:
             self._status_label.setText("✗ " + (data.get("message") or "Error"))
             self._status_label.setStyleSheet("color: red;")

@@ -325,7 +325,7 @@ def setup_updates_settings_controls(self, parent):
 
     ver_widget = QWidget()
     ver_widget.setStyleSheet(
-        "QWidget { background: rgba(16,13,25,0.96); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; }"
+        "QWidget { background: transparent; border: none; }"
     )
     ver_layout = QVBoxLayout(ver_widget)
     ver_layout.setContentsMargins(10, 8, 10, 8)
@@ -344,6 +344,8 @@ def setup_updates_settings_controls(self, parent):
 
     # Channel
     channel_row = QWidget()
+    channel_row.setObjectName("UpdatesChannelRow")
+    channel_row.setStyleSheet("QWidget#UpdatesChannelRow { background: transparent; }")
     channel_layout = QHBoxLayout(channel_row)
     channel_layout.setContentsMargins(0, 4, 0, 0)
     channel_layout.setSpacing(8)
@@ -353,6 +355,7 @@ def setup_updates_settings_controls(self, parent):
     channel_layout.addWidget(channel_lbl)
 
     channel_combo = QComboBox()
+    channel_combo.setStyleSheet("QComboBox { background: transparent; }")
     channel_combo.addItems(["stable", "beta"])
     current_channel = self.settings.get("UPDATE_CHANNEL", "stable")
     idx = channel_combo.findText(current_channel)
@@ -411,6 +414,8 @@ def setup_updates_settings_controls(self, parent):
 
     # Tester code
     tester_row = QWidget()
+    tester_row.setObjectName("UpdatesTesterRow")
+    tester_row.setStyleSheet("QWidget#UpdatesTesterRow { background: transparent; }")
     tester_layout = QHBoxLayout(tester_row)
     tester_layout.setContentsMargins(0, 4, 0, 0)
     tester_layout.setSpacing(8)
@@ -421,6 +426,7 @@ def setup_updates_settings_controls(self, parent):
     tester_layout.addWidget(tester_lbl)
 
     tester_entry = QLineEdit()
+    tester_entry.setStyleSheet("QLineEdit { background: transparent; }")
     tester_entry.setEchoMode(QLineEdit.EchoMode.Password)
     tester_entry.setPlaceholderText(_("пароль для тестовых архивов", "password for test archives"))
     tester_entry.setText(self.settings.get("TESTER_CODE", ""))
@@ -441,6 +447,8 @@ def setup_updates_settings_controls(self, parent):
 
     # Unity install dir
     unity_row = QWidget()
+    unity_row.setObjectName("UpdatesUnityRow")
+    unity_row.setStyleSheet("QWidget#UpdatesUnityRow { background: transparent; }")
     unity_layout = QHBoxLayout(unity_row)
     unity_layout.setContentsMargins(0, 4, 0, 0)
     unity_layout.setSpacing(4)
@@ -451,6 +459,7 @@ def setup_updates_settings_controls(self, parent):
     unity_layout.addWidget(unity_lbl)
 
     unity_entry = QLineEdit()
+    unity_entry.setStyleSheet("QLineEdit { background: transparent; }")
     unity_entry.setPlaceholderText(_("по умолчанию: ../NeuroMita-Unity", "default: ../NeuroMita-Unity"))
     unity_entry.setText(self.settings.get("UNITY_INSTALL_DIR", ""))
     unity_layout.addWidget(unity_entry)
@@ -516,6 +525,8 @@ def setup_updates_settings_controls(self, parent):
 
     # Action buttons
     buttons_row = QWidget()
+    buttons_row.setObjectName("UpdatesButtonsRow")
+    buttons_row.setStyleSheet("QWidget#UpdatesButtonsRow { background: transparent; }")
     buttons_layout = QHBoxLayout(buttons_row)
     buttons_layout.setContentsMargins(0, 0, 0, 0)
     buttons_layout.setSpacing(8)
