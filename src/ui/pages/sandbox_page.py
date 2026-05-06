@@ -12,7 +12,9 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -22,6 +24,7 @@ from core.events import Events
 from main_logger import logger
 from ui.chat.message_widget import AVATAR_MAP, _get_avatar_dir
 from ui.widgets.chat_panel import ChatPanel
+from ui.widgets.character_state_panel import CharacterStatePanel
 from utils import _
 
 _MODEL_CONFIGURE_SENTINEL = "__configure_models__"
@@ -65,7 +68,7 @@ class SandboxPage(QWidget):
         self._inspector_tab_buttons = {}
         self._character_avatar_label = None
         self._asr_retries = 0
-        self._inspector_expanded_width = 392
+        self._inspector_expanded_width = 380
         self._inspector_collapsed_width = 56
         self._inspector_tab_indexes = {}
 
@@ -735,15 +738,6 @@ class SandboxPage(QWidget):
         headline_row.addStretch(1)
         title_col.addLayout(headline_row)
 
-        subtitle_label = QLabel(
-            _(
-                "Экспериментируй, общайся и тестируй возможности NeuroMita в безопасной песочнице.",
-                "Experiment, chat and test NeuroMita inside a focused sandbox workspace.",
-            )
-        )
-        subtitle_label.setObjectName("ChatHeroSubtitle")
-        subtitle_label.setWordWrap(True)
-        title_col.addWidget(subtitle_label)
         title_layout.addLayout(title_col, 1)
 
         actions = QHBoxLayout()
@@ -767,21 +761,32 @@ class SandboxPage(QWidget):
         title_layout.addLayout(actions, 0)
         return title_card
 
-    def _build_selector_deck(self) -> QFrame:
-        deck = QFrame()
-        deck.setObjectName("SandboxSelectorDeck")
-        deck_layout = QHBoxLayout(deck)
-        deck_layout.setContentsMargins(14, 14, 14, 14)
-        deck_layout.setSpacing(10)
+    # --------- Inspector tabs -----------
+    def _wrap_in_scroll(self, page: QWidget) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setObjectName("SandboxInspectorScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(page)
+        return scroll
 
-        character_card, character_layout = self._make_selector_card(_("Персонаж", "Character"), "fa6s.user")
+    def _build_inspector_session_tab(self) -> QWidget:
+        page, layout = self._make_tab_page()
+
+        # ── Active session card (Character / Prompts / Model) ──
+        active_card, active_layout = self._make_inspector_card(_("Активная сессия", "Active session"), "fa6s.id-badge")
+
+        char_label = QLabel(_("Персонаж", "Character"))
+        char_label.setObjectName("SandboxInspectorLabel")
+        active_layout.addWidget(char_label)
+
         char_row = QHBoxLayout()
         char_row.setSpacing(8)
         char_row.setContentsMargins(0, 0, 0, 0)
-
         self._character_avatar_label = QLabel()
         self._character_avatar_label.setObjectName("SandboxCharacterAvatar")
-        self._character_avatar_label.setFixedSize(32, 32)
+        self._character_avatar_label.setFixedSize(28, 28)
         char_row.addWidget(self._character_avatar_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.gui.chat_character_combobox = QComboBox()
@@ -789,31 +794,29 @@ class SandboxPage(QWidget):
         self.gui.chat_character_combobox.setToolTip(_("Выбрать персонажа", "Select character"))
         self.gui.chat_character_combobox.currentTextChanged.connect(self._on_chat_character_changed)
         char_row.addWidget(self.gui.chat_character_combobox, 1)
-        character_layout.addLayout(char_row)
-        deck_layout.addWidget(character_card, 3)
+        active_layout.addLayout(char_row)
 
-        prompt_card, prompt_layout = self._make_selector_card(_("Набор промптов", "Prompt set"), "fa6s.scroll")
+        prompt_label = QLabel(_("Набор промптов", "Prompt set"))
+        prompt_label.setObjectName("SandboxInspectorLabel")
+        active_layout.addWidget(prompt_label)
         self.gui.chat_prompt_pack_combobox = QComboBox()
         self.gui.chat_prompt_pack_combobox.setObjectName("ChatCharacterCombo")
         self.gui.chat_prompt_pack_combobox.setToolTip(_("Активный набор промптов", "Active prompt set"))
         self.gui.chat_prompt_pack_combobox.currentIndexChanged.connect(self._on_chat_prompt_pack_changed)
-        prompt_layout.addWidget(self.gui.chat_prompt_pack_combobox)
-        deck_layout.addWidget(prompt_card, 3)
+        active_layout.addWidget(self.gui.chat_prompt_pack_combobox)
 
-        model_card, model_layout = self._make_selector_card(_("Модель", "Model"), "fa6s.microchip")
+        model_label = QLabel(_("Модель", "Model"))
+        model_label.setObjectName("SandboxInspectorLabel")
+        active_layout.addWidget(model_label)
         self.gui.chat_model_combobox = QComboBox()
         self.gui.chat_model_combobox.setObjectName("ChatCharacterCombo")
         self.gui.chat_model_combobox.setToolTip(_("Активный API-пресет (модель)", "Active API preset (model)"))
         self.gui.chat_model_combobox.currentIndexChanged.connect(self._on_chat_model_changed)
-        model_layout.addWidget(self.gui.chat_model_combobox)
-        deck_layout.addWidget(model_card, 3)
-        return deck
+        active_layout.addWidget(self.gui.chat_model_combobox)
+        layout.addWidget(active_card)
 
-    # --------- Inspector tabs -----------
-    def _build_inspector_params_tab(self) -> QWidget:
-        page, layout = self._make_tab_page()
-
-        session_card, session_layout = self._make_inspector_card(_("Параметры сессии", "Session controls"), "fa6s.sliders")
+        # ── Voice/ASR/RAG ──
+        session_card, session_layout = self._make_inspector_card(_("Голос и память", "Voice & memory"), "fa6s.sliders")
 
         tts_label = QLabel(_("Голосовой вывод", "Voice output"))
         tts_label.setObjectName("SandboxInspectorLabel")
@@ -850,6 +853,7 @@ class SandboxPage(QWidget):
         session_layout.addWidget(self.gui.chat_rag_combobox)
         layout.addWidget(session_card)
 
+        # ── Capture ──
         capture_card, capture_layout = self._make_inspector_card(_("Захват / Capture", "Capture"), "fa6s.camera-retro")
         screen_cb = QCheckBox(_("Захват экрана", "Screen capture"))
         screen_cb.setObjectName("SandboxCaptureToggle")
@@ -871,58 +875,34 @@ class SandboxPage(QWidget):
         camera_cb.toggled.connect(lambda v: self._on_capture_toggle("ENABLE_CAMERA_CAPTURE", v))
         capture_layout.addWidget(camera_cb)
         self._capture_camera_cb = camera_cb
-
         layout.addWidget(capture_card)
 
-        layout.addStretch(1)
-        return page
-
-    def _build_inspector_tools_tab(self) -> QWidget:
-        page, layout = self._make_tab_page()
-
-        chat_card, chat_layout = self._make_inspector_card(_("Действия чата", "Chat actions"), "fa6s.comments")
+        # ── Quick actions ──
+        actions_card, actions_layout = self._make_inspector_card(_("Быстрые действия", "Quick actions"), "fa6s.bolt")
         self.gui.clear_chat_button = QPushButton(_("Очистить чат", "Clear chat"))
         self.gui.clear_chat_button.setObjectName("SandboxQuickAction")
         self.gui.clear_chat_button.clicked.connect(self.gui.clear_chat_display)
-        chat_layout.addWidget(self.gui.clear_chat_button)
+        actions_layout.addWidget(self.gui.clear_chat_button)
 
         self.gui.load_history_button = QPushButton(_("Загрузить историю", "Load history"))
         self.gui.load_history_button.setObjectName("SandboxQuickAction")
         self.gui.load_history_button.clicked.connect(self.gui.load_chat_history)
-        chat_layout.addWidget(self.gui.load_history_button)
-        layout.addWidget(chat_card)
+        actions_layout.addWidget(self.gui.load_history_button)
 
-        shortcuts_card, shortcuts_layout = self._make_inspector_card(_("Переходы", "Shortcuts"), "fa6s.arrow-up-right-from-square")
-        api_button = QPushButton(_("Открыть API-настройки", "Open API settings"))
-        api_button.setObjectName("SandboxQuickAction")
-        api_button.clicked.connect(lambda: self._jump_to_settings("api"))
-        shortcuts_layout.addWidget(api_button)
+        reset_btn = QPushButton(_("Сбросить персонажа", "Reset character"))
+        reset_btn.setObjectName("SandboxQuickAction")
+        reset_btn.setProperty("danger", True)
+        reset_btn.clicked.connect(self._on_reset_character)
+        actions_layout.addWidget(reset_btn)
 
-        character_button = QPushButton(_("Открыть настройки персонажей", "Open character settings"))
-        character_button.setObjectName("SandboxQuickAction")
-        character_button.clicked.connect(lambda: self._jump_to_settings("characters"))
-        shortcuts_layout.addWidget(character_button)
-
-        memory_button = QPushButton(_("Открыть RAG / память", "Open RAG / memory"))
-        memory_button.setObjectName("SandboxQuickAction")
-        memory_button.clicked.connect(lambda: self._jump_to_settings("models"))
-        shortcuts_layout.addWidget(memory_button)
-        layout.addWidget(shortcuts_card)
-
-        diagnostics_card, diagnostics_layout = self._make_inspector_card(_("Инструменты", "Diagnostics"), "fa6s.screwdriver-wrench")
-        db_btn = QPushButton(_("Открыть DB персонажа", "Open character DB"))
-        db_btn.setObjectName("SandboxQuickAction")
-        db_btn.clicked.connect(self._open_selected_character_history)
-        diagnostics_layout.addWidget(db_btn)
-
-        logs_btn = QPushButton(_("Открыть страницу логов", "Open logs page"))
-        logs_btn.setObjectName("SandboxQuickAction")
-        logs_btn.clicked.connect(lambda: self.gui.switch_main_page("logs"))
-        diagnostics_layout.addWidget(logs_btn)
-        layout.addWidget(diagnostics_card)
+        full_settings_btn = QPushButton(_("Полные настройки", "Full settings"))
+        full_settings_btn.setObjectName("SandboxQuickAction")
+        full_settings_btn.clicked.connect(lambda: self.gui.switch_main_page("settings"))
+        actions_layout.addWidget(full_settings_btn)
+        layout.addWidget(actions_card)
 
         layout.addStretch(1)
-        return page
+        return self._wrap_in_scroll(page)
 
     def _on_capture_toggle(self, key: str, value: bool):
         try:
@@ -938,10 +918,39 @@ class SandboxPage(QWidget):
                 pass
         self._refresh_debug_summary()
 
-    def _build_inspector_memory_tab(self) -> QWidget:
-        page, layout = self._make_tab_page()
+    def _on_reset_character(self) -> None:
+        char_id = self._get_current_character_id()
+        if not char_id:
+            return
+        reply = QMessageBox.question(
+            self,
+            _("Сбросить персонажа", "Reset character"),
+            _(
+                "Очистить историю и состояние '{name}'? Это действие необратимо.",
+                "Clear history and state of '{name}'? This cannot be undone.",
+            ).format(name=char_id),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.gui.event_bus.emit(Events.Character.CLEAR_HISTORY)
+        except Exception as exc:
+            logger.error(f"Failed to reset character: {exc}", exc_info=True)
+            return
+        try:
+            self.gui.clear_chat_display()
+        except Exception:
+            pass
 
-        counts_card, counts_layout = self._make_inspector_card(_("Лимиты памяти", "Memory limits"))
+    def _build_inspector_state_tab(self) -> QWidget:
+        page, layout = self._make_tab_page()
+        self._character_state_panel = CharacterStatePanel(self.gui)
+        layout.addWidget(self._character_state_panel)
+
+        # Memory shortcuts (small)
+        memory_card, memory_layout = self._make_inspector_card(_("Контекст и память", "Context & memory"), "fa6s.brain")
         for label_text, key, fallback in (
             (_("Сообщений в окне", "Messages in window"), "MODEL_MESSAGE_LIMIT", 35),
             (_("Долгосрочная память", "Long-term memory"), "MEMORY_CAPACITY", 50),
@@ -956,17 +965,17 @@ class SandboxPage(QWidget):
             value = QLabel(str(self.gui._get_setting(key, fallback)))
             value.setObjectName("SandboxInspectorValue")
             row.addWidget(value)
-            counts_layout.addLayout(row)
+            memory_layout.addLayout(row)
             self._memory_limit_values[key] = value
 
-        full_btn = QPushButton(_("Открыть RAG / память", "Open RAG / memory"))
-        full_btn.setObjectName("SandboxQuickAction")
-        full_btn.clicked.connect(lambda: self._jump_to_settings("models"))
-        counts_layout.addWidget(full_btn)
-        layout.addWidget(counts_card)
+        memory_btn = QPushButton(_("Открыть RAG / память", "Open RAG / memory"))
+        memory_btn.setObjectName("SandboxQuickAction")
+        memory_btn.clicked.connect(lambda: self._jump_to_settings("models"))
+        memory_layout.addWidget(memory_btn)
+        layout.addWidget(memory_card)
 
         layout.addStretch(1)
-        return page
+        return self._wrap_in_scroll(page)
 
     def _build_inspector_debug_tab(self) -> QWidget:
         page, layout = self._make_tab_page()
@@ -996,17 +1005,43 @@ class SandboxPage(QWidget):
             row.addWidget(value)
             summary_layout.addLayout(row)
             self._debug_summary_values[key] = value
-        layout.addWidget(summary_card)
 
-        actions_card, actions_layout = self._make_inspector_card(_("Диагностика", "Diagnostics"))
         refresh_btn = QPushButton(_("Обновить сводку", "Refresh summary"))
         refresh_btn.setObjectName("SandboxQuickAction")
         refresh_btn.clicked.connect(self._refresh_debug_summary)
-        actions_layout.addWidget(refresh_btn)
-        layout.addWidget(actions_card)
+        summary_layout.addWidget(refresh_btn)
+        layout.addWidget(summary_card)
+
+        diagnostics_card, diagnostics_layout = self._make_inspector_card(_("Диагностика", "Diagnostics"), "fa6s.screwdriver-wrench")
+        db_btn = QPushButton(_("Открыть DB персонажа", "Open character DB"))
+        db_btn.setObjectName("SandboxQuickAction")
+        db_btn.clicked.connect(self._open_selected_character_history)
+        diagnostics_layout.addWidget(db_btn)
+
+        logs_btn = QPushButton(_("Открыть страницу логов", "Open logs page"))
+        logs_btn.setObjectName("SandboxQuickAction")
+        logs_btn.clicked.connect(lambda: self.gui.switch_main_page("logs"))
+        diagnostics_layout.addWidget(logs_btn)
+
+        api_btn = QPushButton(_("Открыть API-настройки", "Open API settings"))
+        api_btn.setObjectName("SandboxQuickAction")
+        api_btn.clicked.connect(lambda: self._jump_to_settings("api"))
+        diagnostics_layout.addWidget(api_btn)
+        layout.addWidget(diagnostics_card)
+
+        # Debug panel controls migrated from DeveloperPage
+        debug_panel_card, debug_panel_layout = self._make_inspector_card(_("Параметры отладки", "Debug parameters"), "fa6s.bug")
+        try:
+            from ui.settings.debug_settings import setup_debug_panel_controls
+            setup_debug_panel_controls(self.gui, debug_panel_layout)
+        except Exception as exc:
+            err = QLabel(f"[debug_settings error] {exc}")
+            err.setWordWrap(True)
+            debug_panel_layout.addWidget(err)
+        layout.addWidget(debug_panel_card)
 
         layout.addStretch(1)
-        return page
+        return self._wrap_in_scroll(page)
 
     def _build_inspector(self) -> QWidget:
         inspector = QFrame()
@@ -1032,16 +1067,14 @@ class SandboxPage(QWidget):
         tab_host_layout.setSpacing(8)
         self._inspector_tab_host = tab_host
 
-        params_page = self._build_inspector_params_tab()
-        tools_page = self._build_inspector_tools_tab()
-        memory_page = self._build_inspector_memory_tab()
+        session_page = self._build_inspector_session_tab()
+        state_page = self._build_inspector_state_tab()
         debug_page = self._build_inspector_debug_tab()
 
         self._inspector_tab_buttons = {}
         for key, label in (
-            ("params", _("Параметры", "Params")),
-            ("tools", _("Инструменты", "Tools")),
-            ("memory", _("Память", "Memory")),
+            ("session", _("Сессия", "Session")),
+            ("state", _("Состояние", "State")),
             ("debug", _("Отладка", "Debug")),
         ):
             tab_host_layout.addWidget(self._make_inspector_tab_button(key, label))
@@ -1062,15 +1095,14 @@ class SandboxPage(QWidget):
         stack = QStackedWidget()
         stack.setObjectName("SandboxInspectorStack")
         self._inspector_tab_indexes = {
-            "params": stack.addWidget(params_page),
-            "tools": stack.addWidget(tools_page),
-            "memory": stack.addWidget(memory_page),
+            "session": stack.addWidget(session_page),
+            "state": stack.addWidget(state_page),
             "debug": stack.addWidget(debug_page),
         }
         layout.addWidget(stack, 1)
         self.gui.sandbox_inspector_tabs = stack
         self._inspector_stack = stack
-        self._set_inspector_tab("params")
+        self._set_inspector_tab("session")
         return inspector
 
     def _toggle_inspector_collapsed(self):
@@ -1097,27 +1129,20 @@ class SandboxPage(QWidget):
 
     def _build_ui(self):
         page_layout = QVBoxLayout(self)
-        page_layout.setContentsMargins(18, 18, 18, 18)
+        page_layout.setContentsMargins(14, 12, 14, 12)
         page_layout.setSpacing(0)
 
         workspace_shell = QFrame()
         workspace_shell.setObjectName("SandboxWorkspaceShell")
         shell_layout = QGridLayout(workspace_shell)
-        shell_layout.setContentsMargins(18, 18, 18, 18)
-        shell_layout.setHorizontalSpacing(14)
-        shell_layout.setVerticalSpacing(12)
+        shell_layout.setContentsMargins(14, 12, 14, 12)
+        shell_layout.setHorizontalSpacing(12)
+        shell_layout.setVerticalSpacing(8)
         shell_layout.setColumnStretch(0, 1)
         shell_layout.setColumnStretch(1, 0)
         shell_layout.setRowStretch(1, 1)
 
         shell_layout.addWidget(self._build_title_bar(), 0, 0, 1, 2)
-
-        left_column = QWidget()
-        left_column.setObjectName("SandboxLeftColumn")
-        left_layout = QVBoxLayout(left_column)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(12)
-        left_layout.addWidget(self._build_selector_deck())
 
         self._chat_panel = ChatPanel(self.gui)
         chat_host = QFrame()
@@ -1126,9 +1151,8 @@ class SandboxPage(QWidget):
         chat_host_layout.setContentsMargins(14, 14, 14, 14)
         chat_host_layout.setSpacing(0)
         chat_host_layout.addWidget(self._chat_panel)
-        left_layout.addWidget(chat_host, 1)
 
-        shell_layout.addWidget(left_column, 1, 0)
+        shell_layout.addWidget(chat_host, 1, 0)
         shell_layout.addWidget(self._build_inspector(), 1, 1)
         page_layout.addWidget(workspace_shell, 1)
 

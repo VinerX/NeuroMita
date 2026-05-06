@@ -28,7 +28,6 @@ class DeveloperPage(QWidget):
         root.setParent(self)
 
         content_layout.addWidget(self._build_hero())
-        content_layout.addWidget(self._build_debug_card())
         content_layout.addWidget(self._build_finetune_card())
         content_layout.addStretch(1)
 
@@ -39,10 +38,10 @@ class DeveloperPage(QWidget):
     def _build_hero(self) -> QFrame:
         return _create_hero_card(
             "DEV",
-            _("Разработка и отладка", "Development & debug"),
+            _("Сбор данных для дообучения", "Fine-tune data collection"),
             _(
-                "Управление выводом дебага, снапшотами истории и сбором данных для дообучения модели.",
-                "Control debug output, history snapshots and fine-tuning data collection.",
+                "Сбор и экспорт данных для дообучения модели. Параметры отладки переехали в Песочницу → Отладка.",
+                "Collect and export data for fine-tuning. Debug parameters moved to Sandbox → Debug.",
             ),
             actions=[
                 DashboardAction(

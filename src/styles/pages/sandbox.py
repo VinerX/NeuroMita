@@ -348,6 +348,85 @@ QPushButton#SandboxQuickAction:pressed {
     background-color: rgba({accent_rgb}, 0.18);
 }
 
+QPushButton#SandboxQuickAction[danger="true"] {
+    color: #ffd1dc;
+    border: 1px solid rgba(255, 110, 140, 0.35);
+}
+
+QPushButton#SandboxQuickAction[danger="true"]:hover {
+    background-color: rgba(255, 90, 120, 0.18);
+    border: 1px solid rgba(255, 110, 140, 0.55);
+}
+
+/* ── Character state panel ── */
+QLabel#CharacterStatLabel {
+    color: {muted};
+    font-size: 9pt;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+}
+
+QLabel#CharacterStatValue {
+    color: {text};
+    font-size: 9pt;
+    font-weight: 700;
+}
+
+QLabel#CharacterMoodValue {
+    font-size: 10pt;
+    font-weight: 700;
+}
+
+QLabel#CharacterStateBadge {
+    color: #ffd1dc;
+    background-color: rgba(255, 90, 120, 0.18);
+    border: 1px solid rgba(255, 110, 140, 0.45);
+    border-radius: 10px;
+    padding: 4px 10px;
+    font-size: 9pt;
+    font-weight: 700;
+}
+
+QLabel#CharacterStateBadge[kind="active"] {
+    color: #d6ffe3;
+    background-color: rgba(110, 220, 150, 0.18);
+    border: 1px solid rgba(110, 220, 150, 0.45);
+}
+
+QLabel#CharacterStateBadge[kind="neutral"] {
+    color: {muted};
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+QToolButton#SandboxInspectorToggle {
+    background: transparent;
+    border: none;
+    color: {muted};
+    font-size: 9pt;
+    font-weight: 600;
+    padding: 2px 4px;
+}
+
+QToolButton#SandboxInspectorToggle:hover {
+    color: {text};
+}
+
+QPlainTextEdit#SandboxInspectorMonoText {
+    background-color: rgba(0, 0, 0, 0.28);
+    color: {text};
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    padding: 6px 8px;
+    font-family: "Consolas", "Cascadia Mono", monospace;
+    font-size: 8.5pt;
+}
+
+QScrollArea#SandboxInspectorScroll {
+    background: transparent;
+    border: none;
+}
+
 QFrame#ChatConversationStrip {
     background-color: rgba({settings_panel_rgb}, 0.95);
     border: 1px solid rgba({accent_rgb}, 0.14);
