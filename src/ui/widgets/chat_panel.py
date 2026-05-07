@@ -85,6 +85,14 @@ class ChatPanel(QWidget):
         history_button.clicked.connect(self._open_character_history)
         layout.addWidget(history_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
+        refresh_button = QPushButton(_("Обновить", "Refresh"))
+        refresh_button.setObjectName("ChatStripGhostButton")
+        refresh_button.setIcon(qta.icon("fa6s.rotate", color="#ffd2ec"))
+        refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        refresh_button.setToolTip(_("Загрузить историю чата", "Load chat history"))
+        refresh_button.clicked.connect(self.gui.load_chat_history)
+        layout.addWidget(refresh_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
         clear_button = QPushButton(_("Очистить чат", "Clear chat"))
         clear_button.setObjectName("ChatStripGhostButton")
         clear_button.setIcon(qta.icon("fa6s.trash", color="#ffd2ec"))
