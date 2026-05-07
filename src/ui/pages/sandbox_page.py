@@ -33,6 +33,28 @@ _ASR_CONFIGURE_SENTINEL = "__configure_asr__"
 _PROMPT_CONFIGURE_SENTINEL = "__configure_prompts__"
 
 
+class _NoWheelComboBox(QComboBox):
+    """QComboBox that blocks wheel-scroll from reaching separator/sentinel items."""
+
+    _SENTINELS = frozenset({
+        _MODEL_CONFIGURE_SENTINEL,
+        _TTS_CONFIGURE_SENTINEL,
+        _ASR_CONFIGURE_SENTINEL,
+        _PROMPT_CONFIGURE_SENTINEL,
+    })
+
+    def wheelEvent(self, event):
+        step = -1 if event.angleDelta().y() > 0 else 1
+        target = self.currentIndex() + step
+        if not (0 <= target < self.count()):
+            event.accept()
+            return
+        if not self.itemText(target) or self.itemData(target) in self._SENTINELS:
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+
 def _round_pixmap(src: QPixmap, size: int) -> QPixmap:
     from PyQt6.QtGui import QPainter, QPainterPath
     scaled = src.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
@@ -789,7 +811,7 @@ class SandboxPage(QWidget):
         self._character_avatar_label.setFixedSize(28, 28)
         char_row.addWidget(self._character_avatar_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        self.gui.chat_character_combobox = QComboBox()
+        self.gui.chat_character_combobox = _NoWheelComboBox()
         self.gui.chat_character_combobox.setObjectName("ChatCharacterCombo")
         self.gui.chat_character_combobox.setToolTip(_("Выбрать персонажа", "Select character"))
         self.gui.chat_character_combobox.currentTextChanged.connect(self._on_chat_character_changed)
@@ -799,7 +821,7 @@ class SandboxPage(QWidget):
         prompt_label = QLabel(_("Набор промптов", "Prompt set"))
         prompt_label.setObjectName("SandboxInspectorLabel")
         active_layout.addWidget(prompt_label)
-        self.gui.chat_prompt_pack_combobox = QComboBox()
+        self.gui.chat_prompt_pack_combobox = _NoWheelComboBox()
         self.gui.chat_prompt_pack_combobox.setObjectName("ChatCharacterCombo")
         self.gui.chat_prompt_pack_combobox.setToolTip(_("Активный набор промптов", "Active prompt set"))
         self.gui.chat_prompt_pack_combobox.currentIndexChanged.connect(self._on_chat_prompt_pack_changed)
@@ -808,7 +830,7 @@ class SandboxPage(QWidget):
         model_label = QLabel(_("Модель", "Model"))
         model_label.setObjectName("SandboxInspectorLabel")
         active_layout.addWidget(model_label)
-        self.gui.chat_model_combobox = QComboBox()
+        self.gui.chat_model_combobox = _NoWheelComboBox()
         self.gui.chat_model_combobox.setObjectName("ChatCharacterCombo")
         self.gui.chat_model_combobox.setToolTip(_("Активный API-пресет (модель)", "Active API preset (model)"))
         self.gui.chat_model_combobox.currentIndexChanged.connect(self._on_chat_model_changed)
@@ -821,7 +843,7 @@ class SandboxPage(QWidget):
         tts_label = QLabel(_("Голосовой вывод", "Voice output"))
         tts_label.setObjectName("SandboxInspectorLabel")
         session_layout.addWidget(tts_label)
-        self.gui.chat_tts_combobox = QComboBox()
+        self.gui.chat_tts_combobox = _NoWheelComboBox()
         self.gui.chat_tts_combobox.setObjectName("ChatCharacterCombo")
         self.gui.chat_tts_combobox.setToolTip(_("Способ озвучки", "Voice output"))
         self.gui.chat_tts_combobox.currentIndexChanged.connect(self._on_chat_voice_changed)
@@ -830,7 +852,7 @@ class SandboxPage(QWidget):
         asr_label = QLabel(_("Распознавание речи", "Speech recognition"))
         asr_label.setObjectName("SandboxInspectorLabel")
         session_layout.addWidget(asr_label)
-        self.gui.chat_asr_combobox = QComboBox()
+        self.gui.chat_asr_combobox = _NoWheelComboBox()
         self.gui.chat_asr_combobox.setObjectName("ChatCharacterCombo")
         self.gui.chat_asr_combobox.setToolTip(_("Установленные модели распознавания речи", "Installed speech recognition models"))
         self.gui.chat_asr_combobox.currentIndexChanged.connect(self._on_chat_asr_changed)
@@ -839,7 +861,7 @@ class SandboxPage(QWidget):
         rag_label = QLabel(_("Профиль памяти / RAG", "Memory / RAG profile"))
         rag_label.setObjectName("SandboxInspectorLabel")
         session_layout.addWidget(rag_label)
-        self.gui.chat_rag_combobox = QComboBox()
+        self.gui.chat_rag_combobox = _NoWheelComboBox()
         self.gui.chat_rag_combobox.setObjectName("ChatCharacterCombo")
         self.gui.chat_rag_combobox.setToolTip(_("Профиль памяти / RAG", "Memory / RAG profile"))
         labels = self._memory_profile_labels()
