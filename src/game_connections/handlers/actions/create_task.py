@@ -325,7 +325,7 @@ class CreateTaskAction:
             react_system_input_lines.append(f"Reason: {reason_text}")
             react_system_input_lines.append(f"Duration (seconds): {float(duration or 0.0):.1f}")
 
-            if current_info:
+            if current_info and not policy.use_pending_sysinfo:
                 react_system_input_lines.append("")
                 react_system_input_lines.append("Current game info:")
                 react_system_input_lines.append(str(current_info))
