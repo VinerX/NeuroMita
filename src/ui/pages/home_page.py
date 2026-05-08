@@ -331,6 +331,7 @@ class HomePage(LauncherHomeBackground):
         layout.addWidget(divider)
 
         self._news_panel_placeholder = QWidget()
+        self._news_panel_placeholder.setObjectName("LauncherHomeNewsItems")
         self._news_items_layout = QVBoxLayout(self._news_panel_placeholder)
         self._news_items_layout.setContentsMargins(0, 0, 0, 0)
         self._news_items_layout.setSpacing(8)

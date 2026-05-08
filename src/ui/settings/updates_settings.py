@@ -355,7 +355,13 @@ def setup_updates_settings_controls(self, parent):
     channel_layout.addWidget(channel_lbl)
 
     channel_combo = QComboBox()
-    channel_combo.setStyleSheet("QComboBox { background: transparent; }")
+    channel_combo.setStyleSheet(
+        "QComboBox { background-color: rgba(16,13,25,0.76); border: 1px solid rgba(255,255,255,0.05); border-radius: 10px; "
+        "color: #f3edf6; padding: 7px 10px; }"
+        "QComboBox:focus { border: 1px solid rgba(219,101,150,0.24); }"
+        "QComboBox::drop-down { border: none; width: 26px; }"
+        "QComboBox QAbstractItemView { background-color: rgba(15,16,31,0.96); border: 1px solid rgba(219,101,150,0.24); color: #f3edf6; selection-background-color: rgba(219,101,150,0.30); }"
+    )
     channel_combo.addItems(["stable", "beta"])
     current_channel = self.settings.get("UPDATE_CHANNEL", "stable")
     idx = channel_combo.findText(current_channel)
@@ -426,7 +432,11 @@ def setup_updates_settings_controls(self, parent):
     tester_layout.addWidget(tester_lbl)
 
     tester_entry = QLineEdit()
-    tester_entry.setStyleSheet("QLineEdit { background: transparent; }")
+    tester_entry.setStyleSheet(
+        "QLineEdit { background-color: rgba(16,13,25,0.76); border: 1px solid rgba(255,255,255,0.05); border-radius: 10px; "
+        "color: #f3edf6; padding: 7px 10px; }"
+        "QLineEdit:focus { border: 1px solid rgba(219,101,150,0.24); }"
+    )
     tester_entry.setEchoMode(QLineEdit.EchoMode.Password)
     tester_entry.setPlaceholderText(_("пароль для тестовых архивов", "password for test archives"))
     tester_entry.setText(self.settings.get("TESTER_CODE", ""))
@@ -459,7 +469,11 @@ def setup_updates_settings_controls(self, parent):
     unity_layout.addWidget(unity_lbl)
 
     unity_entry = QLineEdit()
-    unity_entry.setStyleSheet("QLineEdit { background: transparent; }")
+    unity_entry.setStyleSheet(
+        "QLineEdit { background-color: rgba(16,13,25,0.76); border: 1px solid rgba(255,255,255,0.05); border-radius: 10px; "
+        "color: #f3edf6; padding: 7px 10px; }"
+        "QLineEdit:focus { border: 1px solid rgba(219,101,150,0.24); }"
+    )
     unity_entry.setPlaceholderText(_("по умолчанию: ../NeuroMita-Unity", "default: ../NeuroMita-Unity"))
     unity_entry.setText(self.settings.get("UNITY_INSTALL_DIR", ""))
     unity_layout.addWidget(unity_entry)
@@ -505,6 +519,10 @@ def setup_updates_settings_controls(self, parent):
     release_info.setReadOnly(True)
     release_info.setMinimumHeight(180)
     release_info.setPlaceholderText(_("Сначала нажми «Проверить».", "Press 'Check' first."))
+    release_info.setStyleSheet(
+        "QTextEdit { background-color: rgba(16,13,25,0.76); border: 1px solid rgba(255,255,255,0.05); border-radius: 10px; "
+        "color: #f3edf6; padding: 7px 10px; }"
+    )
     parent.addWidget(release_info)
 
     # Progress + status

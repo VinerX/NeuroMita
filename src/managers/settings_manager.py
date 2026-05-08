@@ -262,8 +262,7 @@ class InnerCollapsibleSection(CollapsibleSection):
         self.arrow_pix_right = _angle_icon('right', 8)
         self.arrow_pix_down  = _angle_icon('down',  8)
         self.arrow_label.setPixmap(self.arrow_pix_right)
-        self.header.layout().setSpacing(3)
-        self.arrow_label.setFixedWidth(9) 
+        self.header.layout().setSpacing(4)
+        self.arrow_label.setFixedWidth(12) 
         self.title_label.setStyleSheet('font-size:9pt;')
-        # больший отступ строк внутри подп-секции
-        self.content_layout.setContentsMargins(24, 5, 12, 5)
+        self.content_layout.setContentsMargins(28, 5, 12, 5)

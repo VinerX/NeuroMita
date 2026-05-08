@@ -22,9 +22,9 @@ class SettingsIconButton(QPushButton):
         self.setText(self._base_tooltip)
         self.setToolTip(self._base_tooltip)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(40)
-        self.setFixedHeight(40)
-        self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        self.setMinimumHeight(42)
+        self.setFixedHeight(42)
+        self.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
         self.setCheckable(False)
 
         self.is_active = False
@@ -171,10 +171,10 @@ class SettingsIconButton(QPushButton):
                     );
                     color: #ffffff;
                     border: 1px solid rgba({accent_rgb}, 0.46);
-                    padding: 8px 12px;
+                    padding: 6px 8px;
                     border-radius: 12px;
                     text-align: left;
-                    font-size: 9.5pt;
+                    font-size: 9pt;
                     font-weight: 700;
                 }}
                 QPushButton:hover {{
@@ -194,10 +194,10 @@ class SettingsIconButton(QPushButton):
                     background-color: rgba(255, 255, 255, 0.035);
                     color: {self._theme["muted"]};
                     border: 1px solid rgba(255, 255, 255, 0.07);
-                    padding: 8px 12px;
+                    padding: 6px 8px;
                     border-radius: 12px;
                     text-align: left;
-                    font-size: 9.5pt;
+                    font-size: 9pt;
                     font-weight: 600;
                 }}
                 QPushButton:hover {{

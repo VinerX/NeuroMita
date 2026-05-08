@@ -70,15 +70,15 @@ QLabel#LauncherHomeProgressLabel {
 QFrame#LauncherHomeUpdateChip,
 QFrame#LauncherHomeNewsPanel,
 QFrame#LauncherHomeStatusCard {
-    background-color: rgba({settings_panel_rgb}, 0.78);
+    background-color: rgba({settings_panel_rgb}, 0.92);
     border: 1px solid rgba({accent_rgb}, 0.22);
     border-radius: 14px;
 }
 
-QFrame#LauncherHomeNewsItem {
+QFrame#LauncherHomeNewsItem,
+QWidget#LauncherHomeNewsItems {
     background: transparent;
     border: none;
-    border-radius: 0;
 }
 
 QLabel#LauncherHomeLogo {

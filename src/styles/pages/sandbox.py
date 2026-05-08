@@ -409,13 +409,14 @@ QToolButton#SandboxInspectorToggle:hover {
 }
 
 QPlainTextEdit#SandboxInspectorMonoText {
-    background-color: rgba(0, 0, 0, 0.28);
+    background-color: rgba(8, 8, 18, 0.82);
     color: {text};
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 8px;
-    padding: 6px 8px;
-    font-family: "Consolas", "Cascadia Mono", monospace;
+    border: 1px solid rgba({accent_rgb}, 0.14);
+    border-radius: 10px;
+    padding: 8px 10px;
+    font-family: "Consolas", "Cascadia Mono", "Courier New", monospace;
     font-size: 8.5pt;
+    selection-background-color: rgba({accent_rgb}, 0.30);
 }
 
 QScrollArea#SandboxInspectorScroll {

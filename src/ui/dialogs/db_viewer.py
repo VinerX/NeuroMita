@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
 )
 
 from main_logger import logger
+from utils import getTranslationVariant as _
 
 
 def _sql_escape_literal(value: str) -> str:
@@ -152,8 +153,15 @@ class _AdvancedTablePage(QWidget):
     Keeps its own filter/search state and preserves sorting on refresh.
     """
 
-    OPERATORS = ["Contains", "Equals", "Starts With", "Is Empty"]
-    SEARCH_OPERATORS = ["Contains", "Starts With", "Equals"]
+    _FILTER_OPERATORS = ["Contains", "Equals", "Starts With", "Is Empty"]
+    _SEARCH_OPERATORS = ["Contains", "Starts With", "Equals"]
+
+    _OP_TRANSLATIONS = {
+        "Contains": ("Содержит", "Contains"),
+        "Equals": ("Равно", "Equals"),
+        "Starts With": ("Начинается с", "Starts With"),
+        "Is Empty": ("Пусто", "Is Empty"),
+    }
     TABLES_WITH_IS_DELETED: frozenset = frozenset({"memories", "history"})
 
     # Default visible columns (non-extended mode). Missing columns are ignored.
@@ -281,32 +289,34 @@ class _AdvancedTablePage(QWidget):
         # --- Filtering UI ---
         self.cmb_column = QComboBox(self)
         self.cmb_operator = QComboBox(self)
-        self.cmb_operator.addItems(self.OPERATORS)
+        for op_key in self._FILTER_OPERATORS:
+            ru, en = self._OP_TRANSLATIONS[op_key]
+            self.cmb_operator.addItem(_(ru, en), op_key)
 
         self.txt_value = QLineEdit(self)
-        self.txt_value.setPlaceholderText("Value...")
+        self.txt_value.setPlaceholderText(_("Значение...", "Value..."))
 
-        self.btn_apply = QPushButton("Apply Filter", self)
-        self.btn_clear = QPushButton("Clear Filter", self)
+        self.btn_apply = QPushButton(_("Применить фильтр", "Apply Filter"), self)
+        self.btn_clear = QPushButton(_("Очистить фильтр", "Clear Filter"), self)
 
-        self.lbl_filter_state = QLabel("Filter: OFF", self)
+        self.lbl_filter_state = QLabel(_("Фильтр: OFF", "Filter: OFF"), self)
         self._set_filter_state(False)
 
         self.btn_apply.clicked.connect(self.apply_filter)
         self.btn_clear.clicked.connect(self.clear_filter)
 
-        self.chk_hide_deleted = QCheckBox("Скрыть удалённые", self)
+        self.chk_hide_deleted = QCheckBox(_("Скрыть удалённые", "Hide deleted"), self)
         self.chk_hide_deleted.setChecked(True)
         self.chk_hide_deleted.setVisible(self.table_name in self.TABLES_WITH_IS_DELETED)
         self.chk_hide_deleted.toggled.connect(self._on_hide_deleted_toggled)
 
         filter_row = QHBoxLayout()
         filter_row.insertWidget(0, self.chk_hide_deleted)
-        filter_row.addWidget(QLabel("Column:", self))
+        filter_row.addWidget(QLabel(_("Колонка:", "Column:"), self))
         filter_row.addWidget(self.cmb_column, 2)
-        filter_row.addWidget(QLabel("Operator:", self))
+        filter_row.addWidget(QLabel(_("Оператор:", "Operator:"), self))
         filter_row.addWidget(self.cmb_operator, 1)
-        filter_row.addWidget(QLabel("Value:", self))
+        filter_row.addWidget(QLabel(_("Значение:", "Value:"), self))
         filter_row.addWidget(self.txt_value, 3)
         filter_row.addWidget(self.btn_apply)
         filter_row.addWidget(self.btn_clear)
@@ -315,13 +325,15 @@ class _AdvancedTablePage(QWidget):
         # --- Search UI ---
         self.cmb_search_column = QComboBox(self)
         self.cmb_search_operator = QComboBox(self)
-        self.cmb_search_operator.addItems(self.SEARCH_OPERATORS)
+        for op_key in self._SEARCH_OPERATORS:
+            ru, en = self._OP_TRANSLATIONS[op_key]
+            self.cmb_search_operator.addItem(_(ru, en), op_key)
 
         self.txt_search = QLineEdit(self)
-        self.txt_search.setPlaceholderText("Search... (filters rows)")
+        self.txt_search.setPlaceholderText(_("Поиск... (фильтр строк)", "Search... (filters rows)"))
 
-        self.chk_search_case = QCheckBox("Case sensitive", self)
-        self.btn_clear_search = QPushButton("Clear Search", self)
+        self.chk_search_case = QCheckBox(_("С учётом регистра", "Case sensitive"), self)
+        self.btn_clear_search = QPushButton(_("Очистить поиск", "Clear Search"), self)
 
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
@@ -335,11 +347,11 @@ class _AdvancedTablePage(QWidget):
         self.btn_clear_search.clicked.connect(self.clear_search)
 
         search_row = QHBoxLayout()
-        search_row.addWidget(QLabel("Search:", self))
+        search_row.addWidget(QLabel(_("Поиск:", "Search:"), self))
         search_row.addWidget(self.txt_search, 4)
-        search_row.addWidget(QLabel("In:", self))
+        search_row.addWidget(QLabel(_("В:", "In:"), self))
         search_row.addWidget(self.cmb_search_column, 2)
-        search_row.addWidget(QLabel("Op:", self))
+        search_row.addWidget(QLabel(_("Оператор:", "Op:"), self))
         search_row.addWidget(self.cmb_search_operator, 1)
         search_row.addWidget(self.chk_search_case)
         search_row.addWidget(self.btn_clear_search)
@@ -447,7 +459,7 @@ class _AdvancedTablePage(QWidget):
         return " AND ".join(parts)
 
     def _set_filter_state(self, active: bool) -> None:
-        self.lbl_filter_state.setText("Filter: ON" if active else "Filter: OFF")
+        self.lbl_filter_state.setText(_("Фильтр: ON", "Filter: ON") if active else _("Фильтр: OFF", "Filter: OFF"))
         self.lbl_filter_state.setToolTip(self._combined_filter() or "(no filter)")
         self.lbl_filter_state.setStyleSheet(
             "font-weight: 600; color: #b00020;" if active else "font-weight: 600; color: #2e7d32;"
@@ -499,9 +511,9 @@ class _AdvancedTablePage(QWidget):
             self.cmb_search_column.clear()
 
             # Search column: "All"
-            self.cmb_search_column.addItem("All columns", None)
+            self.cmb_search_column.addItem(_("Все колонки", "All columns"), None)
 
-            for _, name in self._iter_columns():
+            for _i, name in self._iter_columns():
                 if self._is_embeddingish(name):
                     # still allow filtering by embedding presence via context menu; UI combo can skip
                     continue
@@ -517,7 +529,7 @@ class _AdvancedTablePage(QWidget):
         cols = self._iter_columns()
 
         if self._extended_columns:
-            for i, _ in cols:
+            for i, __ in cols:
                 self.view.showColumn(i)
             return
 
@@ -551,7 +563,7 @@ class _AdvancedTablePage(QWidget):
         if not self.model.select():
             err = self.model.lastError().text()
             logger.error(f"DB Viewer: select() failed for table '{self.table_name}': {err}")
-            QMessageBox.critical(self, "Database Viewer", f"Failed to load table '{self.table_name}':\n{err}")
+            QMessageBox.critical(self, _("Просмотрщик БД", "Database Viewer"), _(f"Не удалось загрузить таблицу '{self.table_name}':\n{{err}}", f"Failed to load table '{self.table_name}':\n{{err}}").format(err=err))
 
         self._refresh_columns_combos()
         self._apply_column_visibility()
@@ -613,7 +625,7 @@ class _AdvancedTablePage(QWidget):
         if not col:
             return
 
-        op = self.cmb_operator.currentText()
+        op = self.cmb_operator.currentData()
         raw_value = self.txt_value.text()
 
         col_ident = _q_ident(str(col))
@@ -622,7 +634,7 @@ class _AdvancedTablePage(QWidget):
             self._user_filter = f"({col_ident} IS NULL OR TRIM({col_ident}) = '')"
         else:
             if raw_value is None or raw_value == "":
-                QMessageBox.information(self, "Filter", "Enter a value or use the 'Is Empty' operator.")
+                QMessageBox.information(self, _("Фильтр", "Filter"), _("Введите значение или используйте оператор 'Пусто'.", "Enter a value or use the 'Is Empty' operator."))
                 return
 
             if op == "Equals":
@@ -648,7 +660,7 @@ class _AdvancedTablePage(QWidget):
     def _apply_search_from_ui(self) -> None:
         text = (self.txt_search.text() or "").strip()
         col = self.cmb_search_column.currentData()  # None means "All columns"
-        op = self.cmb_search_operator.currentText()
+        op = self.cmb_search_operator.currentData()
         case_sensitive = bool(self.chk_search_case.isChecked())
 
         if not text:
@@ -677,7 +689,7 @@ class _AdvancedTablePage(QWidget):
             self._search_filter = like_expr(str(col))
         else:
             # All columns (except blob-ish)
-            cols = [name for _, name in self._iter_columns() if self._is_searchable_column(name)]
+            cols = [name for _i, name in self._iter_columns() if self._is_searchable_column(name)]
             if not cols:
                 self._search_filter = ""
             else:
@@ -709,24 +721,23 @@ class _AdvancedTablePage(QWidget):
             col_name = str(model.headerData(index.column(), Qt.Orientation.Horizontal) or f"Column {index.column()}")
             raw = model.data(index, Qt.ItemDataRole.EditRole)
 
-            # Quick filter submenu
-            sub_filter = menu.addMenu(f'Filter by "{col_name}"')
+            sub_filter = menu.addMenu(_('Фильтр по "{col}"', 'Filter by "{col}"').format(col=col_name))
 
-            act_eq = QAction("Equals this value (replace)", self)
+            act_eq = QAction(_("Равно этому значению (заменить)", "Equals this value (replace)"), self)
             act_eq.triggered.connect(lambda: self._set_user_filter_expr(self._expr_equals(col_name, raw), append_and=False))
             sub_filter.addAction(act_eq)
 
-            act_eq_and = QAction("Equals this value (AND)", self)
+            act_eq_and = QAction(_("Равно этому значению (AND)", "Equals this value (AND)"), self)
             act_eq_and.triggered.connect(lambda: self._set_user_filter_expr(self._expr_equals(col_name, raw), append_and=True))
             sub_filter.addAction(act_eq_and)
 
-            act_contains = QAction("Contains this value (replace)", self)
+            act_contains = QAction(_("Содержит это значение (заменить)", "Contains this value (replace)"), self)
             act_contains.triggered.connect(
                 lambda: self._set_user_filter_expr(self._expr_contains(col_name, raw), append_and=False)
             )
             sub_filter.addAction(act_contains)
 
-            act_contains_and = QAction("Contains this value (AND)", self)
+            act_contains_and = QAction(_("Содержит это значение (AND)", "Contains this value (AND)"), self)
             act_contains_and.triggered.connect(
                 lambda: self._set_user_filter_expr(self._expr_contains(col_name, raw), append_and=True)
             )
@@ -734,73 +745,68 @@ class _AdvancedTablePage(QWidget):
 
             sub_filter.addSeparator()
 
-            act_empty = QAction("Is Empty (replace)", self)
+            act_empty = QAction(_("Пусто (заменить)", "Is Empty (replace)"), self)
             act_empty.triggered.connect(lambda: self._set_user_filter_expr(self._expr_is_empty(col_name), append_and=False))
             sub_filter.addAction(act_empty)
 
-            act_empty_and = QAction("Is Empty (AND)", self)
+            act_empty_and = QAction(_("Пусто (AND)", "Is Empty (AND)"), self)
             act_empty_and.triggered.connect(lambda: self._set_user_filter_expr(self._expr_is_empty(col_name), append_and=True))
             sub_filter.addAction(act_empty_and)
 
-            act_has = QAction("Has Value (replace)", self)
+            act_has = QAction(_("Есть значение (заменить)", "Has Value (replace)"), self)
             act_has.triggered.connect(lambda: self._set_user_filter_expr(self._expr_has_value(col_name), append_and=False))
             sub_filter.addAction(act_has)
 
-            act_has_and = QAction("Has Value (AND)", self)
+            act_has_and = QAction(_("Есть значение (AND)", "Has Value (AND)"), self)
             act_has_and.triggered.connect(lambda: self._set_user_filter_expr(self._expr_has_value(col_name), append_and=True))
             sub_filter.addAction(act_has_and)
 
             menu.addSeparator()
 
-            # Quick search actions
-            act_search_col = QAction(f'Search this value in "{col_name}"', self)
+            act_search_col = QAction(_('Искать это в колонке "{col}"', 'Search this value in "{col}"').format(col=col_name), self)
             act_search_col.triggered.connect(lambda: self._search_from_cell(col_name, raw))
             menu.addAction(act_search_col)
 
-            act_search_all = QAction("Search this value in all columns", self)
+            act_search_all = QAction(_("Искать это во всех колонках", "Search this value in all columns"), self)
             act_search_all.triggered.connect(lambda: self._search_from_cell(None, raw))
             menu.addAction(act_search_all)
 
             menu.addSeparator()
 
-            # Column visibility quick actions
-            act_hide_col = QAction(f'Hide column "{col_name}"', self)
+            act_hide_col = QAction(_('Скрыть колонку "{col}"', 'Hide column "{col}"').format(col=col_name), self)
             act_hide_col.triggered.connect(lambda: self.view.hideColumn(index.column()))
             menu.addAction(act_hide_col)
 
-            act_show_all_cols = QAction("Show all columns (this tab)", self)
+            act_show_all_cols = QAction(_("Показать все колонки (в этой вкладке)", "Show all columns (this tab)"), self)
             act_show_all_cols.triggered.connect(self._show_all_columns_temp)
             menu.addAction(act_show_all_cols)
 
-            act_reset_cols = QAction("Reset columns to default", self)
+            act_reset_cols = QAction(_("Сбросить колонки по умолчанию", "Reset columns to default"), self)
             act_reset_cols.triggered.connect(self._apply_column_visibility)
             menu.addAction(act_reset_cols)
 
             menu.addSeparator()
 
-            # Copy / batch edit
-            act_copy = QAction("Copy Cell Content", self)
+            act_copy = QAction(_("Копировать содержимое ячейки", "Copy Cell Content"), self)
             act_copy.triggered.connect(lambda: self._copy_cell(index))
             menu.addAction(act_copy)
 
-            act_batch = QAction(f'Batch Edit "{col_name}"', self)
+            act_batch = QAction(_('Массовое редактирование "{col}"', 'Batch Edit "{col}"').format(col=col_name), self)
             act_batch.triggered.connect(lambda: self._batch_edit(index))
             menu.addAction(act_batch)
 
             menu.addSeparator()
 
-        # Delete is always available
-        act_delete = QAction("Delete Selected Rows", self)
+        act_delete = QAction(_("Удалить выбранные строки", "Delete Selected Rows"), self)
         act_delete.triggered.connect(self._delete_selected_rows)
         menu.addAction(act_delete)
 
-        # Clear helpers
         menu.addSeparator()
-        act_clear_filters = QAction("Clear Filter (keep base)", self)
+        act_clear_filters = QAction(_("Очистить фильтр (оставить базовый)", "Clear Filter (keep base)"), self)
         act_clear_filters.triggered.connect(self.clear_filter)
         menu.addAction(act_clear_filters)
 
-        act_clear_search = QAction("Clear Search", self)
+        act_clear_search = QAction(_("Очистить поиск", "Clear Search"), self)
         act_clear_search.triggered.connect(self.clear_search)
         menu.addAction(act_clear_search)
 
@@ -893,9 +899,9 @@ class _AdvancedTablePage(QWidget):
         if "embedding" in lname:
             QMessageBox.information(
                 self,
-                "View Cell",
-                f'"{col_name}" looks like a BLOB/embedding field.\n'
-                f"Inline viewing/editing is disabled for this column.",
+                _("Просмотр ячейки", "View Cell"),
+                _(f'"{col_name}" — BLOB/embedding поле.', f'"{col_name}" looks like a BLOB/embedding field.') + "\n"
+                + _("Просмотр и редактирование отключены для этой колонки.", "Inline viewing/editing is disabled for this column."),
             )
             return
 
@@ -916,7 +922,7 @@ class _AdvancedTablePage(QWidget):
         root.addWidget(editor, 1)
 
         btn_row = QHBoxLayout()
-        btn_copy = QPushButton("Copy", dlg)
+        btn_copy = QPushButton(_("Копировать", "Copy"), dlg)
         btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(editor.toPlainText()))
         btn_row.addWidget(btn_copy)
 
@@ -924,10 +930,10 @@ class _AdvancedTablePage(QWidget):
 
         btn_save = None
         if editable:
-            btn_save = QPushButton("Save", dlg)
+            btn_save = QPushButton(_("Сохранить", "Save"), dlg)
             btn_row.addWidget(btn_save)
 
-        btn_close = QPushButton("Close", dlg)
+        btn_close = QPushButton(_("Закрыть", "Close"), dlg)
         btn_close.clicked.connect(dlg.reject)
         btn_row.addWidget(btn_close)
         root.addLayout(btn_row)
@@ -937,13 +943,13 @@ class _AdvancedTablePage(QWidget):
                 new_val = editor.toPlainText()
                 col_name_save = str(self.model.headerData(index.column(), Qt.Orientation.Horizontal) or "")
                 if not col_name_save:
-                    QMessageBox.critical(self, "Save Failed", "Could not determine column name.")
+                    QMessageBox.critical(self, _("Ошибка сохранения", "Save Failed"), _("Не удалось определить имя колонки.", "Could not determine column name."))
                     return
 
                 rec = self.model.record(index.row())
                 pk = rec.value("id")
                 if pk is None:
-                    QMessageBox.critical(self, "Save Failed", "Could not determine row ID (no 'id' column?).")
+                    QMessageBox.critical(self, _("Ошибка сохранения", "Save Failed"), _("Не удалось определить ID строки (нет колонки 'id'?).", "Could not determine row ID (no 'id' column?)."))
                     return
 
                 try:
@@ -955,11 +961,11 @@ class _AdvancedTablePage(QWidget):
                     if not q.exec():
                         err = q.lastError().text()
                         logger.error(f"DB Viewer: cell save failed for '{self.table_name}.{col_name_save}': {err}")
-                        QMessageBox.critical(self, "Save Failed", f"Failed to commit change:\n{err}")
+                        QMessageBox.critical(self, _("Ошибка сохранения", "Save Failed"), _("Не удалось сохранить изменения:\n{err}", "Failed to commit change:\n{err}").format(err=err))
                         return
                 except Exception as e:
                     logger.error(f"DB Viewer: cell save exception: {e}", exc_info=True)
-                    QMessageBox.critical(self, "Save Failed", f"Failed to commit change:\n{e}")
+                    QMessageBox.critical(self, _("Ошибка сохранения", "Save Failed"), _("Не удалось сохранить изменения:\n{err}", "Failed to commit change:\n{err}").format(err=e))
                     return
 
                 self.refresh()
@@ -976,8 +982,8 @@ class _AdvancedTablePage(QWidget):
 
         resp = QMessageBox.question(
             self,
-            "Confirm Delete",
-            f"Delete {len(rows)} selected row(s) from '{self.table_name}'?",
+            _("Подтверждение удаления", "Confirm Delete"),
+            _("Удалить {count} выбранных строк из '{table}'?", "Delete {count} selected row(s) from '{table}'?").format(count=len(rows), table=self.table_name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -994,7 +1000,7 @@ class _AdvancedTablePage(QWidget):
                 row_ids.append(pk)
 
         if not row_ids:
-            QMessageBox.warning(self, "Delete Failed", "Could not determine row IDs (no 'id' column?).")
+            QMessageBox.warning(self, _("Ошибка удаления", "Delete Failed"), _("Не удалось определить ID строк (нет колонки 'id'?).", "Could not determine row IDs (no 'id' column?)."))
             return
 
         try:
@@ -1004,7 +1010,7 @@ class _AdvancedTablePage(QWidget):
             if not q.exec(f'DELETE FROM "{self.table_name}" WHERE id IN ({ids_literal})'):
                 err = q.lastError().text()
                 logger.error(f"DB Viewer: delete failed on '{self.table_name}': {err}")
-                QMessageBox.critical(self, "Delete Failed", f"Failed to delete rows:\n{err}")
+                QMessageBox.critical(self, _("Ошибка удаления", "Delete Failed"), _("Не удалось удалить строки:\n{err}", "Failed to delete rows:\n{err}").format(err=err))
                 return
         except Exception as e:
             logger.error(f"DB Viewer: delete exception on '{self.table_name}': {e}", exc_info=True)
@@ -1022,7 +1028,7 @@ class _AdvancedTablePage(QWidget):
         lname = col_name.lower().strip()
 
         if "embedding" in lname:
-            QMessageBox.information(self, "Batch Edit", f'Editing "{col_name}" is disabled (likely a large BLOB field).')
+            QMessageBox.information(self, _("Массовое редактирование", "Batch Edit"), _('Редактирование "{col}" отключено (вероятно, BLOB поле).', 'Editing "{col}" is disabled (likely a large BLOB field).').format(col=col_name))
             return
 
         rows = self._selected_row_numbers()
@@ -1035,8 +1041,8 @@ class _AdvancedTablePage(QWidget):
 
         new_val, ok = QInputDialog.getText(
             self,
-            "Batch Edit",
-            f'Set "{col_name}" for {len(rows)} selected row(s):',
+            _("Массовое редактирование", "Batch Edit"),
+            _('Установить "{col}" для {count} выбранных строк:', 'Set "{col}" for {count} selected row(s):').format(col=col_name, count=len(rows)),
             text=str(current_val),
         )
         if not ok:
@@ -1053,7 +1059,7 @@ class _AdvancedTablePage(QWidget):
                 row_ids.append(pk)
 
         if not row_ids:
-            QMessageBox.warning(self, "Batch Edit", "Could not determine row IDs (no 'id' column?).")
+            QMessageBox.warning(self, _("Массовое редактирование", "Batch Edit"), _("Не удалось определить ID строк (нет колонки 'id'?).", "Could not determine row IDs (no 'id' column?)."))
             return
 
         # Direct SQL via QSqlQuery — bypasses model's submitAll() fetch-back loop.
@@ -1066,12 +1072,11 @@ class _AdvancedTablePage(QWidget):
             if not q.exec():
                 err = q.lastError().text()
                 logger.error(f"DB Viewer: direct UPDATE failed for batch edit '{self.table_name}.{col_name}': {err}")
-                QMessageBox.critical(self, "Batch Edit Failed", f"Failed to commit changes:\n{err}")
+                QMessageBox.critical(self, _("Ошибка редактирования", "Batch Edit Failed"), _("Не удалось сохранить изменения:\n{err}", "Failed to commit changes:\n{err}").format(err=err))
                 return
         except Exception as e:
             logger.error(f"DB Viewer: batch edit exception: {e}", exc_info=True)
-            QMessageBox.critical(self, "Batch Edit Failed", f"Failed to update values:\n{e}")
-            return
+            QMessageBox.critical(self, _("Ошибка редактирования", "Batch Edit Failed"), _("Не удалось обновить значения:\n{err}", "Failed to update values:\n{err}").format(err=e))
 
         self.refresh()
 
@@ -1088,7 +1093,7 @@ class DbViewerDialog(QDialog):
 
     def __init__(self, parent=None, character_id: Optional[str] = None):
         super().__init__(parent)
-        self.setWindowTitle("Advanced Database Viewer (World.db)")
+        self.setWindowTitle(_("Просмотрщик базы данных (World.db)", "Advanced Database Viewer (World.db)"))
         self.resize(1200, 740)
         self.character_id = character_id
 
@@ -1099,10 +1104,10 @@ class DbViewerDialog(QDialog):
 
         # Global "extended output" checkbox (affects all tabs)
         top_row = QHBoxLayout()
-        self.chk_extended = QCheckBox("Extended output (show all columns)", self)
+        self.chk_extended = QCheckBox(_("Расширенный вывод (все колонки)", "Extended output (show all columns)"), self)
         self.chk_extended.setChecked(False)
         top_row.addWidget(self.chk_extended)
-        self.chk_auto_row_height = QCheckBox("Wrap text + auto row height", self)
+        self.chk_auto_row_height = QCheckBox(_("Перенос текста + авто высота строк", "Wrap text + auto row height"), self)
         self.chk_auto_row_height.setChecked(False)
         top_row.addWidget(self.chk_auto_row_height)
         top_row.addStretch(1)
@@ -1115,21 +1120,19 @@ class DbViewerDialog(QDialog):
         self.memories_page = _AdvancedTablePage(self, db=self.db, table_name="memories", character_id=self.character_id)
         self.variables_page = _AdvancedTablePage(self, db=self.db, table_name="variables", character_id=self.character_id)
 
-        self.tabs.addTab(self.history_page, "History")
-        self.tabs.addTab(self.memories_page, "Memories")
-        self.tabs.addTab(self.variables_page, "Variables")
+        self.tabs.addTab(self.history_page, _("История", "History"))
+        self.tabs.addTab(self.memories_page, _("Память", "Memories"))
+        self.tabs.addTab(self.variables_page, _("Переменные", "Variables"))
 
-        # Embeddings table (only if it exists in the database).
         if self._table_exists("embeddings"):
             self.embeddings_page = _AdvancedTablePage(self, db=self.db, table_name="embeddings", character_id=self.character_id)
-            self.tabs.addTab(self.embeddings_page, "Embeddings")
+            self.tabs.addTab(self.embeddings_page, _("Embedding", "Embeddings"))
 
-        # Graph tables (only if they exist in the database).
         self._graph_pages: list[_AdvancedTablePage] = []
-        for tbl_name, tab_label in [("graph_entities", "Graph: Entities"), ("graph_relations", "Graph: Relations")]:
+        for tbl_name, tab_label_ru, tab_label_en in [("graph_entities", "Граф: Сущности", "Graph: Entities"), ("graph_relations", "Граф: Связи", "Graph: Relations")]:
             if self._table_exists(tbl_name):
                 page = _AdvancedTablePage(self, db=self.db, table_name=tbl_name, character_id=self.character_id)
-                self.tabs.addTab(page, tab_label)
+                self.tabs.addTab(page, _(tab_label_ru, tab_label_en))
                 self._graph_pages.append(page)
 
         # Interactive graph visualisation tab (if graph tables exist).
@@ -1138,7 +1141,7 @@ class DbViewerDialog(QDialog):
             try:
                 from ui.dialogs.graph_view_widget import GraphViewPage
                 self._graph_view_page = GraphViewPage(self, db=self.db, character_id=self.character_id)
-                self.tabs.addTab(self._graph_view_page, "Graph: Visual")
+                self.tabs.addTab(self._graph_view_page, _("Граф: Визуальный", "Graph: Visual"))
             except Exception as e:
                 logger.warning(f"DB Viewer: could not load graph visualisation: {e}")
 
@@ -1148,11 +1151,11 @@ class DbViewerDialog(QDialog):
         self._apply_auto_row_height_to_all(self.chk_auto_row_height.isChecked())
         # Bottom buttons
         btn_row = QHBoxLayout()
-        self.btn_refresh = QPushButton("Refresh", self)
+        self.btn_refresh = QPushButton(_("Обновить", "Refresh"), self)
         self.btn_refresh.clicked.connect(self.refresh_all)
         btn_row.addWidget(self.btn_refresh)
 
-        self.btn_close = QPushButton("Close", self)
+        self.btn_close = QPushButton(_("Закрыть", "Close"), self)
         self.btn_close.clicked.connect(self.close)
         btn_row.addWidget(self.btn_close)
 
@@ -1208,7 +1211,7 @@ class DbViewerDialog(QDialog):
         if not db.open():
             err = db.lastError().text()
             logger.error(f"DB Viewer: failed to open Qt DB connection: {err}")
-            QMessageBox.critical(self, "Database Viewer", f"Failed to open database:\n{err}")
+            QMessageBox.critical(self, _("Просмотрщик БД", "Database Viewer"), _("Не удалось открыть базу данных:\n{err}", "Failed to open database:\n{err}").format(err=err))
             # Remove orphaned connection to prevent leak
             db = QSqlDatabase()
             QSqlDatabase.removeDatabase(self._connection_name)

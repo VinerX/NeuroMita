@@ -468,8 +468,8 @@ class SettingsPage(QWidget):
     def _build_tabs_row(self) -> QFrame:
         card = _make_card("SettingsTabsCard")
         layout = QHBoxLayout(card)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 14, 10, 14)
+        layout.setSpacing(4)
 
         for spec in get_settings_section_specs():
             label = _(spec.nav_label[0], spec.nav_label[1])

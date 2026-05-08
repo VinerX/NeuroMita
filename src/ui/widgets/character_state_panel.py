@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 
 import qtawesome as qta
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -88,6 +89,56 @@ class _StatBar(QWidget):
         if suffix:
             text = f"{text} {suffix}"
         self._value_label.setText(text)
+
+
+class _VariableSyntaxHighlighter(QSyntaxHighlighter):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self._key_fmt = QTextCharFormat()
+        self._key_fmt.setForeground(QColor("#ff8ad1"))
+        self._key_fmt.setFontWeight(QFont.Weight.Bold)
+
+        self._str_fmt = QTextCharFormat()
+        self._str_fmt.setForeground(QColor("#89f7b2"))
+
+        self._num_fmt = QTextCharFormat()
+        self._num_fmt.setForeground(QColor("#ffd86b"))
+
+        self._bool_fmt = QTextCharFormat()
+        self._bool_fmt.setForeground(QColor("#79d7ff"))
+
+        self._none_fmt = QTextCharFormat()
+        self._none_fmt.setForeground(QColor("#8d8d96"))
+        self._none_fmt.setFontItalic(True)
+
+        self._default_fmt = QTextCharFormat()
+        self._default_fmt.setForeground(QColor("#f3edf6"))
+
+    def highlightBlock(self, text: str) -> None:
+        colon_idx = text.find(": ")
+        if colon_idx >= 0:
+            self.setFormat(0, colon_idx, self._key_fmt)
+            value_part = text[colon_idx + 2:]
+            self._highlight_value(colon_idx + 2, len(value_part), value_part.strip())
+        else:
+            self.setFormat(0, len(text), self._default_fmt)
+
+    def _highlight_value(self, start: int, length: int, value: str) -> None:
+        if length == 0:
+            return
+        lower = value.lower()
+        if lower == "true" or lower == "false":
+            self.setFormat(start, length, self._bool_fmt)
+        elif value == "None" or value == "null" or value == "—":
+            self.setFormat(start, length, self._none_fmt)
+        elif value.startswith('"') or value.startswith("'"):
+            self.setFormat(start, length, self._str_fmt)
+        else:
+            try:
+                float(value)
+                self.setFormat(start, length, self._num_fmt)
+            except ValueError:
+                self.setFormat(start, length, self._default_fmt)
 
 
 class CharacterStatePanel(QWidget):
@@ -185,8 +236,13 @@ class CharacterStatePanel(QWidget):
         self._all_text.setObjectName("SandboxInspectorMonoText")
         self._all_text.setReadOnly(True)
         self._all_text.setVisible(False)
-        self._all_text.setMaximumHeight(220)
+        self._all_text.setMaximumHeight(280)
         self._all_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._all_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        font = QFont("Consolas", 9)
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        self._all_text.setFont(font)
+        self._highlighter = _VariableSyntaxHighlighter(self._all_text.document())
         all_layout.addWidget(self._all_text)
 
         root.addWidget(all_card)
@@ -320,7 +376,6 @@ class CharacterStatePanel(QWidget):
         self._custom_card.setVisible(any_widget)
 
     def _refresh_all_text(self) -> None:
-        # Don't interrupt user while they are interacting with the field
         if self._all_text.hasFocus():
             return
         character = self._get_current_character()
@@ -335,14 +390,20 @@ class CharacterStatePanel(QWidget):
         for k in sorted(variables.keys(), key=str.lower):
             v = variables[k]
             try:
-                if isinstance(v, float):
+                if isinstance(v, bool):
+                    v_text = "true" if v else "false"
+                elif v is None:
+                    v_text = "None"
+                elif isinstance(v, float):
                     v_text = f"{v:.3f}".rstrip("0").rstrip(".")
+                elif isinstance(v, str):
+                    v_text = f'"{v}"' if len(v) > 0 and (" " in v or "\n" in v or v[0] in "{[#") else v
                 else:
                     v_text = str(v)
             except Exception:
                 v_text = repr(v)
-            if len(v_text) > 200:
-                v_text = v_text[:197] + "…"
+            if len(v_text) > 300:
+                v_text = v_text[:297] + "…"
             lines.append(f"{k}: {v_text}")
         new_text = "\n".join(lines) if lines else "—"
         scrollbar = self._all_text.verticalScrollBar()
