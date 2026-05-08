@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
 
 from core.events import get_event_bus, Events
 from managers.settings_manager import InnerCollapsibleSection, SettingsManager
+from ui.gui_templates import SettingsBodyWidget
 from utils import getTranslationVariant as _
 
 
@@ -132,7 +133,7 @@ class _EmbedProviderWidget(QWidget):
         root.addWidget(self._manual_path_check)
 
         # Row: URL (API only)
-        self._url_widget = QWidget()
+        self._url_widget = SettingsBodyWidget()
         url_row = QHBoxLayout(self._url_widget)
         url_row.setContentsMargins(0, 0, 0, 0)
         url_row.setSpacing(4)
@@ -144,7 +145,7 @@ class _EmbedProviderWidget(QWidget):
         root.addWidget(self._url_widget)
 
         # Row: API key (API only)
-        self._key_widget = QWidget()
+        self._key_widget = SettingsBodyWidget()
         key_row = QHBoxLayout(self._key_widget)
         key_row.setContentsMargins(0, 0, 0, 0)
         key_row.setSpacing(4)
@@ -167,7 +168,7 @@ class _EmbedProviderWidget(QWidget):
         root.addWidget(self._key_widget)
 
         # Reserve keys (API only)
-        self._reserve_widget = QWidget()
+        self._reserve_widget = SettingsBodyWidget()
         rv = QVBoxLayout(self._reserve_widget)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(2)
@@ -179,7 +180,7 @@ class _EmbedProviderWidget(QWidget):
         root.addWidget(self._reserve_widget)
 
         # HF token + download (local only)
-        self._hf_widget = QWidget()
+        self._hf_widget = SettingsBodyWidget()
         hf_row = QHBoxLayout(self._hf_widget)
         hf_row.setContentsMargins(0, 0, 0, 0)
         hf_row.setSpacing(4)

@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QComboBox,
     QSizePolicy
 )
-from ui.gui_templates import create_setting_widget, create_section_header
+from ui.gui_templates import create_setting_widget, create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
 from core.events import get_event_bus, Events
 
@@ -13,7 +13,7 @@ def build_voiceover_settings_ui(self, parent_layout):
     sidebar_w = getattr(self, "SETTINGS_SIDEBAR_WIDTH", 50)
     right_pad = max(8, min(14, int(sidebar_w * 0.22)))
 
-    container = QWidget()
+    container = SettingsBodyWidget()
     container_lay = QVBoxLayout(container)
     container_lay.setContentsMargins(0, 0, right_pad, 0)
     container_lay.setSpacing(6)
@@ -49,7 +49,7 @@ def build_voiceover_settings_ui(self, parent_layout):
             if cfg.get('widget_name') == 'method_combobox':
                 self.method_frame = widget
 
-    self.tg_settings_frame = QWidget()
+    self.tg_settings_frame = SettingsBodyWidget()
     tg_layout = QVBoxLayout(self.tg_settings_frame)
     tg_layout.setContentsMargins(0, 0, 0, 0)
     tg_layout.setSpacing(4)
@@ -106,12 +106,12 @@ def build_voiceover_settings_ui(self, parent_layout):
 
     container_lay.addWidget(self.tg_settings_frame)
 
-    self.local_settings_frame = QWidget()
+    self.local_settings_frame = SettingsBodyWidget()
     local_layout = QVBoxLayout(self.local_settings_frame)
     local_layout.setContentsMargins(0, 0, 0, 0)
     local_layout.setSpacing(4)
 
-    local_model_row = QWidget()
+    local_model_row = SettingsBodyWidget()
     local_model_layout = QHBoxLayout(local_model_row)
     local_model_layout.setContentsMargins(0, 2, 0, 2)
     local_model_layout.setSpacing(10)
@@ -132,7 +132,7 @@ def build_voiceover_settings_ui(self, parent_layout):
     label_part.addWidget(self.local_model_status_label)
     label_part.addWidget(local_model_label)
 
-    label_container = QWidget()
+    label_container = SettingsBodyWidget()
     label_container.setLayout(label_part)
     label_container.setMinimumWidth(140)
     label_container.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)

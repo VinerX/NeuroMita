@@ -6,6 +6,13 @@ from main_logger import logger
 from managers.settings_manager import CollapsibleSection, InnerCollapsibleSection
 from utils import getTranslationVariant as _
 
+
+class SettingsBodyWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background: transparent; border: none;")
+
+
 def create_settings_section(gui, parent_layout, title, cfg_list, *, icon_name=None):
     root = CollapsibleSection(title, gui, icon_name=icon_name)
     parent_layout.addWidget(root)

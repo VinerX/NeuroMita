@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
 
-from ui.gui_templates import create_section_header
+from ui.gui_templates import create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
 
 
@@ -21,10 +21,7 @@ def setup_data_settings_controls(self, parent):
     create_section_header(parent, _("Данные для дообучения", "Finetune Data"))
 
     # ── Explanatory info block ────────────────────────────────────────────────
-    info_widget = QWidget()
-    info_widget.setStyleSheet(
-        "QWidget { background: transparent; border: none; }"
-    )
+    info_widget = SettingsBodyWidget()
     info_layout = QVBoxLayout(info_widget)
     info_layout.setContentsMargins(10, 8, 10, 8)
     info_layout.setSpacing(4)
@@ -150,9 +147,7 @@ def setup_data_settings_controls(self, parent):
     browse_btn.clicked.connect(_on_browse)
     path_row.addWidget(browse_btn)
 
-    path_container = QWidget()
-    path_container.setObjectName("PathContainer")
-    path_container.setStyleSheet("QWidget#PathContainer { background: transparent; border: none; }")
+    path_container = SettingsBodyWidget()
     path_container.setLayout(path_row)
     parent.addWidget(path_container)
 
@@ -192,9 +187,7 @@ def setup_data_settings_controls(self, parent):
     clear_btn.clicked.connect(lambda: _clear_all_data(self))
     btn_row.addWidget(clear_btn)
 
-    btn_container = QWidget()
-    btn_container.setObjectName("BtnContainer")
-    btn_container.setStyleSheet("QWidget#BtnContainer { background: transparent; border: none; }")
+    btn_container = SettingsBodyWidget()
     btn_container.setLayout(btn_row)
     parent.addWidget(btn_container)
 

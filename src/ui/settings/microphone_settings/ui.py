@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
 )
 import qtawesome as qta
 
-from ui.gui_templates import create_section_header
+from ui.gui_templates import create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
 
 
@@ -15,7 +15,7 @@ def make_row(label_text: str, field_widget: QWidget, label_w: int) -> QWidget:
     """
     Унифицированная строка настроек: метка слева, виджет справа.
     """
-    row = QWidget()
+    row = SettingsBodyWidget()
     hl = QHBoxLayout(row)
     hl.setContentsMargins(0, 0, 0, 0)
     hl.setSpacing(6)
@@ -36,7 +36,7 @@ def build_microphone_settings_ui(self, parent_layout):
     label_w = max(90, min(120, int(overlay_w * 0.3)))
     self.mic_label_width = label_w
 
-    root = QWidget()
+    root = SettingsBodyWidget()
     root_lay = QVBoxLayout(root)
     root_lay.setContentsMargins(0, 0, 0, 0)
     root_lay.setSpacing(6)
@@ -49,7 +49,7 @@ def build_microphone_settings_ui(self, parent_layout):
     root_lay.addWidget(self.asr_manage_button, 0)
 
     # 2) Доступные (установленные) модели + refresh
-    engine_field = QWidget()
+    engine_field = SettingsBodyWidget()
     eng_h = QHBoxLayout(engine_field)
     eng_h.setContentsMargins(0, 0, 0, 0)
     eng_h.setSpacing(6)
@@ -69,7 +69,7 @@ def build_microphone_settings_ui(self, parent_layout):
     root_lay.addWidget(make_row(_("Модель", "Model"), engine_field, label_w))
 
     # 3) Текущий микрофон + refresh
-    mic_field = QWidget()
+    mic_field = SettingsBodyWidget()
     mic_h = QHBoxLayout(mic_field)
     mic_h.setContentsMargins(0, 0, 0, 0)
     mic_h.setSpacing(6)
