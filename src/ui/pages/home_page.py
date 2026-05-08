@@ -128,7 +128,7 @@ class HomePage(LauncherHomeBackground):
         )
         subtitle.setObjectName("LauncherHomeSubtitle")
         left_column.addWidget(subtitle)
-        left_column.addWidget(self._build_home_update_chip())
+        # left_column.addWidget(self._build_home_update_chip())
 
         logo_wrap = QWidget()
         logo_wrap.setObjectName("LauncherHomeLogoZone")
@@ -469,10 +469,10 @@ class HomePage(LauncherHomeBackground):
     def refresh_news_content(self):
         news_items = self._get_current_news_items()
         headline = news_items[0].title if news_items else _("Новости недоступны", "News unavailable")
-        if self._update_chip_label is not None:
-            self._update_chip_label.setText(
-                _("Доступно обновление: {headline}", "Fresh update: {headline}").format(headline=headline[:48])
-            )
+        # if self._update_chip_label is not None:
+        #     self._update_chip_label.setText(
+        #         _("Доступно обновление: {headline}", "Fresh update: {headline}").format(headline=headline[:48])
+        #     )
 
         if self._news_items_layout is not None:
             while self._news_items_layout.count():
