@@ -403,6 +403,7 @@ class AppWindowBase(QMainWindow):
             "discord": "https://discord.gg/Tu5MPFxM4P",
             "github": "https://github.com/VinerX/NeuroMita",
             "youtube": "https://www.youtube.com/@NeuroMita",
+            "boosty": "https://boosty.to/vinerx",
         }
         url = urls.get(platform)
         if url:

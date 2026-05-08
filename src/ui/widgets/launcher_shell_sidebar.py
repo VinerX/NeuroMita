@@ -178,6 +178,7 @@ class LauncherSidebarWidget(QFrame):
             ("discord", "Discord", "fa6b.discord"),
             ("github", "GitHub", "fa6b.github"),
             ("youtube", "YouTube", "fa6b.youtube"),
+            ("boosty", "Boosty", "mdi.fire"),
         ):
             button = QPushButton("")
             button.setObjectName("LauncherShellSocialButton")
