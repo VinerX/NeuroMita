@@ -35,7 +35,12 @@ IF playingGame == True AND game_id == "seabattle" THEN
     LOG "SeaBattleHandler: Returning prompt for active game."
     RETURN prompt
 ELSE
-    LOG "SeaBattleHandler: No active game, returning instructions to start."
+    LOG "SeaBattleHandler: No active game."
+    IF ENABLE_GAMES != True OR ENABLE_GAME_SEABATTLE != True THEN
+        LOG "SeaBattleHandler: Games or Sea Battle disabled in settings, returning empty."
+        RETURN ""
+    ENDIF
+    LOG "SeaBattleHandler: Returning instructions to start."
     RETURN """
 Ты можешь предложить Игроку сыграть в "Морской бой".
 В этой игре нет уровней сложности.

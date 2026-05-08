@@ -41,6 +41,14 @@ Schema:
 """
 ENDIF
 
+IF ENABLE_GAMES == True THEN
+    SET LOCAL p_schema_game_fields = """
+      "start_game": "game_id",
+      "end_game": "game_id","""
+ELSE
+    SET LOCAL p_schema_game_fields = ""
+ENDIF
+
 SET LOCAL p_schema_fields = """  "segments": [
     {
       "text": "Your text here (REQUIRED)",
@@ -53,9 +61,7 @@ SET LOCAL p_schema_fields = """  "segments": [
       "clothes": ["outfit_id"],
       "music": ["music_name"],
       "interactions": ["interaction_target"],
-      "face_params": ["param"],
-      "start_game": "game_id",
-      "end_game": "game_id",
+      "face_params": ["param"],""" + p_schema_game_fields + """
       "target": "character_name",
       "hint": "hint text",
       "allow_sleep": true/false
@@ -85,9 +91,7 @@ SET LOCAL p_graph_schema_fields = """  "segments": [
       "clothes": ["outfit_id"],
       "music": ["music_name"],
       "interactions": ["interaction_target"],
-      "face_params": ["param"],
-      "start_game": "game_id",
-      "end_game": "game_id",
+      "face_params": ["param"],""" + p_schema_game_fields + """
       "target": "character_name",
       "hint": "hint text",
       "allow_sleep": true/false
