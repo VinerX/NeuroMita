@@ -270,5 +270,6 @@ QLabel#CollapsibleArrow, QLabel#CollapsibleTitle {
 }
 QWidget#CollapsibleContent { background-color: transparent; padding-top: 6px; }
 QWidget#CollapsibleSection { background-color: transparent; background: transparent; }
+QWidget#SettingsBodyWidget { background-color: transparent; background: transparent; }
 QWidget#SettingRow { background-color: transparent; background: transparent; }
 """
