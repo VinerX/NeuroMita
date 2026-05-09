@@ -76,8 +76,6 @@ def build_microphone_settings_ui(self, parent_layout):
 
     self.mic_combobox = QComboBox()
     self.mic_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    self.mic_combobox.setMaximumWidth(200)
-    self.mic_combobox.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContentsOnFirstShow)
     mic_h.addWidget(self.mic_combobox, 1)
 
     self.mic_refresh_button = QPushButton()

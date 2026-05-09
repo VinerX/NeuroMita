@@ -337,8 +337,8 @@ QWidget#SettingsPageRoot QSpinBox,
 QWidget#SettingsPageRoot QDoubleSpinBox,
 QWidget#SettingsPageRoot QListWidget,
 QWidget#SettingsPageRoot QTreeWidget {
-    background-color: rgba({settings_panel_rgb}, 0.76);
-    border: 1px solid rgba(255,255,255,0.05);
+    background-color: rgba({settings_panel_rgb}, 0.85);
+    border: 1px solid rgba(255,255,255,0.12);
     border-radius: 10px;
     color: {text};
     padding: 7px 10px;
