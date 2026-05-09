@@ -408,13 +408,13 @@ class SettingsPage(QWidget):
 
     def _build_ui(self):
         page_layout = QVBoxLayout(self)
-        page_layout.setContentsMargins(18, 18, 18, 18)
+        page_layout.setContentsMargins(14, 12, 14, 12)
         page_layout.setSpacing(0)
 
         workspace_shell = QFrame()
         workspace_shell.setObjectName("SettingsWorkspaceRootShell")
         shell_layout = QVBoxLayout(workspace_shell)
-        shell_layout.setContentsMargins(18, 18, 18, 18)
+        shell_layout.setContentsMargins(14, 12, 14, 12)
         shell_layout.setSpacing(12)
 
         shell_layout.addWidget(self._build_settings_hero())

@@ -76,8 +76,7 @@ QFrame#SettingsNoteCard {
 
 QFrame#SettingsWorkspaceRootShell {
     background-color: rgba({sandbox_bg_rgb}, 0.98);
-    border: 1px solid rgba({accent_rgb}, 0.14);
-    border-radius: 24px;
+    border: none;
 }
 
 QFrame#SettingsWorkspaceHeader {

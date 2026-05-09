@@ -111,8 +111,7 @@ QWidget#SandboxInspectorTabCorner {
 
 QFrame#SandboxWorkspaceShell {
     background-color: rgba({sandbox_bg_rgb}, 0.995);
-    border: 1px solid rgba({accent_rgb}, 0.12);
-    border-radius: 24px;
+    border: none;
 }
 
 QFrame#SandboxWorkspaceHeader {

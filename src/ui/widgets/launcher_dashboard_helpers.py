@@ -79,7 +79,7 @@ def create_shell_page_container() -> tuple[QWidget, QVBoxLayout]:
     outer.addWidget(backdrop)
 
     backdrop_layout = QVBoxLayout(backdrop)
-    backdrop_layout.setContentsMargins(18, 18, 18, 18)
+    backdrop_layout.setContentsMargins(14, 12, 14, 12)
     backdrop_layout.setSpacing(0)
 
     scroll = QScrollArea()

@@ -54,8 +54,7 @@ def get_launcher_shell_stylesheet() -> str:
     }}
     QFrame#LauncherShellBackdrop {{
         {bg_rule}
-        border-radius: 28px;
-        border: 1px solid rgba(255, 255, 255, 0.04);
+        border: none;
     }}
     QScrollArea#LauncherShellScrollArea,
     QScrollArea#LauncherShellScrollArea > QWidget,
