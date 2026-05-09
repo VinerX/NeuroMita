@@ -426,7 +426,7 @@ class ModelController:
         # небольшая обратная совместимость на случай странных значений
         if raw_role == "player":
             raw_role = "user"
-        if raw_role not in ("user", "assistant", "system"):
+        if raw_role not in ("user", "assistant", "system", "event"):
             return None
 
         # фильтр пустых user

@@ -291,7 +291,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
     if not speaker_name:
         if role == "user": speaker_name = _("Вы", "You")
         elif role == "assistant" and hasattr(gui, "_get_character_name"): speaker_name = gui._get_character_name()
-        elif role == "system": speaker_name = _("Система", "System")
+        elif role in ("system", "event"): speaker_name = _("Система", "System")
 
     full_text = "".join(text_parts).strip()
     hide_tags = gui._get_setting("HIDE_CHAT_TAGS", False)
@@ -332,7 +332,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             display_name = f"{speaker_name} → {target}" if target and target.lower() != "player" and not is_self else speaker_name
             
             # Show avatar only on the last bubble of the split sequence to avoid spam
-            show_av = is_last and (role not in ("system", "think", "structured"))
+            show_av = is_last and (role not in ("system", "event", "think", "structured"))
 
             w = MessageWidget(
                 role=role, speaker_name=display_name, content_text=group_text,
@@ -349,7 +349,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
     else:
         msg_widget = MessageWidget(
             role=role, speaker_name=speaker_name, content_text=full_text,
-            show_avatar=(role not in ("system", "think", "structured")),
+            show_avatar=(role not in ("system", "event", "think", "structured")),
             font_size=font_size, message_time=message_time, show_timestamp=show_ts,
             max_bubble_width=max_bw, sample_id=_ft_sample_id, message_id=message_id, parent=chat_parent
         )
@@ -403,7 +403,7 @@ def prepare_stream_slot(gui, role="assistant"):
         _ft_stream_sample_id = _pop_sample_id_if_collecting() if role == "assistant" else None
         msg = MessageWidget(
             role=role, speaker_name=speaker_name, content_text="",
-            show_avatar=(role not in ("system", "think", "structured")),
+            show_avatar=(role not in ("system", "event", "think", "structured")),
             font_size=font_size, show_timestamp=show_ts, max_bubble_width=max_bw,
             sample_id=_ft_stream_sample_id, parent=chat_parent
         )

@@ -43,36 +43,42 @@ ROLE_COLORS = {
     "user":      "#ff7ab8",
     "assistant": "#ff9cd2",
     "system":    "#7bc6ff",
+    "event":     "#7bc6ff",
     "think":     "#bdb4c7",
 }
 CARD_BG = {
     "user":      QColor(171, 44, 102, 242),
     "assistant": QColor(46, 24, 52, 244),
     "system":    QColor(67, 122, 176, 42),
+    "event":     QColor(67, 122, 176, 42),
     "think":     QColor(74, 58, 82, 72),
 }
 CARD_BORDER = {
     "user":      QColor(255, 133, 188, 165),
     "assistant": QColor(255, 132, 191, 70),
     "system":    QColor(123, 198, 255, 70),
+    "event":     QColor(123, 198, 255, 70),
     "think":     QColor(189, 180, 199, 42),
 }
 TEXT_COLOR = {
     "user":      "#fff6fb",
     "assistant": "#f3eaf3",
     "system":    "#eef7ff",
+    "event":     "#eef7ff",
     "think":     "#cbc1d1",
 }
 NAME_COLOR = {
     "user":      "#ffd7ea",
     "assistant": "#ff8fc8",
     "system":    "#7bc6ff",
+    "event":     "#7bc6ff",
     "think":     "#bdb4c7",
 }
 TIME_COLOR = {
     "user":      "rgba(255,255,255,0.55)",
     "assistant": "rgba(255,255,255,0.42)",
     "system":    "rgba(255,255,255,0.42)",
+    "event":     "rgba(255,255,255,0.42)",
     "think":     "rgba(255,255,255,0.28)",
 }
 
@@ -349,11 +355,11 @@ class MessageWidget(QWidget):
         outer.setAlignment(Qt.AlignmentFlag.AlignBottom)
 
         tail_side = None
-        if role not in ("system", "think", "structured"):
+        if role not in ("system", "event", "think", "structured"):
             tail_side = "right" if is_user else "left"
 
         self._avatar_label = None
-        if show_avatar and role not in ("system", "think", "structured"):
+        if show_avatar and role not in ("system", "event", "think", "structured"):
             self._avatar_label = QLabel(self)
             self._avatar_label.setFixedSize(AVATAR_SIZE, AVATAR_SIZE)
             self._avatar_label.setStyleSheet("background: transparent; border: none;")
@@ -361,7 +367,7 @@ class MessageWidget(QWidget):
 
         # Placeholder to keep bubble aligned if avatar is hidden (for split messages)
         spacer = None
-        if not show_avatar and role not in ("system", "think", "structured"):
+        if not show_avatar and role not in ("system", "event", "think", "structured"):
             spacer = QWidget()
             spacer.setFixedSize(AVATAR_SIZE, AVATAR_SIZE)
 
@@ -369,7 +375,7 @@ class MessageWidget(QWidget):
             if self._avatar_label: outer.addWidget(self._avatar_label, 0, Qt.AlignmentFlag.AlignBottom)
             elif spacer: outer.addWidget(spacer, 0, Qt.AlignmentFlag.AlignBottom)
 
-        if is_user or role == "system": outer.addStretch()
+        if is_user or role in ("system", "event"): outer.addStretch()
 
         self._card = BubbleFrame(role, tail_side, self)
         if max_bubble_width > 0: self._card.setMaximumWidth(max_bubble_width)
