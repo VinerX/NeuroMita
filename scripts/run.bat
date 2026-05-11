@@ -1,6 +1,5 @@
-
-@echo off
-cd /d "%~dp0.."
+﻿@echo off
+cd /d "%~dp0"
 
 :loop
 libs\python\python.exe -m uv run NeuroMita.pyz

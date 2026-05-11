@@ -402,10 +402,8 @@ class HomePage(LauncherHomeBackground):
 
         base_dir = os.environ.get("NEUROMITA_BASE_DIR", "")
         if base_dir:
-            return Path(base_dir).parent / "NeuroMita-Unity"
-        # Совпадает с логикой updater.check_for_unity_updates чтобы обнаружение
-        # работало после установки без NEUROMITA_BASE_DIR.
-        return Path(sys.argv[0]).resolve().parent.parent / "NeuroMita-Unity"
+            return Path(base_dir) / "NeuroMita-Unity"
+        return Path(sys.argv[0]).resolve().parent / "NeuroMita-Unity"
 
     def find_unity_executable(self) -> Path | None:
         unity_dir = self._get_unity_install_dir()

@@ -52,7 +52,7 @@ def setup_updates_settings_controls(self, parent):
 
     def _current_unity_dir() -> Path:
         base_dir = os.environ.get("NEUROMITA_BASE_DIR", "")
-        unity_path = Path(base_dir).parent / "NeuroMita-Unity"
+        unity_path = Path(base_dir) / "NeuroMita-Unity"
         unity_dir_setting = self.settings.get("UNITY_INSTALL_DIR", "")
         if unity_dir_setting:
             unity_path = Path(unity_dir_setting)
@@ -474,7 +474,7 @@ def setup_updates_settings_controls(self, parent):
         "color: #f3edf6; padding: 7px 10px; }"
         "QLineEdit:focus { border: 1px solid rgba(219,101,150,0.24); }"
     )
-    unity_entry.setPlaceholderText(_("по умолчанию: ../NeuroMita-Unity", "default: ../NeuroMita-Unity"))
+    unity_entry.setPlaceholderText(_("по умолчанию: NeuroMita-Unity", "default: NeuroMita-Unity"))
     unity_entry.setText(self.settings.get("UNITY_INSTALL_DIR", ""))
     unity_layout.addWidget(unity_entry)
 

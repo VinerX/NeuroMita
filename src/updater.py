@@ -264,7 +264,7 @@ def get_unity_update_info(
     if base_dir is None:
         base_dir = str(Path(sys.argv[0]).parent)
     base_path = Path(base_dir)
-    unity_path = Path(unity_dir) if unity_dir else base_path.parent / "NeuroMita-Unity"
+    unity_path = Path(unity_dir) if unity_dir else base_path / "NeuroMita-Unity"
     version_file = unity_path / "_version.txt"
     install_complete = _find_unity_executable(unity_path) is not None
     local_version = (
@@ -440,8 +440,8 @@ def check_for_unity_updates(
 ) -> None:
     """Check for Unity-part updates. Apply automatically if AUTO_UPDATE_UNITY=1.
 
-    The Unity part is installed adjacent to the Python part by default
-    (parent_dir/NeuroMita-Unity), or in the path specified by unity_dir.
+    The Unity part is installed inside the Python part by default
+    (base_path/NeuroMita-Unity), or in the path specified by unity_dir.
 
     Does NOT call sys.exit(42): Unity runs as a separate process, no Python
     restart is needed after a Unity update.
@@ -469,7 +469,7 @@ def check_for_unity_updates(
         base_dir = str(Path(sys.argv[0]).parent)
     base_path = Path(base_dir)
 
-    unity_path = Path(unity_dir) if unity_dir else base_path.parent / "NeuroMita-Unity"
+    unity_path = Path(unity_dir) if unity_dir else base_path / "NeuroMita-Unity"
 
     version_file = unity_path / "_version.txt"
     install_complete = _find_unity_executable(unity_path) is not None
