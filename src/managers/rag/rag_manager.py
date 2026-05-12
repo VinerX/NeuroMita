@@ -434,6 +434,8 @@ class RAGManager:
         """
         if not text or not SettingsManager.get("RAG_ENABLED", False):
             return None
+        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False):
+            return None
 
         # Очистка от тегов
         text = rag_clean_text(text)
@@ -480,6 +482,8 @@ class RAGManager:
             return []
         if (not allow_when_rag_disabled) and (not SettingsManager.get("RAG_ENABLED", False)):
             return []
+        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False):
+            return [None] * len(texts)
 
         cleaned: List[str] = []
         for t in texts:
