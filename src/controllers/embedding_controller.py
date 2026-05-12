@@ -87,7 +87,7 @@ class EmbeddingController:
             return False
         if not SettingsManager.get("RAG_ENABLED", False):
             return False
-        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", True):
+        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False):
             return False
         if self._provider_name() != "local":
             with self._init_lock:

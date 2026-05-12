@@ -79,7 +79,7 @@ def _current_targets() -> list[str]:
         return []
 
     targets: list[str] = []
-    if _local_provider_enabled() and SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", True):
+    if _local_provider_enabled() and SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False):
         targets.append(TARGET_EMBEDDINGS)
 
     ce_model = resolve_ce_model()

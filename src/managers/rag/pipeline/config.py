@@ -301,7 +301,7 @@ class RAGConfig:
 
         # --- NEW settings (safe defaults) ---
         cfg.combine_mode = str(SettingsManager.get("RAG_COMBINE_MODE", "union") or "union").strip().lower()
-        cfg.vector_search_enabled = _b(SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", True), True)
+        cfg.vector_search_enabled = _b(SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False), False)
         cfg.vector_top_k = _i(SettingsManager.get("RAG_VECTOR_TOP_K", 0), 0)
 
         cfg.intersect_min_methods = _i(SettingsManager.get("RAG_INTERSECT_MIN_METHODS", 2), 2)
