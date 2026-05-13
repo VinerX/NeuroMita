@@ -213,6 +213,26 @@ def _schema_aware_coerce(data: dict) -> dict:
     import copy
     data = copy.deepcopy(data)
 
+    segment_list_fields = (
+        "emotions",
+        "animations",
+        "idle_animations",
+        "commands",
+        "movement_modes",
+        "visual_effects",
+        "clothes",
+        "music",
+        "interactions",
+        "face_params",
+    )
+
+    def _coerce_string_list(value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item) for item in value if item is not None]
+        return [str(value)]
+
     # 1. Приведение числовых статов
     for field in ("attitude_change", "boredom_change", "stress_change"):
         val = data.get(field)
@@ -231,8 +251,34 @@ def _schema_aware_coerce(data: dict) -> dict:
     # 3. Базовая починка сегментов
     if isinstance(data.get("segments"), list):
         for seg in data["segments"]:
-            if isinstance(seg, dict) and "text" not in seg:
+            if not isinstance(seg, dict):
+                continue
+
+            if "text" not in seg or seg["text"] is None:
                 seg["text"] = ""
+            elif not isinstance(seg["text"], str):
+                seg["text"] = str(seg["text"])
+
+            for field in segment_list_fields:
+                if field in seg:
+                    seg[field] = _coerce_string_list(seg.get(field))
+
+            for field in ("start_game", "end_game", "target", "hint"):
+                if field in seg and seg[field] is not None and not isinstance(seg[field], str):
+                    seg[field] = str(seg[field])
+
+            if "allow_sleep" in seg and seg["allow_sleep"] is not None and not isinstance(seg["allow_sleep"], bool):
+                value = seg["allow_sleep"]
+                if isinstance(value, str):
+                    lowered = value.strip().lower()
+                    if lowered in {"true", "1", "yes", "on"}:
+                        seg["allow_sleep"] = True
+                    elif lowered in {"false", "0", "no", "off"}:
+                        seg["allow_sleep"] = False
+                    else:
+                        seg["allow_sleep"] = None
+                else:
+                    seg["allow_sleep"] = bool(value)
 
     # 4. Если текста много, а сегментов нет — создаем сегмент
     if not data.get("segments") and isinstance(data.get("text"), str):
