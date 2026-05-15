@@ -2,6 +2,7 @@
 
 import base64
 import datetime
+import os
 import uuid
 from typing import Any, Callable, Optional
 
@@ -100,6 +101,7 @@ class ConversationEventWriter:
         participants: list[str],
         user_input: str,
         image_data: list[Any],
+        image_descriptions: dict[str, str] | None,
         event_type: str,
         req_id: str | None,
     ) -> Optional[dict]:
@@ -124,7 +126,7 @@ class ConversationEventWriter:
                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
             })
 
-        return {
+        msg = {
             "message_id": self._make_message_id("in", req_id),
             "role": "user",
             "speaker": speaker,
@@ -135,6 +137,9 @@ class ConversationEventWriter:
             "time": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
             "content": chunks,
         }
+        if image_descriptions:
+            msg["image_descriptions"] = image_descriptions
+        return msg
 
     def _build_assistant_event_message(
         self,
@@ -165,6 +170,30 @@ class ConversationEventWriter:
             msg["thinking"] = thinking
         return msg
 
+    def _save_drawings_to_disk(self, image_data: list[Any], character_id: str) -> None:
+        """Save easel drawing bytes to Histories/{char}/Drawings/ for permanent storage."""
+        try:
+            ch_ref = self._get_character_ref(character_id)
+            if ch_ref is None or not hasattr(ch_ref, "history_manager"):
+                return
+            char_name = getattr(ch_ref.history_manager, "character_name", None) or character_id
+            histories_dir = os.environ.get(
+                "NEUROMITA_HISTORIES_DIR", os.path.join(os.getcwd(), "Histories")
+            )
+            drawings_dir = os.path.join(histories_dir, char_name, "Drawings")
+            os.makedirs(drawings_dir, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            for i, img in enumerate(image_data):
+                if not isinstance(img, bytes):
+                    continue
+                fname = f"drawing_{ts}_{i}.jpg"
+                fpath = os.path.join(drawings_dir, fname)
+                with open(fpath, "wb") as fh:
+                    fh.write(img)
+                logger.info(f"[ConversationEventWriter] Easel drawing saved: {fpath}")
+        except Exception as e:
+            logger.warning(f"[ConversationEventWriter] Failed to save easel drawing: {e}")
+
     def write_turn(
         self,
         *,
@@ -173,6 +202,7 @@ class ConversationEventWriter:
         participants: Any,
         user_input: str,
         image_data: list[Any],
+        image_descriptions: dict[str, str] | None = None,
         req_id: str | None,
         origin_message_id: str | None,
         assistant_text: str,
@@ -187,6 +217,10 @@ class ConversationEventWriter:
         assistant_target = str(assistant_target or "Player")
         origin_message_id = str(origin_message_id or "").strip() or None
 
+        # Persist player's easel drawings to a dedicated folder immediately on receipt.
+        if event_type == "easel_drawing" and image_data:
+            self._save_drawings_to_disk(image_data, responder_character_id)
+
         pts = self.normalize_participants(participants)
         if responder_character_id and responder_character_id not in pts:
             pts.append(responder_character_id)
@@ -199,6 +233,7 @@ class ConversationEventWriter:
                 participants=pts,
                 user_input=user_input,
                 image_data=image_data,
+                image_descriptions=image_descriptions,
                 event_type=event_type,
                 req_id=req_id,
             )

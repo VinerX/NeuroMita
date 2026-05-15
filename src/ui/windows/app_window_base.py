@@ -488,7 +488,8 @@ class AppWindowBase(QMainWindow):
                     )
                 message_renderer.insert_message(self, role, content, message_time=message_time,
                                                 structured_data=structured_data,
-                                                message_id=message_id, character_id=character_id)
+                                                message_id=message_id, character_id=character_id,
+                                                ui_images=entry.get("_ui_images") or [])
             except Exception as ex:
                 logger.error(f"_on_history_loaded: НУ Я ПОНЯЛ: {str(ex)}")
         self.update_debug_info()

@@ -113,6 +113,9 @@ class ModelController:
         self.event_writer = ConversationEventWriter(character_ref_resolver=self._get_character_ref)
         self.ui_projector = HistoryUiProjector(resolve_name=lambda cid: str(getattr(self._get_character_ref(cid), "name", "") or cid))
 
+        from handlers.image_description_handler import ImageDescriptionHandler
+        self.image_description_handler = ImageDescriptionHandler(model=self.model, settings=self.settings)
+
         self._refresh_chat_model_character_refs()
 
         self._subscribe_to_events()
@@ -707,6 +710,23 @@ class ModelController:
         think_text = "\n\n".join(think_parts).strip()
         return visible, think_text
 
+    def _extract_image_description(self, text: str) -> tuple[str, str | None]:
+        """
+        Extracts <image_description>...</image_description> block from text.
+        Returns (clean_text_without_block, description_or_None).
+        Used when IMAGE_INLINE_DESCRIPTION is enabled.
+        """
+        if not isinstance(text, str) or not text:
+            return text, None
+        pattern = re.compile(r"<image_description\b[^>]*>(.*?)</image_description\s*>", flags=re.IGNORECASE | re.DOTALL)
+        m = pattern.search(text)
+        if not m:
+            return text, None
+        description = m.group(1).strip() or None
+        clean = pattern.sub("", text)
+        clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+        return clean, description
+
     def _on_generate_response(self, event: Event):
         data = event.data or {}
 
@@ -858,6 +878,33 @@ class ModelController:
 
         data["capabilities"] = dict(effective_capabilities)
 
+        # Non-native image fallback: describe images with a vision provider first,
+        # then pass text descriptions to the main (non-vision) model instead of images.
+        original_image_data = image_data  # kept for history storage
+        image_descriptions: dict[str, str] | None = None
+        if image_data and bool(self.settings.get("IMAGE_DESCRIPTION_ENABLED", False)):
+            _detail = str(self.settings.get("IMAGE_DESCRIPTION_DETAIL", "normal") or "normal")
+            try:
+                if len(image_data) > 1:
+                    # Multiple frames → describe as a sequence in one API call
+                    seq_desc = self.image_description_handler.describe_sequence(image_data)
+                    if seq_desc and not seq_desc.startswith("["):
+                        user_input = (user_input + f"\n[Scene: {seq_desc}]").strip() if user_input else f"[Scene: {seq_desc}]"
+                        image_descriptions = {_detail: seq_desc}
+                        logger.info(f"[ModelController] Non-native sequence mode: {len(image_data)} frames described as one scene.")
+                else:
+                    descriptions = self.image_description_handler.describe(image_data)
+                    if descriptions:
+                        desc_text = "\n".join(
+                            f"[Image {i + 1}: {d}]" for i, d in enumerate(descriptions)
+                        )
+                        user_input = (user_input + "\n" + desc_text).strip() if user_input else desc_text
+                        image_descriptions = {_detail: "\n".join(descriptions)}
+                        logger.info(f"[ModelController] Non-native image mode: replaced {len(descriptions)} image(s) with text descriptions.")
+                image_data = []  # don't send images to main model
+            except Exception as _desc_exc:
+                logger.warning(f"[ModelController] Image description fallback failed: {_desc_exc}")
+
         try:
             prompt_res = self.event_bus.emit_and_wait(
                 Events.Prompt.BUILD_PROMPT,
@@ -981,6 +1028,17 @@ class ModelController:
 
             visible_raw, think_text = self._extract_think_blocks(str(raw_text))
 
+            if original_image_data and bool(self.settings.get("IMAGE_INLINE_DESCRIPTION", False)):
+                _detail = str(self.settings.get("IMAGE_DESCRIPTION_DETAIL", "normal") or "normal")
+                visible_raw, _desc_text = self._extract_image_description(visible_raw)
+                if _desc_text:
+                    image_descriptions = {_detail: _desc_text}
+                else:
+                    logger.warning(
+                        f"[ModelController][{char_id}] IMAGE_INLINE_DESCRIPTION is enabled "
+                        f"but no <image_description> block was found in the model response."
+                    )
+
             if is_structured_output:
                 return self._process_structured_output(
                     visible_raw=visible_raw,
@@ -993,7 +1051,7 @@ class ModelController:
                     sender=sender,
                     participants=participants,
                     user_input=user_input,
-                    image_data=image_data,
+                    image_data=original_image_data,
                     req_id=req_id,
                     task_uid=task_uid,
                     event_type=event_type,
@@ -1037,7 +1095,8 @@ class ModelController:
                     sender=sender,
                     participants=participants,
                     user_input=user_input,
-                    image_data=image_data,
+                    image_data=original_image_data,
+                    image_descriptions=image_descriptions,
                     req_id=req_id,
                     origin_message_id=origin_message_id,
                     assistant_text=final_text,
@@ -1346,6 +1405,13 @@ class ModelController:
                 final_text,
             )
 
+        # Extract image_description from structured response (inline description for structured mode)
+        _structured_image_descriptions: dict[str, str] | None = None
+        if getattr(structured, "image_description", None):
+            _detail = str(self.settings.get("IMAGE_DESCRIPTION_DETAIL", "normal") or "normal")
+            _structured_image_descriptions = {_detail: structured.image_description.strip()}
+            logger.debug(f"[ModelController][{char_id}] Structured image_description captured ({_detail}).")
+
         assistant_message_id = ""
         if policy.write_to_history:
             origin_message_id = str(data.get("origin_message_id") or "") or None
@@ -1357,6 +1423,7 @@ class ModelController:
                 participants=participants,
                 user_input=user_input,
                 image_data=image_data,
+                image_descriptions=_structured_image_descriptions,
                 req_id=req_id,
                 origin_message_id=origin_message_id,
                 assistant_text=final_text,
@@ -1487,6 +1554,7 @@ class ModelController:
                 participants=participants,
                 user_input=user_input,
                 image_data=image_data,
+                image_descriptions=None,
                 req_id=req_id,
                 origin_message_id=origin_message_id,
                 assistant_text=first_text,

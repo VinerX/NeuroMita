@@ -1,11 +1,26 @@
 ﻿from __future__ import annotations
 
-from typing import Any, Dict
+import logging
+from typing import Any, Dict, List, Optional
 
 from core.events import Events
 from core.request_policy import resolve_policy
 from managers.task_manager import TaskStatus
 from game_connections.handlers.registry import RequestContext
+
+logger = logging.getLogger(__name__)
+
+
+def _collect_context_images(context: dict) -> List:
+    """Merge image_base64_list strings + bytes read from image_paths into one list."""
+    images: List = list(context.get("image_base64_list", []) or [])
+    for path in context.get("image_paths", []) or []:
+        try:
+            with open(str(path), "rb") as fh:
+                images.append(fh.read())
+        except Exception as exc:
+            logger.warning(f"[create_task] Cannot read image from path {path!r}: {exc}")
+    return images
 
 
 class CreateTaskAction:
@@ -126,7 +141,7 @@ class CreateTaskAction:
                 event_bus.emit(Events.Chat.SEND_MESSAGE, {
                     "user_input": str(user_input or ""),
                     "system_input": collected_sys,
-                    "image_data": context.get("image_base64_list", []),
+                    "image_data": _collect_context_images(context),
                     "task_uid": task.uid,
                     "event_type": model_event_type,
                     "character_id": character_id,
@@ -366,7 +381,7 @@ class CreateTaskAction:
                 event_bus.emit(Events.Chat.SEND_MESSAGE, {
                     "user_input": "",
                     "system_input": react_system_input,
-                    "image_data": context.get("image_base64_list", []),
+                    "image_data": _collect_context_images(context),
                     "task_uid": task.uid,
                     "event_type": model_event_type,
                     "character_id": character_id,

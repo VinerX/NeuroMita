@@ -527,12 +527,29 @@ class HistoryManager:
                 meta = {}
 
         content = db_content
+        ui_images: list[dict] = []   # populated inside the if-block when needed
 
         if meta.get("is_multimodal_list", False) or meta.get("multimodal_parts"):
             reconstructed_list = []
 
             if db_content:
                 reconstructed_list.append({"type": "text", "text": str(db_content)})
+
+            # Resolve stored description: prefer new dict format, fall back to legacy string.
+            # Dict format: {"normal": "...", "detailed": "..."} — pick best available variant.
+            _desc_dict = meta.get("image_descriptions")
+            _desc_legacy = meta.get("image_description")
+            stored_description: str | None = None
+            if isinstance(_desc_dict, dict) and _desc_dict:
+                stored_description = (
+                    _desc_dict.get("manual")
+                    or _desc_dict.get("detailed")
+                    or _desc_dict.get("normal")
+                    or _desc_dict.get("brief")
+                    or next(iter(_desc_dict.values()), None)
+                )
+            elif isinstance(_desc_legacy, str) and _desc_legacy:
+                stored_description = _desc_legacy
 
             if "multimodal_parts" in meta:
                 parts = meta.get("multimodal_parts") or []
@@ -543,20 +560,33 @@ class HistoryManager:
                     part_type = part.get("type")
                     if part_type == "image_url":
                         url = part.get("image_url", {}).get("url", "")
-                        final_url = url
+                        if stored_description:
+                            # For LLM: send lightweight text description
+                            reconstructed_list.append({
+                                "type": "text",
+                                "text": f"[Image: {stored_description}]"
+                            })
+                            # For UI: remember the file path so the real image
+                            # can still be displayed in the chat bubble
+                            if url:
+                                ui_images.append({
+                                    "url": url,
+                                    "description": stored_description,
+                                })
+                        else:
+                            final_url = url
+                            is_local = part.get("is_local_file", False)
+                            if is_local or (url and not str(url).startswith("http") and not str(url).startswith("data:")):
+                                final_url = self._image_file_to_base64(str(url))
 
-                        is_local = part.get("is_local_file", False)
-                        if is_local or (url and not str(url).startswith("http") and not str(url).startswith("data:")):
-                            final_url = self._image_file_to_base64(str(url))
+                            clean_part = {
+                                "type": "image_url",
+                                "image_url": {"url": final_url}
+                            }
+                            if "detail" in (part.get("image_url") or {}):
+                                clean_part["image_url"]["detail"] = part["image_url"]["detail"]
 
-                        clean_part = {
-                            "type": "image_url",
-                            "image_url": {"url": final_url}
-                        }
-                        if "detail" in (part.get("image_url") or {}):
-                            clean_part["image_url"]["detail"] = part["image_url"]["detail"]
-
-                        reconstructed_list.append(clean_part)
+                            reconstructed_list.append(clean_part)
 
                     elif part_type == "text":
                         reconstructed_list.append({"type": "text", "text": part.get("text", "")})
@@ -564,6 +594,11 @@ class HistoryManager:
             content = reconstructed_list
 
         msg = {"role": role, "content": content}
+
+        # UI display hint: file paths + descriptions for history rendering.
+        # Stored at message level so providers never see it (they only use "content").
+        if ui_images:
+            msg["_ui_images"] = ui_images
 
         # переносим meta поля обратно, но фильтруем служебное
         for k, v in meta.items():

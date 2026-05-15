@@ -36,6 +36,18 @@ class PromptController:
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.Prompt.BUILD_PROMPT, self._on_build_prompt, weak=False)
 
+    def _get_setting(self, key: str, default=None):
+        """Fetch a single setting value via the event bus."""
+        try:
+            res = self.event_bus.emit_and_wait(
+                Events.Settings.GET_SETTING,
+                {"key": key, "default": default},
+                timeout=0.5,
+            )
+            return res[0] if res else default
+        except Exception:
+            return default
+
     def _load_app_vars(self) -> Dict[str, Any]:
         app_vars: Dict[str, Any] = {}
         try:
@@ -295,6 +307,9 @@ class PromptController:
                 prefix = ""
             user_content_chunks.append({"type": "text", "text": prefix + user_input})
 
+        _is_structured = bool(capabilities.get("structured_output", False))
+        inline_desc_enabled = bool(self._get_setting("IMAGE_INLINE_DESCRIPTION", False)) if image_data else False
+
         for img in image_data:
             if isinstance(img, bytes):
                 img_b64 = base64.b64encode(img).decode("utf-8")
@@ -304,6 +319,21 @@ class PromptController:
                 "type": "image_url",
                 "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
             })
+
+        if image_data and inline_desc_enabled:
+            _detail = str(self._get_setting("IMAGE_DESCRIPTION_DETAIL", "normal") or "normal")
+            if _is_structured:
+                from handlers.image_description_handler import get_structured_inline_instruction
+                messages.append({
+                    "role": "system",
+                    "content": get_structured_inline_instruction(_detail)
+                })
+            else:
+                from handlers.image_description_handler import get_inline_instruction
+                messages.append({
+                    "role": "system",
+                    "content": get_inline_instruction(_detail)
+                })
 
         if user_content_chunks:
             user_message_for_history = {"role": "user", "content": user_content_chunks}

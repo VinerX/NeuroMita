@@ -213,7 +213,7 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
     widget.regenerate_from_requested.connect(on_regenerate_from)
     widget.view_context_requested.connect(on_view_context)
 
-def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None):
+def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None, ui_images=None):
     font_size = _get_font_size(gui)
     max_bw = int(gui._get_setting("CHAT_MAX_BUBBLE_WIDTH", 600))
     chat_parent = gui.chat_window.get_layout_parent()
@@ -294,6 +294,14 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         elif role in ("system", "event"): speaker_name = _("Система", "System")
 
     full_text = "".join(text_parts).strip()
+
+    # When ui_images are provided the real images will be shown as bubbles below.
+    # Strip the "[Image: ...]" placeholder text so it doesn't clutter the chat.
+    if ui_images:
+        import re as _re
+        full_text = _re.sub(r'\[Image:[^\]]*\]', '', full_text)
+        full_text = _re.sub(r'\n{3,}', '\n\n', full_text).strip()
+
     hide_tags = gui._get_setting("HIDE_CHAT_TAGS", False)
     if hide_tags:
         import re
@@ -363,8 +371,22 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         wrapped = _wrap_panel_aligned(_pending_struct_panel, role, parent=chat_parent)
         gui.chat_window.add_message_widget(wrapped, at_start=insert_at_start)
 
+    # Images from the current live message (base64 / data-URI)
     for image_data in images:
         img_widget = ImageWidget(image_data, role=role, max_bubble_width=max_bw, parent=chat_parent)
+        wrapped_img = _wrap_panel_aligned(img_widget, role, parent=chat_parent)
+        gui.chat_window.add_message_widget(wrapped_img, at_start=insert_at_start)
+
+    # Images from history that have a stored description:
+    # the model receives "[Image: ...]" text, but the UI shows the real image.
+    for img_info in (ui_images or []):
+        img_widget = ImageWidget(
+            img_info.get("url", ""),
+            role=role,
+            max_bubble_width=max_bw,
+            description=img_info.get("description", ""),
+            parent=chat_parent,
+        )
         wrapped_img = _wrap_panel_aligned(img_widget, role, parent=chat_parent)
         gui.chat_window.add_message_widget(wrapped_img, at_start=insert_at_start)
 
