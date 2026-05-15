@@ -395,4 +395,103 @@ class CreateTaskAction:
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to create react task", req_id=req_id)
             return
 
+        if event_type == "camera_snapshot_result":
+            model_event_type = "chat"
+            policy = resolve_policy(model_event_type=model_event_type)
+            policy_dict = policy.to_dict()
+
+            snapshot_msg = str(data.get("message", "Camera snapshot taken"))
+
+            task_result = event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
+                "type": "chat",
+                "data": {
+                    "character": character_id,
+                    "character_stats": character_stats,
+                    "user_input": "",
+                    "system_input": (
+                        "You have received a camera snapshot (image attached). "
+                        f"Context: {snapshot_msg}"
+                    ),
+                    "system_info": context.get("currentInfo", ""),
+                    "client_id": ctx.client_id,
+                    "event_type": event_type,
+                    "req_id": req_id,
+                    "sender": sender,
+                    "participants": participants,
+                    "origin_message_id": origin_message_id,
+                    "policy": policy_dict,
+                }
+            }, timeout=5.0)
+
+            task = task_result[0] if task_result else None
+            if task:
+                server.client_tasks[ctx.client_id].add(task.uid)
+                await server.send_task_update(ctx.client_id, task)
+
+                event_bus.emit(Events.Chat.SEND_MESSAGE, {
+                    "user_input": "",
+                    "system_input": f"You have received a camera snapshot. {snapshot_msg}",
+                    "image_data": _collect_context_images(context),
+                    "task_uid": task.uid,
+                    "event_type": model_event_type,
+                    "character_id": character_id,
+                    "sender": sender,
+                    "participants": participants,
+                    "req_id": req_id,
+                    "origin_message_id": origin_message_id,
+                    "policy": policy_dict,
+                })
+            else:
+                await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to create snapshot task", req_id=req_id)
+            return
+
+        if event_type == "tv_reaction":
+            model_event_type = "react"
+            policy = resolve_policy(model_event_type=model_event_type)
+            policy_dict = policy.to_dict()
+
+            tv_prompt = str(data.get("message", "TV reaction requested"))
+            if not tv_prompt.strip():
+                tv_prompt = "The player is watching TV. React to what is shown."
+
+            task_result = event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
+                "type": "react",
+                "data": {
+                    "character": character_id,
+                    "character_stats": character_stats,
+                    "user_input": "",
+                    "system_input": tv_prompt,
+                    "system_info": context.get("currentInfo", ""),
+                    "client_id": ctx.client_id,
+                    "event_type": event_type,
+                    "req_id": req_id,
+                    "sender": sender,
+                    "participants": participants,
+                    "origin_message_id": origin_message_id,
+                    "policy": policy_dict,
+                }
+            }, timeout=5.0)
+
+            task = task_result[0] if task_result else None
+            if task:
+                server.client_tasks[ctx.client_id].add(task.uid)
+                await server.send_task_update(ctx.client_id, task)
+
+                event_bus.emit(Events.Chat.SEND_MESSAGE, {
+                    "user_input": "",
+                    "system_input": tv_prompt,
+                    "image_data": _collect_context_images(context),
+                    "task_uid": task.uid,
+                    "event_type": model_event_type,
+                    "character_id": character_id,
+                    "sender": sender,
+                    "participants": participants,
+                    "req_id": req_id,
+                    "origin_message_id": origin_message_id,
+                    "policy": policy_dict,
+                })
+            else:
+                await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to create TV reaction task", req_id=req_id)
+            return
+
         await server._send_aborted_update(ctx.client_id, event_type, character_id, reason=f"Unknown event type: {event_type}", req_id=req_id)
