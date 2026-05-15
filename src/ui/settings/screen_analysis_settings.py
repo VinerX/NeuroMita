@@ -165,6 +165,9 @@ def setup_screen_analysis_controls(gui, parent_layout):
     # Пятая CollapsibleSection — хранение и очистка изображений
     _setup_image_cleanup_section(gui, parent_layout)
 
+    # Шестая CollapsibleSection — камера на голове Миты
+    _setup_mita_camera_section(gui, parent_layout)
+
 
 def _wire_detail_dependency(gui) -> None:
     """
@@ -332,3 +335,128 @@ def _setup_image_cleanup_section(gui, parent_layout) -> None:
     )
     # Вставляем label с результатом прямо под секцией
     parent_layout.addWidget(result_label)
+
+
+def _setup_mita_camera_section(gui, parent_layout) -> None:
+    """
+    Настройки FrameRecorder — камеры на голове Миты.
+
+    Два режима:
+      • Непрерывный — автозахват каждые N секунд, кадры складываются в буфер.
+      • По команде  — Мита использует DSL-действие camera_snapshot, Unity
+                      немедленно захватывает кадр и отправляет Python как отдельный диалог.
+    """
+    mita_camera_config = [
+        {
+            'label': _('Включить камеру Миты (FrameRecorder)', 'Enable Mita Camera (FrameRecorder)'),
+            'key': 'MITA_CAMERA_ENABLED',
+            'type': 'checkbutton',
+            'default_checkbutton': False,
+            'tooltip': _(
+                'Активирует систему камеры на голове Миты.\n'
+                'Необходимо назначить Camera-компонент в Unity-сцене.',
+                'Activates the head-mounted camera system on Mita.\n'
+                'Requires a Camera component assigned in the Unity scene.'
+            ),
+        },
+        {
+            'label': _('Режим: непрерывный захват', 'Mode: continuous capture'),
+            'key': 'MITA_CAMERA_CONTINUOUS',
+            'type': 'checkbutton',
+            'default_checkbutton': False,
+            'depends_on': 'MITA_CAMERA_ENABLED',
+            'tooltip': _(
+                'Автоматически захватывает кадры с заданным интервалом.\n'
+                'Кадры накапливаются в буфере и прикладываются к следующему запросу.',
+                'Automatically captures frames at the set interval.\n'
+                'Frames accumulate in a buffer and are attached to the next request.'
+            ),
+        },
+        {
+            'label': _('Режим: по команде Миты (DSL)', 'Mode: on-demand (DSL command)'),
+            'key': 'MITA_CAMERA_ON_DEMAND',
+            'type': 'checkbutton',
+            'default_checkbutton': False,
+            'depends_on': 'MITA_CAMERA_ENABLED',
+            'tooltip': _(
+                'Мита может сделать снимок, написав в ответе:\n'
+                '    <action>camera_snapshot</action>\n'
+                'Unity захватывает кадр и немедленно отправляет его Мите\n'
+                'как новый диалоговый запрос (event_type = camera_snapshot_result).',
+                'Mita can take a snapshot by writing in her reply:\n'
+                '    <action>camera_snapshot</action>\n'
+                'Unity captures the frame and immediately sends it to Mita\n'
+                'as a new dialogue request (event_type = camera_snapshot_result).'
+            ),
+        },
+        {
+            'label': _('Интервал захвата (сек)', 'Capture interval (sec)'),
+            'key': 'MITA_CAMERA_INTERVAL',
+            'type': 'entry',
+            'default': '5.0',
+            'depends_on': 'MITA_CAMERA_ENABLED',
+            'validation': gui.validate_float_positive,
+            'tooltip': _(
+                'Интервал между кадрами в режиме непрерывного захвата (секунды).',
+                'Interval between frames in continuous capture mode (seconds).'
+            ),
+        },
+        {
+            'label': _('Макс. кадров в буфере', 'Max frames in buffer'),
+            'key': 'MITA_CAMERA_MAX_FRAMES',
+            'type': 'entry',
+            'default': '8',
+            'depends_on': 'MITA_CAMERA_ENABLED',
+            'validation': gui.validate_positive_integer,
+            'tooltip': _(
+                'Максимальное количество кадров, хранимых в кольцевом буфере.\n'
+                'При переполнении старые кадры удаляются.',
+                'Maximum number of frames kept in the ring buffer.\n'
+                'Oldest frames are dropped when the buffer is full.'
+            ),
+        },
+        {
+            'label': _('Кадров для отправки', 'Frames to send'),
+            'key': 'MITA_CAMERA_FRAMES_TO_SEND',
+            'type': 'entry',
+            'default': '1',
+            'depends_on': 'MITA_CAMERA_ENABLED',
+            'validation': gui.validate_positive_integer,
+            'tooltip': _(
+                'Сколько последних кадров из буфера прикладывать к запросу.',
+                'How many latest frames from the buffer to attach to the request.'
+            ),
+        },
+        {
+            'label': _('Качество JPEG (%)', 'JPEG quality (%)'),
+            'key': 'MITA_CAMERA_JPEG_QUALITY',
+            'type': 'entry',
+            'default': '40',
+            'depends_on': 'MITA_CAMERA_ENABLED',
+            'validation': gui.validate_positive_integer,
+            'tooltip': _(
+                'Степень сжатия JPEG (1–100). Ниже = меньше трафика, хуже качество.',
+                'JPEG compression level (1–100). Lower = less traffic, worse quality.'
+            ),
+        },
+        {
+            'label': _('Передавать через файл (не base64)', 'Transfer via file path (not base64)'),
+            'key': 'MITA_CAMERA_USE_FILE_TRANSFER',
+            'type': 'checkbutton',
+            'default_checkbutton': False,
+            'depends_on': 'MITA_CAMERA_ENABLED',
+            'tooltip': _(
+                'Unity сохраняет кадры на диск и передаёт Python путь к файлу.\n'
+                'Снижает нагрузку на сокет при больших изображениях.\n'
+                'Требует, чтобы Python и Unity были на одной машине.',
+                'Unity saves frames to disk and sends Python the file path.\n'
+                'Reduces socket load for large images.\n'
+                'Requires Python and Unity to run on the same machine.'
+            ),
+        },
+    ]
+    create_settings_section(
+        gui, parent_layout,
+        _("Камера Миты (FrameRecorder)", "Mita Camera (FrameRecorder)"),
+        mita_camera_config
+    )

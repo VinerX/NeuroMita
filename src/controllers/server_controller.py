@@ -89,7 +89,14 @@ class ServerController:
         self.ConnectedToGame = False
         self._destroyed = False
 
-        self.settings_to_send = ['ACTION_MENU', 'MITAS_MENU', 'IGNORE_GAME_REQUESTS', 'GAME_BLOCK_LEVEL', 'CHARACTER', 'WORLD_HIERARCHY_TREE']
+        self.settings_to_send = [
+            'ACTION_MENU', 'MITAS_MENU', 'IGNORE_GAME_REQUESTS', 'GAME_BLOCK_LEVEL',
+            'CHARACTER', 'WORLD_HIERARCHY_TREE',
+            # Mita head-camera (FrameRecorder)
+            'MITA_CAMERA_ENABLED', 'MITA_CAMERA_CONTINUOUS', 'MITA_CAMERA_ON_DEMAND',
+            'MITA_CAMERA_INTERVAL', 'MITA_CAMERA_MAX_FRAMES', 'MITA_CAMERA_FRAMES_TO_SEND',
+            'MITA_CAMERA_JPEG_QUALITY', 'MITA_CAMERA_USE_FILE_TRANSFER',
+        ]
 
         self.echo_suppressor = ServerEchoSuppressor()
 
