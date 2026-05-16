@@ -560,33 +560,28 @@ class HistoryManager:
                     part_type = part.get("type")
                     if part_type == "image_url":
                         url = part.get("image_url", {}).get("url", "")
-                        if stored_description:
-                            # For LLM: send lightweight text description
-                            reconstructed_list.append({
-                                "type": "text",
-                                "text": f"[Image: {stored_description}]"
+                        final_url = url
+                        is_local = part.get("is_local_file", False)
+                        if is_local or (url and not str(url).startswith("http") and not str(url).startswith("data:")):
+                            final_url = self._image_file_to_base64(str(url))
+
+                        clean_part = {
+                            "type": "image_url",
+                            "image_url": {"url": final_url}
+                        }
+                        if "detail" in (part.get("image_url") or {}):
+                            clean_part["image_url"]["detail"] = part["image_url"]["detail"]
+                        if part.get("display_role"):
+                            clean_part["display_role"] = part.get("display_role")
+
+                        reconstructed_list.append(clean_part)
+
+                        if stored_description and final_url:
+                            ui_images.append({
+                                "url": final_url,
+                                "description": stored_description,
+                                "display_role": part.get("display_role"),
                             })
-                            # For UI: remember the file path so the real image
-                            # can still be displayed in the chat bubble
-                            if url:
-                                ui_images.append({
-                                    "url": url,
-                                    "description": stored_description,
-                                })
-                        else:
-                            final_url = url
-                            is_local = part.get("is_local_file", False)
-                            if is_local or (url and not str(url).startswith("http") and not str(url).startswith("data:")):
-                                final_url = self._image_file_to_base64(str(url))
-
-                            clean_part = {
-                                "type": "image_url",
-                                "image_url": {"url": final_url}
-                            }
-                            if "detail" in (part.get("image_url") or {}):
-                                clean_part["image_url"]["detail"] = part["image_url"]["detail"]
-
-                            reconstructed_list.append(clean_part)
 
                     elif part_type == "text":
                         reconstructed_list.append({"type": "text", "text": part.get("text", "")})

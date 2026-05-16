@@ -101,6 +101,7 @@ class ConversationEventWriter:
         participants: list[str],
         user_input: str,
         image_data: list[Any],
+        image_source: str,
         image_descriptions: dict[str, str] | None,
         event_type: str,
         req_id: str | None,
@@ -121,10 +122,15 @@ class ConversationEventWriter:
                 b64 = base64.b64encode(img).decode("utf-8")
             else:
                 b64 = str(img)
-            chunks.append({
+            image_chunk = {
                 "type": "image_url",
                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
-            })
+            }
+            if image_source == "mita_camera":
+                image_chunk["display_role"] = "assistant"
+            elif image_source == "easel":
+                image_chunk["display_role"] = "user"
+            chunks.append(image_chunk)
 
         msg = {
             "message_id": self._make_message_id("in", req_id),
@@ -137,6 +143,8 @@ class ConversationEventWriter:
             "time": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
             "content": chunks,
         }
+        if image_source:
+            msg["image_source"] = image_source
         if image_descriptions:
             msg["image_descriptions"] = image_descriptions
         return msg
@@ -202,6 +210,7 @@ class ConversationEventWriter:
         participants: Any,
         user_input: str,
         image_data: list[Any],
+        image_source: str = "",
         image_descriptions: dict[str, str] | None = None,
         req_id: str | None,
         origin_message_id: str | None,
@@ -215,6 +224,7 @@ class ConversationEventWriter:
         sender = str(sender or "Player")
         responder_character_id = str(responder_character_id or "").strip()
         assistant_target = str(assistant_target or "Player")
+        image_source = str(image_source or "").strip().lower()
         origin_message_id = str(origin_message_id or "").strip() or None
 
         # Persist player's easel drawings to a dedicated folder immediately on receipt.
@@ -233,6 +243,7 @@ class ConversationEventWriter:
                 participants=pts,
                 user_input=user_input,
                 image_data=image_data,
+                image_source=image_source,
                 image_descriptions=image_descriptions,
                 event_type=event_type,
                 req_id=req_id,

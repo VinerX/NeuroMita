@@ -62,6 +62,7 @@ async def _dispatch_task(
     req_id,
     origin_message_id,
     event_type: str,
+    image_source: str = "",
     extra_task_data: Optional[dict] = None,
     abort_reason: str = "Failed to create task",
 ) -> Any:
@@ -99,6 +100,7 @@ async def _dispatch_task(
             "user_input": user_input,
             "system_input": system_input,
             "image_data": images,
+            "image_source": image_source,
             "task_uid": task.uid,
             "event_type": model_event_type,
             "character_id": character_id,
@@ -222,9 +224,11 @@ class CreateTaskAction:
                 collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
 
             # Label continuous in-game camera frames when Unity flags them
+            effective_image_source = str(context.get("image_source") or "")
             if _should_label_as_mita_camera(event_type, context):
                 camera_label = "[Your eyes (in-game camera)] The attached image shows what you currently see through your own eyes in-game. It is not a player photo, selfie, or drawing."
                 collected_sys = (camera_label + "\n" + collected_sys).strip() if collected_sys else camera_label
+                effective_image_source = "mita_camera"
 
             await _dispatch_task(
                 **_shared,
@@ -234,6 +238,7 @@ class CreateTaskAction:
                 user_input=str(user_input or ""),
                 system_input=collected_sys,
                 images=_collect_context_images(context),
+                image_source=effective_image_source,
                 extra_task_data={"system_info": context.get("currentInfo", "")},
                 abort_reason="Failed to create task",
             )
@@ -326,6 +331,7 @@ class CreateTaskAction:
                 user_input="",
                 system_input=collected_sys,
                 images=[],
+                image_source="",
                 extra_task_data={"system_info": context.get("currentInfo", "")},
                 abort_reason="Failed to flush system info",
             )
@@ -377,8 +383,10 @@ class CreateTaskAction:
                     react_lines += ["", "Pending system info:", collected_sys]
 
             # Label continuous in-game camera frames when Unity flags them
+            effective_image_source = str(context.get("image_source") or "")
             if _should_label_as_mita_camera(event_type, context):
                 react_lines.insert(0, "[Your eyes (in-game camera)] The attached image shows what you currently see through your own eyes in-game. It is not a player photo, selfie, or drawing.")
+                effective_image_source = "mita_camera"
 
             await _dispatch_task(
                 **_shared,
@@ -388,6 +396,7 @@ class CreateTaskAction:
                 user_input="",
                 system_input="\n".join(react_lines),
                 images=_collect_context_images(context),
+                image_source=effective_image_source,
                 extra_task_data={"reason": reason_text, "duration": duration},
                 abort_reason="Failed to create react task",
             )
@@ -406,6 +415,7 @@ class CreateTaskAction:
                 user_input="",
                 system_input=system_input,
                 images=_collect_context_images(context),
+                image_source="mita_camera",
                 extra_task_data={"system_info": context.get("currentInfo", "")},
                 abort_reason="Failed to create snapshot task",
             )
@@ -425,6 +435,7 @@ class CreateTaskAction:
                 user_input="",
                 system_input=system_input,
                 images=_collect_context_images(context),
+                image_source=str(context.get("image_source") or ""),
                 extra_task_data={"system_info": context.get("currentInfo", "")},
                 abort_reason="Failed to create TV reaction task",
             )
@@ -446,6 +457,7 @@ class CreateTaskAction:
                 user_input="",
                 system_input=system_input,
                 images=_collect_context_images(context),
+                image_source="easel",
                 extra_task_data={"system_info": context.get("currentInfo", "")},
                 abort_reason="Failed to create easel drawing task",
             )

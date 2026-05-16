@@ -687,7 +687,8 @@ class ImageWidget(QWidget):
             desc_box = QPlainTextEdit()
             desc_box.setPlainText(self._description)
             desc_box.setReadOnly(True)
-            desc_box.setMaximumHeight(120)
+            desc_box.setMinimumHeight(150)
+            desc_box.setMaximumHeight(160)
             desc_box.setStyleSheet(
                 "background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.85); "
                 "border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; "
@@ -697,7 +698,7 @@ class ImageWidget(QWidget):
 
         # Minimum width: 520 so long descriptions don't get squished in a tiny column
         dlg_w = max(520, min(pix.width() + 32, max_w))
-        dlg_h = min(pix.height() + (140 if self._description else 32),
+        dlg_h = min(pix.height() + (180 if self._description else 32),
                     avail.height() - 40 if screen else max_h)
         dlg.resize(dlg_w, dlg_h)
         dlg.exec()

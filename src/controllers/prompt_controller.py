@@ -183,6 +183,7 @@ class PromptController:
         event_type: str = data.get("event_type", "chat")
         user_input: str = data.get("user_input", "") or ""
         system_input: str = data.get("system_input", "") or ""
+        hidden_user_context: str = data.get("hidden_user_context", "") or ""
         image_data = data.get("image_data") or []
 
         sender: str = str(data.get("sender") or "Player")
@@ -296,6 +297,12 @@ class PromptController:
                 role = "event"
 
             messages.append({"role": role, "content": system_input})
+
+        if hidden_user_context:
+            messages.append({
+                "role": "system",
+                "content": hidden_user_context,
+            })
 
         user_message_for_history: Optional[Dict[str, Any]] = None
         user_content_chunks: List[Dict[str, Any]] = []

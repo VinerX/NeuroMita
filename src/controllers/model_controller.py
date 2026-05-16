@@ -731,8 +731,10 @@ class ModelController:
         data = event.data or {}
 
         user_input = data.get("user_input", "") or ""
+        visible_user_input = user_input
         system_input = data.get("system_input", "") or ""
         image_data = data.get("image_data", []) or []
+        image_source = str(data.get("image_source") or "").strip().lower()
         stream_callback = data.get("stream_callback", None)
         event_type = (data.get("event_type") or "chat") or "chat"
 
@@ -892,7 +894,7 @@ class ModelController:
                 "This is what the character is currently seeing with their own eyes, not a player photo, selfie, or drawing. "
                 "Describe the scene strictly from the character's point of view."
             )
-        elif str((data.get("context") or {}).get("image_source") or "").strip().lower() == "mita_camera":
+        elif image_source == "mita_camera" or str((data.get("context") or {}).get("image_source") or "").strip().lower() == "mita_camera":
             _image_context_hint = (
                 "These frames were explicitly marked as coming from the character's own in-game camera. "
                 "This is the character's current visual perception, not a player-uploaded image, selfie, or drawing. "
@@ -911,14 +913,38 @@ class ModelController:
                 "Describe the drawing itself and any depicted characters or objects."
             )
 
+        hidden_user_context = ""
+
         if image_data and bool(self.settings.get("IMAGE_DESCRIPTION_ENABLED", False)):
             _detail = str(self.settings.get("IMAGE_DESCRIPTION_DETAIL", "normal") or "normal")
+
+            _is_mita_cam = image_source in ("mita_camera",) or event_type == "camera_snapshot_result"
+            _is_easel = image_source == "easel" or event_type == "easel_drawing"
+
+            if _is_mita_cam:
+                _ctx_preamble_single = (
+                    "The following description is what you (the character) currently see through your own eyes "
+                    "(in-game camera). React naturally as if perceiving this scene yourself."
+                )
+                _ctx_preamble_seq = _ctx_preamble_single
+            elif _is_easel:
+                _ctx_preamble_single = (
+                    "The player is showing you their drawing from the in-game easel. "
+                    "React to it as artwork the player created and is presenting to you."
+                )
+                _ctx_preamble_seq = _ctx_preamble_single
+            else:
+                _ctx_preamble_single = (
+                    "The following image description is for internal context only. "
+                    "Use it to understand what is shown, but do not repeat it verbatim or present it as dialogue."
+                )
+                _ctx_preamble_seq = _ctx_preamble_single
+
             try:
                 if len(image_data) > 1:
-                    # Multiple frames → describe as a sequence in one API call
                     seq_desc = self.image_description_handler.describe_sequence(image_data, context_hint=_image_context_hint)
                     if seq_desc and not seq_desc.startswith("["):
-                        user_input = (user_input + f"\n[Scene: {seq_desc}]").strip() if user_input else f"[Scene: {seq_desc}]"
+                        hidden_user_context = f"[Hidden image context]\n{_ctx_preamble_seq}\n[Scene: {seq_desc}]"
                         image_descriptions = {_detail: seq_desc}
                         logger.info(f"[ModelController] Non-native sequence mode: {len(image_data)} frames described as one scene.")
                 else:
@@ -927,7 +953,7 @@ class ModelController:
                         desc_text = "\n".join(
                             f"[Image {i + 1}: {d}]" for i, d in enumerate(descriptions)
                         )
-                        user_input = (user_input + "\n" + desc_text).strip() if user_input else desc_text
+                        hidden_user_context = f"[Hidden image context]\n{_ctx_preamble_single}\n{desc_text}"
                         image_descriptions = {_detail: "\n".join(descriptions)}
                         logger.info(f"[ModelController] Non-native image mode: replaced {len(descriptions)} image(s) with text descriptions.")
                 image_data = []  # don't send images to main model
@@ -943,6 +969,7 @@ class ModelController:
                     "event_type": event_type,
                     "user_input": user_input,
                     "system_input": system_input,
+                    "hidden_user_context": hidden_user_context,
                     "image_data": image_data,
                     "memory_limit": memory_limit,
                     "is_game_master": is_game_master,
@@ -1079,8 +1106,9 @@ class ModelController:
                     policy=policy,
                     sender=sender,
                     participants=participants,
-                    user_input=user_input,
+                    user_input=visible_user_input,
                     image_data=original_image_data,
+                    image_source=image_source,
                     req_id=req_id,
                     task_uid=task_uid,
                     event_type=event_type,
@@ -1124,8 +1152,9 @@ class ModelController:
                     responder_character_id=char_id,
                     sender=sender,
                     participants=participants,
-                    user_input=user_input,
+                    user_input=visible_user_input,
                     image_data=original_image_data,
+                    image_source=image_source,
                     image_descriptions=image_descriptions,
                     req_id=req_id,
                     origin_message_id=origin_message_id,
@@ -1145,7 +1174,7 @@ class ModelController:
             self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
                 "character_id": char_id,
                 "character_ref": char,
-                "user_input": user_input,
+                "user_input": visible_user_input,
                 "assistant_output": final_text,
                 "created_memory_ids": created_memory_ids,
                 "inline_graph_json": inline_graph_json,
@@ -1313,6 +1342,7 @@ class ModelController:
         participants: list,
         user_input: str,
         image_data: list,
+        image_source: str,
         req_id: str | None,
         task_uid: str | None,
         event_type: str,
@@ -1456,6 +1486,7 @@ class ModelController:
                 participants=participants,
                 user_input=user_input,
                 image_data=image_data,
+                image_source=image_source,
                 image_descriptions=_structured_image_descriptions,
                 req_id=req_id,
                 origin_message_id=origin_message_id,
@@ -1587,6 +1618,7 @@ class ModelController:
                 participants=participants,
                 user_input=user_input,
                 image_data=image_data,
+                image_source=image_source,
                 image_descriptions=None,
                 req_id=req_id,
                 origin_message_id=origin_message_id,
@@ -1716,12 +1748,13 @@ class ModelController:
             data=data,
             policy=policy,
             sender=sender,
-            participants=participants,
-            user_input="",
-            image_data=[],
-            req_id=req_id,
-            task_uid=task_uid,
-            event_type=event_type,
+                participants=participants,
+                user_input="",
+                image_data=[],
+                image_source=image_source,
+                req_id=req_id,
+                task_uid=task_uid,
+                event_type=event_type,
             combined_messages=combined_messages_v2,
             preset_id=preset_id,
             tools_on=True,
