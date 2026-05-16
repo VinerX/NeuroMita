@@ -104,6 +104,7 @@ class SettingsController:
             "BEAT_SYNC_ENABLED",
             "BEAT_SYNC_STREAMING",
             "BEAT_SYNC_AUTO_INSTALL",
+            "BEAT_SYNC_USE_FILE_TRANSFER",
 
             "REMINDERS_ENABLED",
 
@@ -127,10 +128,10 @@ class SettingsController:
         except Exception:
             game_connected = False
 
-        flag_vars: Dict[str, Any] = {
-            key: bool(self.settings.get(key, False))
-            for key in bool_keys
-        }
+        flag_vars: Dict[str, Any] = {}
+        for key in bool_keys:
+            default_value = True if key == "BEAT_SYNC_USE_FILE_TRANSFER" else False
+            flag_vars[key] = bool(self.settings.get(key, default_value))
 
         flag_vars["GAME_CONNECTED"] = bool(game_connected)
 
