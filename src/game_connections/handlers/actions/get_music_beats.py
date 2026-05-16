@@ -192,6 +192,7 @@ class GetMusicBeatsAction:
                     "request_id": request_id,
                     "duration": result.duration,
                     "beats": result.beats,
+                    "beats_count": len(result.beats),
                     "method": result.method,
                     "bpm_estimate": result.bpm_estimate,
                 },

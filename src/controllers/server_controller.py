@@ -100,6 +100,8 @@ class ServerController:
             'MITA_CAMERA_ENABLED', 'MITA_CAMERA_CONTINUOUS', 'MITA_CAMERA_ON_DEMAND',
             'MITA_CAMERA_INTERVAL', 'MITA_CAMERA_MAX_FRAMES', 'MITA_CAMERA_FRAMES_TO_SEND',
             'MITA_CAMERA_JPEG_QUALITY', 'MITA_CAMERA_USE_FILE_TRANSFER',
+            # Image transport: "shared_files" | "socket" | "auto"
+            'IMAGE_TRANSPORT_MODE',
         ]
 
         self.echo_suppressor = ServerEchoSuppressor()
@@ -369,6 +371,12 @@ class ServerController:
             settings[str(setting)] = self._get_setting(setting)
 
         characters_stats = self._collect_characters_stats()
+
+        transport_raw = str(settings.get("IMAGE_TRANSPORT_MODE") or "auto").strip().lower()
+        if transport_raw not in ("shared_files", "socket", "auto"):
+            transport_raw = "auto"
+        settings["IMAGE_TRANSPORT_MODE"] = transport_raw
+
         shared_transfer: Dict[str, Any] = {}
         try:
             dirs = ensure_shared_transfer_dirs()
@@ -377,6 +385,7 @@ class ServerController:
                 "root": str(dirs["root"]),
                 "images_dir": str(dirs["images"]),
                 "manifests_dir": str(dirs["manifests"]),
+                "mode": transport_raw,
             }
         except Exception as e:
             logger.warning(f"Failed to describe shared image transfer settings: {e}")
