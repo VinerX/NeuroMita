@@ -888,11 +888,20 @@ class ModelController:
         if event_type == "camera_snapshot_result":
             _image_context_hint = (
                 "This image was captured by the character's head-mounted camera "
-                "(their own point of view, in-game). Describe what the character is currently seeing."
+                "(their own point of view, in-game). "
+                "This is what the character is currently seeing with their own eyes, not a player photo, selfie, or drawing. "
+                "Describe the scene strictly from the character's point of view."
+            )
+        elif str((data.get("context") or {}).get("image_source") or "").strip().lower() == "mita_camera":
+            _image_context_hint = (
+                "These frames were explicitly marked as coming from the character's own in-game camera. "
+                "This is the character's current visual perception, not a player-uploaded image, selfie, or drawing. "
+                "Describe what the character is seeing from their point of view."
             )
         elif "[Your eyes (in-game camera)]" in system_input:
             _image_context_hint = (
                 "These frames are from the character's own eyes (in-game camera). "
+                "Treat them as the character's current visual perception, not as a player-uploaded image, selfie, or drawing. "
                 "Describe the scene from their point of view."
             )
         elif event_type == "easel_drawing":

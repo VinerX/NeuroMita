@@ -23,6 +23,27 @@ def _collect_context_images(context: dict) -> List:
     return images
 
 
+def _has_context_images(context: dict) -> bool:
+    return bool((context.get("image_base64_list") or []) or (context.get("image_paths") or []))
+
+
+def _should_label_as_mita_camera(event_type: str, context: dict) -> bool:
+    """
+    Unity6 continuous FrameRecorder currently attaches frames without an explicit
+    `mita_camera` flag in the payload. For ordinary answer/react turns, attached
+    images therefore come from Mita's POV unless a dedicated image event is used.
+    """
+    if not _has_context_images(context):
+        return False
+    if str(context.get("image_source") or "").strip().lower() == "mita_camera":
+        return True
+    if context.get("mita_camera", False):
+        return True
+    if event_type in ("camera_snapshot_result", "easel_drawing", "tv_reaction"):
+        return False
+    return event_type in ("answer", "react")
+
+
 async def _dispatch_task(
     *,
     server,
@@ -201,8 +222,8 @@ class CreateTaskAction:
                 collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
 
             # Label continuous in-game camera frames when Unity flags them
-            if context.get("mita_camera", False) and (context.get("image_base64_list") or context.get("image_paths")):
-                camera_label = "[Your eyes (in-game camera)] The attached image shows your current point of view."
+            if _should_label_as_mita_camera(event_type, context):
+                camera_label = "[Your eyes (in-game camera)] The attached image shows what you currently see through your own eyes in-game. It is not a player photo, selfie, or drawing."
                 collected_sys = (camera_label + "\n" + collected_sys).strip() if collected_sys else camera_label
 
             await _dispatch_task(
@@ -356,8 +377,8 @@ class CreateTaskAction:
                     react_lines += ["", "Pending system info:", collected_sys]
 
             # Label continuous in-game camera frames when Unity flags them
-            if context.get("mita_camera", False) and (context.get("image_base64_list") or context.get("image_paths")):
-                react_lines.insert(0, "[Your eyes (in-game camera)] The attached image shows your current point of view.")
+            if _should_label_as_mita_camera(event_type, context):
+                react_lines.insert(0, "[Your eyes (in-game camera)] The attached image shows what you currently see through your own eyes in-game. It is not a player photo, selfie, or drawing.")
 
             await _dispatch_task(
                 **_shared,
