@@ -3,7 +3,7 @@
 
 Translation (DeepSeek) [English readme](README_EN.md)
 
-Внимание, требуются Python и C# Unity разработчики (начинающие и выше), Unity-аниматоры и моделлеры, если что пишите сразу в личку. Дискорд VinerX!
+Внимание, требуются Python и C# Unity разработчики (начинающие и выше), Unity-аниматоры и моделлеры, если что пишите сразу в личку. Дискорд vinerx!
 
 
 Сервер мода: https://discord.gg/Tu5MPFxM4P <- Здесь вам помогут.
@@ -16,15 +16,15 @@ Translation (DeepSeek) [English readme](README_EN.md)
 Универсальный инструмент моддинга Unity. Могут быть конфликты с модами на BepInEx.
 
   - Пошаговая установка:
-   1) Заходим на https://github.com/LavaGang/MelonLoader, и скачиваем файл  
-    1.1) Либо заходим на https://melonwiki.xyz/#/?id=requirements, и также скачиваем  
+   1) Заходим на https://github.com/LavaGang/MelonLoader и скачиваем файл  
+    1.1) Либо заходим на https://melonwiki.xyz/#/?id=requirements и также скачиваем  
    2) Запускаем файл MelonLoader.Installer.exe
    3) Добавляем игру вручную, нажав "Add Game Manually" и выбрав MiSideFull.exe в папке с игрой
-   4) Выбираем версию 0.6.6 и нажимаем Install. Файл пропатчится, и НейроМита будет работать.
+   4) Выбираем версию 0.6.6 и нажимаем Install. Файл пропатчится и мод будет работать.
 
 Не забудьте, у Мелона могут быть неустановленные у вас зависимости, например - .NET 6.0. Перепроверьте их https://melonwiki.xyz/#/?id=requirements  
 
-- Важно: Windows Vista/7/8/8.1 здесь не подойдут, нужна минимум только Windows 10 или 11 для работы этого компонента  
+- Важно: Windows Vista/7/8.1 здесь не подойдут, нужна минимум только Windows 10 или 11 для работы этого компонента  
 
 
 ### 1 - Мод
@@ -68,21 +68,21 @@ Translation (DeepSeek) [English readme](README_EN.md)
 
    - Бесплатные API:  
      - Mistral AI https://admin.mistral.ai/organization/api-keys - надо прожать галочку "Через Request".
-     - gpt4free https://g4f.dev/members.html - Лимиты: 300к токенов и 100 запросов в час, 1млн токенов в день.
+     - gpt4free https://g4f.dev/members.html - Лимиты: 300к токенов и 100 запросов в час, 1млн токенов в день (Возможны утечки данных, нестабилен)
      - Openrouter https://openrouter.ai/settings/keys. У аккаунтов опенроутера есть лимиты (В среднем - 50 запросов в день).
-     - Google AI Studio https://aistudio.google.com/apikey - новая модель имеет 500 запросов в день, пятеро по 20 запросов, и Gemma 4 по 1.5 тыс. запросов в день.
+     - Google AI Studio https://aistudio.google.com/apikey - новые модели Gemma 4 имеют неограниченное кол-во токенов/минуту, и 1.5 тыс. запросов в день.
      - io.net https://ai.io.net/ai/api-keys - лимит: до 500к токенов в день на аккаунт.  
 	 
    - Платные API:  
      - chutes.ai https://chutes.ai/app/api
-     - OpenAI https://platform.openai.com/api-keys - Ну тут можете сами разбираться с ним. [Все их модели](https://developers.openai.com/api/docs/models/all)
+     - OpenAI https://platform.openai.com/api-keys - Ну тут можете разобраться сами) [Все их модели тут](https://developers.openai.com/api/docs/models/all)
      - Openrouter с оплатой https://openrouter.ai/models?max_price=1, очень большой список моделей, оцените сами.  
 	 
    - Платные API для РФ:  
      - оплачивая ключ здесь https://console.proxyapi.ru/billing. Стабильно, но учитывайте расход. Промокод NeuroMita26 даёт единоразовую скидку в 25%.  
 
    - Локально:
-     - технически пробовалось через LM Studio https://lmstudio.ai, но имейте ввиду - нужно очень мощное железо, и скорее всего оно будет слабее доступных нейронок на сотни миллиадров параметров. Гайда не будет, так как всё рассчитано на опытных пользователей.  
+     - технически пробовалось через [LM Studio](https://lmstudio.ai), но имейте ввиду - нужно очень мощное железо, и скорее всего оно будет слабее доступных нейронок на сотни миллиадров параметров. Гайда не будет, так как всё рассчитано на опытных пользователей.  
 
    Чаще всего модели Gemini лучше справляются с передачей эмоций, так что обычно интересней играть с ними. DeepSeek чуть хуже (но умнее обрабатывает команды).
 
@@ -114,16 +114,19 @@ Translation (DeepSeek) [English readme](README_EN.md)
 
 
 ### G4F (Последняя версия - 7.5.3 от xtekky)
+ВНИМАНИЕ: Этот способ является нестабильным и небезопасным, так как ваши сообщения могут отправляться через неизвестные сервера ([На Хабре есть пост об этом от 4 мая 2026 года](https://habr.com/ru/amp/publications/1031390/))  
+Если хотите получать качественные ответы - выбирайте другие безопасные способы (OpenAI, Google AI, Mistral AI и т.п.)  
+
 Вариант как без ключа, так и с ним.
      
 ![img_1.png](ReadmeFiles/img_1.png)
 
  - Два способа использования:
- - Первый способ: Ставим галочку на использование (оно будет использоваться вместо основных настроек). 
-   1.1) Можно менять версию библиотеки, используя ввод версии.
+ - Первый: Ставим галочку на использование (оно будет использоваться вместо основных настроек). 
+   1.1) Можно менять версию библиотеки, используя ввод версии ("latest" будет загружать последние версии).
    1.2) Если хотите обновить - используйте кнопку "запланировать обновление g4f" и перезапуститесь.
 
-  Второй способ: Использование API https://g4f.space/api/nvidia - использует провайдера Nvidia.
+  Второй: Использование API ссылки https://g4f.space/api/nvidia - использует провайдера Nvidia.
   
   Создаём аккаунт тут https://g4f.dev/members.html (для удобства регаемся через дискорд) и генерим ключ API.
   
@@ -131,7 +134,10 @@ Translation (DeepSeek) [English readme](README_EN.md)
  - Список моделей:  
   meta/llama-3.3-70b-instruct  
   meta/llama-3.2-90b-vision-instruct  
-  qwen/qwen3-next-80b-a3b-instruct (С ней очень весело играть с Безумной Митой)  
+  qwen/qwen3-next-80b-a3b-instruct
+
+ - https://g4f.space/api/gemini-v1beta:  
+  models/gemini-3.1-flash-lite-preview  
   
   
   Используете первый способ? Прописываем модели в поле "Модель gpt4free".  
@@ -183,30 +189,20 @@ API ссылка - https://openrouter.ai/api/v1
 Если тут пишет, что ваша страна не поддерживается (Например РФ), тогда вам нужен первый пункт. 
 Если у вас нет проблем с поддержкой, то переходим сразу ко второму пункту.  
 
-1) Для использования, нам понадобится [файл hosts отсюда](https://discord.com/channels/1341427480942350356/1342238028864950313/1480273751047274760)  
+1) Для использования нам понадобится [файл hosts отсюда](https://discord.com/channels/1341427480942350356/1342238028864950313/1480273751047274760)  
 Файл нужно вставить по этому пути - C:\Windows\System32\drivers\etc  
 Порядок установки: Скачать > скопировать > вставить с заменой.  
 
 Именно в таком порядке, не с перемещением, ЭТО ВАЖНО, так как в ином случае могут быть баги.  
 
-2) После всех проделанных манипуляций, нужно зайти на этот сайт https://aistudio.google.com/apikey зарегистрироваться и создать ключ.  
+2) После всех проделанных манипуляций нужно [зайти на этот сайт](https://aistudio.google.com/apikey), зарегистрироваться и создать ключ.  
 
  - Бесплатные модели по 20 запросов в день:  
    gemini-2.5-flash  
    gemini-2.5-flash-lite  
    gemini-robotics-er-1.5-preview  
    gemini-robotics-er-1.6-preview  
-   gemini-3-flash-preview (долго думает)  
-   
- - Модели Gemma 3:  
-   gemma-3-27b-it  
-   gemma-3-12b-it  
-   gemma-3-4b-it  
-   gemma-3n-e4b-it  
-   gemma-3n-e2b-it  
-   gemma-3-1b-it  
- - У Gemma контекст всего 15к токенов/минуту, при том в день 14.4 тыс. запросов.  
- - Хорошо подходят для создания ТГ ботов, но не совсем подходят для нейромиты.  
+   gemini-3-flash-preview (долго думает)   
  
  - Модель на 500 запросов в день:  
    gemini-3.1-flash-lite-preview (могут быть перебои)  
@@ -228,13 +224,10 @@ API ссылка - https://openrouter.ai/api/v1
 Ключи должны быть пустые, так как ключ находится в самой ссылке.  
 Также нужно прожать в моде две галочки: "Через Request" и "Gemini для ProxyAPI"  
 
-Первая API ссылка: https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=ТУТ_ДОЛЖЕН_БЫТЬ_ВАШ_API_КЛЮЧ  
-Посмотрите на ссылку внимательно, вместо текста ваш ключ.  
-В ссылку после models/ вставлять нужную модель (примерно так: models/gemini-3.1-flash-lite-preview или models/gemini-2.5-flash).  
-
-Вторая API ссылка: https://generativelanguage.googleapis.com/v1beta/openai/  
-Для этой ссылки не нужно ставить галочки, просто прописываем модели в поле "Модель", а ключи соответственно в поля "Ключ" и "Резервные ключи" (если их несколько)  
-
+API ссылка: https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=ТУТ_ДОЛЖЕН_БЫТЬ_ВАШ_API_КЛЮЧ  
+Посмотрите на ссылку внимательно, вместо текста после "=" без пробела вставляем свой ключ.  
+В ссылку после models/ вставлять нужную модель (примерно так: models/gemini-3.1-flash-lite-preview:generateContent или models/gemini-2.5-flash:generateContent).  
+В поле "Модель" указываем нужную модель.
 
 ### Chutes.ai
 Нужна галка "через Request", ссылка https://llm.chutes.ai/v1/chat/completions  
@@ -246,18 +239,20 @@ API ссылка - https://openrouter.ai/api/v1
   Модели от ProxyApi, выбраны так как нормально можно оплатить в РФ. Ключи и цены здесь: https://console.proxyapi.ru/billing  
   Промокод NeuroMita26 даёт скидку на 25% единоразово.  
   
-  Обратите внимание на вид ссылки моделей Gemini. Эти модели - самые дешевые. 
+  Обратите внимание на вид ссылки моделей Gemini. 
     ![img_3.png](ReadmeFiles/img_3.png)
-  - https://api.proxyapi.ru/google/v1/models/gemini-2.0-flash-lite:generateContent - gemini-2.0-flash-lite  
+  - https://api.proxyapi.ru/google/v1/models/gemini-2.5-flash:generateContent - gemini-2.5-flash  
   - https://api.proxyapi.ru/google/v1/models/gemini-3.1-flash-lite-preview:generateContent - gemini-3.1-flash-lite-preview  
   - https://api.proxyapi.ru/google/v1/models/gemini-3.1-pro-preview:generateContent - gemini-3.1-pro-preview (дорогая модель)  
   
-  gpt и deepseek имеют ссылки такого типа - https://api.proxyapi.ru/openai/v1, галок не нужно:
+  gpt имеет ссылку такого типа - https://api.proxyapi.ru/openai/v1, галок не нужно:
 
 ![img_4.png](ReadmeFiles/img_4.png)
 
-  - https://api.proxyapi.ru/openai/v1 - модели gpt-4o-mini и gpt-5.4-nano 
-  - https://api.proxyapi.ru/deepseek - модель deepseek-chat (осторожно, ещё дороже)  
+  - https://api.proxyapi.ru/openai/v1:  
+    gpt-4o-mini  
+    gpt-5.4-nano  
+    gpt-5-nano (самая дешёвая модель)  
 
   Есть и другие модели, если вам позволяют финансы, но будьте аккуратны: https://proxyapi.ru/pricing/list
   
@@ -288,18 +283,18 @@ API ссылка - https://openrouter.ai/api/v1
 - Скачать: https://github.com/VinerX/NeuroMita/releases/download/v0.011/Models.7z
 - Зеркало: https://drive.google.com/file/d/16S0v7qsVKGwqI1yHU_ScZ94wtZooIZqI/view?usp=drive_link
 
-Внимание, в процессе установок моделей будут закачиваться до файлы - это будет занимать время в первый раз.
+Внимание: в процессе установок моделей будут закачиваться дополнительные файлы. Это будет занимать время в первый раз.
 Также, каждый раз при смене моделей затрачивается время на инициализацию.
 
-1) Включаем озвучку
-2) Выбираем Local, доступно если добавили features.env. Можно в целом загрузить автоматом при наличии файлика, но может быть медленно.
-3) Устанавливаем нужную модель, настраиваем.
+1) Включаем озвучку  
+2) Выбираем Local, доступно если добавили features.env. Можно в целом загрузить автоматом при наличии файлика, но может быть медленно.  
+3) Устанавливаем нужную модель, настраиваем.  
 
-Для подробностей по установке моделей [сюда!](https://github.com/VinerX/NeuroMita/blob/main/ReadmeFiles/LocalVoiceInstallation.md)
+Для подробностей по установке моделей [сюда!](https://github.com/VinerX/NeuroMita/blob/main/ReadmeFiles/LocalVoiceInstallation.md)  
 
 ![img_5.png](ReadmeFiles/img_5.png)
 
-Вы дочитали до сюда? Возьмите с полки пирожок))
+Вы дочитали до сюда? Возьмите с полки пирожок))  
 
 Текущий состав разработчков:  
 - VinerX
