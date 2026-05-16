@@ -49,15 +49,18 @@ class ReindexAllCharactersWorker(TaskWorker):
         def _do_all(*, progress_callback=None):
             # NOTE: cooperative cancellation happens inside progress_callback (TaskWorker._emit_progress)
             from managers.database_manager import DatabaseManager
+            from handlers.embedding_presets import resolve_full_config, resolve_model_settings
             from managers.rag.rag_manager import RAGManager
 
             db = DatabaseManager()
+            cfg = resolve_full_config()
+            model_name = str(cfg.get("db_model_key") or cfg.get("hf_name") or resolve_model_settings()["hf_name"])
 
             # Pre-count for a stable global progress bar (best-effort).
             totals: dict[str, int] = {}
             grand_total = 0
             for cid in character_ids:
-                h_c, m_c = db.count_missing_embeddings(cid)
+                h_c, m_c = db.count_missing_embeddings(cid, model_name=model_name)
                 t = int(h_c or 0) + int(m_c or 0)
                 totals[cid] = t
                 grand_total += t
@@ -219,6 +222,14 @@ def wire_character_settings_logic(self):
     self.character_combobox.addItems(character_list if character_list else ["Crazy"])
     self.character_combobox.blockSignals(False)
 
+    if hasattr(self, 'chat_character_combobox'):
+        self.chat_character_combobox.blockSignals(True)
+        try:
+            self.chat_character_combobox.clear()
+            self.chat_character_combobox.addItems(character_list if character_list else ["Crazy"])
+        finally:
+            self.chat_character_combobox.blockSignals(False)
+
     presets_meta = event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
     provider_names = [_("Текущий", "Current")]
     if presets_meta and presets_meta[0]:
@@ -236,6 +247,10 @@ def wire_character_settings_logic(self):
         idx = self.character_combobox.findText(current_char_id, Qt.MatchFlag.MatchFixedString)
         if idx >= 0:
             self.character_combobox.setCurrentIndex(idx)
+        if hasattr(self, 'chat_character_combobox'):
+            chat_idx = self.chat_character_combobox.findText(current_char_id, Qt.MatchFlag.MatchFixedString)
+            if chat_idx >= 0:
+                self.chat_character_combobox.setCurrentIndex(chat_idx)
 
     change_character_actions(self, current_char_id)
 
@@ -383,6 +398,17 @@ def change_character_actions(gui, character_id=None):
 
     if selected_character:
         event_bus.emit(Events.Character.SET_CURRENT, {'character_id': selected_character})
+
+    if selected_character and hasattr(gui, 'chat_character_combobox'):
+        chat_combo = gui.chat_character_combobox
+        if chat_combo.currentText() != selected_character:
+            idx = chat_combo.findText(selected_character, Qt.MatchFlag.MatchFixedString)
+            if idx >= 0:
+                chat_combo.blockSignals(True)
+                try:
+                    chat_combo.setCurrentIndex(idx)
+                finally:
+                    chat_combo.blockSignals(False)
 
     if hasattr(gui, 'char_provider_combobox'):
         provider_key = f"CHAR_PROVIDER_{selected_character}"
@@ -1165,8 +1191,11 @@ def run_reindexing(gui):
     # Предварительная проверка (создаем временный RAGManager для чтения)
     try:
         from managers.database_manager import DatabaseManager
+        from handlers.embedding_presets import resolve_full_config, resolve_model_settings
         db = DatabaseManager()
-        h_c, m_c = db.count_missing_embeddings(character_id)
+        cfg = resolve_full_config()
+        model_name = str(cfg.get("db_model_key") or cfg.get("hf_name") or resolve_model_settings()["hf_name"])
+        h_c, m_c = db.count_missing_embeddings(character_id, model_name=model_name)
 
         if (h_c + m_c) == 0:
             QMessageBox.information(gui, _("Инфо", "Info"),
@@ -1243,10 +1272,35 @@ def run_reindexing(gui):
 
 
 def _get_all_character_ids() -> list[str]:
+    ids: list[str] = []
     event_bus = get_event_bus()
-    all_characters = event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
-    character_list = all_characters[0] if all_characters else []
-    return [str(c or "").strip() for c in (character_list or []) if str(c or "").strip()]
+    try:
+        all_characters = event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
+        character_list = all_characters[0] if all_characters else []
+        ids.extend(str(c or "").strip() for c in (character_list or []) if str(c or "").strip())
+    except Exception:
+        pass
+    try:
+        from managers.database_manager import DatabaseManager
+        db = DatabaseManager()
+        conn = db.get_connection()
+        cur = conn.cursor()
+        for table in ("history", "memories"):
+            try:
+                cur.execute(f"SELECT DISTINCT character_id FROM {table} WHERE character_id IS NOT NULL AND character_id != ''")
+                ids.extend(str(r[0] or "").strip() for r in cur.fetchall() if str(r[0] or "").strip())
+            except Exception:
+                pass
+        conn.close()
+    except Exception:
+        pass
+    seen = set()
+    result = []
+    for cid in ids:
+        if cid not in seen:
+            seen.add(cid)
+            result.append(cid)
+    return result
 
 
 def run_reindexing_all(gui):

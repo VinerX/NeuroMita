@@ -857,11 +857,11 @@ class DatabaseManager:
             except Exception:
                 pass
 
-    def count_missing_embeddings(self, character_id: str) -> Tuple[int, int]:
+    def count_missing_embeddings(self, character_id: str, model_name: Optional[str] = None) -> Tuple[int, int]:
         """
         Counts rows that likely require embedding generation:
-          - history: embedding IS NULL and content is not empty
-          - memories: embedding IS NULL
+          - history: no row in embeddings for the current embedding model
+          - memories: no row in embeddings for the current embedding model
         Returns (history_missing, memories_missing). Safe fallback: (0, 0).
         """
         cid = str(character_id or "").strip()
@@ -879,34 +879,53 @@ class DatabaseManager:
             mem_cols = self._get_table_columns_conn(conn, "memories")
 
             # Для истории: пропускаем удаленные, если колонка есть
-            extra_h = " AND is_deleted=0" if "is_deleted" in hist_cols else ""
+            extra_h = " AND h.is_deleted=0" if "is_deleted" in hist_cols else ""
 
             # Для памяти: пропускаем удаленные, если колонка есть
-            extra_m = " AND is_deleted=0" if "is_deleted" in mem_cols else ""
+            extra_m = " AND m.is_deleted=0" if "is_deleted" in mem_cols else ""
+
+            model = str(model_name or "").strip()
+            if not model:
+                try:
+                    from handlers.embedding_presets import resolve_full_config, resolve_model_settings
+                    cfg = resolve_full_config()
+                    model = str(cfg.get("db_model_key") or cfg.get("hf_name") or resolve_model_settings()["hf_name"])
+                except Exception:
+                    model = "Snowflake/snowflake-arctic-embed-m-v2.0"
 
             cur.execute(
                 f"""
                 SELECT COUNT(*)
-                FROM history
-                WHERE character_id=?
-                  AND embedding IS NULL
-                  AND content IS NOT NULL
-                  AND TRIM(content) != ''
+                FROM history h
+                LEFT JOIN embeddings e
+                  ON e.source_table='history'
+                 AND e.source_id=h.id
+                 AND e.character_id=h.character_id
+                 AND e.model_name=?
+                WHERE h.character_id=?
+                  AND h.content IS NOT NULL
+                  AND TRIM(h.content) != ''
+                  AND e.id IS NULL
                   {extra_h}
                 """,
-                (cid,),
+                (model, cid),
             )
             h = int((cur.fetchone() or [0])[0] or 0)
 
             cur.execute(
                 f"""
                 SELECT COUNT(*)
-                FROM memories
-                WHERE character_id=?
-                  AND embedding IS NULL
+                FROM memories m
+                LEFT JOIN embeddings e
+                  ON e.source_table='memories'
+                 AND e.source_id=m.eternal_id
+                 AND e.character_id=m.character_id
+                 AND e.model_name=?
+                WHERE m.character_id=?
+                  AND e.id IS NULL
                   {extra_m}
                 """,
-                (cid,),
+                (model, cid),
             )
             m = int((cur.fetchone() or [0])[0] or 0)
 

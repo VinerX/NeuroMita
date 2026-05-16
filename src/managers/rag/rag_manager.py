@@ -291,7 +291,7 @@ class RAGManager:
         - concat: как раньше (склейка хвоста + user_query -> один embedding)
         - weighted: отдельные embeddings + взвешенная сумма (лучше для коротких фраз игрока)
         """
-        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", True):
+        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False):
             return None
         mode = str(SettingsManager.get("RAG_QUERY_EMBED_MODE", "concat") or "concat").strip().lower()
         if mode not in ("concat", "weighted"):
@@ -434,6 +434,8 @@ class RAGManager:
         """
         if not text or not SettingsManager.get("RAG_ENABLED", False):
             return None
+        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False):
+            return None
 
         # Очистка от тегов
         text = rag_clean_text(text)
@@ -480,6 +482,8 @@ class RAGManager:
             return []
         if (not allow_when_rag_disabled) and (not SettingsManager.get("RAG_ENABLED", False)):
             return []
+        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False):
+            return [None] * len(texts)
 
         cleaned: List[str] = []
         for t in texts:

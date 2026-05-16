@@ -42,7 +42,9 @@ def setup_screen_analysis_controls(gui, parent_layout):
     
     # Первая CollapsibleSection
     screen_analysis_config = [
-        {'label': _('Включить анализ экрана', 'Enable Screen Analysis'), 'key': 'ENABLE_SCREEN_ANALYSIS', 'type': 'checkbutton', 'default_checkbutton': False},
+        {'label': _('Разрешить обработку изображений', 'Enable Image Analysis'), 'key': 'ENABLE_IMAGE_ANALYSIS', 'type': 'checkbutton', 'default_checkbutton': True, 'hide': True},
+        {'label': _('Включить захват экрана', 'Enable Screen Capture'), 'key': 'ENABLE_SCREEN_ANALYSIS', 'type': 'checkbutton', 'default_checkbutton': False},
+        {'label': _('Прикладывать кадры к сообщениям', 'Auto-attach frames'), 'key': 'AUTO_ATTACH_IMAGES', 'type': 'checkbutton', 'default_checkbutton': False, 'depends_on': 'ENABLE_SCREEN_ANALYSIS'},
         {'label': _('Интервал захвата (сек)', 'Capture Interval (sec)'), 'key': 'SCREEN_CAPTURE_INTERVAL', 'type': 'entry', 'default': '5.0', 'validation': gui.validate_float_positive},
         {'label': _('Сжатие (%)', 'Compression (%)'), 'key': 'SCREEN_CAPTURE_QUALITY', 'type': 'entry', 'default': '25', 'validation': gui.validate_positive_integer},
         {'label': _('Кадров в секунду', 'Frames per second'), 'key': 'SCREEN_CAPTURE_FPS', 'type': 'entry', 'default': '1', 'validation': gui.validate_positive_integer},

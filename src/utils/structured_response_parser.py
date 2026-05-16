@@ -213,6 +213,27 @@ def _schema_aware_coerce(data: dict) -> dict:
     import copy
     data = copy.deepcopy(data)
 
+    segment_list_fields = (
+        "emotions",
+        "animations",
+        "idle_animations",
+        "commands",
+        "movement_modes",
+        "visual_effects",
+        "clothes",
+        "music",
+        "interactions",
+        "face_params",
+    )
+
+    def _coerce_string_list(value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item) for item in value if item is not None]
+        return [str(value)]
+
+    # 1. Приведение числовых статов
     for field in ("attitude_change", "boredom_change", "stress_change"):
         val = data.get(field)
         if isinstance(val, str):
@@ -221,28 +242,55 @@ def _schema_aware_coerce(data: dict) -> dict:
             except ValueError:
                 data[field] = 0.0
 
-    for field in ("memory_add", "memory_update", "memory_delete", "memory_merge", "segments", "reminder_add", "reminder_delete"):
+    # 2. Исправление null в списках (добавили entities и relations)
+    for field in ("memory_add", "memory_update", "memory_delete", "memory_merge",
+                  "segments", "reminder_add", "reminder_delete", "entities", "relations"):
         if data.get(field) is None:
             data[field] = []
 
+    # 3. Базовая починка сегментов
     if isinstance(data.get("segments"), list):
         for seg in data["segments"]:
-            if isinstance(seg, dict) and "text" not in seg:
-                seg["text"] = ""
+            if not isinstance(seg, dict):
+                continue
 
+            if "text" not in seg or seg["text"] is None:
+                seg["text"] = ""
+            elif not isinstance(seg["text"], str):
+                seg["text"] = str(seg["text"])
+
+            for field in segment_list_fields:
+                if field in seg:
+                    seg[field] = _coerce_string_list(seg.get(field))
+
+            for field in ("start_game", "end_game", "target", "hint"):
+                if field in seg and seg[field] is not None and not isinstance(seg[field], str):
+                    seg[field] = str(seg[field])
+
+            if "allow_sleep" in seg and seg["allow_sleep"] is not None and not isinstance(seg["allow_sleep"], bool):
+                value = seg["allow_sleep"]
+                if isinstance(value, str):
+                    lowered = value.strip().lower()
+                    if lowered in {"true", "1", "yes", "on"}:
+                        seg["allow_sleep"] = True
+                    elif lowered in {"false", "0", "no", "off"}:
+                        seg["allow_sleep"] = False
+                    else:
+                        seg["allow_sleep"] = None
+                else:
+                    seg["allow_sleep"] = bool(value)
+
+    # 4. Если текста много, а сегментов нет — создаем сегмент
     if not data.get("segments") and isinstance(data.get("text"), str):
         data["segments"] = [{"text": data["text"]}]
 
-    # Hoist fields the LLM accidentally placed inside a segment to top level.
-    # Happens when the model confuses segment-level and response-level fields.
+    # 5. Hoisting (поднятие полей из сегмента наверх)
     if isinstance(data.get("segments"), list) and data["segments"]:
         seg0 = data["segments"][0]
         if isinstance(seg0, dict):
-            # custom_fields: may be required at top level
             if not data.get("custom_fields") and "custom_fields" in seg0:
                 data["custom_fields"] = seg0.pop("custom_fields")
 
-            # numeric stat changes — hoist if top-level is missing/zero but segment has values
             for stat_field in ("attitude_change", "boredom_change", "stress_change"):
                 if stat_field not in data and stat_field in seg0:
                     try:
@@ -250,11 +298,35 @@ def _schema_aware_coerce(data: dict) -> dict:
                     except (TypeError, ValueError):
                         seg0.pop(stat_field, None)
 
-            # memory lists — hoist if top-level is empty
-            for mem_field in ("memory_add", "memory_update", "memory_delete", "memory_merge",
-                              "reminder_add", "reminder_delete"):
-                if not data.get(mem_field) and seg0.get(mem_field):
-                    data[mem_field] = seg0.pop(mem_field)
+            # Добавили entities и relations в список на "поднятие"
+            for field in ("memory_add", "memory_update", "memory_delete", "memory_merge",
+                          "reminder_add", "reminder_delete", "entities", "relations"):
+                if not data.get(field) and seg0.get(field):
+                    data[field] = seg0.pop(field)
+
+    # 6. Трансформация объектов в строки "name:type"
+    if isinstance(data.get("entities"), list):
+        coerced_entities = []
+        for ent in data["entities"]:
+            if isinstance(ent, dict):
+                name = ent.get("name") or ent.get("entity") or "unknown"
+                etype = ent.get("type") or "thing"
+                coerced_entities.append(f"{name}:{etype}")
+            else:
+                coerced_entities.append(str(ent))
+        data["entities"] = coerced_entities
+
+    if isinstance(data.get("relations"), list):
+        coerced_relations = []
+        for rel in data["relations"]:
+            if isinstance(rel, dict):
+                src = rel.get("source") or rel.get("from") or rel.get("s") or "unknown"
+                rtype = rel.get("type") or rel.get("p") or "related"
+                dst = rel.get("target") or rel.get("to") or rel.get("o") or "unknown"
+                coerced_relations.append(f"{src}:{rtype}:{dst}")
+            else:
+                coerced_relations.append(str(rel))
+        data["relations"] = coerced_relations
 
     return data
 

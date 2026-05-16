@@ -3,6 +3,8 @@ import os
 import asyncio
 import tempfile
 import base64
+import uuid
+import datetime
 from typing import Any
 
 from main_logger import logger
@@ -381,6 +383,23 @@ class ChatController:
                         except Exception:
                             continue
                 image_data = prepared if prepared else None
+
+            if system_input and eff_policy.echo_to_ui:
+                ch = self._get_character_ref(character_id)
+                if ch and hasattr(ch, "history_manager"):
+                    ch.history_manager.append_message({
+                        "role": "system",
+                        "content": system_input,
+                        "message_id": f"sys:{uuid.uuid4().hex}",
+                        "time": datetime.datetime.now().strftime("%H:%M"),
+                    })
+                self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
+                    "role": "system",
+                    "response": system_input,
+                    "is_initial": False,
+                    "emotion": "",
+                    "character_id": character_id or "",
+                }, sync=True)
 
             response_result = self.event_bus.emit_and_wait(
                 Events.Model.GENERATE_RESPONSE,

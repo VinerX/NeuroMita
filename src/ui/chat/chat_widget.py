@@ -10,11 +10,13 @@ from PyQt6.QtWidgets import (
     QGraphicsOpacityEffect, QLabel, QFrame,
 )
 from PyQt6.QtCore import Qt, QPropertyAnimation, QPoint, QTimer, QRectF
-from PyQt6.QtGui import QPainter, QPainterPath, QColor, QBrush, QBitmap, QRegion
+from PyQt6.QtGui import QPainter, QPainterPath, QColor, QBrush, QBitmap, QRegion, QLinearGradient, QPen
 import qtawesome as qta
+from styles.main_styles import get_theme
 
-_PANEL_BG = "rgba(18,18,22,0.92)"
-_PANEL_BG_COLOR = QColor(18, 18, 22, 234)  # 0.92 * 255 ≈ 234
+_THEME = get_theme()
+_PANEL_BG = f"rgba({_THEME['sandbox_bg_rgb']}, 0.96)"
+_PANEL_BG_COLOR = QColor(8, 8, 18, 245)
 
 MAX_DISPLAYED_MESSAGES = 100  # older widgets are deleted when this limit is exceeded
 
@@ -40,12 +42,11 @@ class ChatWidget(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("ChatWidgetFrame")
-        self.setStyleSheet(f"""
-            QFrame#ChatWidgetFrame {{
-                background-color: {_PANEL_BG};
-                border: 1px solid rgba(255,255,255,0.08);
-                border-radius: 12px;
-            }}
+        self.setStyleSheet("""
+            QFrame#ChatWidgetFrame {
+                background: transparent;
+                border: none;
+            }
         """)
 
         outer = QVBoxLayout(self)
@@ -117,11 +118,40 @@ class ChatWidget(QFrame):
         # Message list
         self._messages = []
 
+
         # Debounce timer for _apply_mask — avoids bitmap + region alloc on every resize pixel
         self._mask_timer = QTimer(self)
         self._mask_timer.setSingleShot(True)
         self._mask_timer.setInterval(30)
         self._mask_timer.timeout.connect(self._apply_mask)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        rect = QRectF(self.rect().adjusted(1, 1, -1, -1))
+        path = QPainterPath()
+        path.addRoundedRect(rect, 18, 18)
+
+        gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        gradient.setColorAt(0.0, QColor(16, 13, 25, 245))
+        gradient.setColorAt(0.55, QColor(12, 9, 21, 248))
+        gradient.setColorAt(1.0, QColor(8, 8, 18, 250))
+        painter.fillPath(path, gradient)
+
+        painter.save()
+        painter.setClipPath(path)
+        painter.setPen(QPen(QColor(219, 101, 150, 14), 1))
+        step = 32
+        rl, rt, rr, rb = int(rect.left()), int(rect.top()), int(rect.right()), int(rect.bottom())
+        for x in range(rl, rr, step):
+            painter.drawLine(x, rt, x, rb)
+        for y in range(rt, rb, step):
+            painter.drawLine(rl, y, rr, y)
+        painter.restore()
+
+        painter.setPen(QPen(QColor(219, 101, 150, 105), 1.15))
+        painter.drawPath(path)
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -223,6 +253,11 @@ class ChatWidget(QFrame):
             self._fade_button(1.0)
         self._reposition_scroll_button()
 
+    def _on_fade_button_finished(self):
+        eff = self._scroll_btn.graphicsEffect()
+        if eff and eff.opacity() < 0.05:
+            self._scroll_btn.hide()
+
     def _fade_button(self, target: float):
         anim = self._scroll_btn._opacity_anim
         anim.stop()
@@ -231,9 +266,11 @@ class ChatWidget(QFrame):
         anim.setEndValue(target)
         anim.start()
         if target == 0.0:
-            anim.finished.connect(
-                lambda: self._scroll_btn.hide() if self._scroll_btn.graphicsEffect().opacity() < 0.05 else None
-            )
+            try:
+                anim.finished.disconnect(self._on_fade_button_finished)
+            except TypeError:
+                pass
+            anim.finished.connect(self._on_fade_button_finished)
 
     def _reposition_scroll_button(self):
         margin = 12

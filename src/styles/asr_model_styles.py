@@ -23,8 +23,8 @@ QListWidget#ModelsList::item {
     border-radius: 4px;
     background: transparent;
 }
-QListWidget#ModelsList::item:hover { background: rgba(138, 43, 226, 0.08); }
-QListWidget#ModelsList::item:selected { background: rgba(138, 43, 226, 0.15); }
+QListWidget#ModelsList::item:hover { background: rgba({accent_rgb}, 0.08); }
+QListWidget#ModelsList::item:selected { background: rgba({accent_rgb}, 0.15); }
 
 QLineEdit#SearchBox { border-radius: 10px; }
 

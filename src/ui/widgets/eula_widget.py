@@ -3,6 +3,8 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLab
 from PyQt6.QtGui import QFont
 from core.events import get_event_bus, Events
 import sys
+from styles.theme import get_theme
+from utils import render_qss
 
 class EULAWidget(QWidget):
     accepted = pyqtSignal()
@@ -16,32 +18,32 @@ class EULAWidget(QWidget):
         self.setup_ui()
         
     def setup_ui(self):
-        self.setStyleSheet("""
+        self.setStyleSheet(render_qss("""
             #EULAWidget {
                 background-color: transparent;
             }
             #EULAContainer {
-                background-color: rgba(24,24,28,0.95);
-                border: 1px solid rgba(255,255,255,0.08);
+                background-color: rgba({settings_panel_rgb}, 0.95);
+                border: 1px solid {border_soft};
                 border-radius: 16px;
             }
             #EULATitle {
                 font-size: 18px;
                 font-weight: 700;
-                color: #f5f5f7;
+                color: {text};
                 padding: 6px 8px;
                 border-radius: 8px;
-                background-color: rgba(255,255,255,0.04);
+                background-color: {chip_bg};
             }
             #EULAText {
-                background-color: rgba(16,16,20,0.92);
-                color: #e6e6eb;
-                border: 1px solid rgba(255,255,255,0.06);
+                background-color: rgba({sandbox_bg_rgb}, 0.92);
+                color: {text};
+                border: 1px solid {outline};
                 border-radius: 12px;
                 padding: 12px;
                 font-size: 12px;
                 line-height: 1.55;
-                selection-background-color: #8a2be2;
+                selection-background-color: {accent};
                 selection-color: #ffffff;
             }
             QPushButton {
@@ -50,40 +52,40 @@ class EULAWidget(QWidget):
                 font-size: 14px;
                 font-weight: 600;
                 border-radius: 10px;
-                border: 1px solid rgba(255,255,255,0.08);
-                background-color: rgba(255,255,255,0.04);
-                color: #e6e6eb;
+                border: 1px solid {outline};
+                background-color: {chip_bg};
+                color: {text};
             }
             QPushButton:hover {
-                background-color: rgba(255,255,255,0.07);
+                background-color: {chip_hover};
             }
             QPushButton:pressed {
-                background-color: rgba(255,255,255,0.10);
+                background-color: {chip_pressed};
             }
             #AcceptButton {
-                background-color: #3da66e;
+                background-color: {success};
                 color: #ffffff;
                 border: 1px solid rgba(61,166,110,0.35);
             }
             #AcceptButton:hover {
-                background-color: #49b57b;
+                background-color: {success_hover};
             }
             #AcceptButton:pressed {
-                background-color: #349a69;
+                background-color: {success_pressed};
             }
             #RejectButton {
-                background-color: #d64545;
+                background-color: {danger};
                 color: #ffffff;
                 border: 1px solid rgba(214,69,69,0.35);
             }
             #RejectButton:hover {
-                background-color: #e25757;
+                background-color: {danger_hover};
             }
             #RejectButton:pressed {
-                background-color: #bf3838;
+                background-color: {danger_pressed};
             }
             QRadioButton {
-                color: #e6e6eb;
+                color: {text};
                 font-size: 12px;
                 padding: 5px 8px;
             }
@@ -92,19 +94,19 @@ class EULAWidget(QWidget):
                 height: 16px;
                 border-radius: 8px;
                 border: 1px solid rgba(255,255,255,0.18);
-                background-color: rgba(24,24,28,1);
+                background-color: rgba({sidebar_panel_rgb}, 1.0);
                 margin-right: 6px;
             }
             QRadioButton::indicator:checked {
-                background-color: #8a2be2;
-                border: 1px solid #a270ff;
+                background-color: {accent};
+                border: 1px solid {accent_alt};
             }
             QFrame#Separator {
-                background-color: rgba(255,255,255,0.08);
+                background-color: {border_soft};
                 max-height: 1px;
                 border-radius: 1px;
             }
-        """)
+        """, get_theme()))
         
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)

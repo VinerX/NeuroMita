@@ -50,6 +50,10 @@ FAST_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
     for d in _fast_dirs_raw.split(",") if d.strip()
 ]
 
+ALWAYS_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
+    (PROJECT_DIR / "assets" / "launcher_ui", OUTPUT_DIR / "assets" / "launcher_ui"),
+]
+
 # Файлы: поддержка абсолютных путей
 _copy_files_raw = env.get("BUILD_COPY_FILES", "extra/init.py,extra/Icon.png")
 FILES_TO_COPY: List[Tuple[Path, Path]] = [
@@ -162,6 +166,9 @@ if __name__ == "__main__":
     else:
         print("\nБыстрый режим — .pyz + requirements.txt + быстрые папки...")
         copy_entries(FAST_DIRS_TO_COPY)
+
+    print("\nКопирую обязательные launcher assets...")
+    copy_entries(ALWAYS_DIRS_TO_COPY)
 
     if ROOT_SCRIPTS:
         print("\nКопирую скрипты запуска...")

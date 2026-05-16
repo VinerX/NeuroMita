@@ -865,8 +865,7 @@ class VoiceModelSettingsView(QWidget):
         self.refresh_dependencies_panel()
 
         # Pass GPU info and RTX checker to detail
-        vendor = self._cached_dependencies_status.get('detected_gpu_vendor')
-        self.detail.set_gpu_info(vendor=vendor, name=None, cuda_devices=[])
+        self._apply_gpu_status()
         self.detail.set_rtx_check_func(lambda: bool(self._check_gpu_rtx30_40()))
 
     # ---------- EventBus helpers ----------
@@ -881,6 +880,14 @@ class VoiceModelSettingsView(QWidget):
     def _get_dependencies_status(self):
         results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_DEPENDENCIES_STATUS)
         return results[0] if results else {}
+
+    def _apply_gpu_status(self):
+        st = self._cached_dependencies_status or {}
+        self.detail.set_gpu_info(
+            vendor=st.get('detected_gpu_vendor'),
+            name=st.get('gpu_name'),
+            cuda_devices=st.get('cuda_devices') or [],
+        )
 
     def _get_default_description(self):
         results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_DEFAULT_DESCRIPTION)
@@ -911,7 +918,7 @@ class VoiceModelSettingsView(QWidget):
                 sub.setSpacing(6)
                 lab = QLabel(text)
                 val = QLabel(_("Найден", "Found") if ok else _("Не найден", "Not Found"))
-                val.setStyleSheet(f"color: {'lightgreen' if ok else '#FF6A6A'};")
+                val.setStyleSheet(f"color: {'#7fe38c' if ok else '#FF6A6A'};")
                 sub.addWidget(lab)
                 sub.addWidget(val)
                 row.addLayout(sub)
@@ -1089,7 +1096,7 @@ class VoiceModelSettingsView(QWidget):
 
     def _on_refresh_settings(self):
         self._cached_dependencies_status = self._get_dependencies_status()
-        self.detail.set_gpu_info(vendor=self._cached_dependencies_status.get('detected_gpu_vendor'))
+        self._apply_gpu_status()
         # Пересобрать вкладку "Зависимости" с актуальными данными
         self.refresh_dependencies_panel()
         self._on_selection_changed()

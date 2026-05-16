@@ -6,13 +6,14 @@ from typing import Any, Dict, List, Optional
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
-    QComboBox, QHBoxLayout, QLabel, QLineEdit,
+    QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QSizePolicy, QTextEdit,
     QToolButton, QVBoxLayout, QWidget,
 )
 
 from core.events import get_event_bus, Events
 from managers.settings_manager import InnerCollapsibleSection, SettingsManager
+from ui.gui_templates import SettingsBodyWidget
 from utils import getTranslationVariant as _
 
 
@@ -23,6 +24,10 @@ def build_embed_provider_inner_section(gui) -> InnerCollapsibleSection:
     ctrl = _EmbedProviderWidget(gui)
     section.add_widget(ctrl)
     return section
+
+
+def build_embed_provider_widget(gui) -> QWidget:
+    return _EmbedProviderWidget(gui)
 
 
 class _EmbedProviderWidget(QWidget):
@@ -56,6 +61,8 @@ class _EmbedProviderWidget(QWidget):
         preset_row.addWidget(QLabel(_("Пресет:", "Preset:")))
         self._preset_combo = QComboBox()
         self._preset_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._preset_combo.setMinimumContentsLength(8)
+        self._preset_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self._preset_combo.currentIndexChanged.connect(self._on_preset_combo_changed)
         preset_row.addWidget(self._preset_combo, 1)
         self._add_btn = QToolButton()
@@ -90,6 +97,8 @@ class _EmbedProviderWidget(QWidget):
         type_row.addWidget(QLabel(_("Тип:", "Type:")))
         self._provider_combo = QComboBox()
         self._provider_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._provider_combo.setMinimumContentsLength(8)
+        self._provider_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         for val, label in [
             ("local",        _("Local (HF / путь)", "Local (HF / path)")),
             ("openai_compat", _("OpenAI-compatible API", "OpenAI-compatible API")),
@@ -106,14 +115,25 @@ class _EmbedProviderWidget(QWidget):
         self._model_label = QLabel(_("Модель:", "Model:"))
         model_row.addWidget(self._model_label)
         self._model_combo = QComboBox()
-        self._model_combo.setEditable(True)
         self._model_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._model_combo.lineEdit().textChanged.connect(self._mark_dirty)
+        self._model_combo.setMinimumContentsLength(8)
+        self._model_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self._model_combo.currentTextChanged.connect(self._mark_dirty)
         model_row.addWidget(self._model_combo, 1)
         root.addLayout(model_row)
 
+        self._manual_path_check = QCheckBox(_("Ручное указание пути", "Manual path"))
+        self._manual_path_check.setToolTip(_(
+            "Выключено: выберите стандартную HuggingFace-модель, она хранится в папке checkpoints. "
+            "Включено: поле модели становится ручным HF id или полным путем к папке модели.",
+            "Off: choose a standard HuggingFace model stored under checkpoints. "
+            "On: the model field becomes a manual HF id or full model directory path.",
+        ))
+        self._manual_path_check.toggled.connect(self._on_manual_path_toggled)
+        root.addWidget(self._manual_path_check)
+
         # Row: URL (API only)
-        self._url_widget = QWidget()
+        self._url_widget = SettingsBodyWidget()
         url_row = QHBoxLayout(self._url_widget)
         url_row.setContentsMargins(0, 0, 0, 0)
         url_row.setSpacing(4)
@@ -125,7 +145,7 @@ class _EmbedProviderWidget(QWidget):
         root.addWidget(self._url_widget)
 
         # Row: API key (API only)
-        self._key_widget = QWidget()
+        self._key_widget = SettingsBodyWidget()
         key_row = QHBoxLayout(self._key_widget)
         key_row.setContentsMargins(0, 0, 0, 0)
         key_row.setSpacing(4)
@@ -148,7 +168,7 @@ class _EmbedProviderWidget(QWidget):
         root.addWidget(self._key_widget)
 
         # Reserve keys (API only)
-        self._reserve_widget = QWidget()
+        self._reserve_widget = SettingsBodyWidget()
         rv = QVBoxLayout(self._reserve_widget)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(2)
@@ -160,7 +180,7 @@ class _EmbedProviderWidget(QWidget):
         root.addWidget(self._reserve_widget)
 
         # HF token + download (local only)
-        self._hf_widget = QWidget()
+        self._hf_widget = SettingsBodyWidget()
         hf_row = QHBoxLayout(self._hf_widget)
         hf_row.setContentsMargins(0, 0, 0, 0)
         hf_row.setSpacing(4)
@@ -196,22 +216,22 @@ class _EmbedProviderWidget(QWidget):
 
         tune_row1 = QHBoxLayout()
         tune_row1.setSpacing(4)
-        tune_row1.addWidget(QLabel(_("Размер batch:", "Batch size:")))
+        tune_row1.addWidget(QLabel(_("Batch:", "Batch:")))
         self._batch_edit = QLineEdit()
         self._batch_edit.setPlaceholderText("16")
-        self._batch_edit.setMaximumWidth(90)
+        self._batch_edit.setMaximumWidth(70)
         self._batch_edit.textChanged.connect(self._mark_dirty)
         tune_row1.addWidget(self._batch_edit)
-        tune_row1.addWidget(QLabel(_("Задержка, сек:", "Delay, sec:")))
+        tune_row1.addWidget(QLabel(_("Задержка:", "Delay:")))
         self._delay_edit = QLineEdit()
         self._delay_edit.setPlaceholderText("0.0")
-        self._delay_edit.setMaximumWidth(90)
+        self._delay_edit.setMaximumWidth(70)
         self._delay_edit.textChanged.connect(self._mark_dirty)
         tune_row1.addWidget(self._delay_edit)
-        tune_row1.addWidget(QLabel(_("Таймаут, сек:", "Timeout, sec:")))
+        tune_row1.addWidget(QLabel(_("Таймаут:", "Timeout:")))
         self._timeout_edit = QLineEdit()
         self._timeout_edit.setPlaceholderText("60")
-        self._timeout_edit.setMaximumWidth(90)
+        self._timeout_edit.setMaximumWidth(70)
         self._timeout_edit.textChanged.connect(self._mark_dirty)
         tune_row1.addWidget(self._timeout_edit)
         tune_row1.addStretch()
@@ -222,13 +242,13 @@ class _EmbedProviderWidget(QWidget):
         tune_row2.addWidget(QLabel(_("Повторы:", "Retries:")))
         self._retries_edit = QLineEdit()
         self._retries_edit.setPlaceholderText("2")
-        self._retries_edit.setMaximumWidth(90)
+        self._retries_edit.setMaximumWidth(70)
         self._retries_edit.textChanged.connect(self._mark_dirty)
         tune_row2.addWidget(self._retries_edit)
-        tune_row2.addWidget(QLabel(_("Пауза повтора, сек:", "Retry backoff, sec:")))
+        tune_row2.addWidget(QLabel(_("Пауза:", "Backoff:")))
         self._backoff_edit = QLineEdit()
         self._backoff_edit.setPlaceholderText("0.5")
-        self._backoff_edit.setMaximumWidth(90)
+        self._backoff_edit.setMaximumWidth(70)
         self._backoff_edit.textChanged.connect(self._mark_dirty)
         tune_row2.addWidget(self._backoff_edit)
         tune_row2.addStretch()
@@ -271,9 +291,13 @@ class _EmbedProviderWidget(QWidget):
         if not meta:
             from presets.embedding_provider_presets import list_builtin_presets
             for bp in list_builtin_presets():
+                if bp.get("id") == "custom_local":
+                    continue
                 self._preset_combo.addItem(bp["name"], userData=bp["id"])
         else:
             for b in meta.get("builtin", []):
+                if b.get("id") == "custom_local":
+                    continue
                 self._preset_combo.addItem(b["name"], userData=b["id"])
             for c in meta.get("custom", []):
                 self._preset_combo.addItem("✎ " + c["name"], userData=c["id"])
@@ -318,17 +342,35 @@ class _EmbedProviderWidget(QWidget):
 
             model = cfg.get("model") or ""
             known = list(cfg.get("known_models") or [])
+            if is_local:
+                try:
+                    from handlers.embedding_presets import list_preset_names
+                    known = [x for x in list_preset_names() if x != "Custom"]
+                except Exception:
+                    pass
+            manual_path = bool((cfg.get("extra") or {}).get("manual_path"))
+            if is_local and model and model not in known:
+                manual_path = True
+            self._manual_path_check.blockSignals(True)
+            self._manual_path_check.setChecked(manual_path)
+            self._manual_path_check.blockSignals(False)
             self._model_combo.blockSignals(True)
+            self._model_combo.setEditable(bool(not is_local or manual_path))
             self._model_combo.clear()
-            self._model_combo.addItems(known)
+            if is_local and manual_path:
+                self._model_combo.addItem(model)
+            else:
+                self._model_combo.addItems(known)
             if model and model not in known:
                 self._model_combo.insertItem(0, model)
             mi = self._model_combo.findText(model) if model else -1
             self._model_combo.setCurrentIndex(mi if mi >= 0 else 0)
+            if self._model_combo.isEditable() and self._model_combo.lineEdit():
+                self._model_combo.lineEdit().textChanged.connect(self._mark_dirty)
             self._model_combo.blockSignals(False)
 
             self._model_label.setText(
-                _("Модель / путь:", "Model / path:") if is_local else _("Модель:", "Model:")
+                _("Модель / путь:", "Model / path:") if is_local and manual_path else _("Модель:", "Model:")
             )
 
             self._url_edit.setText(cfg.get("api_url") or "")
@@ -401,6 +443,8 @@ class _EmbedProviderWidget(QWidget):
         self._key_widget.setVisible(not is_local)
         self._reserve_widget.setVisible(not is_local)
         self._hf_widget.setVisible(is_local)
+        self._manual_path_check.setVisible(is_local)
+        self._download_btn.setEnabled(is_local and not self._manual_path_check.isChecked())
 
     def _on_provider_type_changed(self):
         if self._is_loading:
@@ -410,9 +454,40 @@ class _EmbedProviderWidget(QWidget):
         self._refresh_download_btn()
         self._mark_dirty()
 
+    def _on_manual_path_toggled(self, checked: bool):
+        if self._is_loading:
+            return
+        current = self._model_combo.currentText().strip()
+        self._model_combo.blockSignals(True)
+        self._model_combo.setEditable(checked)
+        self._model_combo.clear()
+        if checked:
+            self._model_combo.addItem(current)
+            self._model_label.setText(_("Модель / путь:", "Model / path:"))
+        else:
+            try:
+                from handlers.embedding_presets import list_preset_names
+                names = [x for x in list_preset_names() if x != "Custom"]
+            except Exception:
+                names = []
+            self._model_combo.addItems(names)
+            if current in names:
+                self._model_combo.setCurrentText(current)
+            self._model_label.setText(_("Модель:", "Model:"))
+        if self._model_combo.isEditable() and self._model_combo.lineEdit():
+            self._model_combo.lineEdit().textChanged.connect(self._mark_dirty)
+        self._model_combo.blockSignals(False)
+        self._download_btn.setEnabled(not checked)
+        self._mark_dirty()
+
     def _mark_dirty(self):
         if not self._is_loading:
             self._save_btn.setStyleSheet("font-weight: bold;")
+            self._status_label.setStyleSheet("color: #d6922b;")
+            self._status_label.setText(_(
+                "Есть несохраненные изменения. Нажмите «Сохранить», иначе будет использоваться старый пресет.",
+                "Unsaved changes. Press Save, otherwise the previous preset will be used.",
+            ))
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -453,6 +528,8 @@ class _EmbedProviderWidget(QWidget):
                 extra["retry_backoff_sec"] = max(0.0, float(self._backoff_edit.text().strip()))
         except Exception:
             pass
+        if provider == "local":
+            extra["manual_path"] = bool(self._manual_path_check.isChecked())
 
         data = {
             "id": pid,
@@ -563,7 +640,7 @@ class _EmbedProviderWidget(QWidget):
         self._test_btn.setEnabled(True)
         if data.get("success"):
             self._status_label.setText("✓ " + (data.get("message") or "OK"))
-            self._status_label.setStyleSheet("color: green;")
+            self._status_label.setStyleSheet("color: #7fe38c;")
         else:
             self._status_label.setText("✗ " + (data.get("message") or "Error"))
             self._status_label.setStyleSheet("color: red;")
@@ -575,6 +652,7 @@ class _EmbedProviderWidget(QWidget):
 
     def _on_download_local_model(self):
         try:
+            self._on_save()
             from ui.settings.rag_memory_settings import _download_embed_model
             _download_embed_model(self._gui)
         except Exception as e:
@@ -583,11 +661,20 @@ class _EmbedProviderWidget(QWidget):
         self._refresh_download_btn()
 
     def _refresh_download_btn(self):
+        is_local = (self._provider_combo.currentData() == "local")
+        manual = bool(getattr(self, "_manual_path_check", None) and self._manual_path_check.isChecked())
+        self._download_btn.setVisible(is_local and not manual)
+        self._download_btn.setEnabled(is_local and not manual)
+        if not is_local or manual:
+            return
         try:
             from ui.settings.rag_memory_settings import _is_embed_model_downloaded
-            self._download_btn.setVisible(not _is_embed_model_downloaded())
+            if _is_embed_model_downloaded():
+                self._download_btn.setText(_("Скачать заново", "Download again"))
+            else:
+                self._download_btn.setText(_("Скачать модель", "Download model"))
         except Exception:
-            self._download_btn.setVisible(False)
+            self._download_btn.setText(_("Скачать модель", "Download model"))
 
     def _get_current_display_name(self) -> str:
         return self._preset_combo.currentText().lstrip("✎ ").strip()

@@ -1,10 +1,15 @@
 ### main.py
+import faulthandler
+faulthandler.enable()
 
 import pydantic.fields
 import uvicorn
 import os
 import sys
 import re
+
+os.environ["QT_API"] = "pyqt6" 
+
 from main_logger import logger
 from _version import __version__
 def create_startup_banner(title: str, version: str) -> str:
@@ -126,8 +131,38 @@ logger.info(libs_dir)
 
 # Check for updates (before heavy imports)
 try:
-    from updater import check_for_updates as _check_for_updates
-    _check_for_updates(base_dir=base_dir, logger=logger)
+    from updater import check_for_updates as _check_for_updates, check_for_unity_updates as _check_for_unity_updates
+    import json as _json
+    _upd_settings: dict = {}
+    try:
+        _settings_path = os.path.join(base_dir, "Settings", "settings.json")
+        with open(_settings_path, encoding="utf-8") as _f:
+            _upd_settings = _json.load(_f)
+    except Exception:
+        pass
+    _py_startup_update = bool(
+        _upd_settings.get("AUTO_UPDATE", _upd_settings.get("AUTO_UPDATE_CHECK", False))
+    )
+    _unity_startup_update = bool(_upd_settings.get("AUTO_UPDATE_UNITY", False))
+
+    if _py_startup_update:
+        _check_for_updates(
+            base_dir=base_dir,
+            logger=logger,
+            channel=_upd_settings.get("UPDATE_CHANNEL", "stable"),
+            tester_code=_upd_settings.get("TESTER_CODE") or None,
+            auto_update=True,
+        )
+
+    if _unity_startup_update:
+        _check_for_unity_updates(
+            base_dir=base_dir,
+            logger=logger,
+            unity_dir=_upd_settings.get("UNITY_INSTALL_DIR") or None,
+            channel=_upd_settings.get("UPDATE_CHANNEL", "stable"),
+            tester_code=_upd_settings.get("TESTER_CODE") or None,
+            auto_update=True,
+        )
 except Exception as _upd_err:
     logger.warning(f"Update check failed: {_upd_err}")
 
@@ -335,7 +370,7 @@ ensure_project_root()
 
 import threading
 
-from ui.windows.main_view import ChatGUI
+from ui.windows.main_window import MainWindow
 from controllers.main_controller import MainController
 from core.events import get_event_bus
 from main_logger import logger
@@ -366,9 +401,9 @@ if __name__ == "__main__":
         except Exception as _ft_init_err:
             logger.warning(f"FineTuneCollector не инициализирован: {_ft_init_err}")
     
-        logger.info("Создаю ChatGUI...")
-        main_win = ChatGUI(controller.settings)  # Передаем controller  settings
-        logger.info("ChatGUI создан")
+        logger.info("Создаю MainWindow...")
+        main_win = MainWindow(controller.settings)
+        logger.info("MainWindow создан")
         
         # Обновляем ссылку на реальный view в контроллере
         controller.update_view(main_win)

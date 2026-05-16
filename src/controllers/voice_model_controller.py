@@ -55,14 +55,10 @@ class VoiceModelController:
             "Hover over an interface element to get a description."
         )
 
-        self.detected_gpu_vendor = check_gpu_provider()
-        self.detected_cuda_devices = get_cuda_devices()
+        self.detected_gpu_vendor = "CPU"
+        self.detected_cuda_devices = []
         self.gpu_name = None
-        if self.detected_cuda_devices:
-            try:
-                self.gpu_name = get_gpu_name_by_id(self.detected_cuda_devices[0])
-            except Exception:
-                self.gpu_name = None
+        self._refresh_gpu_runtime_info()
 
         self.installed_models: set[str] = set()
         self.local_voice_models: list[dict] = []
@@ -125,6 +121,102 @@ class VoiceModelController:
             "platform": platform.system(),
         }
 
+    def _refresh_gpu_runtime_info(self) -> tuple[bool, bool]:
+        had_cuda = bool(getattr(self, "detected_cuda_devices", None))
+
+        try:
+            self.detected_gpu_vendor = check_gpu_provider()
+        except Exception:
+            self.detected_gpu_vendor = "CPU"
+
+        try:
+            self.detected_cuda_devices = list(get_cuda_devices() or [])
+        except Exception:
+            self.detected_cuda_devices = []
+
+        self.gpu_name = None
+        if self.detected_cuda_devices:
+            try:
+                self.gpu_name = get_gpu_name_by_id(self.detected_cuda_devices[0])
+            except Exception:
+                self.gpu_name = None
+
+        return had_cuda, bool(self.detected_cuda_devices)
+
+    def _auto_promote_saved_device_settings_to_cuda(self) -> None:
+        if self.detected_gpu_vendor != "NVIDIA" or not self.detected_cuda_devices:
+            return
+        if not os.path.exists(self.settings_values_file):
+            return
+
+        try:
+            with open(self.settings_values_file, "r", encoding="utf-8") as f:
+                saved_values = json.load(f)
+        except Exception:
+            return
+
+        if not isinstance(saved_values, dict) or not saved_values:
+            return
+
+        try:
+            models = self.finalize_model_settings(
+                self.get_default_model_structure(),
+                self.detected_gpu_vendor,
+                self.detected_cuda_devices,
+            )
+        except Exception:
+            return
+
+        first_cuda = str(self.detected_cuda_devices[0])
+        changed = False
+
+        for model in models or []:
+            model_id = str(model.get("id") or "").strip()
+            if not model_id:
+                continue
+
+            model_saved = saved_values.get(model_id)
+            if not isinstance(model_saved, dict):
+                continue
+
+            for setting in model.get("settings", []) or []:
+                if not isinstance(setting, dict):
+                    continue
+
+                setting_key = str(setting.get("key") or "").strip()
+                if "device" not in setting_key.lower():
+                    continue
+
+                options = setting.get("options") if isinstance(setting.get("options"), dict) else {}
+                values = [str(v) for v in (options.get("values") or []) if str(v).strip()]
+                if not any(v.startswith("cuda:") for v in values):
+                    continue
+
+                current_value = str(model_saved.get(setting_key) or "").strip().lower()
+                valid_values_lower = {str(v).strip().lower() for v in values}
+                if current_value in ("", "cpu") or current_value not in valid_values_lower:
+                    model_saved[setting_key] = first_cuda
+                    changed = True
+
+        if not changed:
+            return
+
+        tmp_path = self.settings_values_file + ".tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(saved_values, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, self.settings_values_file)
+            logger.info(
+                f"Voice model settings auto-switched to CUDA after runtime refresh: {self.detected_cuda_devices}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to auto-switch voice model device settings to CUDA: {e}")
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+
     def _is_voice_task(self, data: dict) -> bool:
         if not isinstance(data, dict):
             return False
@@ -172,6 +264,8 @@ class VoiceModelController:
         status = status.copy() if isinstance(status, dict) else {}
         status["show_triton_checks"] = (platform.system() == "Windows")
         status["detected_gpu_vendor"] = self.detected_gpu_vendor
+        status["cuda_devices"] = list(self.detected_cuda_devices or [])
+        status["gpu_name"] = self.gpu_name
 
         with self._lock:
             self._dependencies_status_cache = status
@@ -198,6 +292,9 @@ class VoiceModelController:
         self.open_doc(event.data)
 
     def reload(self):
+        had_cuda, has_cuda = self._refresh_gpu_runtime_info()
+        if (not had_cuda) and has_cuda:
+            self._auto_promote_saved_device_settings_to_cuda()
         self.load_settings()
         self.refresh_installed_models()
         with self._lock:
@@ -446,13 +543,14 @@ class VoiceModelController:
             return
 
         op = self._task_op(data)
-        self.refresh_installed_models()
+        self.reload()
 
         if op == "uninstall":
             self.event_bus.emit(Events.VoiceModel.MODEL_UNINSTALL_FINISHED, {"model_id": str(mid), "success": True})
         else:
             self.event_bus.emit(Events.VoiceModel.MODEL_INSTALL_FINISHED, {"model_id": str(mid), "success": True})
 
+        self.event_bus.emit(Events.VoiceModel.REFRESH_SETTINGS_DISPLAY)
         self.event_bus.emit(Events.VoiceModel.REFRESH_MODEL_PANELS)
 
     def _on_install_task_failed(self, event: Event):
@@ -464,7 +562,7 @@ class VoiceModelController:
             return
 
         op = self._task_op(data)
-        self.refresh_installed_models()
+        self.reload()
         err = str(data.get("error", "") or "")
 
         if op == "uninstall":
@@ -472,6 +570,7 @@ class VoiceModelController:
         else:
             self.event_bus.emit(Events.VoiceModel.MODEL_INSTALL_FINISHED, {"model_id": str(mid), "success": False, "error": err})
 
+        self.event_bus.emit(Events.VoiceModel.REFRESH_SETTINGS_DISPLAY)
         self.event_bus.emit(Events.VoiceModel.REFRESH_MODEL_PANELS)
 
     def finalize_model_settings(self, models_list, detected_vendor, cuda_devices):

@@ -236,11 +236,11 @@ QListWidget::item {
 }
 
 QListWidget::item:hover {
-    background: rgba(138, 43, 226, 0.08);
+    background: rgba({accent_rgb}, 0.08);
 }
 
 QListWidget::item:selected {
-    background: rgba(138, 43, 226, 0.15);
+    background: rgba({accent_rgb}, 0.15);
 }
 
 """

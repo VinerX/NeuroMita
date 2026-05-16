@@ -1081,6 +1081,9 @@ class ApiPresetsController:
         return self.current_preset_id
 
     def _on_set_current_preset_id(self, event: Event):
-        self.current_preset_id = (event.data or {}).get("id")
+        preset_id = (event.data or {}).get("id")
+        self.current_preset_id = preset_id
+        if preset_id is not None:
+            self.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": "LAST_API_PRESET_ID", "value": int(preset_id)})
         return True
     

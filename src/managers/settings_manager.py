@@ -5,12 +5,15 @@ from PyQt6.QtCore import Qt
 
 from main_logger import logger
 
-import json, os, threading, queue, time, atexit
+import json, os, sys, threading, queue, time, atexit
 
 class SettingsManager:
     instance = None
     SAVE_DEBOUNCE_SEC = 0.5          # сколько «выжидать», собирая изменения
     _SENTINEL = object()             # сигнал завершения потока
+    _fallback_settings: dict = {}
+    _fallback_path: str | None = None
+    _fallback_mtime: float | None = None
 
     def __init__(self, config_path: str):
         self.config_path = config_path
@@ -29,7 +32,10 @@ class SettingsManager:
     @staticmethod
     def get(key, default=None):
         inst = SettingsManager.instance
-        return inst.settings.get(key, default) if inst else default
+        if inst:
+            return inst.settings.get(key, default)
+        fallback = SettingsManager._load_fallback_settings()
+        return fallback.get(key, default)
 
     @staticmethod
     def set(key, value):
@@ -39,6 +45,39 @@ class SettingsManager:
             return
         inst.settings[key] = value
         inst._schedule_save()
+
+    @staticmethod
+    def _fallback_config_path() -> str:
+        base_dir = os.environ.get("NEUROMITA_BASE_DIR")
+        if not base_dir:
+            base_dir = os.path.dirname(os.path.abspath(sys.executable))
+        return os.path.join(base_dir, "Settings", "settings.json")
+
+    @staticmethod
+    def _load_fallback_settings() -> dict:
+        path = SettingsManager._fallback_config_path()
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            SettingsManager._fallback_settings = {}
+            SettingsManager._fallback_path = path
+            SettingsManager._fallback_mtime = None
+            return SettingsManager._fallback_settings
+
+        if (
+            SettingsManager._fallback_path == path
+            and SettingsManager._fallback_mtime == mtime
+        ):
+            return SettingsManager._fallback_settings
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                SettingsManager._fallback_settings = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            SettingsManager._fallback_settings = {}
+        SettingsManager._fallback_path = path
+        SettingsManager._fallback_mtime = mtime
+        return SettingsManager._fallback_settings
 
     # ---------- загрузка / сохранение ----------
 
@@ -138,7 +177,9 @@ class CollapsibleSection(QWidget):
     """Внешняя секция"""
     def __init__(self, title, parent=None, *, icon_name=None):
         super().__init__(parent)
-        self.is_collapsed = False
+        self.setObjectName('CollapsibleSection')
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.is_collapsed = True
 
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
@@ -152,6 +193,7 @@ class CollapsibleSection(QWidget):
         h.setSpacing(3)
 
         self.arrow_label = QLabel(self.header)
+        self.arrow_label.setObjectName('CollapsibleArrow')
         self.arrow_pix_right = _angle_icon('right', 10)
         self.arrow_pix_down  = _angle_icon('down',  10)
         self.arrow_label.setPixmap(self.arrow_pix_right)
@@ -168,6 +210,7 @@ class CollapsibleSection(QWidget):
             h.addWidget(self._make_icon(icon_name))
             h.addSpacing(8)
 
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
         self.header.mousePressEvent = self.toggle
 
         # Content
@@ -219,8 +262,7 @@ class InnerCollapsibleSection(CollapsibleSection):
         self.arrow_pix_right = _angle_icon('right', 8)
         self.arrow_pix_down  = _angle_icon('down',  8)
         self.arrow_label.setPixmap(self.arrow_pix_right)
-        self.header.layout().setSpacing(3)
-        self.arrow_label.setFixedWidth(9) 
+        self.header.layout().setSpacing(4)
+        self.arrow_label.setFixedWidth(12) 
         self.title_label.setStyleSheet('font-size:9pt;')
-        # больший отступ строк внутри подп-секции
-        self.content_layout.setContentsMargins(24, 5, 12, 5)
+        self.content_layout.setContentsMargins(28, 5, 12, 5)

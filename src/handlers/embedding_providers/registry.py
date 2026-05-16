@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from .base import BaseEmbeddingProvider, EmbeddingRequest
 from .local_provider import LocalEmbeddingProvider
@@ -24,8 +24,7 @@ def get_provider_for(cfg: Dict[str, Any]) -> BaseEmbeddingProvider:
     name = str(cfg.get("provider_name") or "local").strip()
     provider = _PROVIDERS.get(name)
     if provider is None:
-        # unknown provider → fall back to local
-        provider = _PROVIDERS["local"]
+        raise EmbeddingProviderError(f"Unknown embedding provider: {name}")
     return provider
 
 
