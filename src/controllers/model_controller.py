@@ -895,6 +895,12 @@ class ModelController:
                 "These frames are from the character's own eyes (in-game camera). "
                 "Describe the scene from their point of view."
             )
+        elif event_type == "easel_drawing":
+            _image_context_hint = (
+                "This image shows the player's drawing on an easel/canvas in-game. "
+                "Treat it as artwork created by the player, not as a real-life photo or selfie. "
+                "Describe the drawing itself and any depicted characters or objects."
+            )
 
         if image_data and bool(self.settings.get("IMAGE_DESCRIPTION_ENABLED", False)):
             _detail = str(self.settings.get("IMAGE_DESCRIPTION_DETAIL", "normal") or "normal")
@@ -1074,6 +1080,7 @@ class ModelController:
                     tools_on=_tools_on,
                     enabled_tools=_enabled_tools,
                     tool_depth=0,
+                    image_descriptions=image_descriptions,
                     structured_model_cls=structured_model_cls,
                 )
 
@@ -1305,6 +1312,7 @@ class ModelController:
         tools_on: bool = False,
         enabled_tools: list = None,
         tool_depth: int = 0,
+        image_descriptions: dict[str, str] | None = None,
         structured_model_cls=None,
     ) -> dict | None:
         try:
@@ -1420,10 +1428,12 @@ class ModelController:
             )
 
         # Extract image_description from structured response (inline description for structured mode)
-        _structured_image_descriptions: dict[str, str] | None = None
+        _structured_image_descriptions: dict[str, str] | None = dict(image_descriptions or {}) or None
         if getattr(structured, "image_description", None):
             _detail = str(self.settings.get("IMAGE_DESCRIPTION_DETAIL", "normal") or "normal")
-            _structured_image_descriptions = {_detail: structured.image_description.strip()}
+            if _structured_image_descriptions is None:
+                _structured_image_descriptions = {}
+            _structured_image_descriptions[_detail] = structured.image_description.strip()
             logger.debug(f"[ModelController][{char_id}] Structured image_description captured ({_detail}).")
 
         assistant_message_id = ""
@@ -1708,6 +1718,7 @@ class ModelController:
             tools_on=True,
             enabled_tools=enabled_tools,
             tool_depth=tool_depth + 1,
+            image_descriptions=image_descriptions,
             structured_model_cls=structured_model_cls,
         )
 

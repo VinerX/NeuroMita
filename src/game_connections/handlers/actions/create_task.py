@@ -413,7 +413,10 @@ class CreateTaskAction:
         if event_type == "easel_drawing":
             policy = resolve_policy(model_event_type="chat")
             raw_msg = str(data.get("message", "")).strip()
-            system_input = raw_msg or "[Player shows you their drawing]"
+            easel_label = "[Easel drawing] The attached image is the player's drawing shown on the in-game easel/canvas."
+            system_input = raw_msg or easel_label
+            if system_input != easel_label:
+                system_input = f"{easel_label}\n{system_input}"
             await _dispatch_task(
                 **_shared,
                 task_type="chat",
