@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import os
 import time
 from typing import Any, Callable, Optional
 
@@ -10,6 +11,7 @@ from core.events import Events
 from utils import save_combined_messages
 
 from managers.api_preset_resolver import ApiPresetResolver, PresetSettings
+from handlers.llm_providers.base import LLMResponse
 
 
 class LLMRequestRunner:
@@ -43,7 +45,7 @@ class LLMRequestRunner:
         max_attempts: int,
         retry_delay: float,
         request_timeout: float,
-    ) -> Optional[str]:
+    ) -> Optional[LLMResponse]:
         if messages is None:
             messages = []
 
@@ -86,13 +88,13 @@ class LLMRequestRunner:
                 continue
 
             try:
-                response_text = self._call_with_timeout(
+                response = self._call_with_timeout(
                     pm.generate,
                     args=(req,),
                     timeout=float(request_timeout)
                 )
-                if response_text:
-                    return response_text
+                if response and response.text:
+                    return response
             except concurrent.futures.TimeoutError:
                 logger.error(f"Attempt {attempt} timed out after {request_timeout}s.")
             except Exception as e:

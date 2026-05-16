@@ -20,7 +20,9 @@ from managers.game_state_manager import GameState
 from managers.context_counter import ContextCounter
 from managers.conversation_event_writer import ConversationEventWriter
 from managers.history_ui_projector import HistoryUiProjector
+from managers.model_pricing_manager import ModelPricingManager
 from core.request_policy import RequestPolicy, resolve_policy
+from handlers.llm_providers.base import LLMUsage
 from utils.structured_response_parser import (
     parse_structured_response,
     structured_response_to_result_dict,
@@ -105,7 +107,9 @@ class ModelController:
         self.model.tool_manager.register(ReminderTool())
 
         self.context_counter = ContextCounter(encoding_model="gpt-4o-mini")
+        self.model_pricing_manager = ModelPricingManager()
         self._base_prompt_cache: dict[tuple[str, str], list[dict]] = {}
+        self._last_token_stats: dict[str, Any] = {}
 
         self.game_state = GameState()
         self._temporary_system_infos: list[dict] = []
@@ -191,6 +195,7 @@ class ModelController:
 
         self.event_bus.subscribe(Events.Model.GET_CURRENT_CONTEXT_TOKENS, self._on_get_current_context_tokens, weak=False)
         self.event_bus.subscribe(Events.Model.CALCULATE_COST, self._on_calculate_cost, weak=False)
+        self.event_bus.subscribe(Events.Model.GET_TOKEN_STATS, self._on_get_token_stats, weak=False)
 
         self.event_bus.subscribe(Events.Model.RELOAD_PROMPTS_ASYNC, self._on_reload_prompts_async, weak=False)
 
@@ -213,6 +218,7 @@ class ModelController:
 
     def _on_character_current_changed(self, event: Event):
         self._refresh_chat_model_character_refs()
+        self._last_token_stats = {}
 
     # ---------------------------------------------------------------------
     # Game state / temp system infos
@@ -635,15 +641,38 @@ class ModelController:
 
         self._base_prompt_cache[(character_id, event_type)] = safe
 
-    def _on_get_current_context_tokens(self, event: Event):
+    def _resolve_chat_preset_id(self, character_id: str, character_name: str) -> Optional[int]:
+        def _is_current_label(label: str | None) -> bool:
+            s = str(label or "").strip()
+            return s in ("", "Current", "Текущий", _("Текущий", "Current"))
+
+        def _resolve_label_to_preset_id(label: str | None) -> Optional[int]:
+            if label is None or _is_current_label(label):
+                return None
+            s = str(label).strip()
+            try:
+                return int(s)
+            except ValueError:
+                pass
+            try:
+                return self.preset_resolver.resolve_preset_id_by_name(s)
+            except Exception:
+                return None
+
+        label = self.settings.get(f"CHAR_PROVIDER_{character_id}", None)
+        if label is None and character_name:
+            label = self.settings.get(f"CHAR_PROVIDER_{character_name}", None)
+        return _resolve_label_to_preset_id(label)
+
+    def _build_current_context_messages(self) -> tuple[str, list[dict], int]:
         cid = self._get_current_character_id()
         if not cid:
-            return 0
+            return "", [], 0
 
         event_type = "chat"
         base = self._base_prompt_cache.get((cid, event_type))
         if not base:
-            return 0
+            return cid, [], 0
 
         user_input_res = self.event_bus.emit_and_wait(Events.Speech.GET_USER_INPUT, timeout=1.0)
         user_text = user_input_res[0] if user_input_res else ""
@@ -659,17 +688,119 @@ class ModelController:
             messages.extend([x for x in extra_infos if isinstance(x, dict)])
 
         messages = self.context_counter.with_user_text(messages, str(user_text or ""))
-        return self.context_counter.count_tokens(messages)
+        return cid, messages, self.context_counter.count_tokens(messages)
+
+    def _build_token_stats(self) -> dict[str, Any]:
+        cid, messages, context_tokens = self._build_current_context_messages()
+        cfg = getattr(self.model, "cfg", None)
+        char = self._get_character_ref(cid) if cid else None
+        char_name = str(getattr(char, "name", "") or "")
+        preset_id = self._resolve_chat_preset_id(cid, char_name) if cid else None
+
+        pricing_info = None
+        if cid:
+            try:
+                pricing_info = self.model_pricing_manager.resolve_for_preset(self.preset_resolver.resolve(preset_id))
+            except Exception:
+                pricing_info = None
+
+        estimated_cost = None
+        estimated_currency = None
+        estimated_source = None
+
+        if pricing_info is not None:
+            estimated_cost = pricing_info.estimate_prompt_cost(context_tokens)
+            if estimated_cost is not None:
+                estimated_currency = pricing_info.currency
+                estimated_source = pricing_info.source
+
+        if estimated_cost is None and cfg:
+            try:
+                estimated_cost = (float(context_tokens) / 1000.0) * float(cfg.token_cost_input)
+                estimated_currency = "RUB"
+                estimated_source = "manual_settings"
+            except Exception:
+                estimated_cost = None
+
+        last = dict(self._last_token_stats or {})
+        last.setdefault("actual_cost", None)
+        last.setdefault("actual_cost_currency", None)
+        last.setdefault("actual_cost_source", None)
+
+        max_context_tokens = None
+        max_completion_tokens = None
+        if pricing_info is not None:
+            max_context_tokens = pricing_info.context_length
+            max_completion_tokens = pricing_info.max_completion_tokens
+        if max_context_tokens is None:
+            try:
+                max_context_tokens = int(self.settings.get("MAX_MODEL_TOKENS", 32000))
+            except Exception:
+                max_context_tokens = 32000
+
+        return {
+            "estimated_context_tokens": int(context_tokens or 0),
+            "max_context_tokens": int(max_context_tokens or 0),
+            "max_completion_tokens": int(max_completion_tokens or 0) if max_completion_tokens else None,
+            "estimated_input_cost": estimated_cost,
+            "estimated_input_cost_currency": estimated_currency,
+            "estimated_input_cost_source": estimated_source,
+            "actual_prompt_tokens": last.get("actual_prompt_tokens"),
+            "actual_completion_tokens": last.get("actual_completion_tokens"),
+            "actual_total_tokens": last.get("actual_total_tokens"),
+            "actual_reasoning_tokens": last.get("actual_reasoning_tokens"),
+            "actual_cached_prompt_tokens": last.get("actual_cached_prompt_tokens"),
+            "actual_cost": last.get("actual_cost"),
+            "actual_cost_currency": last.get("actual_cost_currency"),
+            "actual_cost_source": last.get("actual_cost_source"),
+            "actual_model": last.get("actual_model"),
+            "actual_provider": last.get("actual_provider"),
+        }
+
+    def _store_last_usage(
+        self,
+        usage: Optional[LLMUsage],
+        *,
+        model: str = "",
+        provider: str = "",
+        cost_fallback=None,
+        cost_fallback_currency: Optional[str] = None,
+        cost_fallback_source: Optional[str] = None,
+    ) -> None:
+        if usage is None and cost_fallback is None:
+            return
+
+        actual_cost = usage.cost if usage and usage.cost is not None else cost_fallback
+        actual_cost_currency = (
+            usage.cost_currency if usage and usage.cost is not None else cost_fallback_currency
+        )
+        actual_cost_source = (
+            usage.cost_source if usage and usage.cost is not None else cost_fallback_source
+        )
+
+        self._last_token_stats = {
+            "actual_prompt_tokens": int(usage.prompt_tokens or 0) if usage else None,
+            "actual_completion_tokens": int(usage.completion_tokens or 0) if usage else None,
+            "actual_total_tokens": int(usage.total_tokens or 0) if usage else None,
+            "actual_reasoning_tokens": int(usage.reasoning_tokens or 0) if usage else None,
+            "actual_cached_prompt_tokens": int(usage.cached_prompt_tokens or 0) if usage else None,
+            "actual_cost": actual_cost,
+            "actual_cost_currency": actual_cost_currency,
+            "actual_cost_source": actual_cost_source,
+            "actual_model": model or "",
+            "actual_provider": provider or "",
+        }
+
+    def _on_get_current_context_tokens(self, event: Event):
+        return self._build_token_stats().get("estimated_context_tokens", 0)
+
+    def _on_get_token_stats(self, event: Event):
+        return self._build_token_stats()
 
     def _on_calculate_cost(self, event: Event):
-        tokens = self._on_get_current_context_tokens(event)
-        cfg = getattr(self.model, "cfg", None)
-        if not cfg:
-            return 0.0
-        try:
-            return (float(tokens) / 1000.0) * float(cfg.token_cost_input)
-        except Exception:
-            return 0.0
+        stats = self._build_token_stats()
+        cost = stats.get("estimated_input_cost")
+        return float(cost) if cost is not None else 0.0
 
     # ---------------------------------------------------------------------
     # Generation
@@ -783,9 +914,10 @@ class ModelController:
 
             try:
                 result = self.model.generate(messages, stream_callback=None, preset_id=preset_id)
-                if not result:
+                if not result or not result.text:
                     logger.warning(f"[ModelController] {event_type}: model.generate() returned empty/None")
-                return result
+                    return None
+                return result.text
             except Exception as e:
                 logger.error(f"Ошибка при {event_type}: {e}", exc_info=True)
                 return None
@@ -944,6 +1076,12 @@ class ModelController:
         else:
             preset_id = _resolve_label_to_preset_id(_get_char_provider_label(char_id, char_name))
 
+        active_pricing = None
+        try:
+            active_pricing = self.model_pricing_manager.resolve_for_preset(self.preset_resolver.resolve(preset_id))
+        except Exception:
+            active_pricing = None
+
         self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
             "character_id": char_id,
             "character_name": char_name or char_id or "Мита",
@@ -965,7 +1103,7 @@ class ModelController:
 
         try:
             use_stream_cb = stream_callback if policy.allow_streaming else None
-            raw_text = self.model.generate(
+            llm_response = self.model.generate(
                 combined_messages,
                 stream_callback=use_stream_cb,
                 preset_id=preset_id,
@@ -973,18 +1111,23 @@ class ModelController:
                 structured_model=structured_model_cls,
             )
 
-            if not raw_text:
+            if not llm_response or not llm_response.text:
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
                     "error": _("Не удалось получить ответ.", "Text generation failed.")
                 })
                 return None
 
+            raw_text = llm_response.text
             visible_raw, think_text = self._extract_think_blocks(str(raw_text))
 
             if is_structured_output:
                 return self._process_structured_output(
                     visible_raw=visible_raw,
                     think_text=think_text,
+                    usage=llm_response.usage,
+                    response_model=llm_response.model or "",
+                    response_provider=llm_response.provider_name or "",
+                    pricing_info=active_pricing,
                     char=char,
                     char_id=char_id,
                     char_name=char_name,
@@ -1046,6 +1189,16 @@ class ModelController:
                     task_uid=task_uid,
                     thinking=think_text or None,
                 )
+
+            usage_cost_fallback = active_pricing.estimate_usage_cost(llm_response.usage) if active_pricing else None
+            self._store_last_usage(
+                llm_response.usage,
+                model=llm_response.model or "",
+                provider=llm_response.provider_name or "",
+                cost_fallback=usage_cost_fallback,
+                cost_fallback_currency=getattr(active_pricing, "currency", None),
+                cost_fallback_source=getattr(active_pricing, "source", None),
+            )
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
@@ -1215,6 +1368,10 @@ class ModelController:
         self,
         visible_raw: str,
         think_text: str,
+        usage: Optional[LLMUsage],
+        response_model: str,
+        response_provider: str,
+        pricing_info,
         char,
         char_id: str,
         char_name: str,
@@ -1260,6 +1417,16 @@ class ModelController:
                 except Exception:
                     voice_profile = None
 
+            usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
+            self._store_last_usage(
+                usage,
+                model=response_model,
+                provider=response_provider,
+                cost_fallback=usage_cost_fallback,
+                cost_fallback_currency=getattr(pricing_info, "currency", None),
+                cost_fallback_source=getattr(pricing_info, "source", None),
+            )
+
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
             return {
                 "text": processed,
@@ -1295,6 +1462,10 @@ class ModelController:
                 structured=structured,
                 visible_raw=visible_raw,
                 think_text=think_text,
+                usage=usage,
+                response_model=response_model,
+                response_provider=response_provider,
+                pricing_info=pricing_info,
                 char=char,
                 char_id=char_id,
                 char_name=char_name,
@@ -1367,6 +1538,16 @@ class ModelController:
                 thinking=think_text or None,
             )
 
+        usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
+        self._store_last_usage(
+            usage,
+            model=response_model,
+            provider=response_provider,
+            cost_fallback=usage_cost_fallback,
+            cost_fallback_currency=getattr(pricing_info, "currency", None),
+            cost_fallback_source=getattr(pricing_info, "source", None),
+        )
+
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
         if hasattr(char, "flush_variables"):
@@ -1426,6 +1607,10 @@ class ModelController:
         structured,
         visible_raw: str,
         think_text: str,
+        usage: Optional[LLMUsage],
+        response_model: str,
+        response_provider: str,
+        pricing_info,
         char,
         char_id: str,
         char_name: str,
@@ -1575,14 +1760,14 @@ class ModelController:
             "character_name": char_name or char_id or "Мита",
         })
 
-        raw_text_2 = self.model.generate(
+        llm_response_2 = self.model.generate(
             combined_messages_v2,
             preset_id=preset_id,
             capabilities_override=(data.get("capabilities") or None),
             structured_model=structured_model_cls,
         )
 
-        if not raw_text_2:
+        if not llm_response_2 or not llm_response_2.text:
             logger.error(f"[ModelController] Second LLM call after tool '{tool_name}' returned empty.")
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
                 "error": _("Не удалось получить ответ после инструмента.", "Failed to get response after tool.")
@@ -1598,7 +1783,8 @@ class ModelController:
                 "structured": result_dict,
             }
 
-        visible_raw_2, think_text_2 = self._extract_think_blocks(str(raw_text_2))
+        visible_raw_2, think_text_2 = self._extract_think_blocks(str(llm_response_2.text))
+        merged_usage = usage.merged_with(llm_response_2.usage) if usage else llm_response_2.usage
 
         combined_think = think_text
         if think_text_2:
@@ -1609,6 +1795,10 @@ class ModelController:
         return self._process_structured_output(
             visible_raw=visible_raw_2,
             think_text=combined_think or "",
+            usage=merged_usage,
+            response_model=llm_response_2.model or response_model,
+            response_provider=llm_response_2.provider_name or response_provider,
+            pricing_info=pricing_info,
             char=char,
             char_id=char_id,
             char_name=char_name,
