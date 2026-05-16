@@ -767,8 +767,42 @@ class ModelController:
         cost_fallback_currency: Optional[str] = None,
         cost_fallback_source: Optional[str] = None,
     ) -> None:
-        if usage is None and cost_fallback is None:
+        snapshot = self._build_usage_snapshot(
+            usage,
+            model=model,
+            provider=provider,
+            cost_fallback=cost_fallback,
+            cost_fallback_currency=cost_fallback_currency,
+            cost_fallback_source=cost_fallback_source,
+        )
+        if not snapshot:
             return
+
+        self._last_token_stats = {
+            "actual_prompt_tokens": snapshot.get("llm_prompt_tokens"),
+            "actual_completion_tokens": snapshot.get("llm_completion_tokens"),
+            "actual_total_tokens": snapshot.get("llm_total_tokens"),
+            "actual_reasoning_tokens": snapshot.get("llm_reasoning_tokens"),
+            "actual_cached_prompt_tokens": snapshot.get("llm_cached_prompt_tokens"),
+            "actual_cost": snapshot.get("llm_cost"),
+            "actual_cost_currency": snapshot.get("llm_cost_currency"),
+            "actual_cost_source": snapshot.get("llm_cost_source"),
+            "actual_model": snapshot.get("llm_model"),
+            "actual_provider": snapshot.get("llm_provider"),
+        }
+
+    def _build_usage_snapshot(
+        self,
+        usage: Optional[LLMUsage],
+        *,
+        model: str = "",
+        provider: str = "",
+        cost_fallback=None,
+        cost_fallback_currency: Optional[str] = None,
+        cost_fallback_source: Optional[str] = None,
+    ) -> dict[str, Any]:
+        if usage is None and cost_fallback is None:
+            return {}
 
         actual_cost = usage.cost if usage and usage.cost is not None else cost_fallback
         actual_cost_currency = (
@@ -778,17 +812,18 @@ class ModelController:
             usage.cost_source if usage and usage.cost is not None else cost_fallback_source
         )
 
-        self._last_token_stats = {
-            "actual_prompt_tokens": int(usage.prompt_tokens or 0) if usage else None,
-            "actual_completion_tokens": int(usage.completion_tokens or 0) if usage else None,
-            "actual_total_tokens": int(usage.total_tokens or 0) if usage else None,
-            "actual_reasoning_tokens": int(usage.reasoning_tokens or 0) if usage else None,
-            "actual_cached_prompt_tokens": int(usage.cached_prompt_tokens or 0) if usage else None,
-            "actual_cost": actual_cost,
-            "actual_cost_currency": actual_cost_currency,
-            "actual_cost_source": actual_cost_source,
-            "actual_model": model or "",
-            "actual_provider": provider or "",
+        return {
+            "llm_prompt_tokens": int(usage.prompt_tokens or 0) if usage else None,
+            "llm_completion_tokens": int(usage.completion_tokens or 0) if usage else None,
+            "llm_total_tokens": int(usage.total_tokens or 0) if usage else None,
+            "llm_reasoning_tokens": int(usage.reasoning_tokens or 0) if usage else None,
+            "llm_cached_prompt_tokens": int(usage.cached_prompt_tokens or 0) if usage else None,
+            "llm_cache_write_tokens": int(usage.cache_write_tokens or 0) if usage else None,
+            "llm_cost": actual_cost,
+            "llm_cost_currency": actual_cost_currency,
+            "llm_cost_source": actual_cost_source,
+            "llm_model": model or "",
+            "llm_provider": provider or "",
         }
 
     def _on_get_current_context_tokens(self, event: Event):
@@ -1171,6 +1206,16 @@ class ModelController:
                     final_text
                 )
 
+            usage_cost_fallback = active_pricing.estimate_usage_cost(llm_response.usage) if active_pricing else None
+            usage_snapshot = self._build_usage_snapshot(
+                llm_response.usage,
+                model=llm_response.model or "",
+                provider=llm_response.provider_name or "",
+                cost_fallback=usage_cost_fallback,
+                cost_fallback_currency=getattr(active_pricing, "currency", None),
+                cost_fallback_source=getattr(active_pricing, "source", None),
+            )
+
             assistant_message_id = ""
             if policy.write_to_history:
                 origin_message_id = str(data.get("origin_message_id") or "") or None
@@ -1188,9 +1233,9 @@ class ModelController:
                     event_type=event_type,
                     task_uid=task_uid,
                     thinking=think_text or None,
+                    llm_usage=usage_snapshot,
                 )
 
-            usage_cost_fallback = active_pricing.estimate_usage_cost(llm_response.usage) if active_pricing else None
             self._store_last_usage(
                 llm_response.usage,
                 model=llm_response.model or "",
@@ -1517,6 +1562,16 @@ class ModelController:
                 final_text,
             )
 
+        usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
+        usage_snapshot = self._build_usage_snapshot(
+            usage,
+            model=response_model,
+            provider=response_provider,
+            cost_fallback=usage_cost_fallback,
+            cost_fallback_currency=getattr(pricing_info, "currency", None),
+            cost_fallback_source=getattr(pricing_info, "source", None),
+        )
+
         assistant_message_id = ""
         if policy.write_to_history:
             origin_message_id = str(data.get("origin_message_id") or "") or None
@@ -1536,9 +1591,9 @@ class ModelController:
                 task_uid=task_uid,
                 structured_data=history_dict,
                 thinking=think_text or None,
+                llm_usage=usage_snapshot,
             )
 
-        usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
         self._store_last_usage(
             usage,
             model=response_model,
@@ -1663,6 +1718,16 @@ class ModelController:
                 voice_profile = None
 
         # Write first turn to history
+        usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
+        usage_snapshot = self._build_usage_snapshot(
+            usage,
+            model=response_model,
+            provider=response_provider,
+            cost_fallback=usage_cost_fallback,
+            cost_fallback_currency=getattr(pricing_info, "currency", None),
+            cost_fallback_source=getattr(pricing_info, "source", None),
+        )
+
         first_assistant_message_id = ""
         if policy.write_to_history:
             origin_message_id = str(data.get("origin_message_id") or "") or None
@@ -1680,6 +1745,7 @@ class ModelController:
                 task_uid=task_uid,
                 structured_data=result_dict,
                 thinking=think_text or None,
+                llm_usage=usage_snapshot,
             )
 
         # Emit first response to UI (shows "I'll check that" message)

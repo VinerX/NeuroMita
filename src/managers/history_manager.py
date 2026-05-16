@@ -329,6 +329,22 @@ class HistoryManager:
             pass
         return [p.strip() for p in raw.split(",") if p.strip()]
 
+    def _coerce_int_or_none(self, value) -> int | None:
+        if value in (None, ""):
+            return None
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    def _coerce_float_or_none(self, value) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
+
     def _extract_history_db_fields(self, msg: dict) -> dict:
         if not isinstance(msg, dict):
             return {k: None for k in self._HISTORY_DESIRED_COLUMNS.keys()}
@@ -357,6 +373,17 @@ class HistoryManager:
             "task_uid": self._coerce_text(msg.get("task_uid")),
             "structured_data": structured_data_str,
             "thinking": self._coerce_text(msg.get("thinking")),
+            "llm_prompt_tokens": self._coerce_int_or_none(msg.get("llm_prompt_tokens")),
+            "llm_completion_tokens": self._coerce_int_or_none(msg.get("llm_completion_tokens")),
+            "llm_total_tokens": self._coerce_int_or_none(msg.get("llm_total_tokens")),
+            "llm_reasoning_tokens": self._coerce_int_or_none(msg.get("llm_reasoning_tokens")),
+            "llm_cached_prompt_tokens": self._coerce_int_or_none(msg.get("llm_cached_prompt_tokens")),
+            "llm_cache_write_tokens": self._coerce_int_or_none(msg.get("llm_cache_write_tokens")),
+            "llm_cost": self._coerce_float_or_none(msg.get("llm_cost")),
+            "llm_cost_currency": self._coerce_text(msg.get("llm_cost_currency")),
+            "llm_cost_source": self._coerce_text(msg.get("llm_cost_source")),
+            "llm_model": self._coerce_text(msg.get("llm_model")),
+            "llm_provider": self._coerce_text(msg.get("llm_provider")),
         }
 
     def _normalize_loaded_message(self, msg: dict) -> dict:
@@ -376,6 +403,22 @@ class HistoryManager:
                 msg["structured_data"] = json.loads(msg["structured_data"])
             except Exception:
                 pass
+        for key in (
+            "llm_prompt_tokens",
+            "llm_completion_tokens",
+            "llm_total_tokens",
+            "llm_reasoning_tokens",
+            "llm_cached_prompt_tokens",
+            "llm_cache_write_tokens",
+        ):
+            if key in msg:
+                coerced = self._coerce_int_or_none(msg.get(key))
+                if coerced is not None:
+                    msg[key] = coerced
+        if "llm_cost" in msg:
+            coerced_cost = self._coerce_float_or_none(msg.get("llm_cost"))
+            if coerced_cost is not None:
+                msg["llm_cost"] = coerced_cost
         return msg
 
     def _build_extra_meta_for_db(self, msg: dict) -> dict:
