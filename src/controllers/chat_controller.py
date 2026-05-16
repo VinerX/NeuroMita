@@ -221,6 +221,7 @@ class ChatController:
         self.llm_processing = False
 
         self.staged_images = []
+        self._owned_staged_images = set()
         self._subscribe_to_events()
 
     def _subscribe_to_events(self):
@@ -296,6 +297,7 @@ class ChatController:
         user_input: str,
         system_input: str = "",
         image_data: list[bytes] | None = None,
+        image_source: str = "",
         task_uid: str | None = None,
         event_type: str | None = None,
         character_id: str | None = None,
@@ -384,7 +386,7 @@ class ChatController:
                             continue
                 image_data = prepared if prepared else None
 
-            if system_input and eff_policy.echo_to_ui:
+            if system_input and eff_policy.echo_to_ui and image_source != "mita_camera":
                 ch = self._get_character_ref(character_id)
                 if ch and hasattr(ch, "history_manager"):
                     ch.history_manager.append_message({
@@ -401,12 +403,31 @@ class ChatController:
                     "character_id": character_id or "",
                 }, sync=True)
 
+            if image_data and eff_policy.echo_to_ui:
+                img_display_role = "assistant" if image_source == "mita_camera" else "user"
+                img_content = [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64.b64encode(img).decode('utf-8')}"},
+                        "display_role": img_display_role,
+                    }
+                    for img in image_data
+                ]
+                self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
+                    "role": img_display_role,
+                    "response": img_content,
+                    "is_initial": False,
+                    "emotion": "",
+                    "character_id": character_id or "",
+                }, sync=True)
+
             response_result = self.event_bus.emit_and_wait(
                 Events.Model.GENERATE_RESPONSE,
                 {
                     "user_input": user_input,
                     "system_input": system_input,
                     "image_data": image_data,
+                    "image_source": image_source,
                     "stream_callback": stream_callback_handler if is_streaming else None,
                     "message_id": task_uid,
                     "event_type": effective_event_type,
@@ -597,6 +618,7 @@ class ChatController:
         user_input = data.get("user_input", "")
         system_input = data.get("system_input", "")
         image_data = data.get("image_data", [])
+        image_source = data.get("image_source", "")
         task_uid = data.get("task_uid")
         event_type = str(data.get("event_type") or "chat")
         character_id = self._normalize_character_id(data)
@@ -618,6 +640,7 @@ class ChatController:
                     user_input=user_input,
                     system_input=system_input,
                     image_data=image_data,
+                    image_source=image_source,
                     task_uid=task_uid,
                     event_type=event_type,
                     character_id=character_id,
@@ -640,6 +663,7 @@ class ChatController:
                     user_input=user_input,
                     system_input=system_input,
                     image_data=image_data,
+                    image_source=image_source,
                     task_uid=task_uid,
                     event_type=event_type,
                     character_id=character_id,
@@ -683,6 +707,7 @@ class ChatController:
             user_input=data.get("user_input", ""),
             system_input=data.get("system_input", ""),
             image_data=data.get("image_data", []),
+            image_source=data.get("image_source", ""),
             task_uid=data.get("task_uid"),
             event_type=data.get("event_type"),
             character_id=character_id,
@@ -706,10 +731,19 @@ class ChatController:
             f.write(img_bytes)
 
         self.staged_images.append(tmp_path)
+        self._owned_staged_images.add(tmp_path)
         logger.info(f"Clipboard image staged: {tmp_path}")
         return len(self.staged_images)
 
     def clear_staged_images(self):
+        for tmp_path in list(self._owned_staged_images):
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception as e:
+                logger.warning(f"Failed to delete staged temp image {tmp_path}: {e}")
+            finally:
+                self._owned_staged_images.discard(tmp_path)
         self.staged_images.clear()
 
     def _on_stage_image(self, event: Event):

@@ -5,6 +5,7 @@ from main_logger import logger
 from core.events import get_event_bus, Events, Event
 
 from managers.task_manager import TaskStatus
+from game_connections.shared_image_transfer import ensure_shared_transfer_dirs
 
 
 class ServerEchoSuppressor:
@@ -89,7 +90,16 @@ class ServerController:
         self.ConnectedToGame = False
         self._destroyed = False
 
-        self.settings_to_send = ['ACTION_MENU', 'MITAS_MENU', 'IGNORE_GAME_REQUESTS', 'GAME_BLOCK_LEVEL', 'CHARACTER', 'WORLD_HIERARCHY_TREE', 'BEAT_SYNC_ENABLED', 'BEAT_SYNC_STREAMING', 'BEAT_SYNC_CHUNK_SECONDS', 'BEAT_SYNC_MIN_CONFIDENCE', 'BEAT_SYNC_AUTO_INSTALL']
+        self.settings_to_send = [
+            'ACTION_MENU', 'MITAS_MENU', 'IGNORE_GAME_REQUESTS', 'GAME_BLOCK_LEVEL',
+            'CHARACTER', 'WORLD_HIERARCHY_TREE',
+            'BEAT_SYNC_ENABLED', 'BEAT_SYNC_STREAMING', 'BEAT_SYNC_CHUNK_SECONDS',
+            'BEAT_SYNC_MIN_CONFIDENCE', 'BEAT_SYNC_AUTO_INSTALL',
+            # Mita head-camera (FrameRecorder)
+            'MITA_CAMERA_ENABLED', 'MITA_CAMERA_CONTINUOUS', 'MITA_CAMERA_ON_DEMAND',
+            'MITA_CAMERA_INTERVAL', 'MITA_CAMERA_MAX_FRAMES', 'MITA_CAMERA_FRAMES_TO_SEND',
+            'MITA_CAMERA_JPEG_QUALITY', 'MITA_CAMERA_USE_FILE_TRANSFER',
+        ]
 
         self.echo_suppressor = ServerEchoSuppressor()
 
@@ -134,6 +144,11 @@ class ServerController:
     def _init_server(self):
         from game_connections.server import ChatServerNew
         self.server = ChatServerNew()
+        try:
+            transfer_dirs = ensure_shared_transfer_dirs()
+            logger.info(f"Shared image transfer root: {transfer_dirs['root']}")
+        except Exception as e:
+            logger.warning(f"Failed to prepare shared image transfer directories: {e}")
         logger.info("РСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РЅРѕРІС‹Р№ API СЃРµСЂРІРµСЂ")
 
         def _conn_cb(is_connected: bool, _client_id: str | None):
@@ -353,7 +368,22 @@ class ServerController:
             settings[str(setting)] = self._get_setting(setting)
 
         characters_stats = self._collect_characters_stats()
-        return {"settings": settings, "characters_stats": characters_stats}
+        shared_transfer: Dict[str, Any] = {}
+        try:
+            dirs = ensure_shared_transfer_dirs()
+            shared_transfer = {
+                "protocol": "shared_files_v1",
+                "root": str(dirs["root"]),
+                "images_dir": str(dirs["images"]),
+                "manifests_dir": str(dirs["manifests"]),
+            }
+        except Exception as e:
+            logger.warning(f"Failed to describe shared image transfer settings: {e}")
+
+        body = {"settings": settings, "characters_stats": characters_stats}
+        if shared_transfer:
+            body["shared_image_transfer"] = shared_transfer
+        return body
 
     def _get_setting(self, key: str, default=None):
         try:

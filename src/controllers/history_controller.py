@@ -461,6 +461,14 @@ class HistoryController:
                 updated_messages.append(msg)
                 continue
 
+            # Skip degradation for messages that already have a text description stored.
+            # The description replaces the image in history; no base64 to degrade.
+            # Supports both new dict format and legacy string.
+            _has_desc = bool(msg.get("image_descriptions") or msg.get("image_description"))
+            if _has_desc:
+                updated_messages.append(msg)
+                continue
+
             if msg.get("role") in ["user", "assistant"] and isinstance(msg.get("content"), list):
                 new_content_chunks = []
                 image_processed = False

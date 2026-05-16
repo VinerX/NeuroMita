@@ -527,12 +527,29 @@ class HistoryManager:
                 meta = {}
 
         content = db_content
+        ui_images: list[dict] = []   # populated inside the if-block when needed
 
         if meta.get("is_multimodal_list", False) or meta.get("multimodal_parts"):
             reconstructed_list = []
 
             if db_content:
                 reconstructed_list.append({"type": "text", "text": str(db_content)})
+
+            # Resolve stored description: prefer new dict format, fall back to legacy string.
+            # Dict format: {"normal": "...", "detailed": "..."} — pick best available variant.
+            _desc_dict = meta.get("image_descriptions")
+            _desc_legacy = meta.get("image_description")
+            stored_description: str | None = None
+            if isinstance(_desc_dict, dict) and _desc_dict:
+                stored_description = (
+                    _desc_dict.get("manual")
+                    or _desc_dict.get("detailed")
+                    or _desc_dict.get("normal")
+                    or _desc_dict.get("brief")
+                    or next(iter(_desc_dict.values()), None)
+                )
+            elif isinstance(_desc_legacy, str) and _desc_legacy:
+                stored_description = _desc_legacy
 
             if "multimodal_parts" in meta:
                 parts = meta.get("multimodal_parts") or []
@@ -544,7 +561,6 @@ class HistoryManager:
                     if part_type == "image_url":
                         url = part.get("image_url", {}).get("url", "")
                         final_url = url
-
                         is_local = part.get("is_local_file", False)
                         if is_local or (url and not str(url).startswith("http") and not str(url).startswith("data:")):
                             final_url = self._image_file_to_base64(str(url))
@@ -555,8 +571,17 @@ class HistoryManager:
                         }
                         if "detail" in (part.get("image_url") or {}):
                             clean_part["image_url"]["detail"] = part["image_url"]["detail"]
+                        if part.get("display_role"):
+                            clean_part["display_role"] = part.get("display_role")
 
                         reconstructed_list.append(clean_part)
+
+                        if stored_description and final_url:
+                            ui_images.append({
+                                "url": final_url,
+                                "description": stored_description,
+                                "display_role": part.get("display_role"),
+                            })
 
                     elif part_type == "text":
                         reconstructed_list.append({"type": "text", "text": part.get("text", "")})
@@ -564,6 +589,11 @@ class HistoryManager:
             content = reconstructed_list
 
         msg = {"role": role, "content": content}
+
+        # UI display hint: file paths + descriptions for history rendering.
+        # Stored at message level so providers never see it (they only use "content").
+        if ui_images:
+            msg["_ui_images"] = ui_images
 
         # переносим meta поля обратно, но фильтруем служебное
         for k, v in meta.items():

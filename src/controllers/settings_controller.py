@@ -108,6 +108,11 @@ class SettingsController:
             "REMINDERS_ENABLED",
 
             "GRAPH_EXTRACTION_ENABLED",
+
+            "MITA_CAMERA_ENABLED",
+            "MITA_CAMERA_CONTINUOUS",
+            "MITA_CAMERA_ON_DEMAND",
+            "MITA_CAMERA_USE_FILE_TRANSFER",
         ]
 
         custom_vars: Dict[str, Any] = {
