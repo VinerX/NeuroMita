@@ -104,6 +104,9 @@ class SettingsController:
             "REMINDERS_ENABLED",
 
             "GRAPH_EXTRACTION_ENABLED",
+
+            "MITA_CAMERA_ENABLED",
+            "MITA_CAMERA_ON_DEMAND",
         ]
 
         custom_vars: Dict[str, Any] = {

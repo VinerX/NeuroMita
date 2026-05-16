@@ -343,7 +343,7 @@ def _setup_mita_camera_section(gui, parent_layout) -> None:
 
     Два режима:
       • Непрерывный — автозахват каждые N секунд, кадры складываются в буфер.
-      • По команде  — Мита использует DSL-действие camera_snapshot, Unity
+      • По команде  — Мита добавляет \"camera_snapshot\" в поле commands сегмента, Unity
                       немедленно захватывает кадр и отправляет Python как отдельный диалог.
     """
     mita_camera_config = [
@@ -379,12 +379,10 @@ def _setup_mita_camera_section(gui, parent_layout) -> None:
             'default_checkbutton': False,
             'depends_on': 'MITA_CAMERA_ENABLED',
             'tooltip': _(
-                'Мита может сделать снимок, написав в ответе:\n'
-                '    <action>camera_snapshot</action>\n'
+                'Мита может сделать снимок, добавив "camera_snapshot" в поле commands сегмента.\n'
                 'Unity захватывает кадр и немедленно отправляет его Мите\n'
                 'как новый диалоговый запрос (event_type = camera_snapshot_result).',
-                'Mita can take a snapshot by writing in her reply:\n'
-                '    <action>camera_snapshot</action>\n'
+                'Mita can take a snapshot by adding "camera_snapshot" to the commands field of a segment.\n'
                 'Unity captures the frame and immediately sends it to Mita\n'
                 'as a new dialogue request (event_type = camera_snapshot_result).'
             ),

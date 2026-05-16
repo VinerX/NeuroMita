@@ -119,11 +119,14 @@ class ImageDescriptionHandler:
         except Exception:
             return None
 
-    def describe_sequence(self, image_data: List[bytes]) -> str:
+    def describe_sequence(self, image_data: List[bytes], context_hint: str = "") -> str:
         """
         Describe multiple images as a single scene/sequence in one API call.
         All images are sent together so the model can reason about continuity.
         Returns a single description string.
+
+        context_hint: optional hint prepended to the user message so the vision
+        model knows the source/role of the images (e.g. camera POV).
         """
         if not image_data:
             return ""
@@ -132,8 +135,12 @@ class ImageDescriptionHandler:
         system_prompt = get_description_prompt(detail)
         preset_id = self._resolve_preset_id()
 
+        seq_text = f"These are {len(image_data)} sequential frames from a scene. Describe what is happening across the sequence."
+        if context_hint:
+            seq_text = f"{context_hint}\n\n{seq_text}"
+
         content_parts: list = [
-            {"type": "text", "text": f"These are {len(image_data)} sequential frames from a scene. Describe what is happening across the sequence."}
+            {"type": "text", "text": seq_text}
         ]
         for img in image_data:
             if isinstance(img, bytes):
@@ -153,11 +160,14 @@ class ImageDescriptionHandler:
             logger.warning(f"[ImageDescriptionHandler] Failed to describe sequence of {len(image_data)} images: {exc}")
             return "[Scene description unavailable]"
 
-    def describe(self, image_data: List[bytes]) -> List[str]:
+    def describe(self, image_data: List[bytes], context_hint: str = "") -> List[str]:
         """
         Describe each image using a vision provider.
         Returns a list of text descriptions (one per image).
         Falls back to placeholder if a call fails.
+
+        context_hint: optional hint prepended to the user message so the vision
+        model knows the source/role of the images (e.g. camera POV).
         """
         if not image_data:
             return []
@@ -166,6 +176,10 @@ class ImageDescriptionHandler:
         system_prompt = get_description_prompt(detail)
         preset_id = self._resolve_preset_id()
         descriptions: List[str] = []
+
+        user_text = "Please describe this image."
+        if context_hint:
+            user_text = f"{context_hint}\n\nPlease describe this image."
 
         for i, img in enumerate(image_data):
             try:
@@ -179,7 +193,7 @@ class ImageDescriptionHandler:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": "Please describe this image."},
+                            {"type": "text", "text": user_text},
                             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                         ],
                     },

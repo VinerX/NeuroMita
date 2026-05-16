@@ -115,6 +115,11 @@ class CreateTaskAction:
             if policy.use_pending_sysinfo:
                 collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
 
+            # Label continuous in-game camera frames when Unity flags them
+            if context.get("mita_camera", False) and (context.get("image_base64_list") or context.get("image_paths")):
+                camera_label = "[Your eyes (in-game camera)] The attached image shows your current point of view."
+                collected_sys = (camera_label + "\n" + collected_sys).strip() if collected_sys else camera_label
+
             task_result = event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
                 "type": "chat",
                 "data": {
@@ -352,6 +357,10 @@ class CreateTaskAction:
                     react_system_input_lines.append("Pending system info:")
                     react_system_input_lines.append(collected_sys)
 
+            # Label continuous in-game camera frames when Unity flags them
+            if context.get("mita_camera", False) and (context.get("image_base64_list") or context.get("image_paths")):
+                react_system_input_lines.insert(0, "[Your eyes (in-game camera)] The attached image shows your current point of view.")
+
             react_system_input = "\n".join(react_system_input_lines)
 
             task_result = event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
@@ -401,6 +410,7 @@ class CreateTaskAction:
             policy_dict = policy.to_dict()
 
             snapshot_msg = str(data.get("message", "Camera snapshot taken"))
+            camera_snapshot_system_input = f"[Your eyes (in-game camera)] {snapshot_msg}"
 
             task_result = event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
                 "type": "chat",
@@ -408,10 +418,7 @@ class CreateTaskAction:
                     "character": character_id,
                     "character_stats": character_stats,
                     "user_input": "",
-                    "system_input": (
-                        "You have received a camera snapshot (image attached). "
-                        f"Context: {snapshot_msg}"
-                    ),
+                    "system_input": camera_snapshot_system_input,
                     "system_info": context.get("currentInfo", ""),
                     "client_id": ctx.client_id,
                     "event_type": event_type,
@@ -430,7 +437,7 @@ class CreateTaskAction:
 
                 event_bus.emit(Events.Chat.SEND_MESSAGE, {
                     "user_input": "",
-                    "system_input": f"You have received a camera snapshot. {snapshot_msg}",
+                    "system_input": camera_snapshot_system_input,
                     "image_data": _collect_context_images(context),
                     "task_uid": task.uid,
                     "event_type": model_event_type,

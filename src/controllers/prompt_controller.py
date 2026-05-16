@@ -230,20 +230,6 @@ class PromptController:
         )
         messages.extend(system_messages)
 
-        # Camera snapshot capability instruction (injected only when on-demand mode is active)
-        if self._get_setting("MITA_CAMERA_ENABLED", False) and self._get_setting("MITA_CAMERA_ON_DEMAND", False):
-            messages.append({
-                "role": "system",
-                "content": (
-                    "You have a head-mounted camera. "
-                    "To take a snapshot of what is around you, output the action command: "
-                    "<action>camera_snapshot</action>\n"
-                    "The captured image will be delivered to you as a follow-up message "
-                    "(event_type: camera_snapshot_result). "
-                    "Use this when you want to see the environment or inspect something visually."
-                )
-            })
-
         if game_state_prompt_content:
             messages.append({"role": "system", "content": game_state_prompt_content})
 

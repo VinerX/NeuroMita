@@ -882,18 +882,32 @@ class ModelController:
         # then pass text descriptions to the main (non-vision) model instead of images.
         original_image_data = image_data  # kept for history storage
         image_descriptions: dict[str, str] | None = None
+
+        # Build context hint so the vision description model knows the image source.
+        _image_context_hint = ""
+        if event_type == "camera_snapshot_result":
+            _image_context_hint = (
+                "This image was captured by the character's head-mounted camera "
+                "(their own point of view, in-game). Describe what the character is currently seeing."
+            )
+        elif "[Your eyes (in-game camera)]" in system_input:
+            _image_context_hint = (
+                "These frames are from the character's own eyes (in-game camera). "
+                "Describe the scene from their point of view."
+            )
+
         if image_data and bool(self.settings.get("IMAGE_DESCRIPTION_ENABLED", False)):
             _detail = str(self.settings.get("IMAGE_DESCRIPTION_DETAIL", "normal") or "normal")
             try:
                 if len(image_data) > 1:
                     # Multiple frames → describe as a sequence in one API call
-                    seq_desc = self.image_description_handler.describe_sequence(image_data)
+                    seq_desc = self.image_description_handler.describe_sequence(image_data, context_hint=_image_context_hint)
                     if seq_desc and not seq_desc.startswith("["):
                         user_input = (user_input + f"\n[Scene: {seq_desc}]").strip() if user_input else f"[Scene: {seq_desc}]"
                         image_descriptions = {_detail: seq_desc}
                         logger.info(f"[ModelController] Non-native sequence mode: {len(image_data)} frames described as one scene.")
                 else:
-                    descriptions = self.image_description_handler.describe(image_data)
+                    descriptions = self.image_description_handler.describe(image_data, context_hint=_image_context_hint)
                     if descriptions:
                         desc_text = "\n".join(
                             f"[Image {i + 1}: {d}]" for i, d in enumerate(descriptions)
