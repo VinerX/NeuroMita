@@ -517,7 +517,16 @@ class BeatService:
             tmp_path = cache_path + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
-            os.replace(tmp_path, cache_path)
+            try:
+                os.replace(tmp_path, cache_path)
+            except PermissionError:
+                # Some Windows environments deny atomic replace even inside the same directory.
+                with open(cache_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
             logger.info(f"[BeatSync] cache-save track='{_short_path(audio_path)}' method={method} beats={len(result.beats)}")
         except Exception as e:
             logger.debug(f"[BeatSync] cache save skipped for '{_short_path(audio_path)}': {e}")
