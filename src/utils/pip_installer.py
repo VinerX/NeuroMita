@@ -181,14 +181,11 @@ class PipInstaller:
         self.progress_window = progress_window
         # Защищенные пакеты по умолчанию
         self.protected_packages = protected_packages or ["g4f", "gigaam", "pillow", "silero-vad"]
+        self._preferred_installer_cmd: Optional[List[str]] = None
         self._ensure_libs_path()
 
     def install_package(self, package_spec, description="Установка пакета...", extra_args=None) -> bool:
-        cmd = [
-            self.script_path, "-m", "uv", "pip", "install",
-            "--target", str(self.libs_path_abs),
-            "--no-cache-dir"
-        ]
+        cmd = self._build_install_command()
         if extra_args:
             cmd.extend(extra_args)
         if isinstance(package_spec, list):
@@ -196,6 +193,58 @@ class PipInstaller:
         else:
             cmd.append(package_spec)
         return self._run_pip_process(cmd, description)
+
+    def _build_install_command(self) -> List[str]:
+        base = list(self._resolve_installer_base_cmd())
+        base.extend([
+            "install",
+            "--target", str(self.libs_path_abs),
+            "--no-cache-dir",
+        ])
+        return base
+
+    def _resolve_installer_base_cmd(self) -> List[str]:
+        if self._preferred_installer_cmd is not None:
+            return list(self._preferred_installer_cmd)
+
+        uv_cmd = [self.script_path, "-m", "uv", "pip"]
+        if self._check_installer_command(uv_cmd + ["--version"]):
+            self._preferred_installer_cmd = uv_cmd
+            self.update_log("Для установки зависимостей выбран uv pip.")
+            return list(self._preferred_installer_cmd)
+
+        pip_cmd = [self.script_path, "-m", "pip"]
+        if self._check_installer_command(pip_cmd + ["--version"]):
+            self._preferred_installer_cmd = pip_cmd
+            self.update_log("uv недоступен, используем встроенный pip.")
+            return list(self._preferred_installer_cmd)
+
+        self._preferred_installer_cmd = uv_cmd
+        self.update_log("Не удалось проверить uv/pip заранее, пробуем uv по умолчанию.")
+        return list(self._preferred_installer_cmd)
+
+    def _check_installer_command(self, cmd: List[str]) -> bool:
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=15,
+            )
+            if proc.returncode == 0:
+                return True
+
+            details = (proc.stderr or proc.stdout or "").strip()
+            if details:
+                logger.warning(f"Команда проверки установщика завершилась с кодом {proc.returncode}: {details}")
+            return False
+        except Exception as ex:
+            logger.warning(f"Не удалось проверить команду установщика {cmd}: {ex}")
+            return False
 
     def _unload_module_from_sys(self, module_name: str):
         """Выгружает модуль и все его подмодули из sys.modules"""
