@@ -130,8 +130,13 @@ class SettingsController:
 
         flag_vars: Dict[str, Any] = {}
         for key in bool_keys:
-            default_value = True if key == "BEAT_SYNC_USE_FILE_TRANSFER" else False
-            flag_vars[key] = bool(self.settings.get(key, default_value))
+            if key == "BEAT_SYNC_USE_FILE_TRANSFER":
+                flag_vars[key] = True
+                continue
+            if key == "BEAT_SYNC_AUTO_INSTALL":
+                flag_vars[key] = False
+                continue
+            flag_vars[key] = bool(self.settings.get(key, False))
 
         flag_vars["GAME_CONNECTED"] = bool(game_connected)
 

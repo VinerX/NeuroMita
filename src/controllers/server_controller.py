@@ -298,10 +298,9 @@ class ServerController:
                 import asyncio
                 from game_connections.services.beat_service import get_beat_service
 
-                auto_install = bool(self._get_setting('BEAT_SYNC_AUTO_INSTALL', True))
                 if self.server and self.server.can_schedule():
                     asyncio.run_coroutine_threadsafe(
-                        get_beat_service().warmup(auto_install=auto_install),
+                        get_beat_service().warmup(auto_install=False),
                         self.server._loop,
                     )
             except Exception as e:
@@ -368,6 +367,12 @@ class ServerController:
     def _prepare_loaded_settings_body(self) -> Dict[str, Any]:
         settings = {}
         for setting in self.settings_to_send:
+            if setting == 'BEAT_SYNC_USE_FILE_TRANSFER':
+                settings[str(setting)] = True
+                continue
+            if setting == 'BEAT_SYNC_AUTO_INSTALL':
+                settings[str(setting)] = False
+                continue
             settings[str(setting)] = self._get_setting(setting)
 
         characters_stats = self._collect_characters_stats()

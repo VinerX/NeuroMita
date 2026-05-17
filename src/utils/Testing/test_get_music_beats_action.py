@@ -27,7 +27,7 @@ class _FakeServer:
 
 
 class GetMusicBeatsActionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_rejects_python_analysis_when_file_transfer_disabled(self):
+    async def test_hidden_file_transfer_flag_no_longer_blocks_analysis(self):
         action = GetMusicBeatsAction()
         server = _FakeServer()
         ctx = RequestContext(
@@ -37,15 +37,22 @@ class GetMusicBeatsActionTests(unittest.IsolatedAsyncioTestCase):
             event_bus=_FakeEventBus(
                 {
                     "BEAT_SYNC_ENABLED": True,
-                    "BEAT_SYNC_AUTO_INSTALL": True,
                     "BEAT_SYNC_USE_FILE_TRANSFER": False,
                 }
             ),
         )
 
+        fake_result = SimpleNamespace(
+            duration=12.5,
+            beats=[{"time": 1.0, "confidence": 0.9}],
+            method="unit_test",
+            bpm_estimate=120.0,
+        )
+        fake_service = SimpleNamespace(extract_beats=AsyncMock(return_value=fake_result))
+
         with patch(
             "game_connections.handlers.actions.get_music_beats.get_beat_service",
-            side_effect=AssertionError("beat service must not be called when file transfer is disabled"),
+            return_value=fake_service,
         ):
             await action.handle(
                 {
@@ -57,12 +64,10 @@ class GetMusicBeatsActionTests(unittest.IsolatedAsyncioTestCase):
                 ctx,
             )
 
-        self.assertEqual(len(server.messages), 1)
-        self.assertEqual(server.messages[0]["type"], "music_beats_error")
-        self.assertEqual(
-            server.messages[0]["body"]["error"],
-            "BEAT_SYNC_USE_FILE_TRANSFER is OFF",
-        )
+        self.assertEqual(len(server.messages), 2)
+        self.assertEqual(server.messages[0]["type"], "music_beats_job_started")
+        self.assertEqual(server.messages[1]["type"], "music_beats_ready")
+        fake_service.extract_beats.assert_awaited_once()
 
     async def test_missing_setting_defaults_to_enabled_file_transfer(self):
         action = GetMusicBeatsAction()
@@ -74,7 +79,6 @@ class GetMusicBeatsActionTests(unittest.IsolatedAsyncioTestCase):
             event_bus=_FakeEventBus(
                 {
                     "BEAT_SYNC_ENABLED": True,
-                    "BEAT_SYNC_AUTO_INSTALL": True,
                 }
             ),
         )

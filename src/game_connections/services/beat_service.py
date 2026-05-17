@@ -8,12 +8,26 @@ import math
 import os
 import time
 from dataclasses import dataclass
-from typing import AsyncIterator, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import AsyncIterator, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import soundfile as sf
 
 from main_logger import logger
+
+
+BEAT_CACHE_VERSION = 2
+AUDIO_FILE_EXTENSIONS = {
+    ".wav",
+    ".mp3",
+    ".ogg",
+    ".flac",
+    ".aac",
+    ".m4a",
+    ".opus",
+    ".wma",
+}
 
 
 @dataclass
@@ -35,6 +49,26 @@ class BeatStreamChunk:
     method: str
 
 
+@dataclass
+class BeatBackendStatus:
+    beat_this_installed: bool
+    beat_this_ready: bool
+    active_backend: str
+    cache_dir: str
+    cache_entries: int
+    cache_bytes: int
+
+
+@dataclass
+class BeatCacheBuildSummary:
+    root_dir: str
+    scanned_files: int
+    cache_hits: int
+    generated: int
+    failed: int
+    failed_files: List[str]
+
+
 class BeatService:
     """Beat extraction service with optional ML backend and robust DSP fallback."""
 
@@ -42,7 +76,8 @@ class BeatService:
         self._warmup_done = False
         self._warmup_lock = asyncio.Lock()
         self._beat_this_file2beats = None
-        self._cache_dir = os.path.join("Settings", "beat_cache")
+        self._project_root = Path(__file__).resolve().parents[3]
+        self._cache_dir = str(self._project_root / "beat_sync_cache")
 
     async def warmup(self, auto_install: bool = True) -> None:
         if self._warmup_done:
@@ -74,6 +109,7 @@ class BeatService:
         audio_path: str,
         min_confidence: float = 0.2,
         auto_install: bool = True,
+        track_name: str = "",
     ) -> BeatTrackResult:
         await self.warmup(auto_install=auto_install)
         t0 = time.perf_counter()
@@ -82,6 +118,7 @@ class BeatService:
             audio_path,
             float(min_confidence),
             bool(auto_install),
+            str(track_name or ""),
         )
         logger.info(
             f"[BeatSync] extract_beats method={result.method} track='{_short_path(audio_path)}' "
@@ -95,70 +132,30 @@ class BeatService:
         chunk_seconds: float = 8.0,
         min_confidence: float = 0.2,
         auto_install: bool = True,
+        track_name: str = "",
     ) -> AsyncIterator[BeatStreamChunk]:
-        await self.warmup(auto_install=auto_install)
-
-        cached = await asyncio.to_thread(self._load_cached_result, audio_path)
-        if cached is not None:
-            logger.info(
-                f"[BeatSync] cache-hit stream track='{_short_path(audio_path)}' method={cached.method} "
-                f"beats={len(cached.beats)}"
-            )
-            yield BeatStreamChunk(
-                beats=cached.beats,
-                chunk_index=0,
-                chunks_total=1,
-                progress=1.0,
-                duration=cached.duration,
-                method=f"cache:{cached.method}",
-            )
-            return
-
-        mono, sr, duration = await asyncio.to_thread(self._load_audio_mono, audio_path)
-
-        chunk_seconds = max(1.0, float(chunk_seconds))
-        chunk_samples = max(1, int(round(chunk_seconds * sr)))
-        chunks_total = max(1, int(math.ceil(len(mono) / float(chunk_samples))))
-        all_beats: List[Dict[str, float]] = []
-        method = "dsp_stream"
-
-        logger.info(
-            f"[BeatSync] stream-start track='{_short_path(audio_path)}' chunks={chunks_total} "
-            f"chunk_seconds={chunk_seconds:.1f} min_conf={min_confidence:.2f}"
+        result = await self.extract_beats(
+            audio_path=audio_path,
+            min_confidence=min_confidence,
+            auto_install=auto_install,
+            track_name=track_name,
+        )
+        yield BeatStreamChunk(
+            beats=result.beats,
+            chunk_index=0,
+            chunks_total=1,
+            progress=1.0,
+            duration=result.duration,
+            method=result.method,
         )
 
-        for idx in range(chunks_total):
-            start = idx * chunk_samples
-            end = min(len(mono), start + chunk_samples)
-            segment = mono[start:end]
-            offset_sec = float(start) / float(sr)
-
-            beats = await asyncio.to_thread(
-                self._extract_fallback_from_audio,
-                segment,
-                sr,
-                float(min_confidence),
-                offset_sec,
-            )
-            all_beats.extend(beats)
-
-            yield BeatStreamChunk(
-                beats=beats,
-                chunk_index=idx,
-                chunks_total=chunks_total,
-                progress=float(idx + 1) / float(chunks_total),
-                duration=duration,
-                method=method,
-            )
-
-        bpm = _estimate_bpm_from_beats([b["time"] for b in all_beats])
-        await asyncio.to_thread(
-            self._save_cached_result,
-            audio_path,
-            BeatTrackResult(beats=all_beats, duration=duration, sr=int(sr), method=method, bpm_estimate=bpm),
-        )
-
-    def _extract_beats_sync(self, audio_path: str, min_confidence: float, auto_install: bool) -> BeatTrackResult:
+    def _extract_beats_sync(
+        self,
+        audio_path: str,
+        min_confidence: float,
+        auto_install: bool,
+        track_name: str = "",
+    ) -> BeatTrackResult:
         if not audio_path or not os.path.exists(audio_path):
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
@@ -172,20 +169,133 @@ class BeatService:
 
         res = self._try_beat_this(audio_path, min_confidence, auto_install=auto_install)
         if res is not None:
-            self._save_cached_result(audio_path, res)
+            self._save_cached_result(audio_path, res, track_name=track_name)
             return res
 
         res = self._try_librosa(audio_path, min_confidence)
         if res is not None:
-            self._save_cached_result(audio_path, res)
+            self._save_cached_result(audio_path, res, track_name=track_name)
             return res
 
         mono, sr, duration = self._load_audio_mono(audio_path)
         beats = self._extract_fallback_from_audio(mono, sr, min_confidence, offset_seconds=0.0)
         bpm = _estimate_bpm_from_beats([b["time"] for b in beats])
         result = BeatTrackResult(beats=beats, duration=duration, sr=int(sr), method="dsp_fallback", bpm_estimate=bpm)
-        self._save_cached_result(audio_path, result)
+        self._save_cached_result(audio_path, result, track_name=track_name)
         return result
+
+    def get_backend_status(self) -> BeatBackendStatus:
+        cache_stats = self.get_cache_stats()
+        if self._beat_this_file2beats is not None:
+            active_backend = "beat_this"
+        elif _module_available("librosa"):
+            active_backend = "librosa"
+        else:
+            active_backend = "dsp_fallback"
+
+        return BeatBackendStatus(
+            beat_this_installed=_module_available("beat_this"),
+            beat_this_ready=self._beat_this_file2beats is not None,
+            active_backend=active_backend,
+            cache_dir=self._cache_dir,
+            cache_entries=int(cache_stats["entries"]),
+            cache_bytes=int(cache_stats["bytes"]),
+        )
+
+    def get_cache_stats(self) -> Dict[str, int]:
+        entries = 0
+        total_bytes = 0
+        try:
+            cache_root = Path(self._cache_dir)
+            if not cache_root.exists():
+                return {"entries": 0, "bytes": 0}
+            for item in cache_root.glob("*.json"):
+                try:
+                    st = item.stat()
+                except OSError:
+                    continue
+                entries += 1
+                total_bytes += int(st.st_size)
+        except Exception:
+            return {"entries": 0, "bytes": 0}
+        return {"entries": entries, "bytes": total_bytes}
+
+    def install_or_update_backend(self) -> BeatBackendStatus:
+        pip_installer = _get_default_pip_installer()
+        if pip_installer is None:
+            raise RuntimeError("PipInstaller unavailable")
+
+        ok = pip_installer.install_package(
+            ["beat-this", "tqdm", "einops", "soxr", "rotary-embedding-torch"],
+            description="Installing beat-sync package: beat-this",
+            extra_args=["--upgrade"],
+        )
+        if not ok:
+            raise RuntimeError("beat-this installation failed")
+
+        self._warmup_done = False
+        self._beat_this_file2beats = None
+        self._warmup_sync(auto_install=False)
+        self._warmup_done = True
+        return self.get_backend_status()
+
+    def build_cache_for_directory(
+        self,
+        directory_path: str,
+        *,
+        min_confidence: float = 0.2,
+        auto_install: bool = False,
+    ) -> BeatCacheBuildSummary:
+        root = Path(directory_path).resolve()
+        if not root.exists():
+            raise FileNotFoundError(f"Directory not found: {root}")
+        if not root.is_dir():
+            raise NotADirectoryError(f"Not a directory: {root}")
+
+        scanned_files = 0
+        cache_hits = 0
+        generated = 0
+        failed = 0
+        failed_files: List[str] = []
+
+        self._warmup_sync(auto_install=auto_install)
+        self._warmup_done = True
+
+        for audio_file in self.iter_audio_files(root):
+            scanned_files += 1
+            try:
+                if self._load_cached_result(str(audio_file)) is not None:
+                    cache_hits += 1
+                    continue
+                self._extract_beats_sync(
+                    str(audio_file),
+                    float(min_confidence),
+                    bool(auto_install),
+                    track_name=audio_file.stem,
+                )
+                generated += 1
+            except Exception as exc:
+                failed += 1
+                failed_files.append(f"{audio_file.name}: {exc}")
+                logger.error(f"[BeatSync] cache build failed for '{audio_file}': {exc}", exc_info=True)
+
+        return BeatCacheBuildSummary(
+            root_dir=str(root),
+            scanned_files=scanned_files,
+            cache_hits=cache_hits,
+            generated=generated,
+            failed=failed,
+            failed_files=failed_files,
+        )
+
+    def iter_audio_files(self, directory_path: Path | str) -> Iterable[Path]:
+        root = Path(directory_path)
+        for item in sorted(root.rglob("*")):
+            if not item.is_file():
+                continue
+            if item.suffix.lower() not in AUDIO_FILE_EXTENSIONS:
+                continue
+            yield item
 
     def _init_beat_this(self, auto_install: bool) -> bool:
         try:
@@ -357,15 +467,15 @@ class BeatService:
 
     def _load_cached_result(self, audio_path: str) -> Optional[BeatTrackResult]:
         try:
-            signature = self._file_signature(audio_path)
-            cache_path = self._cache_path_for(audio_path)
+            source_hash = self._file_content_hash(audio_path)
+            cache_path = self._cache_path_for_hash(source_hash)
             if not os.path.exists(cache_path):
                 return None
 
             with open(cache_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            if data.get("signature") != signature:
+            if str(data.get("source_hash") or "") != source_hash:
                 return None
 
             beats_raw = data.get("beats") or []
@@ -385,21 +495,25 @@ class BeatService:
             logger.debug(f"[BeatSync] cache read skipped for '{_short_path(audio_path)}': {e}")
             return None
 
-    def _save_cached_result(self, audio_path: str, result: BeatTrackResult) -> None:
+    def _save_cached_result(self, audio_path: str, result: BeatTrackResult, *, track_name: str = "") -> None:
         try:
             os.makedirs(self._cache_dir, exist_ok=True)
             method = result.method[6:] if result.method.startswith("cache:") else result.method
+            source_hash = self._file_content_hash(audio_path)
             data = {
-                "version": 1,
-                "signature": self._file_signature(audio_path),
+                "version": BEAT_CACHE_VERSION,
+                "source_hash": source_hash,
+                "track_name": str(track_name or Path(audio_path).stem),
                 "source_path": os.path.abspath(audio_path),
+                "source_kind": "audio_file",
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "beats": result.beats,
                 "duration": float(result.duration),
                 "sr": int(result.sr),
                 "method": method,
                 "bpm_estimate": float(result.bpm_estimate),
             }
-            cache_path = self._cache_path_for(audio_path)
+            cache_path = self._cache_path_for_hash(source_hash)
             tmp_path = cache_path + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
@@ -408,18 +522,16 @@ class BeatService:
         except Exception as e:
             logger.debug(f"[BeatSync] cache save skipped for '{_short_path(audio_path)}': {e}")
 
-    def _cache_path_for(self, audio_path: str) -> str:
-        key = hashlib.sha256(os.path.abspath(audio_path).lower().encode("utf-8", errors="ignore")).hexdigest()
-        return os.path.join(self._cache_dir, f"{key}.json")
+    def _cache_path_for_hash(self, source_hash: str) -> str:
+        return os.path.join(self._cache_dir, f"{source_hash}.json")
 
     @staticmethod
-    def _file_signature(audio_path: str) -> Dict[str, object]:
-        st = os.stat(audio_path)
-        return {
-            "path": os.path.abspath(audio_path).lower(),
-            "size": int(st.st_size),
-            "mtime_ns": int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))),
-        }
+    def _file_content_hash(audio_path: str) -> str:
+        digest = hashlib.sha256()
+        with open(audio_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     @staticmethod
     def _probe_duration(audio_path: str) -> float:

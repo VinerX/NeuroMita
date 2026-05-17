@@ -36,26 +36,12 @@ class GetMusicBeatsAction:
         )
         beat_enabled = bool(enabled_res and enabled_res[0])
 
-        auto_install_res = ctx.event_bus.emit_and_wait(
-            Events.Settings.GET_SETTING,
-            {"key": "BEAT_SYNC_AUTO_INSTALL", "default": True},
-            timeout=0.8,
-        )
-        auto_install = True if not auto_install_res else bool(auto_install_res[0])
-
-        file_transfer_res = ctx.event_bus.emit_and_wait(
-            Events.Settings.GET_SETTING,
-            {"key": "BEAT_SYNC_USE_FILE_TRANSFER", "default": True},
-            timeout=0.8,
-        )
-        file_transfer_enabled = True if not file_transfer_res else bool(file_transfer_res[0])
-
         req_tag = request_id[:8] if request_id else "-"
         track_for_log = track_name or os.path.basename(audio_path) or "unknown"
         logger.info(
             f"[BeatSync] request req={req_tag} track='{track_for_log}' stream={stream} "
             f"chunk={chunk_seconds:.1f}s min_conf={min_confidence:.2f} "
-            f"auto_install={auto_install} file_transfer={file_transfer_enabled}"
+            "auto_install=False file_transfer=True"
         )
 
         if not beat_enabled:
@@ -67,19 +53,6 @@ class GetMusicBeatsAction:
                     "audio_path": audio_path,
                     "request_id": request_id,
                     "error": "BEAT_SYNC_ENABLED is OFF",
-                },
-            })
-            return
-
-        if not file_transfer_enabled:
-            logger.warning(f"[BeatSync] rejected req={req_tag}: BEAT_SYNC_USE_FILE_TRANSFER is OFF")
-            await ctx.server.send_json(ctx.writer, {
-                "type": "music_beats_error",
-                "body": {
-                    "track_name": track_name,
-                    "audio_path": audio_path,
-                    "request_id": request_id,
-                    "error": "BEAT_SYNC_USE_FILE_TRANSFER is OFF",
                 },
             })
             return
@@ -119,7 +92,8 @@ class GetMusicBeatsAction:
                     audio_path=audio_path,
                     chunk_seconds=chunk_seconds,
                     min_confidence=min_confidence,
-                    auto_install=auto_install,
+                    auto_install=False,
+                    track_name=track_name,
                 ):
                     all_beats.extend(ch.beats)
                     duration = ch.duration
@@ -182,7 +156,8 @@ class GetMusicBeatsAction:
             result = await service.extract_beats(
                 audio_path,
                 min_confidence=min_confidence,
-                auto_install=auto_install,
+                auto_install=False,
+                track_name=track_name,
             )
             await ctx.server.send_json(ctx.writer, {
                 "type": "music_beats_ready",

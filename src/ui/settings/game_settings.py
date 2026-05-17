@@ -1,5 +1,151 @@
+import threading
+from pathlib import Path
+
+from PyQt6.QtWidgets import QFileDialog
+
+from core.events import Events
+from game_connections.services.beat_service import get_beat_service
+from main_logger import logger
 from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
+
+
+def _format_beat_cache_size(total_bytes: int) -> str:
+    if total_bytes < 1024:
+        return f"{total_bytes} B"
+    if total_bytes < 1024 * 1024:
+        return f"{total_bytes / 1024.0:.1f} KB"
+    return f"{total_bytes / (1024.0 * 1024.0):.1f} MB"
+
+
+def _format_beat_status_text(extra_message: str | None = None) -> str:
+    service = get_beat_service()
+    status = service.get_backend_status()
+    install_state = _("установлен", "installed") if status.beat_this_installed else _("не установлен", "not installed")
+    ready_state = _("готов", "ready") if status.beat_this_ready else _("не прогрет", "not warmed up")
+    backend_line = _("Backend: {}", "Backend: {}").format(status.active_backend)
+    cache_line = _("Кеш: {} файлов, {}", "Cache: {} files, {}").format(
+        status.cache_entries,
+        _format_beat_cache_size(status.cache_bytes),
+    )
+    root_line = _("Папка кеша: {}", "Cache folder: {}").format(status.cache_dir)
+    status_line = _("beat-this: {}, {}", "beat-this: {}, {}").format(install_state, ready_state)
+
+    lines = [status_line, backend_line, cache_line, root_line]
+    if extra_message:
+        lines.append(extra_message)
+    return "\n".join(lines)
+
+
+def _set_beat_status_label(gui, text: str) -> None:
+    label = getattr(gui, "beat_sync_status_label", None)
+    if label is None:
+        return
+
+    def _apply():
+        label.setText(text)
+        label.show()
+
+    if threading.current_thread() is threading.main_thread():
+        _apply()
+    else:
+        gui.run_ui_task_signal.emit(_apply)
+
+
+def _set_beat_action_buttons_enabled(gui, enabled: bool) -> None:
+    def _apply():
+        for attr_name in ("beat_sync_install_button", "beat_sync_rebuild_button"):
+            btn = getattr(gui, attr_name, None)
+            if btn is not None:
+                btn.setEnabled(enabled)
+
+    if threading.current_thread() is threading.main_thread():
+        _apply()
+    else:
+        gui.run_ui_task_signal.emit(_apply)
+
+
+def _refresh_beat_sync_status(gui, extra_message: str | None = None) -> None:
+    try:
+        _set_beat_status_label(gui, _format_beat_status_text(extra_message))
+    except Exception as exc:
+        logger.error(f"[BeatSync] status refresh failed: {exc}", exc_info=True)
+
+
+def _install_beat_sync_backend(gui) -> None:
+    _set_beat_action_buttons_enabled(gui, False)
+    _set_beat_status_label(gui, _("Установка beat-this...", "Installing beat-this..."))
+
+    def _worker():
+        try:
+            status = get_beat_service().install_or_update_backend()
+            msg = _("Пакет beat-this готов. Backend: {}", "beat-this is ready. Backend: {}").format(status.active_backend)
+            _refresh_beat_sync_status(gui, msg)
+            gui.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
+                "title": _("Beat Sync", "Beat Sync"),
+                "message": msg,
+            })
+        except Exception as exc:
+            logger.error(f"[BeatSync] install/update failed: {exc}", exc_info=True)
+            msg = _("Не удалось установить beat-this:\n{}", "Failed to install beat-this:\n{}").format(exc)
+            _refresh_beat_sync_status(gui, msg)
+            gui.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
+                "title": _("Beat Sync", "Beat Sync"),
+                "message": msg,
+            })
+        finally:
+            _set_beat_action_buttons_enabled(gui, True)
+
+    threading.Thread(target=_worker, name="beat-sync-install", daemon=True).start()
+
+
+def _rebuild_beat_sync_cache(gui) -> None:
+    start_dir = str(gui._get_setting("BEAT_SYNC_LAST_SCAN_DIR", str(Path.cwd())))
+    selected_dir = QFileDialog.getExistingDirectory(
+        gui,
+        _("Выберите папку с музыкой", "Select music folder"),
+        start_dir,
+    )
+    if not selected_dir:
+        return
+
+    gui._save_setting("BEAT_SYNC_LAST_SCAN_DIR", selected_dir)
+    _set_beat_action_buttons_enabled(gui, False)
+    _set_beat_status_label(
+        gui,
+        _("Сканирование музыки и построение кеша...", "Scanning music and building cache..."),
+    )
+
+    def _worker():
+        try:
+            summary = get_beat_service().build_cache_for_directory(selected_dir, auto_install=False)
+            msg = _(
+                "Обработано: {}/{} | Уже в кеше: {} | Построено: {} | Ошибок: {}",
+                "Processed: {}/{} | Cached: {} | Built: {} | Errors: {}",
+            ).format(
+                summary.scanned_files - summary.failed,
+                summary.scanned_files,
+                summary.cache_hits,
+                summary.generated,
+                summary.failed,
+            )
+            _refresh_beat_sync_status(gui, msg)
+            gui.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
+                "title": _("Beat Sync", "Beat Sync"),
+                "message": msg,
+            })
+        except Exception as exc:
+            logger.error(f"[BeatSync] cache rebuild failed: {exc}", exc_info=True)
+            msg = _("Не удалось построить кеш битов:\n{}", "Failed to build beat cache:\n{}").format(exc)
+            _refresh_beat_sync_status(gui, msg)
+            gui.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
+                "title": _("Beat Sync", "Beat Sync"),
+                "message": msg,
+            })
+        finally:
+            _set_beat_action_buttons_enabled(gui, True)
+
+    threading.Thread(target=_worker, name="beat-sync-cache-build", daemon=True).start()
 
 
 def setup_game_controls(self, parent):
@@ -200,58 +346,28 @@ def setup_game_controls(self, parent):
             ),
         },
         {
-            'label': _('Автоустановка beat-this', 'Auto-install beat-this'),
-            'key': 'BEAT_SYNC_AUTO_INSTALL',
-            'type': 'checkbutton',
-            'default_checkbutton': True,
-            'depends_on': 'BEAT_SYNC_ENABLED',
+            'label': _('Статус Beat Sync', 'Beat Sync status'),
+            'type': 'text',
+            'widget_name': 'beat_sync_status_label',
+        },
+        {
+            'label': _('Установить / обновить beat-this', 'Install / update beat-this'),
+            'type': 'button',
+            'command': lambda: _install_beat_sync_backend(self),
+            'widget_name': 'beat_sync_install_button',
             'tooltip': _(
-                'Если пакет beat-this не установлен, попытаться установить его автоматически при первом запуске.',
-                'If beat-this is not installed, try to install it automatically on first use.',
+                'Устанавливает или обновляет backend beat-this. Выполняется вручную, без авто-скачивания при запросе из Unity.',
+                'Installs or updates the beat-this backend. Manual action, no auto-download during Unity requests.',
             ),
         },
         {
-            'label': _('Передавать трек через файл', 'Transfer track via file'),
-            'key': 'BEAT_SYNC_USE_FILE_TRANSFER',
-            'type': 'checkbutton',
-            'default_checkbutton': True,
-            'depends_on': 'BEAT_SYNC_ENABLED',
+            'label': _('Построить кеш битов для папки музыки', 'Build beat cache for music folder'),
+            'type': 'button',
+            'command': lambda: _rebuild_beat_sync_cache(self),
+            'widget_name': 'beat_sync_rebuild_button',
             'tooltip': _(
-                'Если выключено, Python-анализ битов не будет запрашиваться, и останется только локальный DSP fallback в Unity.',
-                'If OFF, Python beat analysis will not be requested and only the local Unity DSP fallback will remain.',
-            ),
-        },
-        {
-            'label': _('Потоковая отправка битов', 'Stream beats in chunks'),
-            'key': 'BEAT_SYNC_STREAMING',
-            'type': 'checkbutton',
-            'default_checkbutton': True,
-            'depends_on': 'BEAT_SYNC_ENABLED',
-            'tooltip': _(
-                'Если анализ идёт медленно, биты будут приходить частями по мере обработки.',
-                'If analysis is slow, beats will be delivered in chunks while processing.',
-            ),
-        },
-        {
-            'label': _('Размер чанка (сек)', 'Chunk size (sec)'),
-            'key': 'BEAT_SYNC_CHUNK_SECONDS',
-            'type': 'entry',
-            'default': 8,
-            'depends_on': 'BEAT_SYNC_ENABLED',
-            'tooltip': _(
-                'Рекомендуется 6-12 секунд. Меньше значение = быстрее первые биты.',
-                'Recommended 6-12 seconds. Smaller = earlier first beats.',
-            ),
-        },
-        {
-            'label': _('Мин. уверенность бита', 'Min beat confidence'),
-            'key': 'BEAT_SYNC_MIN_CONFIDENCE',
-            'type': 'entry',
-            'default': 0.2,
-            'depends_on': 'BEAT_SYNC_ENABLED',
-            'tooltip': _(
-                'Порог уверенности детекции бита (0.0 - 1.0).',
-                'Threshold to filter noisy beats (0.0 - 1.0).',
+                'Проходит по выбранной папке, считает биты для всех поддерживаемых аудиофайлов и сохраняет JSON-кеш в корне Python-проекта.',
+                'Scans the selected folder, computes beats for all supported audio files, and saves JSON cache files in the Python project root.',
             ),
         },
     ]
@@ -262,3 +378,4 @@ def setup_game_controls(self, parent):
         _('Бит-синхронизация (Beat This)', 'Beat Sync (Beat This)'),
         beat_sync_config
     )
+    _refresh_beat_sync_status(self)
