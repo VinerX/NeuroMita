@@ -206,7 +206,8 @@ API ссылка - https://openrouter.ai/api/v1
    gemini-2.5-flash-lite  
    gemini-robotics-er-1.5-preview  
    gemini-robotics-er-1.6-preview  
-   gemini-3-flash-preview (долго думает)   
+   gemini-3-flash-preview (долго думает)  
+   gemini-3.5-flash (Новая модель)  
  
  - Модель на 500 запросов в день:  
    gemini-3.1-flash-lite-preview (могут быть перебои)  
