@@ -13,6 +13,7 @@ from .widgets import (
     LabeledLineEditRow,
     LabeledTextEditRow,
     LabeledComboRow,
+    FallbackChainEditor,
 )
 from ui.gui_templates import create_section_header
 from managers.settings_manager import CollapsibleSection
@@ -165,6 +166,15 @@ def build_api_settings_ui(self, parent_layout):
 
     self.reserve_keys_row = LabeledTextEditRow(_('Резервные ключи', 'Reserve keys'))
     api_container_layout.addWidget(self.reserve_keys_row)
+
+    # --- Collapsible fallback chain section ---
+    self.fallback_section = CollapsibleSection(
+        _("Резервные провайдеры/модели", "Fallback providers/models"), self, icon_name="fa5s.life-ring"
+    )
+    api_container_layout.addWidget(self.fallback_section)
+
+    self.fallback_editor = FallbackChainEditor()
+    self.fallback_section.add_widget(self.fallback_editor)
 
     # --- Collapsible protocol configuration section (UNDER inputs) ---
     self.protocol_section = CollapsibleSection(_("Конфигурация протокола", "Protocol configuration"), self, icon_name="fa5s.sliders-h")

@@ -50,6 +50,24 @@ class PresetsMixin:
             except Exception:
                 pass
 
+            try:
+                # all presets (custom first, then builtin templates) available as fallback targets
+                all_items = []
+                for p in custom:
+                    pid = getattr(p, "id", None)
+                    name = getattr(p, "name", "")
+                    if isinstance(pid, int):
+                        all_items.append((str(name), pid))
+                for p in builtin:
+                    pid = getattr(p, "id", None)
+                    name = getattr(p, "name", "")
+                    if isinstance(pid, int):
+                        all_items.append((f"[builtin] {name}", pid))
+                if hasattr(v, "fallback_editor"):
+                    v.fallback_editor.set_available_presets(all_items)
+            except Exception:
+                pass
+
             # templates combo
             v.template_combo.blockSignals(True)
             v.template_combo.clear()
@@ -210,6 +228,13 @@ class PresetsMixin:
             gen_overrides = preset.get("generation_overrides") or {}
             if isinstance(gen_overrides, dict):
                 self._write_generation_overrides(gen_overrides)
+
+            if hasattr(v, "fallback_editor"):
+                fb_value = state.get("fallbacks") if isinstance(state.get("fallbacks"), list) else preset.get("fallbacks") or []
+                v.fallback_editor.set_self_preset_id(int(preset_id))
+                v.fallback_editor.blockSignals(True)
+                v.fallback_editor.set_value(fb_value)
+                v.fallback_editor.blockSignals(False)
 
             v.api_url_row.set_enabled(base is None)
 

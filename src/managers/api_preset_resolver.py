@@ -48,7 +48,7 @@ class ApiPresetResolver:
     # Public API
     # ---------------------------
 
-    def resolve(self, preset_id: Optional[int] = None) -> PresetSettings:
+    def resolve(self, preset_id: Optional[int] = None, *, model_override: Optional[str] = None) -> PresetSettings:
         if preset_id is None:
             preset_id = self.settings.get("LAST_API_PRESET_ID", 0)
 
@@ -72,6 +72,10 @@ class ApiPresetResolver:
         # Core fields from preset
         preset_name = str((preset or {}).get("name", "Unknown") or "Unknown")
         api_model = str((preset or {}).get("default_model", "") or "")
+        if model_override is not None:
+            mo = str(model_override or "").strip()
+            if mo:
+                api_model = mo
         api_key = str((preset or {}).get("key", "") or "")
 
         reserve_keys = (preset or {}).get("reserve_keys", []) or []
@@ -139,6 +143,66 @@ class ApiPresetResolver:
             reserve_keys=reserve_keys,
             generation_overrides=generation_overrides,
         )
+
+    def resolve_chain(self, preset_id: Optional[int] = None, *, max_depth: int = 6) -> List[PresetSettings]:
+        """
+        Resolve main preset followed by its configured fallbacks (in order).
+        Each fallback may carry its own model override.
+        Skips duplicates by (preset_id, model_override) pair.
+        Stops at max_depth entries total to prevent runaway chains.
+        """
+        if preset_id is None:
+            try:
+                preset_id = int(self.settings.get("LAST_API_PRESET_ID", 0) or 0)
+            except Exception:
+                preset_id = 0
+
+        chain: List[PresetSettings] = []
+        seen_keys: set = set()
+
+        # Main preset
+        try:
+            main = self.resolve(preset_id)
+            chain.append(main)
+            seen_keys.add((int(preset_id) if preset_id else 0, str(main.api_model or "")))
+        except Exception as e:
+            logger.error(f"[ApiPresetResolver] resolve_chain: main resolve failed: {e}", exc_info=True)
+
+        # Fallback entries are stored in the main preset dict
+        main_raw = self._load_preset_full(preset_id) or {}
+        fallbacks_raw = main_raw.get("fallbacks") or []
+        if not isinstance(fallbacks_raw, list):
+            fallbacks_raw = []
+
+        for fb in fallbacks_raw:
+            if len(chain) >= max_depth:
+                break
+            try:
+                if isinstance(fb, dict):
+                    fb_pid = fb.get("preset_id", fb.get("id"))
+                    fb_model = str(fb.get("model") or "").strip()
+                else:
+                    fb_pid = fb
+                    fb_model = ""
+                fb_pid = int(fb_pid)
+            except Exception:
+                continue
+            if fb_pid <= 0:
+                continue
+
+            try:
+                ps = self.resolve(fb_pid, model_override=fb_model or None)
+            except Exception as e:
+                logger.warning(f"[ApiPresetResolver] fallback resolve failed for {fb_pid}: {e}")
+                continue
+
+            key = (fb_pid, str(ps.api_model or ""))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            chain.append(ps)
+
+        return chain
 
     def resolve_preset_id_by_name(self, display_name: str) -> Optional[int]:
         if not display_name:

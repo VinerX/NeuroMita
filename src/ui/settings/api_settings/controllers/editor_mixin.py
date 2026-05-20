@@ -54,6 +54,10 @@ class EditorMixin:
     def _get_snapshot(self) -> PresetSnapshot:
         v = self.view
         base = self._parse_base(v.template_combo.currentData())
+        fb_tuple = tuple(
+            (int(fb.get("preset_id") or 0), str(fb.get("model") or ""))
+            for fb in (getattr(v, "fallback_editor", None).get_value() if getattr(v, "fallback_editor", None) else [])
+        )
         return PresetSnapshot(
             url=str(v.api_url_row.text() or ""),
             model=str(v.api_model_row.text() or ""),
@@ -62,6 +66,7 @@ class EditorMixin:
             reserve_keys_text=str(v.reserve_keys_row.text() or "").strip(),
             protocol_id=self._current_protocol_id_ui(),
             generation_overrides=self._read_generation_overrides(),
+            fallbacks=fb_tuple,
         )
 
     def _set_dirty(self, dirty: bool) -> None:
@@ -233,6 +238,7 @@ class EditorMixin:
             "model": v.api_model_row.text(),
             "key": v.api_key_row.text(),
             "reserve_keys": [k.strip() for k in v.reserve_keys_row.text().splitlines() if k.strip()],
+            "fallbacks": v.fallback_editor.get_value() if hasattr(v, "fallback_editor") else [],
         }
 
         base = self._parse_base(v.template_combo.currentData())
@@ -299,6 +305,13 @@ class EditorMixin:
 
         self._write_generation_overrides(self._snapshot.generation_overrides)
 
+        if hasattr(v, "fallback_editor"):
+            v.fallback_editor.blockSignals(True)
+            v.fallback_editor.set_value([
+                {"preset_id": pid, "model": m} for pid, m in (self._snapshot.fallbacks or ())
+            ])
+            v.fallback_editor.blockSignals(False)
+
         self._is_loading_ui = False
         self._set_dirty(False)
 
@@ -315,6 +328,7 @@ class EditorMixin:
         data["default_model"] = v.api_model_row.text()
         data["key"] = v.api_key_row.text()
         data["reserve_keys"] = [k.strip() for k in v.reserve_keys_row.text().splitlines() if k.strip()]
+        data["fallbacks"] = v.fallback_editor.get_value() if hasattr(v, "fallback_editor") else []
 
         base = self._parse_base(v.template_combo.currentData())
         data["base"] = base

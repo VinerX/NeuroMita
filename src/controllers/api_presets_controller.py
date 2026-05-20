@@ -55,6 +55,9 @@ class UserPreset:
     protocol_id: str = ""
     protocol_overrides: Dict[str, Any] = field(default_factory=dict)
     generation_overrides: Dict[str, Any] = field(default_factory=dict)
+    # Ordered fallback chain. Each entry: {"preset_id": int, "model": str}.
+    # "model" is optional (empty -> use that preset's default_model).
+    fallbacks: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class ApiPresetsController:
@@ -78,6 +81,34 @@ class ApiPresetsController:
         self._subscribe_to_events()
 
         self._migrate_old_api_keys()
+
+    def _normalize_fallbacks(self, raw: Any) -> List[Dict[str, Any]]:
+        """
+        Normalize fallback chain entries into [{"preset_id": int, "model": str}, ...].
+        Accepts:
+        - list of dicts {"preset_id": x, "model": "..."} or {"id": x}
+        - list of ints (preset ids without model override)
+        Drops invalid items; preserves order; does NOT validate that preset_id exists.
+        """
+        if not isinstance(raw, list):
+            return []
+        out: List[Dict[str, Any]] = []
+        for item in raw:
+            pid = None
+            model = ""
+            if isinstance(item, dict):
+                pid = item.get("preset_id", item.get("id"))
+                model = str(item.get("model") or "")
+            else:
+                pid = item
+            try:
+                pid_int = int(pid)
+            except Exception:
+                continue
+            if pid_int <= 0:
+                continue
+            out.append({"preset_id": pid_int, "model": model.strip()})
+        return out
 
     def _mask_key(self, s: str) -> str:
         s = str(s or "")
@@ -376,6 +407,8 @@ class ApiPresetsController:
         if not isinstance(go, dict):
             go = {}
 
+        fallbacks = self._normalize_fallbacks(raw.get("fallbacks", []))
+
         return UserPreset(
             id=pid,
             name=name,
@@ -388,6 +421,7 @@ class ApiPresetsController:
             protocol_id=protocol_id,
             protocol_overrides=dict(po),
             generation_overrides=dict(go),
+            fallbacks=fallbacks,
         )
 
     def _load_presets_only(self):
@@ -657,6 +691,7 @@ class ApiPresetsController:
             "reserve_keys": p.reserve_keys or [],
             "protocol_overrides": p.protocol_overrides or {},
             "generation_overrides": p.generation_overrides or {},
+            "fallbacks": [dict(fb) for fb in (p.fallbacks or [])],
         }
         return result
 
@@ -764,6 +799,9 @@ class ApiPresetsController:
                 rk = []
             up.reserve_keys = [str(k) for k in rk if str(k).strip()]
 
+        if "fallbacks" in data:
+            up.fallbacks = self._normalize_fallbacks(data.get("fallbacks"))
+
         self.presets[preset_id] = up
         if preset_id not in self.presets_order:
             self.presets_order.append(preset_id)
@@ -849,6 +887,7 @@ class ApiPresetsController:
                 key=str(data.get("key", "") or ""),
                 reserve_keys=[str(k) for k in (data.get("reserve_keys", []) or []) if str(k).strip()],
                 protocol_id=str(data.get("protocol_id", "") or "").strip(),
+                fallbacks=self._normalize_fallbacks(data.get("fallbacks", [])),
             )
 
             self.presets[new_id] = up
@@ -1046,6 +1085,8 @@ class ApiPresetsController:
                 rk = state.get("reserve_keys") or []
                 if isinstance(rk, list):
                     up.reserve_keys = [str(k) for k in rk if str(k).strip()]
+            if "fallbacks" in state:
+                up.fallbacks = self._normalize_fallbacks(state.get("fallbacks"))
 
             ok = self._save_presets()
             if not ok:

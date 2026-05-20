@@ -48,9 +48,13 @@ class LLMRequestRunner:
             messages = []
 
         try:
-            base_preset = self.preset_resolver.resolve(preset_id)
+            preset_chain = self.preset_resolver.resolve_chain(preset_id)
         except Exception as e:
-            logger.error(f"[LLMRequestRunner] Failed to resolve preset: {e}", exc_info=True)
+            logger.error(f"[LLMRequestRunner] Failed to resolve preset chain: {e}", exc_info=True)
+            return None
+
+        if not preset_chain:
+            logger.error("[LLMRequestRunner] Empty preset chain (no main, no fallbacks).")
             return None
 
         try:
@@ -60,8 +64,52 @@ class LLMRequestRunner:
             logger.error(f"[LLMRequestRunner] Failed to init ProviderManager: {e}", exc_info=True)
             return None
 
-        for attempt in range(1, int(max_attempts) + 1):
-            logger.info(f"Generation attempt {attempt}/{max_attempts}")
+        total_presets = len(preset_chain)
+        for chain_idx, base_preset in enumerate(preset_chain, start=1):
+            preset_label = base_preset.preset_name or f"preset#{chain_idx}"
+            if chain_idx > 1:
+                logger.warning(
+                    f"[LLMRequestRunner] Switching to fallback {chain_idx}/{total_presets}: "
+                    f"'{preset_label}' model='{base_preset.api_model}'"
+                )
+
+            response_text = self._run_on_preset(
+                base_preset=base_preset,
+                messages=messages,
+                build_request=build_request,
+                pm=pm,
+                max_attempts=int(max_attempts),
+                retry_delay=float(retry_delay),
+                request_timeout=float(request_timeout),
+                chain_pos=chain_idx,
+                chain_total=total_presets,
+            )
+            if response_text:
+                if chain_idx > 1:
+                    logger.info(f"[LLMRequestRunner] Fallback preset '{preset_label}' succeeded.")
+                return response_text
+
+        logger.error("All generation attempts failed across preset chain.")
+        return None
+
+    def _run_on_preset(
+        self,
+        *,
+        base_preset: PresetSettings,
+        messages: list,
+        build_request: Callable[[PresetSettings, str], Any],
+        pm: Any,
+        max_attempts: int,
+        retry_delay: float,
+        request_timeout: float,
+        chain_pos: int,
+        chain_total: int,
+    ) -> Optional[str]:
+        import os
+        preset_tag = f"[{chain_pos}/{chain_total} {base_preset.preset_name}]"
+
+        for attempt in range(1, max_attempts + 1):
+            logger.info(f"{preset_tag} Generation attempt {attempt}/{max_attempts}")
 
             try:
                 _base = os.environ.get("NEUROMITA_BASE_DIR", "")
@@ -76,33 +124,32 @@ class LLMRequestRunner:
             try:
                 req = build_request(preset_attempt, effective_model)
             except Exception as e:
-                logger.error(f"[LLMRequestRunner] Failed to build request: {e}", exc_info=True)
+                logger.error(f"{preset_tag} Failed to build request: {e}", exc_info=True)
                 req = None
 
             if req is None:
                 if attempt < max_attempts:
                     self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE_ATTEMPT)
-                    time.sleep(float(retry_delay))
+                    time.sleep(retry_delay)
                 continue
 
             try:
                 response_text = self._call_with_timeout(
                     pm.generate,
                     args=(req,),
-                    timeout=float(request_timeout)
+                    timeout=request_timeout,
                 )
                 if response_text:
                     return response_text
             except concurrent.futures.TimeoutError:
-                logger.error(f"Attempt {attempt} timed out after {request_timeout}s.")
+                logger.error(f"{preset_tag} Attempt {attempt} timed out after {request_timeout}s.")
             except Exception as e:
-                logger.error(f"Error during generation attempt {attempt}: {e}", exc_info=True)
+                logger.error(f"{preset_tag} Error during attempt {attempt}: {e}", exc_info=True)
 
             if attempt < max_attempts:
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE_ATTEMPT)
-                time.sleep(float(retry_delay))
+                time.sleep(retry_delay)
 
-        logger.error("All generation attempts failed.")
         return None
 
     def _call_with_timeout(self, func, args=(), kwargs=None, timeout: float = 30.0):
