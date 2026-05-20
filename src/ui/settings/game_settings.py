@@ -4,6 +4,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import QFileDialog
 
 from core.events import Events
+from game_connections.services.beat_install import run_beat_install_blocking
 from game_connections.services.beat_service import get_beat_service
 from main_logger import logger
 from ui.gui_templates import create_settings_section, create_section_header
@@ -78,7 +79,11 @@ def _install_beat_sync_backend(gui) -> None:
 
     def _worker():
         try:
-            status = get_beat_service().install_or_update_backend()
+            ok = run_beat_install_blocking()
+            if not ok:
+                raise RuntimeError("beat-this installation failed")
+            get_beat_service().reset_runtime_state()
+            status = get_beat_service().get_backend_status()
             msg = _("Пакет beat-this готов. Backend: {}", "beat-this is ready. Backend: {}").format(status.active_backend)
             _refresh_beat_sync_status(gui, msg)
             gui.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
@@ -351,13 +356,13 @@ def setup_game_controls(self, parent):
             'widget_name': 'beat_sync_status_label',
         },
         {
-            'label': _('Установить / обновить beat-this', 'Install / update beat-this'),
+            'label': _('Установить beat-this', 'Install beat-this'),
             'type': 'button',
             'command': lambda: _install_beat_sync_backend(self),
             'widget_name': 'beat_sync_install_button',
             'tooltip': _(
-                'Устанавливает или обновляет backend beat-this. Выполняется вручную, без авто-скачивания при запросе из Unity.',
-                'Installs or updates the beat-this backend. Manual action, no auto-download during Unity requests.',
+                'Устанавливает backend beat-this вручную, без авто-скачивания при запросе из Unity.',
+                'Installs the beat-this backend manually, without auto-download during Unity requests.',
             ),
         },
         {

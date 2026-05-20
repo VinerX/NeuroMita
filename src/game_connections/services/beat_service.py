@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import importlib.util
 import math
 import os
 import time
@@ -14,6 +13,7 @@ from typing import AsyncIterator, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import soundfile as sf
 
+from core.events import Events, get_event_bus
 from main_logger import logger
 
 
@@ -70,45 +70,36 @@ class BeatCacheBuildSummary:
 
 
 class BeatService:
-    """Beat extraction service with optional ML backend and robust DSP fallback."""
+    """Cache-first beat-sync proxy. Heavy backends live in ai_engine worker service='beats'."""
 
     def __init__(self):
         self._warmup_done = False
         self._warmup_lock = asyncio.Lock()
-        self._beat_this_file2beats = None
+        self._engine = None
         self._project_root = Path(__file__).resolve().parents[3]
         self._cache_dir = str(self._project_root / "beat_sync_cache")
 
-    async def warmup(self, auto_install: bool = True) -> None:
+    async def warmup(self, auto_install: bool = False) -> None:
         if self._warmup_done:
             return
         async with self._warmup_lock:
             if self._warmup_done:
                 return
-            t0 = time.perf_counter()
-            await asyncio.to_thread(self._warmup_sync, bool(auto_install))
-            self._warmup_done = True
-            logger.info(f"[BeatSync] warmup completed in {(time.perf_counter() - t0):.2f}s")
+            try:
+                await self._engine_call_async("warmup", {"auto_install": bool(auto_install)}, timeout=120.0)
+                self._warmup_done = True
+            except Exception as exc:
+                logger.info(f"[BeatSync] worker warmup skipped: {exc}")
 
-    def _warmup_sync(self, auto_install: bool) -> None:
-        if self._init_beat_this(auto_install=auto_install):
-            return
-
-        try:
-            import librosa  # type: ignore  # noqa: F401
-
-            logger.info("[BeatSync] backend selected: librosa")
-            return
-        except Exception:
-            pass
-
-        logger.info("[BeatSync] backend selected: dsp_fallback")
+    def reset_runtime_state(self) -> None:
+        self._engine = None
+        self._warmup_done = False
 
     async def extract_beats(
         self,
         audio_path: str,
         min_confidence: float = 0.2,
-        auto_install: bool = True,
+        auto_install: bool = False,
         track_name: str = "",
     ) -> BeatTrackResult:
         await self.warmup(auto_install=auto_install)
@@ -117,7 +108,6 @@ class BeatService:
             self._extract_beats_sync,
             audio_path,
             float(min_confidence),
-            bool(auto_install),
             str(track_name or ""),
         )
         logger.info(
@@ -131,7 +121,7 @@ class BeatService:
         audio_path: str,
         chunk_seconds: float = 8.0,
         min_confidence: float = 0.2,
-        auto_install: bool = True,
+        auto_install: bool = False,
         track_name: str = "",
     ) -> AsyncIterator[BeatStreamChunk]:
         result = await self.extract_beats(
@@ -153,7 +143,6 @@ class BeatService:
         self,
         audio_path: str,
         min_confidence: float,
-        auto_install: bool,
         track_name: str = "",
     ) -> BeatTrackResult:
         if not audio_path or not os.path.exists(audio_path):
@@ -167,35 +156,47 @@ class BeatService:
             )
             return cached
 
-        res = self._try_beat_this(audio_path, min_confidence, auto_install=auto_install)
-        if res is not None:
-            self._save_cached_result(audio_path, res, track_name=track_name)
-            return res
+        result = self._extract_uncached_sync(audio_path, min_confidence)
+        self._save_cached_result(audio_path, result, track_name=track_name)
+        return result
 
-        res = self._try_librosa(audio_path, min_confidence)
-        if res is not None:
-            self._save_cached_result(audio_path, res, track_name=track_name)
-            return res
+    def _extract_uncached_sync(self, audio_path: str, min_confidence: float) -> BeatTrackResult:
+        try:
+            payload = self._engine_call_sync(
+                "extract_beats",
+                {
+                    "audio_path": audio_path,
+                    "min_confidence": float(min_confidence),
+                },
+                timeout=3600.0,
+            )
+            return _coerce_track_result(payload)
+        except Exception as exc:
+            logger.warning(f"[BeatSync] worker backend failed for '{_short_path(audio_path)}': {exc}")
 
         mono, sr, duration = self._load_audio_mono(audio_path)
         beats = self._extract_fallback_from_audio(mono, sr, min_confidence, offset_seconds=0.0)
         bpm = _estimate_bpm_from_beats([b["time"] for b in beats])
-        result = BeatTrackResult(beats=beats, duration=duration, sr=int(sr), method="dsp_fallback", bpm_estimate=bpm)
-        self._save_cached_result(audio_path, result, track_name=track_name)
-        return result
+        return BeatTrackResult(beats=beats, duration=duration, sr=int(sr), method="dsp_fallback", bpm_estimate=bpm)
 
     def get_backend_status(self) -> BeatBackendStatus:
         cache_stats = self.get_cache_stats()
-        if self._beat_this_file2beats is not None:
-            active_backend = "beat_this"
-        elif _module_available("librosa"):
-            active_backend = "librosa"
-        else:
-            active_backend = "dsp_fallback"
+
+        beat_this_installed = False
+        beat_this_ready = False
+        active_backend = "engine_unavailable"
+
+        try:
+            payload = self._engine_call_sync("get_backend_status", {}, timeout=2.0)
+            beat_this_installed = bool(payload.get("beat_this_installed", False))
+            beat_this_ready = bool(payload.get("beat_this_ready", False))
+            active_backend = str(payload.get("active_backend") or active_backend)
+        except Exception as exc:
+            logger.debug(f"[BeatSync] backend status unavailable: {exc}")
 
         return BeatBackendStatus(
-            beat_this_installed=_module_available("beat_this"),
-            beat_this_ready=self._beat_this_file2beats is not None,
+            beat_this_installed=beat_this_installed,
+            beat_this_ready=beat_this_ready,
             active_backend=active_backend,
             cache_dir=self._cache_dir,
             cache_entries=int(cache_stats["entries"]),
@@ -220,25 +221,6 @@ class BeatService:
             return {"entries": 0, "bytes": 0}
         return {"entries": entries, "bytes": total_bytes}
 
-    def install_or_update_backend(self) -> BeatBackendStatus:
-        pip_installer = _get_default_pip_installer()
-        if pip_installer is None:
-            raise RuntimeError("PipInstaller unavailable")
-
-        ok = pip_installer.install_package(
-            ["beat-this", "tqdm", "einops", "soxr", "rotary-embedding-torch"],
-            description="Installing beat-sync package: beat-this",
-            extra_args=["--upgrade"],
-        )
-        if not ok:
-            raise RuntimeError("beat-this installation failed")
-
-        self._warmup_done = False
-        self._beat_this_file2beats = None
-        self._warmup_sync(auto_install=False)
-        self._warmup_done = True
-        return self.get_backend_status()
-
     def build_cache_for_directory(
         self,
         directory_path: str,
@@ -252,14 +234,17 @@ class BeatService:
         if not root.is_dir():
             raise NotADirectoryError(f"Not a directory: {root}")
 
+        try:
+            self._engine_call_sync("warmup", {"auto_install": bool(auto_install)}, timeout=120.0)
+            self._warmup_done = True
+        except Exception as exc:
+            logger.info(f"[BeatSync] worker warmup skipped for cache build: {exc}")
+
         scanned_files = 0
         cache_hits = 0
         generated = 0
         failed = 0
         failed_files: List[str] = []
-
-        self._warmup_sync(auto_install=auto_install)
-        self._warmup_done = True
 
         for audio_file in self.iter_audio_files(root):
             scanned_files += 1
@@ -267,12 +252,8 @@ class BeatService:
                 if self._load_cached_result(str(audio_file)) is not None:
                     cache_hits += 1
                     continue
-                self._extract_beats_sync(
-                    str(audio_file),
-                    float(min_confidence),
-                    bool(auto_install),
-                    track_name=audio_file.stem,
-                )
+                result = self._extract_uncached_sync(str(audio_file), float(min_confidence))
+                self._save_cached_result(str(audio_file), result, track_name=audio_file.stem)
                 generated += 1
             except Exception as exc:
                 failed += 1
@@ -297,88 +278,32 @@ class BeatService:
                 continue
             yield item
 
-    def _init_beat_this(self, auto_install: bool) -> bool:
+    def _get_engine(self):
+        if self._engine is not None:
+            return self._engine
+        event_bus = get_event_bus()
         try:
-            if self._beat_this_file2beats is not None:
-                return True
-
-            if not _module_available("beat_this"):
-                if not auto_install:
-                    logger.info("[BeatSync] beat_this not installed and auto_install is disabled")
-                    return False
-                pip_installer = _get_default_pip_installer()
-                if pip_installer is None:
-                    logger.warning("[BeatSync] PipInstaller unavailable, cannot auto-install beat_this")
-                    return False
-
-                logger.info("[BeatSync] installing optional package beat-this...")
-                ok = pip_installer.install_package(
-                    ["beat-this", "tqdm", "einops", "soxr", "rotary-embedding-torch"],
-                    description="Installing optional beat-sync package: beat-this",
-                )
-                if not ok:
-                    logger.warning("[BeatSync] optional beat-this install failed; fallback backend will be used")
-                    return False
-
-                logger.info("[BeatSync] optional beat-this package installed")
-
-            from beat_this.inference import File2Beats  # type: ignore
-
-            device = "cpu"
-            try:
-                import torch  # type: ignore
-
-                if bool(torch.cuda.is_available()):
-                    device = "cuda"
-            except Exception:
-                device = "cpu"
-
-            self._beat_this_file2beats = File2Beats(checkpoint_path="final0", device=device, dbn=False)
-            logger.info(f"[BeatSync] beat_this initialized on device={device} checkpoint=final0")
-            return True
-        except Exception as e:
-            logger.warning(f"[BeatSync] beat_this init skipped: {e}")
-            return False
-
-    def _try_beat_this(self, audio_path: str, min_confidence: float, auto_install: bool) -> Optional[BeatTrackResult]:
-        try:
-            if self._beat_this_file2beats is None and not self._init_beat_this(auto_install=auto_install):
-                return None
-
-            f2b = self._beat_this_file2beats
-            beats_arr, _downbeats_arr = f2b(audio_path)
-            beats = [{"time": float(t), "confidence": 1.0} for t in list(beats_arr)]
-            beats = [b for b in beats if b["confidence"] >= min_confidence]
-            duration = self._probe_duration(audio_path)
-            bpm = _estimate_bpm_from_beats([b["time"] for b in beats])
-            return BeatTrackResult(beats=beats, duration=duration, sr=0, method="beat_this", bpm_estimate=bpm)
-        except Exception as e:
-            logger.warning(f"[BeatSync] beat_this backend failed for '{_short_path(audio_path)}': {e}")
-        return None
-
-    def _try_librosa(self, audio_path: str, min_confidence: float) -> Optional[BeatTrackResult]:
-        try:
-            import librosa  # type: ignore
-
-            y, sr = librosa.load(audio_path, sr=22050, mono=True)
-            tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
-            times = librosa.frames_to_time(beat_frames, sr=sr)
-            beats = [{"time": float(t), "confidence": 0.9} for t in times]
-            beats = [b for b in beats if b["confidence"] >= min_confidence]
-            return BeatTrackResult(
-                beats=beats,
-                duration=float(len(y) / float(sr)) if sr > 0 else 0.0,
-                sr=int(sr),
-                method="librosa",
-                bpm_estimate=float(tempo) if tempo else _estimate_bpm_from_beats([b["time"] for b in beats]),
-            )
+            res = event_bus.emit_and_wait(Events.AI.GET_ENGINE, timeout=1.0)
+            self._engine = res[0] if res else None
         except Exception:
-            return None
+            self._engine = None
+        return self._engine
+
+    async def _engine_call_async(self, method: str, payload: Optional[dict] = None, timeout: float = 30.0):
+        eng = self._get_engine()
+        if eng is None:
+            raise RuntimeError("AI engine not available")
+        fut = eng.call("beats", method, payload or {})
+        return await asyncio.wait_for(asyncio.wrap_future(fut), timeout=timeout)
+
+    def _engine_call_sync(self, method: str, payload: Optional[dict] = None, timeout: float = 30.0):
+        eng = self._get_engine()
+        if eng is None:
+            raise RuntimeError("AI engine not available")
+        fut = eng.call("beats", method, payload or {})
+        return fut.result(timeout=timeout)
 
     def _load_audio_mono(self, audio_path: str, target_sr: int = 22050) -> Tuple[np.ndarray, int, float]:
-        if not audio_path or not os.path.exists(audio_path):
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
-
         wav, sr = sf.read(audio_path, always_2d=True)
         if wav.size == 0:
             return np.zeros((0,), dtype=np.float32), int(target_sr), 0.0
@@ -464,7 +389,6 @@ class BeatService:
 
         return beats
 
-
     def _load_cached_result(self, audio_path: str) -> Optional[BeatTrackResult]:
         try:
             source_hash = self._file_content_hash(audio_path)
@@ -491,8 +415,8 @@ class BeatService:
                 method=str(data.get("method", "cache") or "cache"),
                 bpm_estimate=float(data.get("bpm_estimate", 0.0) or 0.0),
             )
-        except Exception as e:
-            logger.debug(f"[BeatSync] cache read skipped for '{_short_path(audio_path)}': {e}")
+        except Exception as exc:
+            logger.debug(f"[BeatSync] cache read skipped for '{_short_path(audio_path)}': {exc}")
             return None
 
     def _save_cached_result(self, audio_path: str, result: BeatTrackResult, *, track_name: str = "") -> None:
@@ -528,8 +452,8 @@ class BeatService:
                 except OSError:
                     pass
             logger.info(f"[BeatSync] cache-save track='{_short_path(audio_path)}' method={method} beats={len(result.beats)}")
-        except Exception as e:
-            logger.debug(f"[BeatSync] cache save skipped for '{_short_path(audio_path)}': {e}")
+        except Exception as exc:
+            logger.debug(f"[BeatSync] cache save skipped for '{_short_path(audio_path)}': {exc}")
 
     def _cache_path_for_hash(self, source_hash: str) -> str:
         return os.path.join(self._cache_dir, f"{source_hash}.json")
@@ -542,31 +466,21 @@ class BeatService:
                 digest.update(chunk)
         return digest.hexdigest()
 
-    @staticmethod
-    def _probe_duration(audio_path: str) -> float:
-        try:
-            info = sf.info(audio_path)
-            if info and info.samplerate > 0:
-                return float(info.frames) / float(info.samplerate)
-        except Exception:
-            pass
-        return 0.0
 
-
-def _module_available(name: str) -> bool:
-    try:
-        return importlib.util.find_spec(name) is not None
-    except Exception:
-        return False
-
-
-def _get_default_pip_installer():
-    try:
-        from utils.pip_installer import PipInstaller
-
-        return PipInstaller(update_log=logger.info)
-    except Exception:
-        return None
+def _coerce_track_result(payload: dict) -> BeatTrackResult:
+    beats_raw = payload.get("beats") or []
+    beats = [
+        {"time": float(b.get("time", 0.0)), "confidence": float(b.get("confidence", 0.0))}
+        for b in beats_raw
+        if isinstance(b, dict)
+    ]
+    return BeatTrackResult(
+        beats=beats,
+        duration=float(payload.get("duration", 0.0) or 0.0),
+        sr=int(payload.get("sr", 0) or 0),
+        method=str(payload.get("method", "unknown") or "unknown"),
+        bpm_estimate=float(payload.get("bpm_estimate", 0.0) or 0.0),
+    )
 
 
 def _short_path(path: str) -> str:
@@ -616,8 +530,7 @@ def _resample_safe(y: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
     n = max(1, int(math.floor(len(y) * ratio)))
     src_x = np.linspace(0.0, 1.0, num=len(y), dtype=np.float64)
     dst_x = np.linspace(0.0, 1.0, num=n, dtype=np.float64)
-    out = np.interp(dst_x, src_x, y).astype(np.float32)
-    return out
+    return np.interp(dst_x, src_x, y).astype(np.float32)
 
 
 def _estimate_bpm_from_beats(times: List[float]) -> float:

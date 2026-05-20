@@ -88,10 +88,16 @@ class BeatServiceTests(unittest.TestCase):
 
             service = BeatService()
             service._cache_dir = str(root / "beat_sync_cache")
+            fake_result = BeatTrackResult(
+                beats=[{"time": 0.1, "confidence": 0.9}],
+                duration=0.5,
+                sr=22050,
+                method="unit_test",
+                bpm_estimate=120.0,
+            )
 
-            with patch.object(service, "_warmup_sync", return_value=None), \
-                 patch.object(service, "_try_beat_this", return_value=None), \
-                 patch.object(service, "_try_librosa", return_value=None):
+            with patch.object(service, "_engine_call_sync", return_value=True), \
+                 patch.object(service, "_extract_uncached_sync", return_value=fake_result):
                 first = service.build_cache_for_directory(str(root), auto_install=False)
                 second = service.build_cache_for_directory(str(root), auto_install=False)
 

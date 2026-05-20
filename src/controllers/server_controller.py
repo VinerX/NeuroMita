@@ -1,4 +1,4 @@
-﻿# File: src/controllers/server_controller.py
+# File: src/controllers/server_controller.py
 from typing import Dict, Any, Optional, Tuple
 from collections import deque
 from main_logger import logger

@@ -41,7 +41,7 @@ class GetMusicBeatsAction:
         logger.info(
             f"[BeatSync] request req={req_tag} track='{track_for_log}' stream={stream} "
             f"chunk={chunk_seconds:.1f}s min_conf={min_confidence:.2f} "
-            "auto_install=False file_transfer=True"
+            "cache_first=True backend=ai_engine"
         )
 
         if not beat_enabled:
