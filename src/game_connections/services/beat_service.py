@@ -179,7 +179,19 @@ class BeatService:
         except Exception as exc:
             logger.warning(f"[BeatSync] worker backend failed for '{_short_path(audio_path)}': {exc}")
 
-        return await asyncio.to_thread(self._extract_fallback_sync, audio_path, min_confidence)
+        def _build_fallback_result() -> BeatTrackResult:
+            mono, sr, duration = self._load_audio_mono(audio_path)
+            beats = self._extract_fallback_from_audio(mono, sr, min_confidence, offset_seconds=0.0)
+            bpm = _estimate_bpm_from_beats([b["time"] for b in beats])
+            return BeatTrackResult(
+                beats=beats,
+                duration=duration,
+                sr=int(sr),
+                method="dsp_fallback",
+                bpm_estimate=bpm,
+            )
+
+        return await asyncio.to_thread(_build_fallback_result)
 
     def _extract_uncached_sync(self, audio_path: str, min_confidence: float) -> BeatTrackResult:
         try:
@@ -195,9 +207,6 @@ class BeatService:
         except Exception as exc:
             logger.warning(f"[BeatSync] worker backend failed for '{_short_path(audio_path)}': {exc}")
 
-        return self._extract_fallback_sync(audio_path, min_confidence)
-
-    def _extract_fallback_sync(self, audio_path: str, min_confidence: float) -> BeatTrackResult:
         mono, sr, duration = self._load_audio_mono(audio_path)
         beats = self._extract_fallback_from_audio(mono, sr, min_confidence, offset_seconds=0.0)
         bpm = _estimate_bpm_from_beats([b["time"] for b in beats])
