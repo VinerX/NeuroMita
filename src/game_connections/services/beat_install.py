@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Optional
-
 from core.events import Events, get_event_bus
 from core.install_types import InstallAction, InstallPlan
+from game_connections.services.beat_worker_client import call_beats_worker_sync, restart_beats_worker
 
 
 _BEAT_INSTALL_PACKAGES = [
@@ -67,30 +66,20 @@ def _install_runner(*_args, **_kwargs):
     return build_beat_install_plan()
 
 
-def _resolve_engine(event_bus=None):
-    eb = event_bus or get_event_bus()
-    try:
-        res = eb.emit_and_wait(Events.AI.GET_ENGINE, timeout=1.0)
-        return res[0] if res else None
-    except Exception:
-        return None
-
-
 def _restart_beats_service(*_args, **kwargs) -> bool:
     ctx = kwargs.get("ctx") if isinstance(kwargs, dict) else None
     event_bus = ctx.get("event_bus") if isinstance(ctx, dict) else None
-    eng = _resolve_engine(event_bus)
-    if eng is None:
-        return True
-    return bool(eng.restart_service("beats", timeout=15.0))
+    return restart_beats_worker(timeout=15.0, event_bus=event_bus)
 
 
 def _warmup_beats_service(*_args, **kwargs) -> bool:
     ctx = kwargs.get("ctx") if isinstance(kwargs, dict) else None
     event_bus = ctx.get("event_bus") if isinstance(ctx, dict) else None
-    eng = _resolve_engine(event_bus)
-    if eng is None:
-        return False
-
-    fut = eng.call("beats", "warmup", {"auto_install": False})
-    return bool(fut.result(timeout=120.0))
+    return bool(
+        call_beats_worker_sync(
+            "warmup",
+            {"auto_install": False},
+            timeout=120.0,
+            event_bus=event_bus,
+        )
+    )

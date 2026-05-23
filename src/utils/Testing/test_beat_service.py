@@ -96,7 +96,7 @@ class BeatServiceTests(unittest.TestCase):
                 bpm_estimate=120.0,
             )
 
-            with patch.object(service, "_engine_call_sync", return_value=True), \
+            with patch("game_connections.services.beat_service.call_beats_worker_sync", return_value=True), \
                  patch.object(service, "_extract_uncached_sync", return_value=fake_result):
                 first = service.build_cache_for_directory(str(root), auto_install=False)
                 second = service.build_cache_for_directory(str(root), auto_install=False)
@@ -113,6 +113,27 @@ class BeatServiceTests(unittest.TestCase):
 
 
 class BeatServiceStreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_extract_beats_does_not_eagerly_warm_worker(self):
+        service = BeatService()
+        fake_result = BeatTrackResult(
+            beats=[{"time": 0.25, "confidence": 0.8}],
+            duration=1.0,
+            sr=22050,
+            method="beat_this",
+            bpm_estimate=128.0,
+        )
+
+        with patch.object(service, "warmup", AsyncMock()) as warmup_mock, \
+             patch.object(service, "_extract_beats_sync", return_value=fake_result):
+            result = await service.extract_beats(
+                audio_path="C:/tmp/fake.wav",
+                track_name="fake",
+                auto_install=False,
+            )
+
+        warmup_mock.assert_not_awaited()
+        self.assertEqual(result.method, "beat_this")
+
     async def test_streaming_uses_single_cache_first_chunk(self):
         service = BeatService()
         fake_result = BeatTrackResult(

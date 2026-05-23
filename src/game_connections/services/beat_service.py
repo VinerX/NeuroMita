@@ -13,7 +13,7 @@ from typing import AsyncIterator, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import soundfile as sf
 
-from core.events import Events, get_event_bus
+from game_connections.services.beat_worker_client import call_beats_worker_async, call_beats_worker_sync
 from main_logger import logger
 
 
@@ -75,7 +75,6 @@ class BeatService:
     def __init__(self):
         self._warmup_done = False
         self._warmup_lock = asyncio.Lock()
-        self._engine = None
         self._project_root = Path(__file__).resolve().parents[3]
         self._cache_dir = str(self._project_root / "beat_sync_cache")
 
@@ -86,13 +85,12 @@ class BeatService:
             if self._warmup_done:
                 return
             try:
-                await self._engine_call_async("warmup", {"auto_install": bool(auto_install)}, timeout=120.0)
+                await call_beats_worker_async("warmup", {"auto_install": bool(auto_install)}, timeout=120.0)
                 self._warmup_done = True
             except Exception as exc:
                 logger.info(f"[BeatSync] worker warmup skipped: {exc}")
 
     def reset_runtime_state(self) -> None:
-        self._engine = None
         self._warmup_done = False
 
     async def extract_beats(
@@ -102,7 +100,6 @@ class BeatService:
         auto_install: bool = False,
         track_name: str = "",
     ) -> BeatTrackResult:
-        await self.warmup(auto_install=auto_install)
         t0 = time.perf_counter()
         result = await asyncio.to_thread(
             self._extract_beats_sync,
@@ -162,7 +159,7 @@ class BeatService:
 
     def _extract_uncached_sync(self, audio_path: str, min_confidence: float) -> BeatTrackResult:
         try:
-            payload = self._engine_call_sync(
+            payload = call_beats_worker_sync(
                 "extract_beats",
                 {
                     "audio_path": audio_path,
@@ -187,7 +184,7 @@ class BeatService:
         active_backend = "engine_unavailable"
 
         try:
-            payload = self._engine_call_sync("get_backend_status", {}, timeout=2.0)
+            payload = call_beats_worker_sync("get_backend_status", {}, timeout=2.0)
             beat_this_installed = bool(payload.get("beat_this_installed", False))
             beat_this_ready = bool(payload.get("beat_this_ready", False))
             active_backend = str(payload.get("active_backend") or active_backend)
@@ -235,7 +232,7 @@ class BeatService:
             raise NotADirectoryError(f"Not a directory: {root}")
 
         try:
-            self._engine_call_sync("warmup", {"auto_install": bool(auto_install)}, timeout=120.0)
+            call_beats_worker_sync("warmup", {"auto_install": bool(auto_install)}, timeout=120.0)
             self._warmup_done = True
         except Exception as exc:
             logger.info(f"[BeatSync] worker warmup skipped for cache build: {exc}")
@@ -277,31 +274,6 @@ class BeatService:
             if item.suffix.lower() not in AUDIO_FILE_EXTENSIONS:
                 continue
             yield item
-
-    def _get_engine(self):
-        if self._engine is not None:
-            return self._engine
-        event_bus = get_event_bus()
-        try:
-            res = event_bus.emit_and_wait(Events.AI.GET_ENGINE, timeout=1.0)
-            self._engine = res[0] if res else None
-        except Exception:
-            self._engine = None
-        return self._engine
-
-    async def _engine_call_async(self, method: str, payload: Optional[dict] = None, timeout: float = 30.0):
-        eng = self._get_engine()
-        if eng is None:
-            raise RuntimeError("AI engine not available")
-        fut = eng.call("beats", method, payload or {})
-        return await asyncio.wait_for(asyncio.wrap_future(fut), timeout=timeout)
-
-    def _engine_call_sync(self, method: str, payload: Optional[dict] = None, timeout: float = 30.0):
-        eng = self._get_engine()
-        if eng is None:
-            raise RuntimeError("AI engine not available")
-        fut = eng.call("beats", method, payload or {})
-        return fut.result(timeout=timeout)
 
     def _load_audio_mono(self, audio_path: str, target_sr: int = 22050) -> Tuple[np.ndarray, int, float]:
         wav, sr = sf.read(audio_path, always_2d=True)
