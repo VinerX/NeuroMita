@@ -1,6 +1,5 @@
 ﻿import time
 import asyncio
-import gc
 import concurrent.futures
 from collections import deque
 from threading import Lock, RLock, Event as ThreadEvent
@@ -139,12 +138,6 @@ class SpeechRecognition:
     _stopped_event.set()
     _recognition_task = None
 
-    _torch = None
-    _sd = None
-    _np = None
-    _silero_vad_loader = None
-    _silero_vad_model = None
-
     _recognizer_instance: Optional[SpeechRecognizerInterface] = None
     _pip_installer = None
     _rec_instance_lock = RLock()
@@ -195,19 +188,7 @@ class SpeechRecognition:
                 SpeechRecognition._recognizer_instance.cleanup()
                 SpeechRecognition._recognizer_instance = None
             SpeechRecognition._recognizer_type = engine
-            if engine == "google":
-                SpeechRecognition._unload_vad()
         logger.info(f"Recognizer type set to: {engine}")
-
-    @staticmethod
-    def _unload_vad():
-        SpeechRecognition._silero_vad_model = None
-        gc.collect()
-        try:
-            if SpeechRecognition._torch is not None and SpeechRecognition._torch.cuda.is_available():
-                SpeechRecognition._torch.cuda.empty_cache()
-        except Exception:
-            pass
 
     @staticmethod
     def build_install_plan(
@@ -412,39 +393,6 @@ class SpeechRecognition:
         return False
 
     @staticmethod
-    async def _init_vad_dependencies():
-        try:
-            if SpeechRecognition._torch is None:
-                import torch
-                SpeechRecognition._torch = torch
-            if SpeechRecognition._sd is None:
-                import sounddevice as sd
-                SpeechRecognition._sd = sd
-            if SpeechRecognition._np is None:
-                import numpy as np
-                SpeechRecognition._np = np
-
-            if SpeechRecognition._silero_vad_loader is None:
-                try:
-                    from silero_vad import load_silero_vad
-                except ImportError:
-                    SpeechRecognition._init_pip()
-                    SpeechRecognition._pip_installer.install_package(
-                        ["silero-vad"], description=_("Installing Silero VAD...", "Installing Silero VAD...")
-                    )
-                    from silero_vad import load_silero_vad
-                SpeechRecognition._silero_vad_loader = load_silero_vad
-
-            if SpeechRecognition._silero_vad_model is None:
-                model = SpeechRecognition._silero_vad_loader()
-                SpeechRecognition._silero_vad_model = model
-
-            return True
-        except Exception as e:
-            logger.error(f"VAD initialization error: {e}")
-            return False
-
-    @staticmethod
     async def live_recognition():
         max_retries = 3
         retry = 0
@@ -484,21 +432,11 @@ class SpeechRecognition:
                             chunk_size=SpeechRecognition.CHUNK_SIZE
                         )
                     else:
-                        if not await SpeechRecognition._init_vad_dependencies():
-                            logger.error("Failed to initialize VAD.")
-                            return
-                        await inst.live_recognition(
-                            SpeechRecognition.microphone_index,
-                            SpeechRecognition._handle_voice_message,
-                            SpeechRecognition._silero_vad_model,
-                            lambda: SpeechRecognition.active,
-                            sample_rate=SpeechRecognition.VOSK_SAMPLE_RATE,
-                            chunk_size=SpeechRecognition.CHUNK_SIZE,
-                            vad_threshold=SpeechRecognition.VAD_THRESHOLD,
-                            silence_timeout=SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC,
-                            pre_buffer_duration=SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC,
-                            max_speech_duration=SpeechRecognition.MAX_SPEECH_DURATION_SEC,
+                        logger.error(
+                            f"Local ASR mode is disabled for engine '{SpeechRecognition._recognizer_type}'. "
+                            "Use ai_engine ASR worker instead."
                         )
+                        return
                     break
 
                 except asyncio.CancelledError:
@@ -540,17 +478,11 @@ class SpeechRecognition:
             return None
 
     @staticmethod
-    def speech_recognition_start(device_id: int, loop):
+    def speech_recognition_start(device_id: int, loop) -> bool:
         with SpeechRecognition._start_lock:
             if SpeechRecognition._is_running:
                 SpeechRecognition.speech_recognition_stop()
                 time.sleep(0.2)
-
-            SpeechRecognition._is_running = True
-            SpeechRecognition._running_event.set()
-            SpeechRecognition._stopped_event.clear()
-            SpeechRecognition.active = True
-            SpeechRecognition.microphone_index = device_id or 0
 
         engine_id = SpeechRecognition._recognizer_type
         use_remote = SpeechRecognition._remote_asr_mode and engine_id != "google"
@@ -558,7 +490,7 @@ class SpeechRecognition:
         if use_remote:
             eng = SpeechRecognition._get_ai_engine()
             if not eng:
-                logger.error("ASR engine not available, fallback to local mode")
+                logger.error("ASR engine not available. Local fallback is disabled.")
             else:
                 vad = {
                     "sample_rate": SpeechRecognition.VOSK_SAMPLE_RATE,
@@ -578,17 +510,31 @@ class SpeechRecognition:
                 try:
                     ok = bool(fut.result(timeout=10.0))
                     if ok:
+                        with SpeechRecognition._start_lock:
+                            SpeechRecognition._is_running = True
+                            SpeechRecognition._running_event.set()
+                            SpeechRecognition._stopped_event.clear()
+                            SpeechRecognition.active = True
+                            SpeechRecognition.microphone_index = device_id or 0
                         logger.info(f"ASR started (engine:{engine_id}) on device {device_id}")
-                        return
-                    logger.error("ASR engine start failed, fallback to local mode")
+                        return True
+                    logger.error("ASR engine start failed. Local fallback is disabled.")
                 except Exception as e:
                     logger.error(f"ASR engine start exception: {e}")
+            return False
 
-        # fallback: old local mode
+        with SpeechRecognition._start_lock:
+            SpeechRecognition._is_running = True
+            SpeechRecognition._running_event.set()
+            SpeechRecognition._stopped_event.clear()
+            SpeechRecognition.active = True
+            SpeechRecognition.microphone_index = device_id or 0
+
         SpeechRecognition._recognition_task = asyncio.run_coroutine_threadsafe(
             SpeechRecognition.speech_recognition_start_async(), loop
         )
         logger.info(f"Speech recognition started (local) on device {device_id}")
+        return True
 
     @staticmethod
     async def speech_recognition_start_async():
@@ -636,7 +582,6 @@ class SpeechRecognition:
         except Exception:
             pass
 
-        SpeechRecognition._unload_vad()
         SpeechRecognition._is_running = False
         SpeechRecognition._running_event.clear()
         SpeechRecognition._stopped_event.set()

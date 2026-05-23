@@ -251,8 +251,8 @@ class SpeechController:
         loop = loop_res[0] if loop_res else None
         if loop:
             self.asr_is_ready = False
-            SpeechRecognition.speech_recognition_start(self.device_id or 0, loop)
-            self.mic_recognition_active = True
+            started = bool(SpeechRecognition.speech_recognition_start(self.device_id or 0, loop))
+            self.mic_recognition_active = started
         else:
             logger.error("Не удалось получить event loop для запуска распознавания речи")
 
@@ -439,8 +439,8 @@ class SpeechController:
         loop = loop_result[0] if loop_result else None
         if loop:
             self.asr_is_ready = False
-            SpeechRecognition.speech_recognition_start(dev_id, loop)
-            self.mic_recognition_active = True
+            started = bool(SpeechRecognition.speech_recognition_start(dev_id, loop))
+            self.mic_recognition_active = started
         else:
             logger.error("Не удалось получить event loop для запуска распознавания речи")
 
