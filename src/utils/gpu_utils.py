@@ -11,6 +11,10 @@ _GPU_VENDOR_LOCK = threading.Lock()
 _GPU_VENDOR_CACHE: str | None = None
 _GPU_VENDOR_TS = 0.0
 _GPU_VENDOR_TTL_SEC = 120.0
+_CUDA_INFO_LOCK = threading.Lock()
+_CUDA_INFO_CACHE: list[tuple[str, str]] = []
+_CUDA_INFO_TS = 0.0
+_CUDA_INFO_TTL_SEC = 30.0
 
 
 def check_gpu_provider() -> str:
@@ -120,19 +124,7 @@ def check_gpu_provider() -> str:
 
 
 def get_cuda_devices():
-    cuda_devices = []
-    try:
-        import torch
-        if torch.cuda.is_available():
-            device_count = torch.cuda.device_count()
-            for i in range(int(device_count or 0)):
-                cuda_devices.append(f"cuda:{i}")
-    except ImportError:
-        logger.info("PyTorch не найден. Невозможно определить CUDA устройства через PyTorch.")
-    except Exception as e:
-        logger.info(f"Неожиданная ошибка при проверке CUDA устройств через PyTorch: {e}")
-
-    return cuda_devices
+    return [device_id for device_id, _name in _get_cuda_device_info()]
 
 
 def get_gpu_name_by_id(device_id):
@@ -144,14 +136,70 @@ def get_gpu_name_by_id(device_id):
         if not match:
             return None
         index = int(match.group(1))
-
-        import torch
-        if torch.cuda.is_available() and index < torch.cuda.device_count():
-            return torch.cuda.get_device_name(index)
-        return None
-    except ImportError:
-        logger.info("PyTorch не найден. Невозможно получить имя GPU.")
+        for current_device_id, gpu_name in _get_cuda_device_info():
+            if current_device_id == f"cuda:{index}":
+                return gpu_name
         return None
     except Exception as e:
         logger.info(f"Ошибка при получении имени GPU для {device_id}: {e}")
         return None
+
+
+def _get_cuda_device_info() -> list[tuple[str, str]]:
+    global _CUDA_INFO_CACHE, _CUDA_INFO_TS
+
+    now = time.time()
+    with _CUDA_INFO_LOCK:
+        if (now - float(_CUDA_INFO_TS or 0.0)) < float(_CUDA_INFO_TTL_SEC or 30.0):
+            return list(_CUDA_INFO_CACHE)
+
+    if check_gpu_provider() != "NVIDIA":
+        with _CUDA_INFO_LOCK:
+            _CUDA_INFO_CACHE = []
+            _CUDA_INFO_TS = now
+        return []
+
+    query_cmd = [
+        "nvidia-smi",
+        "--query-gpu=index,name",
+        "--format=csv,noheader",
+    ]
+
+    try:
+        output = subprocess.check_output(
+            query_cmd,
+            stdin=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=2.5,
+        ).strip()
+
+        devices: list[tuple[str, str]] = []
+        for raw_line in output.splitlines():
+            line = str(raw_line or "").strip()
+            if not line:
+                continue
+            parts = [part.strip() for part in line.split(",", 1)]
+            if len(parts) != 2 or not parts[0].isdigit():
+                continue
+            devices.append((f"cuda:{int(parts[0])}", parts[1]))
+
+        with _CUDA_INFO_LOCK:
+            _CUDA_INFO_CACHE = devices
+            _CUDA_INFO_TS = now
+        return list(devices)
+    except FileNotFoundError:
+        logger.info("nvidia-smi не найден. Список CUDA-устройств недоступен.")
+    except subprocess.TimeoutExpired:
+        logger.info("nvidia-smi не ответил вовремя. Список CUDA-устройств недоступен.")
+    except subprocess.CalledProcessError as e:
+        details = (e.stderr or "").strip()
+        if details:
+            logger.info(f"nvidia-smi завершился с ошибкой: {details}")
+    except Exception as e:
+        logger.info(f"Ошибка при получении списка CUDA-устройств через nvidia-smi: {e}")
+
+    with _CUDA_INFO_LOCK:
+        _CUDA_INFO_CACHE = []
+        _CUDA_INFO_TS = now
+    return []
