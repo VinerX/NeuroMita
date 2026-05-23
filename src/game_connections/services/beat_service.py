@@ -100,13 +100,21 @@ class BeatService:
         auto_install: bool = False,
         track_name: str = "",
     ) -> BeatTrackResult:
+        if not audio_path or not os.path.exists(audio_path):
+            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
         t0 = time.perf_counter()
-        result = await asyncio.to_thread(
-            self._extract_beats_sync,
-            audio_path,
-            float(min_confidence),
-            str(track_name or ""),
-        )
+        cached = self._load_cached_result(audio_path)
+        if cached is not None:
+            logger.info(
+                f"[BeatSync] cache-hit track='{_short_path(audio_path)}' method={cached.method} "
+                f"beats={len(cached.beats)}"
+            )
+            result = cached
+        else:
+            result = await self._extract_uncached_async(audio_path, float(min_confidence))
+            self._save_cached_result(audio_path, result, track_name=str(track_name or ""))
+
         logger.info(
             f"[BeatSync] extract_beats method={result.method} track='{_short_path(audio_path)}' "
             f"beats={len(result.beats)} elapsed={(time.perf_counter() - t0):.2f}s"
@@ -157,6 +165,22 @@ class BeatService:
         self._save_cached_result(audio_path, result, track_name=track_name)
         return result
 
+    async def _extract_uncached_async(self, audio_path: str, min_confidence: float) -> BeatTrackResult:
+        try:
+            payload = await call_beats_worker_async(
+                "extract_beats",
+                {
+                    "audio_path": audio_path,
+                    "min_confidence": float(min_confidence),
+                },
+                timeout=3600.0,
+            )
+            return _coerce_track_result(payload)
+        except Exception as exc:
+            logger.warning(f"[BeatSync] worker backend failed for '{_short_path(audio_path)}': {exc}")
+
+        return await asyncio.to_thread(self._extract_fallback_sync, audio_path, min_confidence)
+
     def _extract_uncached_sync(self, audio_path: str, min_confidence: float) -> BeatTrackResult:
         try:
             payload = call_beats_worker_sync(
@@ -171,6 +195,9 @@ class BeatService:
         except Exception as exc:
             logger.warning(f"[BeatSync] worker backend failed for '{_short_path(audio_path)}': {exc}")
 
+        return self._extract_fallback_sync(audio_path, min_confidence)
+
+    def _extract_fallback_sync(self, audio_path: str, min_confidence: float) -> BeatTrackResult:
         mono, sr, duration = self._load_audio_mono(audio_path)
         beats = self._extract_fallback_from_audio(mono, sr, min_confidence, offset_seconds=0.0)
         bpm = _estimate_bpm_from_beats([b["time"] for b in beats])

@@ -124,7 +124,10 @@ class BeatServiceStreamingTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch.object(service, "warmup", AsyncMock()) as warmup_mock, \
-             patch.object(service, "_extract_beats_sync", return_value=fake_result):
+             patch("game_connections.services.beat_service.os.path.exists", return_value=True), \
+             patch.object(service, "_load_cached_result", return_value=None), \
+             patch.object(service, "_save_cached_result"), \
+             patch.object(service, "_extract_uncached_async", AsyncMock(return_value=fake_result)):
             result = await service.extract_beats(
                 audio_path="C:/tmp/fake.wav",
                 track_name="fake",
