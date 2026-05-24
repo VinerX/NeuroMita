@@ -7,6 +7,7 @@ import math
 import os
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from main_logger import logger
 
 import numpy as np
 import soundfile as sf
@@ -75,8 +76,10 @@ class BeatsService:
 
         result = self._try_beat_this(audio_path, min_confidence)
         if result is None:
+            logger.warning(f"beat_this failed for {audio_path}, falling back to librosa or DSP method")
             result = self._try_librosa(audio_path, min_confidence)
         if result is None:
+            logger.warning(f"librosa failed for {audio_path}, falling back to DSP method")
             mono, sr, duration = self._load_audio_mono(audio_path)
             beats = self._extract_fallback_from_audio(mono, sr, min_confidence, offset_seconds=0.0)
             result = {
@@ -114,7 +117,8 @@ class BeatsService:
 
             self._beat_this_file2beats = File2Beats(checkpoint_path="final0", device=device, dbn=False)
             return True
-        except Exception:
+        except Exception as ex:
+            logger.exception(f"Error initializing beat_this: {ex}")    
             return False
 
     def _try_beat_this(self, audio_path: str, min_confidence: float) -> Optional[dict]:
@@ -134,7 +138,8 @@ class BeatsService:
                 "method": "beat_this",
                 "bpm_estimate": _estimate_bpm_from_beats([b["time"] for b in beats]),
             }
-        except Exception:
+        except Exception as ex:
+            logger.exception(f"Error in beat_this for {audio_path}: {ex}")
             return None
 
     def _try_librosa(self, audio_path: str, min_confidence: float) -> Optional[dict]:
@@ -153,7 +158,8 @@ class BeatsService:
                 "method": "librosa",
                 "bpm_estimate": float(tempo) if tempo else _estimate_bpm_from_beats([b["time"] for b in beats]),
             }
-        except Exception:
+        except Exception as ex:
+            logger.exception(f"Error in librosa for {audio_path}: {ex}")
             return None
 
     def _load_audio_mono(self, audio_path: str, target_sr: int = 22050) -> Tuple[np.ndarray, int, float]:
