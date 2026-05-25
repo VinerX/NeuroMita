@@ -669,6 +669,14 @@ class Events:
         TASK_FAILED = "install_task_failed"
         RUN_BLOCKING = "run_install_blocking"
 
+    class Installable:
+        LIST = "installable_list"
+        GET = "installable_get"
+        GET_STATUS = "installable_get_status"
+        INSTALL = "installable_install"
+        UNINSTALL = "installable_uninstall"
+        INITIALIZE = "installable_initialize"
+
     class Character:
         GET_ALL = "character_get_all"
         GET = "character_get"

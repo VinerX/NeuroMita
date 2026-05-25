@@ -1949,73 +1949,28 @@ def _start_rag_backend_install(gui, target: str) -> None:
         _refresh_rag_install_widgets(gui)
 
 
-def _download_model_bg(gui, hf_name: str, on_done) -> None:
-    """Download *hf_name* in a background thread via HuggingFace Hub."""
-    from ui.task_worker import TaskWorker
-
-    def _do_download(*, progress_callback=None):
-        from huggingface_hub import snapshot_download
-        from managers.settings_manager import SettingsManager
-
-        token = str(SettingsManager.get("HF_TOKEN", "") or "").strip() or None
-        checkpoints_dir = _get_checkpoints_dir()
-        snapshot_download(repo_id=hf_name, cache_dir=checkpoints_dir, token=token)
-        return hf_name
-
-    worker = TaskWorker(_do_download)
-
-    def _on_finished(_result):
-        on_done(success=True)
-
-    def _on_error(msg):
+def _download_embed_model(gui) -> None:
+    try:
+        start_install(TARGET_EMBEDDINGS, with_ui=True, timeout_sec=3600.0)
+    except Exception as exc:
         QMessageBox.critical(
             gui,
             _("Ошибка", "Error"),
-            _("Не удалось скачать модель:\n{e}", "Failed to download model:\n{e}").format(e=msg),
+            _("Не удалось запустить установку:\n{e}", "Failed to start installation:\n{e}").format(e=exc),
         )
-        on_done(success=False)
-
-    worker.finished_signal.connect(_on_finished)
-    worker.error_signal.connect(_on_error)
-    if not hasattr(gui, "_download_workers"):
-        gui._download_workers = []
-    gui._download_workers.append(worker)
-    worker.start()
-
-
-def _download_embed_model(gui) -> None:
-    cfg = resolve_full_config()
-    hf_name = str(cfg.get("hf_name") or resolve_model_settings()["hf_name"] or "")
-    provider = str(cfg.get("provider_name") or "local").strip().lower()
-    if provider != "local" or not hf_name:
-        QMessageBox.warning(
-            gui,
-            _("Ошибка", "Error"),
-            _("Локальная HuggingFace модель не выбрана.", "No local HuggingFace model selected."),
-        )
-        return
-
-    def _done(*, success):
         _refresh_embed_status(gui)
-
-    _download_model_bg(gui, hf_name, _done)
 
 
 def _download_ce_model(gui) -> None:
-    from managers.rag.pipeline.config import resolve_ce_model
-
-    hf_name = resolve_ce_model()
-    if not hf_name:
-        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Модель не выбрана.", "No model selected."))
-        return
-    if hasattr(gui, "_ce_model_btn"):
-        gui._ce_model_btn.setEnabled(False)
-        gui._ce_model_btn.setText(_("Скачивание...", "Downloading..."))
-
-    def _done(*, success):
+    try:
+        start_install(TARGET_RERANKER, with_ui=True, timeout_sec=3600.0)
+    except Exception as exc:
+        QMessageBox.critical(
+            gui,
+            _("Ошибка", "Error"),
+            _("Не удалось запустить установку:\n{e}", "Failed to start installation:\n{e}").format(e=exc),
+        )
         _refresh_ce_status(gui)
-
-    _download_model_bg(gui, hf_name, _done)
 
 
 def _attach_embed_downloader(gui, section) -> None:

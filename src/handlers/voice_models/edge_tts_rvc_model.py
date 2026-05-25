@@ -6,8 +6,6 @@ import re
 from xml.sax.saxutils import escape
 from typing import Optional, Any, List, Dict
 
-import soundfile as sf
-
 from .base_model import IVoiceModel
 from main_logger import logger
 from utils import getTranslationVariant as _, get_character_voice_paths
@@ -805,6 +803,7 @@ class EdgeTTS_RVC_Model(IVoiceModel):
 
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_wav_file:
                 temp_wav = temp_wav_file.name
+            import soundfile as sf
             sf.write(temp_wav, audio_tensor.cpu().numpy(), self.current_silero_sample_rate)
 
             if not os.path.exists(temp_wav) or os.path.getsize(temp_wav) == 0:

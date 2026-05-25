@@ -11,6 +11,7 @@ from .service import (
     BackendService,
     BackendStatus,
     get_backend_service,
+    normalize_backend_kind,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "BackendService",
     "BackendStatus",
     "get_backend_service",
+    "normalize_backend_kind",
 ]

@@ -19,30 +19,6 @@ from handlers.asr_models.whisper_onnx_recognizer import WhisperOnnxRecognizer
 from core.events import get_event_bus, Events, Event
 
 
-def _asr_install_runner(engine: str, engine_settings: Optional[dict], timeout_sec: float):
-    def _runner(*args, **kwargs):
-        pip_installer = kwargs.get("pip_installer") if isinstance(kwargs, dict) else None
-        callbacks = kwargs.get("callbacks") if isinstance(kwargs, dict) else None
-        ctx = kwargs.get("ctx") if isinstance(kwargs, dict) else None
-
-        if pip_installer is None and len(args) >= 1:
-            pip_installer = args[0]
-        if callbacks is None and len(args) >= 2:
-            callbacks = args[1]
-        if ctx is None and len(args) >= 3:
-            ctx = args[2]
-
-        return SpeechRecognition.build_install_plan(
-            engine,
-            pip_installer=pip_installer,
-            engine_settings=engine_settings or {},
-            callbacks=callbacks,
-            timeout_sec=float(timeout_sec or 3600.0),
-        )
-
-    return _runner
-
-
 def _on_install_asr_model_event(event: Event):
     data = event.data if isinstance(event.data, dict) else {}
 
@@ -55,24 +31,29 @@ def _on_install_asr_model_event(event: Event):
     with_ui = bool(data.get("with_ui", True))
     timeout_sec = float(data.get("timeout_sec", 3600.0) or 3600.0)
 
-    runner = _asr_install_runner(str(engine), engine_settings, timeout_sec)
+    from core.installables import ComponentCategory, make_component_id
 
     payload = {
+        "component_id": make_component_id(ComponentCategory.ASR, str(engine)),
         "kind": "asr",
         "item_id": str(engine),
-        "task_id": f"asr:{engine}",
+        "task_id": f"asr:install:{engine}",
         "title": _("Installing ASR model: ", "Installing ASR model: ") + str(engine),
         "initial_status": _("Preparing...", "Preparing..."),
         "timeout_sec": float(timeout_sec),
+        "with_ui": with_ui,
+        "ctx": {
+            "engine_settings": engine_settings,
+        },
         "meta": {
             "kind": "asr",
             "item_id": str(engine),
+            "op": "install",
         },
-        "runner": runner,
     }
 
     eb = get_event_bus()
-    eb.emit(Events.Install.RUN_WITH_UI if with_ui else Events.Install.RUN_HEADLESS, payload)
+    eb.emit(Events.Installable.INSTALL, payload)
 
 
 def _on_ai_engine_event(event: Event):

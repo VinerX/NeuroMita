@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import gc
-import importlib.util
 import os
 import sys
 import time
@@ -13,9 +12,8 @@ import numpy as np
 
 from main_logger import logger
 from managers.settings_manager import SettingsManager
-from core.backends import BackendKind, CUDA_INDEX_URL, get_backend_service
+from core.backends import get_backend_service
 from utils.gpu_utils import check_gpu_provider
-from utils.pip_installer import PipInstaller
 
 
 def getTranslationVariant(ru_str, en_str=""):
@@ -27,10 +25,6 @@ def getTranslationVariant(ru_str, en_str=""):
 
 _ = getTranslationVariant
 
-
-def _module_available(name: str) -> bool:
-    """Проверка наличия модуля без тяжёлого импорта."""
-    return importlib.util.find_spec(name) is not None
 
 
 # --- Константы модели ---
@@ -50,15 +44,6 @@ def _ensure_checkpoints_dir() -> str:
 checkpoints_dir = _ensure_checkpoints_dir()
 
 
-def _get_default_pip_installer() -> Optional[PipInstaller]:
-    try:
-        return PipInstaller(
-            update_log=logger.info
-        )
-    except Exception:
-        return None
-
-
 def _ensure_lib_on_path():
     lib_path = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
     lib_path_norm = os.path.normcase(os.path.abspath(lib_path))
@@ -69,19 +54,7 @@ def _ensure_lib_on_path():
     sys.path.insert(0, lib_path)
 
 
-def _ensure_torch_and_transformers(pip_installer: Optional[PipInstaller] = None) -> None:
-    """
-    Гарантирует, что torch/transformers доступны в нужном варианте (CUDA/CPU).
-    НЕ вызывается на import-time, только когда реально нужен EmbeddingModelHandler.
-
-    Логика:
-      1. Определяем уже установленный вариант torch через importlib.metadata
-         (БЕЗ импорта torch — иначе переустановка не заменит загруженные расширения).
-      2. Сравниваем с доступным GPU. Если CPU-билд установлен, а есть NVIDIA —
-         сносим torch/torchaudio и ставим cu128-билд.
-      3. Только после этого импортируем torch.
-      4. Далее — transformers (без CUDA-логики).
-    """
+def _ensure_torch_and_transformers() -> None:
     _ensure_lib_on_path()
 
     try:
@@ -94,99 +67,36 @@ def _ensure_torch_and_transformers(pip_installer: Optional[PipInstaller] = None)
     backend_ctx = {"gpu_vendor": gpu, "libs_dir": lib_path}
     backend_kind = backend_service.preferred_torch_kind(backend_ctx)
     status = backend_service.get_status(backend_kind, ctx=backend_ctx)
-    action = status.action
     installed_variant = backend_service.get_installed_torch_variant(target_dir=lib_path)
     logger.info(
         f"torch bootstrap: gpu={gpu}, required_backend={backend_kind.value}, installed_variant={installed_variant}, "
-        f"action={action}, torch_in_sys_modules={'torch' in sys.modules}"
+        f"action={status.action}, torch_in_sys_modules={'torch' in sys.modules}"
     )
 
-    if action != "skip":
-        pip_installer = pip_installer or _get_default_pip_installer()
-        if pip_installer is None:
-            # Инсталлера нет — единственный шанс выжить, если torch уже стоит
-            try:
-                import torch  # noqa: F401
-            except Exception as e:
-                raise RuntimeError(
-                    "torch не установлен и PipInstaller недоступен"
-                ) from e
-        else:
-            # Если torch уже был импортирован ранее в этом процессе, переустановка
-            # не заменит нативные расширения — потребуется перезапуск игры.
-            if action == "reinstall" and "torch" in sys.modules:
-                logger.warning(
-                    "torch уже импортирован в этом процессе, апгрейд CPU→CUDA "
-                    "требует перезапуска. Используется текущий вариант."
-                )
-            else:
-                if action == "reinstall":
-                    logger.info("Удаление CPU-варианта PyTorch перед установкой CUDA-варианта...")
-                    ok = pip_installer.uninstall_packages(
-                        ["torch", "torchaudio"],
-                        description="Удаление CPU-варианта PyTorch",
-                    )
-                    if not ok:
-                        raise RuntimeError(
-                            "Не удалось удалить CPU-вариант torch/torchaudio"
-                        )
-
-                logger.info(status.reason)
-                installed_status = backend_service.install_backend(
-                    backend_kind,
-                    pip_installer=pip_installer,
-                    ctx=backend_ctx,
-                )
-                if not installed_status.ok:
-                    raise RuntimeError(installed_status.reason or "Failed to install backend runtime")
-
-    # Импортируем только после того, как разобрались с установкой.
-    import torch  # noqa: F401
-
-    # Post-import проверка: metadata могла показать CUDA, а реальный torch — CPU.
-    # Это ловит ситуацию, когда dist-info обновился на +cu128, но бинарники
-    # остались CPU (неполная предыдущая переустановка).
-    _torch_cuda_ver = getattr(torch.version, "cuda", None)
-    _torch_file = getattr(torch, "__file__", "?")
-    logger.info(
-        f"torch loaded: version={torch.__version__}, cuda_version={_torch_cuda_ver}, "
-        f"cuda_available={torch.cuda.is_available()}, path={_torch_file}"
-    )
-    if gpu == "NVIDIA" and _torch_cuda_ver is None:
-        logger.warning(
-            "GPU=NVIDIA но загруженный torch не содержит CUDA! "
-            "dist-info врёт — принудительная переустановка. "
-            f"torch.__file__={_torch_file}"
+    if not status.ok:
+        raise RuntimeError(
+            "RAG backend runtime is not installed. Install the RAG component via the installable pipeline first: "
+            + (status.reason or status.action)
         )
-        pip_installer = pip_installer or _get_default_pip_installer()
-        if pip_installer is not None:
-            # torch уже импортирован — в текущем процессе DLL не заменить.
-            # Но делаем uninstall + install на диске — следующий запуск подхватит CUDA.
-            logger.info("Удаление сломанного torch перед переустановкой CUDA...")
-            pip_installer.uninstall_packages(
-                ["torch", "torchaudio"],
-                description="Удаление torch с неверными бинарниками",
-            )
-            pip_installer.install_package(
-                list(backend_service.torch_package_specs(kind=BackendKind.CUDA)),
-                description="Установка PyTorch CUDA (cu128) — исправление...",
-                extra_args=["--index-url", CUDA_INDEX_URL],
-            )
-            logger.warning(
-                "PyTorch CUDA переустановлен. Перезапустите игру для активации GPU."
-            )
+
+    import torch
+    torch_cuda_ver = getattr(torch.version, "cuda", None)
+    torch_file = getattr(torch, "__file__", "?")
+    logger.info(
+        f"torch loaded: version={torch.__version__}, cuda_version={torch_cuda_ver}, "
+        f"cuda_available={torch.cuda.is_available()}, path={torch_file}"
+    )
+    if backend_kind.value == "cuda" and torch_cuda_ver is None:
+        raise RuntimeError(
+            f"CUDA backend is required, but loaded torch has no CUDA runtime. torch.__file__={torch_file}"
+        )
 
     try:
         from transformers import AutoModel, AutoTokenizer  # noqa: F401
-    except Exception:
-        pip_installer = pip_installer or _get_default_pip_installer()
-        if pip_installer is None:
-            raise
-
-        ok = pip_installer.install_package("transformers>=4.45.2", "Installing transformers>=4.45.2")
-        if not ok:
-            raise RuntimeError("Failed to install transformers")
-
+    except Exception as exc:
+        raise RuntimeError(
+            "transformers is not installed. Install the RAG component via the installable pipeline first."
+        ) from exc
 
 
 class EmbeddingModelHandler:

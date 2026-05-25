@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+from typing import Any
+
+from main_logger import logger
+
+from core.events import Event, Events, get_event_bus
+from core.install_types import InstallPlan
+from core.installables import ComponentCategory, make_component_id
+from installables import get_installable_registry, refresh_installable_registry
+
+
+class InstallableController:
+    def __init__(self) -> None:
+        self.event_bus = get_event_bus()
+        self._subscribe_to_events()
+
+    def _subscribe_to_events(self) -> None:
+        eb = self.event_bus
+        eb.subscribe(Events.Installable.LIST, self._on_list, weak=False)
+        eb.subscribe(Events.Installable.GET, self._on_get, weak=False)
+        eb.subscribe(Events.Installable.GET_STATUS, self._on_get_status, weak=False)
+        eb.subscribe(Events.Installable.INSTALL, self._on_install, weak=False)
+        eb.subscribe(Events.Installable.UNINSTALL, self._on_uninstall, weak=False)
+        eb.subscribe(Events.Installable.INITIALIZE, self._on_initialize, weak=False)
+
+    def _component_id(self, data: dict[str, Any]) -> str:
+        raw = str(data.get("component_id") or data.get("id") or "").strip()
+        if raw:
+            return raw
+        category = data.get("category")
+        item_id = data.get("item_id") or data.get("model_id") or data.get("model") or data.get("engine") or data.get("target")
+        if category and item_id:
+            return make_component_id(str(category), str(item_id))
+        raise ValueError("Installable payload requires component_id or category+item_id")
+
+    def _get_component(self, data: dict[str, Any]):
+        registry = refresh_installable_registry() if data.get("refresh") else get_installable_registry()
+        return registry.require(self._component_id(data))
+
+    def _on_list(self, event: Event):
+        data = event.data if isinstance(event.data, dict) else {}
+        registry = refresh_installable_registry() if data.get("refresh") else get_installable_registry()
+        category = data.get("category")
+        if category:
+            try:
+                items = registry.by_category(str(category))
+            except Exception:
+                items = []
+        else:
+            items = registry.all()
+
+        include_status = bool(data.get("include_status", False))
+        ctx = data.get("ctx") if isinstance(data.get("ctx"), dict) else {}
+        result = []
+        for item in items:
+            row = {"metadata": item.metadata().as_dict()}
+            if include_status:
+                row["status"] = item.status(ctx).as_dict()
+            result.append(row)
+        return result
+
+    def _on_get(self, event: Event):
+        data = event.data if isinstance(event.data, dict) else {}
+        try:
+            item = self._get_component(data)
+            return item.metadata().as_dict()
+        except Exception as exc:
+            logger.error(f"Installable GET failed: {exc}", exc_info=True)
+            return None
+
+    def _on_get_status(self, event: Event):
+        data = event.data if isinstance(event.data, dict) else {}
+        try:
+            item = self._get_component(data)
+            ctx = data.get("ctx") if isinstance(data.get("ctx"), dict) else {}
+            return item.status(ctx).as_dict()
+        except Exception as exc:
+            logger.error(f"Installable GET_STATUS failed: {exc}", exc_info=True)
+            return None
+
+    def _on_install(self, event: Event):
+        self._run(event, op="install")
+
+    def _on_uninstall(self, event: Event):
+        self._run(event, op="uninstall")
+
+    def _on_initialize(self, event: Event):
+        self._run(event, op="initialize")
+
+    def _run(self, event: Event, *, op: str) -> bool:
+        data = event.data if isinstance(event.data, dict) else {}
+        try:
+            component = self._get_component(data)
+        except Exception as exc:
+            logger.error(f"Installable {op}: component not found: {exc}", exc_info=True)
+            return False
+
+        with_ui = bool(data.get("with_ui", True))
+        timeout_sec = float(data.get("timeout_sec", 3600.0) or 3600.0)
+        base_ctx = data.get("ctx") if isinstance(data.get("ctx"), dict) else {}
+
+        def runner(*_args, **kwargs) -> InstallPlan:
+            run_ctx = dict(base_ctx)
+            raw_ctx = kwargs.get("ctx") if isinstance(kwargs.get("ctx"), dict) else {}
+            run_ctx.update(raw_ctx)
+            if kwargs.get("pip_installer") is not None:
+                run_ctx["pip_installer"] = kwargs.get("pip_installer")
+            if kwargs.get("callbacks") is not None:
+                run_ctx["callbacks"] = kwargs.get("callbacks")
+
+            if op == "install":
+                return component.build_install_plan(run_ctx)
+            if op == "uninstall":
+                return component.build_uninstall_plan(run_ctx)
+            plan = component.build_initialize_plan(run_ctx)
+            if plan is None:
+                return InstallPlan(actions=[], already_installed=True, already_installed_status="Nothing to initialize")
+            return plan
+
+        meta = {
+            "kind": component.legacy_kind or component.category.value,
+            "category": component.category.value,
+            "component_id": component.id,
+            "item_id": component.item_id,
+            "op": op,
+        }
+        if isinstance(data.get("meta"), dict):
+            meta.update(data["meta"])
+            meta.setdefault("component_id", component.id)
+            meta.setdefault("category", component.category.value)
+            meta.setdefault("item_id", component.item_id)
+            meta.setdefault("op", op)
+
+        title = data.get("title") or self._title(component, op)
+        payload = {
+            "kind": meta.get("kind"),
+            "item_id": component.item_id,
+            "component_id": component.id,
+            "task_id": data.get("task_id") or f"{component.category.value}:{op}:{component.item_id}",
+            "title": title,
+            "initial_status": data.get("initial_status") or "Preparing...",
+            "timeout_sec": timeout_sec,
+            "meta": meta,
+            "runner": runner,
+        }
+
+        self.event_bus.emit(Events.Install.RUN_WITH_UI if with_ui else Events.Install.RUN_HEADLESS, payload)
+        return True
+
+    def _title(self, component, op: str) -> str:
+        try:
+            title = component.metadata().title
+        except Exception:
+            title = component.item_id
+        labels = {
+            "install": "Installing",
+            "uninstall": "Uninstalling",
+            "initialize": "Initializing",
+        }
+        return f"{labels.get(op, op.title())}: {title}"

@@ -3,6 +3,7 @@ from __future__ import annotations
 from core.backends import get_backend_service
 from core.events import Events, get_event_bus
 from core.install_types import InstallAction, InstallPlan
+from core.installables import ComponentCategory, make_component_id
 from game_connections.services.beat_backend_spec import (
     BACKEND_AUTO,
     BACKEND_BEAT_THIS,
@@ -160,35 +161,6 @@ def build_beat_initialize_plan(preferred_backend: str = BACKEND_AUTO) -> Install
     return InstallPlan(actions=actions, ok_status=_("Готово", "Done"))
 
 
-def make_install_runner(target_backend: str):
-    normalized = normalize_backend_choice(target_backend)
-
-    def _runner(*args, **kwargs):
-        run_ctx = kwargs.get("ctx") if isinstance(kwargs, dict) else None
-        return build_beat_install_plan(normalized, ctx=run_ctx if isinstance(run_ctx, dict) else None)
-
-    return _runner
-
-
-def make_uninstall_runner(target_backend: str):
-    normalized = normalize_backend_choice(target_backend)
-
-    def _runner(*args, **kwargs):
-        run_ctx = kwargs.get("ctx") if isinstance(kwargs, dict) else None
-        return build_beat_uninstall_plan(normalized, ctx=run_ctx if isinstance(run_ctx, dict) else None)
-
-    return _runner
-
-
-def make_initialize_runner(preferred_backend: str):
-    normalized = normalize_backend_choice(preferred_backend)
-
-    def _runner(*_args, **_kwargs):
-        return build_beat_initialize_plan(normalized)
-
-    return _runner
-
-
 def start_beat_install(
     target_backend: str = BACKEND_BEAT_THIS,
     *,
@@ -202,16 +174,18 @@ def start_beat_install(
 
     _emit_install_task(
         {
+            "component_id": make_component_id(ComponentCategory.BEATS, normalized),
             "kind": "beats",
             "item_id": normalized,
             "task_id": f"beats:install:{normalized}",
             "title": title,
             "initial_status": _("Подготовка...", "Preparing..."),
             "timeout_sec": float(timeout_sec or 3600.0),
+            "with_ui": bool(with_ui),
             "meta": {"kind": "beats", "item_id": normalized, "op": "install"},
-            "runner": make_install_runner(normalized),
         },
         with_ui=with_ui,
+        event_name=Events.Installable.INSTALL,
     )
 
 
@@ -224,16 +198,18 @@ def start_beat_uninstall(
     normalized = normalize_backend_choice(target_backend)
     _emit_install_task(
         {
+            "component_id": make_component_id(ComponentCategory.BEATS, normalized),
             "kind": "beats",
             "item_id": normalized,
             "task_id": f"beats:uninstall:{normalized}",
             "title": _("Удаление beat-this backend", "Uninstalling beat-this backend"),
             "initial_status": _("Подготовка...", "Preparing..."),
             "timeout_sec": float(timeout_sec or 3600.0),
+            "with_ui": bool(with_ui),
             "meta": {"kind": "beats", "item_id": normalized, "op": "uninstall"},
-            "runner": make_uninstall_runner(normalized),
         },
         with_ui=with_ui,
+        event_name=Events.Installable.UNINSTALL,
     )
 
 
@@ -246,24 +222,24 @@ def start_beat_initialize(
     normalized = normalize_backend_choice(preferred_backend)
     _emit_install_task(
         {
+            "component_id": make_component_id(ComponentCategory.BEATS, normalized),
             "kind": "beats",
             "item_id": normalized,
             "task_id": f"beats:init:{normalized}",
             "title": _("Инициализация Beat Sync backend", "Initializing Beat Sync backend"),
             "initial_status": _("Подготовка...", "Preparing..."),
             "timeout_sec": float(timeout_sec or 3600.0),
+            "with_ui": bool(with_ui),
             "meta": {"kind": "beats", "item_id": normalized, "op": "initialize"},
-            "runner": make_initialize_runner(normalized),
         },
         with_ui=with_ui,
+        event_name=Events.Installable.INITIALIZE,
     )
 
 
-def _emit_install_task(payload: dict, *, with_ui: bool) -> None:
-    get_event_bus().emit(
-        Events.Install.RUN_WITH_UI if with_ui else Events.Install.RUN_HEADLESS,
-        payload,
-    )
+def _emit_install_task(payload: dict, *, with_ui: bool, event_name: str) -> None:
+    payload["with_ui"] = bool(with_ui)
+    get_event_bus().emit(event_name, payload)
 
 
 def _restart_beats_service(*_args, **kwargs) -> bool:

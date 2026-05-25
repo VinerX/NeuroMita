@@ -13,10 +13,26 @@ try:
 except Exception:
     LANGDETECT_AVAILABLE = False
 
-from num2words import num2words
+try:
+    from num2words import num2words
+except Exception:
+    def num2words(value, *args, **kwargs):
+        return str(value)
 
 from main_logger import logger
-from managers.settings_manager import SettingsManager
+try:
+    from managers.settings_manager import SettingsManager
+except Exception:
+    class SettingsManager:
+        instance = None
+
+        @staticmethod
+        def get(_key, default=None):
+            return default
+
+        @staticmethod
+        def set(_key, _value):
+            return None
 from utils.gpu_utils import check_gpu_provider
 
 

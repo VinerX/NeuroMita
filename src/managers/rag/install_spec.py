@@ -10,7 +10,15 @@ from core.install_requirements import InstallRequirement, check_requirements
 from core.install_types import InstallAction, InstallPlan
 from handlers.embedding_presets import resolve_full_config
 from managers.rag.pipeline.config import resolve_ce_model
-from managers.settings_manager import SettingsManager
+try:
+    from managers.settings_manager import SettingsManager
+except Exception:
+    class SettingsManager:
+        instance = None
+
+        @staticmethod
+        def get(_key, default=None):
+            return default
 from utils import getTranslationVariant as _
 from utils.gpu_utils import check_gpu_provider
 
@@ -181,6 +189,13 @@ def get_install_status(target: str, *, ctx: dict[str, Any] | None = None) -> dic
             summary["required"] = True
             summary["needs_local_runtime"] = True
             summary["required_backend"] = _required_backend(ctx).value
+            embed_model = _local_embed_model_name()
+            if embed_model and not os.path.isdir(_cache_marker_path(embed_model)):
+                summary["ok"] = False
+                if "embedding_model" not in summary["missing_required"]:
+                    summary["missing_required"].append("embedding_model")
+                if embed_model not in summary["download_models"]:
+                    summary["download_models"].append(embed_model)
 
             checked = check_requirements(_embed_requirements(ctx), ctx=ctx)
             _merge_requirement_status(summary, checked)
@@ -195,6 +210,12 @@ def get_install_status(target: str, *, ctx: dict[str, Any] | None = None) -> dic
             summary["required"] = True
             summary["needs_local_runtime"] = True
             summary["required_backend"] = _required_backend(ctx).value
+            if not os.path.isdir(_cache_marker_path(ce_model)):
+                summary["ok"] = False
+                if "reranker_model" not in summary["missing_required"]:
+                    summary["missing_required"].append("reranker_model")
+                if ce_model not in summary["download_models"]:
+                    summary["download_models"].append(ce_model)
 
             checked = check_requirements(_reranker_requirements(ctx), ctx=ctx)
             _merge_requirement_status(summary, checked)
@@ -378,30 +399,12 @@ def build_install_plan(
     )
 
 
-def make_install_runner(target: str, timeout_sec: float = 3600.0):
-    def _runner(*args, **kwargs):
-        pip_installer = kwargs.get("pip_installer") if isinstance(kwargs, dict) else None
-        callbacks = kwargs.get("callbacks") if isinstance(kwargs, dict) else None
-
-        if pip_installer is None and len(args) >= 1:
-            pip_installer = args[0]
-        if callbacks is None and len(args) >= 2:
-            callbacks = args[1]
-
-        return build_install_plan(
-            target,
-            pip_installer=pip_installer,
-            callbacks=callbacks,
-            timeout_sec=float(timeout_sec or 3600.0),
-        )
-
-    return _runner
-
-
 def start_install(target: str, *, with_ui: bool = True, timeout_sec: float = 3600.0) -> None:
     normalized = str(target or "").strip().lower()
     if normalized not in (TARGET_EMBEDDINGS, TARGET_RERANKER, TARGET_CURRENT):
         raise ValueError(f"Unknown RAG install target: {target}")
+
+    from core.installables import ComponentCategory, make_component_id
 
     title_map = {
         TARGET_EMBEDDINGS: _("Installing RAG embeddings backend", "Installing RAG embeddings backend"),
@@ -410,21 +413,20 @@ def start_install(target: str, *, with_ui: bool = True, timeout_sec: float = 360
     }
 
     payload = {
+        "component_id": make_component_id(ComponentCategory.RAG, normalized),
         "kind": "rag",
         "item_id": normalized,
-        "task_id": f"rag:{normalized}",
+        "task_id": f"rag:install:{normalized}",
         "title": title_map[normalized],
         "initial_status": _("Preparing...", "Preparing..."),
         "timeout_sec": float(timeout_sec or 3600.0),
+        "with_ui": bool(with_ui),
         "meta": {
             "kind": "rag",
             "item_id": normalized,
             "target": normalized,
+            "op": "install",
         },
-        "runner": make_install_runner(normalized, timeout_sec=float(timeout_sec or 3600.0)),
     }
 
-    get_event_bus().emit(
-        Events.Install.RUN_WITH_UI if with_ui else Events.Install.RUN_HEADLESS,
-        payload,
-    )
+    get_event_bus().emit(Events.Installable.INSTALL, payload)

@@ -524,6 +524,15 @@ class SpeechController:
                 models_map = self._asr_settings.get("models", {}) or {}
                 registry = getattr(SpeechRecognition, "_registry", {}) or {}
                 engines = list(registry.keys())
+                try:
+                    from core.installables import ComponentCategory, make_component_id
+                    from installables import get_installable_registry
+
+                    installable_registry = get_installable_registry()
+                except Exception:
+                    installable_registry = None
+                    ComponentCategory = None
+                    make_component_id = None
 
                 result = []
                 for engine in engines:
@@ -558,24 +567,44 @@ class SpeechController:
                     ctx = {
                         "device": engine_settings.get("device"),
                         "gpu_vendor": gpu_vendor,
+                        "engine_settings": engine_settings,
                     }
 
                     status = check_requirements(reqs, ctx=ctx) if reqs else {
                         "ok": True, "missing_required": [], "missing_optional": [], "details": []
                     }
+                    component_id = ""
+                    component_status = None
+                    if installable_registry is not None and ComponentCategory is not None and make_component_id is not None:
+                        try:
+                            component_id = make_component_id(ComponentCategory.ASR, engine)
+                            component = installable_registry.get(component_id)
+                            if component is not None:
+                                component_status = component.status(ctx)
+                        except Exception:
+                            component_status = None
+
+                    installed = bool(component_status.ready) if component_status is not None else bool(status.get("ok"))
+                    missing_required = list(status.get("missing_required", []))
+                    details = list(status.get("details", []))
+                    if component_status is not None:
+                        if not component_status.ready and component_status.installed and not component_status.backend_ok:
+                            missing_required = ["backend"]
+                        details.append(component_status.as_dict())
 
                     result.append({
                         "id": engine,
+                        "component_id": component_id,
                         "name": meta.get("name") or engine,
                         "description": meta.get("description") or "",
                         "languages": meta.get("languages", []) if isinstance(meta.get("languages"), list) else [],
                         "gpu_vendor": meta.get("gpu_vendor", []) if isinstance(meta.get("gpu_vendor"), list) else [],
                         "tags": meta.get("tags", []) if isinstance(meta.get("tags"), list) else [],
                         "links": meta.get("links", []) if isinstance(meta.get("links"), list) else [],
-                        "installed": bool(status.get("ok")),
-                        "missing_required": status.get("missing_required", []),
+                        "installed": installed,
+                        "missing_required": missing_required,
                         "missing_optional": status.get("missing_optional", []),
-                        "details": status.get("details", []),
+                        "details": details,
                     })
 
                 return result

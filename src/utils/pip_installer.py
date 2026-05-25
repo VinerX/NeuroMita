@@ -9,9 +9,25 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name, NormalizedName
 from packaging.version import parse as parse_version
 from main_logger import logger
-from PyQt6.QtWidgets import QApplication
 from typing import Set, List, Tuple, Optional, Deque
-from PyQt6.QtCore import QThread, QCoreApplication
+try:
+    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtCore import QThread, QCoreApplication
+except Exception:
+    class QApplication:
+        @staticmethod
+        def processEvents():
+            return None
+
+    class QThread:
+        @staticmethod
+        def currentThread():
+            return None
+
+    class QCoreApplication:
+        @staticmethod
+        def instance():
+            return None
 from collections import deque
 
 

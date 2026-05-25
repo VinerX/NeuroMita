@@ -1,7 +1,11 @@
 
-import qtawesome as qta
+try:
+    import qtawesome as qta
+except Exception:
+    qta = None
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap
 
 from main_logger import logger
 
@@ -168,6 +172,8 @@ class SettingsManager:
 # универсальный маленький помощник-иконки
 def _angle_icon(kind: str, size: int = 10):
     """kind: 'right' | 'down'"""
+    if qta is None:
+        return QPixmap(size, size)
     name = 'fa6s.angle-right' if kind == 'right' else 'fa6s.angle-down'
     return qta.icon(name, color='#f0f0f0').pixmap(size, size)
 # ────────────────────────────────────────────────────
@@ -226,7 +232,7 @@ class CollapsibleSection(QWidget):
     def _make_icon(self, name):
         # немного юзлесс функция, обрезается и тому подобное.
         lbl = QLabel(self.header)
-        lbl.setPixmap(qta.icon(name, color='#f0f0f0').pixmap(15, 15))
+        lbl.setPixmap(qta.icon(name, color='#f0f0f0').pixmap(15, 15) if qta is not None else QPixmap(15, 15))
         lbl.setFixedSize(18, 18)
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         return lbl
