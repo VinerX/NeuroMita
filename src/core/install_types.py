@@ -1,7 +1,10 @@
 ﻿from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable, Optional, Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable, Optional
+
+if TYPE_CHECKING:
+    from core.backends import BackendKind
 
 
 @dataclass
@@ -20,6 +23,7 @@ class InstallAction:
 
     packages: Optional[list[str]] = None
     extra_args: Optional[list[str]] = None
+    uv_overrides: Optional[list[str]] = None
 
     files: Optional[list[dict]] = None
     headers: Optional[dict[str, str]] = None
@@ -34,3 +38,5 @@ class InstallPlan:
     already_installed: bool = False
     ok_status: str = "Done"
     already_installed_status: str = "Already installed"
+    required_backend: Optional["BackendKind"] = None
+    backend_context: dict[str, Any] = field(default_factory=dict)

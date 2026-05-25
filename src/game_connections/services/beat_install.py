@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from core.backends import get_backend_service
 from core.events import Events, get_event_bus
 from core.install_types import InstallAction, InstallPlan
 from game_connections.services.beat_backend_spec import (
@@ -14,8 +15,9 @@ from game_connections.services.beat_backend_spec import (
     normalize_backend_choice,
 )
 from game_connections.services.beat_worker_client import call_beats_worker_sync, restart_beats_worker
-from handlers.voice_models.install_plan_helpers import pip_uninstall_action, torch_install_action
+from handlers.voice_models.install_plan_helpers import pip_uninstall_action
 from utils import getTranslationVariant as _
+
 
 def build_beat_install_plan(target_backend: str = BACKEND_BEAT_THIS, *, ctx: dict | None = None) -> InstallPlan:
     normalized = normalize_backend_choice(target_backend)
@@ -26,7 +28,11 @@ def build_beat_install_plan(target_backend: str = BACKEND_BEAT_THIS, *, ctx: dic
         return InstallPlan(
             actions=[],
             already_installed=True,
-            already_installed_status=_("DSP fallback не требует установки", "DSP fallback does not require installation"),
+            already_installed_status=_(
+                "DSP fallback не требует установки",
+                "DSP fallback does not require installation",
+            ),
+            backend_context=dict(beat_ctx),
         )
 
     backend_key = BACKEND_LIBROSA if normalized == BACKEND_LIBROSA else BACKEND_BEAT_THIS
@@ -36,14 +42,10 @@ def build_beat_install_plan(target_backend: str = BACKEND_BEAT_THIS, *, ctx: dic
             actions=[],
             already_installed=True,
             already_installed_status=_("Уже установлено", "Already installed"),
+            backend_context=dict(beat_ctx),
         )
 
-    actions: list[InstallAction] = []
-    if backend_key == BACKEND_BEAT_THIS:
-        actions.append(torch_install_action(beat_ctx, progress=10))
-
-    packages = backend_install_packages(backend_key)
-    actions.append(
+    actions: list[InstallAction] = [
         InstallAction(
             type="pip",
             description=_(
@@ -51,27 +53,35 @@ def build_beat_install_plan(target_backend: str = BACKEND_BEAT_THIS, *, ctx: dic
                 "Installing beat sync dependencies...",
             ),
             progress=35 if backend_key == BACKEND_BEAT_THIS else 20,
-            packages=packages,
-        )
-    )
-    actions.append(
+            packages=backend_install_packages(backend_key),
+        ),
         InstallAction(
             type="call",
             description=_("Перезапуск beat backend...", "Restarting beat backend..."),
             progress=85,
             fn=_restart_beats_service,
-        )
-    )
-    actions.append(
+        ),
         InstallAction(
             type="call",
-            description=_("Проверка зависимостей beat backend...", "Validating beat backend dependencies..."),
+            description=_(
+                "Проверка зависимостей beat backend...",
+                "Validating beat backend dependencies...",
+            ),
             progress=99,
             fn=lambda **kwargs: _backend_installed(backend_key, **kwargs),
-        )
-    )
-    return InstallPlan(actions=actions, ok_status=_("Готово", "Done"))
+        ),
+    ]
 
+    required_backend = None
+    if backend_key == BACKEND_BEAT_THIS:
+        required_backend = get_backend_service().preferred_torch_kind(beat_ctx)
+
+    return InstallPlan(
+        actions=actions,
+        ok_status=_("Готово", "Done"),
+        required_backend=required_backend,
+        backend_context=dict(beat_ctx),
+    )
 
 
 def build_beat_uninstall_plan(target_backend: str = BACKEND_BEAT_THIS, *, ctx: dict | None = None) -> InstallPlan:
@@ -80,7 +90,10 @@ def build_beat_uninstall_plan(target_backend: str = BACKEND_BEAT_THIS, *, ctx: d
         return InstallPlan(
             actions=[],
             already_installed=True,
-            already_installed_status=_("Для этого backend удаление не требуется", "Nothing to uninstall for this backend"),
+            already_installed_status=_(
+                "Для этого backend удаление не требуется",
+                "Nothing to uninstall for this backend",
+            ),
         )
 
     actions = [
@@ -115,7 +128,10 @@ def build_beat_initialize_plan(preferred_backend: str = BACKEND_AUTO) -> Install
         return InstallPlan(
             actions=[],
             already_installed=True,
-            already_installed_status=_("DSP fallback готов без инициализации", "DSP fallback is ready without initialization"),
+            already_installed_status=_(
+                "DSP fallback готов без инициализации",
+                "DSP fallback is ready without initialization",
+            ),
         )
 
     actions = [
@@ -276,7 +292,6 @@ def _initialize_beats_service(preferred_backend: str) -> bool:
     )
 
 
-
 def _backend_installed(preferred_backend: str, *, callbacks=None, **_kwargs) -> bool:
     try:
         payload = call_beats_worker_sync(
@@ -329,13 +344,15 @@ def _format_backend_validation_issue(target: str, backend_state: dict) -> str:
         extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
         module = extra.get("module")
         spec = extra.get("spec") or extra.get("dist")
-        if kind == "torch_runtime":
+
+        if kind == "backend":
             label = ", ".join(
                 str(value)
                 for value in (
-                    f"action={extra.get('action')}",
+                    f"requested={extra.get('requested_kind')}",
+                    f"resolved={extra.get('resolved_kind')}",
+                    f"provider={extra.get('provider')}",
                     f"variant={extra.get('variant')}",
-                    f"gpu={extra.get('gpu_vendor')}",
                     extra.get("reason"),
                 )
                 if value and value != "None"
@@ -343,9 +360,11 @@ def _format_backend_validation_issue(target: str, backend_state: dict) -> str:
         else:
             label = module or spec or req_id
         failed_details.append(f"{req_id} ({kind}: {label})")
+
     if failed_details:
         parts.append("Failed checks: " + "; ".join(failed_details[:12]))
     return " ".join(parts)
+
 
 def _backend_ready(preferred_backend: str) -> bool:
     payload = call_beats_worker_sync(

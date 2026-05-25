@@ -9,6 +9,7 @@ import urllib.request
 import urllib.error
 
 from main_logger import logger
+from core.backends import BackendKind, get_backend_service
 from core.events import get_event_bus, Events, Event
 from utils.pip_installer import PipInstaller
 from core.install_types import InstallCallbacks, InstallAction, InstallPlan
@@ -150,6 +151,73 @@ class InstallController:
                 missing.append(s)
         return missing
 
+    def _backend_actions(self, plan: InstallPlan, ctx: dict) -> list[InstallAction]:
+        required_backend = getattr(plan, "required_backend", None)
+        if required_backend is None:
+            return []
+
+        backend_service = get_backend_service()
+        backend_requirement = backend_service.build_requirement(required_backend)
+        if backend_requirement.kind == BackendKind.NONE:
+            return []
+
+        backend_ctx = dict(ctx or {})
+        backend_ctx.update(getattr(plan, "backend_context", {}) or {})
+
+        def _install_backend(*, pip_installer=None, callbacks=None, ctx=None, **_kwargs) -> bool:
+            if pip_installer is None:
+                return False
+            status = backend_service.install_backend(
+                backend_requirement,
+                pip_installer=pip_installer,
+                callbacks=callbacks,
+                ctx=backend_ctx,
+            )
+            return bool(status.ok)
+
+        def _validate_backend(*, callbacks=None, ctx=None, **_kwargs) -> bool:
+            status = backend_service.get_status(backend_requirement, ctx=backend_ctx)
+            if status.ok:
+                return True
+            if callbacks is not None:
+                try:
+                    callbacks.log(
+                        "Backend validation failed: "
+                        + ", ".join(
+                            value for value in (
+                                f"kind={status.requested_kind.value}",
+                                f"variant={status.variant}",
+                                f"provider={status.provider}",
+                                status.reason,
+                            )
+                            if value
+                        )
+                    )
+                except Exception:
+                    pass
+            return False
+
+        install_status = backend_service.get_status(backend_requirement, ctx=backend_ctx)
+        actions: list[InstallAction] = []
+        if not install_status.ok and install_status.action != "skip":
+            actions.append(
+                InstallAction(
+                    type="call",
+                    description=install_status.reason,
+                    progress=10,
+                    fn=_install_backend,
+                )
+            )
+        actions.append(
+            InstallAction(
+                type="call",
+                description="Validating backend runtime...",
+                progress=25,
+                fn=_validate_backend,
+            )
+        )
+        return actions
+
     def _download_http_files(
         self,
         files: list[dict],
@@ -280,13 +348,32 @@ class InstallController:
         ctx: dict,
     ) -> bool:
         cb = callbacks
+        backend_ctx = dict(ctx or {})
+        backend_ctx.update(getattr(plan, "backend_context", {}) or {})
+        backend_actions = self._backend_actions(plan, backend_ctx)
+        backend_requirement = getattr(plan, "required_backend", None)
+        if backend_requirement is not None:
+            backend_service = get_backend_service()
+            backend_requirement = backend_service.build_requirement(backend_requirement)
+            if backend_requirement.kind != BackendKind.NONE:
+                for act in (plan.actions or []):
+                    if (act.type or "").strip().lower() != "pip":
+                        continue
+                    if act.uv_overrides:
+                        continue
+                    act.uv_overrides = list(
+                        backend_service.build_uv_overrides(
+                            backend_requirement,
+                            requested_specs=act.packages or [],
+                        )
+                    )
 
-        if plan.already_installed:
+        if plan.already_installed and not backend_actions:
             cb.status(plan.already_installed_status or "Already installed")
             cb.progress(100)
             return True
 
-        actions = plan.actions or []
+        actions = backend_actions + (plan.actions or [])
         for act in actions:
             atype = (act.type or "").strip().lower()
 
@@ -311,11 +398,21 @@ class InstallController:
                     continue
 
                 cb.log(f"Installing: {', '.join(to_install)}")
-                ok = pip_installer.install_package(
-                    to_install,
-                    description=desc or "Installing...",
-                    extra_args=act.extra_args,
-                )
+                extra_args = list(act.extra_args or [])
+                install_with_overrides = getattr(pip_installer, "install_package_with_overrides", None)
+                if callable(install_with_overrides):
+                    ok = install_with_overrides(
+                        to_install,
+                        description=desc or "Installing...",
+                        extra_args=extra_args or None,
+                        uv_overrides=list(act.uv_overrides or []),
+                    )
+                else:
+                    ok = pip_installer.install_package(
+                        to_install,
+                        description=desc or "Installing...",
+                        extra_args=extra_args or None,
+                    )
                 if not ok:
                     cb.status("Failed")
                     cb.log("pip step failed")

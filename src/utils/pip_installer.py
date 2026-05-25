@@ -5,7 +5,6 @@ PipInstaller 3.1 — упрощённый PTY/Pipes-раннер без снап
 from __future__ import annotations
 import subprocess, sys, os, queue, threading, time, json, shutil, gc, importlib.util, re, tempfile
 from pathlib import Path
-from core.install_dependency_policy import managed_runtime_dists
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name, NormalizedName
 from packaging.version import parse as parse_version
@@ -222,16 +221,38 @@ class PipInstaller:
                     pass
 
     def _build_dependency_overrides(self, package_spec) -> List[str]:
-        overrides: List[str] = []
-        requested = self._requested_dist_names(package_spec)
+        return []
 
-        for dist_name in managed_runtime_dists():
-            if canonicalize_name(dist_name) in requested:
-                continue
-            if self._target_dist_version(dist_name) is not None:
-                overrides.append(f"{dist_name}; sys_platform == 'never'")
+    def install_package_with_overrides(
+        self,
+        package_spec,
+        description="Installing package...",
+        extra_args=None,
+        uv_overrides: Optional[List[str]] = None,
+    ) -> bool:
+        cmd = self._build_install_command()
+        is_uv = self._is_uv_command(cmd)
+        override_path: str | None = None
+        try:
+            if extra_args:
+                cmd.extend(extra_args)
 
-        return self._dedupe_overrides(overrides)
+            effective_overrides = self._dedupe_overrides(list(uv_overrides or [])) if is_uv else []
+            if effective_overrides:
+                override_path = self._write_uv_overrides(effective_overrides)
+                cmd.extend(["--overrides", override_path])
+
+            if isinstance(package_spec, list):
+                cmd.extend(package_spec)
+            else:
+                cmd.append(package_spec)
+            return self._run_pip_process(cmd, description)
+        finally:
+            if override_path:
+                try:
+                    os.unlink(override_path)
+                except OSError:
+                    pass
 
     def _requested_dist_names(self, package_spec) -> Set[NormalizedName]:
         specs = package_spec if isinstance(package_spec, list) else [package_spec]

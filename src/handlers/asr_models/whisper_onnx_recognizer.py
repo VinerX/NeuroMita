@@ -15,6 +15,7 @@ import urllib.request
 import urllib.error
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
 
 from utils import getTranslationVariant as _
@@ -134,16 +135,17 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
 
     def requirements(self):
         p = self._paths()
+        backend_kind = self.required_backend({
+            "device": self.device,
+            "gpu_vendor": self._current_gpu or "CPU",
+        })
         return [
-            InstallRequirement(id="torch", kind="python_module", module="torch", required=True),
-            InstallRequirement(id="torchaudio", kind="python_module", module="torchaudio", required=True),
+            InstallRequirement(id=f"backend_{backend_kind.value}", kind="backend", backend_kind=backend_kind, required=True),
             InstallRequirement(id="sounddevice", kind="python_module", module="sounddevice", required=True),
-            InstallRequirement(id="numpy", kind="python_module", module="numpy", required=True),
             InstallRequirement(id="silero_vad", kind="python_module", module="silero_vad", required=True),
 
             InstallRequirement(id="transformers", kind="python_module", module="transformers", required=True),
             InstallRequirement(id="optimum_ort", kind="python_module", module="optimum.onnxruntime", required=True),
-            InstallRequirement(id="onnxruntime", kind="python_module", module="onnxruntime", required=True),
 
             InstallRequirement(id="whisper_cfg", kind="file", required=True, path=os.path.join(self.model_dir, "config.json")),
             InstallRequirement(id="whisper_tok", kind="file", required=True, path=os.path.join(self.model_dir, "tokenizer.json")),
@@ -158,39 +160,14 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
         ]
 
     def pip_install_steps(self, ctx: dict) -> List[dict]:
-        gpu = (ctx.get("gpu_vendor") or "CPU")
-        device = str(ctx.get("device") or "auto").strip().lower()
-
         steps: List[dict] = []
-
-        # 1) torch/torchaudio отдельно (из-за CUDA index-url)
-        if gpu == "NVIDIA" and device in ("auto", "cuda"):
-            steps.append({
-                "progress": 10,
-                "description": _("Установка PyTorch с CUDA (cu128)...", "Installing PyTorch with CUDA (cu128)..."),
-                "packages": ["torch==2.7.1", "torchaudio==2.7.1"],
-                "extra_args": ["--index-url", "https://download.pytorch.org/whl/cu128"]
-            })
-        else:
-            steps.append({
-                "progress": 10,
-                "description": _("Установка PyTorch CPU...", "Installing PyTorch CPU..."),
-                "packages": ["torch==2.7.1", "torchaudio==2.7.1"],
-                "extra_args": None
-            })
-
-        # 2) Остальные зависимости одним шагом
-        need_dml = (device in ("auto", "dml")) and gpu != "NVIDIA"
-        ort_pkg = "onnxruntime-directml" if need_dml else "onnxruntime"
 
         steps.append({
             "progress": 65,
             "description": _("Установка зависимостей ASR...", "Installing ASR dependencies..."),
             "packages": [
-                "numpy",
                 "sounddevice",
                 "silero-vad",
-                ort_pkg,
                 "transformers",
             ],
             "extra_args": None
@@ -198,12 +175,15 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
         steps.append({
             "progress": 80,
             "description": _("Установка optimum (onnxruntime)...", "Installing optimum (onnxruntime)..."),
-            "packages": ["optimum[onnxruntime]"],
+            "packages": ["optimum"],
             "extra_args": None
         })
 
 
         return steps
+
+    def required_backend(self, ctx: dict) -> BackendKind:
+        return BackendKind.ONNX
 
     def is_installed(self) -> bool:
         if self._current_gpu is None:

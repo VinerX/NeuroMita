@@ -949,6 +949,44 @@ class VoiceModelSettingsView(QWidget):
             info.setObjectName("Subtle")
             layout.addWidget(info)
 
+        backend_statuses = st.get("backend_statuses") if isinstance(st.get("backend_statuses"), dict) else {}
+        if backend_statuses:
+            title = QLabel(_("AI backend:", "AI backend:"))
+            title.setObjectName("Subtle")
+            layout.addWidget(title)
+
+            for backend_id in ("cpu", "cuda", "onnx"):
+                item = backend_statuses.get(backend_id)
+                if not isinstance(item, dict):
+                    continue
+
+                requested = str(item.get("kind") or backend_id).upper()
+                resolved = str(item.get("resolved_kind") or requested).upper()
+                provider = str(item.get("provider") or "").strip()
+                variant = str(item.get("variant") or "").strip()
+                action = str(item.get("action") or "").strip()
+                reason = str(item.get("reason") or "").strip()
+                ok = bool(item.get("ok"))
+
+                parts = [requested]
+                if resolved and resolved != requested:
+                    parts.append(f"→ {resolved}")
+                if provider and provider not in ("none", "missing"):
+                    parts.append(f"({provider.upper()})")
+                if variant and variant != "missing":
+                    parts.append(f"[{variant}]")
+
+                text = " ".join(parts)
+                if not ok and action and action != "skip":
+                    text += _(" — требуется {}", " — needs {}").format(action)
+                if reason and not ok:
+                    text += f": {reason}"
+
+                row = QLabel(text)
+                row.setWordWrap(True)
+                row.setStyleSheet(f"color: {'#7fe38c' if ok else '#FFB347'};")
+                layout.addWidget(row)
+
     # ---------- Description helpers ----------
     def _on_update_description(self, text: str):
         if self.desc_label:

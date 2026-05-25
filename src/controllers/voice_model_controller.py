@@ -11,6 +11,7 @@ from main_logger import logger
 from managers.settings_manager import SettingsManager
 from utils import getTranslationVariant as _
 
+from core.backends import get_backend_service
 from core.events import get_event_bus, Events, Event
 
 try:
@@ -119,6 +120,7 @@ class VoiceModelController:
             "cuda_devices": list(self.detected_cuda_devices or []),
             "gpu_name": self.gpu_name,
             "platform": platform.system(),
+            "libs_dir": os.environ.get("NEUROMITA_LIB_DIR"),
         }
 
     def _refresh_gpu_runtime_info(self) -> tuple[bool, bool]:
@@ -266,6 +268,7 @@ class VoiceModelController:
         status["detected_gpu_vendor"] = self.detected_gpu_vendor
         status["cuda_devices"] = list(self.detected_cuda_devices or [])
         status["gpu_name"] = self.gpu_name
+        status["backend_statuses"] = get_backend_service().status_snapshot(ctx=self._ctx())
 
         with self._lock:
             self._dependencies_status_cache = status
@@ -483,7 +486,15 @@ class VoiceModelController:
             run_ctx = (kwargs.get("ctx") or {})
             merged = dict(ctx)
             merged.update(run_ctx)
-            return spec.build_install_plan(mid, merged)
+            plan = spec.build_install_plan(mid, merged)
+            if getattr(plan, "required_backend", None) is None and hasattr(spec, "required_backend"):
+                try:
+                    plan.required_backend = spec.required_backend(mid, merged)
+                except Exception:
+                    pass
+            if not getattr(plan, "backend_context", None):
+                plan.backend_context = dict(merged)
+            return plan
 
         self.event_bus.emit(Events.VoiceModel.MODEL_INSTALL_STARTED, {"model_id": mid})
 

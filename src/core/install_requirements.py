@@ -5,6 +5,8 @@ from typing import Callable, Optional, Any, Dict, List, Tuple, FrozenSet
 import os
 import importlib.util
 
+from core.backends import BackendKind, get_backend_service
+
 try:
     from importlib import metadata as importlib_metadata  # py3.8+
 except Exception:  # pragma: no cover
@@ -19,7 +21,7 @@ PipCheckFn = Callable[[str, dict], bool]
 @dataclass(frozen=True)
 class InstallRequirement:
     id: str
-    kind: str  # "python_module" | "python_dist" | "file"
+    kind: str  # "python_module" | "python_dist" | "file" | "backend"
     required: bool = True
 
     module: Optional[str] = None
@@ -31,6 +33,7 @@ class InstallRequirement:
     path_fn: Optional[PathFn] = None
 
     when: Optional[WhenFn] = None
+    backend_kind: Optional[BackendKind | str] = None
 
 
 def _should_check(req: InstallRequirement, ctx: dict) -> bool:
@@ -223,6 +226,13 @@ def check_requirements(requirements: list[InstallRequirement], ctx: Optional[dic
             p = _resolve_path(req, ctx)
             extra["path"] = p
             ok = bool(p) and os.path.exists(p)
+
+        elif req.kind == "backend":
+            backend_kind = req.backend_kind or BackendKind.NONE
+            extra["backend_kind"] = str(getattr(backend_kind, "value", backend_kind))
+            status = get_backend_service().get_status(backend_kind, ctx=ctx)
+            ok = bool(status.ok)
+            extra.update(status.as_dict())
 
         else:
             ok = False

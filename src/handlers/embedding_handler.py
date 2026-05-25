@@ -13,9 +13,9 @@ import numpy as np
 
 from main_logger import logger
 from managers.settings_manager import SettingsManager
+from core.backends import BackendKind, CUDA_INDEX_URL, get_backend_service
 from utils.gpu_utils import check_gpu_provider
 from utils.pip_installer import PipInstaller
-from core.torch_runtime import TORCH_PACKAGES, decide_torch_install
 
 
 def getTranslationVariant(ru_str, en_str=""):
@@ -89,13 +89,15 @@ def _ensure_torch_and_transformers(pip_installer: Optional[PipInstaller] = None)
     except Exception:
         gpu = "CPU"
 
-    plan = decide_torch_install(gpu)
-    action = plan["action"]
-
-    from core.torch_runtime import get_installed_torch_variant
-    installed_variant = get_installed_torch_variant()
+    lib_path = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
+    backend_service = get_backend_service()
+    backend_ctx = {"gpu_vendor": gpu, "libs_dir": lib_path}
+    backend_kind = backend_service.preferred_torch_kind(backend_ctx)
+    status = backend_service.get_status(backend_kind, ctx=backend_ctx)
+    action = status.action
+    installed_variant = backend_service.get_installed_torch_variant(target_dir=lib_path)
     logger.info(
-        f"torch bootstrap: gpu={gpu}, installed_variant={installed_variant}, "
+        f"torch bootstrap: gpu={gpu}, required_backend={backend_kind.value}, installed_variant={installed_variant}, "
         f"action={action}, torch_in_sys_modules={'torch' in sys.modules}"
     )
 
@@ -129,14 +131,14 @@ def _ensure_torch_and_transformers(pip_installer: Optional[PipInstaller] = None)
                             "Не удалось удалить CPU-вариант torch/torchaudio"
                         )
 
-                logger.info(plan["description"])
-                ok = pip_installer.install_package(
-                    list(TORCH_PACKAGES),
-                    description=plan["description"],
-                    extra_args=plan.get("extra_args"),
+                logger.info(status.reason)
+                installed_status = backend_service.install_backend(
+                    backend_kind,
+                    pip_installer=pip_installer,
+                    ctx=backend_ctx,
                 )
-                if not ok:
-                    raise RuntimeError("Failed to install torch/torchaudio")
+                if not installed_status.ok:
+                    raise RuntimeError(installed_status.reason or "Failed to install backend runtime")
 
     # Импортируем только после того, как разобрались с установкой.
     import torch  # noqa: F401
@@ -165,9 +167,8 @@ def _ensure_torch_and_transformers(pip_installer: Optional[PipInstaller] = None)
                 ["torch", "torchaudio"],
                 description="Удаление torch с неверными бинарниками",
             )
-            from core.torch_runtime import TORCH_PACKAGES, CUDA_INDEX_URL
             pip_installer.install_package(
-                list(TORCH_PACKAGES),
+                list(backend_service.torch_package_specs(kind=BackendKind.CUDA)),
                 description="Установка PyTorch CUDA (cu128) — исправление...",
                 extra_args=["--index-url", CUDA_INDEX_URL],
             )

@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, List
 import numpy as np
 
+from core.backends import BackendKind
 from core.install_requirements import InstallRequirement
 
 
@@ -22,6 +23,9 @@ class SpeechRecognizerInterface(ABC):
 
     def pip_install_steps(self, ctx: dict) -> List[dict]:
         return []
+
+    def required_backend(self, ctx: dict) -> BackendKind:
+        return BackendKind.NONE
 
     def install_manifest(self) -> list[dict]:
         return []

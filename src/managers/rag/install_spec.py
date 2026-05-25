@@ -4,16 +4,15 @@ import os
 import sys
 from typing import Any
 
+from core.backends import BackendKind, get_backend_service
 from core.events import Events, get_event_bus
 from core.install_requirements import InstallRequirement, check_requirements
 from core.install_types import InstallAction, InstallPlan
 from handlers.embedding_presets import resolve_full_config
-from handlers.voice_models.install_plan_helpers import torch_install_action
 from managers.rag.pipeline.config import resolve_ce_model
 from managers.settings_manager import SettingsManager
 from utils import getTranslationVariant as _
 from utils.gpu_utils import check_gpu_provider
-from core.torch_runtime import get_torch_runtime_status
 
 
 TARGET_EMBEDDINGS = "embeddings"
@@ -113,22 +112,32 @@ def _merge_requirement_status(summary: dict[str, Any], checked: dict[str, Any]) 
             summary["missing_required"].append(req_id)
 
 
-def _torch_status(ctx: dict[str, Any]) -> dict[str, Any]:
-    return get_torch_runtime_status(
-        str(ctx.get("gpu_vendor") or "CPU"),
-        target_dir=os.environ.get("NEUROMITA_LIB_DIR"),
+def _required_backend(ctx: dict[str, Any]) -> BackendKind:
+    return get_backend_service().preferred_torch_kind(ctx)
+
+
+def _backend_requirement(ctx: dict[str, Any]) -> InstallRequirement:
+    backend_kind = _required_backend(ctx)
+    return InstallRequirement(
+        id=f"backend_{backend_kind.value}",
+        kind="backend",
+        backend_kind=backend_kind,
+        required=True,
     )
 
 
-def _embed_requirements() -> list[InstallRequirement]:
+def _embed_requirements(ctx: dict[str, Any]) -> list[InstallRequirement]:
     return [
+        _backend_requirement(ctx),
         InstallRequirement(id="transformers", kind="python_dist", spec=TRANSFORMERS_SPEC, required=True),
         InstallRequirement(id="huggingface_hub", kind="python_dist", spec=HF_HUB_SPEC, required=True),
     ]
 
 
 def _reranker_requirements(ctx: dict[str, Any]) -> list[InstallRequirement]:
+    ce_model = resolve_ce_model()
     reqs = [
+        _backend_requirement(ctx),
         InstallRequirement(id="transformers", kind="python_dist", spec=TRANSFORMERS_SPEC, required=True),
         InstallRequirement(id="huggingface_hub", kind="python_dist", spec=HF_HUB_SPEC, required=True),
     ]
@@ -160,10 +169,9 @@ def get_install_status(target: str, *, ctx: dict[str, Any] | None = None) -> dic
         "download_models": [],
         "needs_local_runtime": False,
         "needs_bitsandbytes": False,
+        "required_backend": None,
         "gpu_vendor": ctx.get("gpu_vendor"),
     }
-
-    torch_added = False
 
     for item in resolved_targets:
         if item == TARGET_EMBEDDINGS:
@@ -172,16 +180,9 @@ def get_install_status(target: str, *, ctx: dict[str, Any] | None = None) -> dic
 
             summary["required"] = True
             summary["needs_local_runtime"] = True
+            summary["required_backend"] = _required_backend(ctx).value
 
-            if not torch_added:
-                tstatus = _torch_status(ctx)
-                summary["details"].append(tstatus)
-                if not tstatus.get("ok"):
-                    summary["missing_required"].append("torch_runtime")
-                    summary["ok"] = False
-                torch_added = True
-
-            checked = check_requirements(_embed_requirements(), ctx=ctx)
+            checked = check_requirements(_embed_requirements(ctx), ctx=ctx)
             _merge_requirement_status(summary, checked)
             if not checked.get("ok"):
                 summary["ok"] = False
@@ -193,14 +194,7 @@ def get_install_status(target: str, *, ctx: dict[str, Any] | None = None) -> dic
 
             summary["required"] = True
             summary["needs_local_runtime"] = True
-
-            if not torch_added:
-                tstatus = _torch_status(ctx)
-                summary["details"].append(tstatus)
-                if not tstatus.get("ok"):
-                    summary["missing_required"].append("torch_runtime")
-                    summary["ok"] = False
-                torch_added = True
+            summary["required_backend"] = _required_backend(ctx).value
 
             checked = check_requirements(_reranker_requirements(ctx), ctx=ctx)
             _merge_requirement_status(summary, checked)
@@ -306,6 +300,7 @@ def build_install_plan(
 ) -> InstallPlan:
     ctx = _with_gpu_ctx({
         "timeout_sec": float(timeout_sec or 3600.0),
+        "libs_dir": os.environ.get("NEUROMITA_LIB_DIR"),
     })
     status = get_install_status(target, ctx=ctx)
 
@@ -326,7 +321,6 @@ def build_install_plan(
     actions: list[InstallAction] = []
 
     if status.get("needs_local_runtime"):
-        actions.append(torch_install_action(ctx, progress=10))
         actions.append(
             InstallAction(
                 type="pip",
@@ -372,7 +366,16 @@ def build_install_plan(
         )
     )
 
-    return InstallPlan(actions=actions, ok_status=_("Done", "Done"))
+    required_backend = None
+    if status.get("needs_local_runtime"):
+        required_backend = _required_backend(ctx)
+
+    return InstallPlan(
+        actions=actions,
+        ok_status=_("Done", "Done"),
+        required_backend=required_backend,
+        backend_context=dict(ctx),
+    )
 
 
 def make_install_runner(target: str, timeout_sec: float = 3600.0):

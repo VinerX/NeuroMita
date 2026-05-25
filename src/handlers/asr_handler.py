@@ -1,4 +1,5 @@
 ﻿import time
+import os
 import asyncio
 import concurrent.futures
 from collections import deque
@@ -212,6 +213,7 @@ class SpeechRecognition:
         ctx = {
             "gpu_vendor": gpu_vendor,
             "device": engine_settings.get("device"),
+            "libs_dir": os.environ.get("NEUROMITA_LIB_DIR"),
         }
 
         reg = getattr(SpeechRecognition, "_registry", {}) or {}
@@ -240,6 +242,11 @@ class SpeechRecognition:
             steps = steps or []
         except Exception:
             steps = []
+
+        try:
+            required_backend = recognizer.required_backend(ctx)
+        except Exception:
+            required_backend = None
 
         actions: list[InstallAction] = []
 
@@ -315,7 +322,13 @@ class SpeechRecognition:
             )
         )
 
-        return InstallPlan(actions=actions, already_installed=False, ok_status="Done")
+        return InstallPlan(
+            actions=actions,
+            already_installed=False,
+            ok_status="Done",
+            required_backend=required_backend,
+            backend_context=dict(ctx),
+        )
 
     @staticmethod
     def get_settings_schema(engine: Optional[str] = None) -> List[dict]:

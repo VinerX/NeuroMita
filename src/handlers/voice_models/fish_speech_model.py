@@ -14,10 +14,11 @@ from main_logger import logger
 from core.events import Events
 from utils import getTranslationVariant as _, get_character_voice_paths
 
+from core.backends import BackendKind, get_backend_service
 from core.install_types import InstallPlan, InstallAction
 from core.install_requirements import InstallRequirement, check_requirements
 
-from handlers.voice_models.install_plan_helpers import torch_install_action, pip_uninstall_action
+from handlers.voice_models.install_plan_helpers import pip_uninstall_action
 
 
 class FishSpeechInstallSpec:
@@ -32,7 +33,10 @@ class FishSpeechInstallSpec:
     @classmethod
     def requirements(cls, model_id: str, ctx: dict) -> list[InstallRequirement]:
         mid = str(model_id)
+        backend_kind = cls.required_backend(mid, ctx)
+        backend_kind = cls.required_backend(model_id, ctx)
         req: list[InstallRequirement] = [
+            InstallRequirement(id=f"backend_{backend_kind.value}", kind="backend", backend_kind=backend_kind, required=True),
             InstallRequirement(id="fish_speech_lib", kind="python_dist", spec="fish-speech-lib", required=True),
         ]
         if mid in ("medium+", "medium+low"):
@@ -45,6 +49,10 @@ class FishSpeechInstallSpec:
     def is_installed(cls, model_id: str, ctx: dict) -> bool:
         st = check_requirements(cls.requirements(model_id, ctx), ctx=ctx)
         return bool(st.get("ok"))
+
+    @classmethod
+    def required_backend(cls, model_id: str, ctx: dict) -> BackendKind:
+        return get_backend_service().preferred_torch_kind(ctx)
 
     @classmethod
     def _libs_path_abs(cls, pip_installer) -> str:
@@ -313,10 +321,13 @@ class FishSpeechInstallSpec:
     @classmethod
     def build_install_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
         mid = str(model_id)
+        backend_kind = cls.required_backend(mid, ctx)
         if cls.is_installed(mid, ctx):
             return InstallPlan(
                 actions=[],
                 already_installed=True,
+                required_backend=backend_kind,
+                backend_context=dict(ctx),
                 already_installed_status=_("Уже установлено", "Already installed")
             )
 
@@ -338,11 +349,8 @@ class FishSpeechInstallSpec:
 
         actions: list[InstallAction] = []
 
-        actions.append(torch_install_action(ctx, progress=10))
-
         pkgs = [
             "fish-speech-lib",
-            "numpy==1.26.0",
             "librosa==0.9.1",
             "numba==0.60.0",
         ]
@@ -387,7 +395,12 @@ class FishSpeechInstallSpec:
             )
         )
 
-        return InstallPlan(actions=actions, ok_status=_("Готово", "Done"))
+        return InstallPlan(
+            actions=actions,
+            ok_status=_("Готово", "Done"),
+            required_backend=backend_kind,
+            backend_context=dict(ctx),
+        )
 
     @classmethod
     def build_uninstall_plan(cls, model_id: str, ctx: dict) -> InstallPlan:

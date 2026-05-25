@@ -5,8 +5,8 @@ import platform
 import subprocess
 from typing import Any
 
+from core.backends import BACKEND_NUMPY_SPEC, BackendKind, get_backend_service
 from core.install_requirements import InstallRequirement, check_requirements
-from core.torch_runtime import get_torch_runtime_status
 
 
 def _(ru_text: str, en_text: str = "") -> str:
@@ -69,7 +69,7 @@ BACKEND_BEAT_THIS = "beat_this"
 BACKEND_LIBROSA = "librosa"
 BACKEND_DSP = "dsp_fallback"
 
-BEAT_NUMPY_SPEC = "numpy==1.26.0"
+BEAT_NUMPY_SPEC = BACKEND_NUMPY_SPEC
 BEAT_LIBROSA_SPEC = "librosa==0.9.1"
 BEAT_JOBLIB_SPEC = "joblib"
 BEAT_NUMBA_SPEC = "numba==0.60.0"
@@ -103,6 +103,11 @@ BEAT_SHARED_PACKAGES = [
     "soundfile",
     "cffi",
     "pycparser",
+]
+
+BEAT_SHARED_PACKAGES_NO_NUMPY = [
+    pkg for pkg in BEAT_SHARED_PACKAGES
+    if str(pkg).strip().lower() != str(BEAT_NUMPY_SPEC).strip().lower()
 ]
 
 BEAT_THIS_PACKAGES = [
@@ -163,16 +168,19 @@ def build_beat_ctx(ctx: dict[str, Any] | None = None) -> dict[str, Any]:
     return data
 
 
-def _torch_status(ctx: dict[str, Any]) -> dict[str, Any]:
-    libs_dir = ctx.get("libs_dir")
-    gpu_vendor = str(ctx.get("gpu_vendor") or "CPU")
-    return get_torch_runtime_status(gpu_vendor, target_dir=libs_dir)
+def _beat_this_backend_kind(ctx: dict[str, Any]) -> BackendKind:
+    return get_backend_service().preferred_torch_kind(ctx)
 
 
-def _beat_this_requirements() -> list[InstallRequirement]:
+def _beat_this_requirements(ctx: dict[str, Any]) -> list[InstallRequirement]:
+    backend_kind = _beat_this_backend_kind(ctx)
     return [
-        InstallRequirement(id="torch_module", kind="python_module", module="torch", required=True),
-        InstallRequirement(id="torchaudio_module", kind="python_module", module="torchaudio", required=True),
+        InstallRequirement(
+            id=f"backend_{backend_kind.value}",
+            kind="backend",
+            backend_kind=backend_kind,
+            required=True,
+        ),
         InstallRequirement(id="beat_this_module", kind="python_module", module="beat_this", required=True),
         InstallRequirement(id="tqdm", kind="python_dist", spec="tqdm", required=True),
         InstallRequirement(id="einops", kind="python_dist", spec="einops", required=True),
@@ -183,7 +191,6 @@ def _beat_this_requirements() -> list[InstallRequirement]:
             required=True,
         ),
         InstallRequirement(id="soxr", kind="python_dist", spec="soxr", required=True),
-        InstallRequirement(id="numpy", kind="python_dist", spec=BEAT_NUMPY_SPEC, required=True),
     ]
 
 
@@ -230,17 +237,13 @@ def _build_backend_entry(
 def get_backend_status_snapshot(preferred_backend: str | None, *, ctx: dict[str, Any] | None = None) -> dict[str, Any]:
     beat_ctx = build_beat_ctx(ctx)
     selected = normalize_backend_choice(preferred_backend)
-    torch_status = _torch_status(beat_ctx)
+    runtime_status = get_backend_service().get_status(_beat_this_backend_kind(beat_ctx), ctx=beat_ctx)
+    runtime_status_detail = runtime_status.as_requirement_detail()
 
-    beat_this_checked = check_requirements(_beat_this_requirements(), ctx=beat_ctx)
+    beat_this_checked = check_requirements(_beat_this_requirements(beat_ctx), ctx=beat_ctx)
     beat_this_missing = list(beat_this_checked.get("missing_required") or [])
-    if not torch_status.get("ok") and "torch_runtime" not in beat_this_missing:
-        beat_this_missing.insert(0, "torch_runtime")
-
-    beat_this_available = bool(torch_status.get("ok")) and bool(beat_this_checked.get("ok"))
+    beat_this_available = bool(beat_this_checked.get("ok"))
     beat_this_details = list(beat_this_checked.get("details") or [])
-    if not torch_status.get("ok"):
-        beat_this_details.append(torch_status)
 
     librosa_checked = check_requirements(_librosa_requirements(), ctx=beat_ctx)
     librosa_available = bool(librosa_checked.get("ok"))
@@ -283,7 +286,8 @@ def get_backend_status_snapshot(preferred_backend: str | None, *, ctx: dict[str,
         "resolved_backend": resolved_backend,
         "active_backend": resolved_backend,
         "gpu_vendor": beat_ctx.get("gpu_vendor"),
-        "torch": torch_status,
+        "runtime_backend": runtime_status.as_dict(),
+        "torch": runtime_status_detail,
         "backends": backends,
     }
 
@@ -294,7 +298,7 @@ def backend_install_packages(target_backend: str | None) -> list[str]:
         return []
     if normalized == BACKEND_LIBROSA:
         return list(BEAT_SHARED_PACKAGES)
-    packages = list(BEAT_SHARED_PACKAGES)
+    packages = list(BEAT_SHARED_PACKAGES_NO_NUMPY)
     packages.extend(BEAT_THIS_PACKAGES)
     seen: set[str] = set()
     ordered: list[str] = []
