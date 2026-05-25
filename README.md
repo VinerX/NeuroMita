@@ -179,12 +179,12 @@ API ссылка - https://openrouter.ai/api/v1
 Найденный где-то в Мае 25-го года сервис. Лимит до 500к токенов на аккаунт в день (может быть разным).
 Ссылка https://api.intelligence.io.solutions/api/v1/
     - Список моделей:  
-	meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8  
-	deepseek-ai/DeepSeek-V4-Flash (Новая модель)  
-	Qwen/Qwen3-Next-80B-A3B-Instruct  
-	google/gemma-4-26b-a4b-it  
-	openai/gpt-oss-20b  
-	[Полный список моделей io.net тут](https://ai.io.net/ai/models)  
+	 meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8  
+	 deepseek-ai/DeepSeek-V4-Flash (Новая модель)  
+	 Qwen/Qwen3-Next-80B-A3B-Instruct  
+	 google/gemma-4-26b-a4b-it  
+	 openai/gpt-oss-20b  
+	 [Полный список моделей io.net тут](https://ai.io.net/ai/models)  
 	
   - Есть 1 рабочий способ: Создаём на их сайте по несколько аккаунтов, на каждом из них создаём по одному API ключу, а затем вставляем их в поле "Резервные ключи" (аккаунтов можно бесконечное кол-во создать, и не только для io net).  
   
