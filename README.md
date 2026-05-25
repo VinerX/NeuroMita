@@ -58,7 +58,7 @@ Translation (DeepSeek) [English readme](README_EN.md)
 Релизы, то есть файлы, которые нужны обычному игроку - https://github.com/VinerX/NeuroMita/releases  
 1. [Актуальная версия v0.011 здесь](https://github.com/VinerX/NeuroMita/releases/download/v0.011/NeuroMita.0.011.MitaWorld.7z)  
 
-2. [Версия v0.011 с исправлениями от vladislavmorozov2007](https://drive.google.com/file/d/1btPLozmi_ftmTaCecb8wWXkh72RJ3DKD/view?usp=drivesdk) (Папку распаковать в любое место)  
+2. [Версия v0.011 с исправлениями от vladislavmorozov2007](https://drive.google.com/file/d/1c5d-G4glYICanOus1zCWYsRr0x-Ud9z8/view?usp=drivesdk) (Папку распаковать в любое место)  
     
 Кнопка, чтобы начать писать в игре - Tab 
 Чтобы отправить - Enter.
