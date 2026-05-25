@@ -15,7 +15,7 @@ from main_logger import logger
 from managers.settings_manager import SettingsManager
 from utils.gpu_utils import check_gpu_provider
 from utils.pip_installer import PipInstaller
-from utils.torch_install_utils import TORCH_PACKAGES, decide_torch_install
+from core.torch_runtime import TORCH_PACKAGES, decide_torch_install
 
 
 def getTranslationVariant(ru_str, en_str=""):
@@ -92,7 +92,7 @@ def _ensure_torch_and_transformers(pip_installer: Optional[PipInstaller] = None)
     plan = decide_torch_install(gpu)
     action = plan["action"]
 
-    from utils.torch_install_utils import get_installed_torch_variant
+    from core.torch_runtime import get_installed_torch_variant
     installed_variant = get_installed_torch_variant()
     logger.info(
         f"torch bootstrap: gpu={gpu}, installed_variant={installed_variant}, "
@@ -165,7 +165,7 @@ def _ensure_torch_and_transformers(pip_installer: Optional[PipInstaller] = None)
                 ["torch", "torchaudio"],
                 description="Удаление torch с неверными бинарниками",
             )
-            from utils.torch_install_utils import TORCH_PACKAGES, CUDA_INDEX_URL
+            from core.torch_runtime import TORCH_PACKAGES, CUDA_INDEX_URL
             pip_installer.install_package(
                 list(TORCH_PACKAGES),
                 description="Установка PyTorch CUDA (cu128) — исправление...",

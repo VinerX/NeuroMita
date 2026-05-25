@@ -4,7 +4,7 @@ import os
 import shutil
 from core.install_types import InstallAction
 from utils import getTranslationVariant as _
-from utils.torch_install_utils import TORCH_PACKAGES, decide_torch_install
+from core.torch_runtime import TORCH_PACKAGES, decide_torch_install
 
 
 def torch_install_action(ctx: dict, *, progress: int = 10) -> InstallAction:

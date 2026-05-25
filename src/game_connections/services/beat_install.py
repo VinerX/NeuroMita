@@ -45,13 +45,13 @@ def build_beat_install_plan(target_backend: str = BACKEND_BEAT_THIS, *, ctx: dic
     packages = backend_install_packages(backend_key)
     actions.append(
         InstallAction(
-            type="call",
+            type="pip",
             description=_(
                 "Установка зависимостей beat sync...",
                 "Installing beat sync dependencies...",
             ),
             progress=35 if backend_key == BACKEND_BEAT_THIS else 20,
-            fn=lambda **kwargs: _install_backend_packages(packages, **kwargs),
+            packages=packages,
         )
     )
     actions.append(
@@ -67,7 +67,7 @@ def build_beat_install_plan(target_backend: str = BACKEND_BEAT_THIS, *, ctx: dic
             type="call",
             description=_("Проверка зависимостей beat backend...", "Validating beat backend dependencies..."),
             progress=99,
-            fn=lambda **_kwargs: _backend_installed(backend_key),
+            fn=lambda **kwargs: _backend_installed(backend_key, **kwargs),
         )
     )
     return InstallPlan(actions=actions, ok_status=_("Готово", "Done"))
@@ -252,8 +252,15 @@ def _emit_install_task(payload: dict, *, with_ui: bool) -> None:
 
 def _restart_beats_service(*_args, **kwargs) -> bool:
     ctx = kwargs.get("ctx") if isinstance(kwargs, dict) else None
+    callbacks = kwargs.get("callbacks") if isinstance(kwargs, dict) else None
     event_bus = ctx.get("event_bus") if isinstance(ctx, dict) else None
-    return restart_beats_worker(timeout=15.0, event_bus=event_bus)
+    ok = restart_beats_worker(timeout=15.0, event_bus=event_bus)
+    if not ok and callbacks is not None:
+        try:
+            callbacks.log("Beat backend restart failed: AI engine did not confirm service restart.")
+        except Exception:
+            pass
+    return bool(ok)
 
 
 def _initialize_beats_service(preferred_backend: str) -> bool:
@@ -269,35 +276,18 @@ def _initialize_beats_service(preferred_backend: str) -> bool:
     )
 
 
-def _install_backend_packages(packages: list[str], *, pip_installer=None, callbacks=None, **_kwargs) -> bool:
-    if pip_installer is None:
-        return False
-    if not packages:
-        return True
+
+def _backend_installed(preferred_backend: str, *, callbacks=None, **_kwargs) -> bool:
     try:
-        if callbacks:
-            callbacks.log("Installing packages: {}".format(", ".join(packages)))
-        return bool(
-            pip_installer.install_package(
-                list(packages),
-                description=_("Установка зависимостей beat sync...", "Installing beat sync dependencies..."),
-                extra_args=["--upgrade"],
-            )
+        payload = call_beats_worker_sync(
+            "get_backend_status",
+            {"backend_preference": normalize_backend_choice(preferred_backend)},
+            timeout=15.0,
         )
     except Exception as exc:
-        try:
-            if callbacks:
-                callbacks.log(str(exc))
-        except Exception:
-            pass
+        _log_beat_validation(callbacks, f"Beat backend validation failed: {exc}")
         return False
 
-def _backend_installed(preferred_backend: str) -> bool:
-    payload = call_beats_worker_sync(
-        "get_backend_status",
-        {"backend_preference": normalize_backend_choice(preferred_backend)},
-        timeout=5.0,
-    )
     preferred = normalize_backend_choice(preferred_backend)
     target = payload.get("resolved_backend") if preferred == BACKEND_AUTO else preferred
     if target == BACKEND_DSP:
@@ -305,8 +295,57 @@ def _backend_installed(preferred_backend: str) -> bool:
     backends = payload.get("backends") if isinstance(payload.get("backends"), dict) else {}
     backend_state = backends.get(target) if isinstance(backends, dict) else None
     if not isinstance(backend_state, dict):
+        _log_beat_validation(callbacks, f"Beat backend validation failed: missing status for '{target}'.")
         return False
-    return bool(backend_state.get("installed") or backend_state.get("available"))
+
+    ok = bool(backend_state.get("installed") or backend_state.get("available"))
+    if not ok:
+        _log_beat_validation(callbacks, _format_backend_validation_issue(target, backend_state))
+    return ok
+
+
+def _log_beat_validation(callbacks, message: str) -> None:
+    if callbacks is None:
+        return
+    try:
+        callbacks.log(message)
+    except Exception:
+        pass
+
+
+def _format_backend_validation_issue(target: str, backend_state: dict) -> str:
+    missing = [str(item) for item in (backend_state.get("missing_required") or []) if str(item)]
+    parts = [f"Beat backend '{target}' is not installed/available after pip install."]
+    if missing:
+        parts.append("Missing requirements: " + ", ".join(missing))
+
+    details = backend_state.get("details") if isinstance(backend_state.get("details"), list) else []
+    failed_details: list[str] = []
+    for item in details:
+        if not isinstance(item, dict) or item.get("ok", True):
+            continue
+        req_id = str(item.get("id") or "unknown")
+        kind = str(item.get("kind") or "unknown")
+        extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
+        module = extra.get("module")
+        spec = extra.get("spec") or extra.get("dist")
+        if kind == "torch_runtime":
+            label = ", ".join(
+                str(value)
+                for value in (
+                    f"action={extra.get('action')}",
+                    f"variant={extra.get('variant')}",
+                    f"gpu={extra.get('gpu_vendor')}",
+                    extra.get("reason"),
+                )
+                if value and value != "None"
+            )
+        else:
+            label = module or spec or req_id
+        failed_details.append(f"{req_id} ({kind}: {label})")
+    if failed_details:
+        parts.append("Failed checks: " + "; ".join(failed_details[:12]))
+    return " ".join(parts)
 
 def _backend_ready(preferred_backend: str) -> bool:
     payload = call_beats_worker_sync(

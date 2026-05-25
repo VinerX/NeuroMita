@@ -13,7 +13,7 @@ from managers.rag.pipeline.config import resolve_ce_model
 from managers.settings_manager import SettingsManager
 from utils import getTranslationVariant as _
 from utils.gpu_utils import check_gpu_provider
-from utils.torch_install_utils import decide_torch_install
+from core.torch_runtime import get_torch_runtime_status
 
 
 TARGET_EMBEDDINGS = "embeddings"
@@ -114,20 +114,10 @@ def _merge_requirement_status(summary: dict[str, Any], checked: dict[str, Any]) 
 
 
 def _torch_status(ctx: dict[str, Any]) -> dict[str, Any]:
-    plan = decide_torch_install(str(ctx.get("gpu_vendor") or "CPU"), target_dir=os.environ.get("NEUROMITA_LIB_DIR"))
-    ok = str(plan.get("action") or "skip") == "skip"
-    reason = str(plan.get("reason") or plan.get("description") or "")
-    return {
-        "id": "torch_runtime",
-        "kind": "torch_runtime",
-        "required": True,
-        "ok": ok,
-        "extra": {
-            "action": plan.get("action"),
-            "reason": reason,
-            "gpu_vendor": ctx.get("gpu_vendor"),
-        },
-    }
+    return get_torch_runtime_status(
+        str(ctx.get("gpu_vendor") or "CPU"),
+        target_dir=os.environ.get("NEUROMITA_LIB_DIR"),
+    )
 
 
 def _embed_requirements() -> list[InstallRequirement]:

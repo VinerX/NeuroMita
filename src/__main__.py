@@ -178,7 +178,7 @@ import importlib.util, ctypes, pathlib, os
 # Должен выполняться ДО любого import torch в процессе.
 # Если стоит CPU-вариант, а GPU — NVIDIA, переустанавливаем на CUDA.
 try:
-    from utils.torch_install_utils import decide_torch_install, TORCH_PACKAGES
+    from core.torch_runtime import decide_torch_install, TORCH_PACKAGES
     from utils.gpu_utils import check_gpu_provider
     _gpu = check_gpu_provider() or "CPU"
     # Передаём libs_dir как target_dir — проверяем dist-info прямо в папке
@@ -187,7 +187,7 @@ try:
     _plan = decide_torch_install(_gpu, target_dir=libs_dir)
     # Только реактивный апгрейд: если torch уже установлен в неправильном варианте.
     # Первичную установку делает lazy bootstrap (embedding_handler / cross_encoder).
-    from utils.torch_install_utils import get_installed_torch_variant as _get_torch_variant
+    from core.torch_runtime import get_installed_torch_variant as _get_torch_variant
     if _plan["action"] == "reinstall" and _get_torch_variant(target_dir=libs_dir) is not None:
         logger.info(f"Torch bootstrap (early): gpu={_gpu}, action=reinstall (CPU→CUDA)")
         from utils.pip_installer import PipInstaller

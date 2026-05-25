@@ -301,7 +301,10 @@ class InstallController:
 
             if atype == "pip":
                 pkgs = act.packages or []
-                to_install = self._missing_pip_specs(pkgs)
+                if hasattr(pip_installer, "missing_specs"):
+                    to_install = pip_installer.missing_specs(pkgs)
+                else:
+                    to_install = self._missing_pip_specs(pkgs)
                 if not to_install:
                     if pkgs:
                         cb.log(f"Skip pip step (already satisfied): {', '.join(pkgs)}")
@@ -340,7 +343,7 @@ class InstallController:
                     res = self._call_flex(act.fn, pip_installer=pip_installer, callbacks=cb, ctx=ctx)
                     if res is False:
                         cb.status("Failed")
-                        cb.log("call step returned False")
+                        cb.log(f"call step returned False: {desc or atype}")
                         return False
                 except Exception as e:
                     cb.status("Failed")

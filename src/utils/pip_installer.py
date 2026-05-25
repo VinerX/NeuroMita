@@ -3,8 +3,9 @@ PipInstaller 3.1 — упрощённый PTY/Pipes-раннер без снап
 """
 
 from __future__ import annotations
-import subprocess, sys, os, queue, threading, time, json, shutil, gc, importlib.util, re
+import subprocess, sys, os, queue, threading, time, json, shutil, gc, importlib.util, re, tempfile
 from pathlib import Path
+from core.install_dependency_policy import managed_runtime_dists
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name, NormalizedName
 from packaging.version import parse as parse_version
@@ -163,6 +164,17 @@ class DependencyResolver:
 
 
 class PipInstaller:
+    DIST_MODULE_ALIASES = {
+        "beat-this": ("beat_this",),
+        "rotary-embedding-torch": ("rotary_embedding_torch",),
+        "scikit-learn": ("sklearn",),
+        "charset-normalizer": ("charset_normalizer",),
+        "typing-extensions": ("typing_extensions",),
+        "pillow": ("PIL",),
+        "pyyaml": ("yaml",),
+        "opencv-python": ("cv2",),
+    }
+
     def __init__(
         self,
         update_status=None,
@@ -186,13 +198,169 @@ class PipInstaller:
 
     def install_package(self, package_spec, description="Установка пакета...", extra_args=None) -> bool:
         cmd = self._build_install_command()
-        if extra_args:
-            cmd.extend(extra_args)
-        if isinstance(package_spec, list):
-            cmd.extend(package_spec)
-        else:
-            cmd.append(package_spec)
-        return self._run_pip_process(cmd, description)
+        is_uv = self._is_uv_command(cmd)
+        override_path: str | None = None
+        try:
+            if extra_args:
+                cmd.extend(extra_args)
+
+            effective_overrides = self._build_dependency_overrides(package_spec) if is_uv else []
+            if effective_overrides:
+                override_path = self._write_uv_overrides(effective_overrides)
+                cmd.extend(["--overrides", override_path])
+
+            if isinstance(package_spec, list):
+                cmd.extend(package_spec)
+            else:
+                cmd.append(package_spec)
+            return self._run_pip_process(cmd, description)
+        finally:
+            if override_path:
+                try:
+                    os.unlink(override_path)
+                except OSError:
+                    pass
+
+    def _build_dependency_overrides(self, package_spec) -> List[str]:
+        overrides: List[str] = []
+        requested = self._requested_dist_names(package_spec)
+
+        for dist_name in managed_runtime_dists():
+            if canonicalize_name(dist_name) in requested:
+                continue
+            if self._target_dist_version(dist_name) is not None:
+                overrides.append(f"{dist_name}; sys_platform == 'never'")
+
+        return self._dedupe_overrides(overrides)
+
+    def _requested_dist_names(self, package_spec) -> Set[NormalizedName]:
+        specs = package_spec if isinstance(package_spec, list) else [package_spec]
+        names: Set[NormalizedName] = set()
+        for spec in specs:
+            value = str(spec or "").strip()
+            if not value:
+                continue
+            try:
+                req = Requirement(value)
+                names.add(canonicalize_name(req.name))
+            except Exception:
+                names.add(canonicalize_name(value.split(";", 1)[0].strip()))
+        return names
+
+    def _dedupe_overrides(self, overrides: List[str]) -> List[str]:
+        seen: set[str] = set()
+        result: List[str] = []
+        for item in overrides:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(item)
+        return result
+
+    def _is_uv_command(self, cmd: List[str]) -> bool:
+        joined = " ".join(str(part).lower() for part in cmd)
+        return " uv " in f" {joined} " and " pip " in f" {joined} "
+
+    def _write_uv_overrides(self, overrides: List[str]) -> str:
+        fd, path = tempfile.mkstemp(prefix="neuromita_uv_overrides_", suffix=".txt", text=True)
+        lines = [str(item).strip() for item in overrides or [] if str(item).strip()]
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("\n".join(lines))
+            fh.write("\n")
+        self.update_log(f"Using uv dependency overrides: {path}")
+        return path
+
+    def missing_specs(self, specs: List[str]) -> List[str]:
+        missing: List[str] = []
+        for spec in specs or []:
+            value = str(spec or "").strip()
+            if not value:
+                continue
+            if not self.is_spec_satisfied_in_target(value):
+                missing.append(value)
+        return missing
+
+    def is_spec_satisfied_in_target(self, spec: str) -> bool:
+        try:
+            req = Requirement(spec)
+        except Exception:
+            req = None
+
+        try:
+            if req is not None and req.marker is not None and not req.marker.evaluate():
+                return True
+        except Exception:
+            pass
+
+        dist_name = req.name if req is not None else spec.split(";", 1)[0].strip()
+        version = self._target_dist_version(dist_name)
+        if version is None:
+            return False
+        if req is not None and req.specifier:
+            try:
+                if not bool(req.specifier.contains(version, prereleases=True)):
+                    return False
+            except Exception:
+                return False
+        return self._target_module_exists_for_dist(dist_name)
+
+    def _target_module_exists_for_dist(self, dist_name: str) -> bool:
+        base = canonicalize_name(dist_name)
+        candidates = list(self.DIST_MODULE_ALIASES.get(base, (base.replace("-", "_"),)))
+        if not os.path.isdir(self.libs_path_abs):
+            return False
+        for module_name in candidates:
+            value = str(module_name or "").strip()
+            if not value:
+                continue
+            parts = value.split(".")
+            first = parts[0]
+            if os.path.isdir(os.path.join(self.libs_path_abs, first)):
+                return True
+            if os.path.isfile(os.path.join(self.libs_path_abs, first + ".py")):
+                return True
+        return False
+
+    def _target_dist_version(self, dist_name: str) -> Optional[str]:
+        if not dist_name or not os.path.isdir(self.libs_path_abs):
+            return None
+
+        wanted = canonicalize_name(dist_name)
+        for item in os.listdir(self.libs_path_abs):
+            if not item.endswith(".dist-info"):
+                continue
+            metadata_path = os.path.join(self.libs_path_abs, item, "METADATA")
+            name: Optional[str] = None
+            version: Optional[str] = None
+
+            if os.path.isfile(metadata_path):
+                try:
+                    with open(metadata_path, "r", encoding="utf-8", errors="ignore") as fh:
+                        for line in fh:
+                            lower = line.lower()
+                            if lower.startswith("name:"):
+                                name = line.split(":", 1)[1].strip()
+                            elif lower.startswith("version:"):
+                                version = line.split(":", 1)[1].strip()
+                            if name and version:
+                                break
+                except Exception:
+                    name = None
+                    version = None
+
+            if name is None:
+                name = item.rsplit(".dist-info", 1)[0].split("-", 1)[0]
+            if canonicalize_name(name) != wanted:
+                continue
+            if version:
+                return version
+
+            parts = item.rsplit(".dist-info", 1)[0].split("-")
+            if len(parts) >= 2:
+                return parts[-1]
+            return ""
+        return None
 
     def _build_install_command(self) -> List[str]:
         base = list(self._resolve_installer_base_cmd())

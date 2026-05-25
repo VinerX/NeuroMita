@@ -3,10 +3,10 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
-from pathlib import Path
 from typing import Any
 
 from core.install_requirements import InstallRequirement, check_requirements
+from core.torch_runtime import get_torch_runtime_status
 
 
 def _(ru_text: str, en_text: str = "") -> str:
@@ -14,37 +14,6 @@ def _(ru_text: str, en_text: str = "") -> str:
     if language == "EN" and en_text:
         return en_text
     return ru_text
-
-
-def _load_torch_install_utils():
-    try:
-        import importlib.util
-
-        module_path = Path(__file__).resolve().parents[2] / "utils" / "torch_install_utils.py"
-        spec = importlib.util.spec_from_file_location("_beat_torch_install_utils", module_path)
-        if spec is None or spec.loader is None:
-            raise RuntimeError(f"Failed to load torch_install_utils from {module_path}")
-
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    except Exception:
-        return None
-
-
-_TORCH_INSTALL_UTILS = _load_torch_install_utils()
-
-
-def _decide_torch_install(gpu_vendor: str, target_dir: str | None) -> dict[str, Any]:
-    if _TORCH_INSTALL_UTILS is not None and hasattr(_TORCH_INSTALL_UTILS, "decide_torch_install"):
-        return _TORCH_INSTALL_UTILS.decide_torch_install(gpu_vendor, target_dir=target_dir)
-    return {"action": "install", "description": "Installing PyTorch CPU...", "extra_args": None}
-
-
-def _get_installed_torch_variant(target_dir: str | None) -> str | None:
-    if _TORCH_INSTALL_UTILS is not None and hasattr(_TORCH_INSTALL_UTILS, "get_installed_torch_variant"):
-        return _TORCH_INSTALL_UTILS.get_installed_torch_variant(target_dir=target_dir)
-    return None
 
 
 def _detect_gpu_vendor() -> str:
@@ -107,17 +76,33 @@ BEAT_NUMBA_SPEC = "numba==0.60.0"
 BEAT_SCIPY_SPEC = "scipy>=1.10,<1.14"
 BEAT_SKLEARN_SPEC = "scikit-learn>=1.1,<1.6"
 BEAT_POOCH_SPEC = "pooch>=1.6,<2"
+BEAT_LLVMLITE_SPEC = "llvmlite==0.43.0"
 BEAT_THIS_SPEC = "beat-this"
 
 BEAT_SHARED_PACKAGES = [
     BEAT_NUMPY_SPEC,
     "soxr",
     BEAT_LIBROSA_SPEC,
+    "audioread",
+    "decorator",
     BEAT_JOBLIB_SPEC,
     BEAT_NUMBA_SPEC,
+    BEAT_LLVMLITE_SPEC,
     BEAT_SCIPY_SPEC,
     BEAT_SKLEARN_SPEC,
+    "threadpoolctl",
     BEAT_POOCH_SPEC,
+    "packaging",
+    "platformdirs",
+    "requests",
+    "certifi",
+    "charset-normalizer",
+    "idna",
+    "urllib3",
+    "resampy",
+    "soundfile",
+    "cffi",
+    "pycparser",
 ]
 
 BEAT_THIS_PACKAGES = [
@@ -181,27 +166,13 @@ def build_beat_ctx(ctx: dict[str, Any] | None = None) -> dict[str, Any]:
 def _torch_status(ctx: dict[str, Any]) -> dict[str, Any]:
     libs_dir = ctx.get("libs_dir")
     gpu_vendor = str(ctx.get("gpu_vendor") or "CPU")
-    plan = _decide_torch_install(gpu_vendor, target_dir=libs_dir)
-    variant = _get_installed_torch_variant(target_dir=libs_dir) or "missing"
-    ok = str(plan.get("action") or "skip") == "skip"
-    reason = str(plan.get("reason") or plan.get("description") or "")
-    return {
-        "id": "torch_runtime",
-        "kind": "torch_runtime",
-        "required": True,
-        "ok": ok,
-        "extra": {
-            "action": plan.get("action"),
-            "reason": reason,
-            "gpu_vendor": gpu_vendor,
-            "variant": variant,
-        },
-    }
+    return get_torch_runtime_status(gpu_vendor, target_dir=libs_dir)
 
 
 def _beat_this_requirements() -> list[InstallRequirement]:
     return [
         InstallRequirement(id="torch_module", kind="python_module", module="torch", required=True),
+        InstallRequirement(id="torchaudio_module", kind="python_module", module="torchaudio", required=True),
         InstallRequirement(id="beat_this_module", kind="python_module", module="beat_this", required=True),
         InstallRequirement(id="tqdm", kind="python_dist", spec="tqdm", required=True),
         InstallRequirement(id="einops", kind="python_dist", spec="einops", required=True),
@@ -223,14 +194,17 @@ def _librosa_requirements() -> list[InstallRequirement]:
         InstallRequirement(id="sklearn_module", kind="python_module", module="sklearn", required=True),
         InstallRequirement(id="pooch_module", kind="python_module", module="pooch", required=True),
         InstallRequirement(id="scipy_module", kind="python_module", module="scipy", required=True),
+        InstallRequirement(id="soundfile_module", kind="python_module", module="soundfile", required=True),
         InstallRequirement(id="soxr", kind="python_dist", spec="soxr", required=True),
         InstallRequirement(id="numpy", kind="python_dist", spec=BEAT_NUMPY_SPEC, required=True),
         InstallRequirement(id="librosa_dist", kind="python_dist", spec=BEAT_LIBROSA_SPEC, required=True),
         InstallRequirement(id="joblib_dist", kind="python_dist", spec=BEAT_JOBLIB_SPEC, required=True),
         InstallRequirement(id="numba", kind="python_dist", spec=BEAT_NUMBA_SPEC, required=True),
+        InstallRequirement(id="llvmlite", kind="python_dist", spec=BEAT_LLVMLITE_SPEC, required=True),
         InstallRequirement(id="scipy_dist", kind="python_dist", spec=BEAT_SCIPY_SPEC, required=True),
         InstallRequirement(id="sklearn_dist", kind="python_dist", spec=BEAT_SKLEARN_SPEC, required=True),
         InstallRequirement(id="pooch_dist", kind="python_dist", spec=BEAT_POOCH_SPEC, required=True),
+        InstallRequirement(id="soundfile_dist", kind="python_dist", spec="soundfile", required=True),
     ]
 
 

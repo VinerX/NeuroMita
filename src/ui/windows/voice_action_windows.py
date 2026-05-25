@@ -249,7 +249,7 @@ class VoiceInstallationWindow(QDialog):
         QGuiApplication.clipboard().setText("\n".join(self._full_log_lines) or "")
 
     def _save_log(self):
-        fname, _ = QFileDialog.getSaveFileName(self, _("Сохранить лог", "Save Log"), "install_log.txt", "Text Files (*.txt)")
+        fname, _selected_filter = QFileDialog.getSaveFileName(self, _("Сохранить лог", "Save Log"), "install_log.txt", "Text Files (*.txt)")
         if fname:
             try:
                 with open(fname, "w", encoding="utf-8") as f:
@@ -467,7 +467,7 @@ class VoiceActionWindow(QDialog):
         QGuiApplication.clipboard().setText("\n".join(self._full_log_lines) or "")
 
     def _save_log(self):
-        fname, _ = QFileDialog.getSaveFileName(self, _("Сохранить лог", "Save Log"), "action_log.txt", "Text Files (*.txt)")
+        fname, _selected_filter = QFileDialog.getSaveFileName(self, _("Сохранить лог", "Save Log"), "action_log.txt", "Text Files (*.txt)")
         if fname:
             try:
                 with open(fname, "w", encoding="utf-8") as f:
