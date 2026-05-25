@@ -7,10 +7,16 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator, Dict, Iterable, List, Optional
+from typing import Any, AsyncIterator, Dict, Iterable, List, Optional
 
+from game_connections.services.beat_backend_spec import BACKEND_AUTO, normalize_backend_choice
 from game_connections.services.beat_worker_client import call_beats_worker_async, call_beats_worker_sync
 from main_logger import logger
+
+try:
+    from managers.settings_manager import SettingsManager
+except Exception:
+    SettingsManager = None
 
 
 BEAT_CACHE_VERSION = 2
@@ -50,6 +56,13 @@ class BeatBackendStatus:
     beat_this_installed: bool
     beat_this_ready: bool
     active_backend: str
+    preferred_backend: str
+    resolved_backend: str
+    librosa_installed: bool
+    librosa_ready: bool
+    torch_variant: str
+    torch_ready: bool
+    backends: Dict[str, Dict[str, Any]]
     cache_dir: str
     cache_entries: int
     cache_bytes: int
@@ -81,13 +94,27 @@ class BeatService:
             if self._warmup_done:
                 return
             try:
-                await call_beats_worker_async("warmup", {"auto_install": bool(auto_install)}, timeout=120.0)
+                await call_beats_worker_async(
+                    "warmup",
+                    self._worker_payload(auto_install=auto_install),
+                    timeout=120.0,
+                )
                 self._warmup_done = True
             except Exception as exc:
                 logger.error(f"[BeatSync] worker warmup failed: {exc}", exc_info=True)
 
     def reset_runtime_state(self) -> None:
         self._warmup_done = False
+
+    def initialize_backend(self, *, backend_preference: str | None = None) -> bool:
+        payload = self._worker_payload(auto_install=False, backend_preference=backend_preference)
+        try:
+            result = call_beats_worker_sync("initialize_backend", payload, timeout=180.0)
+            self._warmup_done = True
+            return bool(result)
+        except Exception as exc:
+            logger.error(f"[BeatSync] backend initialization failed: {exc}", exc_info=True)
+            return False
 
     async def extract_beats(
         self,
@@ -147,6 +174,7 @@ class BeatService:
                 {
                     "audio_path": audio_path,
                     "min_confidence": float(min_confidence),
+                    "backend_preference": self._backend_preference(),
                 },
                 timeout=3600.0,
             )
@@ -162,6 +190,7 @@ class BeatService:
                 {
                     "audio_path": audio_path,
                     "min_confidence": float(min_confidence),
+                    "backend_preference": self._backend_preference(),
                 },
                 timeout=3600.0,
             )
@@ -175,13 +204,37 @@ class BeatService:
 
         beat_this_installed = False
         beat_this_ready = False
+        librosa_installed = False
+        librosa_ready = False
+        torch_variant = "missing"
+        torch_ready = False
         active_backend = "engine_unavailable"
+        preferred_backend = self._backend_preference()
+        resolved_backend = active_backend
+        backends: Dict[str, Dict[str, Any]] = {}
 
         try:
-            payload = call_beats_worker_sync("get_backend_status", {}, timeout=2.0)
-            beat_this_installed = bool(payload.get("beat_this_installed", False))
-            beat_this_ready = bool(payload.get("beat_this_ready", False))
+            payload = call_beats_worker_sync(
+                "get_backend_status",
+                {"backend_preference": preferred_backend},
+                timeout=2.0,
+            )
+            backends_raw = payload.get("backends")
+            backends = backends_raw if isinstance(backends_raw, dict) else {}
+            beat_this_state = backends.get("beat_this") if isinstance(backends.get("beat_this"), dict) else {}
+            librosa_state = backends.get("librosa") if isinstance(backends.get("librosa"), dict) else {}
+
+            beat_this_installed = bool(beat_this_state.get("installed", False))
+            beat_this_ready = bool(beat_this_state.get("ready", False))
+            librosa_installed = bool(librosa_state.get("installed", False))
+            librosa_ready = bool(librosa_state.get("ready", False))
             active_backend = str(payload.get("active_backend") or active_backend)
+            preferred_backend = str(payload.get("preferred_backend") or preferred_backend)
+            resolved_backend = str(payload.get("resolved_backend") or active_backend)
+            torch_payload = payload.get("torch") if isinstance(payload.get("torch"), dict) else {}
+            torch_extra = torch_payload.get("extra") if isinstance(torch_payload.get("extra"), dict) else {}
+            torch_variant = str(torch_extra.get("variant") or torch_variant)
+            torch_ready = bool(torch_payload.get("ok", False))
         except Exception as exc:
             logger.error(f"[BeatSync] backend status unavailable: {exc}", exc_info=True)
 
@@ -189,6 +242,13 @@ class BeatService:
             beat_this_installed=beat_this_installed,
             beat_this_ready=beat_this_ready,
             active_backend=active_backend,
+            preferred_backend=preferred_backend,
+            resolved_backend=resolved_backend,
+            librosa_installed=librosa_installed,
+            librosa_ready=librosa_ready,
+            torch_variant=torch_variant,
+            torch_ready=torch_ready,
+            backends=backends,
             cache_dir=self._cache_dir,
             cache_entries=int(cache_stats["entries"]),
             cache_bytes=int(cache_stats["bytes"]),
@@ -226,7 +286,11 @@ class BeatService:
             raise NotADirectoryError(f"Not a directory: {root}")
 
         try:
-            call_beats_worker_sync("warmup", {"auto_install": bool(auto_install)}, timeout=120.0)
+            call_beats_worker_sync(
+                "warmup",
+                self._worker_payload(auto_install=auto_install),
+                timeout=120.0,
+            )
             self._warmup_done = True
         except Exception as exc:
             logger.error(f"[BeatSync] worker warmup failed for cache build: {exc}", exc_info=True)
@@ -345,6 +409,18 @@ class BeatService:
             for chunk in iter(lambda: f.read(1024 * 1024), b""):
                 digest.update(chunk)
         return digest.hexdigest()
+
+    @staticmethod
+    def _backend_preference() -> str:
+        if SettingsManager is None:
+            return BACKEND_AUTO
+        return normalize_backend_choice(SettingsManager.get("BEAT_SYNC_BACKEND", BACKEND_AUTO))
+
+    def _worker_payload(self, *, auto_install: bool, backend_preference: str | None = None) -> dict:
+        return {
+            "auto_install": bool(auto_install),
+            "backend_preference": normalize_backend_choice(backend_preference or self._backend_preference()),
+        }
 
 
 def _coerce_track_result(payload: dict) -> BeatTrackResult:

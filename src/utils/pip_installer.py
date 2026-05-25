@@ -203,12 +203,13 @@ class PipInstaller:
         ])
         return base
 
+        
     def _resolve_installer_base_cmd(self) -> List[str]:
         if self._preferred_installer_cmd is not None:
             return list(self._preferred_installer_cmd)
 
         uv_cmd = [self.script_path, "-m", "uv", "pip"]
-        if self._check_installer_command(uv_cmd + ["--version"]):
+        if self._check_installer_command([self.script_path, "-m", "uv", "--version"]):
             self._preferred_installer_cmd = uv_cmd
             self.update_log("Для установки зависимостей выбран uv pip.")
             return list(self._preferred_installer_cmd)

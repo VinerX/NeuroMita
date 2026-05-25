@@ -7,6 +7,16 @@ import math
 import os
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from game_connections.services.beat_backend_spec import (
+    BACKEND_AUTO,
+    BACKEND_BEAT_THIS,
+    BACKEND_DSP,
+    BACKEND_LIBROSA,
+    backend_attempt_order,
+    get_backend_status_snapshot,
+    normalize_backend_choice,
+)
 from main_logger import logger
 
 import numpy as np
@@ -19,6 +29,7 @@ class BeatsService:
         self._warmup_done = False
         self._warmup_lock = threading.RLock()
         self._beat_this_file2beats = None
+        self._librosa_ready = False
 
     async def shutdown(self):
         await asyncio.to_thread(self._shutdown_sync)
@@ -30,74 +41,133 @@ class BeatsService:
             return True
 
         if m == "warmup":
-            await asyncio.to_thread(self._warmup_sync)
+            preferred_backend = str(payload.get("backend_preference") or BACKEND_AUTO)
+            await asyncio.to_thread(self._warmup_sync, preferred_backend)
             return True
 
         if m == "get_backend_status":
-            return await asyncio.to_thread(self._get_backend_status_sync)
+            preferred_backend = str(payload.get("backend_preference") or BACKEND_AUTO)
+            return await asyncio.to_thread(self._get_backend_status_sync, preferred_backend)
+
+        if m == "initialize_backend":
+            preferred_backend = str(payload.get("backend_preference") or BACKEND_AUTO)
+            strict = bool(payload.get("strict", False))
+            return await asyncio.to_thread(self._initialize_backend_sync, preferred_backend, strict)
 
         if m == "extract_beats":
             audio_path = str(payload.get("audio_path") or "").strip()
             min_confidence = float(payload.get("min_confidence", 0.2) or 0.2)
-            return await asyncio.to_thread(self._extract_beats_sync, audio_path, min_confidence)
+            preferred_backend = str(payload.get("backend_preference") or BACKEND_AUTO)
+            return await asyncio.to_thread(self._extract_beats_sync, audio_path, min_confidence, preferred_backend)
 
         raise RuntimeError(f"Unknown beats method: {method}")
 
-    def _warmup_sync(self) -> None:
+    def _warmup_sync(self, preferred_backend: str = BACKEND_AUTO) -> None:
         if self._warmup_done:
             return
         with self._warmup_lock:
             if self._warmup_done:
                 return
-            if self._init_beat_this():
-                self._warmup_done = True
-                return
+            self._initialize_backend_sync(preferred_backend, strict=False)
             self._warmup_done = True
 
-    def _get_backend_status_sync(self) -> dict:
-        if self._beat_this_file2beats is not None:
-            active_backend = "beat_this"
-        elif _module_available("librosa"):
-            active_backend = "librosa"
-        else:
-            active_backend = "dsp_fallback"
+    def _get_backend_status_sync(self, preferred_backend: str = BACKEND_AUTO) -> dict:
+        snapshot = get_backend_status_snapshot(preferred_backend)
+        backends = snapshot.get("backends") if isinstance(snapshot.get("backends"), dict) else {}
+        beat_this_state = backends.get(BACKEND_BEAT_THIS)
+        if isinstance(beat_this_state, dict):
+            beat_this_state["ready"] = self._beat_this_file2beats is not None
+        librosa_state = backends.get(BACKEND_LIBROSA)
+        if isinstance(librosa_state, dict):
+            librosa_state["ready"] = self._librosa_ready
+        dsp_state = backends.get(BACKEND_DSP)
+        if isinstance(dsp_state, dict):
+            dsp_state["ready"] = True
 
-        return {
-            "beat_this_installed": _module_available("beat_this"),
-            "beat_this_ready": self._beat_this_file2beats is not None,
-            "active_backend": active_backend,
-        }
+        snapshot["beat_this_installed"] = bool(beat_this_state.get("installed", False)) if isinstance(beat_this_state, dict) else False
+        snapshot["beat_this_ready"] = bool(beat_this_state.get("ready", False)) if isinstance(beat_this_state, dict) else False
+        snapshot["librosa_installed"] = bool(librosa_state.get("installed", False)) if isinstance(librosa_state, dict) else False
+        snapshot["librosa_ready"] = bool(librosa_state.get("ready", False)) if isinstance(librosa_state, dict) else False
+        snapshot["active_backend"] = str(snapshot.get("resolved_backend") or BACKEND_DSP)
+        return snapshot
 
-    def _extract_beats_sync(self, audio_path: str, min_confidence: float) -> dict:
+    def _extract_beats_sync(self, audio_path: str, min_confidence: float, preferred_backend: str = BACKEND_AUTO) -> dict:
         if not audio_path or not os.path.exists(audio_path):
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-        self._warmup_sync()
+        selected_backend = normalize_backend_choice(preferred_backend)
+        self._warmup_sync(selected_backend)
 
-        result = self._try_beat_this(audio_path, min_confidence)
-        if result is None:
-            logger.warning(f"beat_this failed for {audio_path}, falling back to librosa or DSP method")
-            result = self._try_librosa(audio_path, min_confidence)
-        if result is None:
-            logger.warning(f"librosa failed for {audio_path}, falling back to DSP method")
-            mono, sr, duration = self._load_audio_mono(audio_path)
-            beats = self._extract_fallback_from_audio(mono, sr, min_confidence, offset_seconds=0.0)
-            result = {
-                "beats": beats,
-                "duration": duration,
-                "sr": int(sr),
-                "method": "dsp_fallback",
-                "bpm_estimate": _estimate_bpm_from_beats([b["time"] for b in beats]),
-            }
+        for backend_id in backend_attempt_order(selected_backend):
+            if backend_id == BACKEND_BEAT_THIS:
+                result = self._try_beat_this(audio_path, min_confidence)
+                if result is not None:
+                    return result
+                logger.warning(f"beat_this failed for {audio_path}, falling back to next backend")
+                continue
 
-        return result
+            if backend_id == BACKEND_LIBROSA:
+                result = self._try_librosa(audio_path, min_confidence)
+                if result is not None:
+                    return result
+                logger.warning(f"librosa failed for {audio_path}, falling back to DSP method")
+                continue
+
+            return self._extract_dsp_fallback(audio_path, min_confidence)
+
+        return self._extract_dsp_fallback(audio_path, min_confidence)
+
+    def _initialize_backend_sync(self, preferred_backend: str = BACKEND_AUTO, strict: bool = False) -> bool:
+        selected_backend = normalize_backend_choice(preferred_backend)
+        errors: list[str] = []
+
+        with self._warmup_lock:
+            snapshot = get_backend_status_snapshot(selected_backend)
+            backends = snapshot.get("backends") if isinstance(snapshot.get("backends"), dict) else {}
+
+            for backend_id in backend_attempt_order(selected_backend):
+                backend_state = backends.get(backend_id) if isinstance(backends, dict) else None
+
+                if backend_id == BACKEND_BEAT_THIS:
+                    if not isinstance(backend_state, dict) or not backend_state.get("available"):
+                        errors.append(self._backend_issue_text(BACKEND_BEAT_THIS, backend_state))
+                        continue
+                    if self._init_beat_this():
+                        self._warmup_done = True
+                        return True
+                    errors.append("beat_this runtime initialization failed")
+                    continue
+
+                if backend_id == BACKEND_LIBROSA:
+                    if not isinstance(backend_state, dict) or not backend_state.get("available"):
+                        errors.append(self._backend_issue_text(BACKEND_LIBROSA, backend_state))
+                        continue
+                    if self._warmup_librosa():
+                        self._warmup_done = True
+                        return True
+                    errors.append("librosa runtime initialization failed")
+                    continue
+
+                if backend_id == BACKEND_DSP:
+                    self._warmup_done = True
+                    return True
+
+            self._warmup_done = True
+
+        if strict:
+            detail = "; ".join([e for e in errors if e]) or "no available backend"
+            raise RuntimeError(f"Failed to initialize requested beat backend: {detail}")
+        return False
 
     def _init_beat_this(self) -> bool:
         try:
             if self._beat_this_file2beats is not None:
                 return True
 
-            if not _module_available("beat_this"):
+            snapshot = get_backend_status_snapshot(BACKEND_BEAT_THIS)
+            backends = snapshot.get("backends") if isinstance(snapshot.get("backends"), dict) else {}
+            beat_this_state = backends.get(BACKEND_BEAT_THIS)
+            if not isinstance(beat_this_state, dict) or not beat_this_state.get("available"):
                 return False
 
             import importlib
@@ -119,6 +189,28 @@ class BeatsService:
             return True
         except Exception as ex:
             logger.exception(f"Error initializing beat_this: {ex}")    
+            return False
+
+    def _warmup_librosa(self) -> bool:
+        try:
+            if self._librosa_ready:
+                return True
+
+            snapshot = get_backend_status_snapshot(BACKEND_LIBROSA)
+            backends = snapshot.get("backends") if isinstance(snapshot.get("backends"), dict) else {}
+            librosa_state = backends.get(BACKEND_LIBROSA)
+            if not isinstance(librosa_state, dict) or not librosa_state.get("available"):
+                return False
+
+            import librosa  # type: ignore
+
+            test_audio = np.zeros((22050,), dtype=np.float32)
+            librosa.beat.beat_track(y=test_audio, sr=22050)
+            self._librosa_ready = True
+            return True
+        except Exception as ex:
+            logger.exception(f"Error initializing librosa backend: {ex}")
+            self._librosa_ready = False
             return False
 
     def _try_beat_this(self, audio_path: str, min_confidence: float) -> Optional[dict]:
@@ -144,6 +236,9 @@ class BeatsService:
 
     def _try_librosa(self, audio_path: str, min_confidence: float) -> Optional[dict]:
         try:
+            if not self._warmup_librosa():
+                return None
+
             import librosa  # type: ignore
 
             y, sr = librosa.load(audio_path, sr=22050, mono=True)
@@ -161,6 +256,17 @@ class BeatsService:
         except Exception as ex:
             logger.exception(f"Error in librosa for {audio_path}: {ex}")
             return None
+
+    def _extract_dsp_fallback(self, audio_path: str, min_confidence: float) -> dict:
+        mono, sr, duration = self._load_audio_mono(audio_path)
+        beats = self._extract_fallback_from_audio(mono, sr, min_confidence, offset_seconds=0.0)
+        return {
+            "beats": beats,
+            "duration": duration,
+            "sr": int(sr),
+            "method": BACKEND_DSP,
+            "bpm_estimate": _estimate_bpm_from_beats([b["time"] for b in beats]),
+        }
 
     def _load_audio_mono(self, audio_path: str, target_sr: int = 22050) -> Tuple[np.ndarray, int, float]:
         wav, sr = sf.read(audio_path, always_2d=True)
@@ -250,7 +356,17 @@ class BeatsService:
 
     def _shutdown_sync(self) -> None:
         self._beat_this_file2beats = None
+        self._librosa_ready = False
         self._warmup_done = False
+
+    @staticmethod
+    def _backend_issue_text(backend_id: str, backend_state: Any) -> str:
+        if not isinstance(backend_state, dict):
+            return f"{backend_id} status unavailable"
+        missing = backend_state.get("missing_required")
+        if isinstance(missing, list) and missing:
+            return f"{backend_id} missing: {', '.join(str(x) for x in missing)}"
+        return f"{backend_id} is not available"
 
 
 def _module_available(name: str) -> bool:

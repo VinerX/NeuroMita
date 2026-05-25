@@ -16,7 +16,8 @@ def torch_install_action(ctx: dict, *, progress: int = 10) -> InstallAction:
       - reinstall -> call-action: uninstall torch/torchaudio → install в CUDA
     """
     gpu = str((ctx or {}).get("gpu_vendor") or "CPU")
-    plan = decide_torch_install(gpu)
+    libs_dir = os.environ.get("NEUROMITA_LIB_DIR")
+    plan = decide_torch_install(gpu, target_dir=libs_dir)
     action = plan["action"]
 
     if action == "skip":

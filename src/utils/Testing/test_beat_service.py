@@ -46,6 +46,61 @@ def _workspace_temp_dir():
 
 
 class BeatServiceTests(unittest.TestCase):
+    def test_get_backend_status_maps_rich_worker_payload(self):
+        service = BeatService()
+
+        with patch(
+            "game_connections.services.beat_service.call_beats_worker_sync",
+            return_value={
+                "preferred_backend": "beat_this",
+                "resolved_backend": "librosa",
+                "active_backend": "librosa",
+                "torch": {"ok": False, "extra": {"variant": "cpu"}},
+                "backends": {
+                    "beat_this": {
+                        "installed": False,
+                        "ready": False,
+                        "available": False,
+                        "missing_required": ["torch_runtime"],
+                    },
+                    "librosa": {
+                        "installed": True,
+                        "ready": True,
+                        "available": True,
+                        "missing_required": [],
+                    },
+                },
+            },
+        ):
+            status = service.get_backend_status()
+
+        self.assertEqual(status.preferred_backend, "beat_this")
+        self.assertEqual(status.resolved_backend, "librosa")
+        self.assertEqual(status.active_backend, "librosa")
+        self.assertFalse(status.beat_this_installed)
+        self.assertFalse(status.beat_this_ready)
+        self.assertTrue(status.librosa_installed)
+        self.assertTrue(status.librosa_ready)
+        self.assertEqual(status.torch_variant, "cpu")
+        self.assertFalse(status.torch_ready)
+        self.assertIn("beat_this", status.backends)
+        self.assertIn("librosa", status.backends)
+
+    def test_initialize_backend_forwards_requested_preference(self):
+        service = BeatService()
+
+        with patch(
+            "game_connections.services.beat_service.call_beats_worker_sync",
+            return_value=True,
+        ) as call_mock:
+            ok = service.initialize_backend(backend_preference="librosa")
+
+        self.assertTrue(ok)
+        call_mock.assert_called_once()
+        self.assertEqual(call_mock.call_args.args[0], "initialize_backend")
+        self.assertEqual(call_mock.call_args.args[1]["backend_preference"], "librosa")
+        self.assertTrue(service._warmup_done)
+
     def test_save_and_load_cache_uses_content_hash_metadata(self):
         with _workspace_temp_dir() as root:
             audio_path = root / "track.wav"
