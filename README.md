@@ -56,8 +56,11 @@ Translation (DeepSeek) [English readme](README_EN.md)
 В будущих версиях постараемся завезти лаунчер.  
 
 Релизы, то есть файлы, которые нужны обычному игроку - https://github.com/VinerX/NeuroMita/releases  
-[Актуальная версия v0.011 здесь](https://github.com/VinerX/NeuroMita/releases/download/v0.011/NeuroMita.0.011.MitaWorld.7z)   
-[Версия v0.011 с исправлениями от vladislavmorozov2007](https://drive.google.com/file/d/1btPLozmi_ftmTaCecb8wWXkh72RJ3DKD/view?usp=drivesdk) (Папку распаковать в любое место)  
+[Актуальная версия v0.011 здесь](https://github.com/VinerX/NeuroMita/releases/download/v0.011/NeuroMita.0.011.MitaWorld.7z)  
+
+[Версия v0.011 с исправлениями от vladislavmorozov2007](https://drive.google.com/file/d/1btPLozmi_ftmTaCecb8wWXkh72RJ3DKD/view?usp=drivesdk)  
+
+Папку распаковать в любое место.  
     
 	
 Кнопка, чтобы начать писать в игре - Tab 
