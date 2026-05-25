@@ -30,8 +30,8 @@ Translation (DeepSeek) [English readme](README_EN.md)
 ### 1 - Мод
 Мод идет в комплекте 
 
-А) файлы питона (их ставьте где угодно вместе)
-Б) файлы C# MitaAI.dll и assetbudle.test непосредственно в папку mods, созданную мелоном (вроде в релизы кинул). 
+А) файлы питона (их ставьте где угодно вместе)  
+Б) файлы C# MitaAI.dll и assetbudle.test непосредственно в папку mods, созданную мелоном (вроде в релизы кинул).  
 
 - Итоговая структура должна выглядеть так:
 
@@ -53,10 +53,11 @@ Translation (DeepSeek) [English readme](README_EN.md)
     - init_triton.bat
     - init.py
 
-В будущих версиях постараемся завезти лаунчер.
+В будущих версиях постараемся завезти лаунчер.  
 
 Релизы, то есть файлы, которые нужны обычному игроку - https://github.com/VinerX/NeuroMita/releases
-[Актуальная версия v0.011 здесь](https://github.com/VinerX/NeuroMita/releases/download/v0.011/NeuroMita.0.011.MitaWorld.7z)
+[Актуальная версия v0.011 здесь](https://github.com/VinerX/NeuroMita/releases/download/v0.011/NeuroMita.0.011.MitaWorld.7z)  
+[Версия v0.011 с исправлениями от vladislavmorozov2007](https://drive.google.com/file/d/1btPLozmi_ftmTaCecb8wWXkh72RJ3DKD/view?usp=drivesdk) (Папку распаковать в любое место)  
     
 	
 Кнопка, чтобы начать писать в игре - Tab 
@@ -86,12 +87,13 @@ Translation (DeepSeek) [English readme](README_EN.md)
 
    Чаще всего модели Gemini лучше справляются с передачей эмоций, так что обычно интересней играть с ними. DeepSeek чуть хуже (но умнее обрабатывает команды).
 
-### Модели для генерации (на 04.05.2026)
+### Модели для генерации (на 25.05.2026)
 
    Внимание, в мире нейронных сетей все очень быстро меняется, и к моменту вашего прочтения какие-то могут устареть, а какие-то не успеть войти в список.
    Следите за новостями в дискорд сервере.
 	
    - для Google API появились новые модели: gemma-4-31b-it и gemma-4-26b-a4b-it.  
+   - появилась новая модель на 20 запросов в день - gemini-3.5-flash  
    - io net имеет ограничение до 500к токенов в день на аккаунт  
 	
 Сейчас пойдут настройки, которые нужно прописать в запущенном моде (чат боте)  
@@ -114,7 +116,7 @@ Translation (DeepSeek) [English readme](README_EN.md)
 
 
 ### G4F (Последняя версия - 7.5.3 от xtekky)
-ВАЖНО: Этот способ является нестабильным, так как ваши сообщения могут отправляться через неизвестные сервера ([На Хабре есть пост от 4 мая 2026 года](https://habr.com/ru/amp/publications/1031390/))  
+ВАЖНО: Этот способ является нестабильным, так как ваши сообщения могут отправляться через неизвестные сервера. Иногда ответы могут занимать несколько минут.
 
 Вариант как без ключа, так и с ним.  
      
@@ -161,7 +163,7 @@ API ссылка - https://openrouter.ai/api/v1
 
   - Модели:    
      nvidia/nemotron-3-super-120b-a12b:free  
-     deepseek/deepseek-v4-flash:free
+     deepseek/deepseek-v4-flash:free  
 	 
   - Лимит: В среднем 50 запросов в день (до 1000, если один раз пополнить аккаунт опенроутера на 10 долларов).  
 
@@ -182,7 +184,7 @@ API ссылка - https://openrouter.ai/api/v1
 	Qwen/Qwen3-Next-80B-A3B-Instruct  
 	google/gemma-4-26b-a4b-it  
 	openai/gpt-oss-20b  
-	[Полный список моделей тут](https://ai.io.net/ai/models)  
+	[Полный список моделей io.net тут](https://ai.io.net/ai/models)  
 	
   - Есть 1 рабочий способ: Создаём на их сайте по несколько аккаунтов, на каждом из них создаём по одному API ключу, а затем вставляем их в поле "Резервные ключи" (аккаунтов можно бесконечное кол-во создать, и не только для io net).  
   
@@ -198,7 +200,6 @@ API ссылка - https://openrouter.ai/api/v1
 
 Именно в таком порядке, не с перемещением, ЭТО ВАЖНО, так как в ином случае могут быть баги.  
 
-<!-- vladislavmorozov2007: поместил некотрые ссылки в текст -->
 2) После всех проделанных манипуляций нужно [зайти на этот сайт](https://aistudio.google.com/apikey), зарегистрироваться и создать ключ.  
 
  - Бесплатные модели по 20 запросов в день:  
@@ -210,7 +211,7 @@ API ссылка - https://openrouter.ai/api/v1
    gemini-3.5-flash (Новая модель)  
  
  - Модель на 500 запросов в день:  
-   gemini-3.1-flash-lite-preview (могут быть перебои)  
+   gemini-3.1-flash-lite (могут быть перебои)  
 
  - Модели по 1.5 тыс. запросов в день:  
    gemma-4-31b-it  
@@ -229,19 +230,19 @@ API ссылка - https://openrouter.ai/api/v1
 Ключи должны быть пустые, так как ключ находится в самой ссылке.  
 Также нужно прожать в моде две галочки: "Через Request" и "Gemini для ProxyAPI"  
 
-API ссылка: https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=ТУТ_ДОЛЖЕН_БЫТЬ_ВАШ_API_КЛЮЧ  
+API ссылка: https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=ТУТ_ДОЛЖЕН_БЫТЬ_ВАШ_API_КЛЮЧ  
 Посмотрите на ссылку внимательно, вместо текста после "=" без пробела вставляем свой ключ.  
-В ссылку после models/ вставлять нужную модель (примерно так: models/gemini-3.1-flash-lite-preview:generateContent или models/gemini-2.5-flash:generateContent).  
+В ссылку после models/ вставлять нужную модель (примерно так: models/gemini-3.1-flash-lite:generateContent или models/gemini-2.5-flash:generateContent).  
 В поле "Модель" указываем нужную модель.  
 
 ### Chutes.ai
 Нужна галка "через Request", ссылка https://llm.chutes.ai/v1/chat/completions  
-- модель deepseek-ai/DeepSeek-R1-Distill-Llama-70B (0.03 USD/млн входных и 0.11 USD/млн выходных токенов)  
+- модель deepseek-ai/DeepSeek-R1-Distill-Llama-70B (0.03 доллара вход и 0.11 долларов выход)  
 
 [Другие модели тут](https://chutes.ai/app)  
    
 ### ProxyAPI (РФ)  
-  Модели от ProxyAPI, выбраны так как нормально можно оплатить в РФ. Ключи и цены здесь: https://console.proxyapi.ru/billing  
+  Модели от ProxyAPI выбраны, так как нормально можно оплатить в РФ. Ключи и цены здесь: https://console.proxyapi.ru/billing  
   Промокод NeuroMita26 даёт скидку на 25% единоразово.  
   
   Обратите внимание на вид ссылки моделей Gemini.  
@@ -308,7 +309,7 @@ API ссылка: https://generativelanguage.googleapis.com/v1beta/models/gemini
 - vlad2830 - работа как по C# части, так и Python
 - Nelxi (distrane25) - спасибо за помощь по внедрению голосового ввода на Python
 
-За коллосальную (без преувеличения!) работу по локальной озвучке (а также помощь по python) спасибо:  
+За коллосальную (без преувеличения!) работу по локальной озвучке (а также помощь по Python) спасибо:  
 - _atm4x
 
 За промты персонажей спасибо: (им можно и нужно писать по вопросам и о доработкам логики ответа персонажей)  
