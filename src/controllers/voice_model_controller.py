@@ -23,13 +23,6 @@ except Exception:
         return []
     def get_gpu_name_by_id(_id):
         return None
-
-
-def _get_voice_spec(model_id: str):
-    from handlers.voice_models.catalog import get_voice_spec
-    return get_voice_spec(model_id)
-
-
 class VoiceModelController:
     """
     Backend-контроллер локальных голосовых моделей.
@@ -468,8 +461,7 @@ class VoiceModelController:
                 except Exception:
                     component = None
 
-            spec = None if component is not None else _get_voice_spec(mid)
-            if not component and not spec:
+            if component is None:
                 continue
 
             ok = False
@@ -477,11 +469,7 @@ class VoiceModelController:
                 ctx = dict(ctx_base)
                 ctx["gpu_vendor"] = v
                 try:
-                    if component is not None:
-                        if component.status(ctx).installed:
-                            ok = True
-                            break
-                    elif spec.is_installed(mid, ctx):
+                    if component.status(ctx).installed:
                         ok = True
                         break
                 except Exception:

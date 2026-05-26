@@ -580,6 +580,22 @@ class FishSpeechModel(IVoiceModel):
     def get_model_configs(self) -> List[Dict[str, Any]]:
         return self.MODEL_CONFIGS
 
+    @classmethod
+    def required_backend_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> BackendKind:
+        return FishSpeechInstallSpec.required_backend(model_id, ctx)
+
+    @classmethod
+    def is_model_installed(cls, model_id: str, ctx: Dict[str, Any]) -> bool:
+        return FishSpeechInstallSpec.is_installed(model_id, ctx)
+
+    @classmethod
+    def build_install_plan_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> InstallPlan:
+        return FishSpeechInstallSpec.build_install_plan(model_id, ctx)
+
+    @classmethod
+    def build_uninstall_plan_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> InstallPlan:
+        return FishSpeechInstallSpec.build_uninstall_plan(model_id, ctx)
+
     def _load_module(self):
         if self.fish_speech_module is not None:
             return

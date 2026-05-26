@@ -3,7 +3,8 @@ from __future__ import annotations
 from core.backends import get_backend_service
 from core.events import Events, get_event_bus
 from core.install_types import InstallAction, InstallPlan
-from core.installables import ComponentCategory, make_component_id
+from core.installables import ComponentCategory, ComponentMetadata, make_component_id
+from core.installables.helpers import build_runtime_ctx, noop_plan, status_from_installed
 from game_connections.services.beat_backend_spec import (
     BACKEND_AUTO,
     BACKEND_BEAT_THIS,
@@ -159,6 +160,56 @@ def build_beat_initialize_plan(preferred_backend: str = BACKEND_AUTO) -> Install
         ),
     ]
     return InstallPlan(actions=actions, ok_status=_("Готово", "Done"))
+
+
+class BeatThisInstallableComponent:
+    category = ComponentCategory.BEATS
+    legacy_kind = "beats"
+
+    def __init__(self) -> None:
+        self.item_id = BACKEND_BEAT_THIS
+        self.id = make_component_id(self.category, self.item_id)
+
+    def metadata(self) -> ComponentMetadata:
+        beat_ctx = build_runtime_ctx(build_beat_ctx({}))
+        backend = get_backend_service().preferred_torch_kind(beat_ctx)
+        return ComponentMetadata(
+            id=self.id,
+            item_id=self.item_id,
+            category=self.category,
+            title="Beat This",
+            description="Neural beat synchronization backend.",
+            backend=backend,
+            legacy_kind=self.legacy_kind,
+            tags=("beat",),
+        )
+
+    def status(self, ctx: dict | None = None):
+        beat_ctx = build_runtime_ctx(build_beat_ctx(ctx))
+        snapshot = get_backend_status_snapshot(BACKEND_BEAT_THIS, ctx=beat_ctx)
+        entry = snapshot.get("backends", {}).get(BACKEND_BEAT_THIS, {})
+        backend = get_backend_service().preferred_torch_kind(beat_ctx)
+        installed = bool(entry.get("installed") or entry.get("available"))
+        return status_from_installed(
+            component_id=self.id,
+            installed=installed,
+            backend=backend,
+            ctx=beat_ctx,
+            details=dict(entry or {}),
+        )
+
+    def build_install_plan(self, ctx: dict | None = None) -> InstallPlan:
+        return build_beat_install_plan(BACKEND_BEAT_THIS, ctx=build_beat_ctx(ctx))
+
+    def build_uninstall_plan(self, ctx: dict | None = None) -> InstallPlan:
+        return build_beat_uninstall_plan(BACKEND_BEAT_THIS, ctx=build_beat_ctx(ctx))
+
+    def build_initialize_plan(self, ctx: dict | None = None) -> InstallPlan | None:
+        return noop_plan("Beat backend initialization is handled by runtime selection.")
+
+
+def create_beat_installable_components() -> list[BeatThisInstallableComponent]:
+    return [BeatThisInstallableComponent()]
 
 
 def start_beat_install(

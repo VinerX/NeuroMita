@@ -181,7 +181,6 @@ class SpeechRecognition:
         callbacks: Optional[object] = None,
         timeout_sec: float = 3600.0,
     ) -> "InstallPlan":
-        from core.install_types import InstallPlan, InstallAction
         from utils.gpu_utils import check_gpu_provider
 
         engine_settings = engine_settings or {}
@@ -200,116 +199,33 @@ class SpeechRecognition:
         reg = getattr(SpeechRecognition, "_registry", {}) or {}
         cls = reg.get(engine)
         if not cls:
+            from core.install_types import InstallAction, InstallPlan
+
             return InstallPlan(
                 actions=[InstallAction(type="call", description="Failed", progress=1, fn=lambda: False)],
                 already_installed=False,
             )
 
         recognizer = cls(pip_installer, logger)
-        try:
-            if hasattr(recognizer, "apply_settings"):
-                recognizer.apply_settings(engine_settings)
-        except Exception:
-            pass
+        return recognizer.build_install_plan({
+            **ctx,
+            "timeout_sec": float(timeout_sec or 3600.0),
+            "engine_settings": dict(engine_settings or {}),
+        })
 
-        try:
-            if recognizer.is_installed():
-                return InstallPlan(actions=[], already_installed=True, already_installed_status="Already installed")
-        except Exception:
-            pass
-
-        try:
-            steps = recognizer.pip_install_steps(ctx) if hasattr(recognizer, "pip_install_steps") else []
-            steps = steps or []
-        except Exception:
-            steps = []
-
-        try:
-            required_backend = recognizer.required_backend(ctx)
-        except Exception:
-            required_backend = None
-
-        actions: list[InstallAction] = []
-
-        for step in steps:
+    @staticmethod
+    def create_installable_components() -> list[SpeechRecognizerInterface]:
+        components: list[SpeechRecognizerInterface] = []
+        for engine_id, cls in (SpeechRecognition._registry or {}).items():
             try:
-                pr = int(step.get("progress", 10) or 10)
-            except Exception:
-                pr = 10
-            desc = str(step.get("description", "Installing...") or "Installing...")
-            pkgs = step.get("packages")
-            extra = step.get("extra_args")
-
-            if isinstance(pkgs, str):
-                pkgs_list = [pkgs]
-            elif pkgs:
-                pkgs_list = list(pkgs)
-            else:
-                pkgs_list = []
-
-            actions.append(
-                InstallAction(
-                    type="pip",
-                    description=desc,
-                    progress=pr,
-                    packages=pkgs_list,
-                    extra_args=extra,
-                )
-            )
-
-        manifest = None
-        if hasattr(recognizer, "install_manifest"):
-            try:
-                manifest = recognizer.install_manifest()
-            except Exception:
-                manifest = None
-
-        if manifest:
-            actions.append(
-                InstallAction(
-                    type="download_http",
-                    description="Downloading model files...",
-                    progress=75,
-                    progress_to=99,
-                    files=list(manifest),
-                )
-            )
-        else:
-            async def _install_artifacts_async(**_kwargs) -> bool:
-                return bool(await recognizer.install())
-
-            actions.append(
-                InstallAction(
-                    type="call_async",
-                    description="Downloading model files...",
-                    progress=75,
-                    fn=_install_artifacts_async,
-                    timeout_sec=float(timeout_sec or 3600.0),
-                )
-            )
-
-        def _final_check(**_kwargs) -> bool:
-            try:
-                return bool(recognizer.is_installed())
-            except Exception:
-                return True
-
-        actions.append(
-            InstallAction(
-                type="call",
-                description="Finalizing...",
-                progress=99,
-                fn=_final_check,
-            )
-        )
-
-        return InstallPlan(
-            actions=actions,
-            already_installed=False,
-            ok_status="Done",
-            required_backend=required_backend,
-            backend_context=dict(ctx),
-        )
+                instance = cls(None, logger)
+                config_id = getattr(instance, "item_id", "")
+                if config_id and str(config_id) != str(engine_id):
+                    logger.warning(f"ASR installable id mismatch: registry='{engine_id}' component='{config_id}'")
+                components.append(instance)
+            except Exception as exc:
+                logger.error(f"Failed to create ASR installable for '{engine_id}': {exc}", exc_info=True)
+        return components
 
     @staticmethod
     def get_settings_schema(engine: Optional[str] = None) -> List[dict]:

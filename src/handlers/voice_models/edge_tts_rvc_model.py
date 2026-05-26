@@ -340,6 +340,22 @@ class EdgeTTS_RVC_Model(IVoiceModel):
     def get_model_configs(self) -> List[Dict[str, Any]]:
         return self.MODEL_CONFIGS
 
+    @classmethod
+    def required_backend_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> BackendKind:
+        return EdgeTTSRVCInstallSpec.required_backend(model_id, ctx)
+
+    @classmethod
+    def is_model_installed(cls, model_id: str, ctx: Dict[str, Any]) -> bool:
+        return EdgeTTSRVCInstallSpec.is_installed(model_id, ctx)
+
+    @classmethod
+    def build_install_plan_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> InstallPlan:
+        return EdgeTTSRVCInstallSpec.build_install_plan(model_id, ctx)
+
+    @classmethod
+    def build_uninstall_plan_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> InstallPlan:
+        return EdgeTTSRVCInstallSpec.build_uninstall_plan(model_id, ctx)
+
     def _load_module(self):
         if self.tts_rvc_module is not None:
             return

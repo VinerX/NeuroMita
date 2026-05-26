@@ -8,6 +8,8 @@ from core.backends import BackendKind, get_backend_service
 from core.events import Events, get_event_bus
 from core.install_requirements import InstallRequirement, check_requirements
 from core.install_types import InstallAction, InstallPlan
+from core.installables import ComponentCategory, ComponentMetadata, coerce_backend, make_component_id
+from core.installables.helpers import build_runtime_ctx, noop_plan, status_from_installed
 from handlers.embedding_presets import resolve_full_config
 from managers.rag.pipeline.config import resolve_ce_model
 try:
@@ -35,6 +37,17 @@ _LM_RERANKER_PATTERNS = (
     "qwen3-reranker",
     "qwen/qwen3-reranker",
 )
+
+
+def _target_title(target: str) -> str:
+    normalized = str(target or "").strip().lower()
+    if normalized == TARGET_EMBEDDINGS:
+        model_name = _local_embed_model_name()
+        return model_name or "RAG embeddings"
+    if normalized == TARGET_RERANKER:
+        model_name = resolve_ce_model()
+        return model_name or "RAG reranker"
+    return str(target or "rag")
 
 
 def _detect_gpu_vendor(ctx: dict[str, Any] | None = None) -> str:
@@ -397,6 +410,66 @@ def build_install_plan(
         required_backend=required_backend,
         backend_context=dict(ctx),
     )
+
+
+class RagInstallableComponent:
+    category = ComponentCategory.RAG
+    legacy_kind = "rag"
+
+    def __init__(self, target: str) -> None:
+        self.item_id = str(target or "").strip().lower()
+        self.id = make_component_id(self.category, self.item_id)
+
+    def metadata(self) -> ComponentMetadata:
+        run_ctx = build_runtime_ctx({})
+        status = get_install_status(self.item_id, ctx=run_ctx)
+        backend = coerce_backend(status.get("required_backend"))
+        return ComponentMetadata(
+            id=self.id,
+            item_id=self.item_id,
+            category=self.category,
+            title=_target_title(self.item_id),
+            description="Local RAG model artifacts.",
+            backend=backend,
+            legacy_kind=self.legacy_kind,
+            tags=("rag",),
+        )
+
+    def status(self, ctx: dict[str, Any] | None = None):
+        run_ctx = build_runtime_ctx(ctx)
+        data = get_install_status(self.item_id, ctx=run_ctx)
+        backend = coerce_backend(data.get("required_backend"))
+        required = bool(data.get("required", True))
+        installed = bool(data.get("ok", False)) or not required
+        return status_from_installed(
+            component_id=self.id,
+            installed=installed,
+            backend=backend,
+            ctx=run_ctx,
+            details=dict(data or {}),
+        )
+
+    def build_install_plan(self, ctx: dict[str, Any] | None = None) -> InstallPlan:
+        run_ctx = build_runtime_ctx(ctx)
+        return build_install_plan(
+            self.item_id,
+            pip_installer=run_ctx.get("pip_installer"),
+            callbacks=run_ctx.get("callbacks"),
+            timeout_sec=float(run_ctx.get("timeout_sec", 3600.0) or 3600.0),
+        )
+
+    def build_uninstall_plan(self, ctx: dict[str, Any] | None = None) -> InstallPlan:
+        return noop_plan("RAG uninstall is not implemented yet.")
+
+    def build_initialize_plan(self, ctx: dict[str, Any] | None = None) -> InstallPlan | None:
+        return None
+
+
+def create_rag_installable_components() -> list[RagInstallableComponent]:
+    return [
+        RagInstallableComponent(TARGET_EMBEDDINGS),
+        RagInstallableComponent(TARGET_RERANKER),
+    ]
 
 
 def start_install(target: str, *, with_ui: bool = True, timeout_sec: float = 3600.0) -> None:

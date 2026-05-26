@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtCore import QSize, Qt, QTimer
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -55,6 +55,16 @@ _STATUS_COLORS = {
 }
 
 
+def _meta_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    value = row.get("metadata")
+    return value if isinstance(value, dict) else {}
+
+
+def _status_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    value = row.get("status")
+    return value if isinstance(value, dict) else {}
+
+
 class AIHubComponentItem(QWidget):
     def __init__(self, row: dict[str, Any], parent=None):
         super().__init__(parent)
@@ -62,8 +72,8 @@ class AIHubComponentItem(QWidget):
         self._build()
 
     def _build(self) -> None:
-        meta = self.row.get("metadata") if isinstance(self.row.get("metadata"), dict) else {}
-        status = self.row.get("status") if isinstance(self.row.get("status"), dict) else {}
+        meta = _meta_from_row(self.row)
+        status = _status_from_row(self.row)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 8, 10, 8)
@@ -73,42 +83,38 @@ class AIHubComponentItem(QWidget):
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(8)
 
-        title = QLabel(str(meta.get("title") or meta.get("id") or "—"))
+        title = QLabel(str(meta.get("title") or meta.get("id") or "-"))
         title.setStyleSheet("font-size: 14px; font-weight: 600; color: #f4f4f5;")
         top.addWidget(title, 1)
 
         status_code = str(status.get("code") or "unknown")
-        status_text = _STATUS_LABELS.get(status_code, status_code)
-        status_color = _STATUS_COLORS.get(status_code, "#9ca3af")
-        chip = QLabel(status_text)
+        chip = QLabel(_STATUS_LABELS.get(status_code, status_code))
         chip.setStyleSheet(
-            "padding: 3px 10px; border-radius: 10px; "
-            f"background: rgba(255,255,255,0.05); color: {status_color}; font-weight: 600;"
+            "padding: 3px 10px; border-radius: 10px;"
+            f"background: rgba(255,255,255,0.05); color: {_STATUS_COLORS.get(status_code, '#9ca3af')};"
+            "font-weight: 600;"
         )
         top.addWidget(chip, 0)
         root.addLayout(top)
 
-        desc_parts: list[str] = []
+        parts: list[str] = []
+        size = str(meta.get("size") or "").strip()
+        if size:
+            parts.append(size)
+
         backend = str(meta.get("backend") or "").strip()
         if backend and backend != "none":
-            desc_parts.append(backend.upper())
-        for item in meta.get("languages") or []:
-            text = str(item or "").strip()
-            if text:
-                desc_parts.append(text.upper())
-        for item in meta.get("tags") or []:
-            text = str(item or "").strip()
-            if text and text not in desc_parts:
-                desc_parts.append(text)
+            parts.append(backend.upper())
 
-        message = str(status.get("message") or "").strip()
-        sub = " • ".join(desc_parts[:4])
-        if message:
-            sub = f"{sub} • {message}" if sub else message
-        if not sub:
-            sub = str(meta.get("id") or "")
+        langs = [str(item).upper() for item in (meta.get("languages") or []) if str(item).strip()]
+        if langs:
+            parts.append("/".join(langs))
 
-        subtitle = QLabel(sub)
+        tags = [str(item).strip() for item in (meta.get("tags") or []) if str(item).strip()]
+        if tags:
+            parts.extend(tags[:2])
+
+        subtitle = QLabel(" • ".join(parts) if parts else str(meta.get("description") or meta.get("id") or ""))
         subtitle.setWordWrap(True)
         subtitle.setStyleSheet("font-size: 11px; color: #a1a1aa;")
         root.addWidget(subtitle)
@@ -123,9 +129,10 @@ class AIHubDialog(QDialog):
         self._pending_category: str | None = None
         self._pending_component_id: str | None = None
         self._last_task_status = ""
+        self._loaded_once = False
         self._build()
         self._bind_events()
-        QTimer.singleShot(0, self.refresh)
+        QTimer.singleShot(0, lambda: self.refresh(force=True))
 
     def _build(self) -> None:
         self.setObjectName("AIHubDialog")
@@ -237,7 +244,7 @@ class AIHubDialog(QDialog):
 
         self.btn_refresh = QPushButton(_("Обновить", "Refresh"))
         self.btn_refresh.setObjectName("AIHubSecondary")
-        self.btn_refresh.clicked.connect(self.refresh)
+        self.btn_refresh.clicked.connect(lambda: self.refresh(force=True))
         header.addWidget(self.btn_refresh, 0)
         root.addLayout(header)
 
@@ -311,11 +318,11 @@ class AIHubDialog(QDialog):
         right_l.setContentsMargins(14, 14, 14, 14)
         right_l.setSpacing(10)
 
-        self.detail_title = QLabel("—")
+        self.detail_title = QLabel("-")
         self.detail_title.setStyleSheet("font-size: 18px; font-weight: 700;")
         right_l.addWidget(self.detail_title)
 
-        self.detail_status = QLabel("—")
+        self.detail_status = QLabel("-")
         self.detail_status.setObjectName("AIHubMuted")
         self.detail_status.setWordWrap(True)
         right_l.addWidget(self.detail_status)
@@ -325,7 +332,7 @@ class AIHubDialog(QDialog):
         self.detail_meta.setWordWrap(True)
         right_l.addWidget(self.detail_meta)
 
-        self.detail_desc = QLabel("—")
+        self.detail_desc = QLabel("-")
         self.detail_desc.setWordWrap(True)
         self.detail_desc.setStyleSheet("color: #d4d4d8;")
         right_l.addWidget(self.detail_desc)
@@ -339,11 +346,6 @@ class AIHubDialog(QDialog):
         self.btn_install.setObjectName("AIHubPrimary")
         self.btn_install.clicked.connect(self._run_install)
         actions.addWidget(self.btn_install, 1)
-
-        self.btn_initialize = QPushButton(_("Инициализировать", "Initialize"))
-        self.btn_initialize.setObjectName("AIHubSecondary")
-        self.btn_initialize.clicked.connect(self._run_initialize)
-        actions.addWidget(self.btn_initialize, 1)
 
         self.btn_uninstall = QPushButton(_("Удалить", "Uninstall"))
         self.btn_uninstall.setObjectName("AIHubDanger")
@@ -380,25 +382,31 @@ class AIHubDialog(QDialog):
             self._pending_category = category
         if component_id:
             self._pending_component_id = component_id
-        self.refresh()
+        if self._loaded_once and self._rows:
+            self._rebuild_category_list()
+            self._rebuild_component_list()
+            self._update_summary()
+        else:
+            self.refresh(force=True)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        QTimer.singleShot(0, self.refresh)
+        if not self._loaded_once:
+            QTimer.singleShot(0, lambda: self.refresh(force=True))
 
-    def refresh(self) -> None:
-        rows = self._fetch_rows()
-        self._rows = rows
+    def refresh(self, *, force: bool = False) -> None:
+        self._rows = self._fetch_rows(force=force)
+        self._loaded_once = True
         self._rebuild_category_list()
         self._update_banner()
         self._rebuild_component_list()
         self._update_summary()
 
-    def _fetch_rows(self) -> list[dict[str, Any]]:
+    def _fetch_rows(self, *, force: bool = False) -> list[dict[str, Any]]:
         try:
             result = self.event_bus.emit_and_wait(
                 Events.Installable.LIST,
-                {"include_status": True, "refresh": True},
+                {"include_status": True, "refresh": bool(force)},
                 timeout=5.0,
             )
             rows = result[0] if result and isinstance(result[0], list) else []
@@ -410,12 +418,15 @@ class AIHubDialog(QDialog):
     def _rebuild_category_list(self) -> None:
         counts = {category: 0 for category in _CATEGORY_ORDER}
         for row in self._rows:
-            meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            meta = _meta_from_row(row)
             category = str(meta.get("category") or "")
             if category in counts:
                 counts[category] += 1
 
         selected = self._pending_category or self._selected_category or "tts"
+        if selected not in _CATEGORY_ORDER:
+            selected = "tts"
+
         self.category_list.blockSignals(True)
         try:
             self.category_list.clear()
@@ -436,10 +447,10 @@ class AIHubDialog(QDialog):
     def _filtered_rows(self) -> list[dict[str, Any]]:
         query = str(self.search_box.text() or "").strip().lower()
         category = self._selected_category
-        rows = []
+        rows: list[dict[str, Any]] = []
         for row in self._rows:
-            meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-            status = row.get("status") if isinstance(row.get("status"), dict) else {}
+            meta = _meta_from_row(row)
+            status = _status_from_row(row)
             if category and str(meta.get("category") or "") != category:
                 continue
             haystack = " ".join(
@@ -448,9 +459,9 @@ class AIHubDialog(QDialog):
                     str(meta.get("title") or ""),
                     str(meta.get("description") or ""),
                     str(meta.get("backend") or ""),
-                    str(status.get("message") or ""),
                     " ".join(str(x) for x in (meta.get("tags") or [])),
                     " ".join(str(x) for x in (meta.get("languages") or [])),
+                    str(status.get("message") or ""),
                 ]
             ).lower()
             if query and query not in haystack:
@@ -461,12 +472,12 @@ class AIHubDialog(QDialog):
         if sort_mode == "installed":
             rows.sort(
                 key=lambda row: (
-                    0 if (row.get("status") or {}).get("installed") else 1,
-                    str((row.get("metadata") or {}).get("title") or ""),
+                    0 if _status_from_row(row).get("installed") else 1,
+                    str(_meta_from_row(row).get("title") or ""),
                 )
             )
         elif sort_mode == "name":
-            rows.sort(key=lambda row: str((row.get("metadata") or {}).get("title") or ""))
+            rows.sort(key=lambda row: str(_meta_from_row(row).get("title") or ""))
         return rows
 
     def _rebuild_component_list(self) -> None:
@@ -477,7 +488,7 @@ class AIHubDialog(QDialog):
         try:
             self.component_list.clear()
             for row in rows:
-                meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+                meta = _meta_from_row(row)
                 component_id = str(meta.get("id") or "")
                 item = QListWidgetItem()
                 item.setData(Qt.ItemDataRole.UserRole, component_id)
@@ -510,32 +521,30 @@ class AIHubDialog(QDialog):
         item = self.component_list.currentItem()
         if item is None:
             return None
-        component_id = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
-        return component_id or None
+        value = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
+        return value or None
 
     def _current_row(self) -> dict[str, Any] | None:
-        component_id = self._current_component_id()
-        if not component_id:
+        current_id = self._current_component_id()
+        if not current_id:
             return None
         for row in self._rows:
-            meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-            if str(meta.get("id") or "") == component_id:
+            if str(_meta_from_row(row).get("id") or "") == current_id:
                 return row
         return None
 
     def _render_detail(self, row: dict[str, Any] | None) -> None:
         if not row:
-            self.detail_title.setText("—")
+            self.detail_title.setText("-")
             self.detail_status.setText(_("Выберите компонент.", "Select a component."))
             self.detail_meta.setText("")
             self.detail_desc.setText("")
             self.btn_install.setVisible(False)
-            self.btn_initialize.setVisible(False)
             self.btn_uninstall.setVisible(False)
             return
 
-        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-        status = row.get("status") if isinstance(row.get("status"), dict) else {}
+        meta = _meta_from_row(row)
+        status = _status_from_row(row)
         category = str(meta.get("category") or "")
         item_id = str(meta.get("item_id") or "")
         component_id = str(meta.get("id") or "")
@@ -543,21 +552,19 @@ class AIHubDialog(QDialog):
         status_text = _STATUS_LABELS.get(status_code, status_code)
         status_msg = str(status.get("message") or "").strip()
 
-        self.detail_title.setText(str(meta.get("title") or component_id or "—"))
-        self.detail_status.setText(
-            f"{status_text}: {status_msg}" if status_msg else status_text
-        )
+        self.detail_title.setText(str(meta.get("title") or component_id or "-"))
+        self.detail_status.setText(f"{status_text}: {status_msg}" if status_msg else status_text)
 
-        meta_parts = [
-            _CATEGORY_LABELS.get(category, category),
-            component_id,
-        ]
+        meta_parts = [_CATEGORY_LABELS.get(category, category)]
         backend = str(meta.get("backend") or "").strip()
         if backend and backend != "none":
             meta_parts.append(f"backend={backend}")
-        langs = [str(x).upper() for x in (meta.get("languages") or []) if str(x).strip()]
+        langs = [str(item).upper() for item in (meta.get("languages") or []) if str(item).strip()]
         if langs:
             meta_parts.append("/".join(langs))
+        size = str(meta.get("size") or "").strip()
+        if size:
+            meta_parts.append(size)
         self.detail_meta.setText(" • ".join(part for part in meta_parts if part))
 
         description = str(meta.get("description") or "").strip()
@@ -576,8 +583,6 @@ class AIHubDialog(QDialog):
         if category == "beats" and item_id == "beat_this" and bool(status.get("installed")):
             uninstall_visible = True
 
-        initialize_visible = category == "beats"
-
         self.btn_install.setText(install_text)
         self.btn_install.setVisible(install_visible)
         self.btn_install.setEnabled(True)
@@ -585,15 +590,11 @@ class AIHubDialog(QDialog):
         self.btn_uninstall.setVisible(uninstall_visible)
         self.btn_uninstall.setEnabled(uninstall_visible)
 
-        self.btn_initialize.setVisible(initialize_visible)
-        self.btn_initialize.setEnabled(initialize_visible)
-
     def _emit_component_action(self, event_name: str) -> None:
         row = self._current_row()
         if not row:
             return
-        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-        component_id = str(meta.get("id") or "").strip()
+        component_id = str(_meta_from_row(row).get("id") or "").strip()
         if not component_id:
             return
         self._emit_component_action_by_id(component_id, event_name)
@@ -608,7 +609,6 @@ class AIHubDialog(QDialog):
             },
         )
         self.task_label.setText(_("Запуск установки...", "Starting task..."))
-        QTimer.singleShot(500, self.refresh)
 
     def _run_install(self) -> None:
         self._emit_component_action(Events.Installable.INSTALL)
@@ -616,19 +616,11 @@ class AIHubDialog(QDialog):
     def _run_uninstall(self) -> None:
         self._emit_component_action(Events.Installable.UNINSTALL)
 
-    def _run_initialize(self) -> None:
-        self._emit_component_action(Events.Installable.INITIALIZE)
-
     def _update_summary(self) -> None:
-        total = len(self._filtered_rows())
-        installed = 0
-        ready = 0
-        for row in self._filtered_rows():
-            status = row.get("status") if isinstance(row.get("status"), dict) else {}
-            if status.get("installed"):
-                installed += 1
-            if status.get("ready"):
-                ready += 1
+        rows = self._filtered_rows()
+        total = len(rows)
+        installed = sum(1 for row in rows if _status_from_row(row).get("installed"))
+        ready = sum(1 for row in rows if _status_from_row(row).get("ready"))
         self.summary_label.setText(
             _("Показано: {total} • Установлено: {installed} • Готово: {ready}",
               "Shown: {total} • Installed: {installed} • Ready: {ready}").format(
@@ -649,8 +641,8 @@ class AIHubDialog(QDialog):
 
         row_cpu = self._row_by_id("backend:cpu")
         row_cuda = self._row_by_id("backend:cuda")
-        cpu_ready = bool(((row_cpu or {}).get("status") or {}).get("ready"))
-        cuda_ready = bool(((row_cuda or {}).get("status") or {}).get("ready"))
+        cpu_ready = bool(_status_from_row(row_cpu or {}).get("ready"))
+        cuda_ready = bool(_status_from_row(row_cuda or {}).get("ready"))
 
         show = gpu_vendor == "NVIDIA" and cpu_ready and not cuda_ready
         self.banner.setVisible(show)
@@ -667,8 +659,7 @@ class AIHubDialog(QDialog):
 
     def _row_by_id(self, component_id: str) -> dict[str, Any] | None:
         for row in self._rows:
-            meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-            if str(meta.get("id") or "") == component_id:
+            if str(_meta_from_row(row).get("id") or "") == component_id:
                 return row
         return None
 
@@ -694,10 +685,7 @@ class AIHubDialog(QDialog):
         status = str(data.get("status") or "").strip()
         progress = data.get("progress")
         if status:
-            if progress is not None:
-                self._last_task_status = f"{status} ({progress}%)"
-            else:
-                self._last_task_status = status
+            self._last_task_status = f"{status} ({progress}%)" if progress is not None else status
             self.task_label.setText(self._last_task_status)
 
     def _on_install_finished(self, event) -> None:
@@ -705,7 +693,7 @@ class AIHubDialog(QDialog):
             return
         self._last_task_status = _("Готово", "Done")
         self.task_label.setText(self._last_task_status)
-        QTimer.singleShot(250, self.refresh)
+        QTimer.singleShot(250, lambda: self.refresh(force=True))
 
     def _on_install_failed(self, event) -> None:
         if not self._is_installable_task(event):
@@ -714,4 +702,4 @@ class AIHubDialog(QDialog):
         error = str(data.get("error") or _("Ошибка установки", "Install failed"))
         self._last_task_status = error
         self.task_label.setText(error)
-        QTimer.singleShot(250, self.refresh)
+        QTimer.singleShot(250, lambda: self.refresh(force=True))

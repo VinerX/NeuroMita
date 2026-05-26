@@ -109,14 +109,12 @@ class LocalVoice:
             return False
 
         try:
-            from handlers.voice_models.catalog import get_voice_spec
-
-            spec = get_voice_spec(model_id)
-            if not spec:
+            model = self._registry.get(model_id)
+            if model is None:
                 return False
 
             ctx = {"gpu_vendor": self.provider or "CPU"}
-            return bool(spec.is_installed(model_id, ctx))
+            return bool(model.__class__.is_model_installed(model_id, ctx))
         except Exception:
             return False
 

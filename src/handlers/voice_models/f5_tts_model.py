@@ -253,6 +253,22 @@ class F5TTSModel(IVoiceModel):
     def get_model_configs(self) -> List[Dict[str, Any]]:
         return self.MODEL_CONFIGS
 
+    @classmethod
+    def required_backend_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> BackendKind:
+        return F5TTSInstallSpec.required_backend(model_id, ctx)
+
+    @classmethod
+    def is_model_installed(cls, model_id: str, ctx: Dict[str, Any]) -> bool:
+        return F5TTSInstallSpec.is_installed(model_id, ctx)
+
+    @classmethod
+    def build_install_plan_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> InstallPlan:
+        return F5TTSInstallSpec.build_install_plan(model_id, ctx)
+
+    @classmethod
+    def build_uninstall_plan_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> InstallPlan:
+        return F5TTSInstallSpec.build_uninstall_plan(model_id, ctx)
+
     def get_display_name(self) -> str:
         mode = self._mode()
         return "F5-TTS + RVC" if mode == "high+low" else "F5-TTS"

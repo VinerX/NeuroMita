@@ -1,4 +1,4 @@
-from installables.catalog import (
+from installables.registry_builder import (
     build_installable_registry,
     get_installable_registry,
     refresh_installable_registry,

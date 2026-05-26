@@ -13,6 +13,8 @@ from installables import get_installable_registry, refresh_installable_registry
 class InstallableController:
     def __init__(self) -> None:
         self.event_bus = get_event_bus()
+        self._list_cache_plain: list[dict[str, Any]] | None = None
+        self._list_cache_with_status: list[dict[str, Any]] | None = None
         self._subscribe_to_events()
 
     def _subscribe_to_events(self) -> None:
@@ -23,6 +25,25 @@ class InstallableController:
         eb.subscribe(Events.Installable.INSTALL, self._on_install, weak=False)
         eb.subscribe(Events.Installable.UNINSTALL, self._on_uninstall, weak=False)
         eb.subscribe(Events.Installable.INITIALIZE, self._on_initialize, weak=False)
+        eb.subscribe(Events.Install.TASK_STARTED, self._on_install_task_mutated, weak=False)
+        eb.subscribe(Events.Install.TASK_FINISHED, self._on_install_task_mutated, weak=False)
+        eb.subscribe(Events.Install.TASK_FAILED, self._on_install_task_mutated, weak=False)
+
+    def _invalidate_list_cache(self) -> None:
+        self._list_cache_plain = None
+        self._list_cache_with_status = None
+
+    def _is_installable_task(self, data: dict[str, Any]) -> bool:
+        if not isinstance(data, dict):
+            return False
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+        component_id = str(data.get("component_id") or meta.get("component_id") or "").strip()
+        return ":" in component_id or str(meta.get("category") or "").strip() != ""
+
+    def _on_install_task_mutated(self, event: Event) -> None:
+        data = event.data if isinstance(event.data, dict) else {}
+        if self._is_installable_task(data):
+            self._invalidate_list_cache()
 
     def _component_id(self, data: dict[str, Any]) -> str:
         raw = str(data.get("component_id") or data.get("id") or "").strip()
@@ -40,6 +61,25 @@ class InstallableController:
 
     def _on_list(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
+        include_status = bool(data.get("include_status", False))
+        ctx = data.get("ctx") if isinstance(data.get("ctx"), dict) else {}
+        category = data.get("category")
+
+        if data.get("refresh"):
+            self._invalidate_list_cache()
+
+        cached_rows = None
+        if not ctx and not data.get("refresh"):
+            cached_rows = self._list_cache_with_status if include_status else self._list_cache_plain
+        if cached_rows is not None:
+            if category:
+                value = str(category or "").strip().lower()
+                return [
+                    row for row in cached_rows
+                    if str(((row.get("metadata") or {}).get("category") or "")).strip().lower() == value
+                ]
+            return list(cached_rows)
+
         registry = refresh_installable_registry() if data.get("refresh") else get_installable_registry()
         category = data.get("category")
         if category:
@@ -50,14 +90,18 @@ class InstallableController:
         else:
             items = registry.all()
 
-        include_status = bool(data.get("include_status", False))
-        ctx = data.get("ctx") if isinstance(data.get("ctx"), dict) else {}
         result = []
         for item in items:
             row = {"metadata": item.metadata().as_dict()}
             if include_status:
                 row["status"] = item.status(ctx).as_dict()
             result.append(row)
+
+        if not ctx and not category:
+            if include_status:
+                self._list_cache_with_status = list(result)
+            else:
+                self._list_cache_plain = list(result)
         return result
 
     def _on_get(self, event: Event):
