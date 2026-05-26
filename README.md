@@ -5,7 +5,6 @@ Translation (DeepSeek) [English readme](README_EN.md)
 
 Внимание, требуются Python и C# Unity разработчики (начинающие и выше), Unity-аниматоры и моделлеры, если что пишите сразу в личку. Дискорд vinerx!
 
-
 Сервер мода: https://discord.gg/Tu5MPFxM4P <- Здесь вам помогут.
 
 ![logomod3](https://github.com/user-attachments/assets/aea3ec44-c203-4d4a-a405-a09191188464)
@@ -56,9 +55,7 @@ Translation (DeepSeek) [English readme](README_EN.md)
 В будущих версиях постараемся завезти лаунчер.  
 
 Релизы, то есть файлы, которые нужны обычному игроку - https://github.com/VinerX/NeuroMita/releases  
-1. [Актуальная версия v0.011 здесь](https://github.com/VinerX/NeuroMita/releases/download/v0.011/NeuroMita.0.011.MitaWorld.7z)  
-
-2. [Версия v0.011 с исправлениями от vladislavmorozov2007](https://drive.google.com/file/d/1c5d-G4glYICanOus1zCWYsRr0x-Ud9z8/view?usp=drivesdk) (Папку распаковать в любое место)  
+[Актуальная версия v0.011 здесь](https://github.com/VinerX/NeuroMita/releases/download/v0.011/NeuroMita.0.011.MitaWorld.7z)  
     
 Кнопка, чтобы начать писать в игре - Tab 
 Чтобы отправить - Enter.
@@ -72,7 +69,7 @@ Translation (DeepSeek) [English readme](README_EN.md)
      - gpt4free https://g4f.dev/members.html - Лимиты: 300к токенов и 100 запросов в час, 1млн токенов в день (Возможны утечки данных, нестабилен)
      - Openrouter https://openrouter.ai/settings/keys. У аккаунтов опенроутера есть лимиты (В среднем - 50 запросов в день).
      - Google AI Studio https://aistudio.google.com/apikey - новые модели Gemma 4 имеют неограниченное кол-во токенов/минуту, и 1.5 тыс. запросов в день.
-     - io.net https://ai.io.net/ai/api-keys - лимит: до 500к токенов в день на аккаунт.  
+     - io.net https://ai.io.net/ai/api-keys - лимит: 200к токенов в день на аккаунт.  
 	 
    - Платные API:  
      - chutes.ai https://chutes.ai/app/api
@@ -94,7 +91,7 @@ Translation (DeepSeek) [English readme](README_EN.md)
 	
    - для Google API появились новые модели: gemma-4-31b-it и gemma-4-26b-a4b-it.  
    - появилась новая модель на 20 запросов в день - gemini-3.5-flash  
-   - io net имеет ограничение до 500к токенов в день на аккаунт  
+   - io net имеет ограничение 200к токенов в день на аккаунт  
 	
 Сейчас пойдут настройки, которые нужно прописать в запущенном моде (чат боте)  
 
@@ -176,7 +173,7 @@ API ссылка - https://openrouter.ai/api/v1
 
 
 ### Ai.iO
-Найденный где-то в Мае 25-го года сервис. Лимит до 500к токенов на аккаунт в день (может быть разным).
+Найденный где-то в Мае 25-го года сервис. Лимит 200к токенов на аккаунт в день (может быть разным).
 Ссылка https://api.intelligence.io.solutions/api/v1/
     - Список моделей:  
 	 meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8  
@@ -217,11 +214,12 @@ API ссылка - https://openrouter.ai/api/v1
    gemma-4-31b-it  
    gemma-4-26b-a4b-it  
    
- - Помните, новые модели так или иначе через какое-то время поменяют или снизят свои лимиты  
+ - Помните, новые модели так или иначе через какое-то время поменяют или снизят свои лимиты
+ - Можно добавить до 10 проектов с 10 ключами соответственно (лимиты будут считаться отдельно для каждого проекта)
 
 Чтобы они работали, ставим фикс с одной из двух ссылок (нужен только файл NeuroMita.exe):  
-Зеркало - https://drive.google.com/file/d/1_SUU2hCFwZWEgm-cgxgU1IpiXRtRVxx8/view?usp=drive_link  
-Дискорд сервер - https://discord.com/channels/1341427480942350356/1341429975147872320/1375176535434334249  
+- Зеркало: https://drive.google.com/file/d/1_SUU2hCFwZWEgm-cgxgU1IpiXRtRVxx8/view?usp=drive_link  
+- Дискорд сервер: https://discord.com/channels/1341427480942350356/1341429975147872320/1375176535434334249  
 
 Размещаем файл в папку с нейромитой, вставляем с заменой.  
    
@@ -279,6 +277,7 @@ API ссылка: https://generativelanguage.googleapis.com/v1beta/models/gemini
 Если есть облачный пароль, введите его. Он невидимый, но если ввести правильно и нажать Enter, то пройдет.  
 
 Есть два бота для озвучки:  
+<!-- CrazyMitaAIbot нужно убирать из новой версии, когда она будет готова -->
 @CrazyMitaAIbot (Проект полностью закрыли, не работает)  
 @silero_voice_bot (Платно, но есть 600 символов потестить)  
 
@@ -323,7 +322,6 @@ API ссылка: https://generativelanguage.googleapis.com/v1beta/models/gemini
 
 За Pull Request и контакт CrazyMitaBot спасибо:  
 - スノー (v1nn1ty)
-- vladislavmorozov2007 - обновил README.md до состояния актуального на 2026 год.  
 
 Спасибо и самому проекту CrazyMitaBot - благодаря им озвучка становится доступней  
 
