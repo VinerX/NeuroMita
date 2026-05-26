@@ -24,6 +24,23 @@ SILERO_RVC_CUDA_ID = "silero_rvc_cuda"
 SILERO_RVC_ONNX_ID = "silero_rvc_onnx"
 
 
+# Full F0-extractor set. The previous refactor narrowed CUDA to (crepe, fcpe)
+# and ONNX to (pm,), which broke parity with how the older single-source
+# config exposed methods. Restore the full set for both branches and keep
+# rmvpe as the main default — it's the best speed/quality tradeoff on
+# both NVIDIA and AMD/Intel paths.
+_RVC_F0_METHODS = ("pm", "dio", "crepe", "rmvpe", "harvest", "fcpe")
+_RVC_F0_DEFAULT = "rmvpe"
+_RVC_F0_HELP_RU = (
+    "Алгоритм извлечения F0 (высоты тона): rmvpe/crepe — точнее, "
+    "pm/harvest/dio — быстрее, fcpe — компромисс."
+)
+_RVC_F0_HELP_EN = (
+    "F0 extraction algorithm: rmvpe/crepe — more accurate, "
+    "pm/harvest/dio — faster, fcpe — middle ground."
+)
+
+
 def _setting_entry(key: str, label_ru: str, label_en: str, default: str, help_ru: str, help_en: str) -> dict[str, Any]:
     return {
         "key": key,
@@ -91,10 +108,10 @@ def _cuda_edge_settings() -> list[dict[str, Any]]:
             "f0method",
             "Метод F0 (RVC)",
             "F0 Method (RVC)",
-            ["crepe", "fcpe"],
-            "fcpe",
-            "CUDA-ветка оставляет только F0-методы, которые хорошо масштабируются на NVIDIA.",
-            "The CUDA variant exposes only F0 methods that scale well on NVIDIA.",
+            list(_RVC_F0_METHODS),
+            _RVC_F0_DEFAULT,
+            _RVC_F0_HELP_RU,
+            _RVC_F0_HELP_EN,
         ),
         _setting_entry("pitch", "Высота голоса RVC (пт)", "RVC Pitch (semitones)", "6", "Смещение высоты в полутонах.", "Pitch shift in semitones."),
         _setting_check("use_index_file", "Исп. .index файл (RVC)", "Use .index file (RVC)", True, "Использовать .index для лучшего совпадения тембра.", "Use .index to better match voice timbre."),
@@ -115,8 +132,17 @@ def _onnx_edge_settings() -> list[dict[str, Any]]:
             "RVC Device",
             ["dml", "cpu"],
             "dml",
-            "DirectML для AMD/Intel или CPU fallback. Полуточность и тяжёлые F0-методы отключены.",
-            "DirectML for AMD/Intel or CPU fallback. Half precision and heavy F0 methods are disabled.",
+            "DirectML для AMD/Intel или CPU fallback.",
+            "DirectML for AMD/Intel or CPU fallback.",
+        ),
+        _setting_combo(
+            "f0method",
+            "Метод F0 (RVC)",
+            "F0 Method (RVC)",
+            list(_RVC_F0_METHODS),
+            _RVC_F0_DEFAULT,
+            _RVC_F0_HELP_RU,
+            _RVC_F0_HELP_EN,
         ),
         _setting_entry("pitch", "Высота голоса RVC (пт)", "RVC Pitch (semitones)", "6", "Смещение высоты в полутонах.", "Pitch shift in semitones."),
         _setting_check("use_index_file", "Исп. .index файл (RVC)", "Use .index file (RVC)", True, "Использовать .index для лучшего совпадения тембра.", "Use .index to better match voice timbre."),
@@ -132,7 +158,15 @@ def _cuda_silero_settings() -> list[dict[str, Any]]:
         _setting_combo("silero_rvc_device", "Устройство RVC", "RVC Device", ["cuda:0", "cpu"], "cuda:0", "CUDA-устройство для RVC.", "CUDA device for RVC."),
         _setting_combo("silero_device", "Устройство Silero", "Silero Device", ["cuda", "cpu"], "cuda", "Устройство для Silero.", "Device for Silero."),
         _setting_combo("silero_rvc_is_half", "Half-precision RVC", "Half-precision RVC", ["True", "False"], "True", "FP16 для RVC на NVIDIA.", "FP16 for RVC on NVIDIA."),
-        _setting_combo("silero_rvc_f0method", "Метод F0 (RVC)", "F0 Method (RVC)", ["crepe", "fcpe"], "fcpe", "CUDA-ветка ограничена оптимальными F0-методами.", "CUDA variant is limited to optimized F0 methods."),
+        _setting_combo(
+            "silero_rvc_f0method",
+            "Метод F0 (RVC)",
+            "F0 Method (RVC)",
+            list(_RVC_F0_METHODS),
+            _RVC_F0_DEFAULT,
+            _RVC_F0_HELP_RU,
+            _RVC_F0_HELP_EN,
+        ),
         _setting_entry("silero_rvc_pitch", "Высота голоса RVC (пт)", "RVC Pitch (semitones)", "6", "Смещение высоты в полутонах.", "Pitch shift in semitones."),
         _setting_check("silero_rvc_use_index_file", "Исп. .index файл (RVC)", "Use .index file (RVC)", True, "Улучшает совпадение тембра.", "Improves timbre matching."),
         _setting_entry("silero_rvc_index_rate", "Соотношение индекса RVC", "RVC Index Rate", "0.75", "Степень влияния .index (0..1).", "How much .index affects result (0..1)."),
@@ -150,6 +184,15 @@ def _onnx_silero_settings() -> list[dict[str, Any]]:
     return [
         _setting_combo("silero_rvc_device", "Устройство RVC", "RVC Device", ["dml", "cpu"], "dml", "DirectML для RVC или CPU fallback.", "DirectML for RVC or CPU fallback."),
         _setting_combo("silero_device", "Устройство Silero", "Silero Device", ["cpu"], "cpu", "Silero в ONNX-сборке запускается на CPU для стабильности.", "Silero runs on CPU in the ONNX build for stability.", locked=True),
+        _setting_combo(
+            "silero_rvc_f0method",
+            "Метод F0 (RVC)",
+            "F0 Method (RVC)",
+            list(_RVC_F0_METHODS),
+            _RVC_F0_DEFAULT,
+            _RVC_F0_HELP_RU,
+            _RVC_F0_HELP_EN,
+        ),
         _setting_entry("silero_rvc_pitch", "Высота голоса RVC (пт)", "RVC Pitch (semitones)", "6", "Смещение высоты в полутонах.", "Pitch shift in semitones."),
         _setting_check("silero_rvc_use_index_file", "Исп. .index файл (RVC)", "Use .index file (RVC)", True, "Улучшает совпадение тембра.", "Improves timbre matching."),
         _setting_entry("silero_rvc_index_rate", "Соотношение индекса RVC", "RVC Index Rate", "0.75", "Степень влияния .index (0..1).", "How much .index affects result (0..1)."),
@@ -738,8 +781,8 @@ class EdgeTTSRVCCudaModel(EdgeTTSRVCBaseModel):
     MODEL_EXTENSION = "pth"
     VOICE_PATH_PROVIDER = "NVIDIA"
     RVC_DEFAULT_DEVICE = "cuda:0"
-    RVC_DEFAULT_F0_METHOD = "fcpe"
-    RVC_F0_METHODS = ("crepe", "fcpe")
+    RVC_DEFAULT_F0_METHOD = _RVC_F0_DEFAULT
+    RVC_F0_METHODS = _RVC_F0_METHODS
     RVC_HELPER_MODEL_ID = EDGE_TTS_RVC_CUDA_ID
     SUPPORTS_HALF = True
     SUPPORTS_RUNTIME_F0 = True
@@ -791,11 +834,11 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
     MODEL_EXTENSION = "onnx"
     VOICE_PATH_PROVIDER = "AMD"
     RVC_DEFAULT_DEVICE = "dml"
-    RVC_DEFAULT_F0_METHOD = "pm"
-    RVC_F0_METHODS = ("pm",)
+    RVC_DEFAULT_F0_METHOD = _RVC_F0_DEFAULT
+    RVC_F0_METHODS = _RVC_F0_METHODS
     RVC_HELPER_MODEL_ID = EDGE_TTS_RVC_ONNX_ID
     SUPPORTS_HALF = False
-    SUPPORTS_RUNTIME_F0 = False
+    SUPPORTS_RUNTIME_F0 = True
     PATCH_FAIRSEQ_CONFIGS = False
 
     EDGE_MODEL_ID = EDGE_TTS_RVC_ONNX_ID
