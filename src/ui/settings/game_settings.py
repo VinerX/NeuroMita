@@ -15,7 +15,6 @@ from game_connections.services.beat_backend_spec import (
     backend_display_name,
     normalize_backend_choice,
 )
-from game_connections.services.beat_install import start_beat_initialize, start_beat_install, start_beat_uninstall
 from game_connections.services.beat_service import get_beat_service
 from main_logger import logger
 from ui.gui_templates import create_settings_section, create_section_header
@@ -74,9 +73,7 @@ def _set_beat_status_label(gui, text: str) -> None:
 def _set_beat_action_buttons_enabled(gui, enabled: bool) -> None:
     def _apply():
         for attr_name in (
-            "beat_sync_install_button",
-            "beat_sync_initialize_button",
-            "beat_sync_uninstall_button",
+            "beat_sync_manage_button",
             "beat_sync_open_cache_button",
             "beat_sync_rebuild_button",
         ):
@@ -101,25 +98,15 @@ def _refresh_beat_sync_status(gui, extra_message: str | None = None) -> None:
 
 
 def _install_beat_sync_backend(gui) -> None:
-    _set_beat_action_buttons_enabled(gui, False)
-    _set_beat_status_label(gui, _("Запуск установки beat backend...", "Starting beat backend installation..."))
-    get_beat_service().reset_runtime_state()
-    start_beat_install(BACKEND_BEAT_THIS, with_ui=True)
+    _open_beat_ai_hub(gui)
 
 
 def _initialize_beat_sync_backend(gui) -> None:
-    _set_beat_action_buttons_enabled(gui, False)
-    _set_beat_status_label(gui, _("Запуск инициализации beat backend...", "Starting beat backend initialization..."))
-    get_beat_service().reset_runtime_state()
-    backend = normalize_backend_choice(gui._get_setting("BEAT_SYNC_BACKEND", BACKEND_AUTO))
-    start_beat_initialize(backend, with_ui=True)
+    _open_beat_ai_hub(gui)
 
 
 def _uninstall_beat_sync_backend(gui) -> None:
-    _set_beat_action_buttons_enabled(gui, False)
-    _set_beat_status_label(gui, _("Запуск удаления beat-this...", "Starting beat-this removal..."))
-    get_beat_service().reset_runtime_state()
-    start_beat_uninstall(BACKEND_BEAT_THIS, with_ui=True)
+    _open_beat_ai_hub(gui)
 
 
 def _rebuild_beat_sync_cache(gui) -> None:
@@ -176,6 +163,20 @@ def _open_beat_cache_folder(gui) -> None:
     path = Path(cache_dir)
     path.mkdir(parents=True, exist_ok=True)
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
+
+
+def _open_beat_ai_hub(gui) -> None:
+    preferred = normalize_backend_choice(gui._get_setting("BEAT_SYNC_BACKEND", BACKEND_AUTO))
+    gui.event_bus.emit(
+        Events.GUI.SHOW_WINDOW,
+        {
+            "window_id": "ai_hub",
+            "payload": {
+                "category": "beats",
+                "component_id": f"beats:{preferred}",
+            },
+        },
+    )
 
 
 def _create_beat_backend_selector(gui) -> QWidget:
@@ -540,37 +541,15 @@ def setup_game_controls(self, parent) -> None:
         },
         {
             'type': 'subsection',
-            'label': _('Инициализация', 'Initialization'),
+            'label': _('Управление', 'Management'),
         },
         {
             'type': 'button_group',
             'buttons': [
                 {
-                    'label': _('Инициализировать backend', 'Initialize backend'),
-                    'command': lambda: _initialize_beat_sync_backend(self),
-                    'widget_name': 'beat_sync_initialize_button',
-                },
-            ],
-        },
-        {
-            'type': 'end',
-        },
-        {
-            'type': 'subsection',
-            'label': _('Установка', 'Installation'),
-        },
-        {
-            'type': 'button_group',
-            'buttons': [
-                {
-                    'label': _('Установить beat-this', 'Install beat-this'),
-                    'command': lambda: _install_beat_sync_backend(self),
-                    'widget_name': 'beat_sync_install_button',
-                },
-                {
-                    'label': _('Удалить beat-this', 'Uninstall beat-this'),
-                    'command': lambda: _uninstall_beat_sync_backend(self),
-                    'widget_name': 'beat_sync_uninstall_button',
+                    'label': _('Открыть AI Hub', 'Open AI Hub'),
+                    'command': lambda: _open_beat_ai_hub(self),
+                    'widget_name': 'beat_sync_manage_button',
                 },
             ],
         },

@@ -247,11 +247,22 @@ class BackendService:
             for name in self._requested_dist_names(requested_specs or ())
         }
         overrides: list[str] = []
+        target_dir = os.environ.get("NEUROMITA_LIB_DIR")
         for dist_name in self._managed_dist_names_for_requirement(backend_req):
             canon = canonicalize_name(dist_name)
             if canon in requested_names:
                 continue
-            overrides.append(f"{dist_name}; sys_platform == 'never'")
+            
+            # Проверяем версию уже установленного пакета в целевой папке Lib
+            version = self._dist_version(dist_name, target_dir=target_dir)
+            if version:
+                # Если пакет уже есть, фиксируем его текущую версию в ограничениях
+                overrides.append(f"{dist_name}=={version}")
+            else:
+                # Если пакета нет, не накладываем ломающих ограничений,
+                # давая бэкенду или стандартной установке выполнить работу.
+                pass
+                
         return tuple(self._dedupe(overrides))
 
     def install_backend(

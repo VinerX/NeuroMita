@@ -212,6 +212,13 @@ class AppWindowBase(QMainWindow):
 
     def _window_specs(self) -> dict:
         return {
+            "ai_hub": {
+                "factory": self._factory_ai_hub_dialog,
+                "singleton": True,
+                "hide_on_close": True,
+                "modal": False,
+                "on_ready": self._on_ai_hub_dialog_ready,
+            },
             "voice_models": {
                 "factory": self._factory_voice_models_dialog,
                 "singleton": True,
@@ -320,7 +327,16 @@ class AppWindowBase(QMainWindow):
         dialog_layout.setSpacing(0)
 
         return dialog
-    
+
+    def _factory_ai_hub_dialog(self, parent, payload: dict):
+        from ui.windows.ai_hub_window import AIHubDialog
+
+        return AIHubDialog(parent)
+
+    def _on_ai_hub_dialog_ready(self, dialog, payload: dict):
+        if hasattr(dialog, "apply_payload"):
+            dialog.apply_payload(payload if isinstance(payload, dict) else {})
+
     def _factory_asr_glossary_dialog(self, parent, payload: dict):
         dialog = QDialog(parent)
         dialog.setWindowTitle(_("ASR модели", "ASR Models"))
@@ -343,7 +359,10 @@ class AppWindowBase(QMainWindow):
     def _create_dialog_for_voice_model(self, data):
         if not hasattr(self, "window_manager") or self.window_manager is None:
             return
-        self.window_manager.show_dialog("voice_models", data if isinstance(data, dict) else {})
+        payload = data if isinstance(data, dict) else {}
+        payload = dict(payload)
+        payload.setdefault("category", "tts")
+        self.window_manager.show_dialog("ai_hub", payload)
 
     def _on_create_installation_window(self, title: str, initial_status: str, holder: dict):
         win = VoiceInstallationWindow(self, title, initial_status)

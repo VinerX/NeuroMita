@@ -789,6 +789,9 @@ class EdgeTTS_RVC_Model(IVoiceModel):
             character_name = voice_paths["character_name"]
 
             ssml_text, character_base_rvc_pitch, character_speaker = self._preprocess_text_to_ssml(text, character_name)
+
+            logger.info(f"Текст для озвучки: {ssml_text[:100]}")
+            
             settings = self.parent.load_model_settings("low+")
 
             audio_tensor = self.current_silero_model.apply_tts(

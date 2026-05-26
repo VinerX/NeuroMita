@@ -223,8 +223,8 @@ class SpeechController:
             self.events_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
                 'title': _('Требуется установка', 'Installation required'),
                 'message': _(
-                    'ASR-модель не установлена. Установите её через "Каталог ASR моделей".',
-                    'ASR model is not installed. Install it via the "ASR Model Catalogue".'
+                    'ASR-модель не установлена. Установите её через AI Hub.',
+                    'ASR model is not installed. Install it via AI Hub.'
                 )
             })
 
@@ -241,7 +241,7 @@ class SpeechController:
                 pass
 
             try:
-                self.events_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "asr_glossary"})
+                self.events_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "asr"}})
             except Exception:
                 pass
 

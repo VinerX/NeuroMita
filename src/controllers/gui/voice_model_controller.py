@@ -73,7 +73,7 @@ class VoiceModelGuiController(BaseController):
             QTimer.singleShot(0, self._vm_view.refresh_all)
 
     def _on_legacy_open_voice_models(self, event: Event):
-        self.event_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "voice_models"})
+        self.event_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "tts"}})
 
     def _ask_question_in_vm_view(self, title: str, message: str) -> bool:
         if not self._vm_view:

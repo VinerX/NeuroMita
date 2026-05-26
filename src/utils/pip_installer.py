@@ -220,7 +220,7 @@ class PipInstaller:
                 cmd.extend(extra_args)
 
             effective_overrides = self._build_dependency_overrides(package_spec) if is_uv else []
-            if effective_overrides:
+            if effective_overrides and len(effective_overrides) > 0:
                 override_path = self._write_uv_overrides(effective_overrides)
                 cmd.extend(["--overrides", override_path])
 
@@ -254,7 +254,7 @@ class PipInstaller:
                 cmd.extend(extra_args)
 
             effective_overrides = self._dedupe_overrides(list(uv_overrides or [])) if is_uv else []
-            if effective_overrides:
+            if effective_overrides and len(effective_overrides) > 0:
                 override_path = self._write_uv_overrides(effective_overrides)
                 cmd.extend(["--overrides", override_path])
 
@@ -413,7 +413,7 @@ class PipInstaller:
         if self._preferred_installer_cmd is not None:
             return list(self._preferred_installer_cmd)
 
-        uv_cmd = [self.script_path, "-m", "uv", "pip"]
+        uv_cmd = [self.script_path, "-m", "uv", "--verbose", "pip"]
         if self._check_installer_command([self.script_path, "-m", "uv", "--version"]):
             self._preferred_installer_cmd = uv_cmd
             self.update_log("Для установки зависимостей выбран uv pip.")
@@ -702,7 +702,7 @@ class PipInstaller:
             return
 
         low = clean.lower()
-        if any(k in low for k in ("error", "ошибка", "failed", "traceback", "exception", "critical")):
+        if any(k in low for k in ("error:", "ошибка:", "failed:", "traceback", "exception", "critical")) or (("error" in low or "failed" in low) and "build\\" not in low and "bdist." not in low):
             logger.error(clean)
             self.update_log(clean)
             state.error_seen = True
@@ -822,7 +822,7 @@ class PipInstaller:
         threading.Thread(target=_reader, args=(proc.stdout, q_out), daemon=True).start()
         threading.Thread(target=_reader, args=(proc.stderr, q_err), daemon=True).start()
 
-        while proc.poll() is None:
+        while proc.poll() is None or t_out.is_alive() or t_err.is_alive():
             processed_any = False
             while not q_out.empty():
                 line = q_out.get_nowait()

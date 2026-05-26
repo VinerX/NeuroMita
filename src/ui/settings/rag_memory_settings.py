@@ -1903,13 +1903,13 @@ def _refresh_ce_status(gui) -> None:
             if gui._ce_dl_btn.parentWidget() is None:
                 return
             gui._ce_dl_btn.setEnabled(True)
-            gui._ce_dl_btn.setText(_("Установить backend", "Install backend"))
+            gui._ce_dl_btn.setText(_("Открыть AI Hub", "Open AI Hub"))
             gui._ce_dl_btn.setVisible(_needs_ce_backend_install())
         if hasattr(gui, "_ce_model_btn"):
             if gui._ce_model_btn.parentWidget() is None:
                 return
             gui._ce_model_btn.setEnabled(True)
-            gui._ce_model_btn.setText(_("Скачать модель", "Download model"))
+            gui._ce_model_btn.setText(_("Открыть AI Hub", "Open AI Hub"))
             gui._ce_model_btn.setVisible(not _is_ce_model_downloaded())
     except Exception:
         pass
@@ -1925,50 +1925,70 @@ def _refresh_embed_status(gui) -> None:
             if gui._embed_dl_btn.parentWidget() is None:
                 return
             gui._embed_dl_btn.setEnabled(True)
-            gui._embed_dl_btn.setText(_("Установить backend", "Install backend"))
+            gui._embed_dl_btn.setText(_("Открыть AI Hub", "Open AI Hub"))
             gui._embed_dl_btn.setVisible(_needs_embed_backend_install())
     except Exception:
         pass
+
+
+def _open_rag_ai_hub(gui, target: str) -> None:
+    try:
+        gui.event_bus.emit(
+            Events.GUI.SHOW_WINDOW,
+            {
+                "window_id": "ai_hub",
+                "payload": {
+                    "category": "rag",
+                    "component_id": f"rag:{target}",
+                },
+            },
+        )
+    except Exception as exc:
+        QMessageBox.critical(
+            gui,
+            _("Ошибка", "Error"),
+            _("Не удалось открыть AI Hub:\n{e}", "Failed to open AI Hub:\n{e}").format(e=exc),
+        )
 
 
 def _start_rag_backend_install(gui, target: str) -> None:
     try:
         if target == TARGET_EMBEDDINGS and hasattr(gui, "_embed_dl_btn"):
             gui._embed_dl_btn.setEnabled(False)
-            gui._embed_dl_btn.setText(_("Installing...", "Installing..."))
+            gui._embed_dl_btn.setText(_("Открытие AI Hub...", "Opening AI Hub..."))
         if target == TARGET_RERANKER and hasattr(gui, "_ce_dl_btn"):
             gui._ce_dl_btn.setEnabled(False)
-            gui._ce_dl_btn.setText(_("Installing...", "Installing..."))
-        start_install(target, with_ui=True, timeout_sec=3600.0)
+            gui._ce_dl_btn.setText(_("Открытие AI Hub...", "Opening AI Hub..."))
+        _open_rag_ai_hub(gui, target)
     except Exception as exc:
         QMessageBox.critical(
             gui,
             _("Ошибка", "Error"),
-            _("Не удалось запустить установку:\n{e}", "Failed to start installation:\n{e}").format(e=exc),
+            _("Не удалось открыть AI Hub:\n{e}", "Failed to open AI Hub:\n{e}").format(e=exc),
         )
         _refresh_rag_install_widgets(gui)
 
 
 def _download_embed_model(gui) -> None:
     try:
-        start_install(TARGET_EMBEDDINGS, with_ui=True, timeout_sec=3600.0)
+        _open_rag_ai_hub(gui, TARGET_EMBEDDINGS)
     except Exception as exc:
         QMessageBox.critical(
             gui,
             _("Ошибка", "Error"),
-            _("Не удалось запустить установку:\n{e}", "Failed to start installation:\n{e}").format(e=exc),
+            _("Не удалось открыть AI Hub:\n{e}", "Failed to open AI Hub:\n{e}").format(e=exc),
         )
         _refresh_embed_status(gui)
 
 
 def _download_ce_model(gui) -> None:
     try:
-        start_install(TARGET_RERANKER, with_ui=True, timeout_sec=3600.0)
+        _open_rag_ai_hub(gui, TARGET_RERANKER)
     except Exception as exc:
         QMessageBox.critical(
             gui,
             _("Ошибка", "Error"),
-            _("Не удалось запустить установку:\n{e}", "Failed to start installation:\n{e}").format(e=exc),
+            _("Не удалось открыть AI Hub:\n{e}", "Failed to open AI Hub:\n{e}").format(e=exc),
         )
         _refresh_ce_status(gui)
 
@@ -1984,7 +2004,7 @@ def _attach_embed_downloader(gui, section) -> None:
         _dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
         _idx_label = QLabel(_("Индекс:", "Index:") + " " + _get_embed_status_text(), _parent)
         _idx_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _embed_dl_btn = QPushButton(_("Установить backend", "Install backend"), _parent)
+        _embed_dl_btn = QPushButton(_("Открыть AI Hub", "Open AI Hub"), _parent)
         _embed_dl_btn.setVisible(_needs_embed_backend_install())
         _embed_dl_btn.clicked.connect(lambda: _start_rag_backend_install(gui, TARGET_EMBEDDINGS))
         _target_section = None
@@ -2028,10 +2048,10 @@ def _attach_ce_downloader(gui, section) -> None:
         _ce_model_label.setStyleSheet("color: #aaa; font-size: 11px;")
         _ce_ld_label = QLabel(_("Статус:", "Status:") + " " + _get_ce_loaded_status(), _parent)
         _ce_ld_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _ce_dl_btn = QPushButton(_("Установить backend", "Install backend"), _parent)
+        _ce_dl_btn = QPushButton(_("Открыть AI Hub", "Open AI Hub"), _parent)
         _ce_dl_btn.setVisible(_needs_ce_backend_install())
         _ce_dl_btn.clicked.connect(lambda: _start_rag_backend_install(gui, TARGET_RERANKER))
-        _ce_model_btn = QPushButton(_("Скачать модель", "Download model"), _parent)
+        _ce_model_btn = QPushButton(_("Открыть AI Hub", "Open AI Hub"), _parent)
         _ce_model_btn.setVisible(not _is_ce_model_downloaded())
         _ce_model_btn.clicked.connect(lambda: _download_ce_model(gui))
         _target_section = None

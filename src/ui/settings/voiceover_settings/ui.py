@@ -161,9 +161,9 @@ def build_voiceover_settings_ui(self, parent_layout):
          'type': 'button',
          'command': (lambda: get_event_bus().emit(Events.AI.RESTART_SERVICE, {"service": "tts"}))},
 
-        {'label': _('Управление моделями', 'Manage Models'),
+        {'label': _('Открыть AI Hub', 'Open AI Hub'),
          'type': 'button',
-         'command': (lambda: get_event_bus().emit(Events.GUI.SHOW_WINDOW, {"window_id": "voice_models", "payload": {}}))}
+         'command': (lambda: get_event_bus().emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "tts"}}))}
     ]
     if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1":
         local_config.insert(2, {
