@@ -5,7 +5,7 @@ import os
 import shutil
 from typing import Any
 
-from PyQt6.QtCore import QPoint, QSize, Qt, QTimer
+from PyQt6.QtCore import QPoint, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QMouseEvent
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -38,6 +38,10 @@ _DRAG_ZONE_HEIGHT = 84
 
 
 class AIHubDialog(QDialog):
+    # Cross-thread dispatcher: event-bus callbacks emit a lambda here and the
+    # connected slot runs it on the GUI thread (QueuedConnection by default).
+    _ui_call_requested = pyqtSignal(object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.event_bus = get_event_bus()
@@ -51,9 +55,26 @@ class AIHubDialog(QDialog):
         self._category_buttons: dict[str, CategoryButton] = {}
         self._drag_offset: QPoint | None = None
 
+        self._ui_call_requested.connect(self._execute_ui_call)
+
         self._build()
         self._bind_events()
         QTimer.singleShot(0, lambda: self.refresh(force=True))
+
+    # ------------------------------------------------------------ thread hop
+    def _execute_ui_call(self, fn) -> None:
+        try:
+            fn()
+        except Exception:
+            logger.exception("AI Hub: UI callback failed")
+
+    def _on_gui_thread(self, fn) -> None:
+        """Schedule `fn` to run on the GUI thread.
+
+        Event-bus callbacks fire on the bus's processor thread, so any Qt
+        widget mutation (incl. QTimer.start) must be marshalled here first.
+        """
+        self._ui_call_requested.emit(fn)
 
     # ------------------------------------------------------------------ build
     def _build(self) -> None:
@@ -654,7 +675,8 @@ class AIHubDialog(QDialog):
         if not self._is_installable_task(event):
             return
         data = event.data if isinstance(event.data, dict) else {}
-        self._set_task_status(str(data.get("status") or _("Подготовка...", "Preparing...")))
+        text = str(data.get("status") or _("Подготовка...", "Preparing..."))
+        self._on_gui_thread(lambda: self._set_task_status(text))
 
     def _on_install_progress(self, event) -> None:
         if not self._is_installable_task(event):
@@ -662,19 +684,30 @@ class AIHubDialog(QDialog):
         data = event.data if isinstance(event.data, dict) else {}
         status = str(data.get("status") or "").strip()
         progress = data.get("progress")
-        if status:
-            text = f"{status} ({progress}%)" if progress is not None else status
-            self._set_task_status(text)
+        if not status:
+            return
+        text = f"{status} ({progress}%)" if progress is not None else status
+        self._on_gui_thread(lambda: self._set_task_status(text))
 
     def _on_install_finished(self, event) -> None:
         if not self._is_installable_task(event):
             return
-        self._set_task_status(_("Готово", "Done"))
-        QTimer.singleShot(250, lambda: (self.refresh(force=True), self._set_task_status("")))
+        done_text = _("Готово", "Done")
+
+        def _apply() -> None:
+            self._set_task_status(done_text)
+            QTimer.singleShot(250, lambda: (self.refresh(force=True), self._set_task_status("")))
+
+        self._on_gui_thread(_apply)
 
     def _on_install_failed(self, event) -> None:
         if not self._is_installable_task(event):
             return
         data = event.data if isinstance(event.data, dict) else {}
-        self._set_task_status(str(data.get("error") or _("Ошибка установки", "Install failed")))
-        QTimer.singleShot(250, lambda: self.refresh(force=True))
+        text = str(data.get("error") or _("Ошибка установки", "Install failed"))
+
+        def _apply() -> None:
+            self._set_task_status(text)
+            QTimer.singleShot(250, lambda: self.refresh(force=True))
+
+        self._on_gui_thread(_apply)

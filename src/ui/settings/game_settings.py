@@ -88,13 +88,23 @@ def _set_beat_action_buttons_enabled(gui, enabled: bool) -> None:
 
 
 def _refresh_beat_sync_status(gui, extra_message: str | None = None) -> None:
-    try:
-        status = get_beat_service().get_backend_status()
-        _update_beat_backend_combo(gui, status)
-        _sync_beat_buttons(gui, status)
-        _set_beat_status_label(gui, _format_beat_status_text(status, extra_message))
-    except Exception as exc:
-        logger.error(f"[BeatSync] status refresh failed: {exc}", exc_info=True)
+    # May be called from the event-bus processor thread (e.g. install
+    # finished/failed callbacks). All Qt widget mutations must happen on the
+    # GUI thread or Qt prints "QBasicTimer::start: Timers cannot be started
+    # from another thread" and randomly corrupts widget state.
+    def _apply():
+        try:
+            status = get_beat_service().get_backend_status()
+            _update_beat_backend_combo(gui, status)
+            _sync_beat_buttons(gui, status)
+            _set_beat_status_label(gui, _format_beat_status_text(status, extra_message))
+        except Exception as exc:
+            logger.error(f"[BeatSync] status refresh failed: {exc}", exc_info=True)
+
+    if threading.current_thread() is threading.main_thread():
+        _apply()
+    else:
+        gui.run_ui_task_signal.emit(_apply)
 
 
 def _install_beat_sync_backend(gui) -> None:

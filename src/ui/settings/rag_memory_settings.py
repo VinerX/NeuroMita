@@ -1838,7 +1838,12 @@ def _ensure_rag_install_event_handlers(gui) -> None:
     def _on_install_changed(event):
         if not _is_rag_install_event(event):
             return
-        _refresh_rag_install_widgets(gui)
+        # Event bus dispatches on its own processor thread; widget mutations
+        # in _refresh_rag_install_widgets must hop to the GUI thread.
+        if threading.current_thread() is threading.main_thread():
+            _refresh_rag_install_widgets(gui)
+        else:
+            gui.run_ui_task_signal.emit(lambda: _refresh_rag_install_widgets(gui))
 
     gui.event_bus.subscribe(Events.Install.TASK_FINISHED, _on_install_changed, weak=False)
     gui.event_bus.subscribe(Events.Install.TASK_FAILED, _on_install_changed, weak=False)

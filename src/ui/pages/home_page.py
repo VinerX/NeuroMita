@@ -644,10 +644,15 @@ class HomePage(LauncherHomeBackground):
                 _("Не удалось запустить Unity: {err}", "Failed to launch Unity: {err}").format(err=exc),
             )
 
+    # Install.* events are dispatched on the bus processor thread — every
+    # widget/timer mutation in these handlers must hop to the GUI thread via
+    # _queue_ui_call, otherwise Qt prints "QBasicTimer::start: Timers cannot
+    # be started from another thread".
+
     def _on_install_started(self, event):
         data = getattr(event, "data", None) or {}
         title = str(data.get("title") or data.get("name") or _("Установка", "Installation"))
-        self.set_progress(title, 0, 100, busy=True)
+        self._queue_ui_call(lambda t=title: self.set_progress(t, 0, 100, busy=True))
 
     def _on_install_progress(self, event):
         data = getattr(event, "data", None) or {}
@@ -658,29 +663,37 @@ class HomePage(LauncherHomeBackground):
         if total > 0:
             pct = int(max(0, min(100, downloaded / total * 100)))
             label = title or message or _("Загрузка…", "Downloading…")
-            self.set_progress(f"{label} — {pct}%", pct, 100, busy=False)
+            self._queue_ui_call(
+                lambda l=label, p=pct: self.set_progress(f"{l} — {p}%", p, 100, busy=False)
+            )
         else:
             label = title or message or _("Загрузка…", "Downloading…")
-            self.set_progress(label, 0, 0, busy=True)
+            self._queue_ui_call(lambda l=label: self.set_progress(l, 0, 0, busy=True))
 
     def _on_install_finished(self, event):
-        self.hide_progress()
-        self.refresh_primary_label()
-        self.refresh_status_cards()
+        def _apply():
+            self.hide_progress()
+            self.refresh_primary_label()
+            self.refresh_status_cards()
+        self._queue_ui_call(_apply)
 
     def _on_install_failed(self, event):
         data = getattr(event, "data", None) or {}
         err = str(data.get("error") or data.get("message") or _("ошибка", "error"))
-        if self.progress_label is not None:
-            self.progress_label.setText(_("Ошибка: {err}", "Error: {err}").format(err=err))
-            self.progress_label.setVisible(True)
-        if self.progress_bar is not None:
-            self.progress_bar.setVisible(False)
-        self._home_install_thread_running = False
-        if self.primary_button is not None:
-            self.primary_button.setEnabled(True)
-        self.refresh_primary_label()
-        QTimer.singleShot(4000, self.hide_progress)
+
+        def _apply():
+            if self.progress_label is not None:
+                self.progress_label.setText(_("Ошибка: {err}", "Error: {err}").format(err=err))
+                self.progress_label.setVisible(True)
+            if self.progress_bar is not None:
+                self.progress_bar.setVisible(False)
+            self._home_install_thread_running = False
+            if self.primary_button is not None:
+                self.primary_button.setEnabled(True)
+            self.refresh_primary_label()
+            QTimer.singleShot(4000, self.hide_progress)
+
+        self._queue_ui_call(_apply)
 
     def run_install_unity(self):
         if self._home_install_thread_running:
