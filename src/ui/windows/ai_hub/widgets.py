@@ -18,16 +18,35 @@ from .helpers import qpixmap
 class Chip(QLabel):
     """Inline tag chip. Hugs its content; no vertical stretching."""
 
-    def __init__(self, text: str, *, variant: str = "default", parent=None):
+    _MAX_LANG_TAGS = 3  # show individual flags up to this count; collapse beyond
+
+    def __init__(self, text: str, *, variant: str = "default", tooltip: str = "", parent=None):
         super().__init__(text, parent)
         if variant == "backend":
             self.setObjectName("AIHubChipBackend")
         elif variant == "gpu_ok":
             self.setObjectName("AIHubChipGpuOk")
+        elif variant == "multilingual":
+            self.setObjectName("AIHubChipMulti")
         else:
             self.setObjectName("AIHubChip")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        if tooltip:
+            self.setToolTip(tooltip)
+
+    @classmethod
+    def for_languages(cls, langs: list[str], parent=None) -> "Chip | None":
+        """Build either a compact 'EN/RU' chip or a 'Multilingual N' chip
+        with the full list in the tooltip."""
+        langs = [str(x).strip().upper() for x in (langs or []) if str(x).strip()]
+        if not langs:
+            return None
+        if len(langs) <= cls._MAX_LANG_TAGS:
+            return cls(" / ".join(langs), parent=parent)
+        from utils import getTranslationVariant as t
+        label = t("Multilingual {n}", "Multilingual {n}").format(n=len(langs))
+        return cls(label, variant="multilingual", tooltip=", ".join(langs), parent=parent)
 
 
 class CategoryButton(QFrame):
@@ -215,9 +234,9 @@ class ModelCard(QFrame):
         elif backend and backend != "none":
             chips_row.addWidget(Chip(backend.upper(), variant="backend"))
 
-        langs = [str(x).upper() for x in (meta.get("languages") or []) if str(x).strip()]
-        if langs:
-            chips_row.addWidget(Chip(" / ".join(langs)))
+        lang_chip = Chip.for_languages(meta.get("languages") or [])
+        if lang_chip is not None:
+            chips_row.addWidget(lang_chip)
 
         size = str(meta.get("size") or "").strip()
         if size:
@@ -228,31 +247,21 @@ class ModelCard(QFrame):
         chips_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         root.addWidget(chips_wrap, 4)
 
-        # ---- right: status pill (icon + label)
-        status_row = QHBoxLayout()
-        status_row.setContentsMargins(0, 0, 0, 0)
-        status_row.setSpacing(6)
-        status_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        # ---- right: tiny circular status indicator (no duplicate label;
+        # button text already conveys installed/not installed semantics)
+        from .constants import STATUS_LABELS as _SL
         icon_name, icon_color = STATUS_ICONS.get(status_code, STATUS_ICONS["unknown"])
-        status_icon = QLabel()
+        dot = QLabel()
+        dot.setFixedSize(18, 18)
+        dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
         pix = qpixmap(icon_name, icon_color, 14)
         if pix is not None:
-            status_icon.setPixmap(pix)
+            dot.setPixmap(pix)
         else:
-            status_icon.setText("●")
-            status_icon.setStyleSheet(f"color: {icon_color};")
-        status_row.addWidget(status_icon, 0)
-
-        status_lbl = QLabel(STATUS_LABELS.get(status_code, status_code))
-        status_lbl.setObjectName("AIHubStatusPill")
-        status_lbl.setStyleSheet(f"color: {icon_color};")
-        status_row.addWidget(status_lbl, 0)
-
-        status_wrap = QFrame()
-        status_wrap.setLayout(status_row)
-        status_wrap.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        status_wrap.setMinimumWidth(130)
-        root.addWidget(status_wrap, 0)
+            dot.setText("●")
+            dot.setStyleSheet(f"color: {icon_color};")
+        dot.setToolTip(_SL.get(status_code, status_code))
+        root.addWidget(dot, 0)
 
         # ---- right: action button
         from PyQt6.QtWidgets import QPushButton

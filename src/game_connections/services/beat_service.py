@@ -214,10 +214,14 @@ class BeatService:
         backends: Dict[str, Dict[str, Any]] = {}
 
         try:
+            # First call after a restart can take a few seconds (worker is
+            # still importing torch / loading model weights). Give the
+            # worker a realistic budget and treat the transient timeout as
+            # a warning rather than a hard error.
             payload = call_beats_worker_sync(
                 "get_backend_status",
                 {"backend_preference": preferred_backend},
-                timeout=2.0,
+                timeout=8.0,
             )
             backends_raw = payload.get("backends")
             backends = backends_raw if isinstance(backends_raw, dict) else {}
@@ -235,6 +239,12 @@ class BeatService:
             torch_extra = torch_payload.get("extra") if isinstance(torch_payload.get("extra"), dict) else {}
             torch_variant = str(torch_extra.get("variant") or torch_variant)
             torch_ready = bool(torch_payload.get("ok", False))
+        except TimeoutError:
+            # Worker is restarting / cold-starting; the UI will refresh
+            # again once the next install/restart event fires.
+            logger.warning("[BeatSync] backend status request timed out (worker warming up?)")
+            active_backend = "engine_warming"
+            resolved_backend = active_backend
         except Exception as exc:
             logger.error(f"[BeatSync] backend status unavailable: {exc}", exc_info=True)
 

@@ -5,13 +5,11 @@ import os
 import shutil
 from typing import Any
 
-from PyQt6.QtCore import QPoint, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QMouseEvent
+from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QFrame,
-    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -33,10 +31,6 @@ from .helpers import meta_from_row, qicon, qpixmap, row_category, status_from_ro
 from .widgets import CategoryButton, ModelCard, Stat
 
 
-# Header drag-zone (in px from the top of the rounded card).
-_DRAG_ZONE_HEIGHT = 84
-
-
 class AIHubDialog(QDialog):
     # Cross-thread dispatcher: event-bus callbacks emit a lambda here and the
     # connected slot runs it on the GUI thread (QueuedConnection by default).
@@ -53,7 +47,6 @@ class AIHubDialog(QDialog):
         self._loaded_once = False
         self._last_check_ts: _dt.datetime | None = None
         self._category_buttons: dict[str, CategoryButton] = {}
-        self._drag_offset: QPoint | None = None
 
         self._ui_call_requested.connect(self._execute_ui_call)
 
@@ -83,28 +76,21 @@ class AIHubDialog(QDialog):
         self.setModal(False)
         self.resize(1280, 820)
         self.setMinimumSize(1100, 700)
-
-        # frameless rounded modal
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setStyleSheet(get_ai_hub_stylesheet())
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(22, 22, 22, 22)
+        # Use the native OS window chrome — no custom title bar, no shadow.
+        # The root frame stays as a styling anchor so the QSS still matches
+        # everything inside it.
+        root_outer = QVBoxLayout(self)
+        root_outer.setContentsMargins(0, 0, 0, 0)
 
         self._card = QFrame()
         self._card.setObjectName("AIHubRoot")
-        outer.addWidget(self._card)
-
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(46)
-        shadow.setOffset(0, 10)
-        shadow.setColor(QColor(0, 0, 0, 200))
-        self._card.setGraphicsEffect(shadow)
+        root_outer.addWidget(self._card)
 
         root = QVBoxLayout(self._card)
-        root.setContentsMargins(28, 22, 28, 22)
-        root.setSpacing(18)
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(16)
 
         root.addLayout(self._build_header())
         root.addLayout(self._build_body(), 1)
@@ -142,19 +128,7 @@ class AIHubDialog(QDialog):
         title_box.addWidget(subtitle)
         header.addLayout(title_box, 1)
 
-        close_btn = QPushButton()
-        close_btn.setObjectName("AIHubClose")
-        close_btn.setFixedSize(32, 32)
-        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        ic = qicon("fa5s.times", "#bca9bb")
-        if ic is not None:
-            close_btn.setIcon(ic)
-            close_btn.setIconSize(QSize(14, 14))
-        else:
-            close_btn.setText("×")
-        close_btn.clicked.connect(self.close)
-        header.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignTop)
-
+        # native OS window chrome already provides a close button
         return header
 
     def _build_body(self) -> QHBoxLayout:
@@ -189,12 +163,17 @@ class AIHubDialog(QDialog):
             self._category_buttons[key] = btn
             l.addWidget(btn, 0)
 
-        l.addSpacing(16)
+        # task status (install / progress)
+        self.task_status_label = QLabel("")
+        self.task_status_label.setObjectName("AIHubSidebarStatus")
+        self.task_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.task_status_label.setWordWrap(True)
+        self.task_status_label.setVisible(False)
+        l.addWidget(self.task_status_label)
 
-        qa_header = QLabel(_("БЫСТРОЕ ДЕЙСТВИЕ", "QUICK ACTION"))
-        qa_header.setObjectName("AIHubSidebarHeader")
-        l.addWidget(qa_header)
+        l.addStretch(1)
 
+        # "Check for updates" button sits at the very bottom of the sidebar
         self.btn_refresh = QPushButton(_("Проверить обновления", "Check for updates"))
         self.btn_refresh.setObjectName("AIHubSidebarBtn")
         self.btn_refresh.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -204,34 +183,6 @@ class AIHubDialog(QDialog):
             self.btn_refresh.setIconSize(QSize(13, 13))
         self.btn_refresh.clicked.connect(lambda: self.refresh(force=True))
         l.addWidget(self.btn_refresh)
-
-        # task status (install / progress) — replaces the old "last check" line
-        self.task_status_label = QLabel("")
-        self.task_status_label.setObjectName("AIHubSidebarStatus")
-        self.task_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.task_status_label.setVisible(False)
-        l.addWidget(self.task_status_label)
-
-        l.addStretch(1)
-
-        hint = QFrame()
-        hint.setObjectName("AIHubHint")
-        hl = QVBoxLayout(hint)
-        hl.setContentsMargins(14, 12, 14, 12)
-        hl.setSpacing(6)
-        hint_title = QLabel(_("Подсказка", "Tip"))
-        hint_title.setObjectName("AIHubHintTitle")
-        hl.addWidget(hint_title)
-        hint_body = QLabel(
-            _(
-                "Модели работают локально на вашем устройстве. Чем выше требования — тем быстрее отклик.",
-                "Models run locally on your device. The higher the requirements, the faster the response.",
-            )
-        )
-        hint_body.setObjectName("AIHubHintBody")
-        hint_body.setWordWrap(True)
-        hl.addWidget(hint_body)
-        l.addWidget(hint)
 
         return sidebar
 
@@ -370,51 +321,7 @@ class AIHubDialog(QDialog):
             s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             footer.addWidget(s, 1)
 
-        self.btn_close = QPushButton(_("Закрыть", "Close"))
-        self.btn_close.setObjectName("AIHubSecondary")
-        self.btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_close.setMinimumWidth(120)
-        self.btn_close.clicked.connect(self.close)
-        footer.addWidget(self.btn_close, 0)
-
-        self.btn_apply = QPushButton(_("Применить изменения", "Apply changes"))
-        self.btn_apply.setObjectName("AIHubPrimary")
-        self.btn_apply.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_apply.setMinimumWidth(180)
-        self.btn_apply.clicked.connect(lambda: self.refresh(force=True))
-        footer.addWidget(self.btn_apply, 0)
-
         return footer
-
-    # ----------------------------------------------------------- drag (frameless)
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
-        if (
-            event.button() == Qt.MouseButton.LeftButton
-            and event.position().y() < _DRAG_ZONE_HEIGHT
-        ):
-            self._drag_offset = (
-                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            )
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
-        if self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
-            self.move(event.globalPosition().toPoint() - self._drag_offset)
-            event.accept()
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
-        self._drag_offset = None
-        super().mouseReleaseEvent(event)
-
-    def keyPressEvent(self, event) -> None:  # type: ignore[override]
-        if event.key() == Qt.Key.Key_Escape:
-            self.close()
-            return
-        super().keyPressEvent(event)
 
     # ----------------------------------------------------------- events
     def _bind_events(self) -> None:

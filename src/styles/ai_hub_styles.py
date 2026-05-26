@@ -14,8 +14,7 @@ QDialog#AIHubDialog {
 
 QFrame#AIHubRoot {
     background: {bg_root};
-    border: 1px solid {border_soft};
-    border-radius: 18px;
+    border: none;
 }
 
 /* ---------- Header ---------- */
@@ -35,16 +34,6 @@ QLabel#AIHubIconBadge {
     border-radius: 12px;
     border: 1px solid {accent_border};
 }
-QPushButton#AIHubClose {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid {border_soft};
-    border-radius: 10px;
-}
-QPushButton#AIHubClose:hover {
-    background: rgba(255,123,123,0.12);
-    border: 1px solid rgba(255,123,123,0.30);
-}
-
 /* ---------- Sidebar ---------- */
 QFrame#AIHubSidebar {
     background: {sidebar_panel};
@@ -55,12 +44,12 @@ QLabel#AIHubSidebarHeader {
     color: {muted};
     font-size: 10px;
     font-weight: 700;
-    letter-spacing: 1.4px;
+    letter-spacing: 1px;
     padding: 2px 4px;
 }
 QLabel#AIHubSidebarStatus {
     color: {muted};
-    font-size: 10.5px;
+    font-size: 10px;
     padding: 4px 6px;
 }
 
@@ -78,7 +67,7 @@ QFrame#AIHubCategoryButton[selected="true"] {
 }
 QLabel#AIHubCategoryLabel {
     color: {muted};
-    font-size: 12.5px;
+    font-size: 12px;
     font-weight: 500;
     background: transparent;
 }
@@ -88,16 +77,19 @@ QFrame#AIHubCategoryButton[selected="true"] QLabel#AIHubCategoryLabel {
 }
 QLabel#AIHubCategoryCount {
     color: {muted};
-    background: rgba(255,255,255,0.05);
-    padding: 1px 8px;
-    border-radius: 8px;
-    font-size: 10.5px;
-    font-weight: 600;
-    min-width: 14px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 10px;
+    padding: 0px 0px;
+    font-size: 10px;
+    font-weight: 700;
+    min-width: 20px;
+    max-width: 20px;
+    min-height: 20px;
+    max-height: 20px;
 }
 QFrame#AIHubCategoryButton[selected="true"] QLabel#AIHubCategoryCount {
     color: {accent};
-    background: rgba({accent_rgb}, 0.15);
+    background: rgba({accent_rgb}, 0.18);
 }
 
 QPushButton#AIHubSidebarBtn {
@@ -145,12 +137,12 @@ QLabel#AIHubBannerIcon {
 }
 QLabel#AIHubBannerTitle {
     color: {text};
-    font-size: 13.5px;
+    font-size: 13px;
     font-weight: 700;
 }
 QLabel#AIHubBannerBody {
     color: {muted};
-    font-size: 11.5px;
+    font-size: 11px;
 }
 
 /* ---------- Toolbar (search + sort) ---------- */
@@ -224,12 +216,12 @@ QFrame#AIHubModelCard:hover {
 }
 QLabel#AIHubCardTitle {
     color: {text};
-    font-size: 14.5px;
+    font-size: 14px;
     font-weight: 700;
 }
 QLabel#AIHubCardDesc {
     color: {muted};
-    font-size: 11.5px;
+    font-size: 11px;
 }
 
 QLabel#AIHubChip {
@@ -238,7 +230,7 @@ QLabel#AIHubChip {
     border: 1px solid {outline};
     border-radius: 8px;
     padding: 2px 9px;
-    font-size: 10.5px;
+    font-size: 10px;
     font-weight: 500;
 }
 QLabel#AIHubChipBackend {
@@ -247,7 +239,7 @@ QLabel#AIHubChipBackend {
     border: 1px solid {accent_border};
     border-radius: 8px;
     padding: 2px 9px;
-    font-size: 10.5px;
+    font-size: 10px;
     font-weight: 600;
 }
 QLabel#AIHubChipGpuOk {
@@ -256,12 +248,21 @@ QLabel#AIHubChipGpuOk {
     border: 1px solid rgba(127, 227, 140, 0.30);
     border-radius: 8px;
     padding: 2px 9px;
-    font-size: 10.5px;
+    font-size: 10px;
+    font-weight: 600;
+}
+QLabel#AIHubChipMulti {
+    background: rgba({accent_rgb}, 0.08);
+    color: {accent};
+    border: 1px solid {accent_border};
+    border-radius: 8px;
+    padding: 2px 9px;
+    font-size: 10px;
     font-weight: 600;
 }
 
 QLabel#AIHubStatusPill {
-    font-size: 11.5px;
+    font-size: 11px;
     font-weight: 600;
 }
 
@@ -292,7 +293,7 @@ QPushButton#AIHubCardDanger:hover { background: rgba(255,123,123,0.14); }
 /* Empty state */
 QLabel#AIHubEmpty {
     color: {muted};
-    font-size: 12.5px;
+    font-size: 12px;
     padding: 40px 0;
 }
 
@@ -308,7 +309,7 @@ QLabel#AIHubStatIcon {
 }
 QLabel#AIHubStatLabel {
     color: {muted};
-    font-size: 10.5px;
+    font-size: 10px;
     font-weight: 500;
 }
 QLabel#AIHubStatValue {
@@ -318,7 +319,7 @@ QLabel#AIHubStatValue {
 }
 QLabel#AIHubStatSub {
     color: {muted};
-    font-size: 10.5px;
+    font-size: 10px;
 }
 
 QPushButton#AIHubPrimary {
@@ -328,7 +329,7 @@ QPushButton#AIHubPrimary {
     border-radius: 10px;
     padding: 9px 18px;
     font-weight: 700;
-    font-size: 12.5px;
+    font-size: 12px;
 }
 QPushButton#AIHubPrimary:hover { background: {accent_hover}; }
 QPushButton#AIHubPrimary:pressed { background: {accent_pressed}; }
@@ -343,7 +344,7 @@ QPushButton#AIHubSecondary {
     border-radius: 10px;
     padding: 9px 18px;
     font-weight: 600;
-    font-size: 12.5px;
+    font-size: 12px;
 }
 QPushButton#AIHubSecondary:hover {
     background: rgba({accent_rgb}, 0.08);
