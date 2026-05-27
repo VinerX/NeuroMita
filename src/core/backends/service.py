@@ -520,11 +520,14 @@ class BackendService:
         )
 
     def _onnx_variant(self, target_dir: Optional[str]) -> str:
+        # Only the managed dist counts as "installed". An onnxruntime that
+        # happened to land in the env via a transitive dep was previously
+        # reported as "onnx_cpu" via the _module_exists fallback — that
+        # caused the AI Hub to show the ONNX backend as installed even
+        # when the user never installed it through the Hub.
         if self._dist_version(ONNX_DIRECTML_PACKAGE, target_dir):
             return "onnx_dml"
         if self._dist_version(ONNX_PACKAGE, target_dir):
-            return "onnx_cpu"
-        if self._module_exists("onnxruntime", target_dir):
             return "onnx_cpu"
         return "missing"
 

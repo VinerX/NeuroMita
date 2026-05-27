@@ -29,6 +29,8 @@ class Chip(QLabel):
             self.setObjectName("AIHubChipGpuOk")
         elif variant == "multilingual":
             self.setObjectName("AIHubChipMulti")
+        elif variant == "onnx":
+            self.setObjectName("AIHubChipOnnx")
         else:
             self.setObjectName("AIHubChip")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -272,7 +274,7 @@ class ModelCard(QFrame):
         if backend == "cuda":
             chips_row.addWidget(Chip("NVIDIA", variant="gpu_ok"))
         elif backend == "onnx":
-            chips_row.addWidget(Chip("ONNX", variant="backend"))
+            chips_row.addWidget(Chip("ONNX", variant="onnx"))
         elif backend == "cpu":
             chips_row.addWidget(Chip("CPU"))
         elif backend and backend != "none":

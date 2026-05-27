@@ -599,10 +599,14 @@ class AIHubDialog(QDialog):
 
     # ----------------------------------------------------------- summary / banner
     def _update_summary(self) -> None:
-        installed = sum(1 for r in self._rows if status_from_row(r).get("installed"))
+        # "Models" stats — count only model categories (tts/asr/rag).
+        # Backend ('Системное ядро') and deps ('Зависимости') aren't models.
+        _MODEL_CATEGORIES = {"tts", "asr", "rag"}
+        model_rows = [r for r in self._rows if row_category(r) in _MODEL_CATEGORIES]
+        installed = sum(1 for r in model_rows if status_from_row(r).get("installed"))
         updates = sum(
             1
-            for r in self._rows
+            for r in model_rows
             if str(status_from_row(r).get("code") or "") == "needs_update"
             or status_from_row(r).get("update_available")
         )
