@@ -298,6 +298,58 @@ QLabel#SandboxInspectorTitle {
     font-weight: 800;
 }
 
+/* ── Stack-panel strips (replaces cards everywhere except State tab) ── */
+QWidget#SandboxInspectorStrip {
+    background: transparent;
+}
+QLabel#SandboxStripTitle {
+    color: {text};
+    font-size: 10pt;
+    font-weight: 800;
+    letter-spacing: 0.3px;
+}
+QFrame#SandboxStripUnderline {
+    background-color: rgba(255, 255, 255, 0.06);
+    border: none;
+}
+
+/* Info rows: [label] [value] [pencil edit button] */
+QWidget#SandboxInfoRow,
+QWidget#SandboxMemoryRow {
+    background: transparent;
+}
+QLabel#SandboxInfoLabel {
+    color: {muted};
+    font-size: 9pt;
+    font-weight: 600;
+}
+QLabel#SandboxInfoValue {
+    color: {text};
+    font-size: 9.5pt;
+    font-weight: 700;
+}
+QPushButton#SandboxInfoEditBtn {
+    background-color: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    padding: 2px;
+}
+QPushButton#SandboxInfoEditBtn:hover {
+    background-color: rgba({accent_rgb}, 0.16);
+    border: 1px solid rgba({accent_rgb}, 0.40);
+}
+
+/* Memory progress bars */
+QProgressBar#SandboxMemoryBar {
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 4px;
+}
+QProgressBar#SandboxMemoryBar::chunk {
+    background-color: {accent};
+    border-radius: 3px;
+}
+
 QLabel#SandboxInspectorLabel,
 QLabel#SandboxSelectorLabel {
     color: {muted};

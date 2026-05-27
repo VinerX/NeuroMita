@@ -731,6 +731,95 @@ class SandboxPage(QWidget):
             layout.addLayout(title_row)
         return card, layout
 
+    def _make_strip(self, title_text: str, icon_name: str | None = None) -> tuple[QWidget, QVBoxLayout]:
+        """Stack-panel section: flat, no card border, just a title row
+        with an optional icon and an underline. Used everywhere except the
+        State tab (which keeps cards on the character_state_panel)."""
+        strip = QWidget()
+        strip.setObjectName("SandboxInspectorStrip")
+        layout = QVBoxLayout(strip)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(8)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+        if icon_name:
+            icon_label = QLabel()
+            icon_label.setObjectName("SandboxSelectorIcon")
+            icon_label.setPixmap(qta.icon(icon_name, color="#ffd2ec").pixmap(14, 14))
+            title_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        title = QLabel(title_text)
+        title.setObjectName("SandboxStripTitle")
+        title_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addStretch(1)
+        layout.addLayout(title_row)
+
+        underline = QFrame()
+        underline.setObjectName("SandboxStripUnderline")
+        underline.setFixedHeight(1)
+        layout.addWidget(underline)
+
+        return strip, layout
+
+    def _make_info_row(
+        self,
+        label_text: str,
+        value_provider,
+        edit_target: str,
+        *,
+        edit_tooltip: str | None = None,
+    ) -> tuple[QWidget, QLabel]:
+        """One read-only row: [label] [bold value] [pencil button].
+
+        `value_provider` is a callable that returns the current text, OR a
+        QComboBox (then we mirror currentText() and listen for changes).
+        `edit_target` is the settings category key to jump to on pencil click.
+        Returns (widget, value_label) so the caller can store the label and
+        update it later if needed.
+        """
+        row = QWidget()
+        row.setObjectName("SandboxInfoRow")
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+
+        label = QLabel(label_text)
+        label.setObjectName("SandboxInfoLabel")
+        h.addWidget(label, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        value_label = QLabel("—")
+        value_label.setObjectName("SandboxInfoValue")
+        value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        h.addWidget(value_label, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+
+        edit_btn = QPushButton()
+        edit_btn.setObjectName("SandboxInfoEditBtn")
+        edit_btn.setIcon(qta.icon("fa6s.pen", color="#ffd2ec"))
+        edit_btn.setFixedSize(26, 26)
+        edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        edit_btn.setToolTip(edit_tooltip or _("Изменить в настройках", "Edit in settings"))
+        edit_btn.clicked.connect(lambda: self._jump_to_settings(edit_target))
+        h.addWidget(edit_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        # Wire up the value source
+        if isinstance(value_provider, QComboBox):
+            combo = value_provider
+
+            def _sync():
+                value_label.setText(combo.currentText() or "—")
+            _sync()
+            combo.currentTextChanged.connect(lambda _t: _sync())
+        elif callable(value_provider):
+            try:
+                value_label.setText(str(value_provider() or "—"))
+            except Exception:
+                value_label.setText("—")
+        else:
+            value_label.setText(str(value_provider or "—"))
+
+        return row, value_label
+
     def _build_title_bar(self) -> QFrame:
         title_card = QFrame()
         title_card.setObjectName("SandboxWorkspaceHeader")
