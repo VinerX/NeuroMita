@@ -25,6 +25,9 @@ class InstallableController:
         eb.subscribe(Events.Installable.INSTALL, self._on_install, weak=False)
         eb.subscribe(Events.Installable.UNINSTALL, self._on_uninstall, weak=False)
         eb.subscribe(Events.Installable.INITIALIZE, self._on_initialize, weak=False)
+        eb.subscribe(Events.Installable.GET_SETTINGS_SCHEMA, self._on_get_settings_schema, weak=False)
+        eb.subscribe(Events.Installable.LOAD_SETTINGS, self._on_load_settings, weak=False)
+        eb.subscribe(Events.Installable.SAVE_SETTINGS, self._on_save_settings, weak=False)
         eb.subscribe(Events.Install.TASK_STARTED, self._on_install_task_mutated, weak=False)
         eb.subscribe(Events.Install.TASK_FINISHED, self._on_install_task_mutated, weak=False)
         eb.subscribe(Events.Install.TASK_FAILED, self._on_install_task_mutated, weak=False)
@@ -122,6 +125,87 @@ class InstallableController:
         except Exception as exc:
             logger.error(f"Installable GET_STATUS failed: {exc}", exc_info=True)
             return None
+
+    # ------------------------------------------------------------------
+    # ConfigurableComponent bridge (used by AI Hub Settings tab)
+    # ------------------------------------------------------------------
+
+    def _as_configurable(self, component) -> Any:
+        """Return the component if it implements ConfigurableComponent,
+        else None. Uses duck-typing rather than the Protocol runtime check
+        to keep the import set lean."""
+        for attr in ("settings_schema", "load_settings", "save_settings"):
+            if not callable(getattr(component, attr, None)):
+                return None
+        return component
+
+    def _on_get_settings_schema(self, event: Event):
+        data = event.data if isinstance(event.data, dict) else {}
+        try:
+            component = self._get_component(data)
+        except Exception as exc:
+            logger.error(f"Installable GET_SETTINGS_SCHEMA: not found: {exc}")
+            return None
+        configurable = self._as_configurable(component)
+        if configurable is None:
+            return []
+        try:
+            schema = configurable.settings_schema()
+            return list(schema or [])
+        except Exception as exc:
+            logger.error(f"Installable GET_SETTINGS_SCHEMA failed: {exc}", exc_info=True)
+            return []
+
+    def _on_load_settings(self, event: Event):
+        data = event.data if isinstance(event.data, dict) else {}
+        try:
+            component = self._get_component(data)
+        except Exception as exc:
+            logger.error(f"Installable LOAD_SETTINGS: not found: {exc}")
+            return {}
+        configurable = self._as_configurable(component)
+        if configurable is None:
+            return {}
+        try:
+            values = configurable.load_settings()
+            return dict(values or {})
+        except Exception as exc:
+            logger.error(f"Installable LOAD_SETTINGS failed: {exc}", exc_info=True)
+            return {}
+
+    def _on_save_settings(self, event: Event):
+        data = event.data if isinstance(event.data, dict) else {}
+        values = data.get("values")
+        if not isinstance(values, dict):
+            return {"ok": False, "errors": {"_": "values must be a dict"}}
+        try:
+            component = self._get_component(data)
+        except Exception as exc:
+            return {"ok": False, "errors": {"_": str(exc)}}
+        configurable = self._as_configurable(component)
+        if configurable is None:
+            return {"ok": False, "errors": {"_": "Component is not configurable"}}
+
+        # If the component exposes validate_settings, run it first so the UI
+        # can surface per-field errors before we touch persistence.
+        validate = getattr(configurable, "validate_settings", None)
+        if callable(validate):
+            try:
+                result = validate(values)
+                ok = bool(getattr(result, "ok", True))
+                errors = dict(getattr(result, "errors", {}) or {})
+                if not ok:
+                    return {"ok": False, "errors": errors}
+            except Exception as exc:
+                logger.error(f"Installable SAVE_SETTINGS validate failed: {exc}", exc_info=True)
+                return {"ok": False, "errors": {"_": str(exc)}}
+
+        try:
+            configurable.save_settings(values)
+            return {"ok": True, "errors": {}}
+        except Exception as exc:
+            logger.error(f"Installable SAVE_SETTINGS failed: {exc}", exc_info=True)
+            return {"ok": False, "errors": {"_": str(exc)}}
 
     def _on_install(self, event: Event):
         self._run(event, op="install")

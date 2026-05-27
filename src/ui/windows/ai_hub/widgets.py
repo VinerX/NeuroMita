@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QSizePolicy,
     QVBoxLayout,
 )
@@ -161,50 +162,92 @@ class Stat(QFrame):
 
 
 class ModelCard(QFrame):
-    """Single model row: title + description on the left,
-    meta chips in the middle, status + action button on the right."""
+    """Single model row.
+
+    Layout:
+        [title + description]  [meta chips]  [status]  [action]
+
+    Status / action change depending on state:
+      - installed     → green "Установлено" + ⋮ menu (Settings / Uninstall)
+      - not installed → status icon + Install button
+      - incompatible  → grey-out + red "Несовместимо" chip; the action button
+                        warns on click and lets the user proceed at their own
+                        risk
+    """
 
     def __init__(
         self,
         row: dict[str, Any],
         on_install: Callable[[str], None],
         on_uninstall: Callable[[str], None],
+        on_open_settings: Callable[[str], None],
+        gpu_vendor: str,
         parent=None,
     ):
         super().__init__(parent)
         self._row = row
         self._on_install = on_install
         self._on_uninstall = on_uninstall
+        self._on_open_settings = on_open_settings
+        self._gpu_vendor = (gpu_vendor or "CPU").upper()
         self.setObjectName("AIHubModelCard")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._build()
 
-    # Keep build pieces small; widgets get all their style from QSS.
+    # ------------------------------------------------------------------
     def _build(self) -> None:
         from .constants import STATUS_LABELS, STATUS_ICONS
-        from .helpers import meta_from_row, status_from_row
+        from .helpers import is_backend_compatible, meta_from_row, status_from_row
 
         meta = meta_from_row(self._row)
         status = status_from_row(self._row)
         status_code = str(status.get("code") or "unknown")
         installed = bool(status.get("installed")) or status_code in ("ready", "installed")
+        backend = str(meta.get("backend") or "").strip().lower()
+        compatible = is_backend_compatible(backend, self._gpu_vendor)
+
+        # mark whole card visually as incompatible (drives QSS via property)
+        self.setProperty("incompatible", "true" if (not compatible and not installed) else "false")
+        # also expose 'state' for any future styling
+        if installed:
+            self.setProperty("state", "installed")
+        elif not compatible:
+            self.setProperty("state", "incompatible")
+        else:
+            self.setProperty("state", "available")
 
         root = QHBoxLayout(self)
         root.setContentsMargins(18, 14, 18, 14)
         root.setSpacing(14)
 
-        # ---- left: title + description (40% of width)
+        # ---- left: title + description
         info_col = QVBoxLayout()
         info_col.setContentsMargins(0, 0, 0, 0)
         info_col.setSpacing(4)
 
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+
         title = QLabel(str(meta.get("title") or meta.get("id") or "-"))
         title.setObjectName("AIHubCardTitle")
-        info_col.addWidget(title)
+        title_row.addWidget(title, 0)
+
+        if not compatible and not installed:
+            warn_chip = Chip(
+                _t("Несовместимо", "Incompatible"),
+                tooltip=_t(
+                    "Эта модель требует другого backend и не запустится на вашем оборудовании.",
+                    "This model needs a different backend and won't run on your hardware.",
+                ),
+            )
+            warn_chip.setObjectName("AIHubChipDanger")
+            title_row.addWidget(warn_chip, 0)
+
+        title_row.addStretch(1)
+        info_col.addLayout(title_row)
 
         description = str(meta.get("description") or "").strip()
-        if not description:
-            description = ""
         desc = QLabel(description)
         desc.setObjectName("AIHubCardDesc")
         desc.setWordWrap(True)
@@ -216,7 +259,7 @@ class ModelCard(QFrame):
         info_wrap.setMinimumWidth(220)
         root.addWidget(info_wrap, 3)
 
-        # ---- middle: chips (auto width, hugged)
+        # ---- middle: chips
         chips_row = QHBoxLayout()
         chips_row.setContentsMargins(0, 0, 0, 0)
         chips_row.setSpacing(6)
@@ -226,9 +269,10 @@ class ModelCard(QFrame):
         if vram:
             chips_row.addWidget(Chip(f"VRAM {vram}"))
 
-        backend = str(meta.get("backend") or "").strip().lower()
         if backend == "cuda":
             chips_row.addWidget(Chip("NVIDIA", variant="gpu_ok"))
+        elif backend == "onnx":
+            chips_row.addWidget(Chip("ONNX", variant="backend"))
         elif backend == "cpu":
             chips_row.addWidget(Chip("CPU"))
         elif backend and backend != "none":
@@ -247,62 +291,142 @@ class ModelCard(QFrame):
         chips_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         root.addWidget(chips_wrap, 4)
 
-        # ---- right: tiny circular status indicator (no duplicate label;
-        # button text already conveys installed/not installed semantics)
-        from .constants import STATUS_LABELS as _SL
-        icon_name, icon_color = STATUS_ICONS.get(status_code, STATUS_ICONS["unknown"])
-        dot = QLabel()
-        dot.setFixedSize(18, 18)
-        dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pix = qpixmap(icon_name, icon_color, 14)
-        if pix is not None:
-            dot.setPixmap(pix)
-        else:
-            dot.setText("●")
-            dot.setStyleSheet(f"color: {icon_color};")
-        dot.setToolTip(_SL.get(status_code, status_code))
-        root.addWidget(dot, 0)
-
-        # ---- right: action button
-        from PyQt6.QtWidgets import QPushButton
+        # ---- right: status indicator (dot + label for installed)
         from .helpers import qicon
 
         if installed:
-            btn = QPushButton(self._txt_uninstall())
-            btn.setObjectName("AIHubCardDanger")
-            icon = qicon("fa5s.trash-alt", "#ffb4c5")
-            btn.clicked.connect(self._handle_uninstall)
+            ok_lbl = QLabel(_t("Установлено", "Installed"))
+            ok_lbl.setObjectName("AIHubStatusInstalled")
+            ok_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+            root.addWidget(ok_lbl, 0)
         else:
-            btn = QPushButton(self._txt_install())
-            btn.setObjectName("AIHubCardPrimary")
-            icon = qicon("fa5s.download", "white")
-            btn.clicked.connect(self._handle_install)
-        if icon is not None:
-            btn.setIcon(icon)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            icon_name, icon_color = STATUS_ICONS.get(status_code, STATUS_ICONS["unknown"])
+            dot = QLabel()
+            dot.setFixedSize(18, 18)
+            dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            pix = qpixmap(icon_name, icon_color, 14)
+            if pix is not None:
+                dot.setPixmap(pix)
+            else:
+                dot.setText("●")
+                dot.setStyleSheet(f"color: {icon_color};")
+            dot.setToolTip(STATUS_LABELS.get(status_code, status_code))
+            root.addWidget(dot, 0)
+
+        # ---- right: action button or ⋮ menu
+        from PyQt6.QtWidgets import QPushButton
+
+        if installed:
+            btn = QPushButton("⋮")
+            btn.setObjectName("AIHubCardMenuBtn")
+            btn.setFixedSize(34, 34)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(self._show_menu)
+            self._menu_btn = btn
+        else:
+            btn = QPushButton(_t("Установить", "Install"))
+            if compatible:
+                btn.setObjectName("AIHubCardPrimary")
+            else:
+                btn.setObjectName("AIHubCardPrimaryDim")
+            icon = qicon("fa5s.download", "white" if compatible else "#c8aaba")
+            if icon is not None:
+                btn.setIcon(icon)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(self._handle_install_click)
         root.addWidget(btn, 0)
 
-    # translations kept local — avoid clobbering `_` in this scope
-    @staticmethod
-    def _txt_install() -> str:
-        from utils import getTranslationVariant as t
-        return t("Установить", "Install")
-
-    @staticmethod
-    def _txt_uninstall() -> str:
-        from utils import getTranslationVariant as t
-        return t("Удалить", "Uninstall")
-
+    # ------------------------------------------------------------------
     def _component_id(self) -> str:
         from .helpers import meta_from_row
         return str(meta_from_row(self._row).get("id") or "").strip()
 
-    def _handle_install(self) -> None:
+    def _handle_install_click(self) -> None:
+        from .helpers import is_backend_compatible, meta_from_row
+        meta = meta_from_row(self._row)
+        backend = str(meta.get("backend") or "").strip().lower()
+        if not is_backend_compatible(backend, self._gpu_vendor):
+            if not self._confirm_incompatible_install():
+                return
         cid = self._component_id()
         if cid:
             self._on_install(cid)
 
-    def _handle_uninstall(self) -> None:
+    def _confirm_incompatible_install(self) -> bool:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(_t("Несовместимый backend", "Incompatible backend"))
+        box.setText(
+            _t(
+                "Эта модель требует другого backend.\n"
+                "Если переключиться на него, ранее установленные модели другого backend будут удалены.",
+                "This model requires a different backend.\n"
+                "Switching backends will uninstall packages from previously installed models.",
+            )
+        )
+        box.setInformativeText(
+            _t(
+                "Установить всё равно?",
+                "Install anyway?",
+            )
+        )
+        yes = box.addButton(_t("Установить", "Install"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(_t("Отмена", "Cancel"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        return box.clickedButton() is yes
+
+    def _show_menu(self) -> None:
+        from PyQt6.QtWidgets import QMenu
+        from .helpers import qicon
+
         cid = self._component_id()
-        if cid:
+        menu = QMenu(self)
+        menu.setObjectName("AIHubCardMenu")
+
+        act_settings = menu.addAction(_t("Открыть настройки", "Open settings"))
+        ic = qicon("fa5s.sliders-h", "#f3edf6")
+        if ic is not None:
+            act_settings.setIcon(ic)
+
+        act_uninstall = menu.addAction(_t("Удалить", "Uninstall"))
+        ic2 = qicon("fa5s.trash-alt", "#ffb4c5")
+        if ic2 is not None:
+            act_uninstall.setIcon(ic2)
+
+        btn = getattr(self, "_menu_btn", None)
+        anchor = btn.mapToGlobal(btn.rect().bottomLeft()) if btn is not None else self.mapToGlobal(self.rect().bottomRight())
+        chosen = menu.exec(anchor)
+        if chosen is act_settings:
+            self._on_open_settings(cid)
+        elif chosen is act_uninstall:
+            self._confirm_and_uninstall(cid)
+
+    def _confirm_and_uninstall(self, cid: str) -> None:
+        from .helpers import meta_from_row
+        meta = meta_from_row(self._row)
+        title = str(meta.get("title") or cid)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(_t("Удаление модели", "Uninstall model"))
+        box.setText(
+            _t(
+                "Удалить «{title}»?",
+                "Uninstall «{title}»?",
+            ).format(title=title)
+        )
+        box.setInformativeText(
+            _t(
+                "Файлы и зависимости модели будут удалены. Это действие нельзя отменить.",
+                "Model files and dependencies will be removed. This cannot be undone.",
+            )
+        )
+        yes = box.addButton(_t("Удалить", "Uninstall"), QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(_t("Отмена", "Cancel"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is yes:
             self._on_uninstall(cid)
+
+
+def _t(ru: str, en: str) -> str:
+    from utils import getTranslationVariant as _g
+    return _g(ru, en)

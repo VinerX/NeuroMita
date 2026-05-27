@@ -187,13 +187,34 @@ class AIHubDialog(QDialog):
         return sidebar
 
     def _build_main_column(self) -> QVBoxLayout:
+        from PyQt6.QtWidgets import QStackedWidget
+        from .settings_panel import SettingsPanel
+
         col = QVBoxLayout()
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(14)
 
+        col.addLayout(self._build_tab_switcher())
         col.addWidget(self._build_banner())
-        col.addLayout(self._build_toolbar())
-        col.addWidget(self._build_scroll(), 1)
+
+        # ---- stacked content: page 0 = install (list), page 1 = settings
+        self._stack = QStackedWidget()
+        self._stack.setObjectName("AIHubStack")
+
+        # install page (existing layout)
+        install_page = QWidget()
+        ip = QVBoxLayout(install_page)
+        ip.setContentsMargins(0, 0, 0, 0)
+        ip.setSpacing(14)
+        ip.addLayout(self._build_toolbar())
+        ip.addWidget(self._build_scroll(), 1)
+        self._stack.addWidget(install_page)
+
+        # settings page
+        self._settings_panel = SettingsPanel()
+        self._stack.addWidget(self._settings_panel)
+
+        col.addWidget(self._stack, 1)
         return col
 
     def _build_banner(self) -> QFrame:
@@ -244,50 +265,89 @@ class AIHubDialog(QDialog):
 
         return self.banner
 
-    def _build_toolbar(self) -> QHBoxLayout:
-        toolbar = QHBoxLayout()
-        toolbar.setContentsMargins(0, 0, 0, 0)
-        toolbar.setSpacing(10)
+    def _build_toolbar(self) -> QVBoxLayout:
+        """Two-row toolbar.
+
+        Row 1: «Доступные модели» (page header) + backend filter pills
+               + search + sort.
+        Row 2: install / settings tab switcher.
+        """
+        wrap = QVBoxLayout()
+        wrap.setContentsMargins(0, 0, 0, 0)
+        wrap.setSpacing(10)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(10)
 
         title = QLabel(_("Доступные модели", "Available models"))
         title.setObjectName("AIHubSectionTitle")
-        toolbar.addWidget(title, 0)
+        top.addWidget(title, 0)
+        top.addStretch(1)
 
-        info_icon = QLabel()
-        info_icon.setFixedSize(16, 16)
-        ipix = qpixmap("fa5s.info-circle", "#bca9bb", 13)
-        if ipix is not None:
-            info_icon.setPixmap(ipix)
-        info_icon.setToolTip(
-            _(
-                "Локальные модели расходуют диск и видеопамять. Используйте поиск и сортировку.",
-                "Local models use disk and VRAM. Use search and sorting.",
-            )
-        )
-        toolbar.addWidget(info_icon, 0)
-        toolbar.addStretch(1)
+        # backend filter pills
+        self._backend_filter = "all"
+        self._backend_filter_buttons: dict[str, QPushButton] = {}
+        for key, label in (
+            ("all", _("Все", "All")),
+            ("cuda", "NVIDIA / CUDA"),
+            ("onnx", "ONNX"),
+            ("cpu", "CPU"),
+        ):
+            btn = QPushButton(label)
+            btn.setObjectName("AIHubFilterPill")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setProperty("active", "true" if key == "all" else "false")
+            btn.clicked.connect(lambda _checked, k=key: self._set_backend_filter(k))
+            self._backend_filter_buttons[key] = btn
+            top.addWidget(btn, 0)
+        self._backend_filter_buttons["all"].setChecked(True)
+
+        top.addSpacing(6)
 
         self.search_box = QLineEdit()
         self.search_box.setObjectName("AIHubSearch")
         self.search_box.setPlaceholderText(_("Поиск моделей...", "Search models..."))
-        self.search_box.setFixedWidth(280)
+        self.search_box.setFixedWidth(240)
         si = qicon("fa5s.search", "#bca9bb")
         if si is not None:
             action = self.search_box.addAction(si, QLineEdit.ActionPosition.LeadingPosition)
             action.setEnabled(False)
         self.search_box.textChanged.connect(self._rebuild_component_list)
-        toolbar.addWidget(self.search_box, 0)
+        top.addWidget(self.search_box, 0)
 
         self.sort_combo = QComboBox()
         self.sort_combo.setObjectName("AIHubSort")
-        self.sort_combo.setFixedWidth(230)
+        self.sort_combo.setFixedWidth(220)
         self.sort_combo.addItem(_("По умолчанию", "Default"), "default")
         self.sort_combo.addItem(_("Сначала установленные", "Installed first"), "installed")
         self.sort_combo.addItem(_("По имени", "By name"), "name")
         self.sort_combo.currentIndexChanged.connect(self._rebuild_component_list)
-        toolbar.addWidget(self.sort_combo, 0)
+        top.addWidget(self.sort_combo, 0)
 
-        return toolbar
+        wrap.addLayout(top)
+        return wrap
+
+    def _build_tab_switcher(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        self._tab_buttons: dict[str, QPushButton] = {}
+        for key, label in (
+            ("install", _("Установка", "Install")),
+            ("settings", _("Настройки", "Settings")),
+        ):
+            btn = QPushButton(label)
+            btn.setObjectName("AIHubTabBtn")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setProperty("active", "true" if key == "install" else "false")
+            btn.clicked.connect(lambda _c, k=key: self._set_tab(k))
+            row.addWidget(btn, 0)
+            self._tab_buttons[key] = btn
+        row.addStretch(1)
+        return row
 
     def _build_scroll(self) -> QScrollArea:
         scroll = QScrollArea()
@@ -360,6 +420,38 @@ class AIHubDialog(QDialog):
         self._update_banner()
         self._rebuild_component_list()
         self._update_summary()
+        # propagate the same row set to the Settings panel
+        if hasattr(self, "_settings_panel"):
+            self._settings_panel.apply_data(self._rows, self._selected_category)
+
+    # ----------------------------------------------------------- tabs & filters
+    def _set_tab(self, key: str) -> None:
+        key = key if key in ("install", "settings") else "install"
+        for k, btn in self._tab_buttons.items():
+            btn.setProperty("active", "true" if k == key else "false")
+            btn.setChecked(k == key)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+        self._stack.setCurrentIndex(1 if key == "settings" else 0)
+        # the settings panel should reflect the current category when shown
+        if key == "settings" and hasattr(self, "_settings_panel"):
+            self._settings_panel.apply_data(self._rows, self._selected_category)
+
+    def _set_backend_filter(self, key: str) -> None:
+        key = key if key in ("all", "cuda", "onnx", "cpu") else "all"
+        self._backend_filter = key
+        for k, btn in self._backend_filter_buttons.items():
+            btn.setChecked(k == key)
+            btn.setProperty("active", "true" if k == key else "false")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+        self._rebuild_component_list()
+
+    def _open_component_settings(self, component_id: str) -> None:
+        self._set_tab("settings")
+        if hasattr(self, "_settings_panel"):
+            self._settings_panel.apply_data(self._rows, self._selected_category)
+            self._settings_panel.select_component(component_id)
 
     def _fetch_rows(self, *, force: bool = False) -> list[dict[str, Any]]:
         try:
@@ -400,18 +492,31 @@ class AIHubDialog(QDialog):
         for k, btn in self._category_buttons.items():
             btn.setSelected(k == key)
         self._rebuild_component_list()
+        if hasattr(self, "_settings_panel"):
+            self._settings_panel.apply_data(self._rows, key)
         self._update_summary()
 
     # ----------------------------------------------------------- filtering
     def _filtered_rows(self) -> list[dict[str, Any]]:
+        from .helpers import is_backend_compatible
+
         query = str(self.search_box.text() or "").strip().lower()
         category = self._selected_category
+        backend_filter = getattr(self, "_backend_filter", "all")
+        gpu_vendor = self._detect_gpu_vendor()
+
         rows: list[dict[str, Any]] = []
         for row in self._rows:
             meta = meta_from_row(row)
             status = status_from_row(row)
             if category and row_category(row) != category:
                 continue
+            backend = str(meta.get("backend") or "").strip().lower()
+            if backend_filter != "all" and backend != backend_filter:
+                # exception: "cpu"/"none" components stay visible under any
+                # filter — they're universally compatible
+                if backend not in ("cpu", "none", ""):
+                    continue
             haystack = " ".join(
                 [
                     str(meta.get("id") or ""),
@@ -428,16 +533,34 @@ class AIHubDialog(QDialog):
             rows.append(row)
 
         mode = str(self.sort_combo.currentData() or "default")
+
+        def _compat_rank(r: dict[str, Any]) -> int:
+            # 0 = compatible or already installed; 1 = incompatible -> bottom
+            status = status_from_row(r)
+            if status.get("installed") or status.get("ready"):
+                return 0
+            return 0 if is_backend_compatible(str(meta_from_row(r).get("backend") or ""), gpu_vendor) else 1
+
         if mode == "installed":
             rows.sort(
                 key=lambda r: (
+                    _compat_rank(r),
                     0 if status_from_row(r).get("installed") else 1,
                     str(meta_from_row(r).get("title") or ""),
                 )
             )
         elif mode == "name":
-            rows.sort(key=lambda r: str(meta_from_row(r).get("title") or ""))
+            rows.sort(key=lambda r: (_compat_rank(r), str(meta_from_row(r).get("title") or "")))
+        else:
+            # default — preserve original order but push incompatible to the bottom
+            rows.sort(key=_compat_rank)
         return rows
+
+    def _detect_gpu_vendor(self) -> str:
+        try:
+            return str(check_gpu_provider() or "CPU").upper()
+        except Exception:
+            return "CPU"
 
     # ----------------------------------------------------------- list rendering
     def _clear_scroll(self) -> None:
@@ -462,11 +585,14 @@ class AIHubDialog(QDialog):
             self._scroll_layout.insertWidget(self._scroll_layout.count() - 1, empty)
             return
 
+        gpu_vendor = self._detect_gpu_vendor()
         for row in rows:
             card = ModelCard(
                 row,
                 on_install=lambda cid: self._emit_component_action_by_id(cid, Events.Installable.INSTALL),
                 on_uninstall=lambda cid: self._emit_component_action_by_id(cid, Events.Installable.UNINSTALL),
+                on_open_settings=self._open_component_settings,
+                gpu_vendor=gpu_vendor,
                 parent=self._scroll_content,
             )
             self._scroll_layout.insertWidget(self._scroll_layout.count() - 1, card)
