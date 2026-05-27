@@ -69,7 +69,11 @@ def setup_general_settings_controls(self, parent):
                       'Hide tags (<e>, <c>, <a>, [b], [i], [color]) in the displayed chat text.')},
 
         {'label': _('Выводить мышление', 'Show thinking'), 'key': 'SHOW_THINK_IN_GUI',
-         'type': 'checkbutton', 'default_checkbutton': True},
+         'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _('Отображать блок «мышления» модели как отдельное сообщение. '
+                      'Дублируется в Песочнице → Отладка.',
+                      "Display the model's thinking block as a separate message. "
+                      'Also available in Sandbox → Debug.')},
     ]
 
     create_settings_section(
