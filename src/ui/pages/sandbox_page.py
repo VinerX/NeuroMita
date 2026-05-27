@@ -1216,7 +1216,40 @@ class SandboxPage(QWidget):
     def _build_inspector_debug_tab(self) -> QWidget:
         page, layout = self._make_tab_page()
 
-        summary_card, summary_layout = self._make_inspector_card(_("Контекст сессии", "Session context"))
+        # ── Отображение сообщений ───────────────────────────────────────────
+        # Show-thinking moved here from General settings: the toggle controls
+        # the inline "thinking" message bubble. Default OFF so the sandbox
+        # stays uncluttered out of the box.
+        display_strip, display_layout = self._make_strip(_("Отображение сообщений", "Message display"), "fa6s.eye")
+
+        think_cb = QCheckBox(_("Показывать мышление", "Show thinking"))
+        think_cb.setObjectName("SandboxCaptureToggle")
+        think_cb.setChecked(bool(self.gui._get_setting("SHOW_THINK_IN_GUI", False)))
+        think_cb.setToolTip(
+            _(
+                "Показывать содержимое блока мышления модели как отдельное сообщение в чате.",
+                "Show the model's thinking block as a separate chat message.",
+            )
+        )
+        think_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_THINK_IN_GUI", v))
+        display_layout.addWidget(think_cb)
+        self._show_thinking_cb = think_cb
+
+        tags_cb = QCheckBox(_("Скрывать теги в чате", "Hide tags in chat"))
+        tags_cb.setObjectName("SandboxCaptureToggle")
+        tags_cb.setChecked(bool(self.gui._get_setting("HIDE_CHAT_TAGS", True)))
+        tags_cb.toggled.connect(lambda v: self._on_capture_toggle("HIDE_CHAT_TAGS", v))
+        display_layout.addWidget(tags_cb)
+
+        ts_cb = QCheckBox(_("Показывать время сообщений", "Show timestamps"))
+        ts_cb.setObjectName("SandboxCaptureToggle")
+        ts_cb.setChecked(bool(self.gui._get_setting("SHOW_CHAT_TIMESTAMPS", True)))
+        ts_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_CHAT_TIMESTAMPS", v))
+        display_layout.addWidget(ts_cb)
+        layout.addWidget(display_strip)
+
+        # ── Контекст сессии ─────────────────────────────────────────────────
+        summary_strip, summary_layout = self._make_strip(_("Контекст сессии", "Session context"), "fa6s.list-check")
         rows = [
             ("character", _("Персонаж", "Character")),
             ("prompts", _("Промпты", "Prompts")),
@@ -1233,11 +1266,11 @@ class SandboxPage(QWidget):
             row = QHBoxLayout()
             row.setSpacing(8)
             label = QLabel(label_text)
-            label.setObjectName("SandboxInspectorLabel")
+            label.setObjectName("SandboxInfoLabel")
             row.addWidget(label)
             row.addStretch()
             value = QLabel("—")
-            value.setObjectName("SandboxInspectorValue")
+            value.setObjectName("SandboxInfoValue")
             row.addWidget(value)
             summary_layout.addLayout(row)
             self._debug_summary_values[key] = value
@@ -1246,9 +1279,10 @@ class SandboxPage(QWidget):
         refresh_btn.setObjectName("SandboxQuickAction")
         refresh_btn.clicked.connect(self._refresh_debug_summary)
         summary_layout.addWidget(refresh_btn)
-        layout.addWidget(summary_card)
+        layout.addWidget(summary_strip)
 
-        diagnostics_card, diagnostics_layout = self._make_inspector_card(_("Диагностика", "Diagnostics"), "fa6s.screwdriver-wrench")
+        # ── Диагностика ─────────────────────────────────────────────────────
+        diagnostics_strip, diagnostics_layout = self._make_strip(_("Диагностика", "Diagnostics"), "fa6s.screwdriver-wrench")
         db_btn = QPushButton(_("Открыть DB персонажа", "Open character DB"))
         db_btn.setObjectName("SandboxQuickAction")
         db_btn.clicked.connect(self._open_selected_character_history)
@@ -1263,10 +1297,10 @@ class SandboxPage(QWidget):
         api_btn.setObjectName("SandboxQuickAction")
         api_btn.clicked.connect(lambda: self._jump_to_settings("api"))
         diagnostics_layout.addWidget(api_btn)
-        layout.addWidget(diagnostics_card)
+        layout.addWidget(diagnostics_strip)
 
-        # Debug panel controls migrated from DeveloperPage
-        debug_panel_card, debug_panel_layout = self._make_inspector_card(_("Параметры отладки", "Debug parameters"), "fa6s.bug")
+        # ── Параметры отладки (migrated debug panel) ────────────────────────
+        debug_panel_strip, debug_panel_layout = self._make_strip(_("Параметры отладки", "Debug parameters"), "fa6s.bug")
         try:
             from ui.settings.debug_settings import setup_debug_panel_controls
             setup_debug_panel_controls(self.gui, debug_panel_layout)
@@ -1274,7 +1308,7 @@ class SandboxPage(QWidget):
             err = QLabel(f"[debug_settings error] {exc}")
             err.setWordWrap(True)
             debug_panel_layout.addWidget(err)
-        layout.addWidget(debug_panel_card)
+        layout.addWidget(debug_panel_strip)
 
         layout.addStretch(1)
         return self._wrap_in_scroll(page)
