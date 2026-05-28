@@ -2,10 +2,12 @@
 from utils import getTranslationVariant as _
 
 
-def _on_section_toggled(gui, _value=None):
+def _on_section_toggled(gui, category=None, value=None):
     """Re-apply sidebar/tab visibility whenever a section checkbox flips."""
     try:
-        from ui.widgets.settings_panel import apply_section_visibility
+        from ui.widgets.settings_panel import apply_section_visibility, set_section_enabled
+        if category is not None:
+            set_section_enabled(str(category), bool(value))
         apply_section_visibility(gui)
     except Exception:
         pass
@@ -38,7 +40,7 @@ def _build_section_visibility_config(gui):
             'key': _section_key(cat),
             'type': 'checkbutton',
             'default_checkbutton': SECTION_DEFAULTS[cat],
-            'command': lambda _v, _gui=gui: _on_section_toggled(_gui),
+            'command': lambda value, _gui=gui, _cat=cat: _on_section_toggled(_gui, _cat, value),
         })
     return items
 
