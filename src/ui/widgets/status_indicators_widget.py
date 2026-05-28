@@ -46,14 +46,15 @@ class StatusIndicatorChip(QWidget):
 
 
 def apply_capture_visibility(gui, mode=None):
+    # The capture indicators (screen / camera) live behind the "screen"
+    # settings section. `mode` is kept for backward compatibility but ignored.
     try:
-        from ui.widgets.settings_panel import normalize_mode
+        from ui.widgets.settings_panel import is_section_enabled
 
-        m = normalize_mode(mode or gui.settings.get("INTERFACE_MODE"))
+        visible = is_section_enabled("screen")
     except Exception:
-        m = "basic"
+        visible = False
 
-    visible = m in ("advanced", "full")
     registry = getattr(gui, "_status_indicator_registry", {})
     for attr in ("screen_capture_status_checkbox", "camera_capture_status_checkbox"):
         for widget in registry.get(attr, []):

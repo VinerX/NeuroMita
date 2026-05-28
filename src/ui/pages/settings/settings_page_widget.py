@@ -107,6 +107,9 @@ class SettingsCategoryCard(QFrame):
         self.mode_badge = QLabel(get_mode_label(spec.min_mode))
         self.mode_badge.setObjectName("SettingsSectionBadge")
         self.mode_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        # Interface modes were replaced by per-section toggles; the badge is
+        # kept for layout/QSS compatibility but no longer shown.
+        self.mode_badge.setVisible(False)
         meta_col.addWidget(self.mode_badge, 0, Qt.AlignmentFlag.AlignRight)
 
         self.chevron_label = QLabel()
@@ -193,7 +196,7 @@ class SettingsPage(QWidget):
         self.settings_overview_container = None
         self.settings_overlay = None
         self.current_settings_category = None
-        self._mode_status_value = None
+        self._section_status_value = None
         self._current_mode = "basic"
         self._forced_visible_categories = set()
         self._section_specs = {spec.key: spec for spec in get_settings_section_specs()}
@@ -243,11 +246,17 @@ class SettingsPage(QWidget):
             finally:
                 widget.blockSignals(False)
 
-    def _first_available_category(self, rank: int | None = None) -> str | None:
-        cur_rank = _MODE_RANK[self._current_mode] if rank is None else rank
+    def _section_enabled(self, category) -> bool:
+        try:
+            from ui.widgets.settings_panel import is_section_enabled
+
+            return is_section_enabled(category)
+        except Exception:
+            return True
+
+    def _first_available_category(self) -> str | None:
         for spec in get_settings_section_specs():
-            need = _MODE_RANK[self._category_modes.get(spec.key, "basic")]
-            if need <= cur_rank:
+            if self._section_enabled(spec.key):
                 return spec.key
         return None
 
@@ -256,45 +265,51 @@ class SettingsPage(QWidget):
         for key, button in self.settings_buttons.items():
             button.set_active(key == active)
 
-    def apply_interface_mode(self, mode_value):
-        mode = normalize_mode(mode_value)
-        cur_rank = _MODE_RANK[mode]
-        self._current_mode = mode
+    def _update_section_status(self):
+        if self._section_status_value is None:
+            return
+        total = len(self.settings_buttons)
+        visible = sum(1 for cat in self.settings_buttons if self._section_enabled(cat))
+        self._section_status_value.setText(f"{visible}/{total}")
 
+    def apply_section_visibility(self):
         for category, button in self.settings_buttons.items():
-            need = _MODE_RANK[self._category_modes.get(category, "basic")]
-            button.setVisible(need <= cur_rank)
+            button.setVisible(self._section_enabled(category))
 
         for category, card in self.settings_containers.items():
-            need = _MODE_RANK[self._category_modes.get(category, "basic")]
-            card.setVisible(need <= cur_rank or category in self._forced_visible_categories)
+            card.setVisible(self._section_enabled(category) or category in self._forced_visible_categories)
 
         active = self.current_settings_category
-        if active:
-            active_rank = _MODE_RANK[self._category_modes.get(active, "basic")]
-            if active_rank > cur_rank and active not in self._forced_visible_categories:
-                fallback = self._first_available_category(cur_rank)
-                if fallback is not None:
-                    self._activate_category(fallback, toggle_if_active=False)
-                else:
-                    self.show_overview()
+        if active and not self._section_enabled(active) and active not in self._forced_visible_categories:
+            fallback = self._first_available_category()
+            if fallback is not None:
+                self._activate_category(fallback, toggle_if_active=False, smooth_scroll=False)
+            else:
+                self.show_overview()
 
-        if self._mode_status_value is not None:
-            self._mode_status_value.setText(get_mode_label(mode))
-
-        self._sync_mode_widgets(mode)
+        self._update_section_status()
         self._update_nav_state()
 
         try:
             from ui.widgets.status_indicators_widget import apply_capture_visibility
 
-            apply_capture_visibility(self.gui, mode)
+            apply_capture_visibility(self.gui)
         except Exception:
             pass
 
         sidebar = getattr(self.gui, "shell_sidebar", None)
-        if sidebar is not None and hasattr(sidebar, "apply_nav_mode"):
-            sidebar.apply_nav_mode(cur_rank)
+        if sidebar is not None and hasattr(sidebar, "apply_section_visibility"):
+            try:
+                from ui.widgets.settings_panel import is_section_enabled
+
+                sidebar.apply_section_visibility(is_section_enabled)
+            except Exception:
+                pass
+
+    def apply_interface_mode(self, mode_value=None):
+        # Back-compat: the interface mode dropdown was replaced by per-section
+        # toggles. Ignore the legacy argument and apply the current map.
+        self.apply_section_visibility()
 
     def on_activated(self):
         if self.current_settings_category is None:
@@ -610,9 +625,9 @@ class SettingsPage(QWidget):
 
         items = [
             (
-                "interface_mode",
-                _("Режим интерфейса", "Interface mode"),
-                get_mode_label(self.gui._get_setting("INTERFACE_MODE", _("Базовый", "Basic"))),
+                "sections",
+                _("Видимые разделы", "Visible sections"),
+                "",
             ),
             ("language", _("Язык", "Language"), str(self.gui._get_setting("LANGUAGE", "ru")).upper()),
             (
@@ -642,9 +657,10 @@ class SettingsPage(QWidget):
             row.addWidget(value)
             layout.addLayout(row)
 
-            if key == "interface_mode":
-                self._mode_status_value = value
+            if key == "sections":
+                self._section_status_value = value
 
+        self._update_section_status()
         return card
 
     def _build_quick_actions(self) -> QFrame:
