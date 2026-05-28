@@ -246,7 +246,7 @@ API ссылка: https://generativelanguage.googleapis.com/v1beta/models/gemini
   Обратите внимание на вид ссылки моделей Gemini.  
     ![img_3.png](ReadmeFiles/img_3.png)
   - https://api.proxyapi.ru/google/v1/models/gemini-2.5-flash:generateContent - gemini-2.5-flash  
-  - https://api.proxyapi.ru/google/v1/models/gemini-3.1-flash-lite-preview:generateContent - gemini-3.1-flash-lite-preview  
+  - https://api.proxyapi.ru/google/v1/models/gemini-3.1-flash-lite:generateContent - gemini-3.1-flash-lite  
   - https://api.proxyapi.ru/google/v1/models/gemini-3.1-pro-preview:generateContent - gemini-3.1-pro-preview (дорогая модель)  
   
   gpt имеет ссылку такого типа - https://api.proxyapi.ru/openai/v1, галок не нужно:
@@ -277,7 +277,7 @@ API ссылка: https://generativelanguage.googleapis.com/v1beta/models/gemini
 Если есть облачный пароль, введите его. Он невидимый, но если ввести правильно и нажать Enter, то пройдет.  
 
 Есть два бота для озвучки:  
-<!-- CrazyMitaAIbot нужно убирать из новой версии, когда она будет готова -->
+<!-- @CrazyMitaAIbot нужно убрать из новой версии, когда она будет готова -->
 @CrazyMitaAIbot (Проект полностью закрыли, не работает)  
 @silero_voice_bot (Платно, но есть 600 символов потестить)  
 
