@@ -233,7 +233,11 @@ class ModelCard(QFrame):
 
         title = QLabel(str(meta.get("title") or meta.get("id") or "-"))
         title.setObjectName("AIHubCardTitle")
-        title_row.addWidget(title, 0)
+        # Allow long model names (e.g. "Whisper Large v3 turbo (ONNX)") to wrap
+        # onto a second line instead of being clipped.
+        title.setWordWrap(True)
+        title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        title_row.addWidget(title, 1)
 
         if not compatible and not installed:
             warn_chip = Chip(
@@ -244,9 +248,8 @@ class ModelCard(QFrame):
                 ),
             )
             warn_chip.setObjectName("AIHubChipDanger")
-            title_row.addWidget(warn_chip, 0)
+            title_row.addWidget(warn_chip, 0, Qt.AlignmentFlag.AlignTop)
 
-        title_row.addStretch(1)
         info_col.addLayout(title_row)
 
         description = str(meta.get("description") or "").strip()

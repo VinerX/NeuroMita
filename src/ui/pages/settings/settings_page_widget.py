@@ -2,18 +2,20 @@ from pathlib import Path
 
 import qtawesome as qta
 
-from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, Qt
+from PyQt6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRect, QSize, QTimer, Qt
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
+    QWidgetItem,
 )
 
 from ui.pages.settings.section_registry import SettingsSectionSpec, get_settings_section_specs
@@ -53,6 +55,88 @@ def _make_card(name: str) -> QFrame:
     card = QFrame()
     card.setObjectName(name)
     return card
+
+
+class _FlowLayout(QLayout):
+    """Left-to-right layout that wraps items onto new rows when they run out
+    of horizontal space. Used for the settings tab strip so the tabs reflow
+    to a second row instead of producing a horizontal scrollbar."""
+
+    def __init__(self, parent=None, margin=0, hspacing=6, vspacing=6):
+        super().__init__(parent)
+        self._items: list[QWidgetItem] = []
+        self._hspace = hspacing
+        self._vspace = vspacing
+        self.setContentsMargins(margin, margin, margin, margin)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def addWidget(self, widget):  # type: ignore[override]
+        self.addChildWidget(widget)
+        self.addItem(QWidgetItem(widget))
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+        return size
+
+    def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        margins = self.contentsMargins()
+        x = rect.x() + margins.left()
+        y = rect.y() + margins.top()
+        right = rect.right() - margins.right()
+        line_height = 0
+
+        for item in self._items:
+            widget = item.widget()
+            if widget is not None and not widget.isVisible():
+                continue
+            hint = item.sizeHint()
+            next_x = x + hint.width() + self._hspace
+            if next_x - self._hspace > right and line_height > 0:
+                x = rect.x() + margins.left()
+                y = y + line_height + self._vspace
+                next_x = x + hint.width() + self._hspace
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x = next_x
+            line_height = max(line_height, hint.height())
+
+        return y + line_height - rect.y() + margins.bottom()
 
 
 class SettingsSectionPage(QFrame):
@@ -168,6 +252,7 @@ class SettingsPage(QWidget):
         self._scroll_animation = None
         self._settings_stack = None
         self._page_indexes = {}
+        self._tabs_host = None
 
         self.SETTINGS_PANEL_WIDTH = max(920, int(getattr(gui, "SETTINGS_PANEL_WIDTH", 980) or 980))
         self.SETTINGS_SIDEBAR_WIDTH = 0
@@ -241,6 +326,7 @@ class SettingsPage(QWidget):
     def apply_section_visibility(self):
         for category, button in self.settings_buttons.items():
             button.setVisible(self._section_enabled(category))
+        self._relayout_tabs()
 
         active = self.current_settings_category
         if active is None or not self._section_enabled(active):
@@ -404,35 +490,37 @@ class SettingsPage(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(0)
 
-        tabs_scroll = QScrollArea()
-        tabs_scroll.setObjectName("SettingsTabsScroll")
-        tabs_scroll.setWidgetResizable(False)
-        tabs_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        tabs_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        tabs_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        tabs_scroll.setFixedHeight(50)
+        self._tabs_host = QWidget()
+        self._tabs_host.setObjectName("SettingsTabsHost")
+        host_policy = self._tabs_host.sizePolicy()
+        host_policy.setHeightForWidth(True)
+        host_policy.setVerticalPolicy(QSizePolicy.Policy.Minimum)
+        self._tabs_host.setSizePolicy(host_policy)
 
-        tabs_host = QWidget()
-        tabs_host.setObjectName("SettingsTabsHost")
-        tabs_host.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        tabs_layout = QHBoxLayout(tabs_host)
-        tabs_layout.setContentsMargins(0, 0, 0, 0)
-        tabs_layout.setSpacing(6)
+        flow = _FlowLayout(self._tabs_host, margin=0, hspacing=6, vspacing=6)
 
         for spec in get_settings_section_specs():
             label = _(spec.nav_label[0], spec.nav_label[1])
             button = SettingsIconButton(spec.icon_name, label, category_key=spec.key)
-            button.setMinimumWidth(92)
-            button.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+            # Hug content width so labels never truncate; the flow layout
+            # wraps tabs to a new row instead of clipping or scrolling.
+            button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             button.clicked.connect(lambda checked=False, cat=spec.key: self.show_category(cat))
-            tabs_layout.addWidget(button)
+            flow.addWidget(button)
             self.settings_buttons[spec.key] = button
             self._category_modes[spec.key] = spec.min_mode
 
-        tabs_layout.addStretch(1)
-        tabs_scroll.setWidget(tabs_host)
-        layout.addWidget(tabs_scroll)
+        layout.addWidget(self._tabs_host)
         return card
+
+    def _relayout_tabs(self):
+        host = getattr(self, "_tabs_host", None)
+        if host is None:
+            return
+        lay = host.layout()
+        if lay is not None:
+            lay.invalidate()
+        host.updateGeometry()
 
     def _build_settings_hero(self) -> QFrame:
         card = QFrame()
