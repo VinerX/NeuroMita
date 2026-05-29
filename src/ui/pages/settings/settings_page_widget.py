@@ -122,9 +122,17 @@ class _FlowLayout(QLayout):
 
         for item in self._items:
             widget = item.widget()
-            if widget is not None and not widget.isVisible():
+            # Skip only tabs that were explicitly toggled off. Using isHidden()
+            # (not isVisible()) keeps sizing correct before the window is shown,
+            # when descendants are not "visible" yet.
+            if widget is not None and widget.isHidden():
                 continue
             hint = item.sizeHint()
+            if widget is not None:
+                hint = QSize(
+                    max(hint.width(), widget.minimumWidth()),
+                    max(hint.height(), widget.minimumHeight()),
+                )
             next_x = x + hint.width() + self._hspace
             if next_x - self._hspace > right and line_height > 0:
                 x = rect.x() + margins.left()
