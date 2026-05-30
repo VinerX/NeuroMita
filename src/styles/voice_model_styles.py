@@ -76,10 +76,25 @@ QFrame#ModelPanel QPushButton#PrimaryButton[dirty="true"] {
 }
 
 /* Чекбоксы */
-QFrame#SettingWidget QCheckBox { 
+QFrame#SettingWidget QCheckBox {
     min-height: 28px;
     max-height: 28px;
-    padding-left: 6px;
+    /* spacing (а не padding-left): padding в некоторых сборках Qt
+       растягивает фон индикатора и чекбокс выглядит как «слайдер». */
+    spacing: 8px;
+    margin-left: 6px;
+    background: transparent;
+}
+QFrame#SettingWidget QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 5px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background-color: {chip_bg};
+}
+QFrame#SettingWidget QCheckBox::indicator:checked {
+    background-color: {accent};
+    border: 1px solid {accent_alt};
 }
 
 /* Role labels */

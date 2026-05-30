@@ -60,13 +60,19 @@ def _make_card(name: str) -> QFrame:
 class _FlowLayout(QLayout):
     """Left-to-right layout that wraps items onto new rows when they run out
     of horizontal space. Used for the settings tab strip so the tabs reflow
-    to a second row instead of producing a horizontal scrollbar."""
+    to a second row instead of producing a horizontal scrollbar.
 
-    def __init__(self, parent=None, margin=0, hspacing=6, vspacing=6):
+    When `justify` is set, the items on every row are stretched to fill the
+    full available width (extra space is shared equally between them) instead
+    of hugging the left edge — so the tab strip spans the whole settings page
+    rather than sitting compressed on the left."""
+
+    def __init__(self, parent=None, margin=0, hspacing=6, vspacing=6, justify=False):
         super().__init__(parent)
         self._items: list[QWidgetItem] = []
         self._hspace = hspacing
         self._vspace = vspacing
+        self._justify = justify
         self.setContentsMargins(margin, margin, margin, margin)
 
     def addItem(self, item):
@@ -113,38 +119,71 @@ class _FlowLayout(QLayout):
         size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
         return size
 
+    def _item_hint(self, item: QWidgetItem) -> QSize:
+        widget = item.widget()
+        hint = item.sizeHint()
+        if widget is not None:
+            hint = QSize(
+                max(hint.width(), widget.minimumWidth()),
+                max(hint.height(), widget.minimumHeight()),
+            )
+        return hint
+
     def _do_layout(self, rect: QRect, test_only: bool) -> int:
         margins = self.contentsMargins()
-        x = rect.x() + margins.left()
-        y = rect.y() + margins.top()
+        x0 = rect.x() + margins.left()
         right = rect.right() - margins.right()
-        line_height = 0
+        avail = max(0, right - x0)
+        y = rect.y() + margins.top()
 
-        for item in self._items:
-            widget = item.widget()
-            # Skip only tabs that were explicitly toggled off. Using isHidden()
-            # (not isVisible()) keeps sizing correct before the window is shown,
-            # when descendants are not "visible" yet.
-            if widget is not None and widget.isHidden():
-                continue
-            hint = item.sizeHint()
-            if widget is not None:
-                hint = QSize(
-                    max(hint.width(), widget.minimumWidth()),
-                    max(hint.height(), widget.minimumHeight()),
-                )
-            next_x = x + hint.width() + self._hspace
-            if next_x - self._hspace > right and line_height > 0:
-                x = rect.x() + margins.left()
-                y = y + line_height + self._vspace
-                next_x = x + hint.width() + self._hspace
-                line_height = 0
-            if not test_only:
-                item.setGeometry(QRect(QPoint(x, y), hint))
-            x = next_x
-            line_height = max(line_height, hint.height())
+        # Skip only tabs that were explicitly toggled off. Using isHidden()
+        # (not isVisible()) keeps sizing correct before the window is shown,
+        # when descendants are not "visible" yet.
+        visible = [
+            item
+            for item in self._items
+            if not (item.widget() is not None and item.widget().isHidden())
+        ]
 
-        return y + line_height - rect.y() + margins.bottom()
+        # Group visible items into rows the same way in both passes so the
+        # measured height (test_only) matches the placed geometry.
+        rows: list[list[QWidgetItem]] = []
+        current: list[QWidgetItem] = []
+        current_w = 0
+        for item in visible:
+            w = self._item_hint(item).width()
+            add = w if not current else w + self._hspace
+            if current and current_w + add > avail:
+                rows.append(current)
+                current = []
+                current_w = 0
+                add = w
+            current.append(item)
+            current_w += add
+        if current:
+            rows.append(current)
+
+        bottom = y
+        for row in rows:
+            natural = sum(self._item_hint(it).width() for it in row)
+            natural += self._hspace * (len(row) - 1)
+            extra = max(0, avail - natural) if self._justify else 0
+            per = extra // len(row) if row else 0
+            remainder = extra - per * len(row)
+
+            x = x0
+            line_height = 0
+            for i, item in enumerate(row):
+                hint = self._item_hint(item)
+                w = hint.width() + per + (1 if i < remainder else 0)
+                if not test_only:
+                    item.setGeometry(QRect(QPoint(x, y), QSize(w, hint.height())))
+                x += w + self._hspace
+                line_height = max(line_height, hint.height())
+            y += line_height + self._vspace
+            bottom = y - self._vspace
+
+        return bottom - rect.y() + margins.bottom()
 
 
 class SettingsSectionPage(QFrame):
@@ -505,14 +544,15 @@ class SettingsPage(QWidget):
         host_policy.setVerticalPolicy(QSizePolicy.Policy.Minimum)
         self._tabs_host.setSizePolicy(host_policy)
 
-        flow = _FlowLayout(self._tabs_host, margin=0, hspacing=6, vspacing=6)
+        flow = _FlowLayout(self._tabs_host, margin=0, hspacing=6, vspacing=6, justify=True)
 
         for spec in get_settings_section_specs():
             label = _(spec.nav_label[0], spec.nav_label[1])
             button = SettingsIconButton(spec.icon_name, label, category_key=spec.key)
-            # Hug content width so labels never truncate; the flow layout
-            # wraps tabs to a new row instead of clipping or scrolling.
-            button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            # Preferred (not Maximum) so the justified flow can stretch the
+            # tabs to fill the full row width; the sizeHint is the floor, so
+            # labels still never truncate. Rows wrap instead of scrolling.
+            button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             button.clicked.connect(lambda checked=False, cat=spec.key: self.show_category(cat))
             flow.addWidget(button)
             self.settings_buttons[spec.key] = button
@@ -773,19 +813,74 @@ class SettingsPage(QWidget):
             index = self._settings_stack.addWidget(page)
             self._page_indexes[spec.key] = index
 
+    _COLLAPSE_STATE_KEY = "SETTINGS_COLLAPSED_SECTIONS"
+
+    def _collapsed_state_map(self) -> dict:
+        try:
+            from managers.settings_manager import SettingsManager
+
+            value = SettingsManager.get(self._COLLAPSE_STATE_KEY, {})
+            return dict(value) if isinstance(value, dict) else {}
+        except Exception:
+            return {}
+
+    def _persist_collapsed_state(self, section_id: str, collapsed: bool) -> None:
+        try:
+            from managers.settings_manager import SettingsManager
+
+            state = self._collapsed_state_map()
+            state[section_id] = bool(collapsed)
+            SettingsManager.set(self._COLLAPSE_STATE_KEY, state)
+        except Exception:
+            pass
+
     def _prepare_settings_subsections(self, page: SettingsSectionPage):
+        """Keep the in-page subsections collapsible so long pages (e.g. Models)
+        can be folded instead of forcing an endless scroll.
+
+        Each section keeps the collapse state its builder chose as the default;
+        a persisted per-section override (saved on user toggle) takes priority,
+        so folding a group sticks across navigation."""
+        page_key = getattr(getattr(page, "spec", None), "key", "")
+        state_map = self._collapsed_state_map()
+        seen: dict[str, int] = {}
+
         for section in page.findChildren(QWidget):
             if section.objectName() != "CollapsibleSection":
                 continue
-            if hasattr(section, "expand"):
-                try:
+            if not (hasattr(section, "collapse") and hasattr(section, "expand")):
+                continue
+
+            title = ""
+            title_label = getattr(section, "title_label", None)
+            if title_label is not None:
+                title = title_label.text()
+            seen[title] = seen.get(title, 0) + 1
+            section_id = f"{page_key}:{title}:{seen[title]}"
+
+            # Default = whatever the builder set; persisted choice wins.
+            want_collapsed = bool(state_map.get(section_id, getattr(section, "is_collapsed", True)))
+            try:
+                if want_collapsed:
+                    section.collapse()
+                else:
                     section.expand()
-                except Exception:
-                    pass
-            header = getattr(section, "header", None)
-            if header is not None:
-                header.setCursor(Qt.CursorShape.ArrowCursor)
-                header.mousePressEvent = lambda event, h=header: QWidget.mousePressEvent(h, event)
-            arrow = getattr(section, "arrow_label", None)
-            if arrow is not None:
-                arrow.hide()
+            except Exception:
+                pass
+
+            self._wire_section_persistence(section, section_id)
+
+    def _wire_section_persistence(self, section, section_id: str) -> None:
+        original_toggle = section.toggle
+
+        def _toggle(event=None, _orig=original_toggle, _id=section_id, _sec=section):
+            _orig()
+            self._persist_collapsed_state(_id, bool(getattr(_sec, "is_collapsed", False)))
+
+        # Shadow the bound method so collapse()/expand() (which call
+        # self.toggle()) and the header click both go through persistence.
+        section.toggle = _toggle
+        header = getattr(section, "header", None)
+        if header is not None:
+            header.setCursor(Qt.CursorShape.PointingHandCursor)
+            header.mousePressEvent = _toggle

@@ -33,9 +33,9 @@ class SidebarSection:
 
 DEFAULT_SIDEBAR_SECTIONS: tuple[SidebarSection, ...] = (
     SidebarSection("home", _("Главная", "Home"), "fa6s.house", _("Обзор лаунчера", "Launcher overview")),
-    SidebarSection("news", _("Релизы", "Releases"), "fa6s.rectangle-list", _("Лента релизов проекта", "Project release feed")),
-    SidebarSection("sandbox", _("Песочница", "Sandbox"), "fa6s.flask", _("Быстрый вход в чат", "Quick chat access")),
     SidebarSection("settings", _("Настройки", "Settings"), "fa6s.gear", _("Системные параметры", "System controls")),
+    SidebarSection("sandbox", _("Песочница", "Sandbox"), "fa6s.flask", _("Быстрый вход в чат", "Quick chat access")),
+    SidebarSection("news", _("Релизы", "Releases"), "fa6s.rectangle-list", _("Лента релизов проекта", "Project release feed")),
     SidebarSection("developer", _("Дев", "Dev"), "fa6s.bug", _("Отладка и дообучение", "Debug & fine-tuning"), min_mode="full"),
     SidebarSection("logs", _("Логи", "Logs"), "fa6s.list", _("События и диагностика", "Events and diagnostics")),
 )

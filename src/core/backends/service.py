@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from dataclasses import dataclass
 from enum import Enum
@@ -17,6 +18,12 @@ CUDA_INDEX_URL = "https://download.pytorch.org/whl/cu128"
 BACKEND_NUMPY_SPEC = "numpy==1.26.0"
 ONNX_PACKAGE = "onnxruntime"
 ONNX_DIRECTML_PACKAGE = "onnxruntime-directml"
+
+# Marker file written into the managed libs dir whenever a backend is
+# installed through the Hub. Needed because plain `onnxruntime` (CPU
+# provider) ships bundled with the released build / lands transitively, so
+# its mere presence can't tell us the user ever chose the ONNX backend.
+BACKEND_MARKER_FILENAME = ".neuromita_backends.json"
 
 
 class BackendKind(str, Enum):
@@ -300,6 +307,14 @@ class BackendService:
         )
         if not ok:
             return self.get_status(requirement, ctx=ctx)
+        # Record the deliberate install so a bundled / transitive runtime is
+        # never mistaken for a backend the user actively chose (see
+        # _onnx_installed_variant).
+        if requirement.kind == BackendKind.ONNX:
+            marker_provider = self._preferred_onnx_provider(self._build_ctx(ctx))
+        else:
+            marker_provider = requirement.kind.value
+        self._write_backend_marker(status.target_dir, requirement.kind, marker_provider)
         return self.get_status(requirement, ctx=ctx)
 
     def status_snapshot(self, *, ctx: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
@@ -455,7 +470,7 @@ class BackendService:
         target_dir: Optional[str],
     ) -> BackendStatus:
         preferred_provider = self._preferred_onnx_provider(ctx)
-        installed_variant = self._onnx_variant(target_dir)
+        installed_variant = self._onnx_installed_variant(target_dir)
         provider = "dml" if installed_variant == "onnx_dml" else ("cpu" if installed_variant == "onnx_cpu" else "missing")
         runtime_ok = installed_variant != "missing" and (preferred_provider != "dml" or installed_variant == "onnx_dml")
 
@@ -520,16 +535,70 @@ class BackendService:
         )
 
     def _onnx_variant(self, target_dir: Optional[str]) -> str:
-        # Only the managed dist counts as "installed". An onnxruntime that
-        # happened to land in the env via a transitive dep was previously
-        # reported as "onnx_cpu" via the _module_exists fallback — that
-        # caused the AI Hub to show the ONNX backend as installed even
-        # when the user never installed it through the Hub.
+        """Physical ONNX runtime present on disk, ignoring how it got there."""
         if self._dist_version(ONNX_DIRECTML_PACKAGE, target_dir):
             return "onnx_dml"
         if self._dist_version(ONNX_PACKAGE, target_dir):
             return "onnx_cpu"
         return "missing"
+
+    def _onnx_installed_variant(self, target_dir: Optional[str]) -> str:
+        """ONNX variant that counts as a deliberate Hub install.
+
+        `onnxruntime-directml` is only ever installed on purpose, so it always
+        counts. Plain `onnxruntime` (CPU provider), however, ships bundled with
+        the released build and is pulled in transitively by other packages, so
+        it only counts when a backend marker confirms the user installed the
+        ONNX backend through the Hub. Without this gate the ONNX backend showed
+        as "installed" for every user, even on NVIDIA setups that never touched
+        it.
+        """
+        physical = self._onnx_variant(target_dir)
+        if physical == "onnx_dml":
+            return "onnx_dml"
+        if physical == "onnx_cpu":
+            # When we can't anchor to a managed libs dir (e.g. running from
+            # source) we have no marker to consult — keep the legacy behaviour
+            # and trust physical presence rather than hiding a real install.
+            if not target_dir:
+                return "onnx_cpu"
+            if self._read_backend_marker(target_dir).get(BackendKind.ONNX.value):
+                return "onnx_cpu"
+        return "missing"
+
+    def _backend_marker_path(self, target_dir: Optional[str]) -> Optional[str]:
+        if not target_dir:
+            return None
+        return os.path.join(target_dir, BACKEND_MARKER_FILENAME)
+
+    def _read_backend_marker(self, target_dir: Optional[str]) -> dict[str, Any]:
+        path = self._backend_marker_path(target_dir)
+        if not path or not os.path.isfile(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _write_backend_marker(
+        self,
+        target_dir: Optional[str],
+        kind: BackendKind,
+        provider: str,
+    ) -> None:
+        path = self._backend_marker_path(target_dir)
+        if not path:
+            return
+        data = self._read_backend_marker(target_dir)
+        data[kind.value] = {"provider": provider}
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+        except Exception:
+            pass
 
     def _onnx_providers_for_variant(self, variant: str) -> tuple[str, ...]:
         if variant == "onnx_dml":

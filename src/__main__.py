@@ -392,6 +392,10 @@ if __name__ == "__main__":
         app = QApplication(sys.argv)
         logger.info("QApplication создан")
 
+        # Колёсико мыши не должно переключать значение свёрнутых комбобоксов
+        from ui.wheel_guard import install_combobox_wheel_guard
+        install_combobox_wheel_guard(app)
+
         if sys.platform == 'win32':
             import ctypes
             myappid = 'mycompany.myproduct.subproduct.version' 

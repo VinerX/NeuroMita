@@ -429,4 +429,26 @@ QWidget#SettingsPageRoot QPushButton#SecondaryButton,
 QWidget#SettingsPageRoot QPushButton#CancelButton {
     border-radius: 10px;
 }
+
+/* ========= Scope toggle (Characters: Selected / All) ========= */
+QWidget#SettingsPageRoot QFrame#ScopeToggle {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 9px;
+}
+QWidget#SettingsPageRoot QPushButton#ScopeToggleButton {
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    padding: 5px 14px;
+    color: {text};
+    font-weight: 600;
+}
+QWidget#SettingsPageRoot QPushButton#ScopeToggleButton:hover[active="false"] {
+    background: rgba({accent_rgb}, 0.16);
+}
+QWidget#SettingsPageRoot QPushButton#ScopeToggleButton[active="true"] {
+    background: {accent};
+    color: #ffffff;
+}
 """

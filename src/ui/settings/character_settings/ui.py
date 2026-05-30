@@ -163,29 +163,10 @@ def build_character_settings_ui(self, parent_layout):
     lay.addSpacing(6)
 
     # ══════════════════════════════════════════════════════
-    # Секция «История» — просмотр, сброс, экспорт (для выбранного персонажа)
+    # История и обслуживание — единый набор действий с переключателем области
+    # (вариант A+B: тумблер «Выбранный / Все» убирает дублирование, плюс
+    #  визуальная иерархия и сворачиваемое «Обслуживание»)
     # ══════════════════════════════════════════════════════
-
-    self.history_section_selected = InnerCollapsibleSection(_("История (выбранный)", "History (selected)"), parent=self)
-    lay.addWidget(self.history_section_selected)
-
-    try:
-        orig_toggle = self.history_section_selected.toggle
-
-        def _toggle_and_save(_=None):
-            orig_toggle()
-            if hasattr(self, "settings"):
-                self.settings.set("SHOW_HISTORY_RESET_SECTION", not self.history_section_selected.is_collapsed)
-
-        self.history_section_selected.header.mousePressEvent = _toggle_and_save
-    except Exception:
-        pass
-
-    try:
-        self.history_section_selected.content_layout.setContentsMargins(16, 8, 12, 8)
-        self.history_section_selected.content_layout.setSpacing(8)
-    except Exception:
-        pass
 
     def _mark_danger_hover(btn: QPushButton):
         btn.setObjectName("SecondaryButton")
@@ -202,116 +183,111 @@ def build_character_settings_ui(self, parent_layout):
         btn.style().polish(btn)
         btn.update()
 
-    self.btn_db_viewer = QPushButton(_("История", "History"))
-    self.btn_db_viewer.setToolTip(_("Просмотр базы данных (истории)", "View database (history)"))
-    self.btn_db_viewer.setIcon(qta.icon('fa5s.table', color='#ffffff'))
-    self.btn_db_viewer.setObjectName("SecondaryButton")
-    _make_compact(self.btn_db_viewer)
+    def _btn_row(*widgets) -> QWidget:
+        r = SettingsBodyWidget()
+        rl = QHBoxLayout(r)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(6)
+        for w in widgets:
+            rl.addWidget(w, 1)
+        return r
 
-    self.btn_clear_history = QPushButton(_("Сброс", "Reset"))
-    self.btn_clear_history.setToolTip(_("Сбросить историю персонажа", "Reset character history"))
-    self.btn_clear_history.setIcon(qta.icon('fa5s.undo-alt', color='#ffffff'))
-    _mark_danger_hover(self.btn_clear_history)
-    _make_compact(self.btn_clear_history)
+    # -------- Переключатель области: выбранный персонаж / все --------
+    scope_row = SettingsBodyWidget()
+    scope_l = QHBoxLayout(scope_row)
+    scope_l.setContentsMargins(0, 0, 0, 0)
+    scope_l.setSpacing(8)
 
-    row_char_1 = SettingsBodyWidget()
-    row_char_1_l = QHBoxLayout(row_char_1)
-    row_char_1_l.setContentsMargins(0, 0, 0, 0)
-    row_char_1_l.setSpacing(6)
-    row_char_1_l.addWidget(self.btn_db_viewer, 1)
-    row_char_1_l.addWidget(self.btn_clear_history, 1)
-    self.history_section_selected.add_widget(row_char_1)
+    scope_caption = QLabel(_("Область:", "Scope:"))
+    scope_caption.setStyleSheet("font-weight: 600;")
+    scope_l.addWidget(scope_caption, 0)
 
-    self.btn_export_db = QPushButton(_("Выгрузить", "Export"))
-    self.btn_export_db.setToolTip(_("Выгрузить данные из БД в файл", "Export data from DB to file"))
-    self.btn_export_db.setIcon(qta.icon('fa5s.file-export', color='#ffffff'))
-    self.btn_export_db.setObjectName("SecondaryButton")
-    _make_compact(self.btn_export_db)
+    scope_toggle = SettingsBodyWidget()
+    scope_toggle.setObjectName("ScopeToggle")
+    st_l = QHBoxLayout(scope_toggle)
+    st_l.setContentsMargins(2, 2, 2, 2)
+    st_l.setSpacing(2)
 
-    self.btn_import_db = QPushButton(_("Загрузить", "Import"))
-    self.btn_import_db.setToolTip(_("Загрузить данные из файла в БД", "Import data from file to DB"))
-    self.btn_import_db.setIcon(qta.icon('fa5s.file-import', color='#ffffff'))
-    self.btn_import_db.setObjectName("SecondaryButton")
-    _make_compact(self.btn_import_db)
+    self._scope_btn_current = QPushButton(_("Выбранный", "Selected"))
+    self._scope_btn_current.setObjectName("ScopeToggleButton")
+    self._scope_btn_current.setCheckable(True)
+    self._scope_btn_current.setCursor(Qt.CursorShape.PointingHandCursor)
 
-    row_char_export = SettingsBodyWidget()
-    row_char_export_l = QHBoxLayout(row_char_export)
-    row_char_export_l.setContentsMargins(0, 0, 0, 0)
-    row_char_export_l.setSpacing(6)
-    row_char_export_l.addWidget(self.btn_export_db, 1)
-    row_char_export_l.addWidget(self.btn_import_db, 1)
-    self.history_section_selected.add_widget(row_char_export)
+    self._scope_btn_all = QPushButton(_("Все персонажи", "All characters"))
+    self._scope_btn_all.setObjectName("ScopeToggleButton")
+    self._scope_btn_all.setCheckable(True)
+    self._scope_btn_all.setCursor(Qt.CursorShape.PointingHandCursor)
 
-    # ══════════════════════════════════════════════════════
-    # Секция «История (все)» — просмотр, сброс, экспорт (для всех персонажей)
-    # ══════════════════════════════════════════════════════
+    st_l.addWidget(self._scope_btn_current, 1)
+    st_l.addWidget(self._scope_btn_all, 1)
+    scope_l.addWidget(scope_toggle, 1)
 
-    self.history_section_global = InnerCollapsibleSection(_("История (все)", "History (all)"), parent=self)
-    lay.addWidget(self.history_section_global)
+    self._char_history_scope = "current"
 
-    try:
-        self.history_section_global.content_layout.setContentsMargins(16, 8, 12, 8)
-        self.history_section_global.content_layout.setSpacing(8)
-    except Exception:
-        pass
+    def _set_history_scope(scope: str):
+        scope = "all" if scope == "all" else "current"
+        self._char_history_scope = scope
+        for key, btn in (("current", self._scope_btn_current), ("all", self._scope_btn_all)):
+            active = key == scope
+            btn.setChecked(active)
+            btn.setProperty("active", "true" if active else "false")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+        # «Обновить формат» имеет смысл только для выбранного персонажа
+        if hasattr(self, "btn_maint_update_format"):
+            sel = scope == "current"
+            self.btn_maint_update_format.setEnabled(sel)
+            self.btn_maint_update_format.setToolTip(
+                _("Конвертировать JSON-файл истории в новый structured формат (создаёт резервную копию)",
+                  "Convert JSON history file to the new structured format (creates a backup)")
+                if sel else
+                _("Доступно только для выбранного персонажа",
+                  "Available only for the selected character")
+            )
 
-    self.btn_db_viewer_global = QPushButton(_("История", "History"))
-    self.btn_db_viewer_global.setToolTip(_("Просмотр базы данных (глобально)", "Global DB viewer"))
-    self.btn_db_viewer_global.setIcon(qta.icon('fa5s.table', color='#ffffff'))
-    self.btn_db_viewer_global.setObjectName("SecondaryButton")
-    _make_compact(self.btn_db_viewer_global)
+    self._set_history_scope = _set_history_scope
+    self._scope_btn_current.clicked.connect(lambda: _set_history_scope("current"))
+    self._scope_btn_all.clicked.connect(lambda: _set_history_scope("all"))
 
-    self.btn_clear_all_histories = QPushButton(_("Сброс", "Reset"))
-    self.btn_clear_all_histories.setToolTip(_("Сбросить историю всех персонажей", "Clear history for all chars"))
-    self.btn_clear_all_histories.setIcon(qta.icon('fa5s.undo-alt', color='#ffffff'))
-    _mark_danger_hover(self.btn_clear_all_histories)
-    _make_compact(self.btn_clear_all_histories)
+    lay.addWidget(scope_row)
 
-    row_all_1 = SettingsBodyWidget()
-    row_all_1_l = QHBoxLayout(row_all_1)
-    row_all_1_l.setContentsMargins(0, 0, 0, 0)
-    row_all_1_l.setSpacing(6)
-    row_all_1_l.addWidget(self.btn_db_viewer_global, 1)
-    row_all_1_l.addWidget(self.btn_clear_all_histories, 1)
-    self.history_section_global.add_widget(row_all_1)
+    # -------- Действия с историей (зависят от области) --------
+    hist_title = QLabel(_("История", "History"))
+    hist_title.setStyleSheet("font-weight: 600;")
+    lay.addWidget(hist_title)
 
-    self.btn_export_db_global = QPushButton(_("Выгрузить", "Export"))
-    self.btn_export_db_global.setToolTip(
-        _("Выгрузить данные всех персонажей в файл", "Export all characters data to file"))
-    self.btn_export_db_global.setIcon(qta.icon('fa5s.file-export', color='#ffffff'))
-    self.btn_export_db_global.setObjectName("SecondaryButton")
-    _make_compact(self.btn_export_db_global)
+    self.btn_history_view = QPushButton(_("Открыть", "Open"))
+    self.btn_history_view.setToolTip(_("Просмотр базы данных истории", "View the history database"))
+    self.btn_history_view.setIcon(qta.icon('fa5s.table', color='#ffffff'))
+    self.btn_history_view.setObjectName("SecondaryButton")
+    _make_compact(self.btn_history_view)
 
-    self.btn_import_db_global = QPushButton(_("Загрузить", "Import"))
-    self.btn_import_db_global.setToolTip(
-        _("Загрузить данные из файла в БД (все персонажи)", "Import data from file to DB (all)"))
-    self.btn_import_db_global.setIcon(qta.icon('fa5s.file-import', color='#ffffff'))
-    self.btn_import_db_global.setObjectName("SecondaryButton")
-    _make_compact(self.btn_import_db_global)
+    self.btn_history_export = QPushButton(_("Выгрузить", "Export"))
+    self.btn_history_export.setToolTip(_("Выгрузить данные из БД в файл", "Export data from DB to file"))
+    self.btn_history_export.setIcon(qta.icon('fa5s.file-export', color='#ffffff'))
+    self.btn_history_export.setObjectName("SecondaryButton")
+    _make_compact(self.btn_history_export)
 
-    row_all_export = SettingsBodyWidget()
-    row_all_export_l = QHBoxLayout(row_all_export)
-    row_all_export_l.setContentsMargins(0, 0, 0, 0)
-    row_all_export_l.setSpacing(6)
-    row_all_export_l.addWidget(self.btn_export_db_global, 1)
-    row_all_export_l.addWidget(self.btn_import_db_global, 1)
-    self.history_section_global.add_widget(row_all_export)
+    self.btn_history_import = QPushButton(_("Загрузить", "Import"))
+    self.btn_history_import.setToolTip(_("Загрузить данные из файла в БД", "Import data from file to DB"))
+    self.btn_history_import.setIcon(qta.icon('fa5s.file-import', color='#ffffff'))
+    self.btn_history_import.setObjectName("SecondaryButton")
+    _make_compact(self.btn_history_import)
 
-    # ══════════════════════════════════════════════════════
-    # Секция «Обслуживание» — миграции данных и RAG-индексация
-    # ══════════════════════════════════════════════════════
+    self.btn_history_reset = QPushButton(_("Сбросить", "Reset"))
+    self.btn_history_reset.setToolTip(_("Сбросить историю", "Reset history"))
+    self.btn_history_reset.setIcon(qta.icon('fa5s.undo-alt', color='#ffffff'))
+    _mark_danger_hover(self.btn_history_reset)
+    _make_compact(self.btn_history_reset)
+
+    lay.addWidget(_btn_row(self.btn_history_view, self.btn_history_export))
+    lay.addWidget(_btn_row(self.btn_history_import, self.btn_history_reset))
 
     lay.addSpacing(4)
 
+    # -------- Обслуживание (свёрнуто по умолчанию) --------
     self.maintenance_section = InnerCollapsibleSection(_("Обслуживание", "Maintenance"), parent=self)
     lay.addWidget(self.maintenance_section)
-
-    try:
-        # Свёрнута по умолчанию
-        if not getattr(self.maintenance_section, "is_collapsed", True):
-            self.maintenance_section.toggle()
-    except Exception:
-        pass
 
     try:
         self.maintenance_section.content_layout.setContentsMargins(16, 8, 12, 8)
@@ -319,146 +295,64 @@ def build_character_settings_ui(self, parent_layout):
     except Exception:
         pass
 
-    # -------- Миграции данных — для выбранного персонажа --------
-    mig_char_title = QLabel(_("Для выбранного персонажа", "For selected character"))
-    mig_char_title.setStyleSheet("font-weight: 600;")
-    self.maintenance_section.add_widget(mig_char_title)
+    maint_hint = QLabel(
+        _("Действия применяются к выбранной области (переключатель выше).",
+          "Actions apply to the selected scope (toggle above)."))
+    maint_hint.setObjectName("SeparatorLabel")
+    maint_hint.setWordWrap(True)
+    self.maintenance_section.add_widget(maint_hint)
 
-    # "Файлы → БД" — перенос JSON истории в SQLite
-    self.btn_migrate_db = QPushButton(_("Файлы → БД", "Files → DB"))
-    self.btn_migrate_db.setToolTip(
+    self.btn_maint_files_db = QPushButton(_("Файлы → БД", "Files → DB"))
+    self.btn_maint_files_db.setToolTip(
         _("Перенести историю из JSON-файлов в базу данных SQLite",
           "Import history from JSON files into the SQLite database"))
-    self.btn_migrate_db.setIcon(qta.icon('fa5s.database', color='#ffffff'))
-    self.btn_migrate_db.setObjectName("SecondaryButton")
-    _make_compact(self.btn_migrate_db)
+    self.btn_maint_files_db.setIcon(qta.icon('fa5s.database', color='#ffffff'))
+    self.btn_maint_files_db.setObjectName("SecondaryButton")
+    _make_compact(self.btn_maint_files_db)
 
-    # "Теги → структуру" — перенос inline-тегов из content в structured_data
-    self.btn_migrate_to_structured = QPushButton(_("Теги → данные", "Tags → data"))
-    self.btn_migrate_to_structured.setToolTip(
+    self.btn_maint_tags = QPushButton(_("Теги → данные", "Tags → data"))
+    self.btn_maint_tags.setToolTip(
         _("Перенести теги из поля content в колонку structured_data",
           "Move inline tags from the content field into the structured_data column"))
-    self.btn_migrate_to_structured.setIcon(qta.icon('fa5s.exchange-alt', color='#ffffff'))
-    self.btn_migrate_to_structured.setObjectName("SecondaryButton")
-    _make_compact(self.btn_migrate_to_structured)
+    self.btn_maint_tags.setIcon(qta.icon('fa5s.exchange-alt', color='#ffffff'))
+    self.btn_maint_tags.setObjectName("SecondaryButton")
+    _make_compact(self.btn_maint_tags)
 
-    row_mig_char_1 = SettingsBodyWidget()
-    row_mig_char_1_l = QHBoxLayout(row_mig_char_1)
-    row_mig_char_1_l.setContentsMargins(0, 0, 0, 0)
-    row_mig_char_1_l.setSpacing(6)
-    row_mig_char_1_l.addWidget(self.btn_migrate_db, 1)
-    row_mig_char_1_l.addWidget(self.btn_migrate_to_structured, 1)
-    self.maintenance_section.add_widget(row_mig_char_1)
+    self.maintenance_section.add_widget(_btn_row(self.btn_maint_files_db, self.btn_maint_tags))
 
-    # "Обновить формат файла" — конвертировать JSON файл в новый structured формат
-    self.btn_migrate_history = QPushButton(_("Обновить формат", "Update format"))
-    self.btn_migrate_history.setToolTip(
-        _("Конвертировать JSON-файл истории в новый structured формат (создаёт резервную копию)",
-          "Convert JSON history file to the new structured format (creates a backup)"))
-    self.btn_migrate_history.setObjectName("SecondaryButton")
-    self.btn_migrate_history.setIcon(qta.icon('fa5s.file-code', color='#ffffff'))
-    self.btn_migrate_history.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    _make_compact(self.btn_migrate_history)
-    self.maintenance_section.add_widget(self.btn_migrate_history)
-
-    # "Индексировать новое" / "Переиндексировать всё" — RAG-векторизация
-    self.btn_reindex = QPushButton(_("Индекс нового", "Index new"))
-    self.btn_reindex.setToolTip(
+    self.btn_maint_index_new = QPushButton(_("Индекс нового", "Index new"))
+    self.btn_maint_index_new.setToolTip(
         _("Заполнить отсутствующие векторы для RAG", "Fill missing embedding vectors for RAG"))
-    self.btn_reindex.setIcon(qta.icon('fa5s.brain', color='#ffffff'))
-    self.btn_reindex.setObjectName("SecondaryButton")
-    _make_compact(self.btn_reindex)
+    self.btn_maint_index_new.setIcon(qta.icon('fa5s.brain', color='#ffffff'))
+    self.btn_maint_index_new.setObjectName("SecondaryButton")
+    _make_compact(self.btn_maint_index_new)
 
-    self.btn_reindex_all = QPushButton(_("Переиндексация", "Reindex"))
-    self.btn_reindex_all.setToolTip(
+    self.btn_maint_reindex = QPushButton(_("Переиндексация", "Reindex"))
+    self.btn_maint_reindex.setToolTip(
         _("Пересоздать все векторы для RAG (медленно)", "Regenerate ALL embedding vectors for RAG (slow)"))
-    self.btn_reindex_all.setIcon(qta.icon('fa5s.brain', color='#ffffff'))
-    self.btn_reindex_all.setObjectName("SecondaryButton")
-    _make_compact(self.btn_reindex_all)
+    self.btn_maint_reindex.setIcon(qta.icon('fa5s.brain', color='#ffffff'))
+    self.btn_maint_reindex.setObjectName("SecondaryButton")
+    _make_compact(self.btn_maint_reindex)
 
-    row_mig_char_2 = SettingsBodyWidget()
-    row_mig_char_2_l = QHBoxLayout(row_mig_char_2)
-    row_mig_char_2_l.setContentsMargins(0, 0, 0, 0)
-    row_mig_char_2_l.setSpacing(6)
-    row_mig_char_2_l.addWidget(self.btn_reindex, 1)
-    row_mig_char_2_l.addWidget(self.btn_reindex_all, 1)
-    self.maintenance_section.add_widget(row_mig_char_2)
+    self.maintenance_section.add_widget(_btn_row(self.btn_maint_index_new, self.btn_maint_reindex))
 
-    self.btn_dedupe_history = QPushButton(_("Удалить дубли", "Remove duplicates"))
-    self.btn_dedupe_history.setToolTip(_("Удалить дубликаты сообщений", "Remove duplicate messages"))
-    self.btn_dedupe_history.setIcon(qta.icon('fa5s.broom', color='#ffffff'))
-    self.btn_dedupe_history.setObjectName("SecondaryButton")
-    self.btn_dedupe_history.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    _make_compact(self.btn_dedupe_history)
-    self.maintenance_section.add_widget(self.btn_dedupe_history)
+    self.btn_maint_dedupe = QPushButton(_("Удалить дубли", "Remove duplicates"))
+    self.btn_maint_dedupe.setToolTip(_("Удалить дубликаты сообщений", "Remove duplicate messages"))
+    self.btn_maint_dedupe.setIcon(qta.icon('fa5s.broom', color='#ffffff'))
+    self.btn_maint_dedupe.setObjectName("SecondaryButton")
+    _make_compact(self.btn_maint_dedupe)
 
-    # -------- Разделитель --------
+    self.btn_maint_update_format = QPushButton(_("Обновить формат", "Update format"))
+    self.btn_maint_update_format.setIcon(qta.icon('fa5s.file-code', color='#ffffff'))
+    self.btn_maint_update_format.setObjectName("SecondaryButton")
+    _make_compact(self.btn_maint_update_format)
+
+    self.maintenance_section.add_widget(_btn_row(self.btn_maint_dedupe, self.btn_maint_update_format))
+
+    # -------- Разделитель + деструктивное действие (всегда «все») --------
     self.maintenance_section.add_widget(_make_separator())
 
-    # -------- Миграции данных — для всех персонажей --------
-    mig_all_title = QLabel(_("Для всех персонажей", "For all characters"))
-    mig_all_title.setStyleSheet("font-weight: 600;")
-    self.maintenance_section.add_widget(mig_all_title)
-
-    self.btn_migrate_db_all = QPushButton(_("Файлы → БД", "Files → DB"))
-    self.btn_migrate_db_all.setToolTip(
-        _("Перенести историю ВСЕХ персонажей из JSON-файлов в SQLite",
-          "Import history for ALL characters from JSON files into SQLite"))
-    self.btn_migrate_db_all.setIcon(qta.icon('fa5s.database', color='#ffffff'))
-    self.btn_migrate_db_all.setObjectName("SecondaryButton")
-    _make_compact(self.btn_migrate_db_all)
-
-    self.btn_migrate_to_structured_all = QPushButton(_("Теги → данные", "Tags → data"))
-    self.btn_migrate_to_structured_all.setToolTip(
-        _("Перенести теги из content в structured_data для ВСЕХ персонажей",
-          "Move inline tags into structured_data for ALL characters"))
-    self.btn_migrate_to_structured_all.setIcon(qta.icon('fa5s.exchange-alt', color='#ffffff'))
-    self.btn_migrate_to_structured_all.setObjectName("SecondaryButton")
-    _make_compact(self.btn_migrate_to_structured_all)
-
-    row_mig_all_1 = SettingsBodyWidget()
-    row_mig_all_1_l = QHBoxLayout(row_mig_all_1)
-    row_mig_all_1_l.setContentsMargins(0, 0, 0, 0)
-    row_mig_all_1_l.setSpacing(6)
-    row_mig_all_1_l.addWidget(self.btn_migrate_db_all, 1)
-    row_mig_all_1_l.addWidget(self.btn_migrate_to_structured_all, 1)
-    self.maintenance_section.add_widget(row_mig_all_1)
-
-    self.btn_reindex_global = QPushButton(_("Индекс нового", "Index new"))
-    self.btn_reindex_global.setToolTip(
-        _("Заполнить отсутствующие векторы для всех персонажей", "Fill missing vectors for all characters"))
-    self.btn_reindex_global.setIcon(qta.icon('fa5s.brain', color='#ffffff'))
-    self.btn_reindex_global.setObjectName("SecondaryButton")
-    _make_compact(self.btn_reindex_global)
-
-    self.btn_reindex_all_global = QPushButton(_("Переиндексация", "Reindex"))
-    self.btn_reindex_all_global.setToolTip(
-        _("Пересоздать все векторы для всех персонажей (медленно)",
-          "Regenerate ALL vectors for all characters (slow)"))
-    self.btn_reindex_all_global.setIcon(qta.icon('fa5s.brain', color='#ffffff'))
-    self.btn_reindex_all_global.setObjectName("SecondaryButton")
-    _make_compact(self.btn_reindex_all_global)
-
-    row_mig_all_2 = SettingsBodyWidget()
-    row_mig_all_2_l = QHBoxLayout(row_mig_all_2)
-    row_mig_all_2_l.setContentsMargins(0, 0, 0, 0)
-    row_mig_all_2_l.setSpacing(6)
-    row_mig_all_2_l.addWidget(self.btn_reindex_global, 1)
-    row_mig_all_2_l.addWidget(self.btn_reindex_all_global, 1)
-    self.maintenance_section.add_widget(row_mig_all_2)
-
-    self.btn_dedupe_all = QPushButton(_("Удалить дубли", "Remove duplicates"))
-    self.btn_dedupe_all.setToolTip(_("Удалить дубликаты у всех персонажей", "Remove duplicates for all characters"))
-    self.btn_dedupe_all.setIcon(qta.icon('fa5s.broom', color='#ffffff'))
-    self.btn_dedupe_all.setObjectName("SecondaryButton")
-    self.btn_dedupe_all.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    _make_compact(self.btn_dedupe_all)
-    self.maintenance_section.add_widget(self.btn_dedupe_all)
-
-    # -------- Разделитель --------
-    self.maintenance_section.add_widget(_make_separator())
-
-    self.btn_purge_deleted = QPushButton(_("Очистить удалённое", "Purge deleted"))
+    self.btn_purge_deleted = QPushButton(_("Очистить удалённое (все)", "Purge deleted (all)"))
     self.btn_purge_deleted.setToolTip(
         _("Физически удалить is_deleted=1 записи для всех персонажей с резервной копией",
           "Physically delete is_deleted=1 records for all characters with backup")
@@ -472,6 +366,9 @@ def build_character_settings_ui(self, parent_layout):
     self.btn_purge_deleted.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     _make_compact(self.btn_purge_deleted)
     self.maintenance_section.add_widget(self.btn_purge_deleted)
+
+    # Инициализируем активное состояние тумблера (после создания всех кнопок)
+    _set_history_scope("current")
 
     container_lay.addWidget(root)
     parent_layout.addWidget(container)
