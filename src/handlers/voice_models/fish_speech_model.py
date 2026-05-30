@@ -604,11 +604,33 @@ class FishSpeechModel(IVoiceModel):
 
         self._import_attempted = True
         try:
+            import fish_speech_lib
+            # fish_speech_lib импортирует свои подмодули через
+            # pyrootutils.setup_root(..., indicator=".project-root"), который ищет
+            # маркер ВВЕРХ от файла пакета. Когда библиотека лежит в отдельном
+            # Venv (а не в Lib игры), маркер из NEUROMITA_BASE_DIR не находится и
+            # инициализация падает с FileNotFoundError. Чекпоинты резолвятся
+            # относительно cwd (cwd setup_root не меняет), поэтому достаточно
+            # положить маркер рядом с самим пакетом — он попадёт в путь поиска.
+            self._ensure_fish_speech_project_root(fish_speech_lib)
+
             from fish_speech_lib.inference import FishSpeech
             self.fish_speech_module = FishSpeech
         except ImportError as ex:
             logger.info(ex)
             self.fish_speech_module = None
+
+    def _ensure_fish_speech_project_root(self, fish_speech_lib) -> None:
+        try:
+            pkg_file = getattr(fish_speech_lib, "__file__", None)
+            if not pkg_file:
+                return
+            marker = os.path.join(os.path.dirname(os.path.abspath(pkg_file)), ".project-root")
+            if not os.path.exists(marker):
+                open(marker, "w").close()
+                logger.info(f"Создан маркер .project-root для fish_speech_lib: {marker}")
+        except Exception as ex:
+            logger.warning(f"Не удалось создать .project-root для fish_speech_lib: {ex}")
 
     def get_display_name(self) -> str:
         mode = self._mode()
