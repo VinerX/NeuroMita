@@ -178,31 +178,37 @@ import importlib.util, ctypes, pathlib, os
 # Должен выполняться ДО любого import torch в процессе.
 # Если стоит CPU-вариант, а GPU — NVIDIA, переустанавливаем на CUDA.
 try:
-    from utils.torch_install_utils import decide_torch_install, TORCH_PACKAGES
+    from core.backends import get_backend_service
     from utils.gpu_utils import check_gpu_provider
+    from utils.pip_installer import PipInstaller
+    _backend_service = get_backend_service()
     _gpu = check_gpu_provider() or "CPU"
+    _backend_ctx = {"gpu_vendor": _gpu, "libs_dir": libs_dir}
+    _backend_kind = _backend_service.preferred_torch_kind(_backend_ctx)
     # Передаём libs_dir как target_dir — проверяем dist-info прямо в папке
     # установки, а не через importlib.metadata (который может найти torch из
     # другого Python-окружения).
-    _plan = decide_torch_install(_gpu, target_dir=libs_dir)
+    _status = _backend_service.get_status(_backend_kind, ctx=_backend_ctx)
+    _plan = {"action": _status.action, "reason": _status.reason}
     # Только реактивный апгрейд: если torch уже установлен в неправильном варианте.
     # Первичную установку делает lazy bootstrap (embedding_handler / cross_encoder).
-    from utils.torch_install_utils import get_installed_torch_variant as _get_torch_variant
-    if _plan["action"] == "reinstall" and _get_torch_variant(target_dir=libs_dir) is not None:
+    _installed_variant = _backend_service.get_installed_torch_variant(target_dir=libs_dir)
+    if _status.action == "reinstall" and _installed_variant is not None:
         logger.info(f"Torch bootstrap (early): gpu={_gpu}, action=reinstall (CPU→CUDA)")
-        from utils.pip_installer import PipInstaller
         _pip = PipInstaller(update_log=logger.info)
         logger.info("Удаление CPU-варианта PyTorch перед установкой CUDA...")
         _pip.uninstall_packages(
             ["torch", "torchaudio"],
             description="Удаление CPU-варианта PyTorch",
         )
-        _pip.install_package(
-            list(TORCH_PACKAGES),
-            description=_plan["description"],
-            extra_args=_plan.get("extra_args"),
+        _status = _backend_service.install_backend(
+            _backend_kind,
+            pip_installer=_pip,
+            ctx=_backend_ctx,
         )
-    elif _plan["action"] != "skip":
+        if not _status.ok:
+            raise RuntimeError(_status.reason)
+    elif _status.action != "skip":
         logger.info(f"Torch bootstrap (early): gpu={_gpu}, action={_plan['action']} — отложено до первого использования")
     else:
         logger.info(f"Torch bootstrap (early): gpu={_gpu}, action=skip — {_plan.get('reason', '')}")
@@ -214,7 +220,10 @@ except Exception as _torch_boot_err:
 # capi_dir = pathlib.Path(ort_spec.origin).parent / "capi"
 # ctypes.WinDLL(str(capi_dir / "libiomp5md.dll"))
 
-import onnxruntime
+try:
+    import onnxruntime  # noqa: F401
+except Exception:
+    onnxruntime = None
 
 from PyQt6.QtWidgets import QApplication
 

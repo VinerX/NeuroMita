@@ -9,10 +9,84 @@ import urllib.request
 import urllib.error
 
 from main_logger import logger
+from core.backends import BackendKind, get_backend_service
 from core.events import get_event_bus, Events, Event
 from utils.pip_installer import PipInstaller
 from core.install_types import InstallCallbacks, InstallAction, InstallPlan
 
+
+from packaging.utils import canonicalize_name
+from packaging.requirements import Requirement
+
+def _get_installed_constraints(target_dir: str, exclude_specs: list[str]) -> list[str]:
+    """
+    Сканирует target_dir на наличие установленных пакетов (.dist-info)
+    и возвращает список ограничений "package==version" для всех пакетов,
+    кроме тех, которые переданы в exclude_specs (устанавливаемые сейчас).
+    """
+    if not target_dir or not os.path.isdir(target_dir):
+        return []
+
+    # Шаг 1. Парсим каноничные имена пакетов, которые устанавливаем сейчас,
+    # чтобы не заблокировать их обновление.
+    excluded_names = set()
+    for spec in exclude_specs:
+        try:
+            req = Requirement(spec)
+            excluded_names.add(canonicalize_name(req.name))
+        except Exception:
+            # Фолбэк на случай сырой строки без сложного синтаксиса
+            name = spec.split(";", 1)[0].split("==")[0].split(">=")[0].split("<=")[0].strip()
+            excluded_names.add(canonicalize_name(name))
+
+    constraints = []
+    
+    # Шаг 2. Быстро сканируем папки .dist-info
+    try:
+        for item in os.listdir(target_dir):
+            if not item.endswith(".dist-info"):
+                continue
+
+            metadata_path = os.path.join(target_dir, item, "METADATA")
+            name: Optional[str] = None
+            version: Optional[str] = None
+
+            # Пробуем прочесть метаданные напрямую
+            if os.path.isfile(metadata_path):
+                try:
+                    with open(metadata_path, "r", encoding="utf-8", errors="ignore") as fh:
+                        for line in fh:
+                            lower = line.lower()
+                            if lower.startswith("name:"):
+                                name = line.split(":", 1)[1].strip()
+                            elif lower.startswith("version:"):
+                                version = line.split(":", 1)[1].strip()
+                            if name and version:
+                                break
+                except Exception:
+                    pass
+
+            # Если файл METADATA не прочитался, парсим имя папки
+            if name is None:
+                stem = item.rsplit(".dist-info", 1)[0]
+                parts = stem.split("-")
+                if len(parts) >= 2:
+                    name = parts[0]
+                    version = parts[-1]
+                else:
+                    name = stem
+                    version = ""
+
+            if name and version:
+                canon_name = canonicalize_name(name)
+                # Добавляем в оверрайды только если пакет не обновляется прямо сейчас
+                if canon_name not in excluded_names:
+                    constraints.append(f"{name}=={version}")
+                    
+    except Exception as e:
+        logger.warning(f"[InstallController] Ошибка сканирования установленных пакетов: {e}")
+
+    return constraints
 
 class InstallController:
     """
@@ -150,6 +224,73 @@ class InstallController:
                 missing.append(s)
         return missing
 
+    def _backend_actions(self, plan: InstallPlan, ctx: dict) -> list[InstallAction]:
+        required_backend = getattr(plan, "required_backend", None)
+        if required_backend is None:
+            return []
+
+        backend_service = get_backend_service()
+        backend_requirement = backend_service.build_requirement(required_backend)
+        if backend_requirement.kind == BackendKind.NONE:
+            return []
+
+        backend_ctx = dict(ctx or {})
+        backend_ctx.update(getattr(plan, "backend_context", {}) or {})
+
+        def _install_backend(*, pip_installer=None, callbacks=None, ctx=None, **_kwargs) -> bool:
+            if pip_installer is None:
+                return False
+            status = backend_service.install_backend(
+                backend_requirement,
+                pip_installer=pip_installer,
+                callbacks=callbacks,
+                ctx=backend_ctx,
+            )
+            return bool(status.ok)
+
+        def _validate_backend(*, callbacks=None, ctx=None, **_kwargs) -> bool:
+            status = backend_service.get_status(backend_requirement, ctx=backend_ctx)
+            if status.ok:
+                return True
+            if callbacks is not None:
+                try:
+                    callbacks.log(
+                        "Backend validation failed: "
+                        + ", ".join(
+                            value for value in (
+                                f"kind={status.requested_kind.value}",
+                                f"variant={status.variant}",
+                                f"provider={status.provider}",
+                                status.reason,
+                            )
+                            if value
+                        )
+                    )
+                except Exception:
+                    pass
+            return False
+
+        install_status = backend_service.get_status(backend_requirement, ctx=backend_ctx)
+        actions: list[InstallAction] = []
+        if not install_status.ok and install_status.action != "skip":
+            actions.append(
+                InstallAction(
+                    type="call",
+                    description=install_status.reason,
+                    progress=10,
+                    fn=_install_backend,
+                )
+            )
+        actions.append(
+            InstallAction(
+                type="call",
+                description="Validating backend runtime...",
+                progress=25,
+                fn=_validate_backend,
+            )
+        )
+        return actions
+
     def _download_http_files(
         self,
         files: list[dict],
@@ -280,13 +421,32 @@ class InstallController:
         ctx: dict,
     ) -> bool:
         cb = callbacks
+        backend_ctx = dict(ctx or {})
+        backend_ctx.update(getattr(plan, "backend_context", {}) or {})
+        backend_actions = self._backend_actions(plan, backend_ctx)
+        backend_requirement = getattr(plan, "required_backend", None)
+        if backend_requirement is not None:
+            backend_service = get_backend_service()
+            backend_requirement = backend_service.build_requirement(backend_requirement)
+            if backend_requirement.kind != BackendKind.NONE:
+                for act in (plan.actions or []):
+                    if (act.type or "").strip().lower() != "pip":
+                        continue
+                    if act.uv_overrides:
+                        continue
+                    act.uv_overrides = list(
+                        backend_service.build_uv_overrides(
+                            backend_requirement,
+                            requested_specs=act.packages or [],
+                        )
+                    )
 
-        if plan.already_installed:
+        if plan.already_installed and not backend_actions:
             cb.status(plan.already_installed_status or "Already installed")
             cb.progress(100)
             return True
 
-        actions = plan.actions or []
+        actions = backend_actions + (plan.actions or [])
         for act in actions:
             atype = (act.type or "").strip().lower()
 
@@ -301,18 +461,45 @@ class InstallController:
 
             if atype == "pip":
                 pkgs = act.packages or []
-                to_install = self._missing_pip_specs(pkgs)
+                if hasattr(pip_installer, "missing_specs"):
+                    to_install = pip_installer.missing_specs(pkgs)
+                else:
+                    to_install = self._missing_pip_specs(pkgs)
                 if not to_install:
                     if pkgs:
                         cb.log(f"Skip pip step (already satisfied): {', '.join(pkgs)}")
                     continue
 
                 cb.log(f"Installing: {', '.join(to_install)}")
-                ok = pip_installer.install_package(
-                    to_install,
-                    description=desc or "Installing...",
-                    extra_args=act.extra_args,
-                )
+                extra_args = list(act.extra_args or [])
+                
+                # --- ДИНАМИЧЕСКИЙ СБОР СУЩЕСТВУЮЩИХ ПАКЕТОВ ---
+                target_dir = os.environ.get("NEUROMITA_LIB_DIR", self.libs_path)
+                
+                # Сканируем папку Lib на наличие установленных пакетов и версий,
+                # исключая те, что мы устанавливаем прямо сейчас (to_install)
+                detected_constraints = _get_installed_constraints(target_dir, to_install)
+                
+                # Объединяем специфичные оверрайды бэкенда с обнаруженными в системе
+                local_overrides = list(act.uv_overrides or [])
+                combined_overrides = list(set(local_overrides + detected_constraints))
+                # ----------------------------------------------
+
+                install_with_overrides = getattr(pip_installer, "install_package_with_overrides", None)
+                if callable(install_with_overrides):
+                    ok = install_with_overrides(
+                        to_install,
+                        description=desc or "Installing...",
+                        extra_args=extra_args or None,
+                        uv_overrides=combined_overrides, # <-- Передаем дополненный список
+                    )
+                else:
+                    # Фолбэк на случай если метод оверрайдов недоступен
+                    ok = pip_installer.install_package(
+                        to_install,
+                        description=desc or "Installing...",
+                        extra_args=extra_args or None,
+                    )
                 if not ok:
                     cb.status("Failed")
                     cb.log("pip step failed")
@@ -340,7 +527,7 @@ class InstallController:
                     res = self._call_flex(act.fn, pip_installer=pip_installer, callbacks=cb, ctx=ctx)
                     if res is False:
                         cb.status("Failed")
-                        cb.log("call step returned False")
+                        cb.log(f"call step returned False: {desc or atype}")
                         return False
                 except Exception as e:
                     cb.status("Failed")

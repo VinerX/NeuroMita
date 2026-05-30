@@ -2,38 +2,60 @@
 from utils import getTranslationVariant as _
 
 
-def _apply_interface_mode_cb(gui, value):
+def _on_section_toggled(gui, category=None, value=None):
+    """Re-apply sidebar/tab visibility whenever a section checkbox flips."""
     try:
-        from ui.widgets.settings_panel import apply_interface_mode
-        apply_interface_mode(gui, value)
+        from ui.widgets.settings_panel import apply_section_visibility, set_section_enabled
+        if category is not None:
+            set_section_enabled(str(category), bool(value))
+        apply_section_visibility(gui)
     except Exception:
         pass
+
+
+def _build_section_visibility_config(gui):
+    """Build the section-toggle checkbox list dynamically from the central
+    SECTION_DEFAULTS map so the checkboxes can never go out of sync with the
+    settings tabs / sidebar. Replaces the old Basic/Advanced/Full dropdown."""
+    from ui.widgets.settings_panel import (
+        SECTION_DEFAULTS,
+        SECTION_LABELS,
+        TOGGLEABLE_SECTIONS,
+        _section_key,
+    )
+
+    items = [
+        {
+            'label': _('Включите только те разделы, которыми пользуетесь — '
+                       'остальные спрячутся из настроек и боковой панели.',
+                       'Enable only the sections you use — the rest are hidden '
+                       'from the settings and the sidebar.'),
+            'type': 'text',
+        },
+    ]
+    for cat in TOGGLEABLE_SECTIONS:
+        label_pair = SECTION_LABELS.get(cat, (cat.capitalize(), cat.capitalize()))
+        items.append({
+            'label': _(label_pair[0], label_pair[1]),
+            'key': _section_key(cat),
+            'type': 'checkbutton',
+            'default_checkbutton': SECTION_DEFAULTS[cat],
+            'command': lambda value, _gui=gui, _cat=cat: _on_section_toggled(_gui, _cat, value),
+        })
+    return items
 
 
 def setup_general_settings_controls(self, parent):
     create_section_header(parent, _("Основные настройки", "General Settings"))
 
-    # ── Режим отображения настроек ──────────────────────────────────────────
-    interface_mode_config = [
-        {
-            'label': _('Режим интерфейса', 'Interface mode'),
-            'key': 'INTERFACE_MODE', 'type': 'combobox',
-            'options': [_('Базовый', 'Basic'), _('Продвинутый', 'Advanced'), _('Полный', 'Full')],
-            'default': _('Базовый', 'Basic'),
-            'command': lambda v: _apply_interface_mode_cb(self, v),
-            'tooltip': _(
-                'Базовый — только самое нужное.\n'
-                'Продвинутый — добавляет озвучку, микрофон и связь с игрой.\n'
-                'Полный — все разделы настроек.',
-                'Basic — essentials only.\n'
-                'Advanced — adds voice, mic and game connection.\n'
-                'Full — all settings sections.'),
-        },
-    ]
+    # ── Видимость разделов настроек ─────────────────────────────────────────
+    # Replaces the old "Interface mode" Basic/Advanced/Full dropdown. Each
+    # non-general category gets its own checkbox; toggling rebuilds the
+    # settings tabs / sidebar visibility on the spot.
     create_settings_section(
         self, parent,
-        _('Режим отображения настроек', 'Settings UI mode'),
-        interface_mode_config,
+        _('Видимые разделы', 'Visible sections'),
+        _build_section_visibility_config(self),
         icon_name='fa5s.sliders-h',
     )
 
@@ -69,7 +91,11 @@ def setup_general_settings_controls(self, parent):
                       'Hide tags (<e>, <c>, <a>, [b], [i], [color]) in the displayed chat text.')},
 
         {'label': _('Выводить мышление', 'Show thinking'), 'key': 'SHOW_THINK_IN_GUI',
-         'type': 'checkbutton', 'default_checkbutton': True},
+         'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _('Отображать блок «мышления» модели как отдельное сообщение. '
+                      'Дублируется в Песочнице → Отладка.',
+                      "Display the model's thinking block as a separate message. "
+                      'Also available in Sandbox → Debug.')},
     ]
 
     create_settings_section(

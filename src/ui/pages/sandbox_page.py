@@ -619,6 +619,19 @@ class SandboxPage(QWidget):
         if "camera" in self._debug_summary_values:
             safe("camera", lambda: on_off(get("ENABLE_CAMERA_CAPTURE", False)))
 
+        # Sync memory progress bars in the Session tab so they always reflect
+        # the latest values (changed via settings page or memory profile).
+        for key, (bar, value_lbl) in getattr(self, "_memory_bars", {}).items():
+            try:
+                val = int(get(key, bar.value()) or 0)
+            except Exception:
+                val = bar.value()
+            try:
+                bar.setValue(val)
+                value_lbl.setText(str(val))
+            except Exception:
+                pass
+
     # --------- Activation -----------
     def on_activated(self):
         self._populate_chat_character_combobox()
@@ -731,6 +744,95 @@ class SandboxPage(QWidget):
             layout.addLayout(title_row)
         return card, layout
 
+    def _make_strip(self, title_text: str, icon_name: str | None = None) -> tuple[QWidget, QVBoxLayout]:
+        """Stack-panel section: flat, no card border, just a title row
+        with an optional icon and an underline. Used everywhere except the
+        State tab (which keeps cards on the character_state_panel)."""
+        strip = QWidget()
+        strip.setObjectName("SandboxInspectorStrip")
+        layout = QVBoxLayout(strip)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(8)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+        if icon_name:
+            icon_label = QLabel()
+            icon_label.setObjectName("SandboxSelectorIcon")
+            icon_label.setPixmap(qta.icon(icon_name, color="#ffd2ec").pixmap(14, 14))
+            title_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        title = QLabel(title_text)
+        title.setObjectName("SandboxStripTitle")
+        title_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addStretch(1)
+        layout.addLayout(title_row)
+
+        underline = QFrame()
+        underline.setObjectName("SandboxStripUnderline")
+        underline.setFixedHeight(1)
+        layout.addWidget(underline)
+
+        return strip, layout
+
+    def _make_info_row(
+        self,
+        label_text: str,
+        value_provider,
+        edit_target: str,
+        *,
+        edit_tooltip: str | None = None,
+    ) -> tuple[QWidget, QLabel]:
+        """One read-only row: [label] [bold value] [pencil button].
+
+        `value_provider` is a callable that returns the current text, OR a
+        QComboBox (then we mirror currentText() and listen for changes).
+        `edit_target` is the settings category key to jump to on pencil click.
+        Returns (widget, value_label) so the caller can store the label and
+        update it later if needed.
+        """
+        row = QWidget()
+        row.setObjectName("SandboxInfoRow")
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+
+        label = QLabel(label_text)
+        label.setObjectName("SandboxInfoLabel")
+        h.addWidget(label, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        value_label = QLabel("—")
+        value_label.setObjectName("SandboxInfoValue")
+        value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        h.addWidget(value_label, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+
+        edit_btn = QPushButton()
+        edit_btn.setObjectName("SandboxInfoEditBtn")
+        edit_btn.setIcon(qta.icon("fa6s.pen", color="#ffd2ec"))
+        edit_btn.setFixedSize(26, 26)
+        edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        edit_btn.setToolTip(edit_tooltip or _("Изменить в настройках", "Edit in settings"))
+        edit_btn.clicked.connect(lambda: self._jump_to_settings(edit_target))
+        h.addWidget(edit_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        # Wire up the value source
+        if isinstance(value_provider, QComboBox):
+            combo = value_provider
+
+            def _sync():
+                value_label.setText(combo.currentText() or "—")
+            _sync()
+            combo.currentTextChanged.connect(lambda _t: _sync())
+        elif callable(value_provider):
+            try:
+                value_label.setText(str(value_provider() or "—"))
+            except Exception:
+                value_label.setText("—")
+        else:
+            value_label.setText(str(value_provider or "—"))
+
+        return row, value_label
+
     def _build_title_bar(self) -> QFrame:
         title_card = QFrame()
         title_card.setObjectName("SandboxWorkspaceHeader")
@@ -794,89 +896,147 @@ class SandboxPage(QWidget):
         return scroll
 
     def _build_inspector_session_tab(self) -> QWidget:
+        from PyQt6.QtWidgets import QProgressBar
         page, layout = self._make_tab_page()
 
-        # ── Active session card (Character / Prompts / Model) ──
-        active_card, active_layout = self._make_inspector_card(_("Активная сессия", "Active session"), "fa6s.id-badge")
+        # ── Visible comboboxes (label + combo per row) ─────────────────────
+        # Other modules (chat_panel, character_settings/logic, etc.) reference
+        # gui.chat_*_combobox to read the active character / sync model lists.
+        # These are _NoWheelComboBox, so the mouse wheel can't change the
+        # selection — scrolling used to trigger a spurious re-initialization.
+        # To switch a value the user clicks the combo and picks an item; the
+        # final "Настроить…" entry jumps to the matching settings section.
+        def _session_combo(attr: str, *, tooltip: str, change_slot, by_text: bool = False) -> QComboBox:
+            combo = _NoWheelComboBox()
+            combo.setObjectName("ChatCharacterCombo")
+            combo.setToolTip(tooltip)
+            if by_text:
+                combo.currentTextChanged.connect(change_slot)
+            else:
+                combo.currentIndexChanged.connect(change_slot)
+            setattr(self.gui, attr, combo)
+            return combo
 
-        char_label = QLabel(_("Персонаж", "Character"))
-        char_label.setObjectName("SandboxInspectorLabel")
-        active_layout.addWidget(char_label)
+        def _combo_row(strip_layout, label_text: str, combo: QComboBox, leading=None) -> None:
+            row = QWidget()
+            row.setObjectName("SandboxInfoRow")
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(10)
+            lbl = QLabel(label_text)
+            lbl.setObjectName("SandboxInfoLabel")
+            lbl.setMinimumWidth(104)
+            h.addWidget(lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+            if leading is not None:
+                h.addWidget(leading, 0, Qt.AlignmentFlag.AlignVCenter)
+            h.addWidget(combo, 1, Qt.AlignmentFlag.AlignVCenter)
+            strip_layout.addWidget(row)
 
-        char_row = QHBoxLayout()
-        char_row.setSpacing(8)
-        char_row.setContentsMargins(0, 0, 0, 0)
+        # ── Активная сессия ────────────────────────────────────────────────
+        active_strip, active_layout = self._make_strip(_("Активная сессия", "Active session"), "fa6s.id-badge")
+
         self._character_avatar_label = QLabel()
         self._character_avatar_label.setObjectName("SandboxCharacterAvatar")
-        self._character_avatar_label.setFixedSize(28, 28)
-        char_row.addWidget(self._character_avatar_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._character_avatar_label.setFixedSize(22, 22)
 
-        self.gui.chat_character_combobox = _NoWheelComboBox()
-        self.gui.chat_character_combobox.setObjectName("ChatCharacterCombo")
-        self.gui.chat_character_combobox.setToolTip(_("Выбрать персонажа", "Select character"))
-        self.gui.chat_character_combobox.currentTextChanged.connect(self._on_chat_character_changed)
-        char_row.addWidget(self.gui.chat_character_combobox, 1)
-        active_layout.addLayout(char_row)
+        char_combo = _session_combo(
+            "chat_character_combobox",
+            tooltip=_("Выбрать персонажа", "Select character"),
+            change_slot=self._on_chat_character_changed,
+            by_text=True,
+        )
+        _combo_row(active_layout, _("Персонаж", "Character"), char_combo, leading=self._character_avatar_label)
 
-        prompt_label = QLabel(_("Набор промптов", "Prompt set"))
-        prompt_label.setObjectName("SandboxInspectorLabel")
-        active_layout.addWidget(prompt_label)
-        self.gui.chat_prompt_pack_combobox = _NoWheelComboBox()
-        self.gui.chat_prompt_pack_combobox.setObjectName("ChatCharacterCombo")
-        self.gui.chat_prompt_pack_combobox.setToolTip(_("Активный набор промптов", "Active prompt set"))
-        self.gui.chat_prompt_pack_combobox.currentIndexChanged.connect(self._on_chat_prompt_pack_changed)
-        active_layout.addWidget(self.gui.chat_prompt_pack_combobox)
+        prompt_combo = _session_combo(
+            "chat_prompt_pack_combobox",
+            tooltip=_("Активный набор промптов", "Active prompt set"),
+            change_slot=self._on_chat_prompt_pack_changed,
+        )
+        _combo_row(active_layout, _("Набор промптов", "Prompt set"), prompt_combo)
 
-        model_label = QLabel(_("Модель", "Model"))
-        model_label.setObjectName("SandboxInspectorLabel")
-        active_layout.addWidget(model_label)
-        self.gui.chat_model_combobox = _NoWheelComboBox()
-        self.gui.chat_model_combobox.setObjectName("ChatCharacterCombo")
-        self.gui.chat_model_combobox.setToolTip(_("Активный API-пресет (модель)", "Active API preset (model)"))
-        self.gui.chat_model_combobox.currentIndexChanged.connect(self._on_chat_model_changed)
-        active_layout.addWidget(self.gui.chat_model_combobox)
-        layout.addWidget(active_card)
+        model_combo = _session_combo(
+            "chat_model_combobox",
+            tooltip=_("Активный API-пресет (модель)", "Active API preset (model)"),
+            change_slot=self._on_chat_model_changed,
+        )
+        _combo_row(active_layout, _("Модель", "Model"), model_combo)
+        layout.addWidget(active_strip)
 
-        # ── Voice/ASR/RAG ──
-        session_card, session_layout = self._make_inspector_card(_("Голос и память", "Voice & memory"), "fa6s.sliders")
+        # ── Голос и микрофон ───────────────────────────────────────────────
+        voice_strip, voice_layout = self._make_strip(_("Голос и микрофон", "Voice & microphone"), "fa6s.sliders")
 
-        tts_label = QLabel(_("Голосовой вывод", "Voice output"))
-        tts_label.setObjectName("SandboxInspectorLabel")
-        session_layout.addWidget(tts_label)
-        self.gui.chat_tts_combobox = _NoWheelComboBox()
-        self.gui.chat_tts_combobox.setObjectName("ChatCharacterCombo")
-        self.gui.chat_tts_combobox.setToolTip(_("Способ озвучки", "Voice output"))
-        self.gui.chat_tts_combobox.currentIndexChanged.connect(self._on_chat_voice_changed)
-        session_layout.addWidget(self.gui.chat_tts_combobox)
+        tts_combo = _session_combo(
+            "chat_tts_combobox",
+            tooltip=_("Способ озвучки", "Voice output"),
+            change_slot=self._on_chat_voice_changed,
+        )
+        _combo_row(voice_layout, _("Голосовой вывод", "Voice output"), tts_combo)
 
-        asr_label = QLabel(_("Распознавание речи", "Speech recognition"))
-        asr_label.setObjectName("SandboxInspectorLabel")
-        session_layout.addWidget(asr_label)
-        self.gui.chat_asr_combobox = _NoWheelComboBox()
-        self.gui.chat_asr_combobox.setObjectName("ChatCharacterCombo")
-        self.gui.chat_asr_combobox.setToolTip(_("Установленные модели распознавания речи", "Installed speech recognition models"))
-        self.gui.chat_asr_combobox.currentIndexChanged.connect(self._on_chat_asr_changed)
-        session_layout.addWidget(self.gui.chat_asr_combobox)
+        asr_combo = _session_combo(
+            "chat_asr_combobox",
+            tooltip=_("Установленные модели распознавания речи", "Installed speech recognition models"),
+            change_slot=self._on_chat_asr_changed,
+        )
+        _combo_row(voice_layout, _("Распознавание речи", "Speech recognition"), asr_combo)
+        layout.addWidget(voice_strip)
 
-        rag_label = QLabel(_("Профиль памяти / RAG", "Memory / RAG profile"))
-        rag_label.setObjectName("SandboxInspectorLabel")
-        session_layout.addWidget(rag_label)
-        self.gui.chat_rag_combobox = _NoWheelComboBox()
-        self.gui.chat_rag_combobox.setObjectName("ChatCharacterCombo")
-        self.gui.chat_rag_combobox.setToolTip(_("Профиль памяти / RAG", "Memory / RAG profile"))
+        # ── Память и контекст ──────────────────────────────────────────────
+        memory_strip, memory_layout = self._make_strip(_("Память и контекст", "Memory & context"), "fa6s.brain")
+
+        rag_combo = _session_combo(
+            "chat_rag_combobox",
+            tooltip=_("Профиль памяти / RAG", "Memory / RAG profile"),
+            change_slot=self._on_rag_changed,
+            by_text=True,
+        )
         labels = self._memory_profile_labels()
-        self.gui.chat_rag_combobox.addItems([
+        rag_combo.addItems([
             labels.get("optimized", "Optimized"),
             labels.get("balanced", "Balanced"),
             labels.get("large", "Large"),
             labels.get("custom", "Custom"),
         ])
-        self.gui.chat_rag_combobox.currentTextChanged.connect(self._on_rag_changed)
-        session_layout.addWidget(self.gui.chat_rag_combobox)
-        layout.addWidget(session_card)
+        _combo_row(memory_layout, _("Профиль", "Profile"), rag_combo)
 
-        # ── Capture ──
-        capture_card, capture_layout = self._make_inspector_card(_("Захват", "Capture"), "fa6s.camera-retro")
+        # Live readout of the three memory dials as progress bars.
+
+        self._memory_bars = {}
+        for key, label_text, fallback, max_hint in (
+            ("MODEL_MESSAGE_LIMIT", _("Сообщений", "Messages"), 35, 100),
+            ("MEMORY_CAPACITY", _("Память", "Memory"), 50, 100),
+            ("RAG_MAX_RESULTS", _("RAG-результатов", "RAG results"), 50, 100),
+        ):
+            row = QWidget()
+            row.setObjectName("SandboxMemoryRow")
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(8)
+            lbl = QLabel(label_text)
+            lbl.setObjectName("SandboxInfoLabel")
+            lbl.setMinimumWidth(110)
+            rl.addWidget(lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+            bar = QProgressBar()
+            bar.setObjectName("SandboxMemoryBar")
+            bar.setRange(0, max_hint)
+            try:
+                bar.setValue(int(self.gui._get_setting(key, fallback) or fallback))
+            except Exception:
+                bar.setValue(int(fallback))
+            bar.setTextVisible(False)
+            bar.setFixedHeight(8)
+            rl.addWidget(bar, 1, Qt.AlignmentFlag.AlignVCenter)
+            value_lbl = QLabel(str(bar.value()))
+            value_lbl.setObjectName("SandboxInfoValue")
+            value_lbl.setMinimumWidth(28)
+            value_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            rl.addWidget(value_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+            memory_layout.addWidget(row)
+            self._memory_bars[key] = (bar, value_lbl)
+
+        layout.addWidget(memory_strip)
+
+        # ── Захват ─────────────────────────────────────────────────────────
+        capture_strip, capture_layout = self._make_strip(_("Захват", "Capture"), "fa6s.camera-retro")
         screen_cb = QCheckBox(_("Захват экрана", "Screen capture"))
         screen_cb.setObjectName("SandboxCaptureToggle")
         screen_cb.setChecked(bool(self.gui._get_setting("ENABLE_SCREEN_ANALYSIS", False)))
@@ -897,10 +1057,10 @@ class SandboxPage(QWidget):
         camera_cb.toggled.connect(lambda v: self._on_capture_toggle("ENABLE_CAMERA_CAPTURE", v))
         capture_layout.addWidget(camera_cb)
         self._capture_camera_cb = camera_cb
-        layout.addWidget(capture_card)
+        layout.addWidget(capture_strip)
 
-        # ── Quick actions ──
-        actions_card, actions_layout = self._make_inspector_card(_("Быстрые действия", "Quick actions"), "fa6s.bolt")
+        # ── Быстрые действия ───────────────────────────────────────────────
+        actions_strip, actions_layout = self._make_strip(_("Быстрые действия", "Quick actions"), "fa6s.bolt")
         self.gui.clear_chat_button = QPushButton(_("Очистить чат", "Clear chat"))
         self.gui.clear_chat_button.setObjectName("SandboxQuickAction")
         self.gui.clear_chat_button.clicked.connect(self.gui.clear_chat_display)
@@ -921,7 +1081,7 @@ class SandboxPage(QWidget):
         full_settings_btn.setObjectName("SandboxQuickAction")
         full_settings_btn.clicked.connect(lambda: self.gui.switch_main_page("settings"))
         actions_layout.addWidget(full_settings_btn)
-        layout.addWidget(actions_card)
+        layout.addWidget(actions_strip)
 
         layout.addStretch(1)
         return self._wrap_in_scroll(page)
@@ -1002,7 +1162,40 @@ class SandboxPage(QWidget):
     def _build_inspector_debug_tab(self) -> QWidget:
         page, layout = self._make_tab_page()
 
-        summary_card, summary_layout = self._make_inspector_card(_("Контекст сессии", "Session context"))
+        # ── Отображение сообщений ───────────────────────────────────────────
+        # Show-thinking moved here from General settings: the toggle controls
+        # the inline "thinking" message bubble. Default OFF so the sandbox
+        # stays uncluttered out of the box.
+        display_strip, display_layout = self._make_strip(_("Отображение сообщений", "Message display"), "fa6s.eye")
+
+        think_cb = QCheckBox(_("Показывать мышление", "Show thinking"))
+        think_cb.setObjectName("SandboxCaptureToggle")
+        think_cb.setChecked(bool(self.gui._get_setting("SHOW_THINK_IN_GUI", False)))
+        think_cb.setToolTip(
+            _(
+                "Показывать содержимое блока мышления модели как отдельное сообщение в чате.",
+                "Show the model's thinking block as a separate chat message.",
+            )
+        )
+        think_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_THINK_IN_GUI", v))
+        display_layout.addWidget(think_cb)
+        self._show_thinking_cb = think_cb
+
+        tags_cb = QCheckBox(_("Скрывать теги в чате", "Hide tags in chat"))
+        tags_cb.setObjectName("SandboxCaptureToggle")
+        tags_cb.setChecked(bool(self.gui._get_setting("HIDE_CHAT_TAGS", True)))
+        tags_cb.toggled.connect(lambda v: self._on_capture_toggle("HIDE_CHAT_TAGS", v))
+        display_layout.addWidget(tags_cb)
+
+        ts_cb = QCheckBox(_("Показывать время сообщений", "Show timestamps"))
+        ts_cb.setObjectName("SandboxCaptureToggle")
+        ts_cb.setChecked(bool(self.gui._get_setting("SHOW_CHAT_TIMESTAMPS", True)))
+        ts_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_CHAT_TIMESTAMPS", v))
+        display_layout.addWidget(ts_cb)
+        layout.addWidget(display_strip)
+
+        # ── Контекст сессии ─────────────────────────────────────────────────
+        summary_strip, summary_layout = self._make_strip(_("Контекст сессии", "Session context"), "fa6s.list-check")
         rows = [
             ("character", _("Персонаж", "Character")),
             ("prompts", _("Промпты", "Prompts")),
@@ -1019,11 +1212,11 @@ class SandboxPage(QWidget):
             row = QHBoxLayout()
             row.setSpacing(8)
             label = QLabel(label_text)
-            label.setObjectName("SandboxInspectorLabel")
+            label.setObjectName("SandboxInfoLabel")
             row.addWidget(label)
             row.addStretch()
             value = QLabel("—")
-            value.setObjectName("SandboxInspectorValue")
+            value.setObjectName("SandboxInfoValue")
             row.addWidget(value)
             summary_layout.addLayout(row)
             self._debug_summary_values[key] = value
@@ -1032,9 +1225,10 @@ class SandboxPage(QWidget):
         refresh_btn.setObjectName("SandboxQuickAction")
         refresh_btn.clicked.connect(self._refresh_debug_summary)
         summary_layout.addWidget(refresh_btn)
-        layout.addWidget(summary_card)
+        layout.addWidget(summary_strip)
 
-        diagnostics_card, diagnostics_layout = self._make_inspector_card(_("Диагностика", "Diagnostics"), "fa6s.screwdriver-wrench")
+        # ── Диагностика ─────────────────────────────────────────────────────
+        diagnostics_strip, diagnostics_layout = self._make_strip(_("Диагностика", "Diagnostics"), "fa6s.screwdriver-wrench")
         db_btn = QPushButton(_("Открыть DB персонажа", "Open character DB"))
         db_btn.setObjectName("SandboxQuickAction")
         db_btn.clicked.connect(self._open_selected_character_history)
@@ -1049,10 +1243,10 @@ class SandboxPage(QWidget):
         api_btn.setObjectName("SandboxQuickAction")
         api_btn.clicked.connect(lambda: self._jump_to_settings("api"))
         diagnostics_layout.addWidget(api_btn)
-        layout.addWidget(diagnostics_card)
+        layout.addWidget(diagnostics_strip)
 
-        # Debug panel controls migrated from DeveloperPage
-        debug_panel_card, debug_panel_layout = self._make_inspector_card(_("Параметры отладки", "Debug parameters"), "fa6s.bug")
+        # ── Параметры отладки (migrated debug panel) ────────────────────────
+        debug_panel_strip, debug_panel_layout = self._make_strip(_("Параметры отладки", "Debug parameters"), "fa6s.bug")
         try:
             from ui.settings.debug_settings import setup_debug_panel_controls
             setup_debug_panel_controls(self.gui, debug_panel_layout)
@@ -1060,7 +1254,7 @@ class SandboxPage(QWidget):
             err = QLabel(f"[debug_settings error] {exc}")
             err.setWordWrap(True)
             debug_panel_layout.addWidget(err)
-        layout.addWidget(debug_panel_card)
+        layout.addWidget(debug_panel_strip)
 
         layout.addStretch(1)
         return self._wrap_in_scroll(page)

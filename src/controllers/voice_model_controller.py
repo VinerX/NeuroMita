@@ -11,6 +11,7 @@ from main_logger import logger
 from managers.settings_manager import SettingsManager
 from utils import getTranslationVariant as _
 
+from core.backends import get_backend_service
 from core.events import get_event_bus, Events, Event
 
 try:
@@ -22,19 +23,12 @@ except Exception:
         return []
     def get_gpu_name_by_id(_id):
         return None
-
-
-def _get_voice_spec(model_id: str):
-    from handlers.voice_models.catalog import get_voice_spec
-    return get_voice_spec(model_id)
-
-
 class VoiceModelController:
     """
     Backend-контроллер локальных голосовых моделей.
     - source of truth for model catalog/settings (GET_MODEL_DATA)
     - source of truth for installed set (GET_INSTALLED_MODELS)
-    - runs install/uninstall via InstallController (Events.Install.RUN_WITH_UI/HEADLESS)
+    - routes install/uninstall through InstallableController
     """
 
     def __init__(self, config_dir: str = "Settings"):
@@ -119,6 +113,7 @@ class VoiceModelController:
             "cuda_devices": list(self.detected_cuda_devices or []),
             "gpu_name": self.gpu_name,
             "platform": platform.system(),
+            "libs_dir": os.environ.get("NEUROMITA_LIB_DIR"),
         }
 
     def _refresh_gpu_runtime_info(self) -> tuple[bool, bool]:
@@ -266,6 +261,7 @@ class VoiceModelController:
         status["detected_gpu_vendor"] = self.detected_gpu_vendor
         status["cuda_devices"] = list(self.detected_cuda_devices or [])
         status["gpu_name"] = self.gpu_name
+        status["backend_statuses"] = get_backend_service().status_snapshot(ctx=self._ctx())
 
         with self._lock:
             self._dependencies_status_cache = status
@@ -442,6 +438,15 @@ class VoiceModelController:
     def refresh_installed_models(self):
         ctx_base = self._ctx()
         vendors = [self.detected_gpu_vendor] if self.detected_gpu_vendor else ["NVIDIA", "AMD", "CPU"]
+        try:
+            from core.installables import ComponentCategory, make_component_id
+            from installables import get_installable_registry
+
+            registry = get_installable_registry()
+        except Exception:
+            registry = None
+            ComponentCategory = None
+            make_component_id = None
 
         installed = set()
         for m in self.get_default_model_structure():
@@ -449,8 +454,14 @@ class VoiceModelController:
             if not mid:
                 continue
 
-            spec = _get_voice_spec(mid)
-            if not spec:
+            component = None
+            if registry is not None and ComponentCategory is not None and make_component_id is not None:
+                try:
+                    component = registry.get(make_component_id(ComponentCategory.TTS, str(mid)))
+                except Exception:
+                    component = None
+
+            if component is None:
                 continue
 
             ok = False
@@ -458,7 +469,7 @@ class VoiceModelController:
                 ctx = dict(ctx_base)
                 ctx["gpu_vendor"] = v
                 try:
-                    if spec.is_installed(mid, ctx):
+                    if component.status(ctx).installed:
                         ok = True
                         break
                 except Exception:
@@ -472,64 +483,67 @@ class VoiceModelController:
 
     def start_install(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = 3600.0) -> bool:
         mid = str(model_id or "").strip()
-        spec = _get_voice_spec(mid)
-        if not spec:
-            logger.error(f"Unknown voice model spec for '{mid}'")
+        try:
+            from core.installables import ComponentCategory, make_component_id
+            from installables import get_installable_registry
+
+            component_id = make_component_id(ComponentCategory.TTS, mid)
+            component = get_installable_registry().require(component_id)
+            title = component.metadata().title
+        except Exception as exc:
+            logger.error(f"Unknown voice installable component for '{mid}': {exc}")
             return False
 
         ctx = self._ctx()
 
-        def runner(*args, **kwargs):
-            run_ctx = (kwargs.get("ctx") or {})
-            merged = dict(ctx)
-            merged.update(run_ctx)
-            return spec.build_install_plan(mid, merged)
-
         self.event_bus.emit(Events.VoiceModel.MODEL_INSTALL_STARTED, {"model_id": mid})
 
         self.event_bus.emit(
-            Events.Install.RUN_WITH_UI if with_ui else Events.Install.RUN_HEADLESS,
+            Events.Installable.INSTALL,
             {
+                "component_id": component_id,
                 "kind": "voice",
                 "item_id": mid,
                 "task_id": f"voice:install:{mid}",
-                "title": spec.title(mid),
+                "title": title,
                 "initial_status": _("Подготовка...", "Preparing..."),
                 "timeout_sec": float(timeout_sec or 3600.0),
+                "with_ui": bool(with_ui),
+                "ctx": ctx,
                 "meta": {"kind": "voice", "item_id": mid, "op": "install"},
-                "runner": runner,
             },
         )
         return True
 
     def start_uninstall(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = 3600.0) -> bool:
         mid = str(model_id or "").strip()
-        spec = _get_voice_spec(mid)
-        if not spec:
-            logger.error(f"Unknown voice model spec for '{mid}'")
+        try:
+            from core.installables import ComponentCategory, make_component_id
+            from installables import get_installable_registry
+
+            component_id = make_component_id(ComponentCategory.TTS, mid)
+            get_installable_registry().require(component_id)
+        except Exception as exc:
+            logger.error(f"Unknown voice installable component for '{mid}': {exc}")
             return False
 
         ctx = self._ctx()
 
-        def runner(*args, **kwargs):
-            run_ctx = (kwargs.get("ctx") or {})
-            merged = dict(ctx)
-            merged.update(run_ctx)
-            return spec.build_uninstall_plan(mid, merged)
-
         self.event_bus.emit(Events.VoiceModel.MODEL_UNINSTALL_STARTED, {"model_id": mid})
 
         self.event_bus.emit(
-            Events.Install.RUN_WITH_UI if with_ui else Events.Install.RUN_HEADLESS,
+            Events.Installable.UNINSTALL,
             {
+                "component_id": component_id,
                 "kind": "voice",
                 "item_id": mid,
                 "task_id": f"voice:uninstall:{mid}",
                 "title": _("Удаление локальной модели: ", "Uninstalling local model: ") + mid,
                 "initial_status": _("Подготовка...", "Preparing..."),
                 "timeout_sec": float(timeout_sec or 3600.0),
+                "with_ui": bool(with_ui),
+                "ctx": ctx,
                 "meta": {"kind": "voice", "item_id": mid, "op": "uninstall"},
-                "runner": runner,
             },
         )
         return True

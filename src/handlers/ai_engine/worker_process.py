@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 
 _SHARED_WORKER = "shared"
-_SHARED_SERVICES = ("tts", "asr", "rag")
+_SHARED_SERVICES = ("tts", "asr", "rag", "beats")
 
 
 def _ensure_lib_on_path() -> None:
@@ -235,4 +235,8 @@ def _load_service(service_name: str, emit_event: Callable[[str, Any], None]):
         from handlers.ai_engine.services.rag_service import RAGService
 
         return RAGService(emit_event=emit_event)
+    if sn == "beats":
+        from handlers.ai_engine.services.beats_service import BeatsService
+
+        return BeatsService(emit_event=emit_event)
     raise RuntimeError(f"Unknown service_name: {service_name}")

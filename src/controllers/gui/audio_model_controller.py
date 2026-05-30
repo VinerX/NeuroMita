@@ -16,7 +16,7 @@ class AudioModelController(BaseController):
         self.event_bus.subscribe(Events.Audio.OPEN_VOICE_MODEL_SETTINGS_DIALOG, self._on_open_voice_model_settings_dialog, weak=False)
 
     def _on_open_voice_model_settings_dialog(self, event: Event):
-        self.event_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "voice_models", "payload": {}})
+        self.event_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "tts"}})
 
     def _on_check_triton_dependencies(self, event: Event):
         if self.view and hasattr(self.view, "check_triton_dependencies_signal") and self.view.check_triton_dependencies_signal:

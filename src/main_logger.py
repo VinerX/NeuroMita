@@ -1,8 +1,12 @@
 import logging
-import colorlog
 import os
 import sys
 from typing import Any, Optional
+
+try:
+    import colorlog
+except Exception:
+    colorlog = None
 
 # -----------------------------------------------------------------------------
 # Кастомные уровни логирования
@@ -78,22 +82,26 @@ class CustomLogger(logging.Logger):
     def _setup_handlers(self) -> None:
         """Настройка обработчиков для логгера."""
         # Консольный обработчик
-        console_handler = colorlog.StreamHandler()
-        console_handler.setFormatter(
-            colorlog.ColoredFormatter(
-                '%(log_color)s%(levelname)-8s %(location)-30s | %(message)s',
-                log_colors={
-                    'DEBUG':    'white',
-                    'PROGRESS': 'light_blue',
-                    'INFO':     'white',
-                    'NOTIFY':   'light_purple',
-                    'WARNING':  'yellow',
-                    'SUCCESS':  'light_green',
-                    'ERROR':    'red',
-                    'CRITICAL': 'red,bg_white',
-                },
+        if colorlog is not None:
+            console_handler = colorlog.StreamHandler()
+            console_handler.setFormatter(
+                colorlog.ColoredFormatter(
+                    '%(log_color)s%(levelname)-8s %(location)-30s | %(message)s',
+                    log_colors={
+                        'DEBUG':    'white',
+                        'PROGRESS': 'light_blue',
+                        'INFO':     'white',
+                        'NOTIFY':   'light_purple',
+                        'WARNING':  'yellow',
+                        'SUCCESS':  'light_green',
+                        'ERROR':    'red',
+                        'CRITICAL': 'red,bg_white',
+                    },
+                )
             )
-        )
+        else:
+            console_handler = logging.StreamHandler()
+            console_handler.setFormatter(logging.Formatter('%(levelname)-8s %(location)-30s | %(message)s'))
         console_handler.addFilter(ProjectFilter())
         console_handler.addFilter(LocationFilter())
         

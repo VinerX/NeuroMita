@@ -10,7 +10,14 @@ from utils import getTranslationVariant as _, get_character_voice_paths
 from utils.gpu_utils import check_gpu_provider
 
 from handlers.voice_models.base_model import IVoiceModel
-from handlers.voice_models.edge_tts_rvc_model import EdgeTTS_RVC_Model
+from handlers.voice_models.edge_tts_rvc_model import (
+    EDGE_TTS_RVC_CUDA_ID,
+    EDGE_TTS_RVC_ONNX_ID,
+    SILERO_RVC_CUDA_ID,
+    SILERO_RVC_ONNX_ID,
+    EdgeTTSRVCCudaModel,
+    EdgeTTSRVCOnnxModel,
+)
 from handlers.voice_models.fish_speech_model import FishSpeechModel
 from handlers.voice_models.f5_tts_model import F5TTSModel
 
@@ -39,24 +46,36 @@ class LocalVoice:
         self.current_model_id: Optional[str] = None
         self.active_model_instance: Optional[IVoiceModel] = None
 
-        edge_rvc_handler = EdgeTTS_RVC_Model(self, "edge_rvc_handler")
-        fish_handler = FishSpeechModel(self, "fish_handler", rvc_handler=edge_rvc_handler)
-        f5_handler = F5TTSModel(self, "f5_handler", rvc_handler=edge_rvc_handler)
+        edge_rvc_cuda_handler = EdgeTTSRVCCudaModel(self, "edge_rvc_cuda_handler")
+        edge_rvc_onnx_handler = EdgeTTSRVCOnnxModel(self, "edge_rvc_onnx_handler")
+        rvc_handler = edge_rvc_cuda_handler if self.provider == "NVIDIA" else edge_rvc_onnx_handler
+        fish_handler = FishSpeechModel(self, "fish_handler", rvc_handler=rvc_handler)
+        f5_handler = F5TTSModel(self, "f5_handler", rvc_handler=rvc_handler)
 
         self._registry: Dict[str, IVoiceModel] = self._build_registry_from_handlers(
-            [edge_rvc_handler, fish_handler, f5_handler]
+            [edge_rvc_cuda_handler, edge_rvc_onnx_handler, fish_handler, f5_handler]
         )
 
         if not self._registry:
             self._registry = {
-                "low": edge_rvc_handler,
-                "low+": edge_rvc_handler,
+                EDGE_TTS_RVC_CUDA_ID: edge_rvc_cuda_handler,
+                EDGE_TTS_RVC_ONNX_ID: edge_rvc_onnx_handler,
+                SILERO_RVC_CUDA_ID: edge_rvc_cuda_handler,
+                SILERO_RVC_ONNX_ID: edge_rvc_onnx_handler,
                 "medium": fish_handler,
                 "medium+": fish_handler,
                 "medium+low": fish_handler,
                 "high": f5_handler,
                 "high+low": f5_handler,
             }
+
+    def _resolve_model_id(self, model_id: str) -> str:
+        model_id = str(model_id or "").strip()
+        if model_id == "low":
+            return EDGE_TTS_RVC_CUDA_ID if self.provider == "NVIDIA" else EDGE_TTS_RVC_ONNX_ID
+        if model_id == "low+":
+            return SILERO_RVC_CUDA_ID if self.provider == "NVIDIA" else SILERO_RVC_ONNX_ID
+        return model_id
 
     def _build_registry_from_handlers(self, handlers: List[IVoiceModel]) -> Dict[str, IVoiceModel]:
         reg: Dict[str, IVoiceModel] = {}
@@ -104,23 +123,22 @@ class LocalVoice:
         return configs
 
     def is_model_installed(self, model_id: str) -> bool:
-        model_id = str(model_id or "").strip()
+        model_id = self._resolve_model_id(model_id)
         if not model_id:
             return False
 
         try:
-            from handlers.voice_models.catalog import get_voice_spec
-
-            spec = get_voice_spec(model_id)
-            if not spec:
+            model = self._registry.get(model_id)
+            if model is None:
                 return False
 
             ctx = {"gpu_vendor": self.provider or "CPU"}
-            return bool(spec.is_installed(model_id, ctx))
+            return bool(model.__class__.is_model_installed(model_id, ctx))
         except Exception:
             return False
 
     def is_model_initialized(self, model_id: str) -> bool:
+        model_id = self._resolve_model_id(model_id)
         model = self._registry.get(model_id)
         if not model:
             return False
@@ -130,7 +148,7 @@ class LocalVoice:
             return False
 
     def select_model(self, model_id: str) -> None:
-        model_id = str(model_id or "").strip()
+        model_id = self._resolve_model_id(model_id)
         model = self._registry.get(model_id)
         if not model:
             raise RuntimeError(f"Unknown voice model_id: {model_id}")
@@ -139,7 +157,7 @@ class LocalVoice:
         self.active_model_instance = model
 
     def initialize_model(self, model_id: str, *, init: bool = False) -> bool:
-        model_id = str(model_id or "").strip()
+        model_id = self._resolve_model_id(model_id)
         model = self._registry.get(model_id)
         if not model:
             logger.error(f"Unknown model id for init: {model_id}")

@@ -22,6 +22,7 @@ from controllers.history_controller import HistoryController
 from controllers.graph_controller import GraphController
 from controllers.voice_model_controller import VoiceModelController
 from controllers.install_controller import InstallController
+from controllers.installable_controller import InstallableController
 from controllers.protocols_controller import ProtocolsController
 from controllers.embedding_controller import EmbeddingController
 from controllers.ai_engine_controller import AIEngineController
@@ -74,6 +75,9 @@ class MainController:
 
         self.install_controller = InstallController()
         logger.notify("InstallController успешно инициализирован.")
+
+        self.installable_controller = InstallableController()
+        logger.notify("InstallableController initialized.")
 
         self.ai_engine_controller = AIEngineController()
         logger.notify(

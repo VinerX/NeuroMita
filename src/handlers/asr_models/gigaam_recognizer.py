@@ -10,6 +10,7 @@ import urllib.request
 import urllib.error
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from core.backends import BackendKind, get_backend_service
 from core.install_requirements import InstallRequirement, check_requirements
 
 from utils import getTranslationVariant as _
@@ -145,38 +146,22 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
 
     # ---------- dependency model ----------
     def requirements(self):
+        backend_kind = self.required_backend({
+            "device": self.gigaam_device,
+            "gpu_vendor": self._current_gpu or "CPU",
+        })
         return [
-            InstallRequirement(id="torch", kind="python_module", module="torch", required=True),
-            InstallRequirement(id="torchaudio", kind="python_module", module="torchaudio", required=True),
+            InstallRequirement(id=f"backend_{backend_kind.value}", kind="backend", backend_kind=backend_kind, required=True),
             InstallRequirement(id="omegaconf", kind="python_module", module="omegaconf", required=True),
             InstallRequirement(id="hydra", kind="python_module", module="hydra", required=True),
             InstallRequirement(id="sentencepiece", kind="python_module", module="sentencepiece", required=True),
 
             InstallRequirement(id="silero_vad", kind="python_module", module="silero_vad", required=True),
             InstallRequirement(id="sounddevice", kind="python_module", module="sounddevice", required=True),
-            InstallRequirement(id="numpy", kind="python_module", module="numpy", required=True),
         ]
 
     def pip_install_steps(self, ctx: dict) -> List[dict]:
-        gpu = (ctx.get("gpu_vendor") or "CPU")
-        device = str(ctx.get("device") or "auto").strip().lower()
-
         steps: List[dict] = []
-
-        if gpu == "NVIDIA" and device in ("auto", "cuda"):
-            steps.append({
-                "progress": 10,
-                "description": _("Installing PyTorch with CUDA (cu128)...", "Installing PyTorch with CUDA (cu128)..."),
-                "packages": ["torch==2.7.1", "torchaudio==2.7.1"],
-                "extra_args": ["--index-url", "https://download.pytorch.org/whl/cu128"]
-            })
-        else:
-            steps.append({
-                "progress": 10,
-                "description": _("Installing PyTorch CPU...", "Installing PyTorch CPU..."),
-                "packages": ["torch==2.7.1", "torchaudio==2.7.1"],
-                "extra_args": None
-            })
 
         steps.append({
             "progress": 30,
@@ -197,14 +182,11 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             "packages": ["sounddevice"],
             "extra_args": None
         })
-        steps.append({
-            "progress": 65,
-            "description": _("Installing numpy...", "Installing numpy..."),
-            "packages": ["numpy"],
-            "extra_args": None
-        })
 
         return steps
+
+    def required_backend(self, ctx: dict) -> BackendKind:
+        return get_backend_service().preferred_torch_kind(ctx)
 
     def is_installed(self) -> bool:
         if self._current_gpu is None:

@@ -14,7 +14,7 @@ from main_logger import logger
 
 _VALID_MODES = frozenset(("auto", "shared", "split"))
 _SHARED_WORKER = "shared"
-_DEFAULT_SERVICES = ("tts", "asr", "rag")
+_DEFAULT_SERVICES = ("tts", "asr", "rag", "beats")
 
 
 def _detect_gpu_vendor() -> str:

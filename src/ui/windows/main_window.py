@@ -8,9 +8,8 @@ from ui.pages.news_page import build_news_page
 from ui.pages.news_support import get_news_content as load_news_content
 from ui.pages.news_support import get_news_releases as load_news_releases
 from ui.widgets.launcher_shell_sidebar import LauncherSidebarWidget
-from ui.widgets.settings_panel import apply_interface_mode
+from ui.widgets.settings_panel import apply_section_visibility
 from ui.windows.app_window_base import AppWindowBase
-from utils import _
 
 
 class MainWindow(AppWindowBase):
@@ -53,7 +52,7 @@ class MainWindow(AppWindowBase):
             self.page_stack.addWidget(self.page_map[key])
 
         try:
-            apply_interface_mode(self, self.settings.get("INTERFACE_MODE") or _("Базовый", "Basic"))
+            apply_section_visibility(self)
         except Exception:
             pass
 

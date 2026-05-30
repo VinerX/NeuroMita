@@ -233,4 +233,10 @@ ELSE
     SET LOCAL result = p_header + p_toc + p_schema_open + p_schema_fields + p_rules + p_example + p_footer
 ENDIF
 
+IF MITA_CAMERA_ENABLED == True AND MITA_CAMERA_ON_DEMAND == True THEN
+    SET LOCAL result = result + """
+
+[Camera] You have a head-mounted camera. To take a snapshot of what is around you, add "camera_snapshot" to the "commands" field of any segment. The captured image will be delivered as a follow-up message (event_type: camera_snapshot_result). Use this when you want to see the environment or inspect something visually."""
+ENDIF
+
 RETURN result

@@ -11,6 +11,44 @@ from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget,
 from ui.chat.structured_panel import StructuredOutputPanel
 from core.events import get_event_bus, Events
 
+def _strip_hidden_image_descriptions(text: str) -> str:
+    import re
+
+    if not text:
+        return ""
+
+    cleaned = str(text)
+    cleaned = re.sub(
+        r"<image_description\b[^>]*>.*?</image_description\s*>",
+        "",
+        cleaned,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    cleaned = re.sub(r"^\s*\[Scene:[^\n]*\]\s*$", "", cleaned, flags=re.MULTILINE)
+
+    lines = cleaned.splitlines()
+    kept: list[str] = []
+    skipping_image_block = False
+
+    for line in lines:
+        stripped = line.strip()
+        if not skipping_image_block and re.match(r"^\[Image(?:\s+\d+)?:", stripped):
+            needs_multiline_skip = (not stripped.endswith("]")) or ("{" in stripped and not stripped.endswith("}]"))
+            if needs_multiline_skip:
+                skipping_image_block = True
+            continue
+
+        if skipping_image_block:
+            if stripped.endswith("}]") or stripped == "]" or stripped.endswith("]"):
+                skipping_image_block = False
+            continue
+
+        kept.append(line)
+
+    cleaned = "\n".join(kept)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
 def _wrap_panel_aligned(panel, role="assistant", parent=None):
     """
     Wrap a structured/think panel in a container to align perfectly with the message text bubble.
@@ -213,7 +251,7 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
     widget.regenerate_from_requested.connect(on_regenerate_from)
     widget.view_context_requested.connect(on_view_context)
 
-def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None):
+def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None, ui_images=None):
     font_size = _get_font_size(gui)
     max_bw = int(gui._get_setting("CHAT_MAX_BUBBLE_WIDTH", 600))
     chat_parent = gui.chat_window.get_layout_parent()
@@ -284,7 +322,11 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
                 text_parts.append(item.get("text") or item.get("content", ""))
             elif item.get("type") == "image_url":
                 image_url = item.get("image_url", {}).get("url", "")
-                if image_url: images.append(image_url)
+                if image_url:
+                    images.append({
+                        "url": image_url,
+                        "display_role": item.get("display_role"),
+                    })
     elif isinstance(content, str):
         text_parts.append(content)
 
@@ -294,6 +336,13 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         elif role in ("system", "event"): speaker_name = _("Система", "System")
 
     full_text = "".join(text_parts).strip()
+    has_any_images = bool(images or ui_images)
+
+    # When ui_images are provided the real images will be shown as bubbles below.
+    # Strip the "[Image: ...]" placeholder text so it doesn't clutter the chat.
+    if has_any_images:
+        full_text = _strip_hidden_image_descriptions(full_text)
+
     hide_tags = gui._get_setting("HIDE_CHAT_TAGS", False)
     if hide_tags:
         import re
@@ -322,10 +371,15 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
     if len(target_groups) > 1:
         for i, (target, texts) in enumerate(target_groups):
             group_text = " ".join(t.strip() for t in texts).strip()
+            if has_any_images:
+                group_text = _strip_hidden_image_descriptions(group_text)
             if hide_tags:
                 import re
                 group_text = re.sub(r'(<([^>]+)>)(.*?)(</\2>)|(<([^>]+)>)', "", group_text, flags=re.DOTALL)
                 group_text = re.sub(r' +', ' ', group_text).strip()
+
+            if not group_text:
+                continue
                 
             is_last = (i == len(target_groups) - 1)
             is_self = target and speaker_name.lower().startswith(target.lower())
@@ -346,7 +400,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             if is_last and _pending_struct_panel is not None:
                 w.set_structured_ref(_pending_struct_panel)
             gui.chat_window.add_message_widget(w, at_start=insert_at_start)
-    else:
+    elif full_text:
         msg_widget = MessageWidget(
             role=role, speaker_name=speaker_name, content_text=full_text,
             show_avatar=(role not in ("system", "event", "think", "structured")),
@@ -363,9 +417,49 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         wrapped = _wrap_panel_aligned(_pending_struct_panel, role, parent=chat_parent)
         gui.chat_window.add_message_widget(wrapped, at_start=insert_at_start)
 
-    for image_data in images:
-        img_widget = ImageWidget(image_data, role=role, max_bubble_width=max_bw, parent=chat_parent)
-        wrapped_img = _wrap_panel_aligned(img_widget, role, parent=chat_parent)
+    ui_image_entries = list(ui_images or [])
+    ui_image_by_url = {
+        str(img.get("url") or ""): img
+        for img in ui_image_entries
+        if isinstance(img, dict) and img.get("url")
+    }
+    rendered_urls = set()
+
+    # Images from the current live message or reconstructed history.
+    for image_entry in images:
+        image_url = image_entry.get("url", "") if isinstance(image_entry, dict) else str(image_entry or "")
+        image_key = str(image_url or "")
+        img_info = ui_image_by_url.get(image_key, {})
+        image_role = (
+            img_info.get("display_role")
+            or (image_entry.get("display_role") if isinstance(image_entry, dict) else None)
+            or role
+        )
+        img_widget = ImageWidget(
+            image_url,
+            role=image_role,
+            max_bubble_width=max_bw,
+            description=img_info.get("description", ""),
+            parent=chat_parent,
+        )
+        wrapped_img = _wrap_panel_aligned(img_widget, image_role, parent=chat_parent)
+        gui.chat_window.add_message_widget(wrapped_img, at_start=insert_at_start)
+        if image_key:
+            rendered_urls.add(image_key)
+
+    # Legacy fallback for history entries that still only have UI-side image metadata.
+    for img_info in ui_image_entries:
+        image_url = str(img_info.get("url", "") or "")
+        if not image_url or image_url in rendered_urls:
+            continue
+        img_widget = ImageWidget(
+            image_url,
+            role=img_info.get("display_role") or role,
+            max_bubble_width=max_bw,
+            description=img_info.get("description", ""),
+            parent=chat_parent,
+        )
+        wrapped_img = _wrap_panel_aligned(img_widget, img_info.get("display_role") or role, parent=chat_parent)
         gui.chat_window.add_message_widget(wrapped_img, at_start=insert_at_start)
 
 

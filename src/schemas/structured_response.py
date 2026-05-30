@@ -153,6 +153,13 @@ class StructuredResponse(BaseModel):
                     "This field is never shown to the player."
     )
 
+    image_description: Optional[str] = Field(
+        default=None,
+        description="If the user sent one or more images, briefly describe what you see "
+                    "before composing your segments. This description is stored in memory "
+                    "and never shown to the player. Omit if no images were received."
+    )
+
     segments: List[ResponseSegment] = Field(
         default_factory=list,
         description="Ordered list of response segments with positional commands",

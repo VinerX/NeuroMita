@@ -9,7 +9,19 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from managers.settings_manager import SettingsManager
+try:
+    from managers.settings_manager import SettingsManager
+except Exception:
+    class SettingsManager:
+        instance = None
+
+        @staticmethod
+        def get(_key, default=None):
+            return default
+
+        @staticmethod
+        def set(_key, _value):
+            return None
 from main_logger import logger
 
 

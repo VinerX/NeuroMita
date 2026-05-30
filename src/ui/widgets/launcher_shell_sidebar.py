@@ -279,6 +279,22 @@ class LauncherSidebarWidget(QFrame):
             need = _rank.get(section.min_mode, 0)
             button.setVisible(need <= mode_rank)
 
+    def apply_section_visibility(self, is_enabled_fn) -> None:
+        """Show/hide nav buttons via the per-section toggles. Sections whose
+        spec defaults to "basic" stay always visible; gated sections (e.g.
+        "developer") follow their SECTION_<KEY>_ENABLED toggle."""
+        for section in self._sections:
+            button = self._nav_buttons.get(section.key)
+            if button is None:
+                continue
+            if section.min_mode == "basic":
+                button.setVisible(True)
+                continue
+            try:
+                button.setVisible(bool(is_enabled_fn(section.key)))
+            except Exception:
+                button.setVisible(True)
+
     def set_language_label(self, text: str) -> None:
         # Сохранено для совместимости со старым API: новый сайдбар показывает
         # отдельные кнопки RU/EN, поэтому label больше не используется.

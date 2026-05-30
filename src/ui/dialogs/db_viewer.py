@@ -21,8 +21,11 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QTabWidget,
     QTableView,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -1081,6 +1084,379 @@ class _AdvancedTablePage(QWidget):
         self.refresh()
 
 
+# ---------------------------------------------------------------------------
+# Images Tab
+# ---------------------------------------------------------------------------
+
+class _ImageDescriptionsPage(QWidget):
+    """
+    DB viewer tab: all history messages that contain images.
+
+    • One row per message — shows ALL multimodal messages, with or without descriptions.
+    • Rows without a stored description show an empty Description cell (orange tint).
+    • Double-click the Description cell to add/edit a description manually
+      (saved back to meta_data → image_descriptions["manual"] in world.db).
+    • Bottom panel: full description text + thumbnail preview.
+    """
+
+    # Query ALL multimodal messages (with or without stored descriptions)
+    _SQL = """
+        SELECT id, timestamp, character_id, event_type, meta_data
+        FROM history
+        WHERE (meta_data LIKE '%"multimodal_parts"%'
+               OR meta_data LIKE '%"is_multimodal_list"%')
+          AND is_deleted = 0
+        {char_filter}
+        ORDER BY timestamp DESC
+        LIMIT 2000
+    """
+
+    # col 0 = ID (hidden), 1 = Time, 2 = Character, 3 = Event, 4 = Description, 5 = File
+    HEADERS = ("ID", _("Время", "Time"), _("Персонаж", "Character"),
+               _("Событие", "Event"), _("Описание", "Description"),
+               _("Файл", "File"))
+
+    _COL_DESC = 4
+    _COL_FILE = 5
+
+    _ORANGE_BG = "background-color: rgba(255, 160, 50, 40);"
+
+    def __init__(self, parent: QWidget, *, db: QSqlDatabase, character_id: Optional[str] = None):
+        super().__init__(parent)
+        self.db = db
+        self.character_id = character_id
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(4, 4, 4, 4)
+
+        # ── Toolbar ──────────────────────────────────────────────────────────
+        bar = QHBoxLayout()
+        bar.addWidget(QLabel(_("Поиск:", "Search:")))
+        self._search = QLineEdit()
+        self._search.setPlaceholderText(_("Введите текст…", "Type to filter…"))
+        self._search.textChanged.connect(self._apply_filter)
+        bar.addWidget(self._search, 1)
+        btn_refresh = QPushButton(_("Обновить", "Refresh"))
+        btn_refresh.clicked.connect(self.refresh)
+        bar.addWidget(btn_refresh)
+
+        lbl_hint = QLabel(_("(двойной клик по описанию — редактировать)",
+                             "(double-click description to edit)"))
+        lbl_hint.setStyleSheet("color: gray; font-size: 11px;")
+        bar.addWidget(lbl_hint)
+        root.addLayout(bar)
+
+        # ── Splitter: table on top, detail panel below ────────────────────────
+        splitter = QSplitter(Qt.Orientation.Vertical, self)
+        root.addWidget(splitter, 1)
+
+        # Table — no inline edit triggers; double-click handled manually
+        self._table = QTableWidget(0, len(self.HEADERS), self)
+        self._table.setHorizontalHeaderLabels(list(self.HEADERS))
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._table.setAlternatingRowColors(True)
+        self._table.setSortingEnabled(True)
+        self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.setColumnHidden(0, True)        # hide raw id
+        self._table.verticalHeader().setVisible(False)
+        self._table.currentItemChanged.connect(self._on_row_selected)
+        self._table.doubleClicked.connect(self._on_double_click)
+        splitter.addWidget(self._table)
+
+        # Detail panel
+        detail_widget = QWidget()
+        detail_layout = QHBoxLayout(detail_widget)
+        detail_layout.setContentsMargins(0, 4, 0, 0)
+
+        self._detail_text = QPlainTextEdit()
+        self._detail_text.setReadOnly(True)
+        self._detail_text.setMinimumHeight(80)
+        self._detail_text.setMaximumHeight(160)
+        detail_layout.addWidget(self._detail_text, 1)
+
+        self._thumb_label = QLabel()
+        self._thumb_label.setFixedSize(160, 120)
+        self._thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._thumb_label.setStyleSheet("border: 1px solid #888; background: #1a1a1a;")
+        self._thumb_label.setText(_("Нет превью", "No preview"))
+        detail_layout.addWidget(self._thumb_label)
+
+        splitter.addWidget(detail_widget)
+        splitter.setSizes([500, 150])
+
+        # Internal data store: list of dicts, one per message row
+        self._rows: list[dict] = []
+
+        self.refresh()
+
+    # ── Data loading ─────────────────────────────────────────────────────────
+
+    def refresh(self) -> None:
+        import json
+
+        char_filter = ""
+        if self.character_id:
+            escaped = _sql_escape_literal(str(self.character_id))
+            char_filter = f"AND character_id = '{escaped}'"
+
+        sql = self._SQL.format(char_filter=char_filter)
+        q = QSqlQuery(self.db)
+        rows: list[dict] = []
+
+        if q.exec(sql):
+            while q.next():
+                row_id   = q.value(0)
+                ts       = q.value(1) or ""
+                char_id  = q.value(2) or ""
+                evt_type = q.value(3) or ""
+                meta_raw = q.value(4) or ""
+
+                file_paths: list[str] = []
+                desc_text = ""
+                try:
+                    meta = json.loads(meta_raw)
+
+                    # Best available description (dict variant first, then legacy str)
+                    desc_dict = meta.get("image_descriptions")
+                    desc_legacy = meta.get("image_description")
+                    if isinstance(desc_dict, dict) and desc_dict:
+                        # Prefer manual > detailed > normal > brief > first available
+                        desc_text = (
+                            desc_dict.get("manual") or
+                            desc_dict.get("detailed") or
+                            desc_dict.get("normal") or
+                            desc_dict.get("brief") or
+                            next(iter(desc_dict.values()), "")
+                        )
+                    elif isinstance(desc_legacy, str) and desc_legacy:
+                        desc_text = desc_legacy
+
+                    for part in meta.get("multimodal_parts") or []:
+                        url = (part.get("image_url") or {}).get("url", "")
+                        if url and not url.startswith("data:") and not url.startswith("http"):
+                            file_paths.append(url)
+                except Exception:
+                    pass
+
+                file_str = "; ".join(file_paths)
+                rows.append({
+                    "id":       str(row_id),
+                    "ts":       str(ts),
+                    "char":     str(char_id),
+                    "event":    str(evt_type),
+                    "desc":     desc_text,
+                    "file":     file_str,
+                    "meta_raw": str(meta_raw),
+                })
+        else:
+            logger.warning(f"[ImageDescriptionsPage] SQL error: {q.lastError().text()}")
+
+        self._rows = rows
+        self._populate(rows)
+
+    def _populate(self, rows: list[dict]) -> None:
+        from PyQt6.QtGui import QColor
+
+        self._table.setSortingEnabled(False)
+        self._table.setRowCount(len(rows))
+
+        orange = QColor(255, 160, 50, 60)
+
+        for r, row in enumerate(rows):
+            vals = (row["id"], row["ts"], row["char"],
+                    row["event"], row["desc"], row["file"])
+            has_desc = bool(row["desc"].strip())
+            for c, v in enumerate(vals):
+                item = QTableWidgetItem(str(v))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if not has_desc:
+                    item.setBackground(orange)
+                self._table.setItem(r, c, item)
+
+        self._table.setSortingEnabled(True)
+        self._table.resizeColumnsToContents()
+        # Stretch the description column
+        self._table.horizontalHeader().setSectionResizeMode(
+            self._COL_DESC, QHeaderView.ResizeMode.Stretch
+        )
+
+    def _apply_filter(self, text: str = "") -> None:
+        text = (text or self._search.text()).strip().lower()
+        if not text:
+            self._populate(self._rows)
+            return
+        filtered = [
+            r for r in self._rows
+            if text in r["desc"].lower()
+            or text in r["char"].lower()
+            or text in r["event"].lower()
+            or text in r["ts"].lower()
+        ]
+        self._populate(filtered)
+
+    # ── Double-click → edit description ──────────────────────────────────────
+
+    def _on_double_click(self, index) -> None:
+        """Open a description editor when the user double-clicks the Description column."""
+        if not index.isValid():
+            return
+        if index.column() != self._COL_DESC:
+            return
+
+        row = index.row()
+        id_item = self._table.item(row, 0)
+        desc_item = self._table.item(row, self._COL_DESC)
+        if id_item is None:
+            return
+
+        row_id = id_item.text()
+        current_desc = desc_item.text() if desc_item else ""
+
+        self._open_desc_editor(row, row_id, current_desc)
+
+    def _open_desc_editor(self, table_row: int, row_id: str, current_desc: str) -> None:
+        import json
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_("Редактировать описание изображения",
+                              "Edit image description"))
+        dlg.resize(700, 300)
+
+        root = QVBoxLayout(dlg)
+        root.addWidget(QLabel(_("Описание (будет сохранено как 'manual' вариант):",
+                                 "Description (saved as 'manual' variant):")))
+        editor = QPlainTextEdit(dlg)
+        editor.setPlainText(current_desc)
+        editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        root.addWidget(editor, 1)
+
+        btn_row = QHBoxLayout()
+        btn_save = QPushButton(_("Сохранить", "Save"), dlg)
+        btn_cancel = QPushButton(_("Отмена", "Cancel"), dlg)
+        btn_row.addStretch(1)
+        btn_row.addWidget(btn_save)
+        btn_row.addWidget(btn_cancel)
+        root.addLayout(btn_row)
+
+        btn_cancel.clicked.connect(dlg.reject)
+
+        def do_save() -> None:
+            new_desc = editor.toPlainText().strip()
+
+            # Fetch current meta_data from DB
+            q_read = QSqlQuery(self.db)
+            q_read.prepare("SELECT meta_data FROM history WHERE id = ?")
+            q_read.addBindValue(int(row_id))
+            if not (q_read.exec() and q_read.next()):
+                QMessageBox.critical(dlg,
+                    _("Ошибка", "Error"),
+                    _("Не удалось загрузить запись из БД.", "Could not load record from DB."))
+                return
+
+            meta_raw = q_read.value(0) or "{}"
+            try:
+                meta = json.loads(meta_raw)
+            except Exception:
+                meta = {}
+
+            # Set or update the manual variant inside image_descriptions dict
+            desc_dict = meta.get("image_descriptions")
+            if not isinstance(desc_dict, dict):
+                desc_dict = {}
+                # Migrate legacy string if present
+                legacy = meta.get("image_description")
+                if isinstance(legacy, str) and legacy:
+                    desc_dict["normal"] = legacy
+            desc_dict["manual"] = new_desc
+            meta["image_descriptions"] = desc_dict
+
+            new_meta_json = json.dumps(meta, ensure_ascii=False)
+
+            q_upd = QSqlQuery(self.db)
+            q_upd.prepare("UPDATE history SET meta_data = ? WHERE id = ?")
+            q_upd.addBindValue(new_meta_json)
+            q_upd.addBindValue(int(row_id))
+            if not q_upd.exec():
+                err = q_upd.lastError().text()
+                logger.error(f"[ImageDescriptionsPage] meta_data update failed: {err}")
+                QMessageBox.critical(dlg,
+                    _("Ошибка сохранения", "Save Failed"),
+                    _("Не удалось сохранить описание:\n{err}",
+                      "Failed to save description:\n{err}").format(err=err))
+                return
+
+            # Update in-memory row and table cell
+            for stored_row in self._rows:
+                if stored_row["id"] == row_id:
+                    stored_row["desc"] = new_desc
+                    stored_row["meta_raw"] = new_meta_json
+                    break
+
+            if desc_item := self._table.item(table_row, self._COL_DESC):
+                desc_item.setText(new_desc)
+                # Remove orange tint now that we have a description
+                if new_desc.strip():
+                    from PyQt6.QtGui import QColor
+                    desc_item.setBackground(QColor(0, 0, 0, 0))
+                    for c in range(self._table.columnCount()):
+                        it = self._table.item(table_row, c)
+                        if it:
+                            it.setBackground(QColor(0, 0, 0, 0))
+
+            self._detail_text.setPlainText(new_desc)
+            dlg.accept()
+
+        btn_save.clicked.connect(do_save)
+        dlg.exec()
+
+    # ── Detail panel ─────────────────────────────────────────────────────────
+
+    def _on_row_selected(self, current, _previous) -> None:
+        if current is None:
+            self._detail_text.clear()
+            self._load_thumbnail("")
+            self._thumb_label.setText(_("Нет превью", "No preview"))
+            return
+
+        row = self._table.row(current)
+        desc_item = self._table.item(row, self._COL_DESC)
+        file_item = self._table.item(row, self._COL_FILE)
+
+        self._detail_text.setPlainText(desc_item.text() if desc_item else "")
+        self._load_thumbnail(file_item.text() if file_item else "")
+
+    def _load_thumbnail(self, file_path: str) -> None:
+        from PyQt6.QtGui import QPixmap
+        # file_path may be a semicolon-separated list — use the first one
+        first = (file_path or "").split(";")[0].strip()
+        if not first or not os.path.exists(first):
+            self._thumb_label.setPixmap(QPixmap())
+            self._thumb_label.setText(_("Нет файла", "No file"))
+            return
+        try:
+            pix = QPixmap(first)
+            if pix.isNull():
+                raise ValueError("null pixmap")
+            self._thumb_label.setPixmap(
+                pix.scaled(
+                    self._thumb_label.width() - 4,
+                    self._thumb_label.height() - 4,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+            self._thumb_label.setToolTip(first)
+            self._thumb_label.setText("")
+        except Exception:
+            self._thumb_label.setPixmap(QPixmap())
+            self._thumb_label.setText(_("Ошибка загрузки", "Load error"))
+
+    def cleanup(self) -> None:
+        pass  # Nothing to release (DB connection owned by DbViewerDialog)
+
+
 class DbViewerDialog(QDialog):
     """
     Advanced Database Viewer:
@@ -1119,10 +1495,12 @@ class DbViewerDialog(QDialog):
         self.history_page = _AdvancedTablePage(self, db=self.db, table_name="history", character_id=self.character_id)
         self.memories_page = _AdvancedTablePage(self, db=self.db, table_name="memories", character_id=self.character_id)
         self.variables_page = _AdvancedTablePage(self, db=self.db, table_name="variables", character_id=self.character_id)
+        self.image_desc_page = _ImageDescriptionsPage(self, db=self.db, character_id=self.character_id)
 
         self.tabs.addTab(self.history_page, _("История", "History"))
         self.tabs.addTab(self.memories_page, _("Память", "Memories"))
         self.tabs.addTab(self.variables_page, _("Переменные", "Variables"))
+        self.tabs.addTab(self.image_desc_page, _("Изображения", "Images"))
 
         if self._table_exists("embeddings"):
             self.embeddings_page = _AdvancedTablePage(self, db=self.db, table_name="embeddings", character_id=self.character_id)
@@ -1181,10 +1559,11 @@ class DbViewerDialog(QDialog):
 
     @property
     def _all_closeable(self) -> list:
-        """All pages including graph view (for cleanup)."""
+        """All pages including graph view and image descriptions (for cleanup)."""
         pages = list(self._all_pages)
         if self._graph_view_page is not None:
             pages.append(self._graph_view_page)
+        pages.append(self.image_desc_page)
         return pages
 
     def _apply_extended_to_all(self, enabled: bool) -> None:
@@ -1228,6 +1607,7 @@ class DbViewerDialog(QDialog):
     def refresh_all(self) -> None:
         for page in self._all_pages:
             page.refresh()
+        self.image_desc_page.refresh()
         if self._graph_view_page is not None:
             try:
                 self._graph_view_page._reload()

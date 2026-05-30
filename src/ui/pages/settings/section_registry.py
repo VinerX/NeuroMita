@@ -120,12 +120,12 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
     ),
     SettingsSectionSpec(
         key="screen",
-        icon_name="fa6s.display",
-        nav_label=("Экран", "Screen"),
-        title=("Экран и камера", "Screen and camera"),
+        icon_name="fa6s.image",
+        nav_label=("Изображения", "Images"),
+        title=("Изображения и камера", "Images and camera"),
         subtitle=(
-            "Захват экрана, анализ изображений и визуальный контекст.",
-            "Screen capture, image analysis and visual context.",
+            "Захват экрана, камера, описание изображений и хранение.",
+            "Screen capture, camera, image description and storage.",
         ),
         min_mode="full",
         builder_ref=screen_analysis_settings.setup_screen_analysis_controls,

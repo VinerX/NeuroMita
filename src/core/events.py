@@ -670,6 +670,20 @@ class Events:
         TASK_FAILED = "install_task_failed"
         RUN_BLOCKING = "run_install_blocking"
 
+    class Installable:
+        LIST = "installable_list"
+        GET = "installable_get"
+        GET_STATUS = "installable_get_status"
+        INSTALL = "installable_install"
+        UNINSTALL = "installable_uninstall"
+        INITIALIZE = "installable_initialize"
+        # ConfigurableComponent: settings schema + load/save (used by AI Hub
+        # "Settings" tab). Each handler returns its payload synchronously via
+        # emit_and_wait.
+        GET_SETTINGS_SCHEMA = "installable_get_settings_schema"
+        LOAD_SETTINGS = "installable_load_settings"
+        SAVE_SETTINGS = "installable_save_settings"
+
     class Character:
         GET_ALL = "character_get_all"
         GET = "character_get"

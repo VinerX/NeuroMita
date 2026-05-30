@@ -42,7 +42,7 @@ def build_microphone_settings_ui(self, parent_layout):
     root_lay.setSpacing(6)
 
     # 1) Кнопка в глоссарий
-    self.asr_manage_button = QPushButton(_("Каталог ASR моделей", "ASR Model Catalogue"))
+    self.asr_manage_button = QPushButton(_("Открыть AI Hub", "Open AI Hub"))
     self.asr_manage_button.setObjectName("SecondaryButton")
     self.asr_manage_button.setIcon(qta.icon("fa5s.list", color="#ffffff"))
     self.asr_manage_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)

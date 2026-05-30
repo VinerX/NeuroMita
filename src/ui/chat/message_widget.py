@@ -7,8 +7,8 @@ import math
 import time as _time
 import base64
 from PyQt6.QtWidgets import (
-    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QWidget, QSizePolicy,
-    QMenu, QApplication,
+    QDialog, QFrame, QHBoxLayout, QScrollArea, QVBoxLayout,
+    QLabel, QWidget, QSizePolicy, QMenu, QApplication,
 )
 from PyQt6.QtCore import Qt, QSize, QRectF, QPointF, pyqtSignal
 from PyQt6.QtGui import (
@@ -549,41 +549,75 @@ class MessageWidget(QWidget):
         self.copy_requested.emit(text)
 
 class ImageWidget(QWidget):
-    def __init__(self, image_data, role="assistant", max_bubble_width=600, parent=None):
+    """
+    A single image in the chat, displayed inside a BubbleFrame (same visual
+    style as text messages).  Left-click opens the image at full resolution.
+    """
+
+    _THUMB_MAX_W = 360
+    _THUMB_MAX_H = 400
+
+    def __init__(self, image_data, role="assistant", max_bubble_width=600, description="", parent=None):
         super().__init__(parent)
         self.setStyleSheet("background: transparent; border: none;")
-        self.MAX_WIDTH = min(400, max_bubble_width)
-        self.MAX_HEIGHT = 400
+        self._description = description or ""
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        thumb_w = min(self._THUMB_MAX_W, max_bubble_width - TAIL_W - 24)
 
-        frame = QFrame(self)
-        frame.setStyleSheet("""
-            QFrame { background-color: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 0px; }
-        """)
-        frame_layout = QVBoxLayout(frame)
-        frame_layout.setContentsMargins(0, 0, 0, 0)
-        frame_layout.setSpacing(0)
+        # Load once; keep original for full-size view
+        self._original_pixmap = self._load_image(image_data)
 
-        pixmap = self._load_image(image_data)
-        if not pixmap.isNull():
-            scaled = pixmap.scaledToWidth(self.MAX_WIDTH, Qt.TransformationMode.SmoothTransformation)
-            if scaled.height() > self.MAX_HEIGHT:
-                scaled = pixmap.scaledToHeight(self.MAX_HEIGHT, Qt.TransformationMode.SmoothTransformation)
-            img_label = QLabel(frame)
+        # Bubble consistent with text messages
+        tail_side = "right" if role == "user" else "left"
+        bubble = BubbleFrame(role, tail_side=tail_side, parent=self)
+
+        bubble_layout = QVBoxLayout(bubble)
+        bubble_layout.setContentsMargins(0, 0, 0, 0)
+        bubble_layout.setSpacing(0)
+
+        if not self._original_pixmap.isNull():
+            scaled = self._scale_pixmap(self._original_pixmap, thumb_w, self._THUMB_MAX_H)
+
+            img_label = QLabel(bubble)
             img_label.setPixmap(scaled)
-            img_label.setStyleSheet("background: transparent; border: none; padding: 0px;")
-            frame_layout.addWidget(img_label)
+            img_label.setStyleSheet(
+                "background: transparent; border: none; border-radius: 6px; padding: 0px;")
+            img_label.setCursor(Qt.CursorShape.PointingHandCursor)
+            if self._description:
+                img_label.setToolTip(
+                    _("Нажмите для просмотра (есть описание ↓)",
+                      "Click to view (description available ↓)")
+                )
+            else:
+                img_label.setToolTip(
+                    _("Нажмите для просмотра в полном размере",
+                      "Click to view full size")
+                )
+            img_label.mousePressEvent = self._on_click
+            bubble_layout.addWidget(img_label)
         else:
-            err_label = QLabel("⚠️ " + _("Ошибка загрузки", "Load error"), frame)
+            err_label = QLabel("⚠️ " + _("Ошибка загрузки", "Load error"), bubble)
             err_label.setStyleSheet("color: #EF4444; padding: 12px; font-weight: bold;")
-            frame_layout.addWidget(err_label)
+            bubble_layout.addWidget(err_label)
 
-        layout.addWidget(frame)
-        self.setMaximumWidth(self.MAX_WIDTH + 20)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(bubble)
+
+        self.setMaximumWidth(thumb_w + TAIL_W + 24 + 4)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _scale_pixmap(pixmap: QPixmap, max_w: int, max_h: int) -> QPixmap:
+        if pixmap.width() <= max_w and pixmap.height() <= max_h:
+            return pixmap
+        scaled = pixmap.scaledToWidth(max_w, Qt.TransformationMode.SmoothTransformation)
+        if scaled.height() > max_h:
+            scaled = pixmap.scaledToHeight(max_h, Qt.TransformationMode.SmoothTransformation)
+        return scaled
 
     def _load_image(self, image_data) -> QPixmap:
         try:
@@ -591,11 +625,83 @@ class ImageWidget(QWidget):
             if isinstance(image_data, str):
                 if image_data.startswith("data:image"):
                     parts = image_data.split(",", 1)
-                    if len(parts) == 2: pixmap.loadFromData(base64.b64decode(parts[1]))
-                else: pixmap.load(image_data)
-            elif isinstance(image_data, bytes): pixmap.loadFromData(image_data)
+                    if len(parts) == 2:
+                        pixmap.loadFromData(base64.b64decode(parts[1]))
+                else:
+                    pixmap.load(image_data)
+            elif isinstance(image_data, bytes):
+                pixmap.loadFromData(image_data)
             return pixmap
-        except Exception: return QPixmap()
+        except Exception:
+            return QPixmap()
+
+    # ── click → full-size viewer ──────────────────────────────────────────────
+
+    def _on_click(self, event=None) -> None:
+        if event is not None and event.button() != Qt.MouseButton.LeftButton:
+            return
+        if self._original_pixmap.isNull():
+            return
+        self._show_fullsize()
+
+    def _show_fullsize(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_("Изображение", "Image"))
+        dlg.setModal(True)
+        dlg.setWindowFlags(
+            dlg.windowFlags()
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+
+        screen = QApplication.primaryScreen()
+        if screen:
+            avail  = screen.availableGeometry()
+            max_w  = max(400, avail.width()  - 80)
+            # Reserve vertical space for description if present
+            max_h  = max(300, avail.height() - (200 if self._description else 80))
+        else:
+            max_w, max_h = 1200, 800
+
+        pix = self._scale_pixmap(self._original_pixmap, max_w, max_h)
+
+        img_lbl = QLabel()
+        img_lbl.setPixmap(pix)
+        img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        img_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        img_lbl.setToolTip(_("Нажмите для закрытия", "Click to close"))
+        img_lbl.mousePressEvent = lambda _e: dlg.accept()
+
+        scroll = QScrollArea(dlg)
+        scroll.setWidget(img_lbl)
+        scroll.setWidgetResizable(False)
+        scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
+        root.addWidget(scroll, 1)
+
+        if self._description:
+            from PyQt6.QtWidgets import QPlainTextEdit
+            desc_box = QPlainTextEdit()
+            desc_box.setPlainText(self._description)
+            desc_box.setReadOnly(True)
+            desc_box.setMinimumHeight(150)
+            desc_box.setMaximumHeight(160)
+            desc_box.setStyleSheet(
+                "background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.85); "
+                "border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; "
+                "font-size: 11pt; padding: 6px;"
+            )
+            root.addWidget(desc_box)
+
+        # Minimum width: 520 so long descriptions don't get squished in a tiny column
+        dlg_w = max(520, min(pix.width() + 32, max_w))
+        dlg_h = min(pix.height() + (180 if self._description else 32),
+                    avail.height() - 40 if screen else max_h)
+        dlg.resize(dlg_w, dlg_h)
+        dlg.exec()
 
 class ThinkBlockWidget(QFrame):
     def __init__(self, speaker_name="", content_text="", is_streaming=False, font_size=12, max_bubble_width=600, parent=None):

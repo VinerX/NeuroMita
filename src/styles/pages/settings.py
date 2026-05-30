@@ -71,7 +71,7 @@ QFrame#SettingsQuickActionsCard,
 QFrame#SettingsNoteCard {
     background-color: rgba({settings_panel_rgb}, 0.94);
     border: 1px solid rgba({accent_rgb}, 0.14);
-    border-radius: 24px;
+    border-radius: 16px;
 }
 
 QFrame#SettingsWorkspaceRootShell {
@@ -206,7 +206,34 @@ QPushButton#SettingsQuickActionButton:pressed {
 
 QScrollArea#SettingsWorkspaceScroll,
 QScrollArea#SettingsWorkspaceScroll > QWidget,
-QScrollArea#SettingsWorkspaceScroll > QWidget > QWidget {
+QScrollArea#SettingsWorkspaceScroll > QWidget > QWidget,
+QScrollArea#SettingsTabsScroll,
+QScrollArea#SettingsTabsScroll > QWidget,
+QScrollArea#SettingsTabsScroll > QWidget > QWidget,
+QScrollArea#SettingsSectionPageScroll,
+QScrollArea#SettingsSectionPageScroll > QWidget,
+QScrollArea#SettingsSectionPageScroll > QWidget > QWidget,
+QStackedWidget#SettingsWorkspaceStack,
+QWidget#SettingsTabsHost,
+QFrame#SettingsSectionPage,
+QWidget#SettingsSectionPageContent {
+    background: transparent;
+    border: none;
+}
+
+QFrame#SettingsSectionPageHeader {
+    background-color: rgba({settings_panel_rgb}, 0.94);
+    border: 1px solid rgba({accent_rgb}, 0.18);
+    border-radius: 16px;
+}
+
+QLabel#SettingsSectionPageTitle {
+    color: {text};
+    font-size: 15pt;
+    font-weight: 800;
+}
+
+QFrame#SettingsSectionPageBody {
     background: transparent;
     border: none;
 }
@@ -282,18 +309,20 @@ QFrame#SettingsSubsectionLine {
 }
 
 QWidget#SettingsPageRoot QWidget#CollapsibleSection {
-    background: transparent;
-}
-
-QWidget#SettingsPageRoot QWidget#CollapsibleHeader {
-    background-color: rgba(255,255,255,0.035);
+    background-color: rgba({settings_panel_rgb}, 0.70);
     border: 1px solid rgba(255,255,255,0.08);
     border-radius: 14px;
 }
 
+QWidget#SettingsPageRoot QWidget#CollapsibleHeader {
+    background: transparent;
+    border: none;
+    border-radius: 0px;
+}
+
 QWidget#SettingsPageRoot QWidget#CollapsibleHeader:hover {
-    background-color: rgba({accent_rgb}, 0.10);
-    border: 1px solid rgba({accent_rgb}, 0.22);
+    background: transparent;
+    border: none;
 }
 
 QWidget#SettingsPageRoot QWidget#InnerCollapsibleHeader {
@@ -305,13 +334,18 @@ QWidget#SettingsPageRoot QWidget#InnerCollapsibleHeader {
 QWidget#SettingsPageRoot QLabel#CollapsibleArrow,
 QWidget#SettingsPageRoot QLabel#CollapsibleTitle {
     color: {text};
-    font-weight: 700;
-    padding: 4px 2px;
+    font-weight: 800;
+    padding: 8px 2px 4px 2px;
+}
+
+QWidget#SettingsPageRoot QLabel#CollapsibleArrow {
+    max-width: 0px;
+    min-width: 0px;
 }
 
 QWidget#SettingsPageRoot QWidget#CollapsibleContent {
     background: transparent;
-    padding-top: 8px;
+    padding-top: 4px;
 }
 
 QWidget#SettingsPageRoot QWidget#SettingRow {
