@@ -411,6 +411,13 @@ class SpeechRecognition:
                     "max_speech_duration": SpeechRecognition.MAX_SPEECH_DURATION_SEC,
                 }
                 settings = SpeechRecognition._engine_settings.get(engine_id, {}) or {}
+                # Mirror the in-process path so the GUI gets consistent
+                # init signals. Without these the remote (subprocess) engines
+                # never reported "initialized": asr_is_ready stayed False and
+                # the status pill was stuck on "Инициализация ASR..." forever
+                # (the 35s timeout guard is only armed by INIT_STARTED).
+                eb = get_event_bus()
+                eb.emit(Events.Speech.ASR_MODEL_INIT_STARTED)
                 fut = eng.call("asr", "start_live", {
                     "engine_id": engine_id,
                     "microphone_index": int(device_id or 0),
@@ -426,6 +433,7 @@ class SpeechRecognition:
                             SpeechRecognition._stopped_event.clear()
                             SpeechRecognition.active = True
                             SpeechRecognition.microphone_index = device_id or 0
+                        eb.emit(Events.Speech.ASR_MODEL_INITIALIZED)
                         logger.info(f"ASR started (engine:{engine_id}) on device {device_id}")
                         return True
                     logger.error("ASR engine start failed. Local fallback is disabled.")
