@@ -144,7 +144,7 @@ class SpeechController:
 
         if key == "MIC_ACTIVE":
             if bool(value):
-                self._start_maybe_install()
+                self._start_maybe_install_async()
             else:
                 SpeechRecognition.speech_recognition_stop()
                 self.mic_recognition_active = False
@@ -175,7 +175,7 @@ class SpeechController:
             logger.info(f"Тип распознавателя установлен на: {engine}")
 
             if self.settings and self.settings.get("MIC_ACTIVE", False):
-                self._start_maybe_install()
+                self._start_maybe_install_async()
 
         elif key in ("SILENCE_THRESHOLD", "VAD_THRESHOLD"):
             try:
@@ -212,6 +212,19 @@ class SpeechController:
                 SpeechRecognition.MAX_SPEECH_DURATION_SEC = float(value)
             except Exception:
                 pass
+
+    def _start_maybe_install_async(self):
+        """Run the (potentially slow) ASR start off the caller's thread.
+
+        SETTING_CHANGED handlers fire on the event-bus thread; starting ASR
+        loads the model and can block for many seconds (CUDA init), which would
+        stall the whole bus. Always do it on a worker thread."""
+        def _worker():
+            try:
+                self._start_maybe_install()
+            except Exception as e:
+                logger.error(f"Запуск распознавания не удался: {e}")
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _start_maybe_install(self):
         if self.mic_recognition_active:

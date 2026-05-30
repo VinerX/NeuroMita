@@ -425,7 +425,11 @@ class SpeechRecognition:
                     "vad": vad,
                 })
                 try:
-                    ok = bool(fut.result(timeout=10.0))
+                    # Загрузка модели на CUDA (GigaAM/Whisper + инициализация
+                    # CUDA-контекста) легко занимает больше 10 c, поэтому ждём
+                    # долго. Вызов выполняется в фоновом потоке (см.
+                    # SpeechController), так что шину событий это не блокирует.
+                    ok = bool(fut.result(timeout=300.0))
                     if ok:
                         with SpeechRecognition._start_lock:
                             SpeechRecognition._is_running = True
@@ -437,8 +441,13 @@ class SpeechRecognition:
                         logger.info(f"ASR started (engine:{engine_id}) on device {device_id}")
                         return True
                     logger.error("ASR engine start failed. Local fallback is disabled.")
+                except concurrent.futures.TimeoutError:
+                    logger.error(
+                        f"ASR engine start timed out (engine:{engine_id}): модель не "
+                        "инициализировалась за 300 c. Попробуйте ещё раз или проверьте лог движка."
+                    )
                 except Exception as e:
-                    logger.error(f"ASR engine start exception: {e}")
+                    logger.error(f"ASR engine start exception ({type(e).__name__}): {e}", exc_info=True)
             return False
 
         with SpeechRecognition._start_lock:
