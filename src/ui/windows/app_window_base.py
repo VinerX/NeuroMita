@@ -113,6 +113,7 @@ class AppWindowBase(QMainWindow):
     create_dialog_signal = pyqtSignal(dict)
     create_installation_window_signal = pyqtSignal(str, str, object)  # title, initial_status, holder(dict)
     close_installation_window_signal = pyqtSignal(object)
+    finalize_installation_window_signal = pyqtSignal(object, bool)  # win, close_now
     
     asr_install_progress_signal = pyqtSignal(dict)
     asr_install_finished_signal = pyqtSignal(dict)
@@ -283,6 +284,15 @@ class AppWindowBase(QMainWindow):
             type=Qt.ConnectionType.QueuedConnection
         )
 
+        self.finalize_installation_window_signal.connect(
+            self._on_finalize_installation_window,
+            type=Qt.ConnectionType.QueuedConnection
+        )
+
+        # Текущее окно установки (живёт, пока задача не завершена; может быть
+        # свёрнуто пользователем и открыто снова через сайдбар).
+        self._active_install_window = None
+
         self.asr_install_progress_signal.connect(
             self._on_asr_install_progress,
             type=Qt.ConnectionType.QueuedConnection
@@ -366,6 +376,18 @@ class AppWindowBase(QMainWindow):
 
     def _on_create_installation_window(self, title: str, initial_status: str, holder: dict):
         win = VoiceInstallationWindow(self, title, initial_status)
+        self._active_install_window = win
+
+        try:
+            win.minimized.connect(lambda: self._set_install_logs_button_visible(True))
+            win.window_closed.connect(lambda w=win: self._on_install_window_closed(w))
+        except Exception:
+            pass
+
+        # Кнопка «Логи установки» в сайдбаре — чтобы вернуться к окну,
+        # если пользователь его закрыл (свернул).
+        self._set_install_logs_button_visible(True)
+
         win.show()
 
         holder["window"] = win
@@ -381,14 +403,53 @@ class AppWindowBase(QMainWindow):
             except Exception:
                 pass
 
-
     def _on_close_installation_window(self, win_obj: object):
         try:
             if win_obj is None:
                 return
+            if hasattr(win_obj, "finalize"):
+                win_obj.finalize()
             win_obj.close()
         except Exception:
             pass
+
+    def _on_finalize_installation_window(self, win_obj: object, close_now: bool):
+        try:
+            if win_obj is None:
+                return
+            if hasattr(win_obj, "finalize"):
+                win_obj.finalize()
+            if close_now:
+                win_obj.close()
+        except Exception:
+            pass
+
+    def _on_install_window_closed(self, win_obj: object):
+        # Окно действительно закрыто (задача завершена) — убираем ссылку и
+        # прячем кнопку повторного открытия.
+        if win_obj is self._active_install_window:
+            self._active_install_window = None
+            self._set_install_logs_button_visible(False)
+
+    def _on_reopen_install_logs(self):
+        win = getattr(self, "_active_install_window", None)
+        if win is None:
+            self._set_install_logs_button_visible(False)
+            return
+        try:
+            win.show()
+            win.raise_()
+            win.activateWindow()
+        except Exception:
+            pass
+
+    def _set_install_logs_button_visible(self, visible: bool):
+        sidebar = getattr(self, "shell_sidebar", None)
+        if sidebar is not None and hasattr(sidebar, "set_install_logs_visible"):
+            try:
+                sidebar.set_install_logs_visible(bool(visible))
+            except Exception:
+                pass
 
     def setup_ui(self):
         raise NotImplementedError("AppWindowBase.setup_ui() must be implemented by a concrete window class.")

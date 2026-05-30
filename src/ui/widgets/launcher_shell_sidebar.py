@@ -45,6 +45,7 @@ class LauncherSidebarWidget(QFrame):
     page_requested = pyqtSignal(str)
     social_requested = pyqtSignal(str)
     utility_requested = pyqtSignal(str)
+    install_logs_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -83,9 +84,29 @@ class LauncherSidebarWidget(QFrame):
         layout.addWidget(self._build_brand_card())
         layout.addWidget(self._build_brand_divider())
         layout.addWidget(self._build_nav_card())
+        self._install_logs_btn = self._build_install_logs_button()
+        layout.addWidget(self._install_logs_btn)
         layout.addStretch(1)
         layout.addWidget(self._build_social_block())
         layout.addWidget(self._build_footer_block())
+
+    def _build_install_logs_button(self) -> QPushButton:
+        button = QPushButton(_("Логи установки", "Install logs"))
+        button.setObjectName("LauncherShellNavButton")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setIcon(qta.icon("fa6s.terminal", color="#ffd2ec"))
+        button.setToolTip(_(
+            "Открыть окно установки и посмотреть логи",
+            "Open the installation window and view logs",
+        ))
+        button.clicked.connect(self.install_logs_requested.emit)
+        button.setVisible(False)
+        return button
+
+    def set_install_logs_visible(self, visible: bool) -> None:
+        btn = getattr(self, "_install_logs_btn", None)
+        if btn is not None:
+            btn.setVisible(bool(visible))
 
     def _build_brand_card(self) -> QFrame:
         card = QFrame()

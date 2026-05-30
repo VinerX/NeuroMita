@@ -29,6 +29,7 @@ class MainWindow(AppWindowBase):
         )
         self.shell_sidebar.social_requested.connect(self._on_shell_social_requested)
         self.shell_sidebar.utility_requested.connect(self._on_shell_utility_requested)
+        self.shell_sidebar.install_logs_requested.connect(self._on_reopen_install_logs)
         try:
             current_lang = str(self.settings.get("LANGUAGE", "RU") or "RU").lower()
         except Exception:

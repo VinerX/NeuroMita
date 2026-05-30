@@ -28,9 +28,14 @@ class VoiceInstallationWindow(QDialog):
     status_updated = pyqtSignal(str)
     log_updated = pyqtSignal(str)
     window_closed = pyqtSignal()
+    minimized = pyqtSignal()
 
     def __init__(self, parent, title, initial_status=None):
         super().__init__(parent)
+        # Пока установка идёт, закрытие окна не отменяет её — окно просто
+        # прячется (логи сохраняются), и его можно открыть снова. Реальное
+        # закрытие происходит только после finalize() (задача завершена).
+        self._finished = False
         self.setWindowTitle(title)
         self.setMinimumSize(720, 420)
         self.resize(820, 520)
@@ -113,6 +118,16 @@ class VoiceInstallationWindow(QDialog):
         self.log_text.setReadOnly(True)
         self.log_text.setFont(QFont("Consolas", 9))
         layout.addWidget(self.log_text, 1)
+
+        hint_label = QLabel(_(
+            "💡 Это окно можно закрыть — установка продолжится в фоне. "
+            "Открыть снова и посмотреть логи: «Логи установки» в боковой панели.",
+            "💡 You can close this window — the installation keeps running in the "
+            "background. Reopen it and view logs via “Install logs” in the sidebar.",
+        ))
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        layout.addWidget(hint_label)
 
         actions_layout = QHBoxLayout()
         copy_btn = QPushButton(_("Копировать лог", "Copy Log"))
@@ -262,7 +277,19 @@ class VoiceInstallationWindow(QDialog):
         self._display_lines.clear()
         self._render_display_lines()
 
+    def finalize(self):
+        """Mark the task as finished so the window may actually close."""
+        self._finished = True
+
     def closeEvent(self, event):
+        # While the task is still running, closing only hides the window (the
+        # install keeps going and the accumulated logs are preserved so the
+        # user can reopen it). A real close happens once finalize() was called.
+        if not self._finished:
+            event.ignore()
+            self.hide()
+            self.minimized.emit()
+            return
         self.window_closed.emit()
         super().closeEvent(event)
 
