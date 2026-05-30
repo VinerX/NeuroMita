@@ -13,8 +13,17 @@ from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
 from core.backends import BackendKind, get_backend_service
 from core.install_requirements import InstallRequirement, check_requirements
 
-from utils import getTranslationVariant as _
-from utils.gpu_utils import check_gpu_provider
+
+def _(ru_str, en_str=""):
+    return en_str or ru_str
+
+
+def check_gpu_provider() -> str:
+    try:
+        import torch
+        return "NVIDIA" if torch.cuda.is_available() else "CPU"
+    except Exception:
+        return "CPU"
 
 
 class GigaAMRecognizer(SpeechRecognizerInterface):
@@ -144,6 +153,9 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
         name = self._normalized_ckpt_name()
         return os.path.join(self.gigaam_model_path, f"{name}_tokenizer.model")
 
+    def _model_root_abs(self) -> str:
+        return os.path.abspath(self.gigaam_model_path)
+
     # ---------- dependency model ----------
     def requirements(self):
         backend_kind = self.required_backend({
@@ -188,6 +200,14 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
     def required_backend(self, ctx: dict) -> BackendKind:
         return get_backend_service().preferred_torch_kind(ctx)
 
+    @staticmethod
+    def _sentencepiece_available() -> bool:
+        try:
+            from sentencepiece import SentencePieceProcessor  # noqa: F401
+            return True
+        except Exception:
+            return False
+
     def is_installed(self) -> bool:
         if self._current_gpu is None:
             try:
@@ -197,7 +217,17 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
 
         ctx = {"device": self.gigaam_device, "gpu_vendor": self._current_gpu}
         st = check_requirements(self.requirements(), ctx=ctx)
-        return bool(st.get("ok"))
+        if not bool(st.get("ok")):
+            return False
+        if not self._sentencepiece_available():
+            return False
+
+        for item in self.install_manifest():
+            dest = str(item.get("dest") or "").strip()
+            if not dest or not os.path.exists(dest) or os.path.getsize(dest) <= 0:
+                return False
+
+        return True
     
     def install_manifest(self) -> list[dict]:
         model_name = self._normalized_ckpt_name()
@@ -210,7 +240,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             {"url": f"{self._url_dir}/{model_name}.ckpt", "dest": ckpt_dest},
         ]
 
-        if model_name == "v1_rnnt":
+        if model_name == "v1_rnnt" or "e2e" in model_name:
             items.append({
                 "url": f"{self._url_dir}/{model_name}_tokenizer.model",
                 "dest": self._tokenizer_path(),
@@ -335,7 +365,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             self._model = gigaam.load_model(
                 self.gigaam_model,
                 device=device_choice,
-                download_root=self.gigaam_model_path,
+                download_root=self._model_root_abs(),
                 use_flash=False,
             )
 

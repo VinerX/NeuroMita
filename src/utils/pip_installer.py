@@ -372,6 +372,18 @@ class PipInstaller:
 
     def _target_module_exists_for_dist(self, dist_name: str) -> bool:
         base = canonicalize_name(dist_name)
+        if base == "sentencepiece":
+            package_dir = os.path.join(self.libs_path_abs, "sentencepiece")
+            if not os.path.isfile(os.path.join(package_dir, "__init__.py")):
+                return False
+            try:
+                return any(
+                    name.startswith("_sentencepiece") and name.endswith((".pyd", ".so", ".dll"))
+                    for name in os.listdir(package_dir)
+                )
+            except OSError:
+                return False
+
         candidates = list(self.DIST_MODULE_ALIASES.get(base, (base.replace("-", "_"),)))
         if not os.path.isdir(self.libs_path_abs):
             return False
