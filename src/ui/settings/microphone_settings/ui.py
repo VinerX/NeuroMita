@@ -41,6 +41,12 @@ def build_microphone_settings_ui(self, parent_layout):
     root_lay.setContentsMargins(0, 0, 0, 0)
     root_lay.setSpacing(6)
 
+    # 0) Включение ASR — сразу под заголовком, чтобы было на виду
+    self.mic_active_checkbox = QCheckBox("")
+    self.mic_active_checkbox.setChecked(bool(self.settings.get("MIC_ACTIVE")))
+    self.mic_active_checkbox.setToolTip(_("Включить/выключить распознавание", "Enable/disable recognition"))
+    root_lay.addWidget(make_row(_("Микрофон активен", "Microphone active"), self.mic_active_checkbox, label_w))
+
     # 1) Кнопка в глоссарий
     self.asr_manage_button = QPushButton(_("Открыть AI Hub", "Open AI Hub"))
     self.asr_manage_button.setObjectName("SecondaryButton")
@@ -88,11 +94,6 @@ def build_microphone_settings_ui(self, parent_layout):
     root_lay.addWidget(make_row(_("Микрофон", "Microphone"), mic_field, label_w))
 
     # 4) Управление
-    self.mic_active_checkbox = QCheckBox("")
-    self.mic_active_checkbox.setChecked(bool(self.settings.get("MIC_ACTIVE")))
-    self.mic_active_checkbox.setToolTip(_("Включить/выключить распознавание", "Enable/disable recognition"))
-    root_lay.addWidget(make_row(_("Микрофон активен", "Microphone active"), self.mic_active_checkbox, label_w))
-
     self.mic_instant_checkbox = QCheckBox("")
     self.mic_instant_checkbox.setChecked(bool(self.settings.get("MIC_INSTANT_SENT")))
     self.mic_instant_checkbox.setToolTip(_("Мгновенная отправка распознанного текста", "Send recognized text immediately"))
