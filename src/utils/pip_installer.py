@@ -217,7 +217,7 @@ class PipInstaller:
         override_path: str | None = None
         try:
             if extra_args:
-                cmd.extend(extra_args)
+                cmd.extend(self._adapt_extra_args(extra_args, is_uv))
 
             effective_overrides = self._build_dependency_overrides(package_spec) if is_uv else []
             if effective_overrides and len(effective_overrides) > 0:
@@ -239,6 +239,26 @@ class PipInstaller:
     def _build_dependency_overrides(self, package_spec) -> List[str]:
         return []
 
+    def _adapt_extra_args(self, extra_args, is_uv: bool) -> List[str]:
+        """Translate installer-specific flags so a uv-targeted extra_args list
+        still works when we fall back to the built-in pip (and vice versa).
+
+        The backend passes uv's `--reinstall`; pip only understands
+        `--force-reinstall`. Without this translation the CPU->CUDA reinstall
+        crashed with `no such option: --reinstall` whenever uv was missing."""
+        if not extra_args:
+            return []
+        result: List[str] = []
+        for arg in extra_args:
+            a = str(arg)
+            if not is_uv and a == "--reinstall":
+                result.append("--force-reinstall")
+            elif is_uv and a == "--force-reinstall":
+                result.append("--reinstall")
+            else:
+                result.append(a)
+        return result
+
     def install_package_with_overrides(
         self,
         package_spec,
@@ -251,7 +271,7 @@ class PipInstaller:
         override_path: str | None = None
         try:
             if extra_args:
-                cmd.extend(extra_args)
+                cmd.extend(self._adapt_extra_args(extra_args, is_uv))
 
             effective_overrides = self._dedupe_overrides(list(uv_overrides or [])) if is_uv else []
             if effective_overrides and len(effective_overrides) > 0:
@@ -296,8 +316,16 @@ class PipInstaller:
         return result
 
     def _is_uv_command(self, cmd: List[str]) -> bool:
-        joined = " ".join(str(part).lower() for part in cmd)
-        return " uv " in f" {joined} " and " pip " in f" {joined} "
+        parts = [str(p).lower() for p in cmd]
+        if not parts:
+            return False
+        # Module form: python -m uv ...
+        for i, p in enumerate(parts):
+            if p == "-m" and i + 1 < len(parts) and parts[i + 1] == "uv":
+                return True
+        # Executable form: .../uv.exe pip ... or uv pip ...
+        exe = os.path.basename(parts[0])
+        return exe in ("uv", "uv.exe")
 
     def _write_uv_overrides(self, overrides: List[str]) -> str:
         fd, path = tempfile.mkstemp(prefix="neuromita_uv_overrides_", suffix=".txt", text=True)
@@ -417,6 +445,16 @@ class PipInstaller:
         if self._check_installer_command([self.script_path, "-m", "uv", "--version"]):
             self._preferred_installer_cmd = uv_cmd
             self.update_log("Для установки зависимостей выбран uv pip.")
+            return list(self._preferred_installer_cmd)
+
+        # `python -m uv` не находит uv, если он установлен не в site-packages
+        # встроенного интерпретатора (например, лежит в Lib или поставлен как
+        # Scripts/uv.exe). launch.py умеет запускать uv.exe — повторим это,
+        # чтобы рантайм тоже пользовался uv, а не падал на pip.
+        uv_exe = self.python_root / "Scripts" / ("uv.exe" if os.name == "nt" else "uv")
+        if uv_exe.exists() and self._check_installer_command([str(uv_exe), "--version"]):
+            self._preferred_installer_cmd = [str(uv_exe), "--verbose", "pip"]
+            self.update_log(f"Для установки зависимостей выбран uv ({uv_exe.name}).")
             return list(self._preferred_installer_cmd)
 
         pip_cmd = [self.script_path, "-m", "pip"]
