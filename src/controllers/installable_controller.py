@@ -227,11 +227,16 @@ class InstallableController:
         with_ui = bool(data.get("with_ui", True))
         timeout_sec = float(data.get("timeout_sec", 3600.0) or 3600.0)
         base_ctx = data.get("ctx") if isinstance(data.get("ctx"), dict) else {}
+        # "Clean" reinstall: ignore the already-installed shortcut, force pip
+        # reinstall and re-download artifacts (recovers from a broken/partial
+        # download instead of refusing because files "exist").
+        clean = bool(data.get("clean"))
 
         def runner(*_args, **kwargs) -> InstallPlan:
             run_ctx = dict(base_ctx)
             raw_ctx = kwargs.get("ctx") if isinstance(kwargs.get("ctx"), dict) else {}
             run_ctx.update(raw_ctx)
+            run_ctx["clean"] = clean
             if kwargs.get("pip_installer") is not None:
                 run_ctx["pip_installer"] = kwargs.get("pip_installer")
             if kwargs.get("callbacks") is not None:
@@ -252,6 +257,7 @@ class InstallableController:
             "component_id": component.id,
             "item_id": component.item_id,
             "op": op,
+            "clean": clean,
         }
         if isinstance(data.get("meta"), dict):
             meta.update(data["meta"])

@@ -184,7 +184,39 @@ class AIHubDialog(QDialog):
         self.btn_refresh.clicked.connect(lambda: self.refresh(force=True))
         l.addWidget(self.btn_refresh)
 
+        # Очистка кэша установщика (pip/uv). Кэш включён, чтобы прерванные
+        # загрузки докачивались; кнопка освобождает место при необходимости.
+        self.btn_clear_cache = QPushButton(_("Очистить кэш загрузок", "Clear download cache"))
+        self.btn_clear_cache.setObjectName("AIHubSidebarBtn")
+        self.btn_clear_cache.setCursor(Qt.CursorShape.PointingHandCursor)
+        ic_cache = qicon("fa5s.broom", "#db6596")
+        if ic_cache is not None:
+            self.btn_clear_cache.setIcon(ic_cache)
+            self.btn_clear_cache.setIconSize(QSize(13, 13))
+        self.btn_clear_cache.clicked.connect(self._clear_install_cache)
+        l.addWidget(self.btn_clear_cache)
+
         return sidebar
+
+    def _clear_install_cache(self) -> None:
+        import threading
+
+        self._set_task_status(_("Очистка кэша...", "Clearing cache..."))
+
+        def _worker():
+            ok = False
+            try:
+                from utils.pip_installer import PipInstaller
+                ok = bool(PipInstaller(update_log=logger.info).purge_cache())
+            except Exception as exc:
+                logger.error(f"AI Hub: clear cache failed: {exc}", exc_info=True)
+            msg = _("Кэш очищен", "Cache cleared") if ok else _("Не удалось очистить кэш", "Failed to clear cache")
+            self._on_gui_thread(lambda: (
+                self._set_task_status(msg),
+                QTimer.singleShot(2500, lambda: self._set_task_status("")),
+            ))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _build_main_column(self) -> QVBoxLayout:
         from PyQt6.QtWidgets import QStackedWidget
@@ -594,6 +626,9 @@ class AIHubDialog(QDialog):
                 on_open_settings=self._open_component_settings,
                 gpu_vendor=gpu_vendor,
                 parent=self._scroll_content,
+                on_reinstall=lambda cid: self._emit_component_action_by_id(
+                    cid, Events.Installable.INSTALL, extra={"clean": True}
+                ),
             )
             self._scroll_layout.insertWidget(self._scroll_layout.count() - 1, card)
 
@@ -678,17 +713,17 @@ class AIHubDialog(QDialog):
                 return row
         return None
 
-    def _emit_component_action_by_id(self, component_id: str, event_name: str) -> None:
+    def _emit_component_action_by_id(self, component_id: str, event_name: str, extra: dict | None = None) -> None:
         if not component_id:
             return
-        self.event_bus.emit(
-            event_name,
-            {
-                "component_id": component_id,
-                "with_ui": True,
-                "meta": {"source": "ai_hub"},
-            },
-        )
+        payload = {
+            "component_id": component_id,
+            "with_ui": True,
+            "meta": {"source": "ai_hub"},
+        }
+        if extra:
+            payload.update(extra)
+        self.event_bus.emit(event_name, payload)
         self._set_task_status(_("Запуск задачи...", "Starting task..."))
 
     # ----------------------------------------------------------- task events

@@ -299,6 +299,7 @@ class InstallController:
         start_progress: int,
         end_progress: int,
         headers: Optional[dict[str, str]] = None,
+        force: bool = False,
     ) -> bool:
         start_progress = max(0, min(99, int(start_progress)))
         end_progress = max(start_progress, min(99, int(end_progress)))
@@ -310,7 +311,14 @@ class InstallController:
             if not url or not dest:
                 continue
             if os.path.exists(dest) and os.path.getsize(dest) > 0:
-                continue
+                if not force:
+                    continue
+                # Clean reinstall: drop the existing (possibly corrupt) file so
+                # it is downloaded again instead of being skipped.
+                try:
+                    os.remove(dest)
+                except OSError:
+                    pass
             filtered.append({"url": url, "dest": dest})
 
         if not filtered:
@@ -421,6 +429,7 @@ class InstallController:
         ctx: dict,
     ) -> bool:
         cb = callbacks
+        clean = bool((ctx.get("meta") or {}).get("clean")) if isinstance(ctx, dict) else False
         backend_ctx = dict(ctx or {})
         backend_ctx.update(getattr(plan, "backend_context", {}) or {})
         backend_actions = self._backend_actions(plan, backend_ctx)
@@ -461,17 +470,24 @@ class InstallController:
 
             if atype == "pip":
                 pkgs = act.packages or []
-                if hasattr(pip_installer, "missing_specs"):
-                    to_install = pip_installer.missing_specs(pkgs)
+                if clean:
+                    # Clean reinstall: don't skip satisfied packages, force-reinstall.
+                    to_install = list(pkgs)
                 else:
-                    to_install = self._missing_pip_specs(pkgs)
-                if not to_install:
-                    if pkgs:
-                        cb.log(f"Skip pip step (already satisfied): {', '.join(pkgs)}")
-                    continue
+                    if hasattr(pip_installer, "missing_specs"):
+                        to_install = pip_installer.missing_specs(pkgs)
+                    else:
+                        to_install = self._missing_pip_specs(pkgs)
+                    if not to_install:
+                        if pkgs:
+                            cb.log(f"Skip pip step (already satisfied): {', '.join(pkgs)}")
+                        continue
 
                 cb.log(f"Installing: {', '.join(to_install)}")
                 extra_args = list(act.extra_args or [])
+                if clean and "--reinstall" not in extra_args and "--force-reinstall" not in extra_args:
+                    # PipInstaller translates --reinstall -> --force-reinstall for pip.
+                    extra_args.append("--reinstall")
                 
                 # --- ДИНАМИЧЕСКИЙ СБОР СУЩЕСТВУЮЩИХ ПАКЕТОВ ---
                 target_dir = os.environ.get("NEUROMITA_LIB_DIR", self.libs_path)
@@ -514,6 +530,7 @@ class InstallController:
                     start_progress=pr,
                     end_progress=int(end_pr),
                     headers=act.headers,
+                    force=clean,
                 )
                 if not ok:
                     return False

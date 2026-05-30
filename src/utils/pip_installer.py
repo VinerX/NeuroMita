@@ -429,12 +429,35 @@ class PipInstaller:
 
     def _build_install_command(self) -> List[str]:
         base = list(self._resolve_installer_base_cmd())
-        base.extend([
-            "install",
-            "--target", str(self.libs_path_abs),
-            "--no-cache-dir",
-        ])
+        base.extend(["install", "--target", str(self.libs_path_abs)])
+        # Кэш включён по умолчанию: после обрыва (диск/VPN) повторная попытка
+        # переиспользует уже скачанное и докачивает, а не качает всё заново.
+        # Отключается настройкой INSTALL_USE_CACHE (кэш чистится кнопкой в AI Hub).
+        if not self._use_cache():
+            base.append("--no-cache-dir")
         return base
+
+    def _use_cache(self) -> bool:
+        try:
+            from managers.settings_manager import SettingsManager
+            return bool(SettingsManager.get("INSTALL_USE_CACHE", True))
+        except Exception:
+            return True
+
+    def purge_cache(self, description: str = "Очистка кэша установщика...") -> bool:
+        """Clear the pip/uv download cache (frees disk; resets resumable state)."""
+        self.update_status(description)
+        base = self._resolve_installer_base_cmd()
+        if self._is_uv_command(base):
+            root = [p for p in base if str(p).lower() not in ("pip", "--verbose")]
+            cmd = root + ["cache", "clean"]
+        else:
+            cmd = list(base) + ["cache", "purge"]
+        try:
+            return bool(self._run_pip_process(cmd, description))
+        except Exception as exc:
+            self.update_log(f"Не удалось очистить кэш: {exc}")
+            return False
 
         
     def _resolve_installer_base_cmd(self) -> List[str]:

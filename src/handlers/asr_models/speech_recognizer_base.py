@@ -180,7 +180,9 @@ class SpeechRecognizerInterface(ABC):
             pass
 
         try:
-            if self.is_installed():
+            # Clean reinstall skips this shortcut so a broken/partial install
+            # is actually re-fetched instead of being reported "already installed".
+            if self.is_installed() and not run_ctx.get("clean"):
                 return InstallPlan(actions=[], already_installed=True, already_installed_status="Already installed")
         except Exception:
             pass

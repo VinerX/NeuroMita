@@ -185,12 +185,14 @@ class ModelCard(QFrame):
         on_open_settings: Callable[[str], None],
         gpu_vendor: str,
         parent=None,
+        on_reinstall: Callable[[str], None] | None = None,
     ):
         super().__init__(parent)
         self._row = row
         self._on_install = on_install
         self._on_uninstall = on_uninstall
         self._on_open_settings = on_open_settings
+        self._on_reinstall = on_reinstall
         self._gpu_vendor = (gpu_vendor or "CPU").upper()
         self.setObjectName("AIHubModelCard")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -393,6 +395,13 @@ class ModelCard(QFrame):
         if ic is not None:
             act_settings.setIcon(ic)
 
+        act_reinstall = None
+        if self._on_reinstall is not None:
+            act_reinstall = menu.addAction(_t("Переустановить начисто", "Clean reinstall"))
+            ic_re = qicon("fa5s.sync", "#f3edf6")
+            if ic_re is not None:
+                act_reinstall.setIcon(ic_re)
+
         act_uninstall = menu.addAction(_t("Удалить", "Uninstall"))
         ic2 = qicon("fa5s.trash-alt", "#ffb4c5")
         if ic2 is not None:
@@ -403,8 +412,34 @@ class ModelCard(QFrame):
         chosen = menu.exec(anchor)
         if chosen is act_settings:
             self._on_open_settings(cid)
+        elif act_reinstall is not None and chosen is act_reinstall:
+            self._confirm_and_reinstall(cid)
         elif chosen is act_uninstall:
             self._confirm_and_uninstall(cid)
+
+    def _confirm_and_reinstall(self, cid: str) -> None:
+        from .helpers import meta_from_row
+        title = str(meta_from_row(self._row).get("title") or cid)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(_t("Переустановить начисто", "Clean reinstall"))
+        box.setText(
+            _t(
+                f"Удалить загруженные файлы «{title}» и скачать заново?",
+                f"Delete the downloaded files of “{title}” and download them again?",
+            )
+        )
+        box.setInformativeText(
+            _t(
+                "Помогает, если установка оборвалась и файлы повредились.",
+                "Use this if a download was interrupted and the files got corrupted.",
+            )
+        )
+        yes = box.addButton(_t("Переустановить", "Reinstall"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(_t("Отмена", "Cancel"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is yes and self._on_reinstall is not None:
+            self._on_reinstall(cid)
 
     def _confirm_and_uninstall(self, cid: str) -> None:
         from .helpers import meta_from_row
