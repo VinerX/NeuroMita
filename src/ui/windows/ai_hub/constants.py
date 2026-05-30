@@ -29,6 +29,7 @@ ROW_CATEGORY_MAP = {
     "backend": "backend",
     "beats": "deps",
     "deps": "deps",
+    "dependency": "deps",
 }
 
 STATUS_LABELS = {
