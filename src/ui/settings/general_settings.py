@@ -13,6 +13,48 @@ def _on_section_toggled(gui, category=None, value=None):
         pass
 
 
+def _on_sandbox_panel_toggled(gui, key=None, value=None):
+    """Re-apply the Sandbox inspector panel visibility when a checkbox flips."""
+    try:
+        from ui.widgets.sandbox_panels import apply_sandbox_panel_visibility, set_panel_enabled
+        if key is not None:
+            set_panel_enabled(str(key), bool(value))
+        apply_sandbox_panel_visibility(gui)
+    except Exception:
+        pass
+
+
+def _build_sandbox_panels_config(gui):
+    """Build the Sandbox-panel toggle list dynamically from the central
+    sandbox_panels registry — same pattern as the section-visibility block,
+    but governs the right-hand inspector panels in the Sandbox. All ON by
+    default."""
+    from ui.widgets.sandbox_panels import (
+        SANDBOX_PANEL_DEFAULTS,
+        SANDBOX_PANEL_LABELS,
+        TOGGLEABLE_SANDBOX_PANELS,
+        _panel_key,
+    )
+
+    items = [
+        {
+            'label': _('Показывайте только нужные панели в правой части Песочницы.',
+                       'Show only the panels you need in the Sandbox inspector.'),
+            'type': 'text',
+        },
+    ]
+    for key in TOGGLEABLE_SANDBOX_PANELS:
+        label_pair = SANDBOX_PANEL_LABELS.get(key, (key.capitalize(), key.capitalize()))
+        items.append({
+            'label': _(label_pair[0], label_pair[1]),
+            'key': _panel_key(key),
+            'type': 'checkbutton',
+            'default_checkbutton': SANDBOX_PANEL_DEFAULTS[key],
+            'command': lambda value, _gui=gui, _key=key: _on_sandbox_panel_toggled(_gui, _key, value),
+        })
+    return items
+
+
 def _build_section_visibility_config(gui):
     """Build the section-toggle checkbox list dynamically from the central
     SECTION_DEFAULTS map so the checkboxes can never go out of sync with the
@@ -57,6 +99,17 @@ def setup_general_settings_controls(self, parent):
         _('Видимые разделы', 'Visible sections'),
         _build_section_visibility_config(self),
         icon_name='fa5s.sliders-h',
+    )
+
+    # ── Видимость панелей Песочницы ─────────────────────────────────────────
+    # Same per-toggle pattern, but governs the right-hand inspector panels in
+    # the Sandbox (e.g. context budget, last-request diagnostics). All on by
+    # default; toggling updates the live Sandbox page on the spot.
+    create_settings_section(
+        self, parent,
+        _('Панели песочницы', 'Sandbox panels'),
+        _build_sandbox_panels_config(self),
+        icon_name='fa5s.flask',
     )
 
     privacy_config = [
