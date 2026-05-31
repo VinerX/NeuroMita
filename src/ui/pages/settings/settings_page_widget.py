@@ -1,9 +1,6 @@
-from pathlib import Path
-
 import qtawesome as qta
 
 from PyQt6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRect, QSize, QTimer, Qt
-from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -65,14 +62,19 @@ class _FlowLayout(QLayout):
     When `justify` is set, the items on every row are stretched to fill the
     full available width (extra space is shared equally between them) instead
     of hugging the left edge — so the tab strip spans the whole settings page
-    rather than sitting compressed on the left."""
+    rather than sitting compressed on the left.
 
-    def __init__(self, parent=None, margin=0, hspacing=6, vspacing=6, justify=False):
+    When `center` is set (and `justify` is off), items keep their natural
+    (fixed) width and each row is centered as a group within the available
+    width instead of hugging the left edge."""
+
+    def __init__(self, parent=None, margin=0, hspacing=6, vspacing=6, justify=False, center=False):
         super().__init__(parent)
         self._items: list[QWidgetItem] = []
         self._hspace = hspacing
         self._vspace = vspacing
         self._justify = justify
+        self._center = center
         self.setContentsMargins(margin, margin, margin, margin)
 
     def addItem(self, item):
@@ -171,7 +173,10 @@ class _FlowLayout(QLayout):
             per = extra // len(row) if row else 0
             remainder = extra - per * len(row)
 
+            # Center the (natural-width) row as a group when requested.
             x = x0
+            if self._center and not self._justify:
+                x = x0 + max(0, avail - natural) // 2
             line_height = 0
             for i, item in enumerate(row):
                 hint = self._item_hint(item)
@@ -293,7 +298,6 @@ class SettingsPage(QWidget):
         self.settings_overview_container = None
         self.settings_overlay = None
         self.current_settings_category = None
-        self._section_status_value = None
         self._current_mode = "basic"
         self._section_specs = {spec.key: spec for spec in get_settings_section_specs()}
         self._scroll_animation = None
@@ -363,13 +367,6 @@ class SettingsPage(QWidget):
         for key, button in self.settings_buttons.items():
             button.set_active(key == active)
 
-    def _update_section_status(self):
-        if self._section_status_value is None:
-            return
-        total = len(self.settings_buttons)
-        visible = sum(1 for cat in self.settings_buttons if self._section_enabled(cat))
-        self._section_status_value.setText(f"{visible}/{total}")
-
     def apply_section_visibility(self):
         for category, button in self.settings_buttons.items():
             button.setVisible(self._section_enabled(category))
@@ -383,7 +380,6 @@ class SettingsPage(QWidget):
             else:
                 self._set_current_category(None)
 
-        self._update_section_status()
         self._update_nav_state()
 
         try:
@@ -512,20 +508,7 @@ class SettingsPage(QWidget):
         self._settings_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         overlay_layout.addWidget(self._settings_stack, 1)
-        content_row.addWidget(self.settings_overlay, 5)
-
-        rail = QWidget()
-        rail.setObjectName("SettingsRail")
-        rail.setMinimumWidth(308)
-        rail.setMaximumWidth(420)
-        rail.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-        rail_layout = QVBoxLayout(rail)
-        rail_layout.setContentsMargins(0, 0, 0, 0)
-        rail_layout.setSpacing(12)
-        rail_layout.addWidget(self._build_system_card())
-        rail_layout.addWidget(self._build_quick_actions())
-        rail_layout.addStretch(1)
-        content_row.addWidget(rail, 1)
+        content_row.addWidget(self.settings_overlay, 1)
 
         shell_layout.addLayout(content_row, 1)
         page_layout.addWidget(workspace_shell, 1)
@@ -544,15 +527,15 @@ class SettingsPage(QWidget):
         host_policy.setVerticalPolicy(QSizePolicy.Policy.Minimum)
         self._tabs_host.setSizePolicy(host_policy)
 
-        flow = _FlowLayout(self._tabs_host, margin=0, hspacing=6, vspacing=6, justify=True)
+        flow = _FlowLayout(self._tabs_host, margin=0, hspacing=6, vspacing=6, justify=False, center=True)
 
         for spec in get_settings_section_specs():
             label = _(spec.nav_label[0], spec.nav_label[1])
             button = SettingsIconButton(spec.icon_name, label, category_key=spec.key)
-            # Preferred (not Maximum) so the justified flow can stretch the
-            # tabs to fill the full row width; the sizeHint is the floor, so
-            # labels still never truncate. Rows wrap instead of scrolling.
-            button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            # Fixed horizontal policy so each tab keeps its natural (content)
+            # width — no stretching, no empty gaps. The flow centers the row as
+            # a group and wraps to a new line instead of scrolling.
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             button.clicked.connect(lambda checked=False, cat=spec.key: self.show_category(cat))
             flow.addWidget(button)
             self.settings_buttons[spec.key] = button
@@ -626,171 +609,6 @@ class SettingsPage(QWidget):
 
         layout.addLayout(actions)
         return card
-
-    def _build_brand_panel(self) -> QFrame:
-        card = _make_card("SettingsStatusRailCard")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-
-        brand_row = QHBoxLayout()
-        brand_row.setSpacing(12)
-
-        icon = QLabel()
-        icon.setObjectName("SettingsRailBrandIcon")
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_path = Path("assets/launcher_ui/icon.png")
-        if icon_path.exists():
-            icon.setPixmap(
-                QPixmap(str(icon_path)).scaled(
-                    56,
-                    56,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
-        brand_row.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
-
-        brand_col = QVBoxLayout()
-        brand_col.setSpacing(2)
-
-        brand_title = QLabel("NeuroMita Launcher")
-        brand_title.setObjectName("SettingsRailBrandTitle")
-        brand_col.addWidget(brand_title)
-
-        brand_ver = QLabel("v2.0.0")
-        brand_ver.setObjectName("SettingsRailBrandMeta")
-        brand_col.addWidget(brand_ver)
-
-        brand_state = QLabel(_("Актуально", "Current"))
-        brand_state.setObjectName("SettingsRailBrandState")
-        brand_col.addWidget(brand_state)
-
-        brand_row.addLayout(brand_col, 1)
-        layout.addLayout(brand_row)
-
-        build_meta = QLabel(
-            _(
-                "Сборка: launcher shell + модульные settings builders. Этот блок теперь служит правой стойкой статуса, а не отдельной страницей.",
-                "Build: launcher shell + modular settings builders. This block now acts as a status rail rather than a separate page.",
-            )
-        )
-        build_meta.setObjectName("SettingsRailBrandHint")
-        build_meta.setWordWrap(True)
-        layout.addWidget(build_meta)
-
-        check_button = QPushButton(_("Проверить обновления", "Check updates"))
-        check_button.setObjectName("SettingsQuickActionButton")
-        check_button.clicked.connect(lambda: self.show_category("updates"))
-        layout.addWidget(check_button)
-
-        return card
-
-    def _build_system_card(self) -> QFrame:
-        card = _make_card("SettingsStatusRailCard")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-
-        title = QLabel(_("Статус конфигурации", "Configuration status"))
-        title.setObjectName("SettingsRailTitle")
-        layout.addWidget(title)
-
-        items = [
-            (
-                "sections",
-                _("Видимые разделы", "Visible sections"),
-                "",
-            ),
-            ("language", _("Язык", "Language"), str(self.gui._get_setting("LANGUAGE", "ru")).upper()),
-            (
-                "memory",
-                _("RAG", "RAG"),
-                _("Включён", "Enabled") if self.gui._get_setting("RAG_ENABLED", False) else _("Выключен", "Disabled"),
-            ),
-            (
-                "voice",
-                _("Озвучка", "Voice"),
-                _("Локально", "Local") if str(self.gui._get_setting("VOICEOVER_METHOD", "TG")).lower() == "local" else "Telegram",
-            ),
-        ]
-
-        for key, label_text, value_text in items:
-            row = QHBoxLayout()
-            row.setSpacing(8)
-
-            label = QLabel(label_text)
-            label.setObjectName("SettingsRailLabel")
-            row.addWidget(label)
-
-            row.addStretch()
-
-            value = QLabel(value_text)
-            value.setObjectName("SettingsRailValue")
-            row.addWidget(value)
-            layout.addLayout(row)
-
-            if key == "sections":
-                self._section_status_value = value
-
-        self._update_section_status()
-        return card
-
-    def _build_quick_actions(self) -> QFrame:
-        card = _make_card("SettingsQuickActionsCard")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
-
-        title = QLabel(_("Быстрые действия", "Quick actions"))
-        title.setObjectName("SettingsRailTitle")
-        layout.addWidget(title)
-
-        buttons = [
-            (_("API и пресеты", "API and presets"), lambda: self.show_category("api")),
-            (_("История персонажа", "Character history"), self._open_db_viewer),
-            (_("Диагностика в песочнице", "Sandbox diagnostics"), self._open_sandbox_debug),
-            (_("Песочница", "Sandbox"), lambda: self.gui.switch_main_page("sandbox")),
-        ]
-        for text, callback in buttons:
-            button = QPushButton(text)
-            button.setObjectName("SettingsQuickActionButton")
-            button.clicked.connect(callback)
-            layout.addWidget(button)
-
-        return card
-
-    def _build_note_card(self) -> QFrame:
-        card = _make_card("SettingsNoteCard")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(8)
-
-        quote = QLabel(
-            _(
-                "Настраивай систему как рабочий пульт: секции сверху дают быстрое переключение, а внутри остались те же проверенные builders.",
-                "Treat the page like a control console: top chips switch context quickly while the proven builders stay intact underneath.",
-            )
-        )
-        quote.setObjectName("SettingsNoteText")
-        quote.setWordWrap(True)
-        layout.addWidget(quote)
-        return card
-
-    def _open_db_viewer(self):
-        try:
-            from ui.settings.character_settings.logic import open_db_viewer
-
-            open_db_viewer(self.gui)
-        except Exception:
-            self.gui.switch_main_page("settings")
-            self.show_category("characters")
-
-    def _open_sandbox_debug(self):
-        self.gui.switch_main_page("sandbox")
-        page = getattr(self.gui, "sandbox_page", None)
-        if page is not None and hasattr(page, "show_debug_tab"):
-            QTimer.singleShot(0, page.show_debug_tab)
 
     def _build_section_containers(self):
         self.settings_containers = {}

@@ -58,17 +58,13 @@ QPushButton#RemovePresetButton:disabled {
 
 /* ========= Settings Page ========= */
 QWidget#SettingsPageRoot,
-QWidget#SettingsRail,
 QWidget#SettingsWorkspaceContent {
     background: transparent;
     border: none;
 }
 
 QFrame#SettingsWorkspacePanel,
-QFrame#SettingsTabsCard,
-QFrame#SettingsStatusRailCard,
-QFrame#SettingsQuickActionsCard,
-QFrame#SettingsNoteCard {
+QFrame#SettingsTabsCard {
     background-color: rgba({settings_panel_rgb}, 0.94);
     border: 1px solid rgba({accent_rgb}, 0.14);
     border-radius: 16px;
@@ -140,68 +136,6 @@ QPushButton#SettingsHeaderPrimaryButton:hover {
 }
 QPushButton#SettingsHeaderPrimaryButton:pressed {
     background-color: rgba({slider_progress_rgb}, 0.90);
-}
-
-QWidget#SettingsRail {
-    min-width: 308px;
-}
-
-QLabel#SettingsRailTitle,
-QLabel#SettingsRailBrandTitle {
-    color: {text};
-    font-size: 11.5pt;
-    font-weight: 800;
-}
-
-QLabel#SettingsRailLabel {
-    color: {muted};
-    font-size: 8.5pt;
-    font-weight: 700;
-    text-transform: uppercase;
-}
-
-QLabel#SettingsRailValue {
-    color: {text};
-    font-size: 10pt;
-    font-weight: 700;
-}
-
-QLabel#SettingsRailBrandMeta,
-QLabel#SettingsRailBrandHint,
-QLabel#SettingsNoteText {
-    color: {muted};
-    font-size: 9pt;
-}
-
-QLabel#SettingsRailBrandState {
-    color: #82e996;
-    font-size: 9pt;
-    font-weight: 800;
-}
-
-QLabel#SettingsRailBrandIcon {
-    min-width: 64px;
-    min-height: 64px;
-    border-radius: 18px;
-    background-color: rgba({accent_rgb}, 0.08);
-    border: 1px solid rgba({accent_rgb}, 0.16);
-}
-
-QPushButton#SettingsQuickActionButton {
-    background-color: rgba(255,255,255,0.035);
-    color: {text};
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 12px;
-    padding: 10px 12px;
-    text-align: left;
-    font-weight: 700;
-}
-QPushButton#SettingsQuickActionButton:hover {
-    background-color: rgba({accent_rgb}, 0.13);
-    border: 1px solid rgba({accent_rgb}, 0.26);
-}
-QPushButton#SettingsQuickActionButton:pressed {
-    background-color: rgba({accent_rgb}, 0.20);
 }
 
 QScrollArea#SettingsWorkspaceScroll,
