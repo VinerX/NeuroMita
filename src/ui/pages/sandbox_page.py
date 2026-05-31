@@ -598,20 +598,41 @@ class SandboxPage(QWidget):
         try:
             from handlers.embedding_presets import resolve_full_config
             cfg = resolve_full_config() or {}
-            name = (
+            preset_id = str(cfg.get("id") or "").strip()
+            name = str(
                 cfg.get("name")
                 or cfg.get("preset_name")
-                or cfg.get("model")
+                or ""
+            ).strip()
+            model_name = self._short_rag_model_name(
+                cfg.get("model")
                 or cfg.get("hf_name")
                 or cfg.get("db_model_key")
                 or ""
             )
-            name = str(name).strip()
-            if "/" in name:  # shorten HF paths like "Org/model-name"
-                name = name.rsplit("/", 1)[-1]
-            return name or _("Включён", "Enabled")
+            if preset_id in {"local_hf", "custom_local"}:
+                return model_name or name or _("Включён", "Enabled")
+            return name or model_name or _("Включён", "Enabled")
         except Exception:
             return _("Включён", "Enabled")
+
+    @staticmethod
+    def _short_rag_model_name(value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+
+        if text.startswith(("local:", "openai_compat:", "gemini:")):
+            text = text.split(":", 1)[1].strip()
+
+        normalized = text.replace("\\", "/").rstrip("/")
+        if not normalized:
+            return ""
+
+        if "/" in normalized:
+            return normalized.rsplit("/", 1)[-1].strip()
+
+        return normalized
 
     def _refresh_memory_summary(self):
         """Live mini-stats for the current character: real counts vs. limits,
