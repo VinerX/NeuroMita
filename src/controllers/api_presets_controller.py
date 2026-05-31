@@ -663,6 +663,7 @@ class ApiPresetsController:
             "reserve_keys": p.reserve_keys or [],
             "protocol_overrides": p.protocol_overrides or {},
             "generation_overrides": p.generation_overrides or {},
+            "openrouter_routing": p.openrouter_routing or {},
         }
         return result
 
