@@ -51,6 +51,61 @@ class EditorMixin:
                 raw = spec.get("value")
                 val_widget.setText(str(raw) if raw is not None else "")
 
+    def _read_openrouter_routing(self) -> dict:
+        v = self.view
+        return {
+            "enabled": bool(getattr(v, "or_enable_cb", None).isChecked()) if getattr(v, "or_enable_cb", None) is not None else False,
+            "order": str(getattr(v, "or_order_row", None).text() or "") if getattr(v, "or_order_row", None) is not None else "",
+            "only": str(getattr(v, "or_only_row", None).text() or "") if getattr(v, "or_only_row", None) is not None else "",
+            "ignore": str(getattr(v, "or_ignore_row", None).text() or "") if getattr(v, "or_ignore_row", None) is not None else "",
+            "quantizations": str(getattr(v, "or_quantizations_row", None).text() or "") if getattr(v, "or_quantizations_row", None) is not None else "",
+            "sort": str(getattr(v, "or_sort_row", None).current_data() or "") if getattr(v, "or_sort_row", None) is not None else "",
+            "data_collection": str(getattr(v, "or_data_collection_row", None).current_data() or "") if getattr(v, "or_data_collection_row", None) is not None else "",
+            "allow_fallbacks": bool(getattr(v, "or_allow_fallbacks_cb", None).isChecked()) if getattr(v, "or_allow_fallbacks_cb", None) is not None else False,
+            "require_parameters": bool(getattr(v, "or_require_parameters_cb", None).isChecked()) if getattr(v, "or_require_parameters_cb", None) is not None else False,
+            "zdr": bool(getattr(v, "or_zdr_cb", None).isChecked()) if getattr(v, "or_zdr_cb", None) is not None else False,
+            "max_price": {
+                "prompt": str(getattr(v, "or_max_price_prompt", None).text() or "") if getattr(v, "or_max_price_prompt", None) is not None else "",
+                "completion": str(getattr(v, "or_max_price_completion", None).text() or "") if getattr(v, "or_max_price_completion", None) is not None else "",
+                "request": str(getattr(v, "or_max_price_request", None).text() or "") if getattr(v, "or_max_price_request", None) is not None else "",
+                "image": str(getattr(v, "or_max_price_image", None).text() or "") if getattr(v, "or_max_price_image", None) is not None else "",
+            },
+        }
+
+    def _write_openrouter_routing(self, routing: dict) -> None:
+        v = self.view
+        routing = routing or {}
+        max_price = routing.get("max_price") if isinstance(routing.get("max_price"), dict) else {}
+
+        if getattr(v, "or_enable_cb", None) is not None:
+            v.or_enable_cb.setChecked(bool(routing.get("enabled", False)))
+        if getattr(v, "or_order_row", None) is not None:
+            v.or_order_row.set_text(", ".join(routing.get("order", [])) if isinstance(routing.get("order"), list) else str(routing.get("order") or ""))
+        if getattr(v, "or_only_row", None) is not None:
+            v.or_only_row.set_text(", ".join(routing.get("only", [])) if isinstance(routing.get("only"), list) else str(routing.get("only") or ""))
+        if getattr(v, "or_ignore_row", None) is not None:
+            v.or_ignore_row.set_text(", ".join(routing.get("ignore", [])) if isinstance(routing.get("ignore"), list) else str(routing.get("ignore") or ""))
+        if getattr(v, "or_quantizations_row", None) is not None:
+            v.or_quantizations_row.set_text(", ".join(routing.get("quantizations", [])) if isinstance(routing.get("quantizations"), list) else str(routing.get("quantizations") or ""))
+        if getattr(v, "or_sort_row", None) is not None:
+            v.or_sort_row.set_current_by_data(str(routing.get("sort") or ""))
+        if getattr(v, "or_data_collection_row", None) is not None:
+            v.or_data_collection_row.set_current_by_data(str(routing.get("data_collection") or ""))
+        if getattr(v, "or_allow_fallbacks_cb", None) is not None:
+            v.or_allow_fallbacks_cb.setChecked(bool(routing.get("allow_fallbacks", False)))
+        if getattr(v, "or_require_parameters_cb", None) is not None:
+            v.or_require_parameters_cb.setChecked(bool(routing.get("require_parameters", False)))
+        if getattr(v, "or_zdr_cb", None) is not None:
+            v.or_zdr_cb.setChecked(bool(routing.get("zdr", False)))
+        if getattr(v, "or_max_price_prompt", None) is not None:
+            v.or_max_price_prompt.setText(str(max_price.get("prompt") or ""))
+        if getattr(v, "or_max_price_completion", None) is not None:
+            v.or_max_price_completion.setText(str(max_price.get("completion") or ""))
+        if getattr(v, "or_max_price_request", None) is not None:
+            v.or_max_price_request.setText(str(max_price.get("request") or ""))
+        if getattr(v, "or_max_price_image", None) is not None:
+            v.or_max_price_image.setText(str(max_price.get("image") or ""))
+
     def _get_snapshot(self) -> PresetSnapshot:
         v = self.view
         base = self._parse_base(v.template_combo.currentData())
@@ -62,6 +117,7 @@ class EditorMixin:
             reserve_keys_text=str(v.reserve_keys_row.text() or "").strip(),
             protocol_id=self._current_protocol_id_ui(),
             generation_overrides=self._read_generation_overrides(),
+            openrouter_routing=self._read_openrouter_routing(),
         )
 
     def _set_dirty(self, dirty: bool) -> None:
@@ -298,6 +354,7 @@ class EditorMixin:
         self._apply_protocol_details(self._current_protocol_id_ui())
 
         self._write_generation_overrides(self._snapshot.generation_overrides)
+        self._write_openrouter_routing(self._snapshot.openrouter_routing)
 
         self._is_loading_ui = False
         self._set_dirty(False)
@@ -330,6 +387,7 @@ class EditorMixin:
             data["url"] = ""
 
         data["generation_overrides"] = self._read_generation_overrides()
+        data["openrouter_routing"] = self._read_openrouter_routing()
 
         def _call():
             res = self.event_bus.emit_and_wait(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": data}, timeout=2.0)

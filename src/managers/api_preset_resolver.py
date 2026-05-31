@@ -25,6 +25,7 @@ class PresetSettings:
     preset_name: str
     reserve_keys: List[str]
     generation_overrides: Dict[str, Any] = field(default_factory=dict)
+    openrouter_routing: Dict[str, Any] = field(default_factory=dict)
 
     def to_safe_dict(self) -> Dict[str, Any]:
         return {
@@ -125,6 +126,10 @@ class ApiPresetResolver:
         if not isinstance(generation_overrides, dict):
             generation_overrides = {}
 
+        openrouter_routing = (preset or {}).get("openrouter_routing") if isinstance(preset, dict) else None
+        if not isinstance(openrouter_routing, dict):
+            openrouter_routing = {}
+
         return PresetSettings(
             protocol_id=protocol_id,
             dialect_id=dialect_id,
@@ -138,6 +143,7 @@ class ApiPresetResolver:
             preset_name=preset_name,
             reserve_keys=reserve_keys,
             generation_overrides=generation_overrides,
+            openrouter_routing=openrouter_routing,
         )
 
     def resolve_preset_id_by_name(self, display_name: str) -> Optional[int]:

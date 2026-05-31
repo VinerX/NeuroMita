@@ -55,6 +55,7 @@ class UserPreset:
     protocol_id: str = ""
     protocol_overrides: Dict[str, Any] = field(default_factory=dict)
     generation_overrides: Dict[str, Any] = field(default_factory=dict)
+    openrouter_routing: Dict[str, Any] = field(default_factory=dict)
 
 
 class ApiPresetsController:
@@ -376,6 +377,10 @@ class ApiPresetsController:
         if not isinstance(go, dict):
             go = {}
 
+        orr = raw.get("openrouter_routing", {}) or {}
+        if not isinstance(orr, dict):
+            orr = {}
+
         return UserPreset(
             id=pid,
             name=name,
@@ -388,6 +393,7 @@ class ApiPresetsController:
             protocol_id=protocol_id,
             protocol_overrides=dict(po),
             generation_overrides=dict(go),
+            openrouter_routing=dict(orr),
         )
 
     def _load_presets_only(self):
@@ -757,6 +763,12 @@ class ApiPresetsController:
             if not isinstance(go, dict):
                 go = {}
             up.generation_overrides = dict(go)
+
+        if "openrouter_routing" in data:
+            orr = data.get("openrouter_routing") or {}
+            if not isinstance(orr, dict):
+                orr = {}
+            up.openrouter_routing = dict(orr)
 
         if "reserve_keys" in data:
             rk = data.get("reserve_keys") or []

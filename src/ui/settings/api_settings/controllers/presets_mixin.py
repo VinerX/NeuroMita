@@ -211,6 +211,12 @@ class PresetsMixin:
             if isinstance(gen_overrides, dict):
                 self._write_generation_overrides(gen_overrides)
 
+            openrouter_routing = preset.get("openrouter_routing") or {}
+            if isinstance(openrouter_routing, dict):
+                self._write_openrouter_routing(openrouter_routing)
+            else:
+                self._write_openrouter_routing({})
+
             v.api_url_row.set_enabled(base is None)
 
             self._apply_help_links(preset)

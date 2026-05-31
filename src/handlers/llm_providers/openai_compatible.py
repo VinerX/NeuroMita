@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from main_logger import logger
 from .base import BaseProvider, LLMRequest, LLMResponse, normalize_usage_payload
 from schemas.structured_response import StructuredResponse
+from utils.openrouter_routing import normalize_openrouter_routing
 
 
 class OpenAICompatibleProvider(BaseProvider, ABC):
@@ -42,6 +43,10 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
 
             params: Dict[str, Any] = {"model": model_to_use, "messages": cleaned_messages}
             params.update(self._map_unified_params(req.extra or {}, model_to_use))
+            if req.protocol_id == "openrouter_default":
+                routing = normalize_openrouter_routing((req.extra or {}).get("openrouter_routing"))
+                if routing:
+                    params["provider"] = routing
 
             caps = req.capabilities or {}
             if caps.get("structured_output"):

@@ -57,6 +57,8 @@ class ProtocolsMixin:
         v = self.view
         pid = str(protocol_id or "").strip()
         proto = self._protocols.get(pid) or {}
+        if hasattr(v, "openrouter_routing_section"):
+            v.openrouter_routing_section.setVisible(pid == "openrouter_default")
 
         dialect = str(proto.get("dialect") or "")
         provider = str(proto.get("provider") or "")

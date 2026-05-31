@@ -9,6 +9,7 @@ import requests
 from main_logger import logger
 from handlers.llm_providers.base import BaseProvider, LLMRequest, LLMResponse, normalize_usage_payload
 from schemas.structured_response import StructuredResponse
+from utils.openrouter_routing import normalize_openrouter_routing
 
 
 class OpenAIHTTPProviderBase(BaseProvider):
@@ -95,6 +96,10 @@ class OpenAIHTTPProviderBase(BaseProvider):
             "messages": messages,
         }
         payload.update(self._map_unified_params(req.extra or {}, model_to_use))
+        if req.protocol_id == "openrouter_default":
+            routing = normalize_openrouter_routing((req.extra or {}).get("openrouter_routing"))
+            if routing:
+                payload["provider"] = routing
 
         if self._supports_structured_output(req):
             rf_mode = (req.capabilities or {}).get("structured_output_mode", "json_schema")

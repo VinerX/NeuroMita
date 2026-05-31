@@ -12,6 +12,7 @@ from managers.model_config_loader import ModelConfigLoader
 from managers.tools.tool_manager import ToolManager
 
 from handlers.llm_providers.base import LLMRequest, LLMResponse
+from utils.openrouter_routing import normalize_openrouter_routing
 from handlers.llm_providers.param_mapper import build_unified_generation_params
 
 from core.events import get_event_bus
@@ -26,6 +27,7 @@ def _save_last_request_context(req, character_name: str = "") -> None:
     _KEEP = {
         "temperature", "max_tokens", "max_response_tokens", "top_p", "top_k",
         "presence_penalty", "frequency_penalty",
+        "openrouter_routing",
     }
     try:
         base = os.environ.get("NEUROMITA_BASE_DIR", "")
@@ -240,6 +242,10 @@ class ChatModel:
             )
 
             req.extra["tool_manager"] = self.tool_manager
+            if preset_settings.protocol_id == "openrouter_default":
+                routing = normalize_openrouter_routing(preset_settings.openrouter_routing)
+                if routing:
+                    req.extra["openrouter_routing"] = routing
             _last_req[0] = req
             _char = getattr(self, "current_character", None)
             _save_last_request_context(req, character_name=getattr(_char, "name", "") or "")

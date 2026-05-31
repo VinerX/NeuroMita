@@ -153,6 +153,15 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
         v.api_key_row.edit.textChanged.connect(self._safe(self._on_field_changed, "key_changed"))
         v.reserve_keys_row.edit.textChanged.connect(self._safe(self._on_field_changed, "reserve_keys_changed"))
 
+        if hasattr(v, "openrouter_routing_widgets"):
+            for key, widget in (v.openrouter_routing_widgets or {}).items():
+                if hasattr(widget, "textChanged"):
+                    widget.textChanged.connect(self._safe(self._on_field_changed, f"openrouter_routing_{key}"))
+                elif hasattr(widget, "toggled"):
+                    widget.toggled.connect(self._safe(self._on_field_changed, f"openrouter_routing_{key}"))
+                elif hasattr(widget, "currentIndexChanged"):
+                    widget.currentIndexChanged.connect(self._safe(self._on_field_changed, f"openrouter_routing_{key}"))
+
         # Wire generation override widgets
         for key, (chk, val_widget) in getattr(v, 'gen_override_widgets', {}).items():
             chk.toggled.connect(self._safe(self._on_field_changed, f"gen_override_enable_{key}"))
