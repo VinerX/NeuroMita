@@ -663,6 +663,17 @@ class AppWindowBase(QMainWindow):
         # logs_window больше не дублирует debug_info — в нём показывается tail файла логов,
         # а не "Debug info not available". См. _refresh_logs_view().
 
+    @staticmethod
+    def _fmt_tokens(n) -> str:
+        """Compact token counts: show in thousands (e.g. 12.3k) once above 10000."""
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            return str(n)
+        if n > 10000:
+            return f"{n / 1000:.1f}k"
+        return str(n)
+
     def update_token_count(self, event=None):
         show_token_info = self._get_setting("SHOW_TOKEN_INFO", True)
         if show_token_info:
@@ -671,10 +682,11 @@ class AppWindowBase(QMainWindow):
             max_model_tokens = int(self._get_setting("MAX_MODEL_TOKENS", 32000))
             cost = self.event_bus.emit_and_wait(Events.Model.CALCULATE_COST, timeout=0.5)
             cost = cost[0] if cost else 0.0
+            fmt = self._fmt_tokens
             self.token_count_label.setText(
                 _("Токены: {}/{} (Макс. токены: {}) | Ориент. стоимость: {:.4f} ₽",
                   "Tokens: {}/{} (Max tokens: {}) | Approx. cost: {:.4f} ₽").format(
-                    current_context_tokens, max_model_tokens, max_model_tokens, cost
+                    fmt(current_context_tokens), fmt(max_model_tokens), fmt(max_model_tokens), cost
                 )
             )
             self.token_count_label.setVisible(True)

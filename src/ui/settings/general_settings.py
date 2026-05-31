@@ -149,6 +149,13 @@ def setup_general_settings_controls(self, parent):
                       'Дублируется в Песочнице → Отладка.',
                       "Display the model's thinking block as a separate message. "
                       'Also available in Sandbox → Debug.')},
+
+        {'label': _('Показывать системные сообщения', 'Show system messages'), 'key': 'SHOW_SYSTEM_MESSAGES',
+         'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _('Показывать системные/контекстные заметки (например «[Easel drawing]…») в чате. '
+                      'По умолчанию скрыты. Дублируется в Песочнице → Отладка.',
+                      'Show system/context notes (e.g. "[Easel drawing]…") in chat. '
+                      'Hidden by default. Also available in Sandbox → Debug.')},
     ]
 
     create_settings_section(

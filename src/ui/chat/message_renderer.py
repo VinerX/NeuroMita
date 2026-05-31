@@ -309,6 +309,11 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         if isinstance(raw, str) and raw.lstrip().startswith(_SYS_PREFIX):
             role = "system"
 
+    # System notes (engine/context messages like "[Easel drawing]…") are hidden
+    # by default — they aren't part of the conversation. Optional via the setting.
+    if role == "system" and not bool(gui._get_setting("SHOW_SYSTEM_MESSAGES", False)):
+        return
+
     text_parts = []
     speaker_name = ""
     images = []
@@ -333,7 +338,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
     if not speaker_name:
         if role == "user": speaker_name = _("Вы", "You")
         elif role == "assistant" and hasattr(gui, "_get_character_name"): speaker_name = gui._get_character_name()
-        elif role in ("system", "event"): speaker_name = _("Система", "System")
+        elif role in ("system", "event"): speaker_name = _("ⓘ Система", "ⓘ System")
 
     full_text = "".join(text_parts).strip()
     has_any_images = bool(images or ui_images)
@@ -350,6 +355,9 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         full_text = re.sub(r' +', ' ', full_text).strip()
 
     show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
+    # System/event notes read cleaner without a timestamp row.
+    if role in ("system", "event"):
+        show_ts = False
     mode = _struct_mode(gui)
     _pending_struct_panel = None
     

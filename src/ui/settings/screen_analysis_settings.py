@@ -38,9 +38,9 @@ def on_camera_selected(gui):
                 logger.error(f"Не удалось извлечь индекс из '{selection}'")
 
 def setup_screen_analysis_controls(gui, parent_layout):
-    # ОДИН ОБЩИЙ ЗАГОЛОВОК для всех настроек экрана
-    create_section_header(parent_layout, _("Настройки экрана", "Screen Settings"))
-    
+    # No group header here: the page already carries the "Изображения и камера"
+    # title, so a separate "Настройки экрана" heading just duplicated it.
+
     # Первая CollapsibleSection
     screen_analysis_config = [
         {'label': _('Разрешить обработку изображений', 'Enable Image Analysis'), 'key': 'ENABLE_IMAGE_ANALYSIS', 'type': 'checkbutton', 'default_checkbutton': True, 'hide': True},
@@ -58,7 +58,7 @@ def setup_screen_analysis_controls(gui, parent_layout):
         {'label': _('Исключить окно GUI', 'Exclude GUI Window'), 'key': 'EXCLUDE_GUI_WINDOW', 'type': 'checkbutton', 'default_checkbutton': False},
         {'label': _('Заголовок искл. окна', 'Excluded Window Title'), 'key': 'EXCLUDE_WINDOW_TITLE', 'type': 'entry', 'default': ''},
     ]
-    create_settings_section(gui, parent_layout, _("Настройки анализа экрана", "Screen Analysis Settings"), screen_analysis_config)
+    create_settings_section(gui, parent_layout, _("Настройки анализа экрана", "Screen Analysis Settings"), screen_analysis_config, icon_name="fa6s.display")
 
     # Вторая CollapsibleSection
     camera_analysis_config = [
@@ -73,7 +73,7 @@ def setup_screen_analysis_controls(gui, parent_layout):
         {'label': _('Ширина захвата', 'Capture Width'), 'key': 'CAMERA_CAPTURE_WIDTH', 'type': 'entry', 'default': '640', 'validation': gui.validate_positive_integer},
         {'label': _('Высота захвата', 'Capture Height'), 'key': 'CAMERA_CAPTURE_HEIGHT', 'type': 'entry', 'default': '480', 'validation': gui.validate_positive_integer},
     ]
-    gui.camera_section = create_settings_section(gui, parent_layout, _("Настройки захвата с камеры", "Camera Capture Settings"), camera_analysis_config)
+    gui.camera_section = create_settings_section(gui, parent_layout, _("Настройки захвата с камеры", "Camera Capture Settings"), camera_analysis_config, icon_name="fa6s.camera")
 
     # Третья CollapsibleSection
     frame_compression_config = [
@@ -83,7 +83,7 @@ def setup_screen_analysis_controls(gui, parent_layout):
         {'label': _('Минимальное качество (%)', 'Minimum Quality (%)'), 'key': 'IMAGE_QUALITY_REDUCTION_MIN_QUALITY', 'type': 'entry', 'default': '30', 'validation': gui.validate_positive_integer_or_zero},
         {'label': _('Скорость снижения', 'Decrease Rate'), 'key': 'IMAGE_QUALITY_REDUCTION_DECREASE_RATE', 'type': 'entry', 'default': '5', 'validation': gui.validate_positive_integer},
     ]
-    create_settings_section(gui, parent_layout, _("Настройки угасания кадров", "Frame Regression Settings"), frame_compression_config)
+    create_settings_section(gui, parent_layout, _("Настройки угасания кадров", "Frame Regression Settings"), frame_compression_config, icon_name="fa6s.hourglass-half")
 
     # Четвёртая CollapsibleSection — описание изображений
     # Список пресетов для vision-провайдера (тот же паттерн, что у REACT_PROVIDER_L1)
@@ -158,7 +158,7 @@ def setup_screen_analysis_controls(gui, parent_layout):
             ),
         },
     ]
-    create_settings_section(gui, parent_layout, _("Описание изображений", "Image Description"), image_description_config)
+    create_settings_section(gui, parent_layout, _("Описание изображений", "Image Description"), image_description_config, icon_name="fa6s.comment-dots")
     # Detail depends on EITHER inline OR non-native mode being on (both use it)
     _wire_detail_dependency(gui)
 
@@ -331,7 +331,8 @@ def _setup_image_cleanup_section(gui, parent_layout) -> None:
     section = create_settings_section(
         gui, parent_layout,
         _("Хранение и очистка изображений", "Image Storage & Cleanup"),
-        cleanup_config
+        cleanup_config,
+        icon_name="fa6s.box-archive"
     )
     # Вставляем label с результатом прямо под секцией
     parent_layout.addWidget(result_label)
@@ -456,5 +457,6 @@ def _setup_mita_camera_section(gui, parent_layout) -> None:
     create_settings_section(
         gui, parent_layout,
         _("Камера Миты (FrameRecorder)", "Mita Camera (FrameRecorder)"),
-        mita_camera_config
+        mita_camera_config,
+        icon_name="fa6s.film"
     )

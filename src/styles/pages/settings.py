@@ -265,7 +265,6 @@ QWidget#SettingsPageRoot QWidget#InnerCollapsibleHeader {
     padding-bottom: 6px;
 }
 
-QWidget#SettingsPageRoot QLabel#CollapsibleArrow,
 QWidget#SettingsPageRoot QLabel#CollapsibleTitle {
     color: {text};
     font-weight: 800;
@@ -273,8 +272,13 @@ QWidget#SettingsPageRoot QLabel#CollapsibleTitle {
 }
 
 QWidget#SettingsPageRoot QLabel#CollapsibleArrow {
-    max-width: 0px;
-    min-width: 0px;
+    padding: 0px;
+    background: transparent;
+}
+
+QWidget#SettingsPageRoot QLabel#CollapsibleIcon {
+    padding: 0px;
+    background: transparent;
 }
 
 QWidget#SettingsPageRoot QWidget#CollapsibleContent {

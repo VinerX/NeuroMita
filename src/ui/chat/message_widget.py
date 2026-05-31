@@ -42,36 +42,36 @@ BUBBLE_RADIUS = 12
 ROLE_COLORS = {
     "user":      "#ff7ab8",
     "assistant": "#ff9cd2",
-    "system":    "#7bc6ff",
-    "event":     "#7bc6ff",
+    "system":    "#9aa1b8",
+    "event":     "#9aa1b8",
     "think":     "#bdb4c7",
 }
 CARD_BG = {
     "user":      QColor(171, 44, 102, 242),
     "assistant": QColor(46, 24, 52, 244),
-    "system":    QColor(67, 122, 176, 42),
-    "event":     QColor(67, 122, 176, 42),
+    "system":    QColor(255, 255, 255, 13),
+    "event":     QColor(255, 255, 255, 13),
     "think":     QColor(74, 58, 82, 72),
 }
 CARD_BORDER = {
     "user":      QColor(255, 133, 188, 165),
     "assistant": QColor(255, 132, 191, 70),
-    "system":    QColor(123, 198, 255, 70),
-    "event":     QColor(123, 198, 255, 70),
+    "system":    QColor(255, 255, 255, 30),
+    "event":     QColor(255, 255, 255, 30),
     "think":     QColor(189, 180, 199, 42),
 }
 TEXT_COLOR = {
     "user":      "#fff6fb",
     "assistant": "#f3eaf3",
-    "system":    "#eef7ff",
-    "event":     "#eef7ff",
+    "system":    "#c7ccdc",
+    "event":     "#c7ccdc",
     "think":     "#cbc1d1",
 }
 NAME_COLOR = {
     "user":      "#ffd7ea",
     "assistant": "#ff8fc8",
-    "system":    "#7bc6ff",
-    "event":     "#7bc6ff",
+    "system":    "#9aa1b8",
+    "event":     "#9aa1b8",
     "think":     "#bdb4c7",
 }
 TIME_COLOR = {
