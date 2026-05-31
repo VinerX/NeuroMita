@@ -467,54 +467,128 @@ class ContextViewerDialog(QDialog):
         finish_reason = str(self._data.get("finish_reason") or "")
         response_model = str(self._data.get("response_model") or self._data.get("model") or "")
         response_provider = str(self._data.get("response_provider_name") or self._data.get("provider_name") or "")
+        response_ts = str(self._data.get("response_timestamp") or "")
 
         sections: list[str] = []
         meta_rows = []
         if response_model:
             meta_rows.append(
-                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{_('Модель', 'Model')}</b></td>"
+                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{_('Model', 'Model')}</b></td>"
                 f"<td style='color:{_TEXT}'>{self._colorize(response_model)}</td></tr>"
             )
         if response_provider:
             meta_rows.append(
-                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{_('Провайдер', 'Provider')}</b></td>"
+                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{_('Provider', 'Provider')}</b></td>"
                 f"<td style='color:{_TEXT}'>{self._colorize(response_provider)}</td></tr>"
             )
         if finish_reason:
             meta_rows.append(
-                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{_('Причина завершения', 'Finish reason')}</b></td>"
+                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{_('Finish reason', 'Finish reason')}</b></td>"
                 f"<td style='color:{_TEXT}'>{self._colorize(finish_reason)}</td></tr>"
+            )
+        if response_ts:
+            meta_rows.append(
+                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{_('Response time', 'Response time')}</b></td>"
+                f"<td style='color:{_TEXT}'>{self._colorize(response_ts[:19].replace('T', ' '))}</td></tr>"
             )
         if meta_rows:
             sections.append(f"<table style='border-spacing:4px'>{''.join(meta_rows)}</table>")
 
         if usage:
+            usage_rows = self._build_usage_rows(usage)
+            if usage_rows:
+                sections.append(
+                    f"<hr style='border-color:{_BORDER}'>"
+                    f"<p><b style='color:{_MUTED}'>{_('Usage summary', 'Usage summary')}</b></p>"
+                    f"<table style='border-spacing:4px'>{''.join(usage_rows)}</table>"
+                )
             usage_body = self._colorize(json.dumps(usage, ensure_ascii=False, indent=2))
             sections.append(
-                f"<hr style='border-color:{_BORDER}'>"
-                f"<p><b style='color:{_MUTED}'>{_('Usage', 'Usage')}</b></p>"
+                f"<p><b style='color:{_MUTED}'>{_('Raw usage', 'Raw usage')}</b></p>"
                 f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{usage_body}</div>"
             )
 
         if response_text:
             sections.append(
                 f"<hr style='border-color:{_BORDER}'>"
-                f"<p><b style='color:{_ROLE_COLORS['assistant']}'>{_('Ответ модели', 'Model response')}</b></p>"
+                f"<p><b style='color:{_ROLE_COLORS['assistant']}'>{_('Model response', 'Model response')}</b></p>"
                 f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{self._colorize(response_text)}</div>"
             )
         else:
             sections.append(
-                f"<p style='color:{_MUTED}'><i>{_('Данные ответа не сохранены', 'No response data saved')}</i></p>"
+                f"<p style='color:{_MUTED}'><i>{_('No response data saved', 'No response data saved')}</i></p>"
             )
 
         if response_raw and response_raw != response_text:
             sections.append(
                 f"<hr style='border-color:{_BORDER}'>"
-                f"<p><b style='color:{_MUTED}'>{_('Сырой ответ', 'Raw response')}</b></p>"
+                f"<p><b style='color:{_MUTED}'>{_('Raw response', 'Raw response')}</b></p>"
                 f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{self._colorize(response_raw)}</div>"
             )
 
         self._response_viewer.setHtml(self._wrap("".join(sections)))
+
+    def _build_usage_rows(self, usage: dict) -> list[str]:
+        def _to_int(key: str) -> int | None:
+            try:
+                value = usage.get(key)
+                if value in (None, ""):
+                    return None
+                return int(value)
+            except Exception:
+                return None
+
+        def _to_float(key: str) -> float | None:
+            try:
+                value = usage.get(key)
+                if value in (None, ""):
+                    return None
+                return float(value)
+            except Exception:
+                return None
+
+        def _row(label: str, value: str) -> str:
+            return (
+                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{label}</b></td>"
+                f"<td style='color:{_TEXT}'>{value}</td></tr>"
+            )
+
+        rows: list[str] = []
+
+        prompt_tokens = _to_int("prompt_tokens")
+        completion_tokens = _to_int("completion_tokens")
+        total_tokens = _to_int("total_tokens")
+        reasoning_tokens = _to_int("reasoning_tokens")
+        cached_prompt_tokens = _to_int("cached_prompt_tokens")
+        cache_write_tokens = _to_int("cache_write_tokens")
+
+        if prompt_tokens is not None:
+            rows.append(_row(_("Prompt tokens", "Prompt tokens"), self._fmt_int(prompt_tokens)))
+        if completion_tokens is not None:
+            rows.append(_row(_("Completion tokens", "Completion tokens"), self._fmt_int(completion_tokens)))
+        if total_tokens is not None:
+            rows.append(_row(_("Total tokens", "Total tokens"), self._fmt_int(total_tokens)))
+        if reasoning_tokens:
+            rows.append(_row(_("Reasoning tokens", "Reasoning tokens"), self._fmt_int(reasoning_tokens)))
+        if cached_prompt_tokens is not None:
+            cached_text = self._fmt_int(cached_prompt_tokens)
+            if prompt_tokens and prompt_tokens > 0:
+                cached_pct = (cached_prompt_tokens / prompt_tokens) * 100.0
+                cached_text += f" <span style='color:{_MUTED}'>({cached_pct:.1f}%)</span>"
+            rows.append(_row(_("Cached prompt tokens", "Cached prompt tokens"), cached_text))
+        if cache_write_tokens is not None:
+            rows.append(_row(_("Cache write tokens", "Cache write tokens"), self._fmt_int(cache_write_tokens)))
+
+        cost = _to_float("cost")
+        if cost is not None:
+            currency = str(usage.get("cost_currency") or "USD")
+            cost_text = self._fmt_cost(cost, currency)
+            cost_source = str(usage.get("cost_source") or "")
+            if cost_source:
+                cost_text += f" <span style='color:{_MUTED}'>({self._esc(cost_source)})</span>"
+            rows.append(_row(_("Cost", "Cost"), cost_text))
+
+        return rows
 
     def _render_content_blocks(self, blocks: list) -> str:
         parts = []
@@ -573,6 +647,29 @@ class ContextViewerDialog(QDialog):
             f"font-family:\"Segoe UI\",Arial,sans-serif;margin:0;padding:0'>"
             f"{body}</body></html>"
         )
+
+    @staticmethod
+    def _fmt_int(value: int) -> str:
+        try:
+            return f"{int(value):,}".replace(",", " ")
+        except Exception:
+            return str(value)
+
+    @staticmethod
+    def _fmt_cost(value: float, currency: str = "USD") -> str:
+        try:
+            amount = float(value)
+        except Exception:
+            return str(value)
+
+        if abs(amount) >= 1:
+            text = f"{amount:.4f}"
+        elif abs(amount) >= 0.01:
+            text = f"{amount:.5f}"
+        else:
+            text = f"{amount:.7f}"
+        text = text.rstrip("0").rstrip(".")
+        return f"{currency} {text}"
 
     @staticmethod
     def _esc(text: str) -> str:
