@@ -675,6 +675,7 @@ class AppWindowBase(QMainWindow):
             est_cost_text = "n/a" if est_cost is None else f"{float(est_cost):.6f} {est_currency}".strip()
             actual_prompt = stats.get("actual_prompt_tokens")
             actual_completion = stats.get("actual_completion_tokens")
+            actual_cached = stats.get("actual_cached_prompt_tokens")
             actual_cost = stats.get("actual_cost")
             actual_currency = str(stats.get("actual_cost_currency") or "")
             cost = 0.0
@@ -687,15 +688,25 @@ class AppWindowBase(QMainWindow):
             if actual_prompt is not None or actual_completion is not None or actual_cost is not None:
                 actual_prompt = int(actual_prompt or 0)
                 actual_completion = int(actual_completion or 0)
+                actual_cached = int(actual_cached or 0)
                 actual_total = int(stats.get("actual_total_tokens") or (actual_prompt + actual_completion))
                 actual_cost_text = "n/a" if actual_cost is None else f"{float(actual_cost):.6f} {actual_currency}".strip()
-                self.token_count_label.setText(
-                    _("Контекст: ~{}/{} | Оценка входа: {} | Последний запрос: {}/{} (всего {}) | Факт: {}",
-                      "Context: ~{}/{} | Est. input: {} | Last request: {}/{} (total {}) | Actual: {}").format(
-                        current_context_tokens, max_model_tokens, est_cost_text,
-                        actual_prompt, actual_completion, actual_total, actual_cost_text
+                if actual_cached > 0:
+                    self.token_count_label.setText(
+                        _("Контекст: ~{}/{} | Оценка входа: {} | Последний запрос: {}/{} (всего {}, кеш {}) | Факт: {}",
+                          "Context: ~{}/{} | Est. input: {} | Last request: {}/{} (total {}, cached {}) | Actual: {}").format(
+                            current_context_tokens, max_model_tokens, est_cost_text,
+                            actual_prompt, actual_completion, actual_total, actual_cached, actual_cost_text
+                        )
                     )
-                )
+                else:
+                    self.token_count_label.setText(
+                        _("Контекст: ~{}/{} | Оценка входа: {} | Последний запрос: {}/{} (всего {}) | Факт: {}",
+                          "Context: ~{}/{} | Est. input: {} | Last request: {}/{} (total {}) | Actual: {}").format(
+                            current_context_tokens, max_model_tokens, est_cost_text,
+                            actual_prompt, actual_completion, actual_total, actual_cost_text
+                        )
+                    )
             else:
                 self.token_count_label.setText(
                     _("Контекст: ~{}/{} | Оценка входа: {}",

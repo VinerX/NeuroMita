@@ -39,24 +39,26 @@ def _summarize_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def merge_system_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     system_parts: List[str] = []
-    rest: List[Dict[str, Any]] = []
+    out: List[Dict[str, Any]] = []
+    seen_non_system = False
 
     for m in messages or []:
         if not isinstance(m, dict):
             continue
-        if m.get("role") == "system":
+        if not seen_non_system and m.get("role") == "system":
             c = m.get("content", "")
             t = _as_text(c).strip()
             if t:
                 system_parts.append(t)
         else:
-            rest.append(m)
+            seen_non_system = True
+            out.append(m)
 
     if not system_parts:
-        return list(rest)
+        return list(messages or [])
 
     merged = {"role": "system", "content": "\n\n".join(system_parts)}
-    return [merged] + rest
+    return [merged] + out
 
 
 def ensure_last_message_user(messages: List[Dict[str, Any]], fallback_user_text: str = ".") -> List[Dict[str, Any]]:
@@ -181,7 +183,7 @@ _TRANSFORM_CATALOG: List[Dict[str, Any]] = [
     {
         "id": "merge_system_messages",
         "title": "Merge system messages",
-        "description": "Combine all system messages into a single system message at the top.",
+        "description": "Combine only the leading contiguous system messages into a single system message at the top.",
         "params_schema": None,
     },
     {

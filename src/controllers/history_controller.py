@@ -9,6 +9,9 @@ from main_logger import logger
 
 
 class HistoryController:
+    _SUMMARY_TEXT_VAR = "HISTORY_COMPRESSION_SUMMARY"
+    _SUMMARY_COUNT_VAR = "HISTORY_COMPRESSION_SUMMARY_COUNT"
+
     def __init__(self):
         self.event_bus = get_event_bus()
         self._messages_since_last_periodic_compression: Dict[str, int] = {}
@@ -75,13 +78,25 @@ class HistoryController:
             filtered.append(m)
         llm_messages_history = filtered
 
+        use_external_summary = str(self._get_setting("HISTORY_COMPRESSION_OUTPUT_TARGET", "memory")) == "history"
+        history_summary = self._get_history_summary(character) if use_external_summary else ""
+        summary_count = self._get_history_summary_count(character) if use_external_summary else 0
+        if not history_summary:
+            summary_count = 0
+        summary_count = max(0, min(summary_count, len(llm_messages_history)))
+
         if not disable_compression:
-            llm_messages_history = self._process_history_compression(
-                character, llm_messages_history, effective_limit
+            llm_messages_history, history_summary, summary_count = self._process_history_compression(
+                character,
+                llm_messages_history,
+                effective_limit,
+                history_summary=history_summary,
+                summary_count=summary_count,
             )
 
-        missed_messages: List[Dict[str, Any]] = llm_messages_history[:-effective_limit]
-        history_limited: List[Dict[str, Any]] = llm_messages_history[-effective_limit:]
+        unsummarized_history = llm_messages_history[summary_count:]
+        missed_messages: List[Dict[str, Any]] = unsummarized_history[:-effective_limit]
+        history_limited: List[Dict[str, Any]] = unsummarized_history[-effective_limit:]
 
         if missed_messages and save_missed_history:
             logger.info(f"[HistoryController] Сохраняю {len(missed_messages)} пропущенных сообщений для персонажа {char_id}.")
@@ -93,7 +108,7 @@ class HistoryController:
         # ключевая часть: подготовка для LLM (без лишних полей + с префиксами speaker/target)
         history_for_llm = self._sanitize_history_for_llm(character, history_limited)
 
-        return {'history': history_for_llm}
+        return {'history': history_for_llm, 'history_summary': history_summary}
 
     def _decorate_messages_with_character_info(
         self,
@@ -189,8 +204,11 @@ class HistoryController:
         self,
         character,
         llm_messages_history: List[Dict[str, Any]],
-        effective_limit: int
-    ) -> List[Dict[str, Any]]:
+        effective_limit: int,
+        *,
+        history_summary: str = "",
+        summary_count: int = 0,
+    ) -> tuple[List[Dict[str, Any]], str, int]:
         compress_percent = float(self._get_setting("HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS", 0.85))
         enable_on_limit = bool(self._get_setting("ENABLE_HISTORY_COMPRESSION_ON_LIMIT", False))
         enable_periodic = bool(self._get_setting("ENABLE_HISTORY_COMPRESSION_PERIODIC", False))
@@ -203,70 +221,78 @@ class HistoryController:
         keep_tail = max(1, keep_tail)
 
         min_len_to_trigger = max(1, int(keep_tail * compress_percent))
+        use_external_summary = (output_target == "history")
 
-        if enable_on_limit and len(llm_messages_history) >= min_len_to_trigger and len(llm_messages_history) > keep_tail:
-            messages_to_compress = llm_messages_history[:-keep_tail]
-
-            logger.info(
-                f"[HistoryController][{char_id}] История близка/превышает лимит. "
-                f"Попытка сжать {len(messages_to_compress)} сообщений, сохранить хвост {keep_tail}."
-            )
-
-            compressed_summary = self._compress_history(character, messages_to_compress)
-
-            if compressed_summary:
-                if output_target == "memory":
-                    if hasattr(character, 'memory_system') and character.memory_system:
-                        character.memory_system.add_memory(
-                            content=compressed_summary,
-                            memory_type="summary"
-                        )
-                        logger.info(f"[HistoryController][{char_id}] Сжатая сводка добавлена в MemorySystem.")
-                    else:
-                        logger.warning(f"[HistoryController][{char_id}] MemorySystem недоступен для сводки.")
-
-                    llm_messages_history = llm_messages_history[-keep_tail:]
-
-                elif output_target == "history":
-                    summary_message = {
-                        "role": "system",
-                        "content": f"[HISTORY SUMMARY]: {compressed_summary}"
-                    }
-                    tail_to_keep = max(keep_tail - 1, 0)
-                    tail = llm_messages_history[-tail_to_keep:] if tail_to_keep else []
-                    llm_messages_history = [summary_message] + tail
-
-                    logger.info(
-                        f"[HistoryController][{char_id}] Сжатая сводка добавлена в историю, старые сообщения удалены."
-                    )
-                else:
-                    logger.warning(
-                        f"[HistoryController][{char_id}] Неизвестный target для сжатия истории: {output_target}"
-                    )
+        if enable_on_limit:
+            source_messages = llm_messages_history[summary_count:] if use_external_summary else llm_messages_history
+            if len(source_messages) >= min_len_to_trigger and len(source_messages) > keep_tail:
+                messages_to_compress = source_messages[:-keep_tail]
 
                 logger.info(
-                    f"[HistoryController][{char_id}] История после on-limit compression: {len(llm_messages_history)} сообщений."
+                    f"[HistoryController][{char_id}] История близка/превышает лимит. "
+                    f"Попытка сжать {len(messages_to_compress)} сообщений, сохранить хвост {keep_tail}."
                 )
-            else:
-                logger.warning(f"[HistoryController][{char_id}] Сжатие истории по лимиту не удалось.")
+
+                compressed_summary = self._compress_history(
+                    character,
+                    messages_to_compress,
+                    previous_summary=history_summary if use_external_summary else "",
+                )
+
+                if compressed_summary:
+                    if output_target == "memory":
+                        if hasattr(character, 'memory_system') and character.memory_system:
+                            character.memory_system.add_memory(
+                                content=compressed_summary,
+                                memory_type="summary"
+                            )
+                            logger.info(f"[HistoryController][{char_id}] Сжатая сводка добавлена в MemorySystem.")
+                        else:
+                            logger.warning(f"[HistoryController][{char_id}] MemorySystem недоступен для сводки.")
+
+                        llm_messages_history = llm_messages_history[-keep_tail:]
+
+                    elif output_target == "history":
+                        history_summary = compressed_summary
+                        summary_count = min(len(llm_messages_history), summary_count + len(messages_to_compress))
+                        self._set_history_summary_state(character, history_summary, summary_count)
+
+                        logger.info(
+                            f"[HistoryController][{char_id}] Сжатая сводка вынесена в отдельное состояние истории."
+                        )
+                    else:
+                        logger.warning(
+                            f"[HistoryController][{char_id}] Неизвестный target для сжатия истории: {output_target}"
+                        )
+
+                    logger.info(
+                        f"[HistoryController][{char_id}] История после on-limit compression: {len(llm_messages_history)} сообщений."
+                    )
+                else:
+                    logger.warning(f"[HistoryController][{char_id}] Сжатие истории по лимиту не удалось.")
 
         if enable_periodic and periodic_interval > 0:
             cnt = self._messages_since_last_periodic_compression.get(char_id, 0) + 1
             self._messages_since_last_periodic_compression[char_id] = cnt
 
             if cnt >= periodic_interval:
-                messages_to_compress = llm_messages_history[:periodic_interval]
+                source_messages = llm_messages_history[summary_count:] if use_external_summary else llm_messages_history
+                messages_to_compress = source_messages[:periodic_interval]
 
                 if not messages_to_compress:
                     logger.info(f"[HistoryController][{char_id}] Нет сообщений для периодического сжатия.")
                     self._messages_since_last_periodic_compression[char_id] = 0
-                    return llm_messages_history
+                    return llm_messages_history, history_summary, summary_count
 
                 logger.info(
                     f"[HistoryController][{char_id}] Периодическое сжатие: попытка сжать "
                     f"{len(messages_to_compress)} сообщений."
                 )
-                compressed_summary = self._compress_history(character, messages_to_compress)
+                compressed_summary = self._compress_history(
+                    character,
+                    messages_to_compress,
+                    previous_summary=history_summary if use_external_summary else "",
+                )
 
                 if compressed_summary:
                     if output_target == "memory":
@@ -283,17 +309,12 @@ class HistoryController:
                         llm_messages_history = llm_messages_history[-keep_tail:]
 
                     elif output_target == "history":
-                        summary_message = {
-                            "role": "system",
-                            "content": f"[HISTORY SUMMARY]: {compressed_summary}"
-                        }
-                        remaining = llm_messages_history[len(messages_to_compress):]
-                        tail_to_keep = max(keep_tail - 1, 0)
-                        tail = remaining[-tail_to_keep:] if tail_to_keep else []
-                        llm_messages_history = [summary_message] + tail
+                        history_summary = compressed_summary
+                        summary_count = min(len(llm_messages_history), summary_count + len(messages_to_compress))
+                        self._set_history_summary_state(character, history_summary, summary_count)
 
                         logger.info(
-                            f"[HistoryController][{char_id}] Периодическая сводка добавлена в историю, старые сообщения удалены."
+                            f"[HistoryController][{char_id}] Периодическая сводка вынесена в отдельное состояние истории."
                         )
                     else:
                         logger.warning(
@@ -308,9 +329,15 @@ class HistoryController:
 
                 self._messages_since_last_periodic_compression[char_id] = 0
 
-        return llm_messages_history
+        return llm_messages_history, history_summary, summary_count
 
-    def _compress_history(self, character, messages_to_compress: List[Dict[str, Any]]) -> Optional[str]:
+    def _compress_history(
+        self,
+        character,
+        messages_to_compress: List[Dict[str, Any]],
+        *,
+        previous_summary: str = "",
+    ) -> Optional[str]:
         try:
             template_path = str(self._get_setting(
                 "HISTORY_COMPRESSION_PROMPT_TEMPLATE",
@@ -333,9 +360,13 @@ class HistoryController:
                 else f"[{'Player' if msg.get('role') == 'user' else 'Character or System'}]: {msg.get('content')}"
                 for msg in messages_to_compress
             ])
+            previous_summary_limit = int(self._get_setting("HISTORY_COMPRESSION_PREVIOUS_SUMMARY_MAX_CHARS", 6000))
+            previous_summary_trimmed = self._truncate_text_for_prompt(previous_summary, previous_summary_limit)
 
             full_prompt = prompt_template.replace("{history_messages}", formatted_messages)
             full_prompt = full_prompt.replace("{your character}", getattr(character, "name", "Character"))
+            full_prompt = full_prompt.replace("{current_character_name}", getattr(character, "name", "Character"))
+            full_prompt = full_prompt.replace("{previous_summary}", previous_summary_trimmed)
 
             hc_provider = str(self._get_setting("HC_PROVIDER", "Current"))
             preset_id: Optional[int] = None
@@ -396,6 +427,39 @@ class HistoryController:
         except Exception as e:
             logger.error(f"[HistoryController] Ошибка при сжатии истории: {e}", exc_info=True)
             return None
+
+    def _get_history_summary(self, character) -> str:
+        try:
+            return str(character.get_variable(self._SUMMARY_TEXT_VAR, "") or "").strip()
+        except Exception:
+            return ""
+
+    def _get_history_summary_count(self, character) -> int:
+        try:
+            value = character.get_variable(self._SUMMARY_COUNT_VAR, 0)
+            return int(value or 0)
+        except Exception:
+            return 0
+
+    def _set_history_summary_state(self, character, summary: str, summary_count: int) -> None:
+        try:
+            character.set_variable(self._SUMMARY_TEXT_VAR, str(summary or "").strip())
+            character.set_variable(self._SUMMARY_COUNT_VAR, max(0, int(summary_count or 0)))
+            if hasattr(character, "flush_variables"):
+                character.flush_variables()
+        except Exception as e:
+            logger.warning(f"[HistoryController] Не удалось сохранить состояние summary: {e}", exc_info=True)
+
+    def _truncate_text_for_prompt(self, text: str, limit: int) -> str:
+        if limit <= 0:
+            return ""
+
+        text = str(text or "").strip()
+        if len(text) <= limit:
+            return text
+
+        keep = max(0, limit - len("\n...[truncated]"))
+        return text[:keep].rstrip() + "\n...[truncated]"
 
     def _process_image_quality(self, image_bytes: bytes, target_quality: int) -> Optional[bytes]:
         if not image_bytes:

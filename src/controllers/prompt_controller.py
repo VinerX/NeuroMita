@@ -85,7 +85,7 @@ class PromptController:
         separate_prompts: bool,
         policy: RequestPolicy | None = None,
         capabilities: Dict[str, Any] | None = None,
-    ) -> tuple[List[Dict[str, Any]], List[str]]:
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
         self._setup_character_for_prompt(character, event_type)
 
         # Expose capabilities as character variables so DSL templates can use them
@@ -128,10 +128,11 @@ class PromptController:
                 f"для персонажа {getattr(character, 'char_id', '')}: {e}",
                 exc_info=True
             )
-            return [], []
+            return [], [], []
 
-        system_messages: List[Dict[str, Any]] = []
-        system_messages.extend(build_system_prompts(blocks, separate=separate_prompts))
+        stable_system_messages: List[Dict[str, Any]] = []
+        volatile_system_messages: List[Dict[str, Any]] = []
+        stable_system_messages.extend(build_system_prompts(blocks, separate=separate_prompts))
 
         memory_message_content = ""
         try:
@@ -145,20 +146,20 @@ class PromptController:
             memory_message_content = ""
 
         if memory_message_content and memory_message_content.strip():
-            system_messages.append({"role": "system", "content": memory_message_content})
+            stable_system_messages.append({"role": "system", "content": memory_message_content})
 
         try:
             if hasattr(character, "reminder_system") and character.reminder_system:
                 reminder_content = character.reminder_system.get_reminders_formatted()
                 if reminder_content and reminder_content.strip():
-                    system_messages.append({"role": "system", "content": reminder_content})
+                    volatile_system_messages.append({"role": "system", "content": reminder_content})
         except Exception as e:
             logger.warning(
                 f"[PromptController] Ошибка получения напоминаний для персонажа "
                 f"{getattr(character, 'char_id', '')}: {e}"
             )
 
-        return system_messages, dsl_system_infos
+        return stable_system_messages, volatile_system_messages, dsl_system_infos
 
     def _on_build_prompt(self, event: Event) -> Dict[str, Any]:
         data = event.data or {}
@@ -225,22 +226,14 @@ class PromptController:
 
         messages: List[Dict[str, Any]] = []
 
-        system_messages, dsl_system_infos = self._build_system_messages(
+        stable_system_messages, volatile_system_messages, dsl_system_infos = self._build_system_messages(
             character, event_type, separate_prompts, policy=policy,
             capabilities=capabilities,
         )
-        messages.extend(system_messages)
-
-        if game_state_prompt_content:
-            messages.append({"role": "system", "content": game_state_prompt_content})
-
-        non_player_participants = [p for p in participants if p and p != "Player"]
-        if len(non_player_participants) >= 2:
-            sys_txt = self._load_participants_system(character, non_player_participants, sender)
-            if sys_txt:
-                messages.append({"role": "system", "content": sys_txt})
+        messages.extend(stable_system_messages)
 
         history_limited: List[Dict[str, Any]] = []
+        history_summary: str = ""
         if policy.use_history_in_prompt:
             hist_res = self.event_bus.emit_and_wait(
                 Events.History.PREPARE_FOR_PROMPT,
@@ -258,20 +251,38 @@ class PromptController:
             )
             if hist_res and isinstance(hist_res[0], dict):
                 history_limited = hist_res[0].get("history", []) or []
-
-        for info in extra_system_infos:
-            if isinstance(info, dict):
-                history_limited.append(info)
-            elif isinstance(info, str):
-                history_limited.append({"role": "system", "content": info})
+                history_summary = str(hist_res[0].get("history_summary", "") or "").strip()
 
         for s in dsl_system_infos:
             if isinstance(s, str):
-                history_limited.append({"role": "system", "content": s})
+                messages.append({"role": "system", "content": s})
             elif isinstance(s, dict):
-                history_limited.append(s)
+                messages.append(s)
+
+        if history_summary:
+            messages.append({
+                "role": "system",
+                "content": f"[HISTORY SUMMARY]\n{history_summary}",
+            })
 
         messages.extend(history_limited)
+
+        if game_state_prompt_content:
+            messages.append({"role": "system", "content": game_state_prompt_content})
+
+        non_player_participants = [p for p in participants if p and p != "Player"]
+        if len(non_player_participants) >= 2:
+            sys_txt = self._load_participants_system(character, non_player_participants, sender)
+            if sys_txt:
+                messages.append({"role": "system", "content": sys_txt})
+
+        messages.extend(volatile_system_messages)
+
+        for info in extra_system_infos:
+            if isinstance(info, dict):
+                messages.append(info)
+            elif isinstance(info, str):
+                messages.append({"role": "system", "content": info})
 
         current_time = datetime.datetime.now()
         messages.append({
