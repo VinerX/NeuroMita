@@ -63,7 +63,8 @@ def normalize_openrouter_routing(raw: Any) -> Dict[str, Any]:
     if not _to_bool(raw.get("enabled", False)):
         return {}
 
-    out: Dict[str, Any] = {"enabled": True}
+    # `enabled` is a local UI/preset flag. OpenRouter's provider object does not accept it.
+    out: Dict[str, Any] = {}
 
     for key in _LIST_KEYS:
         values = _split_csv_like(raw.get(key))
@@ -86,5 +87,4 @@ def normalize_openrouter_routing(raw: Any) -> Dict[str, Any]:
     if max_price:
         out["max_price"] = max_price
 
-    return out if len(out) > 1 else {}
-
+    return out
