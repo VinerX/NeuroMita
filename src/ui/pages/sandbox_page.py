@@ -1,9 +1,9 @@
 import os
-import threading
+import time
 
 import qtawesome as qta
 
-from PyQt6.QtCore import QSize, QTimer, Qt
+from PyQt6.QtCore import QSize, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QStackedWidget,
@@ -73,7 +74,127 @@ def _round_pixmap(src: QPixmap, size: int) -> QPixmap:
     return out
 
 
+class _SandboxStatusRow(QWidget):
+    """A live status line: [dot] [name] … [value] [switch] [gear→settings].
+
+    * The multi-state dot reflects real state: grey = off, green = active,
+      yellow = initialising, red = error. Green/off come from
+      update_status_colors() (registry `setChecked`); yellow/red come from the
+      SET_SETTINGS_ICON_INDICATOR feed routed in via `set_indicator()`.
+    * The switch turns the feature on/off (its enable setting); the gear jumps
+      to settings to actually pick the engine/model.
+    * The "what exactly" value is filled by the sandbox via `set_value()`.
+    """
+
+    _DOT_COLORS = {
+        "off": ("rgba(255,255,255,0.10)", "rgba(255,255,255,0.18)"),
+        "active": ("#79e78c", "rgba(121,231,140,0.88)"),
+        "init": ("#ffd60a", "rgba(255,214,10,0.85)"),
+        "error": ("#ff453a", "rgba(255,69,58,0.85)"),
+    }
+
+    def __init__(self, name_text: str, on_settings, settings_tooltip: str,
+                 on_toggle=None, initial_on: bool = False, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SandboxInfoRow")
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+
+        self._enabled = bool(initial_on)
+        self._active = False
+        self._indicator = None  # None | "loading" | "red" | "green"
+
+        self._dot = QLabel()
+        self._dot.setFixedSize(12, 12)
+        h.addWidget(self._dot, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        name = QLabel(name_text)
+        name.setObjectName("SandboxInfoLabel")
+        h.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._value = QLabel("—")
+        self._value.setObjectName("SandboxInfoValue")
+        self._value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        h.addWidget(self._value, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+
+        from ui.widgets.toggle_switch import ToggleSwitch
+        self._switch = ToggleSwitch()
+        self._switch.setChecked(bool(initial_on))
+        self._switch.setToolTip(_("Включить / выключить", "Enable / disable"))
+        if on_toggle is not None:
+            self._switch.toggled.connect(on_toggle)
+        h.addWidget(self._switch, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        gear = QPushButton()
+        gear.setObjectName("SandboxInfoEditBtn")
+        gear.setIcon(qta.icon("fa6s.gear", color="#ffd2ec"))
+        gear.setFixedSize(26, 26)
+        gear.setCursor(Qt.CursorShape.PointingHandCursor)
+        gear.setToolTip(settings_tooltip)
+        gear.clicked.connect(on_settings)
+        h.addWidget(gear, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._apply_dot()
+
+    # ----- state inputs -----
+    def setChecked(self, checked: bool):
+        # update_status_colors() → True means the subsystem is actually live.
+        self._active = bool(checked)
+        self._apply_dot()
+
+    def setText(self, _text: str):
+        # update_status_colors() pushes a terse label for the voice chip; the
+        # sandbox computes a richer "what exactly" value itself, so ignore it.
+        pass
+
+    def set_enabled_state(self, enabled: bool):
+        """Reflect the enable setting on the switch without re-firing toggled."""
+        self._enabled = bool(enabled)
+        self._switch.blockSignals(True)
+        try:
+            self._switch.setChecked(bool(enabled))
+        finally:
+            self._switch.blockSignals(False)
+        self._apply_dot()
+
+    def set_indicator(self, state):
+        # state: None | "loading" | "red" | "green" (from SET_SETTINGS_ICON_INDICATOR)
+        st = str(state).strip().lower() if state else None
+        self._indicator = st if st in ("loading", "red", "green") else None
+        self._apply_dot()
+
+    def set_value(self, text: str):
+        self._value.setText(text or "—")
+
+    # ----- dot rendering -----
+    def _resolve_state(self) -> str:
+        if not self._enabled:
+            return "off"
+        if self._indicator == "red":
+            return "error"
+        if self._indicator == "loading":
+            return "init"
+        if self._indicator == "green" or self._active:
+            return "active"
+        # Enabled but not confirmed active yet and no explicit signal.
+        return "init"
+
+    def _apply_dot(self):
+        bg, border = self._DOT_COLORS[self._resolve_state()]
+        self._dot.setStyleSheet(
+            f"background-color: {bg}; border: 1px solid {border}; border-radius: 6px;"
+        )
+
+
 class SandboxPage(QWidget):
+    # Marshal background-thread event callbacks onto the GUI thread.
+    _lr_started_signal = pyqtSignal(dict)
+    _lr_finished_signal = pyqtSignal(dict)
+    _budget_refresh_signal = pyqtSignal()
+    _indicator_signal = pyqtSignal(dict)
+    _setting_changed_signal = pyqtSignal(str)
+
     def __init__(self, gui):
         super().__init__(gui)
         self.gui = gui
@@ -89,29 +210,27 @@ class SandboxPage(QWidget):
         self._inspector_collapse_btn = None
         self._inspector_tab_buttons = {}
         self._character_avatar_label = None
-        self._asr_retries = 0
+        self._voice_status_row = None
+        self._mic_status_row = None
+        self._rag_status_row = None
+        # Toggleable inspector panels (key -> strip widget) and the two new
+        # diagnostics panels' live widgets.
+        self._panels = {}
+        self._budget_bar = None
+        self._budget_value = None
+        self._lr_values = {}
+        self._lr_t0 = None
         self._inspector_expanded_width = 380
         self._inspector_collapsed_width = 56
         self._inspector_tab_indexes = {}
 
         self._build_ui()
+        self._wire_diagnostics()
         self._sync_host_exports()
         self.on_activated()
 
     def _sync_host_exports(self):
         self.gui.sandbox_page = self
-
-    def _sync_combobox_text(self, combo, value: str):
-        if combo is None:
-            return
-        index = combo.findText(value, Qt.MatchFlag.MatchFixedString)
-        if index < 0 or combo.currentIndex() == index:
-            return
-        combo.blockSignals(True)
-        try:
-            combo.setCurrentIndex(index)
-        finally:
-            combo.blockSignals(False)
 
     def _get_current_character_id(self) -> str:
         try:
@@ -124,6 +243,109 @@ class SandboxPage(QWidget):
     def _jump_to_settings(self, category: str):
         self.gui.switch_main_page("settings")
         self.gui.show_settings_category(category)
+
+    # --------- Status rows (voice / mic / RAG) -----------
+    def _make_status_row(self, name_text: str, registry_attr: str, settings_key: str,
+                         enable_key: str, tooltip: str) -> "_SandboxStatusRow":
+        initial_on = bool(self.gui._get_setting(enable_key, False))
+        row = _SandboxStatusRow(
+            name_text,
+            lambda: self._jump_to_settings(settings_key),
+            tooltip,
+            on_toggle=lambda checked, _k=enable_key: self._on_status_toggle(_k, checked),
+            initial_on=initial_on,
+        )
+        # Register under the shared indicator attr so update_status_colors()
+        # keeps the dot live alongside the home/header indicators.
+        try:
+            from ui.widgets.status_indicators_widget import _register_indicator
+            _register_indicator(self.gui, registry_attr, row)
+        except Exception:
+            pass
+        return row
+
+    def _on_status_toggle(self, enable_key: str, checked: bool):
+        """Flip a feature on/off. Routed through SAVE_SETTING so the voiceover /
+        ASR / RAG controllers actually start or stop the subsystem."""
+        try:
+            self.gui.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": enable_key, "value": bool(checked)})
+        except Exception as exc:
+            logger.error(f"Failed to toggle {enable_key}: {exc}")
+        # Optimistic dot feedback; the authoritative refresh happens reactively
+        # when the resulting SETTING_CHANGED comes back (see _on_setting_changed_ui).
+        row = {
+            "USE_VOICEOVER": self._voice_status_row,
+            "MIC_ACTIVE": self._mic_status_row,
+            "RAG_ENABLED": self._rag_status_row,
+        }.get(enable_key)
+        if row is not None:
+            row.set_enabled_state(bool(checked))
+
+    def _make_toggle_row(self, label_text: str, on_toggle, initial_on: bool,
+                         tooltip: str | None = None):
+        """A [label … switch] row using the same pill toggle as the status
+        rows. Returns (row_widget, switch)."""
+        row = QWidget()
+        row.setObjectName("SandboxInfoRow")
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+        label = QLabel(label_text)
+        label.setObjectName("SandboxInfoLabel")
+        if tooltip:
+            label.setToolTip(tooltip)
+        h.addWidget(label, 0, Qt.AlignmentFlag.AlignVCenter)
+        h.addStretch(1)
+
+        from ui.widgets.toggle_switch import ToggleSwitch
+        switch = ToggleSwitch()
+        switch.setChecked(bool(initial_on))
+        if tooltip:
+            switch.setToolTip(tooltip)
+        switch.toggled.connect(on_toggle)
+        h.addWidget(switch, 0, Qt.AlignmentFlag.AlignVCenter)
+        return row, switch
+
+    def _refresh_status_values(self):
+        """Fill the 'what exactly' value on each status row. The dots (active
+        state) are driven separately by update_status_colors()."""
+        get = self.gui._get_setting
+
+        if self._voice_status_row is not None:
+            use_voice = bool(get("USE_VOICEOVER", False))
+            method = str(get("VOICEOVER_METHOD", "TG") or "TG")
+            self._voice_status_row.set_enabled_state(use_voice)
+            if not use_voice:
+                voice_val = _("Выключено", "Off")
+            elif method.lower() == "local":
+                model_id = str(get("LOCAL_VOICE_MODEL_ID", "") or "").strip()
+                voice_val = _("Локально", "Local") + (f": {self._local_voice_name(model_id)}" if model_id else "")
+            else:
+                voice_val = "Telegram"
+            self._voice_status_row.set_value(voice_val)
+
+        if self._mic_status_row is not None:
+            self._mic_status_row.set_enabled_state(bool(get("MIC_ACTIVE", False)))
+            engine = str(get("RECOGNIZER_TYPE", "") or "").strip()
+            self._mic_status_row.set_value(engine or _("Не выбран", "None"))
+
+        if self._rag_status_row is not None:
+            self._rag_status_row.set_enabled_state(bool(get("RAG_ENABLED", False)))
+            if bool(get("RAG_ENABLED", False)):
+                rag_val = self._rag_preset_name()
+            else:
+                rag_val = _("Выключен", "Disabled")
+            self._rag_status_row.set_value(rag_val)
+
+    def _local_voice_name(self, model_id: str) -> str:
+        try:
+            from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
+            for model in LOCAL_VOICE_MODELS:
+                if str(model.get("id") or "") == model_id:
+                    return str(model.get("name") or model_id)
+        except Exception:
+            pass
+        return model_id
 
     # --------- Avatar -----------
     def _resolve_avatar_pixmap(self, character_id: str, size: int = 32) -> QPixmap:
@@ -232,170 +454,6 @@ class SandboxPage(QWidget):
         except Exception:
             pass
         return ""
-
-    # --------- TTS -----------
-    def _populate_tts_combobox(self):
-        combo = getattr(self.gui, "chat_tts_combobox", None)
-        if combo is None:
-            return
-
-        installed_local: set[str] = set()
-        try:
-            result = self.gui.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.5)
-            models = result[0] if result else None
-            if isinstance(models, (set, list, tuple)):
-                installed_local = {str(item) for item in models}
-        except Exception:
-            installed_local = set()
-
-        try:
-            from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
-        except Exception:
-            LOCAL_VOICE_MODELS = []
-
-        method = str(self.gui._get_setting("VOICEOVER_METHOD", "TG") or "TG")
-        selected_local_id = str(self.gui._get_setting("LOCAL_VOICE_MODEL_ID", "") or "")
-
-        combo.blockSignals(True)
-        try:
-            combo.clear()
-            combo.addItem("Telegram (TG)", ("TG", None))
-
-            for model in LOCAL_VOICE_MODELS:
-                model_id = str(model.get("id") or "")
-                name = str(model.get("name") or model_id)
-                if model_id in installed_local:
-                    combo.addItem(name, ("Local", model_id))
-
-            combo.insertSeparator(combo.count())
-            combo.addItem(_("Настроить…", "Configure…"), (_TTS_CONFIGURE_SENTINEL, None))
-
-            active_index = 0
-            for index in range(combo.count()):
-                data = combo.itemData(index)
-                if not isinstance(data, tuple):
-                    continue
-                kind, model_id = data
-                if method == "TG" and kind == "TG":
-                    active_index = index
-                    break
-                if method == "Local" and kind == "Local" and model_id == selected_local_id:
-                    active_index = index
-                    break
-            combo.setCurrentIndex(active_index)
-        finally:
-            combo.blockSignals(False)
-
-    def _on_chat_voice_changed(self, index: int):
-        combo = getattr(self.gui, "chat_tts_combobox", None)
-        if combo is None or index < 0:
-            return
-        data = combo.itemData(index)
-        if not isinstance(data, tuple):
-            return
-        kind, model_id = data
-        if kind == _TTS_CONFIGURE_SENTINEL:
-            QTimer.singleShot(0, self._populate_tts_combobox)
-            self._jump_to_settings("voice")
-            return
-
-        try:
-            self.gui.settings.set("VOICEOVER_METHOD", kind)
-            if kind == "Local" and model_id:
-                self.gui.settings.set("LOCAL_VOICE_MODEL_ID", model_id)
-                try:
-                    self.gui.event_bus.emit(Events.GUI.VOICEOVER_MODEL_SELECTED, {"model_id": model_id})
-                except Exception:
-                    pass
-        except Exception:
-            try:
-                self.gui.settings["VOICEOVER_METHOD"] = kind
-            except Exception:
-                pass
-
-        self._refresh_debug_summary()
-
-    # --------- ASR -----------
-    def _populate_asr_combobox(self):
-        combo = getattr(self.gui, "chat_asr_combobox", None)
-        if combo is None:
-            return
-
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItem(_("Загрузка…", "Loading…"), None)
-        combo.setEnabled(False)
-        combo.blockSignals(False)
-
-        def _apply(items):
-            combo.blockSignals(True)
-            try:
-                combo.clear()
-                engines = []
-                for item in items or []:
-                    try:
-                        if item.get("installed", False) and item.get("id"):
-                            engines.append(str(item["id"]))
-                    except Exception:
-                        pass
-
-                if engines:
-                    for engine in engines:
-                        combo.addItem(engine, engine)
-                    combo.insertSeparator(combo.count())
-                    self._asr_retries = 0
-                else:
-                    if self._asr_retries < 1:
-                        self._asr_retries += 1
-                        QTimer.singleShot(1500, self._populate_asr_combobox)
-
-                combo.addItem(_("Настроить…", "Configure…"), _ASR_CONFIGURE_SENTINEL)
-                combo.setEnabled(True)
-
-                current = str(self.gui._get_setting("RECOGNIZER_TYPE", "") or "")
-                for index in range(combo.count()):
-                    if combo.itemData(index) == current:
-                        combo.setCurrentIndex(index)
-                        break
-            finally:
-                combo.blockSignals(False)
-            self._refresh_debug_summary()
-
-        def _worker():
-            try:
-                res = self.gui.event_bus.emit_and_wait(Events.Speech.GET_ASR_MODELS_GLOSSARY, timeout=5.0)
-                items = res[0] if res else []
-                if not isinstance(items, list):
-                    items = []
-            except Exception:
-                items = []
-            QTimer.singleShot(0, lambda r=items: _apply(r))
-
-        try:
-            t = threading.Thread(target=_worker, daemon=True)
-            t.start()
-        except Exception:
-            _apply([])
-
-    def _on_chat_asr_changed(self, index: int):
-        combo = getattr(self.gui, "chat_asr_combobox", None)
-        if combo is None or index < 0:
-            return
-        data = combo.itemData(index)
-        if data == _ASR_CONFIGURE_SENTINEL:
-            QTimer.singleShot(0, self._populate_asr_combobox)
-            self._jump_to_settings("microphone")
-            return
-        if not data:
-            return
-        try:
-            self.gui.settings.set("RECOGNIZER_TYPE", str(data))
-        except Exception:
-            try:
-                self.gui.settings["RECOGNIZER_TYPE"] = str(data)
-            except Exception:
-                pass
-        self._refresh_debug_summary()
 
     # --------- Prompt set -----------
     def _populate_prompt_pack_combobox(self):
@@ -533,49 +591,112 @@ class SandboxPage(QWidget):
         lang = str(self.gui._get_setting("LANGUAGE", "RU") or "RU").upper()
         return KEY_TO_LABEL_EN if lang == "EN" else KEY_TO_LABEL_RU
 
-    def _refresh_rag_combo(self):
-        combo = getattr(self.gui, "chat_rag_combobox", None)
-        if combo is None:
-            return
+    def _rag_preset_name(self) -> str:
+        """Name of the active RAG embedding preset/model — what RAG actually
+        uses for retrieval. (Not the memory profile, which is a separate
+        memory-window concept.)"""
         try:
-            from ui.settings.memory_profile import detect_memory_profile
-            key_to_label = self._memory_profile_labels()
-            current_label = key_to_label.get(detect_memory_profile(self.gui))
+            from handlers.embedding_presets import resolve_full_config
+            cfg = resolve_full_config() or {}
+            name = (
+                cfg.get("name")
+                or cfg.get("preset_name")
+                or cfg.get("model")
+                or cfg.get("hf_name")
+                or cfg.get("db_model_key")
+                or ""
+            )
+            name = str(name).strip()
+            if "/" in name:  # shorten HF paths like "Org/model-name"
+                name = name.rsplit("/", 1)[-1]
+            return name or _("Включён", "Enabled")
         except Exception:
-            current_label = None
-        if current_label:
-            self._sync_combobox_text(combo, current_label)
+            return _("Включён", "Enabled")
 
     def _refresh_memory_summary(self):
-        for key, fallback in (
-            ("MODEL_MESSAGE_LIMIT", 35),
-            ("MEMORY_CAPACITY", 50),
-            ("RAG_MAX_RESULTS", 50),
-        ):
-            value_label = self._memory_limit_values.get(key)
-            if value_label is not None:
-                value_label.setText(str(self.gui._get_setting(key, fallback)))
+        """Live mini-stats for the current character: real counts vs. limits,
+        plus the forgotten-memory count (RAG keeps these retrievable)."""
+        if not self._memory_limit_values:
+            return
 
-    def _on_rag_changed(self, label: str):
+        get = self.gui._get_setting
+        msg_limit = get("MODEL_MESSAGE_LIMIT", 35)
+        mem_limit = get("MEMORY_CAPACITY", 50)
+        cid = self._get_current_character_id()
+
         try:
-            from ui.settings.memory_profile import apply_memory_profile
+            from managers.database_manager import DatabaseManager
+            db = DatabaseManager()
+            stats = db.get_world_stats(cid)
         except Exception:
-            apply_memory_profile = None
-        if apply_memory_profile is not None:
-            apply_memory_profile(self.gui, label)
+            db = None
+            stats = {}
+
+        # Missing embeddings for the current model (stale-index indicator).
+        miss_h = miss_m = None
+        if db is not None and cid:
+            try:
+                miss_h, miss_m = db.count_missing_embeddings(cid)
+            except Exception:
+                miss_h = miss_m = None
+
+        def _fmt(count, limit=None):
+            if count is None:
+                return "—"
+            return f"{count} / {limit}" if limit is not None else str(count)
+
+        def _pair(a, b):
+            if a is None and b is None:
+                return "—"
+            return f"{a or 0} / {b or 0}"
+
+        mapping = {
+            "messages": _fmt(stats.get("history_active"), msg_limit),
+            "memories": _fmt(stats.get("memories_active"), mem_limit),
+            "forgotten": _fmt(stats.get("memories_forgotten")),
+            "missing": _pair(miss_h, miss_m),
+            "trash": _pair(stats.get("history_deleted"), stats.get("memories_deleted")),
+            "last": self._fmt_timestamp(stats.get("last_activity")),
+            "dbsize": self._fmt_bytes(stats.get("db_size_bytes")),
+        }
+        for stat_key, text in mapping.items():
+            label = self._memory_limit_values.get(stat_key)
+            if label is not None:
+                label.setText(text)
+
+    @staticmethod
+    def _fmt_timestamp(value) -> str:
+        s = str(value or "").strip()
+        if not s:
+            return "—"
+        s = s.replace("T", " ")
+        parts = s.split(" ", 1)
+        date = parts[0]
+        tm = parts[1][:5] if len(parts) > 1 else ""  # HH:MM
+        # Compact the date: "DD.MM.YYYY" → "DD.MM"; ISO "YYYY-MM-DD" → "MM-DD".
+        if "." in date:
+            d = date.split(".")
+            short_date = ".".join(d[:2]) if len(d) >= 2 else date
+        elif "-" in date:
+            d = date.split("-")
+            short_date = "-".join(d[1:3]) if len(d) >= 3 else date
+        else:
+            short_date = date
+        return f"{short_date} {tm}".strip()
+
+    @staticmethod
+    def _fmt_bytes(value) -> str:
         try:
-            self.gui.settings.set("MEMORY_PROFILE", label)
-            try:
-                self.gui.settings.save_settings()
-            except Exception:
-                pass
+            n = float(value or 0)
         except Exception:
-            try:
-                self.gui.settings["MEMORY_PROFILE"] = label
-            except Exception:
-                pass
-        self._refresh_memory_summary()
-        self._refresh_debug_summary()
+            return "—"
+        if n <= 0:
+            return "—"
+        for unit in ("Б", "КБ", "МБ", "ГБ"):
+            if n < 1024 or unit == "ГБ":
+                return f"{n:.0f} {unit}" if unit == "Б" else f"{n:.1f} {unit}"
+            n /= 1024
+        return f"{n:.1f} ГБ"
 
     # --------- Debug summary -----------
     def _refresh_debug_summary(self):
@@ -605,11 +726,8 @@ class SandboxPage(QWidget):
         if "asr" in self._debug_summary_values:
             safe("asr", lambda: str(get("RECOGNIZER_TYPE", "") or "—"))
         if "rag" in self._debug_summary_values:
-            def _rag():
-                from ui.settings.memory_profile import detect_memory_profile
-                key_to_label = self._memory_profile_labels()
-                return key_to_label.get(detect_memory_profile(self.gui), "—")
-            safe("rag", _rag)
+            safe("rag", lambda: (self._rag_preset_name() if get("RAG_ENABLED", False)
+                                 else _("Выключен", "Disabled")))
         if "messages" in self._debug_summary_values:
             safe("messages", lambda: str(get("MODEL_MESSAGE_LIMIT", 35)))
         if "memory" in self._debug_summary_values:
@@ -619,31 +737,22 @@ class SandboxPage(QWidget):
         if "camera" in self._debug_summary_values:
             safe("camera", lambda: on_off(get("ENABLE_CAMERA_CAPTURE", False)))
 
-        # Sync memory progress bars in the Session tab so they always reflect
-        # the latest values (changed via settings page or memory profile).
-        for key, (bar, value_lbl) in getattr(self, "_memory_bars", {}).items():
-            try:
-                val = int(get(key, bar.value()) or 0)
-            except Exception:
-                val = bar.value()
-            try:
-                bar.setValue(val)
-                value_lbl.setText(str(val))
-            except Exception:
-                pass
-
     # --------- Activation -----------
     def on_activated(self):
         self._populate_chat_character_combobox()
         self._populate_model_combobox()
-        self._populate_tts_combobox()
-        self._asr_retries = 0
-        self._populate_asr_combobox()
         self._populate_prompt_pack_combobox()
         self._refresh_character_avatar()
-        self._refresh_rag_combo()
+        self._refresh_status_values()
         self._refresh_memory_summary()
+        self._refresh_context_budget()
+        self.apply_panel_visibility()
         self._refresh_debug_summary()
+        # Sync the status dots (voice / mic / RAG) to their current live state.
+        try:
+            self.gui.update_status_colors()
+        except Exception:
+            pass
         if self._chat_panel is not None:
             self._chat_panel.on_activated()
 
@@ -896,7 +1005,6 @@ class SandboxPage(QWidget):
         return scroll
 
     def _build_inspector_session_tab(self) -> QWidget:
-        from PyQt6.QtWidgets import QProgressBar
         page, layout = self._make_tab_page()
 
         # ── Visible comboboxes (label + combo per row) ─────────────────────
@@ -961,103 +1069,82 @@ class SandboxPage(QWidget):
         )
         _combo_row(active_layout, _("Модель", "Model"), model_combo)
         layout.addWidget(active_strip)
+        self._panels["active"] = active_strip
 
-        # ── Голос и микрофон ───────────────────────────────────────────────
-        voice_strip, voice_layout = self._make_strip(_("Голос и микрофон", "Voice & microphone"), "fa6s.sliders")
+        # ── Статус: голос, микрофон, RAG ───────────────────────────────────
+        # Read-only live status. The dots are driven by update_status_colors()
+        # via the shared indicator registry (green = active); each row shows
+        # what's actually configured and a gear that jumps to its settings
+        # section to change it.
+        status_strip, status_layout = self._make_strip(_("Статус", "Status"), "fa6s.wave-square")
 
-        tts_combo = _session_combo(
-            "chat_tts_combobox",
-            tooltip=_("Способ озвучки", "Voice output"),
-            change_slot=self._on_chat_voice_changed,
+        self._voice_status_row = self._make_status_row(
+            _("Голос", "Voice"),
+            "silero_status_checkbox",
+            "voice",
+            "USE_VOICEOVER",
+            _("Открыть настройки озвучки", "Open voice settings"),
         )
-        _combo_row(voice_layout, _("Голосовой вывод", "Voice output"), tts_combo)
+        status_layout.addWidget(self._voice_status_row)
 
-        asr_combo = _session_combo(
-            "chat_asr_combobox",
-            tooltip=_("Установленные модели распознавания речи", "Installed speech recognition models"),
-            change_slot=self._on_chat_asr_changed,
+        self._mic_status_row = self._make_status_row(
+            _("Микрофон", "Microphone"),
+            "mic_status_checkbox",
+            "microphone",
+            "MIC_ACTIVE",
+            _("Открыть настройки микрофона", "Open microphone settings"),
         )
-        _combo_row(voice_layout, _("Распознавание речи", "Speech recognition"), asr_combo)
-        layout.addWidget(voice_strip)
+        status_layout.addWidget(self._mic_status_row)
 
-        # ── Память и контекст ──────────────────────────────────────────────
-        memory_strip, memory_layout = self._make_strip(_("Память и контекст", "Memory & context"), "fa6s.brain")
-
-        rag_combo = _session_combo(
-            "chat_rag_combobox",
-            tooltip=_("Профиль памяти / RAG", "Memory / RAG profile"),
-            change_slot=self._on_rag_changed,
-            by_text=True,
+        self._rag_status_row = self._make_status_row(
+            "RAG",
+            "rag_status_checkbox",
+            "models",
+            "RAG_ENABLED",
+            _("Открыть настройки RAG / памяти", "Open RAG / memory settings"),
         )
-        labels = self._memory_profile_labels()
-        rag_combo.addItems([
-            labels.get("optimized", "Optimized"),
-            labels.get("balanced", "Balanced"),
-            labels.get("large", "Large"),
-            labels.get("custom", "Custom"),
-        ])
-        _combo_row(memory_layout, _("Профиль", "Profile"), rag_combo)
+        status_layout.addWidget(self._rag_status_row)
+        layout.addWidget(status_strip)
+        self._panels["status"] = status_strip
 
-        # Live readout of the three memory dials as progress bars.
+        # ── Бюджет контекста ───────────────────────────────────────────────
+        # Hidden for now: shows a placeholder limit/cost, not real usage. The
+        # builder (_build_context_budget_strip) and refresh stay in place — to
+        # restore, re-add the three lines below and the "context_budget" entry
+        # in ui/widgets/sandbox_panels.py once real usage is surfaced.
+        #   budget_strip = self._build_context_budget_strip()
+        #   layout.addWidget(budget_strip)
+        #   self._panels["context_budget"] = budget_strip
 
-        self._memory_bars = {}
-        for key, label_text, fallback, max_hint in (
-            ("MODEL_MESSAGE_LIMIT", _("Сообщений", "Messages"), 35, 100),
-            ("MEMORY_CAPACITY", _("Память", "Memory"), 50, 100),
-            ("RAG_MAX_RESULTS", _("RAG-результатов", "RAG results"), 50, 100),
-        ):
-            row = QWidget()
-            row.setObjectName("SandboxMemoryRow")
-            rl = QHBoxLayout(row)
-            rl.setContentsMargins(0, 0, 0, 0)
-            rl.setSpacing(8)
-            lbl = QLabel(label_text)
-            lbl.setObjectName("SandboxInfoLabel")
-            lbl.setMinimumWidth(110)
-            rl.addWidget(lbl, 0, Qt.AlignmentFlag.AlignVCenter)
-            bar = QProgressBar()
-            bar.setObjectName("SandboxMemoryBar")
-            bar.setRange(0, max_hint)
-            try:
-                bar.setValue(int(self.gui._get_setting(key, fallback) or fallback))
-            except Exception:
-                bar.setValue(int(fallback))
-            bar.setTextVisible(False)
-            bar.setFixedHeight(8)
-            rl.addWidget(bar, 1, Qt.AlignmentFlag.AlignVCenter)
-            value_lbl = QLabel(str(bar.value()))
-            value_lbl.setObjectName("SandboxInfoValue")
-            value_lbl.setMinimumWidth(28)
-            value_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            rl.addWidget(value_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
-            memory_layout.addWidget(row)
-            self._memory_bars[key] = (bar, value_lbl)
-
-        layout.addWidget(memory_strip)
+        # ── Последний запрос ───────────────────────────────────────────────
+        last_request_strip = self._build_last_request_strip()
+        layout.addWidget(last_request_strip)
+        self._panels["last_request"] = last_request_strip
 
         # ── Захват ─────────────────────────────────────────────────────────
         capture_strip, capture_layout = self._make_strip(_("Захват", "Capture"), "fa6s.camera-retro")
-        screen_cb = QCheckBox(_("Захват экрана", "Screen capture"))
-        screen_cb.setObjectName("SandboxCaptureToggle")
-        screen_cb.setChecked(bool(self.gui._get_setting("ENABLE_SCREEN_ANALYSIS", False)))
-        screen_cb.toggled.connect(lambda v: self._on_capture_toggle("ENABLE_SCREEN_ANALYSIS", v))
-        capture_layout.addWidget(screen_cb)
-        self._capture_screen_cb = screen_cb
+        screen_row, self._capture_screen_cb = self._make_toggle_row(
+            _("Захват экрана", "Screen capture"),
+            lambda v: self._on_capture_toggle("ENABLE_SCREEN_ANALYSIS", v),
+            bool(self.gui._get_setting("ENABLE_SCREEN_ANALYSIS", False)),
+        )
+        capture_layout.addWidget(screen_row)
 
-        auto_attach_cb = QCheckBox(_("Авто-прикрепление", "Auto-attach"))
-        auto_attach_cb.setObjectName("SandboxCaptureToggle")
-        auto_attach_cb.setChecked(bool(self.gui._get_setting("AUTO_ATTACH_IMAGES", False)))
-        auto_attach_cb.toggled.connect(lambda v: self._on_capture_toggle("AUTO_ATTACH_IMAGES", v))
-        capture_layout.addWidget(auto_attach_cb)
-        self._capture_auto_attach_cb = auto_attach_cb
+        attach_row, self._capture_auto_attach_cb = self._make_toggle_row(
+            _("Авто-прикрепление", "Auto-attach"),
+            lambda v: self._on_capture_toggle("AUTO_ATTACH_IMAGES", v),
+            bool(self.gui._get_setting("AUTO_ATTACH_IMAGES", False)),
+        )
+        capture_layout.addWidget(attach_row)
 
-        camera_cb = QCheckBox(_("Захват с камеры", "Camera capture"))
-        camera_cb.setObjectName("SandboxCaptureToggle")
-        camera_cb.setChecked(bool(self.gui._get_setting("ENABLE_CAMERA_CAPTURE", False)))
-        camera_cb.toggled.connect(lambda v: self._on_capture_toggle("ENABLE_CAMERA_CAPTURE", v))
-        capture_layout.addWidget(camera_cb)
-        self._capture_camera_cb = camera_cb
+        camera_row, self._capture_camera_cb = self._make_toggle_row(
+            _("Захват с камеры", "Camera capture"),
+            lambda v: self._on_capture_toggle("ENABLE_CAMERA_CAPTURE", v),
+            bool(self.gui._get_setting("ENABLE_CAMERA_CAPTURE", False)),
+        )
+        capture_layout.addWidget(camera_row)
         layout.addWidget(capture_strip)
+        self._panels["capture"] = capture_strip
 
         # ── Быстрые действия ───────────────────────────────────────────────
         actions_strip, actions_layout = self._make_strip(_("Быстрые действия", "Quick actions"), "fa6s.bolt")
@@ -1082,9 +1169,226 @@ class SandboxPage(QWidget):
         full_settings_btn.clicked.connect(lambda: self.gui.switch_main_page("settings"))
         actions_layout.addWidget(full_settings_btn)
         layout.addWidget(actions_strip)
+        self._panels["actions"] = actions_strip
+
+        self.apply_panel_visibility()
 
         layout.addStretch(1)
         return self._wrap_in_scroll(page)
+
+    # --------- Panel visibility -----------
+    def apply_panel_visibility(self):
+        """Show/hide each inspector panel per the sandbox_panels toggles."""
+        try:
+            from ui.widgets.sandbox_panels import is_panel_enabled
+        except Exception:
+            return
+        for key, widget in self._panels.items():
+            if widget is not None:
+                widget.setVisible(is_panel_enabled(key))
+
+    # --------- Context budget panel -----------
+    def _build_context_budget_strip(self) -> QWidget:
+        strip, slayout = self._make_strip(_("Бюджет контекста", "Context budget"), "fa6s.gauge-high")
+
+        bar_row = QWidget()
+        bar_row.setObjectName("SandboxMemoryRow")
+        rl = QHBoxLayout(bar_row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(8)
+        self._budget_bar = QProgressBar()
+        self._budget_bar.setObjectName("SandboxMemoryBar")
+        self._budget_bar.setRange(0, 100)
+        self._budget_bar.setValue(0)
+        self._budget_bar.setTextVisible(False)
+        self._budget_bar.setFixedHeight(8)
+        rl.addWidget(self._budget_bar, 1, Qt.AlignmentFlag.AlignVCenter)
+        slayout.addWidget(bar_row)
+
+        self._budget_value = QLabel("—")
+        self._budget_value.setObjectName("SandboxInfoValue")
+        self._budget_value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        slayout.addWidget(self._budget_value)
+        return strip
+
+    def _refresh_context_budget(self):
+        if self._budget_bar is None:
+            return
+        try:
+            res = self.gui.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CONTEXT_TOKENS, timeout=0.5)
+            used = int(res[0]) if res and res[0] is not None else 0
+        except Exception:
+            used = 0
+        try:
+            max_tokens = int(self.gui._get_setting("MAX_MODEL_TOKENS", 32000) or 32000)
+        except Exception:
+            max_tokens = 32000
+        max_tokens = max(1, max_tokens)
+        try:
+            cres = self.gui.event_bus.emit_and_wait(Events.Model.CALCULATE_COST, timeout=0.5)
+            cost = float(cres[0]) if cres and cres[0] is not None else 0.0
+        except Exception:
+            cost = 0.0
+
+        pct = min(100, int(used * 100 / max_tokens))
+        self._budget_bar.setValue(pct)
+        if self._budget_value is not None:
+            self._budget_value.setText(
+                _("{used} / {max} токенов · {pct}% · ~{cost:.4f} ₽",
+                  "{used} / {max} tokens · {pct}% · ~{cost:.4f} ₽").format(
+                    used=used, max=max_tokens, pct=pct, cost=cost)
+            )
+
+    # --------- Last-request diagnostics panel -----------
+    def _build_last_request_strip(self) -> QWidget:
+        strip, slayout = self._make_strip(_("Последний запрос", "Last request"), "fa6s.gauge")
+        self._lr_values = {}
+        for key, label_text in (
+            ("status", _("Статус", "Status")),
+            ("latency", _("Задержка", "Latency")),
+            ("model", _("Модель", "Model")),
+            ("tokens", _("Контекст (токены)", "Context (tokens)")),
+            ("time", _("Время", "Time")),
+        ):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            label = QLabel(label_text)
+            label.setObjectName("SandboxInfoLabel")
+            row.addWidget(label)
+            row.addStretch()
+            value = QLabel("—")
+            value.setObjectName("SandboxInfoValue")
+            value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            row.addWidget(value)
+            slayout.addLayout(row)
+            self._lr_values[key] = value
+        return strip
+
+    # --------- Diagnostics event wiring -----------
+    def _wire_diagnostics(self):
+        """Subscribe to the model request lifecycle so the Last-request panel
+        and the context budget stay live. Event callbacks may fire on worker
+        threads, so they only set primitives / emit Qt signals; the actual
+        widget updates happen on the GUI thread via the connected slots."""
+        self._lr_started_signal.connect(self._on_lr_started_ui)
+        self._lr_finished_signal.connect(self._on_lr_finished_ui)
+        self._budget_refresh_signal.connect(self._refresh_context_budget)
+        self._indicator_signal.connect(self._on_indicator_ui)
+        self._setting_changed_signal.connect(self._on_setting_changed_ui)
+
+        bus = getattr(self.gui, "event_bus", None)
+        if bus is None:
+            return
+        try:
+            bus.subscribe(Events.Model.ON_STARTED_RESPONSE_GENERATION, self._on_resp_started_evt, weak=False)
+            bus.subscribe(Events.Model.ON_SUCCESSFUL_RESPONSE, self._on_resp_success_evt, weak=False)
+            bus.subscribe(Events.Model.ON_FAILED_RESPONSE, self._on_resp_failed_evt, weak=False)
+            bus.subscribe(Events.GUI.UPDATE_TOKEN_COUNT_UI, self._on_token_count_evt, weak=False)
+            bus.subscribe(Events.GUI.SET_SETTINGS_ICON_INDICATOR, self._on_indicator_evt, weak=False)
+            bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed_evt, weak=False)
+        except Exception as exc:
+            logger.debug(f"Sandbox diagnostics wiring failed: {exc}")
+
+    # Keys that affect the status rows / context budget / memory-stat readouts.
+    _STATUS_KEYS = frozenset({
+        "USE_VOICEOVER", "VOICEOVER_METHOD", "LOCAL_VOICE_MODEL_ID", "NM_CURRENT_VOICEOVER",
+        "MIC_ACTIVE", "RECOGNIZER_TYPE", "RAG_ENABLED", "RAG_EMBED_PRESET_ID",
+        "RAG_EMBED_MODEL", "MEMORY_PROFILE",
+    })
+    _BUDGET_KEYS = frozenset({"MAX_MODEL_TOKENS"})
+    _MEMORY_KEYS = frozenset({"MODEL_MESSAGE_LIMIT", "MEMORY_CAPACITY"})
+
+    def _on_setting_changed_evt(self, event):
+        data = getattr(event, "data", None) or {}
+        key = str(data.get("key") or "")
+        if key:
+            self._setting_changed_signal.emit(key)
+
+    def _on_setting_changed_ui(self, key: str):
+        if key in self._STATUS_KEYS:
+            self._refresh_status_values()
+            try:
+                self.gui.update_status_colors()
+            except Exception:
+                pass
+        if key in self._BUDGET_KEYS:
+            self._refresh_context_budget()
+        if key in self._MEMORY_KEYS:
+            self._refresh_memory_summary()
+
+    def _on_indicator_evt(self, event):
+        data = getattr(event, "data", None) or {}
+        self._indicator_signal.emit({
+            "category": str(data.get("category") or ""),
+            "state": data.get("state"),
+        })
+
+    def _on_indicator_ui(self, info: dict):
+        # Route the loading/red/green indicator to the matching status row so
+        # the dot can show init (yellow) / error (red) live.
+        row = {
+            "voice": self._voice_status_row,
+            "microphone": self._mic_status_row,
+            "models": self._rag_status_row,
+        }.get(str(info.get("category") or ""))
+        if row is not None:
+            row.set_indicator(info.get("state"))
+
+    def _on_resp_started_evt(self, event):
+        self._lr_t0 = time.perf_counter()
+        data = getattr(event, "data", None) or {}
+        self._lr_started_signal.emit({"character": str(data.get("character_name") or "")})
+
+    def _on_resp_success_evt(self, event):
+        self._emit_lr_finished(True, "")
+
+    def _on_resp_failed_evt(self, event):
+        data = getattr(event, "data", None) or {}
+        self._emit_lr_finished(False, str(data.get("error") or ""))
+
+    def _emit_lr_finished(self, ok: bool, error: str):
+        latency = None
+        if self._lr_t0 is not None:
+            latency = time.perf_counter() - self._lr_t0
+        self._lr_finished_signal.emit({"ok": bool(ok), "error": error, "latency": latency})
+
+    def _on_token_count_evt(self, event):
+        self._budget_refresh_signal.emit()
+
+    def _on_lr_started_ui(self, info: dict):
+        if not self._lr_values:
+            return
+        self._lr_values["status"].setText(_("Генерация…", "Generating…"))
+        self._lr_values["model"].setText(self._current_preset_name() or "—")
+
+    def _on_lr_finished_ui(self, info: dict):
+        if not self._lr_values:
+            return
+        if info.get("ok"):
+            self._lr_values["status"].setText(_("✓ Успех", "✓ Success"))
+        else:
+            err = str(info.get("error") or "").strip()
+            self._lr_values["status"].setText(_("✗ Ошибка", "✗ Error") + (f": {err}" if err else ""))
+
+        latency = info.get("latency")
+        if isinstance(latency, (int, float)):
+            self._lr_values["latency"].setText(_("{:.2f} с", "{:.2f} s").format(latency))
+        else:
+            self._lr_values["latency"].setText("—")
+
+        self._lr_values["model"].setText(self._current_preset_name() or "—")
+        # Context tokens as a proxy for prompt usage — the real API usage object
+        # isn't surfaced up the stack yet (see _refresh_context_budget).
+        try:
+            res = self.gui.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CONTEXT_TOKENS, timeout=0.5)
+            used = int(res[0]) if res and res[0] is not None else 0
+        except Exception:
+            used = 0
+        self._lr_values["tokens"].setText(str(used))
+        self._lr_values["time"].setText(time.strftime("%H:%M:%S"))
+        self._refresh_context_budget()
+        # A message (and possibly memories) just changed — refresh the DB stats.
+        self._refresh_memory_summary()
 
     def _on_capture_toggle(self, key: str, value: bool):
         try:
@@ -1131,24 +1435,35 @@ class SandboxPage(QWidget):
         self._character_state_panel = CharacterStatePanel(self.gui)
         layout.addWidget(self._character_state_panel)
 
-        # Memory shortcuts (small)
+        # Live DB mini-stats for the current character.
         memory_card, memory_layout = self._make_inspector_card(_("Контекст и память", "Context & memory"), "fa6s.brain")
-        for label_text, key, fallback in (
-            (_("Сообщений в окне", "Messages in window"), "MODEL_MESSAGE_LIMIT", 35),
-            (_("Долгосрочная память", "Long-term memory"), "MEMORY_CAPACITY", 50),
-            (_("Результатов RAG", "RAG results"), "RAG_MAX_RESULTS", 50),
+        for label_text, stat_key, hint in (
+            (_("Сообщений в окне", "Messages in window"), "messages", None),
+            (_("Воспоминаний", "Memories"), "memories", None),
+            (_("Забыто (RAG)", "Forgotten (RAG)"), "forgotten", None),
+            (_("Без эмбеддинга", "Missing embeddings"), "missing",
+             _("Сообщения / воспоминания без эмбеддинга для текущей модели (устаревший индекс)",
+               "Messages / memories without an embedding for the current model (stale index)")),
+            (_("Корзина", "Trash"), "trash",
+             _("Удалённые сообщения / воспоминания", "Deleted messages / memories")),
+            (_("Посл. сообщение", "Last message"), "last", None),
+            (_("Размер БД", "DB size"), "dbsize", None),
         ):
             row = QHBoxLayout()
             row.setSpacing(8)
             label = QLabel(label_text)
             label.setObjectName("SandboxInspectorLabel")
+            if hint:
+                label.setToolTip(hint)
             row.addWidget(label)
             row.addStretch()
-            value = QLabel(str(self.gui._get_setting(key, fallback)))
+            value = QLabel("—")
             value.setObjectName("SandboxInspectorValue")
+            if hint:
+                value.setToolTip(hint)
             row.addWidget(value)
             memory_layout.addLayout(row)
-            self._memory_limit_values[key] = value
+            self._memory_limit_values[stat_key] = value
 
         memory_btn = QPushButton(_("Открыть RAG / память", "Open RAG / memory"))
         memory_btn.setObjectName("SandboxQuickAction")

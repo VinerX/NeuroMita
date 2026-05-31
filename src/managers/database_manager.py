@@ -940,6 +940,83 @@ class DatabaseManager:
             except Exception:
                 pass
 
+    def get_world_stats(self, character_id: Optional[str] = None) -> dict:
+        """Live stats for the sandbox 'state' panel.
+
+        Returns a dict with:
+          - history_active:      active (non-deleted, in-window) message rows
+          - memories_active:     active long-term memories
+          - memories_forgotten:  memories marked forgotten (still RAG-retrievable)
+          - history_deleted:     messages in the trash (is_deleted=1)
+          - memories_deleted:    memories in the trash (is_deleted=1)
+          - last_activity:       newest history timestamp (raw string, "" if none)
+          - db_size_bytes:       size of the SQLite file on disk
+        Best-effort: any failure yields the defaults below.
+        """
+        out = {
+            "history_active": 0, "memories_active": 0, "memories_forgotten": 0,
+            "history_deleted": 0, "memories_deleted": 0,
+            "last_activity": "", "db_size_bytes": 0,
+        }
+        cid = str(character_id or "").strip()
+        conn = None
+        try:
+            conn = self.get_connection()
+            cur = conn.cursor()
+
+            def _count(table: str, *, active: bool = False, forgotten: bool = False,
+                       deleted: bool = False) -> int:
+                cols = self._get_table_columns_conn(conn, table)
+                where: list[str] = []
+                params: list = []
+                if cid and "character_id" in cols:
+                    where.append("character_id=?")
+                    params.append(cid)
+                st_sql, st_params = self._build_status_where(
+                    table, cols, active=active, forgotten=forgotten, deleted=deleted
+                )
+                where.append(st_sql)
+                params.extend(st_params)
+                wsql = " WHERE " + " AND ".join(where) if where else ""
+                cur.execute(f"SELECT COUNT(*) FROM {self._q_ident(table)}{wsql}", tuple(params))
+                return int((cur.fetchone() or [0])[0] or 0)
+
+            out["history_active"] = _count("history", active=True)
+            out["memories_active"] = _count("memories", active=True)
+            out["memories_forgotten"] = _count("memories", forgotten=True)
+            out["history_deleted"] = _count("history", deleted=True)
+            out["memories_deleted"] = _count("memories", deleted=True)
+
+            # Newest message timestamp for the character (freshness).
+            hist_cols = self._get_table_columns_conn(conn, "history")
+            if "timestamp" in hist_cols:
+                where = []
+                params = []
+                if cid and "character_id" in hist_cols:
+                    where.append("character_id=?")
+                    params.append(cid)
+                wsql = " WHERE " + " AND ".join(where) if where else ""
+                cur.execute(f"SELECT MAX(timestamp) FROM {self._q_ident('history')}{wsql}", tuple(params))
+                last = (cur.fetchone() or [None])[0]
+                out["last_activity"] = str(last) if last else ""
+        except Exception as e:
+            logging.debug(f"DB: get_world_stats failed (ignored): {e}")
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+
+        try:
+            path = getattr(self, "db_path", None)
+            if path and os.path.exists(path):
+                out["db_size_bytes"] = int(os.path.getsize(path))
+        except Exception:
+            pass
+
+        return out
+
     def count_records_for_full_reindex(self, character_id: str) -> Tuple[int, int]:
         """
         Counts rows that will be processed by a *full* reindex (re-embed everything):
