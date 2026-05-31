@@ -11,7 +11,7 @@ from managers.llm_request_runner import LLMRequestRunner
 from managers.model_config_loader import ModelConfigLoader
 from managers.tools.tool_manager import ToolManager
 
-from handlers.llm_providers.base import LLMRequest
+from handlers.llm_providers.base import LLMRequest, LLMResponse
 from handlers.llm_providers.param_mapper import build_unified_generation_params
 
 from core.events import get_event_bus
@@ -98,10 +98,10 @@ class ChatModel:
         *,
         capabilities_override: Optional[Dict[str, Any]] = None,
         structured_model: Optional[type] = None,
-    ) -> Optional[str]:
+    ) -> Optional[LLMResponse]:
         if messages is None:
             messages = []
-        raw_text, success = self._generate_chat_response(
+        response, success = self._generate_chat_response(
             combined_messages=messages,
             stream_callback=stream_callback,
             preset_id=preset_id,
@@ -110,7 +110,7 @@ class ChatModel:
         )
         if not success:
             return None
-        return raw_text
+        return response
 
     def _generate_chat_response(
         self,
@@ -209,7 +209,7 @@ class ChatModel:
                         game_connected = False
                     fc.save_sample(
                         req=_last_req[0],
-                        response_text=response_text,
+                        response_text=response_text.text,
                         character_id=char.char_id if char else "unknown",
                         character_name=char.name if char else "unknown",
                         game_connected=game_connected,
@@ -218,9 +218,10 @@ class ChatModel:
                 logger.debug(f"[FinetuneCollector] save_sample skipped: {_ft_err}")
 
         if response_text:
-            cleaned_response = self._clean_response(response_text)
+            cleaned_response = self._clean_response(response_text.text)
             if cleaned_response:
-                return cleaned_response, True
+                response_text.text = cleaned_response
+                return response_text, True
             logger.warning("Response became empty after cleaning.")
             return None, False
 

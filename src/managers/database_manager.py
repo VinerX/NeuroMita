@@ -42,6 +42,17 @@ class DatabaseManager:
         "is_deleted": "INTEGER DEFAULT 0",
         "structured_data": "TEXT",
         "thinking": "TEXT",
+        "llm_prompt_tokens": "INTEGER",
+        "llm_completion_tokens": "INTEGER",
+        "llm_total_tokens": "INTEGER",
+        "llm_reasoning_tokens": "INTEGER",
+        "llm_cached_prompt_tokens": "INTEGER",
+        "llm_cache_write_tokens": "INTEGER",
+        "llm_cost": "REAL",
+        "llm_cost_currency": "TEXT",
+        "llm_cost_source": "TEXT",
+        "llm_model": "TEXT",
+        "llm_provider": "TEXT",
     }
 
     def __new__(cls):
@@ -506,6 +517,17 @@ class DatabaseManager:
                    timestamp TEXT,
                    is_active INTEGER DEFAULT 1,
                    is_deleted INTEGER DEFAULT 0,
+                   llm_prompt_tokens INTEGER,
+                   llm_completion_tokens INTEGER,
+                   llm_total_tokens INTEGER,
+                   llm_reasoning_tokens INTEGER,
+                   llm_cached_prompt_tokens INTEGER,
+                   llm_cache_write_tokens INTEGER,
+                   llm_cost REAL,
+                   llm_cost_currency TEXT,
+                   llm_cost_source TEXT,
+                   llm_model TEXT,
+                   llm_provider TEXT,
                    meta_data TEXT
                    ,embedding BLOB
                )

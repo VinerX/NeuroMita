@@ -2,7 +2,7 @@
 from typing import List, Optional
 
 from main_logger import logger
-from handlers.llm_providers.base import BaseProvider, LLMRequest
+from handlers.llm_providers.base import BaseProvider, LLMRequest, LLMResponse
 from handlers.llm_providers.openai_provider import OpenAIProvider
 from handlers.llm_providers.gemini_provider import GeminiProvider
 from handlers.llm_providers.common_provider import CommonProvider
@@ -48,7 +48,7 @@ class ProviderManager:
             if req.stream and ("streaming_with_tools" in caps) and not bool(caps.get("streaming_with_tools")):
                 req.stream = False
 
-    def generate(self, req: LLMRequest) -> Optional[str]:
+    def generate(self, req: LLMRequest) -> LLMResponse:
         if not req.provider_name:
             logger.error("Protocol-driven routing requires provider_name in request")
             raise RuntimeError("No provider can handle this request")

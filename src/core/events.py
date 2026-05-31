@@ -441,6 +441,7 @@ class Events:
         LOAD_MORE_HISTORY = "load_more_history"
         SCHEDULE_G4F_UPDATE = "schedule_g4f_update"
         GET_CURRENT_CONTEXT_TOKENS = "get_current_context_tokens"
+        GET_TOKEN_STATS = "get_token_stats"
         CALCULATE_COST = "calculate_cost"
         RELOAD_PROMPTS_ASYNC = "reload_prompts_async"
         GET_DEBUG_INFO = "get_debug_info"

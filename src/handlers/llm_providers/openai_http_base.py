@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from main_logger import logger
-from handlers.llm_providers.base import BaseProvider, LLMRequest
+from handlers.llm_providers.base import BaseProvider, LLMRequest, LLMResponse, normalize_usage_payload
 from schemas.structured_response import StructuredResponse
 
 
@@ -118,14 +118,14 @@ class OpenAIHTTPProviderBase(BaseProvider):
             payload["stream"] = True
         return requests.post(req.api_url, headers=headers, json=payload, stream=req.stream)
 
-    def generate(self, req: LLMRequest) -> Optional[str]:
+    def generate(self, req: LLMRequest) -> LLMResponse:
         if req.depth > 3:
             logger.error(f"[{self.name}] Too deep tool recursion.")
-            return None
+            return LLMResponse(text=None, provider_name=self.name)
 
         if not req.api_url:
             logger.error(f"[{self.name}] api_url is empty.")
-            return None
+            return LLMResponse(text=None, provider_name=self.name)
 
         model_to_use = req.model
         msgs = self._preprocess_messages(req)
@@ -157,24 +157,39 @@ class OpenAIHTTPProviderBase(BaseProvider):
             except Exception:
                 err = resp.text
             logger.error(f"[{self.name}] HTTP {resp.status_code}: {err}")
-            return None
+            return LLMResponse(text=None, model=model_to_use, provider_name=self.name)
 
         if req.stream:
-            return self._handle_stream(resp, req.stream_cb)
+            return self._handle_stream(resp, req.api_url, req.stream_cb)
 
         try:
             data = resp.json()
         except Exception as e:
             logger.error(f"[{self.name}] JSON parse error: {e}", exc_info=True)
-            return None
+            return LLMResponse(text=None, model=model_to_use, provider_name=self.name)
 
         message = (data.get("choices", [{}])[0].get("message") or {}) if isinstance(data, dict) else {}
 
         content = message.get("content") or message.get("reasoning_content") or ""
-        return content.strip()
+        return LLMResponse(
+            text=content.strip() if content else None,
+            usage=self._extract_usage(data, req.api_url),
+            model=(data.get("model") if isinstance(data, dict) else None) or model_to_use,
+            provider_name=self.name,
+            finish_reason=((data.get("choices") or [{}])[0].get("finish_reason") if isinstance(data, dict) else None),
+            raw=data if isinstance(data, dict) else {},
+        )
 
-    def _handle_stream(self, resp: requests.Response, stream_callback: Optional[callable] = None) -> str:
+    def _handle_stream(
+        self,
+        resp: requests.Response,
+        api_url: str,
+        stream_callback: Optional[callable] = None,
+    ) -> LLMResponse:
         parts: List[str] = []
+        usage = None
+        finish_reason = None
+        response_model = None
         try:
             for line_bytes in resp.iter_lines(decode_unicode=False):
                 if not line_bytes:
@@ -193,7 +208,13 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
                 try:
                     obj = json.loads(chunk)
+                    if response_model is None:
+                        response_model = obj.get("model")
+                    usage = usage or self._extract_usage(obj, api_url)
                     delta = obj.get("choices", [{}])[0].get("delta", {}) or {}
+                    fr = obj.get("choices", [{}])[0].get("finish_reason")
+                    if fr:
+                        finish_reason = fr
                     text = delta.get("content", "") or delta.get("reasoning_content", "") or ""
                     if text:
                         if stream_callback:
@@ -204,4 +225,29 @@ class OpenAIHTTPProviderBase(BaseProvider):
         except Exception as e:
             logger.error(f"[{self.name}] stream error: {e}", exc_info=True)
 
-        return "".join(parts)
+        return LLMResponse(
+            text="".join(parts),
+            usage=usage,
+            model=response_model,
+            provider_name=self.name,
+            finish_reason=finish_reason,
+        )
+
+    def _extract_usage(self, data: Any, api_url: str):
+        if not isinstance(data, dict):
+            return None
+
+        is_openrouter = "openrouter.ai" in str(api_url or "").lower()
+        usage = normalize_usage_payload(
+            data.get("usage"),
+            cost_currency="credits" if is_openrouter else None,
+            cost_source="provider_usage" if isinstance(data.get("usage"), dict) and data.get("usage", {}).get("cost") is not None else None,
+        )
+        if usage is not None:
+            return usage
+
+        if "usage" not in data:
+            return None
+
+        # Some providers expose usage but without cost; keep token stats if present.
+        return normalize_usage_payload(data.get("usage"))

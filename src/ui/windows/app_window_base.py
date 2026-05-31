@@ -666,17 +666,43 @@ class AppWindowBase(QMainWindow):
     def update_token_count(self, event=None):
         show_token_info = self._get_setting("SHOW_TOKEN_INFO", True)
         if show_token_info:
-            current_context_tokens = self.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CONTEXT_TOKENS, timeout=0.5)
-            current_context_tokens = current_context_tokens[0] if current_context_tokens else 0
-            max_model_tokens = int(self._get_setting("MAX_MODEL_TOKENS", 32000))
-            cost = self.event_bus.emit_and_wait(Events.Model.CALCULATE_COST, timeout=0.5)
-            cost = cost[0] if cost else 0.0
+            stats_res = self.event_bus.emit_and_wait(Events.Model.GET_TOKEN_STATS, timeout=0.5)
+            stats = stats_res[0] if stats_res and isinstance(stats_res[0], dict) else {}
+            current_context_tokens = int(stats.get("estimated_context_tokens") or 0)
+            max_model_tokens = int(stats.get("max_context_tokens") or self._get_setting("MAX_MODEL_TOKENS", 32000))
+            est_cost = stats.get("estimated_input_cost")
+            est_currency = str(stats.get("estimated_input_cost_currency") or "")
+            est_cost_text = "n/a" if est_cost is None else f"{float(est_cost):.6f} {est_currency}".strip()
+            actual_prompt = stats.get("actual_prompt_tokens")
+            actual_completion = stats.get("actual_completion_tokens")
+            actual_cost = stats.get("actual_cost")
+            actual_currency = str(stats.get("actual_cost_currency") or "")
+            cost = 0.0
             self.token_count_label.setText(
                 _("Токены: {}/{} (Макс. токены: {}) | Ориент. стоимость: {:.4f} ₽",
                   "Tokens: {}/{} (Max tokens: {}) | Approx. cost: {:.4f} ₽").format(
                     current_context_tokens, max_model_tokens, max_model_tokens, cost
                 )
             )
+            if actual_prompt is not None or actual_completion is not None or actual_cost is not None:
+                actual_prompt = int(actual_prompt or 0)
+                actual_completion = int(actual_completion or 0)
+                actual_total = int(stats.get("actual_total_tokens") or (actual_prompt + actual_completion))
+                actual_cost_text = "n/a" if actual_cost is None else f"{float(actual_cost):.6f} {actual_currency}".strip()
+                self.token_count_label.setText(
+                    _("Контекст: ~{}/{} | Оценка входа: {} | Последний запрос: {}/{} (всего {}) | Факт: {}",
+                      "Context: ~{}/{} | Est. input: {} | Last request: {}/{} (total {}) | Actual: {}").format(
+                        current_context_tokens, max_model_tokens, est_cost_text,
+                        actual_prompt, actual_completion, actual_total, actual_cost_text
+                    )
+                )
+            else:
+                self.token_count_label.setText(
+                    _("Контекст: ~{}/{} | Оценка входа: {}",
+                      "Context: ~{}/{} | Est. input: {}").format(
+                        current_context_tokens, max_model_tokens, est_cost_text
+                    )
+                )
             self.token_count_label.setVisible(True)
         else:
             self.token_count_label.setVisible(False)
