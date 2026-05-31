@@ -11,6 +11,9 @@ from core.request_policy import RequestPolicy, resolve_policy
 
 _TYPE_MAP = {"float": "number", "double": "number", "int": "integer",
              "bool": "boolean", "str": "string", "string": "string"}
+_VOLATILE_SYSTEM_BLOCK_PREFIXES = (
+    "current context:",
+)
 
 
 def _build_custom_params_schema(custom_params: list) -> str:
@@ -132,7 +135,16 @@ class PromptController:
 
         stable_system_messages: List[Dict[str, Any]] = []
         volatile_system_messages: List[Dict[str, Any]] = []
-        stable_system_messages.extend(build_system_prompts(blocks, separate=separate_prompts))
+        stable_blocks: List[str] = []
+        volatile_blocks: List[str] = []
+        for block in blocks or []:
+            if self._is_volatile_system_block(block):
+                volatile_blocks.append(block)
+            else:
+                stable_blocks.append(block)
+
+        stable_system_messages.extend(build_system_prompts(stable_blocks, separate=separate_prompts))
+        volatile_system_messages.extend(build_system_prompts(volatile_blocks, separate=separate_prompts))
 
         memory_message_content = ""
         try:
@@ -146,7 +158,7 @@ class PromptController:
             memory_message_content = ""
 
         if memory_message_content and memory_message_content.strip():
-            stable_system_messages.append({"role": "system", "content": memory_message_content})
+            volatile_system_messages.append({"role": "system", "content": memory_message_content})
 
         try:
             if hasattr(character, "reminder_system") and character.reminder_system:
@@ -160,6 +172,13 @@ class PromptController:
             )
 
         return stable_system_messages, volatile_system_messages, dsl_system_infos
+
+    @staticmethod
+    def _is_volatile_system_block(block: Any) -> bool:
+        if not isinstance(block, str):
+            return False
+        normalized = " ".join(block.strip().split()).lower()
+        return any(normalized.startswith(prefix) for prefix in _VOLATILE_SYSTEM_BLOCK_PREFIXES)
 
     def _on_build_prompt(self, event: Event) -> Dict[str, Any]:
         data = event.data or {}

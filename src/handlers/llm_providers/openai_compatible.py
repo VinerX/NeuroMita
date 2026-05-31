@@ -8,7 +8,10 @@ from typing import Any, Dict, List, Optional
 from main_logger import logger
 from .base import BaseProvider, LLMRequest, LLMResponse, normalize_usage_payload
 from schemas.structured_response import StructuredResponse
-from utils.openrouter_routing import normalize_openrouter_routing
+from utils.openrouter_routing import (
+    annotate_openrouter_prompt_cache,
+    normalize_openrouter_routing,
+)
 
 
 class OpenAICompatibleProvider(BaseProvider, ABC):
@@ -40,13 +43,21 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
 
         try:
             cleaned_messages = [{k: v for k, v in m.items() if k != "time"} for m in (req.messages or [])]
+            if req.protocol_id == "openrouter_default":
+                cleaned_messages = annotate_openrouter_prompt_cache(cleaned_messages, model_to_use)
 
             params: Dict[str, Any] = {"model": model_to_use, "messages": cleaned_messages}
             params.update(self._map_unified_params(req.extra or {}, model_to_use))
             if req.protocol_id == "openrouter_default":
+                extra_body = dict(params.get("extra_body") or {})
                 routing = normalize_openrouter_routing((req.extra or {}).get("openrouter_routing"))
                 if routing:
-                    params["provider"] = routing
+                    extra_body["provider"] = routing
+                session_id = str((req.extra or {}).get("openrouter_session_id") or "").strip()
+                if session_id:
+                    extra_body["session_id"] = session_id
+                if extra_body:
+                    params["extra_body"] = extra_body
 
             caps = req.capabilities or {}
             if caps.get("structured_output"):
