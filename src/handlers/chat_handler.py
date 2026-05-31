@@ -48,6 +48,73 @@ def _save_last_request_context(req, character_name: str = "") -> None:
         logger.debug(f"[ContextSave] {_e}")
 
 
+def _save_last_response_context(req, response: LLMResponse, *, raw_response_text: str = "", cleaned_response_text: str = "") -> None:
+    """Дописывает последний ответ и usage в last_request_context.json."""
+    import json
+    import os
+    from datetime import datetime, timezone
+
+    try:
+        base = os.environ.get("NEUROMITA_BASE_DIR", "")
+        out_dir = os.path.join(base, "SavedMessages") if base else "SavedMessages"
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, "last_request_context.json")
+
+        record: Dict[str, Any] = {}
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    record = loaded
+            except Exception:
+                record = {}
+
+        if not record:
+            extra_raw = getattr(req, "extra", {}) or {}
+            record = {
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "model": getattr(req, "model", None),
+                "provider_name": getattr(req, "provider_name", None),
+                "protocol_id": getattr(req, "protocol_id", None),
+                "dialect_id": getattr(req, "dialect_id", None),
+                "character_name": "",
+                "extra": extra_raw,
+                "messages": getattr(req, "messages", []),
+            }
+
+        usage = getattr(response, "usage", None)
+        usage_payload = None
+        if usage is not None:
+            usage_payload = {
+                "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+                "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+                "reasoning_tokens": int(getattr(usage, "reasoning_tokens", 0) or 0),
+                "cached_prompt_tokens": int(getattr(usage, "cached_prompt_tokens", 0) or 0),
+                "cache_write_tokens": int(getattr(usage, "cache_write_tokens", 0) or 0),
+                "cost": getattr(usage, "cost", None),
+                "cost_currency": getattr(usage, "cost_currency", None),
+                "cost_source": getattr(usage, "cost_source", None),
+                "raw": getattr(usage, "raw", {}) or {},
+            }
+
+        record.update({
+            "response_timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "response": cleaned_response_text or getattr(response, "text", "") or "",
+            "response_raw": raw_response_text or getattr(response, "text", "") or "",
+            "response_model": getattr(response, "model", None) or getattr(req, "model", None),
+            "response_provider_name": getattr(response, "provider_name", None) or getattr(req, "provider_name", None),
+            "finish_reason": getattr(response, "finish_reason", None),
+            "usage": usage_payload,
+        })
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+    except Exception as _e:
+        logger.debug(f"[ContextSaveResponse] {_e}")
+
+
 class ChatModel:
     def __init__(self, settings):
         self.last_key = 0
@@ -218,9 +285,17 @@ class ChatModel:
                 logger.debug(f"[FinetuneCollector] save_sample skipped: {_ft_err}")
 
         if response_text:
+            raw_response_text = response_text.text or ""
             cleaned_response = self._clean_response(response_text.text)
             if cleaned_response:
                 response_text.text = cleaned_response
+                if _last_req[0]:
+                    _save_last_response_context(
+                        _last_req[0],
+                        response_text,
+                        raw_response_text=raw_response_text,
+                        cleaned_response_text=cleaned_response,
+                    )
                 return response_text, True
             logger.warning("Response became empty after cleaning.")
             return None, False

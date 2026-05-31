@@ -329,6 +329,7 @@ class MessageWidget(QWidget):
     regenerate_from_requested = pyqtSignal(str)
     copy_requested = pyqtSignal(str)
     view_context_requested = pyqtSignal(str)  # emits sample_id
+    view_response_context_requested = pyqtSignal(str)  # emits sample_id
 
     def __init__(self, role="assistant", speaker_name="", content_text="", show_avatar=True, font_size=12,
                  message_time="", show_timestamp=True, max_bubble_width=600, sample_id=None, message_id=None, parent=None):
@@ -521,6 +522,9 @@ class MessageWidget(QWidget):
                 _sid = self._sample_id or ""
                 ctx_action.triggered.connect(lambda: self.view_context_requested.emit(_sid))
                 menu.addAction(ctx_action)
+                resp_ctx_action = QAction(_("Просмотреть контекст ответа", "View response context"), self)
+                resp_ctx_action.triggered.connect(lambda: self.view_response_context_requested.emit(_sid))
+                menu.addAction(resp_ctx_action)
             if self._message_id:
                 regen_from_action = QAction(_("Регенерировать отсюда", "Regenerate from here"), self)
                 regen_from_action.triggered.connect(lambda: self.regenerate_from_requested.emit(self._message_id))

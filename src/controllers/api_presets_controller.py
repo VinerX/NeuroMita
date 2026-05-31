@@ -909,6 +909,81 @@ class ApiPresetsController:
             daemon=True
         ).start()
 
+    @staticmethod
+    def _normalize_test_model_id(raw_model_id: Any) -> str:
+        model_id = str(raw_model_id or "").strip()
+        if model_id.startswith("models/"):
+            return model_id.split("/", 1)[1].strip()
+        return model_id
+
+    def _normalize_test_model_entry(self, raw_entry: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(raw_entry, dict):
+            model_id = self._normalize_test_model_id(raw_entry.get("id") or raw_entry.get("name"))
+            display_name = str(raw_entry.get("name") or model_id).strip()
+            pricing = raw_entry.get("pricing") if isinstance(raw_entry.get("pricing"), dict) else {}
+            top_provider = raw_entry.get("top_provider") if isinstance(raw_entry.get("top_provider"), dict) else {}
+
+            if not model_id:
+                return None
+
+            return {
+                "id": model_id,
+                "name": display_name or model_id,
+                "canonical_slug": raw_entry.get("canonical_slug"),
+                "context_length": raw_entry.get("context_length") or top_provider.get("context_length"),
+                "top_provider_context_length": raw_entry.get("top_provider_context_length") or top_provider.get("context_length"),
+                "max_completion_tokens": raw_entry.get("max_completion_tokens") or top_provider.get("max_completion_tokens"),
+                "is_free": bool(raw_entry.get("is_free")),
+                "pricing": pricing,
+                "top_provider": top_provider,
+                "latency": raw_entry.get("latency"),
+                "tokens_per_second": raw_entry.get("tokens_per_second"),
+            }
+
+        model_id = self._normalize_test_model_id(raw_entry)
+        if not model_id:
+            return None
+
+        return {
+            "id": model_id,
+            "name": model_id,
+            "canonical_slug": None,
+            "context_length": None,
+            "top_provider_context_length": None,
+            "max_completion_tokens": None,
+            "is_free": False,
+            "pricing": {},
+            "top_provider": {},
+            "latency": None,
+            "tokens_per_second": None,
+        }
+
+    def _extract_test_models(self, data: Any) -> List[Dict[str, Any]]:
+        if not isinstance(data, dict):
+            return []
+
+        raw_models = []
+        if isinstance(data.get("models"), list):
+            raw_models = data.get("models") or []
+        elif isinstance(data.get("data"), list):
+            raw_models = data.get("data") or []
+
+        normalized: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for entry in raw_models:
+            model_info = self._normalize_test_model_entry(entry)
+            if not model_info:
+                continue
+
+            model_id = str(model_info.get("id") or "").strip()
+            if not model_id or model_id in seen:
+                continue
+
+            seen.add(model_id)
+            normalized.append(model_info)
+
+        return normalized
+
     def _sync_test_connection(self, preset_id: int, tpl: ApiTemplate, key: str):
 
         protocol_id = str(getattr(tpl, "protocol_id", "") or "").strip()
@@ -951,6 +1026,7 @@ class ApiPresetsController:
             success = False
             message = ""
             models: List[str] = []
+            model_infos: List[Dict[str, Any]] = []
 
             if status == 200:
                 try:
@@ -959,12 +1035,9 @@ class ApiPresetsController:
                         from utils.api_filters import apply_filter
                         data = apply_filter(tpl.filter_fn, data)
 
-                    if "models" in data:
-                        models = [m.get("name", "").split("/")[-1] for m in data.get("models", []) if m.get("name")]
-                        success = True
-                        message = f"Found {len(models)} models"
-                    elif "data" in data and isinstance(data["data"], list):
-                        models = [m.get("id", "").split("/")[-1] for m in data.get("data", []) if m.get("id")]
+                    model_infos = self._extract_test_models(data)
+                    if model_infos:
+                        models = [str(m.get("id") or "").strip() for m in model_infos if str(m.get("id") or "").strip()]
                         success = True
                         message = f"Found {len(models)} models"
                     else:
@@ -991,6 +1064,7 @@ class ApiPresetsController:
                 "success": bool(success),
                 "message": message,
                 "models": models,
+                "model_infos": model_infos,
             })
         except requests.Timeout:
             self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
@@ -1086,4 +1160,3 @@ class ApiPresetsController:
         if preset_id is not None:
             self.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": "LAST_API_PRESET_ID", "value": int(preset_id)})
         return True
-    

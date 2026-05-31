@@ -180,7 +180,7 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
         if dlg.exec() == QDialog.DialogCode.Accepted:
             bus.emit(Events.Chat.REGENERATE_FROM, {"message_id": mid, "character_id": character_id})
 
-    def on_view_context(sample_id: str):
+    def on_view_context(sample_id: str, initial_tab: str = "request"):
         import json
         import os
         import traceback
@@ -237,7 +237,7 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
             )
 
         try:
-            dlg = ContextViewerDialog(data, parent=widget)
+            dlg = ContextViewerDialog(data, parent=widget, initial_tab=initial_tab)
             dlg.exec()
         except Exception as e:
             QMessageBox.critical(
@@ -245,11 +245,15 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
                 f"{e}\n\n{traceback.format_exc()}"
             )
 
+    def on_view_response_context(sample_id: str):
+        on_view_context(sample_id, initial_tab="response")
+
     widget.delete_requested.connect(on_delete)
     widget.edit_requested.connect(on_edit)
     widget.regenerate_requested.connect(on_regenerate)
     widget.regenerate_from_requested.connect(on_regenerate_from)
     widget.view_context_requested.connect(on_view_context)
+    widget.view_response_context_requested.connect(on_view_response_context)
 
 def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None, ui_images=None):
     font_size = _get_font_size(gui)

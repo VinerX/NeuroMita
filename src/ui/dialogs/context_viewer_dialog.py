@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSplitter,
+    QTabWidget,
     QTextBrowser,
     QTreeWidget,
     QTreeWidgetItem,
@@ -122,13 +123,14 @@ class ContextViewerDialog(QDialog):
       - response: str  (если есть — из finetune JSONL)
     """
 
-    def __init__(self, data: Dict[str, Any], parent=None):
+    def __init__(self, data: Dict[str, Any], parent=None, initial_tab: str = "request"):
         super().__init__(parent)
         self._data = data
         self._messages: List[Dict] = data.get("messages") or []
+        self._initial_tab = str(initial_tab or "request").lower()
         self._highlight_enabled = True
 
-        self.setWindowTitle(_("Просмотр контекста запроса", "Request Context Viewer"))
+        self.setWindowTitle(_("Просмотр контекста запроса и ответа", "Request / Response Context Viewer"))
         self.setMinimumSize(900, 600)
         self.resize(1150, 720)
         self.setModal(True)
@@ -145,6 +147,7 @@ class ContextViewerDialog(QDialog):
         first = self._tree.topLevelItem(0)
         if first:
             self._tree.setCurrentItem(first)
+        self._tabs.setCurrentIndex(1 if self._initial_tab == "response" else 0)
 
     # ─────────────────────────────────── UI build ────────────────────────────────
 
@@ -155,31 +158,10 @@ class ContextViewerDialog(QDialog):
 
         root.addWidget(self._build_header())
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setChildrenCollapsible(False)
-
-        self._tree = QTreeWidget()
-        self._tree.setHeaderHidden(True)
-        self._tree.setMinimumWidth(200)
-        self._tree.setMaximumWidth(320)
-        self._tree.currentItemChanged.connect(self._on_item_changed)
-        splitter.addWidget(self._tree)
-
-        # Правая панель: поиск + viewer
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(4)
-
-        right_layout.addWidget(self._build_search_bar())
-
-        self._viewer = QTextBrowser()
-        self._viewer.setOpenLinks(False)
-        right_layout.addWidget(self._viewer)
-
-        splitter.addWidget(right_panel)
-        splitter.setSizes([230, 900])
-        root.addWidget(splitter, stretch=1)
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._build_request_tab(), _("Запрос", "Request"))
+        self._tabs.addTab(self._build_response_tab(), _("Ответ", "Response"))
+        root.addWidget(self._tabs, stretch=1)
 
         # Кнопки внизу
         btn_row = QHBoxLayout()
@@ -197,11 +179,59 @@ class ContextViewerDialog(QDialog):
         copy_msgs_btn.clicked.connect(self._copy_messages)
         btn_row.addWidget(copy_msgs_btn)
 
+        copy_resp_btn = QPushButton(_("Копировать ответ", "Copy response"))
+        copy_resp_btn.setObjectName("SecondaryBtn")
+        copy_resp_btn.setToolTip(_("Скопировать ответ модели и usage", "Copy model response and usage"))
+        copy_resp_btn.clicked.connect(self._copy_response)
+        btn_row.addWidget(copy_resp_btn)
+
         close_btn = QPushButton(_("Закрыть", "Close"))
         close_btn.clicked.connect(self.accept)
         btn_row.addWidget(close_btn)
 
         root.addLayout(btn_row)
+
+    def _build_request_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+
+        self._tree = QTreeWidget()
+        self._tree.setHeaderHidden(True)
+        self._tree.setMinimumWidth(200)
+        self._tree.setMaximumWidth(320)
+        self._tree.currentItemChanged.connect(self._on_item_changed)
+        splitter.addWidget(self._tree)
+
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(4)
+        right_layout.addWidget(self._build_search_bar())
+
+        self._viewer = QTextBrowser()
+        self._viewer.setOpenLinks(False)
+        right_layout.addWidget(self._viewer)
+
+        splitter.addWidget(right_panel)
+        splitter.setSizes([230, 900])
+        layout.addWidget(splitter)
+        return tab
+
+    def _build_response_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self._response_viewer = QTextBrowser()
+        self._response_viewer.setOpenLinks(False)
+        layout.addWidget(self._response_viewer)
+        return tab
 
     def _build_header(self) -> QFrame:
         frame = QFrame()
@@ -340,10 +370,6 @@ class ContextViewerDialog(QDialog):
         params_item.setExpanded(False)
         self._items.append((params_item, "params", self._data.get("extra") or {}))
 
-        if self._data.get("response"):
-            resp_item = QTreeWidgetItem(self._tree, [_("💬 Ответ модели", "💬 Model response")])
-            self._items.append((resp_item, "response", self._data["response"]))
-
         msgs_item = QTreeWidgetItem(
             self._tree,
             [_("Сообщения", "Messages") + f" ({len(self._messages)})"]
@@ -359,6 +385,8 @@ class ContextViewerDialog(QDialog):
             label = f"{icon} {role} #{role_counters[role]}"
             child = QTreeWidgetItem(msgs_item, [label])
             self._items.append((child, "message", msg))
+
+        self._render_response_tab()
 
     # ─────────────────────────────────── Rendering ───────────────────────────────
 
@@ -386,15 +414,6 @@ class ContextViewerDialog(QDialog):
                     for k, v in d.items()
                 )
                 html = f"<table style='border-spacing:4px'>{rows}</table>"
-            self._viewer.setHtml(self._wrap(html))
-
-        elif kind == "response":
-            text = str(payload or "")
-            _asst_color = _ROLE_COLORS["assistant"]
-            html = (
-                f"<p><b style='color:{_asst_color}'>{_('Ответ модели', 'Model response')}</b></p>"
-                f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{self._colorize(text)}</div>"
-            )
             self._viewer.setHtml(self._wrap(html))
 
         elif kind == "overview":
@@ -440,6 +459,62 @@ class ContextViewerDialog(QDialog):
                     f"<div style='color:{_MUTED};font-family:Consolas,monospace'>{extras_body}</div>"
                 )
             self._viewer.setHtml(self._wrap(html))
+
+    def _render_response_tab(self):
+        response_text = str(self._data.get("response") or "")
+        response_raw = str(self._data.get("response_raw") or "")
+        usage = self._data.get("usage") or {}
+        finish_reason = str(self._data.get("finish_reason") or "")
+        response_model = str(self._data.get("response_model") or self._data.get("model") or "")
+        response_provider = str(self._data.get("response_provider_name") or self._data.get("provider_name") or "")
+
+        sections: list[str] = []
+        meta_rows = []
+        if response_model:
+            meta_rows.append(
+                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{_('Модель', 'Model')}</b></td>"
+                f"<td style='color:{_TEXT}'>{self._colorize(response_model)}</td></tr>"
+            )
+        if response_provider:
+            meta_rows.append(
+                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{_('Провайдер', 'Provider')}</b></td>"
+                f"<td style='color:{_TEXT}'>{self._colorize(response_provider)}</td></tr>"
+            )
+        if finish_reason:
+            meta_rows.append(
+                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{_('Причина завершения', 'Finish reason')}</b></td>"
+                f"<td style='color:{_TEXT}'>{self._colorize(finish_reason)}</td></tr>"
+            )
+        if meta_rows:
+            sections.append(f"<table style='border-spacing:4px'>{''.join(meta_rows)}</table>")
+
+        if usage:
+            usage_body = self._colorize(json.dumps(usage, ensure_ascii=False, indent=2))
+            sections.append(
+                f"<hr style='border-color:{_BORDER}'>"
+                f"<p><b style='color:{_MUTED}'>{_('Usage', 'Usage')}</b></p>"
+                f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{usage_body}</div>"
+            )
+
+        if response_text:
+            sections.append(
+                f"<hr style='border-color:{_BORDER}'>"
+                f"<p><b style='color:{_ROLE_COLORS['assistant']}'>{_('Ответ модели', 'Model response')}</b></p>"
+                f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{self._colorize(response_text)}</div>"
+            )
+        else:
+            sections.append(
+                f"<p style='color:{_MUTED}'><i>{_('Данные ответа не сохранены', 'No response data saved')}</i></p>"
+            )
+
+        if response_raw and response_raw != response_text:
+            sections.append(
+                f"<hr style='border-color:{_BORDER}'>"
+                f"<p><b style='color:{_MUTED}'>{_('Сырой ответ', 'Raw response')}</b></p>"
+                f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{self._colorize(response_raw)}</div>"
+            )
+
+        self._response_viewer.setHtml(self._wrap("".join(sections)))
 
     def _render_content_blocks(self, blocks: list) -> str:
         parts = []
@@ -544,4 +619,17 @@ class ContextViewerDialog(QDialog):
     def _copy_messages(self):
         QApplication.clipboard().setText(
             json.dumps(self._messages, ensure_ascii=False, indent=2)
+        )
+
+    def _copy_response(self):
+        payload = {
+            "response": self._data.get("response"),
+            "response_raw": self._data.get("response_raw"),
+            "response_model": self._data.get("response_model") or self._data.get("model"),
+            "response_provider_name": self._data.get("response_provider_name") or self._data.get("provider_name"),
+            "finish_reason": self._data.get("finish_reason"),
+            "usage": self._data.get("usage"),
+        }
+        QApplication.clipboard().setText(
+            json.dumps(payload, ensure_ascii=False, indent=2)
         )

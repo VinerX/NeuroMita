@@ -3,7 +3,7 @@ try:
     import qtawesome as qta
 except Exception:
     qta = None
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QApplication, QStyle
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
 
@@ -172,10 +172,28 @@ class SettingsManager:
 # универсальный маленький помощник-иконки
 def _angle_icon(kind: str, size: int = 10):
     """kind: 'right' | 'down'"""
-    if qta is None:
-        return QPixmap(size, size)
-    name = 'fa6s.angle-right' if kind == 'right' else 'fa6s.angle-down'
-    return qta.icon(name, color='#f0f0f0').pixmap(size, size)
+    if qta is not None:
+        name = 'fa6s.angle-right' if kind == 'right' else 'fa6s.angle-down'
+        try:
+            return qta.icon(name, color='#f0f0f0').pixmap(size, size)
+        except Exception:
+            pass
+
+    app = QApplication.instance()
+    if app is not None:
+        style = app.style()
+        if style is not None:
+            standard_pix = (
+                QStyle.StandardPixmap.SP_ArrowRight
+                if kind == 'right'
+                else QStyle.StandardPixmap.SP_ArrowDown
+            )
+            try:
+                return style.standardIcon(standard_pix).pixmap(size, size)
+            except Exception:
+                pass
+
+    return QPixmap(size, size)
 # ────────────────────────────────────────────────────
 
 

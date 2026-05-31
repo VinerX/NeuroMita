@@ -39,8 +39,8 @@ def mistral_filter(data: dict) -> dict:
 
 def openrouter_filter(data: dict) -> dict:
     """
-    Фильтр для OpenRouter API с добавлением префиксов.
-    Показывает только бесплатные модели (с :free) и добавляет префиксы.
+    Фильтр для OpenRouter API с добавлением префиксов и сохранением метаданных.
+    Возвращает и бесплатные, и платные модели; UI сам решает, что показывать.
     """
     if 'data' not in data:
         return data
@@ -84,31 +84,47 @@ def openrouter_filter(data: dict) -> dict:
         try:
             model_id = model.get('id', '')
             model_id_lower = model_id.lower()
-            
-            # Только бесплатные модели
-            if ':free' not in model_id_lower:
-                continue
-            
+
             # Добавляем префикс, если его нет
             if "/" not in model_id:
                 for key, prefix in prefix_map.items():
                     if key in model_id_lower:
                         model_id = prefix + model_id
                         break
-            
-            # Возвращаем словарь в том же формате, что и aiio_filter
+
+            pricing = model.get('pricing') if isinstance(model.get('pricing'), dict) else {}
+            top_provider = model.get('top_provider') if isinstance(model.get('top_provider'), dict) else {}
+
             formatted_model = {
                 'id': model_id,
-                'name': model_id,  # Показываем полное имя в списке
-                'is_free': True
+                'name': model.get('name') or model_id,
+                'canonical_slug': model.get('canonical_slug'),
+                'context_length': model.get('context_length'),
+                'top_provider_context_length': top_provider.get('context_length'),
+                'max_completion_tokens': top_provider.get('max_completion_tokens'),
+                'is_free': ':free' in model_id_lower,
+                'pricing': pricing,
+                'top_provider': top_provider,
+                # Best-effort optional perf metadata if OpenRouter adds it.
+                'latency': (
+                    top_provider.get('latency')
+                    or model.get('latency')
+                    or model.get('avg_latency')
+                    or model.get('p50_latency')
+                ),
+                'tokens_per_second': (
+                    top_provider.get('tokens_per_second')
+                    or top_provider.get('throughput')
+                    or model.get('tokens_per_second')
+                    or model.get('throughput')
+                ),
             }
-            
+
             filtered_models.append(formatted_model)
-                
+
         except Exception:
             continue
-    
-    # Возвращаем только бесплатные модели с префиксами
+
     return {'models': filtered_models}
 
 

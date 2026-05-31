@@ -1066,7 +1066,7 @@ class AppWindowBase(QMainWindow):
             "character_id": character_id,
         })
 
-    def _on_debug_view_last_context(self):
+    def _on_debug_view_last_context(self, initial_tab: str = "request"):
         import json
         import os
         from PyQt6.QtWidgets import QMessageBox
@@ -1092,13 +1092,16 @@ class AppWindowBase(QMainWindow):
             return
         try:
             from ui.dialogs.context_viewer_dialog import ContextViewerDialog
-            ContextViewerDialog(data, parent=self).exec()
+            ContextViewerDialog(data, parent=self, initial_tab=initial_tab).exec()
         except Exception as e:
             import traceback
             QMessageBox.critical(
                 self, _("Ошибка открытия диалога", "Dialog error"),
                 f"{e}\n\n{traceback.format_exc()}"
             )
+
+    def _on_debug_view_last_response_context(self):
+        self._on_debug_view_last_context(initial_tab="response")
 
     def _get_current_character_id_for_debug(self) -> str:
         try:
