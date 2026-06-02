@@ -184,8 +184,8 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
         import json
         import os
         import traceback
-        from PyQt6.QtWidgets import QMessageBox
         from ui.dialogs.context_viewer_dialog import ContextViewerDialog
+        from ui.dialogs.styled_message import show_styled_message
 
         data = None
 
@@ -198,7 +198,7 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
                     samples = fc.load_samples()
                     data = next((s for s in samples if s.get("id") == sample_id), None)
             except Exception as e:
-                QMessageBox.critical(None, _("Ошибка", "Error"), str(e))
+                show_styled_message(widget, _("Ошибка", "Error"), str(e), level="error")
                 return
 
         # 2. Fallback — последний сохранённый запрос (всегда доступен)
@@ -218,31 +218,34 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
                     pass
 
         if data is None:
-            QMessageBox.warning(
-                None,
+            show_styled_message(
+                widget,
                 _("Не найдено", "Not found"),
                 _("Данные не найдены. Убедитесь, что хотя бы одно сообщение было отправлено.",
-                  "No data found. Make sure at least one message has been sent.")
+                  "No data found. Make sure at least one message has been sent."),
+                level="warning",
             )
             return
 
         if used_fallback:
-            QMessageBox.information(
-                None,
+            show_styled_message(
+                widget,
                 _("Данные конкретного сообщения недоступны", "Message-specific data not available"),
                 _("Сбор данных для дообучения был отключён для этого сообщения.\n"
                   "Показан последний сохранённый запрос — он может не совпадать с этим сообщением.",
                   "Finetune collection was disabled for this message.\n"
-                  "Showing the last saved request — it may not match this message.")
+                  "Showing the last saved request — it may not match this message."),
+                level="info",
             )
 
         try:
             dlg = ContextViewerDialog(data, parent=widget)
             dlg.exec()
         except Exception as e:
-            QMessageBox.critical(
-                None, _("Ошибка открытия диалога", "Dialog error"),
-                f"{e}\n\n{traceback.format_exc()}"
+            show_styled_message(
+                widget, _("Ошибка открытия диалога", "Dialog error"),
+                f"{e}\n\n{traceback.format_exc()}",
+                level="error",
             )
 
     widget.delete_requested.connect(on_delete)

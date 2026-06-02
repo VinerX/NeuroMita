@@ -126,6 +126,11 @@ class ChatServerNew:
                         break
         except asyncio.CancelledError:
             pass
+        except (ConnectionResetError, ConnectionAbortedError, ConnectionError) as e:
+            # Unity закрыл сокет резко (краш/жёсткое закрытие/сетевой сбой,
+            # напр. WinError 64). Это обычный разрыв, а не ошибка сервера —
+            # корутина клиента штатно завершается, сам сервер продолжает работу.
+            logger.info(f"Клиент {client_id} разорвал соединение: {e}")
         except Exception as e:
             logger.error(f"Ошибка в handle_client: {e}", exc_info=True)
         finally:

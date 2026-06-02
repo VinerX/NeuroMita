@@ -1044,7 +1044,7 @@ class AppWindowBase(QMainWindow):
     def _on_debug_view_last_context(self):
         import json
         import os
-        from PyQt6.QtWidgets import QMessageBox
+        from ui.dialogs.styled_message import show_styled_message
         base = os.environ.get("NEUROMITA_BASE_DIR", "")
         path = (
             os.path.join(base, "SavedMessages", "last_request_context.json")
@@ -1052,27 +1052,29 @@ class AppWindowBase(QMainWindow):
             else os.path.join("SavedMessages", "last_request_context.json")
         )
         if not os.path.isfile(path):
-            QMessageBox.warning(
+            show_styled_message(
                 self,
                 _("Нет данных", "No data"),
                 _("Файл контекста не найден. Сначала отправьте сообщение.",
-                  "Context file not found. Send a message first.")
+                  "Context file not found. Send a message first."),
+                level="warning",
             )
             return
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as e:
-            QMessageBox.critical(self, _("Ошибка", "Error"), str(e))
+            show_styled_message(self, _("Ошибка", "Error"), str(e), level="error")
             return
         try:
             from ui.dialogs.context_viewer_dialog import ContextViewerDialog
             ContextViewerDialog(data, parent=self).exec()
         except Exception as e:
             import traceback
-            QMessageBox.critical(
+            show_styled_message(
                 self, _("Ошибка открытия диалога", "Dialog error"),
-                f"{e}\n\n{traceback.format_exc()}"
+                f"{e}\n\n{traceback.format_exc()}",
+                level="error",
             )
 
     def _get_current_character_id_for_debug(self) -> str:
