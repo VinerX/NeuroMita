@@ -529,17 +529,27 @@ class SettingsPage(QWidget):
 
         flow = _FlowLayout(self._tabs_host, margin=0, hspacing=6, vspacing=6, justify=False, center=True)
 
+        tab_buttons = []
         for spec in get_settings_section_specs():
             label = _(spec.nav_label[0], spec.nav_label[1])
             button = SettingsIconButton(spec.icon_name, label, category_key=spec.key)
-            # Fixed horizontal policy so each tab keeps its natural (content)
-            # width — no stretching, no empty gaps. The flow centers the row as
-            # a group and wraps to a new line instead of scrolling.
+            # Fixed horizontal policy so each tab keeps a uniform width (set
+            # below) — no stretching, no empty gaps. The flow centers the row
+            # as a group and wraps to a new line instead of scrolling.
             button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             button.clicked.connect(lambda checked=False, cat=spec.key: self.show_category(cat))
             flow.addWidget(button)
             self.settings_buttons[spec.key] = button
             self._category_modes[spec.key] = spec.min_mode
+            tab_buttons.append(button)
+
+        # Give every tab the same fixed width (the widest label's natural width,
+        # with a sane floor) so the strip reads as a uniform tab bar instead of
+        # ragged content-sized chips.
+        if tab_buttons:
+            uniform = max([b.sizeHint().width() for b in tab_buttons] + [96])
+            for b in tab_buttons:
+                b.setFixedWidth(uniform)
 
         layout.addWidget(self._tabs_host)
         return card

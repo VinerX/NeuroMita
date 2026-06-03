@@ -663,6 +663,17 @@ class AppWindowBase(QMainWindow):
         # logs_window больше не дублирует debug_info — в нём показывается tail файла логов,
         # а не "Debug info not available". См. _refresh_logs_view().
 
+    @staticmethod
+    def _fmt_tokens(n) -> str:
+        """Compact token counts: show in thousands (e.g. 12.3k) once above 10000."""
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            return str(n)
+        if n > 10000:
+            return f"{n / 1000:.1f}k"
+        return str(n)
+
     def update_token_count(self, event=None):
         show_token_info = self._get_setting("SHOW_TOKEN_INFO", True)
         if show_token_info:
@@ -678,11 +689,12 @@ class AppWindowBase(QMainWindow):
             actual_cached = stats.get("actual_cached_prompt_tokens")
             actual_cost = stats.get("actual_cost")
             actual_currency = str(stats.get("actual_cost_currency") or "")
-            cost = 0.0
+            fmt = self._fmt_tokens
+            cost = float(est_cost or 0.0) if est_cost is not None else 0.0
             self.token_count_label.setText(
                 _("Токены: {}/{} (Макс. токены: {}) | Ориент. стоимость: {:.4f} ₽",
                   "Tokens: {}/{} (Max tokens: {}) | Approx. cost: {:.4f} ₽").format(
-                    current_context_tokens, max_model_tokens, max_model_tokens, cost
+                    fmt(current_context_tokens), fmt(max_model_tokens), fmt(max_model_tokens), cost
                 )
             )
             if actual_prompt is not None or actual_completion is not None or actual_cost is not None:
@@ -1069,7 +1081,7 @@ class AppWindowBase(QMainWindow):
     def _on_debug_view_last_context(self, initial_tab: str = "request"):
         import json
         import os
-        from PyQt6.QtWidgets import QMessageBox
+        from ui.dialogs.styled_message import show_styled_message
         base = os.environ.get("NEUROMITA_BASE_DIR", "")
         path = (
             os.path.join(base, "SavedMessages", "last_request_context.json")
@@ -1077,27 +1089,29 @@ class AppWindowBase(QMainWindow):
             else os.path.join("SavedMessages", "last_request_context.json")
         )
         if not os.path.isfile(path):
-            QMessageBox.warning(
+            show_styled_message(
                 self,
                 _("Нет данных", "No data"),
                 _("Файл контекста не найден. Сначала отправьте сообщение.",
-                  "Context file not found. Send a message first.")
+                  "Context file not found. Send a message first."),
+                level="warning",
             )
             return
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as e:
-            QMessageBox.critical(self, _("Ошибка", "Error"), str(e))
+            show_styled_message(self, _("Ошибка", "Error"), str(e), level="error")
             return
         try:
             from ui.dialogs.context_viewer_dialog import ContextViewerDialog
             ContextViewerDialog(data, parent=self, initial_tab=initial_tab).exec()
         except Exception as e:
             import traceback
-            QMessageBox.critical(
+            show_styled_message(
                 self, _("Ошибка открытия диалога", "Dialog error"),
-                f"{e}\n\n{traceback.format_exc()}"
+                f"{e}\n\n{traceback.format_exc()}",
+                level="error",
             )
 
     def _on_debug_view_last_response_context(self):

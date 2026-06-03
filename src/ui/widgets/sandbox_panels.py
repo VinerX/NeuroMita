@@ -20,8 +20,13 @@ _PANELS: tuple[tuple[str, tuple[str, str]], ...] = (
     ("actions", ("Быстрые действия", "Quick actions")),
 )
 
+# Panels that start hidden. Everything else defaults ON; the user trims/extends
+# the list from settings. "last_request" is a diagnostics strip most users don't
+# need, so it's off out of the box.
+_PANEL_DEFAULT_OFF: frozenset[str] = frozenset({"last_request"})
+
 SANDBOX_PANEL_LABELS: dict[str, tuple[str, str]] = {key: label for key, label in _PANELS}
-SANDBOX_PANEL_DEFAULTS: dict[str, bool] = {key: True for key, _ in _PANELS}
+SANDBOX_PANEL_DEFAULTS: dict[str, bool] = {key: key not in _PANEL_DEFAULT_OFF for key, _ in _PANELS}
 TOGGLEABLE_SANDBOX_PANELS: tuple[str, ...] = tuple(key for key, _ in _PANELS)
 
 

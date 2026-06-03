@@ -213,6 +213,9 @@ class SandboxPage(QWidget):
         self._voice_status_row = None
         self._mic_status_row = None
         self._rag_status_row = None
+        # Capture rows carry a two-state dot (off/active) mirroring its switch —
+        # keyed by the switch widget so _sync_toggles_from_settings can recolour.
+        self._toggle_dots = {}
         # Toggleable inspector panels (key -> strip widget) and the two new
         # diagnostics panels' live widgets.
         self._panels = {}
@@ -282,14 +285,24 @@ class SandboxPage(QWidget):
             row.set_enabled_state(bool(checked))
 
     def _make_toggle_row(self, label_text: str, on_toggle, initial_on: bool,
-                         tooltip: str | None = None):
+                         tooltip: str | None = None, with_dot: bool = False):
         """A [label … switch] row using the same pill toggle as the status
-        rows. Returns (row_widget, switch)."""
+        rows. When *with_dot* is set, a leading status dot (like the Status
+        rows above) reflects the switch — two states only: grey off / green on.
+        Returns (row_widget, switch)."""
         row = QWidget()
         row.setObjectName("SandboxInfoRow")
         h = QHBoxLayout(row)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(8)
+
+        dot = None
+        if with_dot:
+            dot = QLabel()
+            dot.setFixedSize(12, 12)
+            self._style_toggle_dot(dot, bool(initial_on))
+            h.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+
         label = QLabel(label_text)
         label.setObjectName("SandboxInfoLabel")
         if tooltip:
@@ -303,8 +316,19 @@ class SandboxPage(QWidget):
         if tooltip:
             switch.setToolTip(tooltip)
         switch.toggled.connect(on_toggle)
+        if dot is not None:
+            switch.toggled.connect(lambda checked, d=dot: self._style_toggle_dot(d, bool(checked)))
+            self._toggle_dots[switch] = dot
         h.addWidget(switch, 0, Qt.AlignmentFlag.AlignVCenter)
         return row, switch
+
+    @staticmethod
+    def _style_toggle_dot(dot: QLabel, on: bool) -> None:
+        """Colour a two-state dot using the same palette as _SandboxStatusRow."""
+        bg, border = _SandboxStatusRow._DOT_COLORS["active" if on else "off"]
+        dot.setStyleSheet(
+            f"background-color: {bg}; border: 1px solid {border}; border-radius: 6px;"
+        )
 
     def _refresh_status_values(self):
         """Fill the 'what exactly' value on each status row. The dots (active
@@ -706,6 +730,15 @@ class SandboxPage(QWidget):
         return f"{short_date} {tm}".strip()
 
     @staticmethod
+    def _fmt_tokens(n) -> str:
+        """Compact token counts: show in thousands (e.g. 12.3k) once above 10000."""
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            return str(n)
+        return f"{n / 1000:.1f}k" if n > 10000 else str(n)
+
+    @staticmethod
     def _fmt_bytes(value) -> str:
         try:
             n = float(value or 0)
@@ -765,6 +798,7 @@ class SandboxPage(QWidget):
         self._populate_prompt_pack_combobox()
         self._refresh_character_avatar()
         self._refresh_status_values()
+        self._sync_toggles_from_settings()
         self._refresh_memory_summary()
         self._refresh_context_budget()
         self.apply_panel_visibility()
@@ -1148,6 +1182,7 @@ class SandboxPage(QWidget):
             _("Захват экрана", "Screen capture"),
             lambda v: self._on_capture_toggle("ENABLE_SCREEN_ANALYSIS", v),
             bool(self.gui._get_setting("ENABLE_SCREEN_ANALYSIS", False)),
+            with_dot=True,
         )
         capture_layout.addWidget(screen_row)
 
@@ -1155,6 +1190,7 @@ class SandboxPage(QWidget):
             _("Авто-прикрепление", "Auto-attach"),
             lambda v: self._on_capture_toggle("AUTO_ATTACH_IMAGES", v),
             bool(self.gui._get_setting("AUTO_ATTACH_IMAGES", False)),
+            with_dot=True,
         )
         capture_layout.addWidget(attach_row)
 
@@ -1162,33 +1198,43 @@ class SandboxPage(QWidget):
             _("Захват с камеры", "Camera capture"),
             lambda v: self._on_capture_toggle("ENABLE_CAMERA_CAPTURE", v),
             bool(self.gui._get_setting("ENABLE_CAMERA_CAPTURE", False)),
+            with_dot=True,
         )
         capture_layout.addWidget(camera_row)
         layout.addWidget(capture_strip)
         self._panels["capture"] = capture_strip
 
         # ── Быстрые действия ───────────────────────────────────────────────
+        # "Очистить чат" / "Загрузить историю" живут в полосе над чатом
+        # (ui/widgets/chat_panel._build_conversation_strip), поэтому здесь не
+        # дублируются. Остаётся сброс персонажа + переходы к настройкам и
+        # просмотр последнего запроса (удобно для отладки, см. задачу 5).
         actions_strip, actions_layout = self._make_strip(_("Быстрые действия", "Quick actions"), "fa6s.bolt")
-        self.gui.clear_chat_button = QPushButton(_("Очистить чат", "Clear chat"))
-        self.gui.clear_chat_button.setObjectName("SandboxQuickAction")
-        self.gui.clear_chat_button.clicked.connect(self.gui.clear_chat_display)
-        actions_layout.addWidget(self.gui.clear_chat_button)
 
-        self.gui.load_history_button = QPushButton(_("Загрузить историю", "Load history"))
-        self.gui.load_history_button.setObjectName("SandboxQuickAction")
-        self.gui.load_history_button.clicked.connect(self.gui.load_chat_history)
-        actions_layout.addWidget(self.gui.load_history_button)
+        view_last_btn = QPushButton(_("Посмотреть последний запрос", "View last request"))
+        view_last_btn.setObjectName("SandboxQuickAction")
+        view_last_btn.setToolTip(
+            _("Открыть просмотр контекста последнего запроса к нейросети.",
+              "Open the context viewer for the last request sent to the model.")
+        )
+        view_last_btn.clicked.connect(self._on_view_last_request)
+        actions_layout.addWidget(view_last_btn)
+
+        char_settings_btn = QPushButton(_("Настройки персонажа", "Character settings"))
+        char_settings_btn.setObjectName("SandboxQuickAction")
+        char_settings_btn.clicked.connect(lambda: self._jump_to_settings("characters"))
+        actions_layout.addWidget(char_settings_btn)
+
+        full_settings_btn = QPushButton(_("Полные настройки", "Full settings"))
+        full_settings_btn.setObjectName("SandboxQuickAction")
+        full_settings_btn.clicked.connect(lambda: self.gui.switch_main_page("settings"))
+        actions_layout.addWidget(full_settings_btn)
 
         reset_btn = QPushButton(_("Сбросить персонажа", "Reset character"))
         reset_btn.setObjectName("SandboxQuickAction")
         reset_btn.setProperty("danger", True)
         reset_btn.clicked.connect(self._on_reset_character)
         actions_layout.addWidget(reset_btn)
-
-        full_settings_btn = QPushButton(_("Полные настройки", "Full settings"))
-        full_settings_btn.setObjectName("SandboxQuickAction")
-        full_settings_btn.clicked.connect(lambda: self.gui.switch_main_page("settings"))
-        actions_layout.addWidget(full_settings_btn)
         layout.addWidget(actions_strip)
         self._panels["actions"] = actions_strip
 
@@ -1405,25 +1451,64 @@ class SandboxPage(QWidget):
             used = int(res[0]) if res and res[0] is not None else 0
         except Exception:
             used = 0
-        self._lr_values["tokens"].setText(str(used))
+        self._lr_values["tokens"].setText(self._fmt_tokens(used))
         self._lr_values["time"].setText(time.strftime("%H:%M:%S"))
         self._refresh_context_budget()
         # A message (and possibly memories) just changed — refresh the DB stats.
         self._refresh_memory_summary()
 
-    def _on_capture_toggle(self, key: str, value: bool):
-        try:
-            self.gui.settings.set(key, bool(value))
+    def _sync_toggles_from_settings(self):
+        """Re-sync the capture/display checkboxes from the current settings so a
+        change made on the settings page is reflected when the Sandbox is shown.
+        (The Voice/Mic/RAG pills are synced separately by _refresh_status_values,
+        and live via the SETTING_CHANGED subscription.)"""
+        get = self.gui._get_setting
+        pairs = (
+            ("_capture_screen_cb", "ENABLE_SCREEN_ANALYSIS", False),
+            ("_capture_auto_attach_cb", "AUTO_ATTACH_IMAGES", False),
+            ("_capture_camera_cb", "ENABLE_CAMERA_CAPTURE", False),
+            ("_show_thinking_cb", "SHOW_THINK_IN_GUI", False),
+            ("_hide_tags_cb", "HIDE_CHAT_TAGS", True),
+            ("_show_ts_cb", "SHOW_CHAT_TIMESTAMPS", True),
+            ("_show_sys_cb", "SHOW_SYSTEM_MESSAGES", False),
+        )
+        for attr, key, default in pairs:
+            w = getattr(self, attr, None)
+            if w is None:
+                continue
+            want = bool(get(key, default))
+            if w.isChecked() == want:
+                continue
+            w.blockSignals(True)
             try:
+                w.setChecked(want)
+            finally:
+                w.blockSignals(False)
+            # toggled was suppressed above — refresh the dot manually.
+            dot = self._toggle_dots.get(w)
+            if dot is not None:
+                self._style_toggle_dot(dot, want)
+
+    def _on_capture_toggle(self, key: str, value: bool):
+        # Route through SAVE_SETTING (not a bare settings.set) so the change emits
+        # SETTING_CHANGED — that's what reloads the chat for display toggles, wakes
+        # the capture controllers, and keeps the settings page in sync.
+        try:
+            self.gui.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": key, "value": bool(value)})
+        except Exception:
+            try:
+                self.gui.settings.set(key, bool(value))
                 self.gui.settings.save_settings()
             except Exception:
                 pass
-        except Exception:
-            try:
-                self.gui.settings[key] = bool(value)
-            except Exception:
-                pass
         self._refresh_debug_summary()
+
+    def _on_view_last_request(self) -> None:
+        """Open the last-request context viewer. Reuses the host view's handler
+        so the SavedMessages fallback lookup stays in one place."""
+        handler = getattr(self.gui, "_on_debug_view_last_context", None)
+        if callable(handler):
+            handler()
 
     def _on_reset_character(self) -> None:
         char_id = self._get_current_character_id()
@@ -1522,12 +1607,27 @@ class SandboxPage(QWidget):
         tags_cb.setChecked(bool(self.gui._get_setting("HIDE_CHAT_TAGS", True)))
         tags_cb.toggled.connect(lambda v: self._on_capture_toggle("HIDE_CHAT_TAGS", v))
         display_layout.addWidget(tags_cb)
+        self._hide_tags_cb = tags_cb
 
         ts_cb = QCheckBox(_("Показывать время сообщений", "Show timestamps"))
         ts_cb.setObjectName("SandboxCaptureToggle")
         ts_cb.setChecked(bool(self.gui._get_setting("SHOW_CHAT_TIMESTAMPS", True)))
         ts_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_CHAT_TIMESTAMPS", v))
         display_layout.addWidget(ts_cb)
+        self._show_ts_cb = ts_cb
+
+        sys_cb = QCheckBox(_("Показывать системные сообщения", "Show system messages"))
+        sys_cb.setObjectName("SandboxCaptureToggle")
+        sys_cb.setChecked(bool(self.gui._get_setting("SHOW_SYSTEM_MESSAGES", False)))
+        sys_cb.setToolTip(
+            _(
+                "Показывать системные/контекстные заметки (например «[Easel drawing]…») в чате. По умолчанию скрыты.",
+                "Show system/context notes (e.g. \"[Easel drawing]…\") in chat. Hidden by default.",
+            )
+        )
+        sys_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_SYSTEM_MESSAGES", v))
+        display_layout.addWidget(sys_cb)
+        self._show_sys_cb = sys_cb
         layout.addWidget(display_strip)
 
         # ── Контекст сессии ─────────────────────────────────────────────────

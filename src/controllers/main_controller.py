@@ -33,7 +33,6 @@ from utils.pip_installer import PipInstaller
 from core.events import get_event_bus, Events, Event, shutdown_event_bus
 
 from controllers.server_controller import ServerController
-from controllers.server_controller_old import ServerControllerOld
 
 
 class MainController:
@@ -144,21 +143,14 @@ class MainController:
         logger.notify("MainController подписался на события")
 
     def _init_server_controller(self):
-        use_new_api = self.settings.get('USE_NEW_API', True)
+        # Старый серверный API (ServerControllerOld / server_old.py) удалён —
+        # всегда используем новый. Настройка USE_NEW_API больше ни на что не
+        # влияет и оставлена только для совместимости со старыми settings.json.
+        if getattr(self, 'server_controller', None):
+            return
 
-        if hasattr(self, 'server_controller') and self.server_controller:
-            current_is_new = isinstance(self.server_controller, ServerController)
-            if (use_new_api and current_is_new) or (not use_new_api and not current_is_new):
-                return
-            self.server_controller.destroy()
-            self.server_controller = None
-
-        if use_new_api:
-            self.server_controller = ServerController()
-            logger.notify("ServerController (новый API) успешно инициализирован.")
-        else:
-            self.server_controller = ServerControllerOld()
-            logger.notify("ServerController (старый API) успешно инициализирован.")
+        self.server_controller = ServerController()
+        logger.notify("ServerController (новый API) успешно инициализирован.")
 
     def update_view(self, view):
         if not self.gui_controller:
@@ -180,14 +172,6 @@ class MainController:
         self.event_bus.subscribe(Events.GUI.CLOSE_LOADING_POPUP, self._on_close_loading_popup, weak=False)
 
         self.event_bus.subscribe(Events.Server.SET_DIALOG_ACTIVE, self._on_set_dialog_active, weak=False)
-        self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
-
-    def _on_setting_changed(self, event: Event):
-        key = event.data.get('key')
-
-        if key == 'USE_NEW_API':
-            logger.info("Обнаружено изменение настройки API, переинициализация ServerController...")
-            self._init_server_controller()
 
     def close_app(self):
         logger.info("Начинаем закрытие приложения...")

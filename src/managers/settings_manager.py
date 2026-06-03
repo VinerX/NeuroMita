@@ -173,9 +173,10 @@ class SettingsManager:
 def _angle_icon(kind: str, size: int = 10):
     """kind: 'right' | 'down'"""
     if qta is not None:
-        name = 'fa6s.angle-right' if kind == 'right' else 'fa6s.angle-down'
+        # Chevrons read more clearly as "expandable / expanded" than thin angles.
+        name = 'fa6s.chevron-right' if kind == 'right' else 'fa6s.chevron-down'
         try:
-            return qta.icon(name, color='#f0f0f0').pixmap(size, size)
+            return qta.icon(name, color='#ff9ed3').pixmap(size, size)
         except Exception:
             pass
 
@@ -218,21 +219,23 @@ class CollapsibleSection(QWidget):
 
         self.arrow_label = QLabel(self.header)
         self.arrow_label.setObjectName('CollapsibleArrow')
-        self.arrow_pix_right = _angle_icon('right', 10)
-        self.arrow_pix_down  = _angle_icon('down',  10)
+        self.arrow_pix_right = _angle_icon('right', 13)
+        self.arrow_pix_down  = _angle_icon('down',  13)
         self.arrow_label.setPixmap(self.arrow_pix_right)
-        self.arrow_label.setFixedWidth(11)
+        self.arrow_label.setFixedWidth(18)
+        self.arrow_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Category icon goes *before* the title (left of it), not pinned to the
+        # far right where it used to render as a cropped sliver.
+        self.icon_label = self._make_icon(icon_name) if icon_name else None
 
         self.title_label = QLabel(title, self.header, objectName='CollapsibleTitle')
+
         h.addWidget(self.arrow_label)
+        if self.icon_label is not None:
+            h.addWidget(self.icon_label)
         h.addWidget(self.title_label)
-
-        
         h.addStretch()
-
-        if icon_name:
-            h.addWidget(self._make_icon(icon_name))
-            h.addSpacing(8)
 
         self.header.setCursor(Qt.CursorShape.PointingHandCursor)
         self.header.mousePressEvent = self.toggle
@@ -248,10 +251,10 @@ class CollapsibleSection(QWidget):
         self.content_frame.hide()
 
     def _make_icon(self, name):
-        # немного юзлесс функция, обрезается и тому подобное.
         lbl = QLabel(self.header)
-        lbl.setPixmap(qta.icon(name, color='#f0f0f0').pixmap(15, 15) if qta is not None else QPixmap(15, 15))
-        lbl.setFixedSize(18, 18)
+        lbl.setObjectName('CollapsibleIcon')
+        lbl.setPixmap(qta.icon(name, color='#ffd2ec').pixmap(15, 15) if qta is not None else QPixmap(15, 15))
+        lbl.setFixedSize(20, 20)
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         return lbl
 

@@ -74,7 +74,7 @@ def setup_data_settings_controls(self, parent):
         "to FineTuneData/ for later fine-tuning."
     ))
     try:
-        chk.setChecked(bool(self.settings.get("FINETUNE_COLLECTION_ENABLED", False)))
+        chk.setChecked(bool(self.settings.get("FINETUNE_COLLECTION_ENABLED", True)))
     except Exception:
         pass
 
@@ -94,6 +94,85 @@ def setup_data_settings_controls(self, parent):
 
     chk.stateChanged.connect(_on_toggle)
     parent.addWidget(chk)
+
+    # ── Record limit (keep last N) + unlimited ────────────────────────────────
+    # Default keeps only the last 50 samples so the latest requests stay easy to
+    # inspect/debug without the store growing unbounded. "Без лимита" disables
+    # the cap for accumulating a full fine-tuning corpus.
+    limit_row = QHBoxLayout()
+    limit_row.setSpacing(8)
+    limit_row.setContentsMargins(0, 2, 0, 2)
+
+    limit_lbl = QLabel(_("Хранить последних:", "Keep last:"))
+    limit_lbl.setStyleSheet("color: #bca9bb; font-size: 11px; background: transparent; border: none;")
+    limit_row.addWidget(limit_lbl)
+
+    from PyQt6.QtWidgets import QSpinBox
+    limit_spin = QSpinBox()
+    limit_spin.setRange(1, 1_000_000)
+    limit_spin.setFixedWidth(110)
+    try:
+        limit_spin.setValue(int(self.settings.get("FINETUNE_MAX_RECORDS", 50) or 50))
+    except Exception:
+        limit_spin.setValue(50)
+    limit_spin.setSuffix(_(" записей", " records"))
+    limit_spin.setToolTip(_(
+        "Сколько последних записей хранить. Старые удаляются автоматически.",
+        "How many most-recent records to keep. Older ones are pruned automatically."
+    ))
+    limit_spin.setStyleSheet(
+        "QSpinBox { background: transparent; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; "
+        "color: #f3edf6; font-size: 11px; padding: 5px 8px; }"
+    )
+    limit_row.addWidget(limit_spin)
+
+    unlimited_chk = QCheckBox(_("Без лимита", "Unlimited"))
+    unlimited_chk.setStyleSheet("background: transparent; border: none; color: #bca9bb; font-size: 11px;")
+    unlimited_chk.setToolTip(_(
+        "Хранить все записи без ограничения. Может занять много места.",
+        "Keep all records with no cap. May use a lot of disk space."
+    ))
+    try:
+        unlimited_chk.setChecked(bool(self.settings.get("FINETUNE_UNLIMITED", False)))
+    except Exception:
+        pass
+    limit_row.addWidget(unlimited_chk)
+    limit_row.addStretch()
+
+    def _apply_limit_now():
+        try:
+            from managers.finetune_collector import FineTuneCollector
+            fc = FineTuneCollector.instance
+            if fc:
+                fc._enforce_limit()
+        except Exception:
+            pass
+
+    def _on_limit_changed(value):
+        try:
+            self._save_setting("FINETUNE_MAX_RECORDS", int(value))
+        except Exception:
+            pass
+        if not unlimited_chk.isChecked():
+            _apply_limit_now()
+
+    def _on_unlimited_toggled(state):
+        val = state == Qt.CheckState.Checked.value
+        try:
+            self._save_setting("FINETUNE_UNLIMITED", val)
+        except Exception:
+            pass
+        limit_spin.setDisabled(val)
+        if not val:
+            _apply_limit_now()
+
+    limit_spin.valueChanged.connect(_on_limit_changed)
+    unlimited_chk.stateChanged.connect(_on_unlimited_toggled)
+    limit_spin.setDisabled(unlimited_chk.isChecked())
+
+    limit_container = SettingsBodyWidget()
+    limit_container.setLayout(limit_row)
+    parent.addWidget(limit_container)
 
     # ── Storage path with folder picker ──────────────────────────────────────
     path_row = QHBoxLayout()

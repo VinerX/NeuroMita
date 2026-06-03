@@ -184,8 +184,8 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
         import json
         import os
         import traceback
-        from PyQt6.QtWidgets import QMessageBox
         from ui.dialogs.context_viewer_dialog import ContextViewerDialog
+        from ui.dialogs.styled_message import show_styled_message
 
         data = None
 
@@ -198,7 +198,7 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
                     samples = fc.load_samples()
                     data = next((s for s in samples if s.get("id") == sample_id), None)
             except Exception as e:
-                QMessageBox.critical(None, _("Ошибка", "Error"), str(e))
+                show_styled_message(widget, _("Ошибка", "Error"), str(e), level="error")
                 return
 
         # 2. Fallback — последний сохранённый запрос (всегда доступен)
@@ -218,31 +218,34 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
                     pass
 
         if data is None:
-            QMessageBox.warning(
-                None,
+            show_styled_message(
+                widget,
                 _("Не найдено", "Not found"),
                 _("Данные не найдены. Убедитесь, что хотя бы одно сообщение было отправлено.",
-                  "No data found. Make sure at least one message has been sent.")
+                  "No data found. Make sure at least one message has been sent."),
+                level="warning",
             )
             return
 
         if used_fallback:
-            QMessageBox.information(
-                None,
+            show_styled_message(
+                widget,
                 _("Данные конкретного сообщения недоступны", "Message-specific data not available"),
                 _("Сбор данных для дообучения был отключён для этого сообщения.\n"
                   "Показан последний сохранённый запрос — он может не совпадать с этим сообщением.",
                   "Finetune collection was disabled for this message.\n"
-                  "Showing the last saved request — it may not match this message.")
+                  "Showing the last saved request — it may not match this message."),
+                level="info",
             )
 
         try:
             dlg = ContextViewerDialog(data, parent=widget, initial_tab=initial_tab)
             dlg.exec()
         except Exception as e:
-            QMessageBox.critical(
-                None, _("Ошибка открытия диалога", "Dialog error"),
-                f"{e}\n\n{traceback.format_exc()}"
+            show_styled_message(
+                widget, _("Ошибка открытия диалога", "Dialog error"),
+                f"{e}\n\n{traceback.format_exc()}",
+                level="error",
             )
 
     def on_view_response_context(sample_id: str):
@@ -313,6 +316,11 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         if isinstance(raw, str) and raw.lstrip().startswith(_SYS_PREFIX):
             role = "system"
 
+    # System notes (engine/context messages like "[Easel drawing]…") are hidden
+    # by default — they aren't part of the conversation. Optional via the setting.
+    if role == "system" and not bool(gui._get_setting("SHOW_SYSTEM_MESSAGES", False)):
+        return
+
     text_parts = []
     speaker_name = ""
     images = []
@@ -337,7 +345,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
     if not speaker_name:
         if role == "user": speaker_name = _("Вы", "You")
         elif role == "assistant" and hasattr(gui, "_get_character_name"): speaker_name = gui._get_character_name()
-        elif role in ("system", "event"): speaker_name = _("Система", "System")
+        elif role in ("system", "event"): speaker_name = _("ⓘ Система", "ⓘ System")
 
     full_text = "".join(text_parts).strip()
     has_any_images = bool(images or ui_images)
@@ -354,6 +362,9 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         full_text = re.sub(r' +', ' ', full_text).strip()
 
     show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
+    # System/event notes read cleaner without a timestamp row.
+    if role in ("system", "event"):
+        show_ts = False
     mode = _struct_mode(gui)
     _pending_struct_panel = None
     
