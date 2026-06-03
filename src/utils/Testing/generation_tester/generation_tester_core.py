@@ -242,6 +242,9 @@ class GenerationTestRuntime:
         src_last_ctx = self.source_base_dir / "SavedMessages" / "last_request_context.json"
         if src_last_ctx.exists():
             shutil.copy2(src_last_ctx, sandbox_dir / "SavedMessages" / "last_request_context.json")
+        src_last_gen = self.source_base_dir / "SavedMessages" / "last_generation_input.json"
+        if src_last_gen.exists():
+            shutil.copy2(src_last_gen, sandbox_dir / "SavedMessages" / "last_generation_input.json")
         return sandbox_dir
 
     def _set_runtime_env(self) -> None:
@@ -252,6 +255,10 @@ class GenerationTestRuntime:
     @property
     def last_request_context_path(self) -> Path:
         return self.runtime_base_dir / "SavedMessages" / "last_request_context.json"
+
+    @property
+    def last_generation_input_path(self) -> Path:
+        return self.runtime_base_dir / "SavedMessages" / "last_generation_input.json"
 
     def get_current_character_profile(self) -> Dict[str, Any]:
         res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
@@ -308,6 +315,21 @@ class GenerationTestRuntime:
             return
         _safe_mkdir(dst_path.parent)
         shutil.copy2(self.last_request_context_path, dst_path)
+
+    def read_last_generation_input(self) -> Dict[str, Any]:
+        if not self.last_generation_input_path.exists():
+            return {}
+        try:
+            return _read_json(self.last_generation_input_path)
+        except Exception as e:
+            logger.warning(f"[GenerationTester] Failed to read last generation input: {e}")
+            return {}
+
+    def snapshot_last_generation_input(self, dst_path: Path) -> None:
+        if not self.last_generation_input_path.exists():
+            return
+        _safe_mkdir(dst_path.parent)
+        shutil.copy2(self.last_generation_input_path, dst_path)
 
     def generate_turn(
         self,
@@ -381,6 +403,45 @@ class GenerationTestRuntime:
             "response_provider": getattr(response, "provider_name", None),
             "usage": _usage_from_response(response),
             "last_request_context": replay_context,
+        }
+
+    def replay_last_generation_input(
+        self,
+        *,
+        timeout: float = 600.0,
+    ) -> Dict[str, Any]:
+        saved = self.read_last_generation_input()
+        incoming_event = saved.get("incoming_event")
+        if not isinstance(incoming_event, dict):
+            raise RuntimeError("last_generation_input.json has no valid incoming_event object")
+
+        payload = dict(incoming_event)
+        payload.pop("stream_callback", None)
+
+        char_id = str(payload.get("character_id") or payload.get("char_id") or payload.get("character") or "")
+        if char_id:
+            self.set_current_character(char_id)
+
+        started_at = datetime.utcnow().isoformat() + "Z"
+        result_list = self.event_bus.emit_and_wait(
+            Events.Model.GENERATE_RESPONSE,
+            payload,
+            timeout=timeout,
+        )
+        result = result_list[0] if result_list else None
+        token_stats_res = self.event_bus.emit_and_wait(Events.Model.GET_TOKEN_STATS, timeout=2.0)
+        token_stats = token_stats_res[0] if token_stats_res else {}
+        last_ctx = self.read_last_request_context()
+        latest_input = self.read_last_generation_input()
+        return {
+            "started_at": started_at,
+            "input": payload,
+            "character_id": char_id or None,
+            "preset_id": payload.get("preset_id"),
+            "result": result,
+            "token_stats": token_stats if isinstance(token_stats, dict) else {},
+            "last_request_context": last_ctx,
+            "last_generation_input": latest_input,
         }
 
 

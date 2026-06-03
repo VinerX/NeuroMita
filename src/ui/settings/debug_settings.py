@@ -116,3 +116,14 @@ def setup_debug_panel_controls(view, parent_layout):
     ctx_row.addWidget(ctx_req_btn)
     ctx_row.addWidget(ctx_resp_btn)
     parent_layout.addLayout(ctx_row)
+
+    capture_cb = QCheckBox(_('Сохранять вход генерации', 'Capture generation input'))
+    capture_cb.setToolTip(
+        _('Сохранять вход события GENERATE_RESPONSE до сборки промпта: сырой payload, состояние перед BUILD_PROMPT и краткую сводку по изображениям.',
+          'Save GENERATE_RESPONSE ingress before prompt build: raw payload, pre-BUILD_PROMPT state, and compact image summaries.')
+    )
+    capture_cb.setChecked(bool(view._get_setting("DEBUG_CAPTURE_GENERATION_INPUT_ENABLED", False)))
+    capture_cb.toggled.connect(
+        lambda checked: view._save_setting("DEBUG_CAPTURE_GENERATION_INPUT_ENABLED", checked)
+    )
+    parent_layout.addWidget(capture_cb)

@@ -243,6 +243,91 @@ class ModelController:
     def _on_get_game_state(self, event: Event):
         return self.game_state.to_prompt_dict()
 
+    def _summarize_image_data_for_capture(self, image_data: Any) -> dict[str, Any]:
+        items = image_data if isinstance(image_data, list) else []
+        summary_items: list[dict[str, Any]] = []
+        for idx, item in enumerate(items):
+            if isinstance(item, str):
+                summary_items.append({
+                    "index": idx,
+                    "kind": "str",
+                    "chars": len(item),
+                    "preview": item[:80],
+                })
+                continue
+            if isinstance(item, dict):
+                summary_items.append({
+                    "index": idx,
+                    "kind": "dict",
+                    "keys": sorted(str(k) for k in item.keys()),
+                    "type": str(item.get("type") or ""),
+                    "mime_type": str(item.get("mime_type") or item.get("mimeType") or ""),
+                    "chars": len(str(item.get("data") or item.get("image") or "")),
+                })
+                continue
+            summary_items.append({
+                "index": idx,
+                "kind": type(item).__name__,
+                "repr": repr(item)[:120],
+            })
+        return {
+            "count": len(items),
+            "items": summary_items,
+        }
+
+    def _capture_generation_input(
+        self,
+        *,
+        raw_event_data: dict,
+        char_id: str,
+        char_name: str,
+        event_type: str,
+        preset_id_override: Any,
+        policy: RequestPolicy,
+        build_prompt_payload: dict,
+        original_image_data: Any,
+        image_data_after_processing: Any,
+        image_descriptions: dict[str, str] | None,
+    ) -> None:
+        try:
+            from managers.generation_input_collector import GenerationInputCollector
+
+            collector = GenerationInputCollector.instance
+            if collector is None:
+                collector = GenerationInputCollector()
+                GenerationInputCollector.instance = collector
+            if not collector.is_enabled():
+                return
+
+            incoming_event = copy.deepcopy(raw_event_data or {})
+            if "stream_callback" in incoming_event:
+                incoming_event["stream_callback"] = "<omitted>"
+
+            build_prompt_copy = {
+                key: copy.deepcopy(value)
+                for key, value in (build_prompt_payload or {}).items()
+                if key != "character_ref"
+            }
+            build_prompt_copy["image_data"] = self._summarize_image_data_for_capture(
+                build_prompt_copy.get("image_data")
+            )
+
+            record = {
+                "character_id": char_id,
+                "character_name": char_name,
+                "event_type": event_type,
+                "preset_id_override": preset_id_override,
+                "policy": policy.to_dict(),
+                "incoming_event": incoming_event,
+                "original_image_data": self._summarize_image_data_for_capture(original_image_data),
+                "processed_image_data": self._summarize_image_data_for_capture(image_data_after_processing),
+                "image_descriptions": copy.deepcopy(image_descriptions or {}),
+                "build_prompt_payload": build_prompt_copy,
+            }
+            collector.save_capture(record)
+        except Exception as e:
+            logger.warning(f"[ModelController] Failed to capture generation input: {e}")
+
     # ---------------------------------------------------------------------
     # History UI
     # ---------------------------------------------------------------------
@@ -895,6 +980,10 @@ class ModelController:
 
     def _on_generate_response(self, event: Event):
         data = event.data or {}
+        try:
+            original_event_data = copy.deepcopy(data)
+        except Exception:
+            original_event_data = dict(data)
 
         user_input = data.get("user_input", "") or ""
         visible_user_input = user_input
@@ -1127,30 +1216,44 @@ class ModelController:
             except Exception as _desc_exc:
                 logger.warning(f"[ModelController] Image description fallback failed: {_desc_exc}")
 
+        build_prompt_payload = {
+            "character_id": char_id,
+            "character_ref": char,
+            "event_type": event_type,
+            "user_input": user_input,
+            "system_input": system_input,
+            "hidden_user_context": hidden_user_context,
+            "image_data": image_data,
+            "memory_limit": memory_limit,
+            "is_game_master": is_game_master,
+            "save_missed_history": save_missed_history,
+            "image_quality": image_quality_cfg,
+            "separate_prompts": separate_prompts,
+            "extra_system_infos": extra_system_infos,
+            "game_state": game_state,
+            "disable_history_compression": disable_history_compression,
+            "sender": sender,
+            "participants": participants,
+            "policy": policy.to_dict(),
+            "capabilities": effective_capabilities,
+        }
+        self._capture_generation_input(
+            raw_event_data=original_event_data,
+            char_id=char_id,
+            char_name=char_name,
+            event_type=event_type,
+            preset_id_override=preset_id_override,
+            policy=policy,
+            build_prompt_payload=build_prompt_payload,
+            original_image_data=original_image_data,
+            image_data_after_processing=image_data,
+            image_descriptions=image_descriptions,
+        )
+
         try:
             prompt_res = self.event_bus.emit_and_wait(
                 Events.Prompt.BUILD_PROMPT,
-                {
-                    "character_id": char_id,
-                    "character_ref": char,
-                    "event_type": event_type,
-                    "user_input": user_input,
-                    "system_input": system_input,
-                    "hidden_user_context": hidden_user_context,
-                    "image_data": image_data,
-                    "memory_limit": memory_limit,
-                    "is_game_master": is_game_master,
-                    "save_missed_history": save_missed_history,
-                    "image_quality": image_quality_cfg,
-                    "separate_prompts": separate_prompts,
-                    "extra_system_infos": extra_system_infos,
-                    "game_state": game_state,
-                    "disable_history_compression": disable_history_compression,
-                    "sender": sender,
-                    "participants": participants,
-                    "policy": policy.to_dict(),
-                    "capabilities": effective_capabilities,
-                },
+                build_prompt_payload,
                 timeout=10.0
             )
         except Exception as e:

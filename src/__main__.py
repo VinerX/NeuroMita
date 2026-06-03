@@ -409,7 +409,9 @@ if __name__ == "__main__":
         # Инициализация сборщика данных для дообучения
         try:
             from managers.finetune_collector import FineTuneCollector
+            from managers.generation_input_collector import GenerationInputCollector
             FineTuneCollector.instance = FineTuneCollector()
+            GenerationInputCollector.instance = GenerationInputCollector()
             logger.info("FineTuneCollector инициализирован")
         except Exception as _ft_init_err:
             logger.warning(f"FineTuneCollector не инициализирован: {_ft_init_err}")
