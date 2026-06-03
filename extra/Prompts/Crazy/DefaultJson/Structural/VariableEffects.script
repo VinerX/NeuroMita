@@ -17,7 +17,7 @@ IF Love == None THEN
     SET Love = 5
     SET output = output + "Love level: Not yet determined\n" // Или какое-то другое значение по умолчанию
 ELSE
-    SET output = output + "Love lvl: " + str(Love) + "\n"
+    SET output = output + "Love level is available in the runtime behavior state.\n"
 ENDIF
 
 SET relation_text = relation_text + output

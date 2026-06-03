@@ -174,6 +174,40 @@ class PromptController:
         return stable_system_messages, volatile_system_messages, dsl_system_infos
 
     @staticmethod
+    def _build_behavior_state_message(character) -> Optional[Dict[str, str]]:
+        try:
+            attitude = float(character.get_variable("attitude", 60.0))
+            boredom = float(character.get_variable("boredom", 10.0))
+            stress = float(character.get_variable("stress", 5.0))
+        except Exception:
+            return None
+
+        lines = [
+            "[Behavior State]",
+            f"Attitude: {attitude:.1f}",
+            f"Boredom: {boredom:.1f}",
+            f"Stress: {stress:.1f}",
+        ]
+
+        try:
+            for param in getattr(character, "custom_params", []) or []:
+                if not isinstance(param, dict):
+                    continue
+                name = str(param.get("name") or "").strip()
+                if name.lower() != "love":
+                    continue
+                love_value = character.get_variable(name, param.get("default", param.get("initial", 0.0)))
+                if isinstance(love_value, float):
+                    lines.append(f"Love: {love_value:.1f}")
+                else:
+                    lines.append(f"Love: {love_value}")
+                break
+        except Exception:
+            pass
+
+        return {"role": "system", "content": "\n".join(lines)}
+
+    @staticmethod
     def _is_volatile_system_block(block: Any) -> bool:
         if not isinstance(block, str):
             return False
@@ -296,6 +330,10 @@ class PromptController:
                 messages.append({"role": "system", "content": sys_txt})
 
         messages.extend(volatile_system_messages)
+
+        behavior_state_message = self._build_behavior_state_message(character)
+        if behavior_state_message:
+            messages.append(behavior_state_message)
 
         for info in extra_system_infos:
             if isinstance(info, dict):
