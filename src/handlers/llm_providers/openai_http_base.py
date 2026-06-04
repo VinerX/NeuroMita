@@ -78,16 +78,54 @@ class OpenAIHTTPProviderBase(BaseProvider):
             lp = u["logprobs"]
             out["logprobs"] = lp if isinstance(lp, bool) else bool(lp)
 
-        # Send thinking only when explicitly enabled.
-        # Never send {"type": "disabled"} — providers that don't support thinking reject it (e.g. Mistral 422).
-        if "enable_thinking" in u and u["enable_thinking"]:
-            budget = int(u.get("gemini_thinking_budget") or u.get("thinking_budget") or 0)
-            thinking_obj: Dict[str, Any] = {"type": "enabled"}
-            if budget > 0:
-                thinking_obj["budget_tokens"] = budget
-            out["thinking"] = thinking_obj
-
+        # Reasoning/thinking is serialized separately in _apply_reasoning, driven by
+        # the protocol's declared capabilities (not by the model name).
         return out
+
+    @staticmethod
+    def _apply_reasoning(payload: Dict[str, Any], req: LLMRequest) -> None:
+        """Serialize the reasoning/thinking toggle into the request payload.
+
+        The transport is declared by the protocol via capabilities["reasoning_control"]
+        rather than guessed from the model name:
+          - "openrouter": OpenRouter's unified `reasoning` map (safe to send to any
+            OpenRouter model — unsupported models normalize it away).
+          - "deepseek": the native DeepSeek `thinking` object, which defaults to
+            "enabled" and must be explicitly disabled to skip reasoning.
+          - otherwise (legacy/unknown): only ever ENABLE via an Anthropic-style
+            `thinking` object; never emit a disabled flag, since some providers
+            reject it (e.g. Mistral 422).
+
+        enable_thinking is tri-state: absent -> leave the provider default untouched;
+        True -> enable; False -> disable.
+        """
+        extra = req.extra or {}
+        if "enable_thinking" not in extra:
+            return
+
+        enabled = bool(extra.get("enable_thinking"))
+        try:
+            budget = int(extra.get("thinking_budget") or extra.get("gemini_thinking_budget") or 0)
+        except Exception:
+            budget = 0
+
+        transport = str((req.capabilities or {}).get("reasoning_control") or "")
+
+        if transport == "openrouter":
+            reasoning: Dict[str, Any] = {"enabled": enabled}
+            if enabled and budget > 0:
+                reasoning["max_tokens"] = budget
+            payload["reasoning"] = reasoning
+        elif transport == "deepseek":
+            thinking: Dict[str, Any] = {"type": "enabled" if enabled else "disabled"}
+            if enabled and budget > 0:
+                thinking["budget_tokens"] = budget
+            payload["thinking"] = thinking
+        elif enabled:
+            thinking = {"type": "enabled"}
+            if budget > 0:
+                thinking["budget_tokens"] = budget
+            payload["thinking"] = thinking
 
     def _supports_structured_output(self, req: LLMRequest) -> bool:
         caps = req.capabilities or {}
@@ -101,6 +139,8 @@ class OpenAIHTTPProviderBase(BaseProvider):
             "messages": messages,
         }
         payload.update(self._map_unified_params(req.extra or {}, model_to_use))
+        self._apply_reasoning(payload, req)
+
         if req.protocol_id == "openrouter_default":
             routing = normalize_openrouter_routing((req.extra or {}).get("openrouter_routing"))
             if routing:
