@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Optional, Type, Any
+from typing import Optional, Type, Any, get_args, get_origin
 
 from main_logger import logger
 from schemas.structured_response import StructuredResponse, ResponseSegment
@@ -200,7 +200,7 @@ def _validate_with_coerce(data: dict, *, model_cls: Type[StructuredResponse]) ->
         return model_cls.model_validate(data)
     except Exception as first_error:
         try:
-            data = _schema_aware_coerce(data)
+            data = _schema_aware_coerce(data, model_cls=model_cls)
             return model_cls.model_validate(data)
         except Exception as second_error:
             raise StructuredResponseParseError(
@@ -209,7 +209,29 @@ def _validate_with_coerce(data: dict, *, model_cls: Type[StructuredResponse]) ->
             ) from first_error
 
 
-def _schema_aware_coerce(data: dict) -> dict:
+def _extract_custom_field_names(model_cls: Type[StructuredResponse]) -> set[str]:
+    custom_fields = getattr(model_cls, "model_fields", {}).get("custom_fields")
+    if custom_fields is None:
+        return set()
+
+    annotation = getattr(custom_fields, "annotation", None)
+    if annotation is None:
+        return set()
+
+    candidates = [annotation]
+    origin = get_origin(annotation)
+    if origin is not None:
+        candidates.extend(arg for arg in get_args(annotation) if arg is not type(None))
+
+    for candidate in candidates:
+        fields = getattr(candidate, "model_fields", None)
+        if isinstance(fields, dict):
+            return {str(name) for name in fields.keys()}
+
+    return set()
+
+
+def _schema_aware_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> dict:
     import copy
     data = copy.deepcopy(data)
 
@@ -232,6 +254,25 @@ def _schema_aware_coerce(data: dict) -> dict:
         if isinstance(value, list):
             return [str(item) for item in value if item is not None]
         return [str(value)]
+
+    custom_field_names = _extract_custom_field_names(model_cls)
+    if custom_field_names:
+        custom_fields = data.get("custom_fields")
+        if not isinstance(custom_fields, dict):
+            custom_fields = {}
+
+        hoisted_fields = []
+        for field_name in custom_field_names:
+            if field_name in data and field_name not in custom_fields:
+                custom_fields[field_name] = data.pop(field_name)
+                hoisted_fields.append(field_name)
+
+        if hoisted_fields:
+            data["custom_fields"] = custom_fields
+            logger.warning(
+                "[StructuredResponseParser] Hoisted top-level custom fields into custom_fields: %s",
+                ", ".join(sorted(hoisted_fields)),
+            )
 
     # 1. Приведение числовых статов
     for field in ("attitude_change", "boredom_change", "stress_change"):
@@ -290,6 +331,22 @@ def _schema_aware_coerce(data: dict) -> dict:
         if isinstance(seg0, dict):
             if not data.get("custom_fields") and "custom_fields" in seg0:
                 data["custom_fields"] = seg0.pop("custom_fields")
+
+            custom_fields = data.get("custom_fields")
+            if custom_field_names and not isinstance(custom_fields, dict):
+                custom_fields = {}
+            if custom_field_names and isinstance(custom_fields, dict):
+                hoisted_segment_fields = []
+                for field_name in custom_field_names:
+                    if field_name in seg0 and field_name not in custom_fields:
+                        custom_fields[field_name] = seg0.pop(field_name)
+                        hoisted_segment_fields.append(field_name)
+                if hoisted_segment_fields:
+                    data["custom_fields"] = custom_fields
+                    logger.warning(
+                        "[StructuredResponseParser] Hoisted segment custom fields into custom_fields: %s",
+                        ", ".join(sorted(hoisted_segment_fields)),
+                    )
 
             for stat_field in ("attitude_change", "boredom_change", "stress_change"):
                 if stat_field not in data and stat_field in seg0:
