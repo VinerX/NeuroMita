@@ -283,6 +283,11 @@ class EditorMixin:
         if not self.current_preset_id:
             return
 
+        state = self._build_preset_state()
+
+        self.event_bus.emit(Events.ApiPresets.SAVE_PRESET_STATE, {"id": int(self.current_preset_id), "state": state})
+
+    def _build_preset_state(self) -> dict:
         v = self.view
         state = {
             "url": v.api_url_row.text(),
@@ -293,10 +298,35 @@ class EditorMixin:
 
         base = self._parse_base(v.template_combo.currentData())
         if base is None:
-            pid = self._current_protocol_id_ui() or self._protocol_default_id
-            state["protocol_id"] = pid
+            state["protocol_id"] = self._current_protocol_id_ui() or self._protocol_default_id
 
-        self.event_bus.emit(Events.ApiPresets.SAVE_PRESET_STATE, {"id": int(self.current_preset_id), "state": state})
+        return state
+
+    def _build_current_preset_payload(self, *, preset_id: int | None, name: str | None = None) -> dict:
+        v = self.view
+        data = dict(self.current_preset_data or {})
+        data["id"] = preset_id
+        if name is not None:
+            data["name"] = str(name).strip()
+        data["url"] = v.api_url_row.text()
+        data["default_model"] = v.api_model_row.text()
+        data["key"] = v.api_key_row.text()
+        data["reserve_keys"] = [k.strip() for k in v.reserve_keys_row.text().splitlines() if k.strip()]
+
+        base = self._parse_base(v.template_combo.currentData())
+        data["base"] = base
+
+        if base is None:
+            data["protocol_id"] = self._current_protocol_id_ui() or self._protocol_default_id
+            data["protocol_overrides"] = dict(self._protocol_overrides or {})
+        else:
+            data.pop("protocol_id", None)
+            data.pop("protocol_overrides", None)
+            data["url"] = ""
+
+        data["generation_overrides"] = self._read_generation_overrides()
+        data["openrouter_routing"] = self._read_openrouter_routing()
+        return data
 
     def _toggle_key_visibility(self) -> None:
         v = self.view
@@ -363,31 +393,8 @@ class EditorMixin:
         if not self.current_preset_id or self.current_preset_id not in self.custom_presets_list_items:
             return
 
-        v = self.view
         pid = int(self.current_preset_id)
-
-        data = dict(self.current_preset_data or {})
-        data["id"] = pid
-        data["url"] = v.api_url_row.text()
-        data["default_model"] = v.api_model_row.text()
-        data["key"] = v.api_key_row.text()
-        data["reserve_keys"] = [k.strip() for k in v.reserve_keys_row.text().splitlines() if k.strip()]
-
-        base = self._parse_base(v.template_combo.currentData())
-        data["base"] = base
-
-        if base is None:
-            data["protocol_id"] = self._current_protocol_id_ui() or self._protocol_default_id
-            data["protocol_overrides"] = dict(self._protocol_overrides or {})
-        else:
-            if "protocol_id" in data:
-                del data["protocol_id"]
-            if "protocol_overrides" in data:
-                del data["protocol_overrides"]
-            data["url"] = ""
-
-        data["generation_overrides"] = self._read_generation_overrides()
-        data["openrouter_routing"] = self._read_openrouter_routing()
+        data = self._build_current_preset_payload(preset_id=pid)
 
         def _call():
             res = self.event_bus.emit_and_wait(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": data}, timeout=2.0)
@@ -405,6 +412,49 @@ class EditorMixin:
                 QTimer.singleShot(0, lambda: self._select_custom_preset(nxt))
 
         self._bus_call_async(_call, _apply, name="save_preset")
+
+    def _copy_custom_preset_async(self) -> None:
+        v = self.view
+        cur_item = v.custom_presets_list.currentItem()
+        if not isinstance(cur_item, CustomPresetListItem):
+            return
+
+        old_name = str(cur_item.base_name or "").strip()
+        suggested_name = f"{old_name} Copy" if old_name else "Preset Copy"
+        new_name, ok = QInputDialog.getText(
+            v,
+            _("Скопировать пресет", "Copy preset"),
+            _("Название копии:", "Copy name:"),
+            text=suggested_name,
+        )
+        if not ok or not str(new_name or "").strip():
+            return
+
+        payload = self._build_current_preset_payload(
+            preset_id=None,
+            name=str(new_name).strip(),
+        )
+        state = self._build_preset_state()
+
+        def _call():
+            res = self.event_bus.emit_and_wait(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": payload}, timeout=2.0)
+            new_id = res[0] if res else None
+            if isinstance(new_id, int):
+                self.event_bus.emit(Events.ApiPresets.SAVE_PRESET_STATE, {"id": int(new_id), "state": state})
+            return new_id
+
+        def _apply(new_id):
+            if not isinstance(new_id, int):
+                QMessageBox.warning(
+                    v,
+                    _("Ошибка", "Error"),
+                    _("Не удалось скопировать пресет.", "Failed to copy preset."),
+                )
+                return
+            self.reload_presets_async()
+            QTimer.singleShot(200, lambda: self._select_custom_preset(int(new_id)))
+
+        self._bus_call_async(_call, _apply, name="copy_preset")
 
     def _add_custom_preset_async(self) -> None:
         logger.info("[API UI] add preset clicked")

@@ -73,6 +73,14 @@ def build_api_settings_ui(self, parent_layout):
     self.rename_preset_btn.setFixedSize(28, 28)
     self.rename_preset_btn.setIconSize(QSize(14, 14))
 
+    self.copy_preset_btn = QPushButton()
+    self.copy_preset_btn.setObjectName("CopyPresetButton")
+    self.copy_preset_btn.setIcon(qta.icon('fa5s.copy', color='#e6e6e6'))
+    self.copy_preset_btn.setToolTip(_("Скопировать пресет", "Copy preset"))
+    self.copy_preset_btn.setEnabled(False)
+    self.copy_preset_btn.setFixedSize(28, 28)
+    self.copy_preset_btn.setIconSize(QSize(14, 14))
+
     self.move_up_btn = QPushButton()
     self.move_up_btn.setObjectName("MoveUpButton")
     self.move_up_btn.setIcon(qta.icon('fa5s.arrow-up', color='#e6e6e6'))
@@ -92,6 +100,7 @@ def build_api_settings_ui(self, parent_layout):
     buttons_layout.addWidget(self.add_preset_btn)
     buttons_layout.addWidget(self.remove_preset_btn)
     buttons_layout.addWidget(self.rename_preset_btn)
+    buttons_layout.addWidget(self.copy_preset_btn)
     buttons_layout.addSpacing(6)
     buttons_layout.addWidget(self.move_up_btn)
     buttons_layout.addWidget(self.move_down_btn)

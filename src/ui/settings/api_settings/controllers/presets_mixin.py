@@ -111,6 +111,7 @@ class PresetsMixin:
         if not isinstance(cur_item, Item):
             v.remove_preset_btn.setEnabled(False)
             v.rename_preset_btn.setEnabled(False)
+            v.copy_preset_btn.setEnabled(False)
             v.move_up_btn.setEnabled(False)
             v.move_down_btn.setEnabled(False)
             v.api_settings_container.setVisible(False)
@@ -138,6 +139,7 @@ class PresetsMixin:
 
         v.remove_preset_btn.setEnabled(True)
         v.rename_preset_btn.setEnabled(True)
+        v.copy_preset_btn.setEnabled(True)
         v.move_up_btn.setEnabled(v.custom_presets_list.currentRow() > 0)
         v.move_down_btn.setEnabled(v.custom_presets_list.currentRow() < v.custom_presets_list.count() - 1)
 
