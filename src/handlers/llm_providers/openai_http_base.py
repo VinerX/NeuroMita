@@ -41,6 +41,19 @@ class OpenAIHTTPProviderBase(BaseProvider):
             headers["Authorization"] = f"Bearer {req.api_key}"
         return headers
 
+    @staticmethod
+    def _stringify_error(value: Any, limit: int = 400) -> str:
+        try:
+            if isinstance(value, str):
+                text = value
+            else:
+                text = json.dumps(value, ensure_ascii=False)
+        except Exception:
+            text = str(value)
+
+        text = (text or "").strip()
+        return text[:limit]
+
     def _preprocess_messages(self, req: LLMRequest) -> List[Dict[str, Any]]:
         allowed_keys = {
             "role",
@@ -169,16 +182,25 @@ class OpenAIHTTPProviderBase(BaseProvider):
         headers = self._headers(req)
         if req.stream:
             payload["stream"] = True
-        return requests.post(req.api_url, headers=headers, json=payload, stream=req.stream)
+        timeout = float((req.extra or {}).get("http_timeout_seconds") or 120)
+        return requests.post(req.api_url, headers=headers, json=payload, stream=req.stream, timeout=timeout)
 
     def generate(self, req: LLMRequest) -> LLMResponse:
         if req.depth > 3:
             logger.error(f"[{self.name}] Too deep tool recursion.")
-            return LLMResponse(text=None, provider_name=self.name)
+            return LLMResponse(
+                text=None,
+                provider_name=self.name,
+                error_message="Too deep tool recursion.",
+            )
 
         if not req.api_url:
             logger.error(f"[{self.name}] api_url is empty.")
-            return LLMResponse(text=None, provider_name=self.name)
+            return LLMResponse(
+                text=None,
+                provider_name=self.name,
+                error_message="Provider api_url is empty.",
+            )
 
         model_to_use = req.model
         msgs = self._preprocess_messages(req)
@@ -209,8 +231,14 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 err = resp.json()
             except Exception:
                 err = resp.text
-            logger.error(f"[{self.name}] HTTP {resp.status_code}: {err}")
-            return LLMResponse(text=None, model=model_to_use, provider_name=self.name)
+            error_text = self._stringify_error(err)
+            logger.error(f"[{self.name}] HTTP {resp.status_code}: {error_text}")
+            return LLMResponse(
+                text=None,
+                model=model_to_use,
+                provider_name=self.name,
+                error_message=f"HTTP {resp.status_code}: {error_text}",
+            )
 
         if req.stream:
             return self._handle_stream(resp, req.api_url, req.stream_cb)
@@ -219,17 +247,38 @@ class OpenAIHTTPProviderBase(BaseProvider):
             data = resp.json()
         except Exception as e:
             logger.error(f"[{self.name}] JSON parse error: {e}", exc_info=True)
-            return LLMResponse(text=None, model=model_to_use, provider_name=self.name)
+            return LLMResponse(
+                text=None,
+                model=model_to_use,
+                provider_name=self.name,
+                error_message=f"Failed to parse provider JSON response: {e}",
+            )
 
         message = (data.get("choices", [{}])[0].get("message") or {}) if isinstance(data, dict) else {}
+        finish_reason = ((data.get("choices") or [{}])[0].get("finish_reason") if isinstance(data, dict) else None)
 
         content = message.get("content") or message.get("reasoning_content") or ""
+        if not content:
+            response_preview = self._stringify_error(data, limit=600)
+            finish_suffix = f" finish_reason={finish_reason}." if finish_reason else ""
+            error_message = f"Provider returned 200 OK but empty message content.{finish_suffix}"
+            logger.error(f"[{self.name}] {error_message} Raw response: {response_preview}")
+            return LLMResponse(
+                text=None,
+                usage=self._extract_usage(data, req.api_url),
+                model=(data.get("model") if isinstance(data, dict) else None) or model_to_use,
+                provider_name=self.name,
+                finish_reason=finish_reason,
+                error_message=error_message,
+                raw=data if isinstance(data, dict) else {},
+            )
+
         return LLMResponse(
             text=content.strip() if content else None,
             usage=self._extract_usage(data, req.api_url),
             model=(data.get("model") if isinstance(data, dict) else None) or model_to_use,
             provider_name=self.name,
-            finish_reason=((data.get("choices") or [{}])[0].get("finish_reason") if isinstance(data, dict) else None),
+            finish_reason=finish_reason,
             raw=data if isinstance(data, dict) else {},
         )
 
@@ -243,6 +292,8 @@ class OpenAIHTTPProviderBase(BaseProvider):
         usage = None
         finish_reason = None
         response_model = None
+        chunk_error_count = 0
+        last_chunk_error = ""
         try:
             for line_bytes in resp.iter_lines(decode_unicode=False):
                 if not line_bytes:
@@ -273,17 +324,33 @@ class OpenAIHTTPProviderBase(BaseProvider):
                         if stream_callback:
                             stream_callback(text)
                         parts.append(text)
-                except Exception:
+                except Exception as e:
+                    chunk_error_count += 1
+                    last_chunk_error = f"{type(e).__name__}: {e}"
+                    if chunk_error_count <= 3:
+                        preview = chunk[:240].replace("\n", "\\n")
+                        logger.warning(f"[{self.name}] Failed to parse stream chunk: {last_chunk_error}. Chunk: {preview}")
                     continue
         except Exception as e:
             logger.error(f"[{self.name}] stream error: {e}", exc_info=True)
 
+        error_message = None
+        if not parts:
+            if chunk_error_count > 0:
+                error_message = (
+                    "Provider stream ended without content. "
+                    f"Chunk parse errors: {chunk_error_count}, last error: {last_chunk_error}"
+                )
+            elif finish_reason and finish_reason != "stop":
+                error_message = f"Provider stream ended without content (finish_reason={finish_reason})."
+
         return LLMResponse(
-            text="".join(parts),
+            text="".join(parts) or None,
             usage=usage,
             model=response_model,
             provider_name=self.name,
             finish_reason=finish_reason,
+            error_message=error_message,
         )
 
     def _extract_usage(self, data: Any, api_url: str):

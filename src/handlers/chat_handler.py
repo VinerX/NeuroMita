@@ -246,6 +246,7 @@ class ChatModel:
             )
 
             req.extra["tool_manager"] = self.tool_manager
+            req.extra["http_timeout_seconds"] = float(request_timeout)
             if preset_settings.protocol_id == "openrouter_default":
                 routing = normalize_openrouter_routing(preset_settings.openrouter_routing)
                 if routing:
@@ -314,9 +315,11 @@ class ChatModel:
                     )
                 return response_text, True
             logger.warning("Response became empty after cleaning.")
-            return None, False
+            response_text.text = None
+            response_text.error_message = response_text.error_message or "Response became empty after cleaning."
+            return response_text, False
 
-        return None, False
+        return response_text, False
 
     def _log_generation_start(self, preset_id: Optional[int] = None):
         logger.info("Preparing to generate LLM response.")

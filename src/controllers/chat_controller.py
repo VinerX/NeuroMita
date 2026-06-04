@@ -450,8 +450,6 @@ class ChatController:
                         "error": "Failed to generate response"
                     })
                 self.llm_processing = False
-                if eff_policy.echo_to_ui:
-                    self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": "Превышено время ожидания ответа"})
                 return None
 
             target = "Player"

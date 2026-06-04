@@ -1353,8 +1353,12 @@ class ModelController:
             )
 
             if not llm_response or not llm_response.text:
+                error_message = getattr(llm_response, "error_message", None) or _(
+                    "Не удалось получить ответ.",
+                    "Text generation failed."
+                )
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                    "error": _("Не удалось получить ответ.", "Text generation failed.")
+                    "error": error_message
                 })
                 return None
 
@@ -2071,8 +2075,12 @@ class ModelController:
 
         if not llm_response_2 or not llm_response_2.text:
             logger.error(f"[ModelController] Second LLM call after tool '{tool_name}' returned empty.")
+            error_message = getattr(llm_response_2, "error_message", None) or _(
+                "Не удалось получить ответ после инструмента.",
+                "Failed to get response after tool."
+            )
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                "error": _("Не удалось получить ответ после инструмента.", "Failed to get response after tool.")
+                "error": error_message
             })
             # Return first response as fallback
             return {

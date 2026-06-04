@@ -28,18 +28,40 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
     def _get_model_to_use(self, req: LLMRequest) -> str:
         return req.model
 
+    @staticmethod
+    def _stringify_error(value: Any, limit: int = 400) -> str:
+        try:
+            if isinstance(value, str):
+                text = value
+            else:
+                text = json.dumps(value, ensure_ascii=False)
+        except Exception:
+            text = str(value)
+
+        text = (text or "").strip()
+        return text[:limit]
+
     def generate(self, req: LLMRequest) -> LLMResponse:
         return self._generate(req)
 
     def _generate(self, req: LLMRequest) -> LLMResponse:
         if req.depth > 3:
             logger.error(f"Слишком много рекурсивных tool-вызовов ({self.name}).")
-            return LLMResponse(text=None, provider_name=self.name)
+            return LLMResponse(
+                text=None,
+                provider_name=self.name,
+                error_message="Too deep tool recursion.",
+            )
 
         model_to_use = self._get_model_to_use(req)
         client = self._get_client(req)
         if not client:
-            return LLMResponse(text=None, model=model_to_use, provider_name=self.name)
+            return LLMResponse(
+                text=None,
+                model=model_to_use,
+                provider_name=self.name,
+                error_message="Failed to initialize provider client.",
+            )
 
         try:
             cleaned_messages = [{k: v for k, v in m.items() if k != "time"} for m in (req.messages or [])]
@@ -104,14 +126,28 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                     model=getattr(completion, "model", None) or model_to_use,
                     provider_name=self.name,
                     finish_reason=finish_reason,
+                    error_message=None if content else (
+                        "Provider returned completion without message content."
+                        + (f" finish_reason={finish_reason}." if finish_reason else "")
+                    ),
                 )
 
             logger.warning(f"[{self.name}] No completion choices.")
-            return LLMResponse(text=None, model=model_to_use, provider_name=self.name)
+            return LLMResponse(
+                text=None,
+                model=model_to_use,
+                provider_name=self.name,
+                error_message="Provider returned no completion choices.",
+            )
 
         except Exception as e:
             logger.error(f"[{self.name}] Error during API call: {e}", exc_info=True)
-            return LLMResponse(text=None, model=model_to_use, provider_name=self.name)
+            return LLMResponse(
+                text=None,
+                model=model_to_use,
+                provider_name=self.name,
+                error_message=f"Provider API call failed: {e}",
+            )
 
     def _map_unified_params(self, unified: Dict[str, Any], model_to_use: str) -> Dict[str, Any]:
         u = unified or {}
@@ -138,6 +174,8 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
         parts: List[str] = []
         final_usage = None
         finish_reason = None
+        chunk_error_count = 0
+        last_chunk_error = ""
         try:
             for chunk in completion:
                 try:
@@ -161,7 +199,12 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                             text = getattr(delta, "reasoning_content", None) or ""
                         if not text:
                             text = (getattr(delta, "model_extra", None) or {}).get("reasoning_content", "")
-                except Exception:
+                except Exception as e:
+                    chunk_error_count += 1
+                    last_chunk_error = f"{type(e).__name__}: {e}"
+                    if chunk_error_count <= 3:
+                        preview = self._stringify_error(getattr(chunk, "model_dump", lambda: chunk)(), limit=240)
+                        logger.warning(f"[{self.name}] Failed to parse stream chunk: {last_chunk_error}. Chunk: {preview}")
                     continue
 
                 if text:
@@ -171,11 +214,22 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
         except Exception as e:
             logger.error(f"[{self.name}] stream error: {e}", exc_info=True)
 
+        error_message = None
+        if not parts:
+            if chunk_error_count > 0:
+                error_message = (
+                    "Provider stream ended without content. "
+                    f"Chunk parse errors: {chunk_error_count}, last error: {last_chunk_error}"
+                )
+            elif finish_reason and finish_reason != "stop":
+                error_message = f"Provider stream ended without content (finish_reason={finish_reason})."
+
         return LLMResponse(
-            text="".join(parts),
+            text="".join(parts) or None,
             usage=final_usage,
             provider_name=self.name,
             finish_reason=finish_reason,
+            error_message=error_message,
         )
 
     def _extract_usage(self, usage_obj: Any):
