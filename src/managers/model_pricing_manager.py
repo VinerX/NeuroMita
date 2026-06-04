@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -83,31 +84,62 @@ class ModelPricingInfo:
 
 class ModelPricingManager:
     _TTL_SECONDS = 60 * 60
+    # Successful lookups are cached for an hour; failures (None) only briefly so a
+    # transient network blip does not disable cost estimation for the whole hour.
+    _NEGATIVE_TTL_SECONDS = 30
 
     def __init__(self):
         self._cache: Dict[tuple[str, str], tuple[float, Optional[ModelPricingInfo]]] = {}
+        self._lock = threading.Lock()
+        self._inflight: set[tuple[str, str]] = set()
 
     def resolve_for_preset(self, preset: PresetSettings) -> Optional[ModelPricingInfo]:
+        """Return cached pricing immediately and refresh in the background.
+
+        Never performs network IO on the calling thread, so it is safe to call from
+        the token-stats / cost hot paths (which run on the event-bus worker and are
+        awaited by the UI with a short timeout). On a cache miss this returns the
+        last known value (or None) right away and kicks off an async fetch.
+        """
         if not preset or not preset.api_model:
             return None
 
         protocol_id = str(getattr(preset, "protocol_id", "") or "")
         model = str(getattr(preset, "api_model", "") or "")
         cache_key = (protocol_id, model)
+        now = time.time()
 
-        cached = self._cache.get(cache_key)
-        if cached and (time.time() - cached[0]) < self._TTL_SECONDS:
-            return cached[1]
+        with self._lock:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                ts, info = cached
+                ttl = self._TTL_SECONDS if info is not None else self._NEGATIVE_TTL_SECONDS
+                if (now - ts) < ttl:
+                    return info
+            stale_info = cached[1] if cached is not None else None
+            if cache_key in self._inflight:
+                return stale_info
+            self._inflight.add(cache_key)
 
-        info = None
-        try:
-            if protocol_id == "openrouter_default":
-                info = self._fetch_openrouter_model_info(preset)
-        except Exception as e:
-            logger.debug(f"[ModelPricingManager] metadata fetch failed for {protocol_id}/{model}: {e}")
+        self._start_background_fetch(cache_key, preset, protocol_id, model)
+        return stale_info
 
-        self._cache[cache_key] = (time.time(), info)
-        return info
+    def _start_background_fetch(
+        self, cache_key: tuple[str, str], preset: PresetSettings, protocol_id: str, model: str
+    ) -> None:
+        def _run() -> None:
+            info = None
+            try:
+                if protocol_id == "openrouter_default":
+                    info = self._fetch_openrouter_model_info(preset)
+            except Exception as e:
+                logger.debug(f"[ModelPricingManager] metadata fetch failed for {protocol_id}/{model}: {e}")
+            finally:
+                with self._lock:
+                    self._cache[cache_key] = (time.time(), info)
+                    self._inflight.discard(cache_key)
+
+        threading.Thread(target=_run, name="pricing-fetch", daemon=True).start()
 
     def _fetch_openrouter_model_info(self, preset: PresetSettings) -> Optional[ModelPricingInfo]:
         models_url = self._build_openrouter_models_url(preset.api_url)
