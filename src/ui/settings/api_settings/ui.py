@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QSize, QStringListModel
 from PyQt6.QtWidgets import (
-    QWidget, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton,
+    QWidget, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QGridLayout, QListWidget, QPushButton,
     QToolButton, QComboBox, QSizePolicy, QCompleter, QTextEdit, QCheckBox, QLineEdit
 )
 import qtawesome as qta
@@ -46,9 +46,10 @@ def build_api_settings_ui(self, parent_layout):
     self.custom_presets_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
     presets_layout.addWidget(self.custom_presets_list, 1)
 
-    buttons_layout = QVBoxLayout()
-    buttons_layout.setContentsMargins(0, 0, 0, 0)
-    buttons_layout.setSpacing(6)
+    buttons_grid = QGridLayout()
+    buttons_grid.setContentsMargins(0, 0, 0, 0)
+    buttons_grid.setHorizontalSpacing(6)
+    buttons_grid.setVerticalSpacing(6)
 
     self.add_preset_btn = QPushButton()
     self.add_preset_btn.setObjectName("AddPresetButton")
@@ -97,15 +98,19 @@ def build_api_settings_ui(self, parent_layout):
     self.move_down_btn.setFixedSize(28, 28)
     self.move_down_btn.setIconSize(QSize(14, 14))
 
-    buttons_layout.addWidget(self.add_preset_btn)
-    buttons_layout.addWidget(self.remove_preset_btn)
-    buttons_layout.addWidget(self.rename_preset_btn)
-    buttons_layout.addWidget(self.copy_preset_btn)
-    buttons_layout.addSpacing(6)
-    buttons_layout.addWidget(self.move_up_btn)
-    buttons_layout.addWidget(self.move_down_btn)
-    buttons_layout.addStretch()
-    presets_layout.addLayout(buttons_layout)
+    # 2x3 grid keeps all six buttons inside the fixed-height panel without overlap
+    buttons_grid.addWidget(self.add_preset_btn, 0, 0)
+    buttons_grid.addWidget(self.remove_preset_btn, 0, 1)
+    buttons_grid.addWidget(self.rename_preset_btn, 1, 0)
+    buttons_grid.addWidget(self.copy_preset_btn, 1, 1)
+    buttons_grid.addWidget(self.move_up_btn, 2, 0)
+    buttons_grid.addWidget(self.move_down_btn, 2, 1)
+
+    buttons_col = QVBoxLayout()
+    buttons_col.setContentsMargins(0, 0, 0, 0)
+    buttons_col.addLayout(buttons_grid)
+    buttons_col.addStretch()
+    presets_layout.addLayout(buttons_col)
 
     main_layout.addWidget(custom_presets_frame)
 
