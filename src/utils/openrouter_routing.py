@@ -52,7 +52,8 @@ def _normalize_max_price(value: Any) -> Dict[str, float]:
         if raw in (None, ""):
             continue
         try:
-            out[key] = float(raw)
+            # Accept comma decimal separators (e.g. "0,05" from RU/EU locales).
+            out[key] = float(str(raw).strip().replace(",", "."))
         except Exception:
             continue
     return out
