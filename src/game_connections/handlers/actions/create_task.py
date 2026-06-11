@@ -359,7 +359,7 @@ class CreateTaskAction:
             duration = data.get("duration", 0.0)
 
             react_lines = [
-                "This is a react event from the game.",
+                "This is a react event from the game. React to it!",
                 f"React level: {policy.react_level or 1}",
             ]
             if reason_type:
