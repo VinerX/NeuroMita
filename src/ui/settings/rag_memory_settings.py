@@ -946,7 +946,7 @@ def _build_pipeline_preset_config(gui) -> list:
         {'label': _('Пресет', 'Preset'),
          'key': 'RAG_PIPELINE_PRESET', 'type': 'combobox',
          'options': list_pipeline_preset_names(user_presets),
-         'default': 'Keyword+FTS+Inline Graph',
+         'default': 'Keyword+FTS only',
          'command': lambda text: _update_preset_delete_btn(gui, text),
          'tooltip': _(
              'Выберите пресет и нажмите «Применить». Custom — ручная настройка.',
@@ -2141,7 +2141,7 @@ def build_rag_section(self, parent, hc_provider_names) -> None:
     try:
         _update_preset_delete_btn(
             self,
-            self.settings.get("RAG_PIPELINE_PRESET", "Custom") or "Custom",
+            self.settings.get("RAG_PIPELINE_PRESET", "Keyword+FTS only") or "Keyword+FTS only",
         )
     except Exception:
         pass

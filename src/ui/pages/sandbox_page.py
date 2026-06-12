@@ -616,27 +616,38 @@ class SandboxPage(QWidget):
         return KEY_TO_LABEL_EN if lang == "EN" else KEY_TO_LABEL_RU
 
     def _rag_preset_name(self) -> str:
-        """Name of the active RAG embedding preset/model — what RAG actually
-        uses for retrieval. (Not the memory profile, which is a separate
-        memory-window concept.)"""
+        """Name of the active RAG *pipeline* preset — what/how RAG retrieves
+        (Keyword+FTS, Vector+FTS, …). The embedding model is appended only when
+        vector search is on, since that's the only mode where it's actually used.
+        (Not the memory profile, which is a separate memory-window concept.)"""
         try:
-            from handlers.embedding_presets import resolve_full_config
-            cfg = resolve_full_config() or {}
-            preset_id = str(cfg.get("id") or "").strip()
-            name = str(
-                cfg.get("name")
-                or cfg.get("preset_name")
-                or ""
-            ).strip()
-            model_name = self._short_rag_model_name(
-                cfg.get("model")
-                or cfg.get("hf_name")
-                or cfg.get("db_model_key")
-                or ""
+            from managers.settings_manager import SettingsManager
+            from managers.rag.pipeline.config import (
+                RAG_PIPELINE_PRESETS, match_pipeline_preset, _b,
             )
-            if preset_id in {"local_hf", "custom_local"}:
-                return model_name or name or _("Включён", "Enabled")
-            return name or model_name or _("Включён", "Enabled")
+            try:
+                from ui.settings.rag_memory_settings import _load_user_presets
+                user_presets = _load_user_presets() or {}
+            except Exception:
+                user_presets = {}
+
+            name = str(SettingsManager.get("RAG_PIPELINE_PRESET", "Keyword+FTS only") or "").strip()
+            known = set(RAG_PIPELINE_PRESETS) | set(user_presets)
+            if name in ("", "Custom") or name not in known:
+                # Stored selection is 'Custom' (or unknown) — try to recognise the
+                # current settings as a built-in/user preset before giving up.
+                name = match_pipeline_preset(user_presets) or _("Custom", "Custom")
+
+            if _b(SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False), False):
+                from handlers.embedding_presets import resolve_full_config
+                cfg = resolve_full_config() or {}
+                model_name = self._short_rag_model_name(
+                    cfg.get("model") or cfg.get("hf_name") or cfg.get("db_model_key") or ""
+                )
+                if model_name:
+                    name = f"{name} · {model_name}"
+
+            return name or _("Включён", "Enabled")
         except Exception:
             return _("Включён", "Enabled")
 
