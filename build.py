@@ -2,6 +2,8 @@ import pathlib
 import zipfile
 import os
 import shutil
+import stat
+import time
 from pathlib import Path
 from typing import List, Tuple
 
@@ -29,6 +31,12 @@ def resolve_path(raw: str, base: Path) -> Path:
 
 PROJECT_DIR = Path(__file__).parent
 env = load_env(PROJECT_DIR / "build.env")
+
+# Переменные окружения переопределяют build.env — удобно для разовой сборки
+# (например, BUILD_OUTPUT_DIR в другую папку, если штатная занята запущенной игрой).
+for _k, _v in os.environ.items():
+    if _k.startswith("BUILD_") or _k in ("NEUROMITA_BACKEND", "LAUNCH_PYTHON"):
+        env[_k] = _v
 
 OUTPUT_DIR = Path(env.get("BUILD_OUTPUT_DIR", str(PROJECT_DIR / "build_output")))
 BUILD_MODE = env.get("BUILD_MODE", "full").lower()
@@ -112,8 +120,41 @@ def clean_output_dir() -> None:
 
     if out.exists():
         print(f"Очищаю выходную папку: {out}")
-        shutil.rmtree(out, ignore_errors=False)
+        _rmtree_robust(out)
     out.mkdir(parents=True, exist_ok=True)
+
+
+def _clear_readonly_and_retry(func, path, _exc):
+    """onexc/onerror-обработчик: снимает read-only и повторяет операцию.
+
+    Если файл реально занят (запущенная игra/uv, антивирус) — повтор
+    выбросит исключение, и _rmtree_robust перейдёт к следующей попытке.
+    """
+    try:
+        os.chmod(path, stat.S_IWRITE)
+    except OSError:
+        pass
+    func(path)
+
+
+def _rmtree_robust(target: Path, attempts: int = 4) -> None:
+    """rmtree, устойчивый к read-only и временным блокировкам (антивирус)."""
+    for attempt in range(1, attempts + 1):
+        try:
+            try:
+                shutil.rmtree(target, onexc=_clear_readonly_and_retry)  # py3.12+
+            except TypeError:
+                shutil.rmtree(target, onerror=_clear_readonly_and_retry)  # py<3.12
+            return
+        except Exception as e:
+            if attempt == attempts:
+                raise SystemExit(
+                    f"Не удалось очистить выходную папку {target}: {e}\n"
+                    f"Похоже, файл занят — закрой запущенную игру/uv из этой папки "
+                    f"(или временно антивирус) и собери снова."
+                )
+            print(f"  Попытка {attempt}/{attempts} не удалась ({e}); повтор через 1.5с...")
+            time.sleep(1.5)
 
 
 def make_copy_ignore():
