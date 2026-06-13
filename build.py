@@ -92,6 +92,29 @@ def bin_filter(path: pathlib.Path) -> bool:
 
 EXCLUDE_CHECKPOINTS = env.get("BUILD_EXCLUDE_CHECKPOINTS", "1") == "1"
 
+# Чистить выходную папку перед сборкой, чтобы не тащить в зип мусор от прошлых
+# сборок и запусков (Logs, Histories, Settings разработчика, scripts и т.п.).
+# 1 — включено (по умолчанию), 0 — выключено.
+CLEAN_OUTPUT = env.get("BUILD_CLEAN_OUTPUT", "1") == "1"
+
+
+def clean_output_dir() -> None:
+    """Полностью очищает OUTPUT_DIR перед сборкой. С защитой от опасных путей."""
+    out = OUTPUT_DIR.resolve()
+
+    # Защита: не даём случайно снести проект, диск целиком или короткий путь.
+    if out == PROJECT_DIR.resolve():
+        raise SystemExit("BUILD_OUTPUT_DIR совпадает с папкой проекта — очистка отменена.")
+    if out == out.anchor or len(out.parts) < 3:
+        raise SystemExit(f"BUILD_OUTPUT_DIR слишком близко к корню диска ({out}) — очистка отменена.")
+    if PROJECT_DIR.resolve() in out.parents:
+        raise SystemExit(f"BUILD_OUTPUT_DIR внутри проекта ({out}) — очистка отменена.")
+
+    if out.exists():
+        print(f"Очищаю выходную папку: {out}")
+        shutil.rmtree(out, ignore_errors=False)
+    out.mkdir(parents=True, exist_ok=True)
+
 
 def make_copy_ignore():
     """Возвращает ignore-функцию для shutil.copytree."""
@@ -129,7 +152,10 @@ if __name__ == "__main__":
     print(f"Выходная папка      : {OUTPUT_DIR}")
     print(f"Фильтр dot-папок    : {'вкл' if EXCLUDE_DOT_DIRS else 'выкл'}")
     print(f"Фильтр checkpoints  : {'вкл' if EXCLUDE_CHECKPOINTS else 'выкл'}")
+    print(f"Очистка output      : {'вкл' if CLEAN_OUTPUT else 'выкл'}")
 
+    if CLEAN_OUTPUT:
+        clean_output_dir()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     pyz_filename = "NeuroMita.pyz"

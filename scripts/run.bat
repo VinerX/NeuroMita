@@ -1,10 +1,13 @@
-﻿@echo off
+@echo off
+chcp 65001 >nul
 cd /d "%~dp0"
 
-:loop
-libs\python\python.exe -m uv run NeuroMita.pyz
-if %errorlevel%==42 (
-    echo Обновление применено, перезапускаю...
-    goto loop
+if not exist "libs\python\python.exe" (
+    echo ERROR: libs\python\python.exe not found.
+    echo Please extract the whole ZIP archive and run again.
+    pause
+    exit /b 1
 )
-pause
+
+libs\python\python.exe run.py
+if errorlevel 1 pause
