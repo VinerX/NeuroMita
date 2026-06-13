@@ -216,6 +216,35 @@ def setup_updates_settings_controls(self, parent):
             _hide_progress()
             _set_buttons_enabled(True)
 
+    def _prompt_restart():
+        # Вызывается на UI-потоке после успешной установки Python-обновления.
+        from PyQt6.QtWidgets import QApplication
+
+        box = QMessageBox(btn_install)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(_("Обновление установлено", "Update installed"))
+        box.setText(_(
+            "Python-обновление установлено.\n\n"
+            "Перезапустить приложение сейчас, чтобы применить его?\n"
+            "(До перезапуска программа работает на старой версии.)",
+            "The Python update has been installed.\n\n"
+            "Restart the app now to apply it?\n"
+            "(Until you restart, the app keeps running the old version.)",
+        ))
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        if box.exec() == QMessageBox.StandardButton.Yes:
+            app = QApplication.instance()
+            if app is not None:
+                # exec() в __main__ вернёт 42 -> sys.exit(42) -> run.bat перезапустит.
+                app.exit(42)
+        else:
+            _set_status_level(
+                _("Обновление применится при следующем запуске.",
+                  "The update will be applied on the next start."),
+                "notify",
+            )
+
     def _run_install():
         logger.info("[updates_ui] Install action started")
         _set_buttons_enabled(False)
@@ -264,16 +293,18 @@ def setup_updates_settings_controls(self, parent):
 
             ui_log = _UiLogger()
 
+            py_applied = False
             if bool(py_info.get("available")):
                 _set_status(_("Устанавливаю Python-обновление...", "Installing Python update..."))
-                check_for_updates(
+                py_applied = bool(check_for_updates(
                     base_dir=base_dir,
                     logger=ui_log,
                     channel=channel,
                     tester_code=tester_code,
                     on_progress=_on_progress,
                     auto_update=True,
-                )
+                    restart_on_success=False,
+                ))
 
             if bool(unity_info.get("available")):
                 _set_status(_("Устанавливаю Unity-обновление...", "Installing Unity update..."))
@@ -288,6 +319,11 @@ def setup_updates_settings_controls(self, parent):
                 )
 
             _refresh_version_labels()
+
+            if py_applied:
+                # Python-часть заменена на диске — предлагаем управляемый
+                # перезапуск (диалог показываем на UI-потоке).
+                _dispatch.schedule(_prompt_restart)
         except SystemExit as e:
             logger.warning(f"[updates_ui] Install action requested process exit: code={getattr(e, 'code', None)}")
             _set_status_level(

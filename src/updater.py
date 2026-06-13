@@ -146,11 +146,30 @@ def _fetch_releases(repo: str, per_page: int = 20) -> list[dict]:
     return data if isinstance(data, list) else []
 
 
+def _published_sort_key(release: dict) -> str:
+    """Ключ сортировки релизов по дате публикации (свежие — первыми).
+
+    published_at в ISO-8601, поэтому строковое сравнение = хронологическое.
+    Падаем на created_at, если publish-даты нет.
+    """
+    return str(release.get("published_at") or release.get("created_at") or "")
+
+
 def _select_release(repo: str, channel: str) -> Optional[dict]:
-    """Return newest release suitable for the given channel."""
+    """Return newest release suitable for the given channel.
+
+    stable: последний опубликованный НЕ-prerelease (GitHub /releases/latest).
+    beta:   то же самое, но с учётом prerelease — берём самый свежий по
+            published_at. Список из /releases GitHub отдаёт в порядке
+            created_at (дата тега), из-за чего более старый по публикации
+            релиз может оказаться первым; поэтому пересортировываем сами.
+    """
     if channel == "beta":
-        releases = _fetch_releases(repo)
-        return releases[0] if releases else None
+        releases = [r for r in _fetch_releases(repo) if not r.get("draft")]
+        if not releases:
+            return None
+        releases.sort(key=_published_sort_key, reverse=True)
+        return releases[0]
     return _fetch_latest_release(repo)
 
 
@@ -350,7 +369,8 @@ def check_for_updates(
     tester_code: Optional[str] = None,
     on_progress: Optional[Callable[[int, int], None]] = None,
     auto_update: Optional[bool] = None,
-) -> None:
+    restart_on_success: bool = True,
+) -> bool:
     """Check for Python-part updates. Apply automatically if AUTO_UPDATE=1.
 
     Args:
@@ -360,6 +380,14 @@ def check_for_updates(
         tester_code: Password for encrypted test archives.
         on_progress: Callback(downloaded_bytes, total_bytes) for UI progress.
         auto_update: Force auto-apply behavior instead of reading env/config only.
+        restart_on_success: при True (по умолчанию, для автообновления на
+            старте) после установки делает sys.exit(42) — run.bat/run.py
+            перезапускают игру. При False (вызов из UI) не выходит, а
+            возвращает True, чтобы вызывающий сам предложил перезапуск.
+
+    Returns:
+        True, если обновление установлено и нужен перезапуск (актуально при
+        restart_on_success=False; иначе процесс завершится через sys.exit).
     """
     log = make_logger(logger, _LOG_PREFIX)
 
@@ -454,10 +482,18 @@ def check_for_updates(
             _install_full_archive(temp_archive, base_path, tester_code, log)
             temp_archive.unlink(missing_ok=True)
 
-        log(f"Update {remote_tag} installed successfully. Restarting ...", "success")
-        # Exit code 42 signals launch.py / run.bat to restart.
-        # Continuing from stale .pyz offsets would cause ZipImportError.
-        sys.exit(42)
+        if restart_on_success:
+            log(f"Update {remote_tag} installed successfully. Restarting ...", "success")
+            # Exit code 42 signals launch.py / run.bat to restart.
+            # Continuing from stale .pyz offsets would cause ZipImportError.
+            sys.exit(42)
+
+        # Вызов из UI: не выходим сами — отдаём управление вызывающему,
+        # чтобы тот спросил пользователя про перезапуск. Продолжать работу
+        # без рестарта рискованно (старый .pyz уже заменён), поэтому
+        # перезапуск всё равно нужен — просто по кнопке.
+        log(f"Update {remote_tag} installed successfully. Restart required.", "success")
+        return True
 
     except PasswordError:
         # Архив валидный, пароль не установлен — не выкидываем, юзер вернётся
@@ -468,6 +504,8 @@ def check_for_updates(
     except Exception as e:
         log(f"Update failed: {e}", "error")
         temp_archive.unlink(missing_ok=True)
+
+    return False
 
 
 def check_for_unity_updates(
