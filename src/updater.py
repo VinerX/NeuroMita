@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -25,6 +27,47 @@ from utils.archive_utils import PasswordError, extract_archive, format_bytes, ma
 
 _USER_AGENT = "NeuroMita-Updater/2.0"
 _LOG_PREFIX = "[updater]"
+
+
+def _install_full_archive(archive: Path, base_path: Path, password, log) -> None:
+    """Полная установка: распаковать во временную папку, выровнять корневой
+    каталог и только потом стереть base_path и перенести содержимое внутрь.
+
+    Распаковка ДО wipe важна по трём причинам:
+      * архив качается в base_path/_update_download — иначе wipe удалил бы его
+        ещё до распаковки (обновление падало с 'No such file or directory',
+        оставляя папку стёртой);
+      * если архив битый или запаролен — base_path не будет стёрт, установка
+        останется рабочей;
+      * запущенная игра пишет логи прямо в base_path, из-за чего in-place
+        flatten не срабатывал (в папке больше одного элемента) и обновление
+        разворачивалось во вложенную папку NeuroMita_PythonBuild. В чистой
+        временной папке выравнивание корня работает надёжно.
+    """
+    staging = Path(tempfile.gettempdir()) / "neuromita_update_extract"
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    try:
+        # extract_archive сам выровняет единственный корневой каталог; staging
+        # чистый, поэтому это срабатывает надёжно.
+        extract_archive(archive, staging, password)
+        wipe_dir(base_path)
+        base_path.mkdir(parents=True, exist_ok=True)
+        for item in staging.iterdir():
+            target = base_path / item.name
+            if target.exists():
+                if target.is_dir():
+                    shutil.rmtree(target, ignore_errors=True)
+                else:
+                    try:
+                        target.unlink()
+                    except OSError:
+                        pass
+            shutil.move(str(item), str(target))
+        log(f"Installed update contents into {base_path}")
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 # ── Repo / version helpers ────────────────────────────────────────────────────
@@ -393,6 +436,7 @@ def check_for_updates(
     try:
         if is_patch:
             try:
+                # Патч накладывается поверх существующих файлов (без wipe).
                 extract_archive(temp_archive, base_path, tester_code)
             except Exception as e:
                 log(f"Patch failed ({e}), falling back to full update ...", "warning")
@@ -404,12 +448,10 @@ def check_for_updates(
                 full_archive = dl_dir / full_asset.name
                 log(f"Downloading full release {full_asset.name} ...")
                 _download(full_asset.url, full_archive, on_progress=on_progress)
-                wipe_dir(base_path)
-                extract_archive(full_archive, base_path, tester_code)
+                _install_full_archive(full_archive, base_path, tester_code, log)
                 full_archive.unlink(missing_ok=True)
         else:
-            wipe_dir(base_path)
-            extract_archive(temp_archive, base_path, tester_code)
+            _install_full_archive(temp_archive, base_path, tester_code, log)
             temp_archive.unlink(missing_ok=True)
 
         log(f"Update {remote_tag} installed successfully. Restarting ...", "success")
@@ -419,7 +461,8 @@ def check_for_updates(
 
     except PasswordError:
         # Архив валидный, пароль не установлен — не выкидываем, юзер вернётся
-        # с TESTER_CODE и не качает заново.
+        # с TESTER_CODE и не качает заново. base_path при ошибке не стёрт,
+        # так как распаковка идёт во временную папку до wipe.
         log("Archive is password-protected. Set TESTER_CODE in settings to unlock.", "error")
         log(f"Archive kept for retry: {temp_archive}")
     except Exception as e:

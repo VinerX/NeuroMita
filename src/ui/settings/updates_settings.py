@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QProgressBar,
     QTextEdit,
@@ -563,8 +564,29 @@ def setup_updates_settings_controls(self, parent):
         "QPushButton:disabled { background: #2b2230; color: #bca9bb; }"
     )
 
+    def _confirm_and_install():
+        # Полное обновление перезаписывает папку игры (включая Prompts).
+        # Предупреждаем, чтобы пользователь не потерял свои промпты.
+        box = QMessageBox(btn_install)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(_("Обновление", "Update"))
+        box.setText(_(
+            "Обновление перезапишет файлы игры в этой папке.\n\n"
+            "Ваши правки в папке Prompts и другие локальные файлы могут быть "
+            "заменены версией из релиза. Сделайте копию важных промптов перед "
+            "продолжением.\n\nПродолжить установку обновления?",
+            "The update will overwrite the game files in this folder.\n\n"
+            "Your edits in the Prompts folder and other local files may be "
+            "replaced with the release version. Back up important prompts before "
+            "continuing.\n\nContinue installing the update?",
+        ))
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        if box.exec() == QMessageBox.StandardButton.Yes:
+            threading.Thread(target=_run_install, daemon=True).start()
+
     btn_check.clicked.connect(lambda: threading.Thread(target=_run_check_only, daemon=True).start())
-    btn_install.clicked.connect(lambda: threading.Thread(target=_run_install, daemon=True).start())
+    btn_install.clicked.connect(_confirm_and_install)
 
     buttons_layout.addWidget(btn_check)
     buttons_layout.addWidget(btn_install)
