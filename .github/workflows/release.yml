@@ -43,8 +43,9 @@ jobs:
           from pathlib import Path
 
           workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          runner_temp = Path(os.environ["RUNNER_TEMP"])
           version   = os.environ["VERSION"]
-          output    = workspace / "ci_build"
+          output    = runner_temp / "neuromita_ci_build"
           archive   = workspace / f"NeuroMita-{version}"
 
           content = "\n".join([
@@ -56,8 +57,10 @@ jobs:
               f"BUILD_ROOT_SCRIPTS=",
               f"BUILD_EXCLUDE_DOT_DIRS=1",
               f"BUILD_EXCLUDE_CHECKPOINTS=1",
+              f"BUILD_CLEAN_OUTPUT=1",
               f"BUILD_ARCHIVE=1",
               f"BUILD_ARCHIVE_PATH={archive}",
+              f"BUILD_ARCHIVE_FORMAT=zip",
           ])
           Path("build.env").write_text(content, encoding="utf-8")
           print("build.env created:")
