@@ -30,22 +30,44 @@ _USER_AGENT = "NeuroMita-Updater/2.0"
 _LOG_PREFIX = "[updater]"
 
 
-def _overlay_dir(staging: Path, base_path: Path, log) -> None:
+def _copy_file_over(src: Path, dst: Path, log) -> bool:
+    """Скопировать src поверх dst, переживая занятый файл. True — если записан."""
+    if dst.is_dir():
+        shutil.rmtree(dst, ignore_errors=True)
+    try:
+        shutil.copy2(src, dst)
+        return True
+    except PermissionError:
+        # Файл занят (например запущенный python.exe сам себя) — пробуем
+        # удалить и записать заново.
+        try:
+            if dst.exists():
+                dst.unlink()
+            shutil.copy2(src, dst)
+            return True
+        except OSError as exc:
+            log(f"Could not overwrite {dst}: {exc}")
+            return False
+
+
+def _overlay_dir(staging: Path, base_path: Path, log, preserve_prompts: bool = False) -> None:
     """Наложить содержимое staging поверх base_path как diff.
 
     Пишем только реально изменившиеся файлы и НИКОГДА не удаляем то, чего нет
     в архиве. Благодаря этому переживают апдейт:
       * libs/python — встроенный питон с уже установленными зависимостями
-        (раньше wipe сносил его, и run.py заново ставил весь requirements.txt,
-        а управляемый перезапуск падал — питона, который крутит цикл, больше
-        не было);
+        (иначе run.py заново ставит весь requirements.txt, а управляемый
+        перезапуск падает — питона, который крутит цикл, больше нет);
       * .req_hash, Settings, Histories, Logs и прочие локальные файлы.
 
     Идентичные файлы пропускаются (сравнение по размеру и содержимому), так что
     обновление по сути диффовое: переписывается только то, что изменилось.
+
+    preserve_prompts=True — НЕ перезаписываем уже существующие файлы внутри
+    папки Prompts (правки пользователя выигрывают), но новые промпты из релиза
+    всё равно добавляются.
     """
-    copied = 0
-    skipped = 0
+    copied = skipped = preserved = 0
     for root, _dirs, files in os.walk(staging):
         rel = Path(root).relative_to(staging)
         dst_root = base_path / rel
@@ -53,41 +75,86 @@ def _overlay_dir(staging: Path, base_path: Path, log) -> None:
         for name in files:
             src = Path(root) / name
             dst = dst_root / name
+            if (
+                preserve_prompts
+                and rel.parts
+                and rel.parts[0].lower() == "prompts"
+                and dst.exists()
+            ):
+                preserved += 1
+                continue
             try:
-                if dst.exists() and filecmp.cmp(src, dst, shallow=False):
+                if dst.exists() and not dst.is_dir() and filecmp.cmp(src, dst, shallow=False):
                     skipped += 1
                     continue
             except OSError:
                 pass
-            if dst.is_dir():
-                shutil.rmtree(dst, ignore_errors=True)
-            try:
-                shutil.copy2(src, dst)
-            except PermissionError:
-                # Файл занят (например запущенный python.exe сам себя) —
-                # пробуем заменить через временное имя.
+            if _copy_file_over(src, dst, log):
+                copied += 1
+    msg = f"Overlay update into {base_path}: {copied} written, {skipped} unchanged"
+    if preserve_prompts:
+        msg += f", {preserved} prompts kept"
+    log(msg + ".")
+
+
+def _full_replace(staging: Path, base_path: Path, log, preserve_prompts: bool = False) -> None:
+    """Полная перезапись: стереть base_path (кроме user_data) и перенести релиз.
+
+    preserve_prompts=True — локальная папка Prompts откладывается до wipe и
+    возвращается поверх релизной (локальные версии файлов выигрывают, новые
+    промпты из релиза остаются).
+    """
+    prompts_backup: Optional[Path] = None
+    local_prompts = base_path / "Prompts"
+    if preserve_prompts and local_prompts.is_dir():
+        prompts_backup = Path(tempfile.gettempdir()) / "neuromita_prompts_backup"
+        if prompts_backup.exists():
+            shutil.rmtree(prompts_backup, ignore_errors=True)
+        shutil.move(str(local_prompts), str(prompts_backup))
+        log("Backed up local Prompts before full replace")
+
+    wipe_dir(base_path)
+    base_path.mkdir(parents=True, exist_ok=True)
+    for item in staging.iterdir():
+        target = base_path / item.name
+        if target.exists():
+            if target.is_dir():
+                shutil.rmtree(target, ignore_errors=True)
+            else:
                 try:
-                    if dst.exists():
-                        dst.unlink()
-                    shutil.copy2(src, dst)
-                except OSError as exc:
-                    log(f"Could not overwrite {dst}: {exc}")
-                    continue
-            copied += 1
-    log(f"Overlay update into {base_path}: {copied} files written, {skipped} unchanged.")
+                    target.unlink()
+                except OSError:
+                    pass
+        shutil.move(str(item), str(target))
+
+    if prompts_backup and prompts_backup.exists():
+        # Локальные промпты накладываем поверх релизных — локальные версии
+        # выигрывают, релизные-новые остаются.
+        _overlay_dir(prompts_backup, base_path / "Prompts", log)
+        shutil.rmtree(prompts_backup, ignore_errors=True)
+        log("Restored local Prompts (local versions kept)")
+    log(f"Full replace into {base_path} finished.")
 
 
-def _install_full_archive(archive: Path, base_path: Path, password, log) -> None:
-    """Полная установка обновления как наложение поверх существующей папки.
+def _install_full_archive(
+    archive: Path,
+    base_path: Path,
+    password,
+    log,
+    mode: str = "diff",
+    preserve_prompts: bool = False,
+) -> None:
+    """Установка обновления. Распаковка идёт в чистую временную папку (там
+    надёжно срабатывает выравнивание единственного корневого каталога — иначе
+    из-за логов в base_path обновление разворачивалось во вложенную папку), а
+    дальше — по выбранному режиму:
 
-    Распаковываем в чистую временную папку (там надёжно срабатывает выравнивание
-    единственного корневого каталога — раньше из-за логов в base_path обновление
-    разворачивалось во вложенный NeuroMita_PythonBuild), а затем накладываем
-    diff'ом через _overlay_dir.
+      mode="diff" (по умолчанию) — наложение поверх существующей папки: пишутся
+        только изменившиеся файлы, ничего не удаляется. libs/python с
+        зависимостями, .req_hash и локальные файлы переживают апдейт.
+      mode="full" — полная перезапись (wipe + перенос релиза), как раньше.
 
-    Намеренно НЕ делаем wipe_dir(base_path): полная очистка сносила встроенный
-    питон с зависимостями и ломала управляемый перезапуск, а также заставляла
-    переустанавливать весь requirements.txt при каждом обновлении.
+    preserve_prompts — сохранять локальные промпты (см. _overlay_dir/_full_replace).
     """
     staging = Path(tempfile.gettempdir()) / "neuromita_update_extract"
     if staging.exists():
@@ -98,7 +165,10 @@ def _install_full_archive(archive: Path, base_path: Path, password, log) -> None
         # чистый, поэтому это срабатывает надёжно.
         extract_archive(archive, staging, password)
         base_path.mkdir(parents=True, exist_ok=True)
-        _overlay_dir(staging, base_path, log)
+        if mode == "full":
+            _full_replace(staging, base_path, log, preserve_prompts)
+        else:
+            _overlay_dir(staging, base_path, log, preserve_prompts)
         log(f"Installed update contents into {base_path}")
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -404,6 +474,8 @@ def check_for_updates(
     on_progress: Optional[Callable[[int, int], None]] = None,
     auto_update: Optional[bool] = None,
     restart_on_success: bool = True,
+    update_mode: str = "diff",
+    preserve_prompts: bool = False,
 ) -> bool:
     """Check for Python-part updates. Apply automatically if AUTO_UPDATE=1.
 
@@ -414,6 +486,10 @@ def check_for_updates(
         tester_code: Password for encrypted test archives.
         on_progress: Callback(downloaded_bytes, total_bytes) for UI progress.
         auto_update: Force auto-apply behavior instead of reading env/config only.
+        update_mode: "diff" (наложение поверх, только изменённые файлы) или
+            "full" (полная перезапись папки). Применяется к полному архиву;
+            патчи всегда накладываются diff'ом.
+        preserve_prompts: не перезаписывать локальные промпты при обновлении.
         restart_on_success: при True (по умолчанию, для автообновления на
             старте) после установки делает sys.exit(42) — run.bat/run.py
             перезапускают игру. При False (вызов из UI) не выходит, а
@@ -431,8 +507,12 @@ def check_for_updates(
         auto_update = os.environ.get("AUTO_UPDATE", "0") == "1"
     channel = (channel or os.environ.get("UPDATE_CHANNEL", "stable")).lower()
     tester_code = tester_code or os.environ.get("TESTER_CODE") or None
+    update_mode = (update_mode or os.environ.get("UPDATE_MODE", "diff")).lower()
+    if update_mode not in ("diff", "full"):
+        update_mode = "diff"
+    preserve_prompts = preserve_prompts or os.environ.get("UPDATE_PRESERVE_PROMPTS", "0") == "1"
 
-    log(f"Checking for updates ({repo}, channel={channel}) ...")
+    log(f"Checking for updates ({repo}, channel={channel}, mode={update_mode}) ...")
 
     release = _select_release(repo, channel)
     if release is None:
@@ -498,8 +578,12 @@ def check_for_updates(
     try:
         if is_patch:
             try:
-                # Патч накладывается поверх существующих файлов (без wipe).
-                extract_archive(temp_archive, base_path, tester_code)
+                # Патч по своей природе аддитивный — всегда накладываем diff'ом
+                # (наложение поверх, без wipe), режим full к нему не применяем.
+                _install_full_archive(
+                    temp_archive, base_path, tester_code, log,
+                    mode="diff", preserve_prompts=preserve_prompts,
+                )
             except Exception as e:
                 log(f"Patch failed ({e}), falling back to full update ...", "warning")
                 temp_archive.unlink(missing_ok=True)
@@ -510,10 +594,16 @@ def check_for_updates(
                 full_archive = dl_dir / full_asset.name
                 log(f"Downloading full release {full_asset.name} ...")
                 _download(full_asset.url, full_archive, on_progress=on_progress)
-                _install_full_archive(full_archive, base_path, tester_code, log)
+                _install_full_archive(
+                    full_archive, base_path, tester_code, log,
+                    mode=update_mode, preserve_prompts=preserve_prompts,
+                )
                 full_archive.unlink(missing_ok=True)
         else:
-            _install_full_archive(temp_archive, base_path, tester_code, log)
+            _install_full_archive(
+                temp_archive, base_path, tester_code, log,
+                mode=update_mode, preserve_prompts=preserve_prompts,
+            )
             temp_archive.unlink(missing_ok=True)
 
         if restart_on_success:

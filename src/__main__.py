@@ -152,6 +152,8 @@ try:
             channel=_upd_settings.get("UPDATE_CHANNEL", "stable"),
             tester_code=_upd_settings.get("TESTER_CODE") or None,
             auto_update=True,
+            update_mode=_upd_settings.get("UPDATE_MODE", "diff"),
+            preserve_prompts=bool(_upd_settings.get("UPDATE_PRESERVE_PROMPTS", True)),
         )
 
     if _unity_startup_update:

@@ -304,6 +304,8 @@ def setup_updates_settings_controls(self, parent):
                     on_progress=_on_progress,
                     auto_update=True,
                     restart_on_success=False,
+                    update_mode=(self.settings.get("UPDATE_MODE", "diff") or "diff"),
+                    preserve_prompts=bool(self.settings.get("UPDATE_PRESERVE_PROMPTS", True)),
                 ))
 
             if bool(unity_info.get("available")):
@@ -423,6 +425,70 @@ def setup_updates_settings_controls(self, parent):
     channel_layout.addWidget(channel_combo)
     channel_layout.addStretch()
     parent.addWidget(channel_row)
+
+    # Update mode (diff / full)
+    mode_row = QWidget()
+    mode_row.setObjectName("UpdatesModeRow")
+    mode_row.setStyleSheet("QWidget#UpdatesModeRow { background: transparent; }")
+    mode_layout = QHBoxLayout(mode_row)
+    mode_layout.setContentsMargins(0, 4, 0, 0)
+    mode_layout.setSpacing(8)
+
+    mode_lbl = QLabel(_("Режим установки:", "Install mode:"))
+    mode_lbl.setStyleSheet("QLabel { color: #bca9bb; font-size: 12px; }")
+    mode_layout.addWidget(mode_lbl)
+
+    mode_combo = QComboBox()
+    mode_combo.setStyleSheet(channel_combo.styleSheet())
+    # data: "diff"/"full"; отображаемые подписи — человекочитаемые.
+    mode_combo.addItem(_("Дифф (только изменённые файлы)", "Diff (changed files only)"), "diff")
+    mode_combo.addItem(_("Полная перезапись", "Full replace"), "full")
+    current_mode = (self.settings.get("UPDATE_MODE", "diff") or "diff").lower()
+    mode_idx = mode_combo.findData(current_mode)
+    if mode_idx >= 0:
+        mode_combo.setCurrentIndex(mode_idx)
+    mode_combo.setToolTip(
+        _(
+            "Дифф - переписываются только изменённые файлы, встроенный питон с\n"
+            "зависимостями и локальные файлы не трогаются (быстро, без переустановки).\n"
+            "Полная - папка очищается и релиз раскладывается заново.",
+            "Diff - only changed files are rewritten; the embedded Python with its\n"
+            "dependencies and local files are left intact (fast, no reinstall).\n"
+            "Full - the folder is wiped and the release is laid out from scratch.",
+        )
+    )
+
+    def _save_mode():
+        value = mode_combo.currentData() or "diff"
+        if value == (self.settings.get("UPDATE_MODE", "diff") or "diff").lower():
+            return
+        logger.info(f"[updates_ui] UPDATE_MODE -> {value}")
+        _persist_setting("UPDATE_MODE", value)
+
+    mode_combo.activated.connect(lambda _index: QTimer.singleShot(0, _save_mode))
+    mode_layout.addWidget(mode_combo)
+    mode_layout.addStretch()
+    parent.addWidget(mode_row)
+
+    # Preserve local prompts on update
+    chk_keep_prompts = QCheckBox(_("Не перезаписывать мои промпты", "Keep my prompts"))
+    chk_keep_prompts.setToolTip(
+        _(
+            "Файлы в папке Prompts, которые уже есть локально, не будут заменены\n"
+            "версией из релиза. Новые промпты из релиза всё равно добавятся.",
+            "Files in the Prompts folder that already exist locally won't be\n"
+            "replaced by the release version. New release prompts are still added.",
+        )
+    )
+    chk_keep_prompts.setChecked(bool(self.settings.get("UPDATE_PRESERVE_PROMPTS", True)))
+
+    def _save_keep_prompts(state):
+        enabled = bool(state)
+        logger.info(f"[updates_ui] UPDATE_PRESERVE_PROMPTS -> {enabled}")
+        _persist_setting("UPDATE_PRESERVE_PROMPTS", enabled)
+
+    chk_keep_prompts.stateChanged.connect(_save_keep_prompts)
+    parent.addWidget(chk_keep_prompts)
 
     # Auto-update checkboxes
     chk_auto = QCheckBox(_("Авто-обновление Python при запуске", "Auto-update Python on startup"))
@@ -601,21 +667,34 @@ def setup_updates_settings_controls(self, parent):
     )
 
     def _confirm_and_install():
-        # Полное обновление перезаписывает папку игры (включая Prompts).
-        # Предупреждаем, чтобы пользователь не потерял свои промпты.
+        # Предупреждаем про перезапись промптов, если их сохранение выключено.
+        keep_prompts = bool(self.settings.get("UPDATE_PRESERVE_PROMPTS", True))
         box = QMessageBox(btn_install)
-        box.setIcon(QMessageBox.Icon.Warning)
+        box.setIcon(QMessageBox.Icon.Warning if not keep_prompts else QMessageBox.Icon.Question)
         box.setWindowTitle(_("Обновление", "Update"))
-        box.setText(_(
-            "Обновление перезапишет файлы игры в этой папке.\n\n"
-            "Ваши правки в папке Prompts и другие локальные файлы могут быть "
-            "заменены версией из релиза. Сделайте копию важных промптов перед "
-            "продолжением.\n\nПродолжить установку обновления?",
-            "The update will overwrite the game files in this folder.\n\n"
-            "Your edits in the Prompts folder and other local files may be "
-            "replaced with the release version. Back up important prompts before "
-            "continuing.\n\nContinue installing the update?",
-        ))
+        if keep_prompts:
+            text = _(
+                "Обновление установит новую версию игры.\n\n"
+                "Сохранение промптов включено: ваши локальные файлы в папке "
+                "Prompts заменены не будут (новые промпты из релиза добавятся).\n\n"
+                "Продолжить установку обновления?",
+                "The update will install the new game version.\n\n"
+                "Keeping prompts is enabled: your local files in the Prompts "
+                "folder won't be replaced (new release prompts are still added).\n\n"
+                "Continue installing the update?",
+            )
+        else:
+            text = _(
+                "Обновление перезапишет файлы игры в этой папке.\n\n"
+                "Сохранение промптов выключено — ваши правки в папке Prompts "
+                "могут быть заменены версией из релиза. Сделайте копию важных "
+                "промптов перед продолжением.\n\nПродолжить установку обновления?",
+                "The update will overwrite the game files in this folder.\n\n"
+                "Keeping prompts is disabled - your edits in the Prompts folder "
+                "may be replaced with the release version. Back up important "
+                "prompts before continuing.\n\nContinue installing the update?",
+            )
+        box.setText(text)
         box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         box.setDefaultButton(QMessageBox.StandardButton.No)
         if box.exec() == QMessageBox.StandardButton.Yes:
