@@ -27,17 +27,15 @@ arrogance
 surpriseo
 
 // --- Простые анимации (мгновенные) ---
-Щелчек
-Помахать в приветствие
-Указать направление
-Жест пальцами
-Кивнуть да
-Кивнуть нет
-Глянуть глазами в случайном направлении
-Прикрыть глаза
-Обнять
-Прикрыть рот и помахать рукой
+SnapFingers
+WaveHello
+PointDirection
+FingerGesture
+LookRandomDirection
+CloseEyes
+Hug
+CoverMouthAndWave
 
 // --- Анимации, меняющие позу ---
-Смотреть с презрением
-Показать усталость
+LookWithContempt
+ShowTiredness

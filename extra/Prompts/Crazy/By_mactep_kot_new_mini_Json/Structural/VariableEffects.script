@@ -45,7 +45,7 @@ SET relation_text = relation_text + "\n\n"
 // ===== ОБРАБОТКА ДЛЯ LOVE =====
 IF Love == None THEN
     SET Love = 1
-    SET relation_text = relation_text + "Love level: Not yet determined\n"
+    SET relation_text = relation_text + "Love: Not yet determined\n"
 ELSE
     SET relation_text = relation_text + "Применяй привязанность к игроку согласно текущему уровню Love lvl."
     SET relation_text = relation_text + "\n\n"

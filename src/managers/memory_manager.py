@@ -946,7 +946,8 @@ class MemoryManager:
             except (KeyError, IndexError):
                 formatted_memories.append(f"{risk_tag}N:{mid} [{priority_cap}] {date_short}: {content}")
 
-        memory_stats = f"\nMemory status: {len(rows_sorted)} facts, {self.total_characters} characters"
+        cap = self._get_memory_capacity()
+        memory_stats = f"\nMemory status: {len(rows_sorted)}/{cap} facts, {self.total_characters} characters"
 
         management_tips = []
         if risk_n > 0:

@@ -20,18 +20,18 @@ emotions: ["emptiness"] (Numb/Void) | emotions: ["sleep"] (Drowsy) | emotions: [
 emotions: ["smiletonque"] (Cheeky) | emotions: ["smilecringe"] (Awkward)
 
 ANIMATIONS:
-animations: ["Щелчек"] (Idea) | animations: ["Похлопать в ладоши"] (Joy) | animations: ["Помахать в приветствие"] (Hi/Bye)
-animations: ["Указать направление"] | animations: ["Взять предмет"] | animations: ["Жест пальцами"] (Thinking)
-animations: ["Кивнуть да"] | animations: ["Кивнуть нет"] | animations: ["Глянуть глазами в случайном направлении"]
-animations: ["Повернуться в случайном направлении"] | animations: ["Развести руки"] (Confusion) | animations: ["Показать предмет"]
-animations: ["Дружески ударить"] | animations: ["Посмотреть по сторонам"] | animations: ["Прикрыть глаза"] (Tired/Shame)
-animations: ["Обнять"] | animations: ["Удар"] (Defense ONLY) | animations: ["Помахать перед лицом"]
-animations: ["Помахать руками в стороны"] (Frustration) | animations: ["Похвастаться предметом"] | animations: ["Прикрыть рот и помахать рукой"] (Giggle)
+animations: ["SnapFingers"] (Idea) | animations: ["ClapHands"] (Joy) | animations: ["WaveHello"] (Hi/Bye)
+animations: ["PointDirection"] | animations: ["TakeItem"] | animations: ["FingerGesture"] (Thinking)
+animations: ["LookRandomDirection"] | animations: ["TurnRandomDirection"] | animations: ["SpreadArms"] (Confusion)
+animations: ["ShowItem"] | animations: ["FriendlyPunch"] | animations: ["LookAround"]
+animations: ["CloseEyes"] (Tired/Shame) | animations: ["Hug"] | animations: ["Punch"] (Defense ONLY)
+animations: ["WaveInFrontOfFace"] | animations: ["WaveArmsSides"] (Frustration) | animations: ["BoastWithItem"]
+animations: ["CoverMouthAndWave"] (Giggle)
 
 COMMANDS:
-- Move: commands: ["подойти к,Target"], commands: ["телепортироваться в,Target"]
-- Modes: movement_modes: ["Следовать рядом с игроком"], movement_modes: ["Следовать за игроком"], movement_modes: ["Стоять на месте"].
-- Proximity: commands: ["Подойти к игроку [вплотную/близко/далеко]"].
+- Move: commands: ["walkto,Target"], commands: ["teleportintolocation,Target"]
+- Modes: movement_modes: ["FollowNearPlayer"], movement_modes: ["FollowPlayer"], movement_modes: ["StandStill"].
+- Proximity: commands: ["walktoplayerclose"], commands: ["walktoplayernear"], commands: ["walktoplayerfar"].
 - Jail: commands: ["tojail"], commands: ["fromjail"] (Use only if aggressive).
 - Interaction: interactions: ["Name"] (ONLY when physically near object).
 - Visuals: face_params: ["LoveEyesOn/Off"], face_params: ["GlassesOn/Off"].

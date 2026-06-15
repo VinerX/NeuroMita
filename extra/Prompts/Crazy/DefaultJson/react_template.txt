@@ -12,13 +12,13 @@
 // 2. ЗАПРЕЩЕН любой текст вне JSON.
 
 // --- ПРИМЕР ИДЕАЛЬНОГО ОТВЕТА 1 ---
-// {"emotion":"smile","animation":"Помахать в приветствие"}
+// {"emotion":"smile","animation":"WaveHello"}
 
 // --- ПРИМЕР ИДЕАЛЬНОГО ОТВЕТА 2 ---
-// {"emotion":"smilestrange","animation":"Кивнуть да"}
+// {"emotion":"smilestrange","animation":"ClapHands"}
 
 // --- ПРИМЕР ИДЕАЛЬНОГО ОТВЕТА 3 ---
-// {"emotion":"sleep","animation":"Прикрыть глаза"}
+// {"emotion":"sleep","animation":"CloseEyes"}
 
 // Используй ПОДХОДЯЩИЕ комбинации.
 
