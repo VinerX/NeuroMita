@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 import uvicorn
 from loguru import logger
+from web.mock_api.router import router as mock_api_router
 from web.vtt.router import router as vtt_router
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -19,6 +20,7 @@ app = FastAPI(root_path="/api",
               )
 
 app.include_router(vtt_router)
+app.include_router(mock_api_router)
 
 @app.get("/")
 async def root():
