@@ -12,6 +12,7 @@ Exit code 42 signals launch.py / run.bat to restart after Python update.
 
 from __future__ import annotations
 
+import filecmp
 import json
 import os
 import shutil
@@ -29,20 +30,64 @@ _USER_AGENT = "NeuroMita-Updater/2.0"
 _LOG_PREFIX = "[updater]"
 
 
-def _install_full_archive(archive: Path, base_path: Path, password, log) -> None:
-    """Полная установка: распаковать во временную папку, выровнять корневой
-    каталог и только потом стереть base_path и перенести содержимое внутрь.
+def _overlay_dir(staging: Path, base_path: Path, log) -> None:
+    """Наложить содержимое staging поверх base_path как diff.
 
-    Распаковка ДО wipe важна по трём причинам:
-      * архив качается в base_path/_update_download — иначе wipe удалил бы его
-        ещё до распаковки (обновление падало с 'No such file or directory',
-        оставляя папку стёртой);
-      * если архив битый или запаролен — base_path не будет стёрт, установка
-        останется рабочей;
-      * запущенная игра пишет логи прямо в base_path, из-за чего in-place
-        flatten не срабатывал (в папке больше одного элемента) и обновление
-        разворачивалось во вложенную папку NeuroMita_PythonBuild. В чистой
-        временной папке выравнивание корня работает надёжно.
+    Пишем только реально изменившиеся файлы и НИКОГДА не удаляем то, чего нет
+    в архиве. Благодаря этому переживают апдейт:
+      * libs/python — встроенный питон с уже установленными зависимостями
+        (раньше wipe сносил его, и run.py заново ставил весь requirements.txt,
+        а управляемый перезапуск падал — питона, который крутит цикл, больше
+        не было);
+      * .req_hash, Settings, Histories, Logs и прочие локальные файлы.
+
+    Идентичные файлы пропускаются (сравнение по размеру и содержимому), так что
+    обновление по сути диффовое: переписывается только то, что изменилось.
+    """
+    copied = 0
+    skipped = 0
+    for root, _dirs, files in os.walk(staging):
+        rel = Path(root).relative_to(staging)
+        dst_root = base_path / rel
+        dst_root.mkdir(parents=True, exist_ok=True)
+        for name in files:
+            src = Path(root) / name
+            dst = dst_root / name
+            try:
+                if dst.exists() and filecmp.cmp(src, dst, shallow=False):
+                    skipped += 1
+                    continue
+            except OSError:
+                pass
+            if dst.is_dir():
+                shutil.rmtree(dst, ignore_errors=True)
+            try:
+                shutil.copy2(src, dst)
+            except PermissionError:
+                # Файл занят (например запущенный python.exe сам себя) —
+                # пробуем заменить через временное имя.
+                try:
+                    if dst.exists():
+                        dst.unlink()
+                    shutil.copy2(src, dst)
+                except OSError as exc:
+                    log(f"Could not overwrite {dst}: {exc}")
+                    continue
+            copied += 1
+    log(f"Overlay update into {base_path}: {copied} files written, {skipped} unchanged.")
+
+
+def _install_full_archive(archive: Path, base_path: Path, password, log) -> None:
+    """Полная установка обновления как наложение поверх существующей папки.
+
+    Распаковываем в чистую временную папку (там надёжно срабатывает выравнивание
+    единственного корневого каталога — раньше из-за логов в base_path обновление
+    разворачивалось во вложенный NeuroMita_PythonBuild), а затем накладываем
+    diff'ом через _overlay_dir.
+
+    Намеренно НЕ делаем wipe_dir(base_path): полная очистка сносила встроенный
+    питон с зависимостями и ломала управляемый перезапуск, а также заставляла
+    переустанавливать весь requirements.txt при каждом обновлении.
     """
     staging = Path(tempfile.gettempdir()) / "neuromita_update_extract"
     if staging.exists():
@@ -52,19 +97,8 @@ def _install_full_archive(archive: Path, base_path: Path, password, log) -> None
         # extract_archive сам выровняет единственный корневой каталог; staging
         # чистый, поэтому это срабатывает надёжно.
         extract_archive(archive, staging, password)
-        wipe_dir(base_path)
         base_path.mkdir(parents=True, exist_ok=True)
-        for item in staging.iterdir():
-            target = base_path / item.name
-            if target.exists():
-                if target.is_dir():
-                    shutil.rmtree(target, ignore_errors=True)
-                else:
-                    try:
-                        target.unlink()
-                    except OSError:
-                        pass
-            shutil.move(str(item), str(target))
+        _overlay_dir(staging, base_path, log)
         log(f"Installed update contents into {base_path}")
     finally:
         shutil.rmtree(staging, ignore_errors=True)
