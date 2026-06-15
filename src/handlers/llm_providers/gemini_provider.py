@@ -5,6 +5,7 @@ import json
 import requests
 
 from main_logger import logger
+from handlers.llm_providers.errors import build_provider_error, coerce_provider_error
 from handlers.llm_providers.param_mapper import filter_jsonable_params
 from schemas.structured_response import StructuredResponse
 
@@ -219,18 +220,34 @@ class GeminiProvider(BaseProvider):
         import time as _time
 
         _t0 = _time.time()
-        response = requests.post(
-            req.api_url,
-            headers=headers,
-            json=data,
-            stream=need_stream,
-            timeout=120,
-        )
+        try:
+            response = requests.post(
+                req.api_url,
+                headers=headers,
+                json=data,
+                stream=need_stream,
+                timeout=120,
+            )
+        except Exception as e:
+            provider_error = coerce_provider_error(self.name, e, url=req.api_url)
+            logger.error(f"[GeminiProvider] {provider_error.to_console_summary()}", exc_info=True)
+            raise provider_error from e
         logger.info(f"[GeminiProvider] Response received in {_time.time()-_t0:.1f}s, status={response.status_code}")
 
         if response.status_code != 200:
-            logger.error(f"Gemini API error: {response.status_code} - {response.text[:500]}")
-            return LLMResponse(text=None, model=req.model, provider_name=self.name)
+            try:
+                payload = response.json()
+            except Exception:
+                payload = response.text[:500]
+            provider_error = build_provider_error(
+                self.name,
+                status_code=response.status_code,
+                payload=payload,
+                url=req.api_url,
+            )
+            logger.error(f"[GeminiProvider] {provider_error.to_console_summary()}")
+            logger.debug(f"[GeminiProvider] raw error payload: {payload}")
+            raise provider_error
 
         if need_stream:
             return self._handle_gemini_stream(response, req.stream_cb)
@@ -268,7 +285,14 @@ class GeminiProvider(BaseProvider):
             )
         except Exception as e:
             logger.error(f"Ошибка парсинга Gemini response: {e}", exc_info=True)
-            return LLMResponse(text=None, model=req.model, provider_name=self.name)
+            provider_error = build_provider_error(
+                self.name,
+                provider_message=f"Gemini response parse error: {e}",
+                payload=getattr(response, "text", None),
+                url=req.api_url,
+            )
+            logger.error(f"[GeminiProvider] {provider_error.to_console_summary()}", exc_info=True)
+            raise provider_error from e
 
     def _handle_gemini_stream(self, response, stream_callback: callable = None) -> LLMResponse:
         full_response_parts = []
@@ -311,12 +335,9 @@ class GeminiProvider(BaseProvider):
                     except json.JSONDecodeError:
                         break
 
-            return LLMResponse(
-                text="".join(full_response_parts),
-                usage=usage,
-                model=response_model,
-                provider_name=self.name,
-            )
+            provider_error = coerce_provider_error(self.name, e)
+            logger.error(f"[GeminiProvider] stream error: {provider_error.to_console_summary()}", exc_info=True)
+            raise provider_error from e
         except Exception as e:
             logger.error(f"Ошибка обработки Gemini stream: {e}", exc_info=True)
             return LLMResponse(

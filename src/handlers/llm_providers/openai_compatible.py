@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from main_logger import logger
 from .base import BaseProvider, LLMRequest, LLMResponse, normalize_usage_payload
+from .errors import build_provider_error, coerce_provider_error
 from schemas.structured_response import StructuredResponse
 from utils.openrouter_routing import (
     annotate_openrouter_prompt_cache,
@@ -56,11 +57,10 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
         model_to_use = self._get_model_to_use(req)
         client = self._get_client(req)
         if not client:
-            return LLMResponse(
-                text=None,
-                model=model_to_use,
-                provider_name=self.name,
-                error_message="Failed to initialize provider client.",
+            raise build_provider_error(
+                self.name,
+                provider_message="API client initialization returned no client.",
+                url=req.api_url,
             )
 
         try:
@@ -141,13 +141,9 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
             )
 
         except Exception as e:
-            logger.error(f"[{self.name}] Error during API call: {e}", exc_info=True)
-            return LLMResponse(
-                text=None,
-                model=model_to_use,
-                provider_name=self.name,
-                error_message=f"Provider API call failed: {e}",
-            )
+            provider_error = coerce_provider_error(self.name, e, url=req.api_url)
+            logger.error(f"[{self.name}] {provider_error.to_console_summary()}", exc_info=True)
+            raise provider_error from e
 
     def _map_unified_params(self, unified: Dict[str, Any], model_to_use: str) -> Dict[str, Any]:
         u = unified or {}
@@ -212,7 +208,9 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                         stream_callback(text)
                     parts.append(text)
         except Exception as e:
-            logger.error(f"[{self.name}] stream error: {e}", exc_info=True)
+            provider_error = coerce_provider_error(self.name, e)
+            logger.error(f"[{self.name}] stream error: {provider_error.to_console_summary()}", exc_info=True)
+            raise provider_error from e
 
         error_message = None
         if not parts:

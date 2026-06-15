@@ -1357,6 +1357,11 @@ class ModelController:
                     "Не удалось получить ответ.",
                     "Text generation failed."
                 )
+                if hasattr(self.model, "get_last_error_message"):
+                    try:
+                        error_message = self.model.get_last_error_message() or error_message
+                    except Exception:
+                        pass
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
                     "error": error_message
                 })

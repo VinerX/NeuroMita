@@ -3,6 +3,7 @@ import re
 from typing import List, Dict, Any, Optional
 
 from main_logger import logger
+from utils import _
 
 from characters.character import Character
 
@@ -163,6 +164,7 @@ class ChatModel:
         }
 
         self.HideAiData = True
+        self.last_error = None
 
     def generate(
         self,
@@ -280,7 +282,10 @@ class ChatModel:
             )
         except Exception as e:
             logger.error(f"Runner failed unexpectedly: {e}", exc_info=True)
+            self.last_error = None
             return None, False
+
+        self.last_error = self.request_runner.last_error
 
         if response_text and _last_req[0]:
             try:
@@ -326,6 +331,14 @@ class ChatModel:
             return response_text, False
 
         return response_text, False
+
+    def get_last_error_message(self) -> str:
+        if self.last_error:
+            try:
+                return self.last_error.to_user_message()
+            except Exception:
+                return str(self.last_error)
+        return _("Не удалось получить ответ.", "Failed to get a response.")
 
     def _log_generation_start(self, preset_id: Optional[int] = None):
         logger.info("Preparing to generate LLM response.")

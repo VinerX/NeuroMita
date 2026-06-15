@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Callable, Optional, Any, Mapping
 from abc import ABC, abstractmethod
 
+from .errors import LLMProviderError
+
 
 @dataclass
 class LLMRequest:
@@ -174,3 +176,13 @@ class BaseProvider(ABC):
     @abstractmethod
     def generate(self, req: LLMRequest) -> LLMResponse:
         pass
+
+
+__all__ = [
+    "LLMRequest",
+    "LLMUsage",
+    "LLMResponse",
+    "BaseProvider",
+    "normalize_usage_payload",
+    "LLMProviderError",
+]

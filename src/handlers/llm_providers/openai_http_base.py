@@ -9,6 +9,7 @@ import requests
 
 from main_logger import logger
 from handlers.llm_providers.base import BaseProvider, LLMRequest, LLMResponse, normalize_usage_payload
+from handlers.llm_providers.errors import build_provider_error, coerce_provider_error
 from schemas.structured_response import StructuredResponse
 from utils.openrouter_routing import (
     annotate_openrouter_prompt_cache,
@@ -215,11 +216,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
         if not req.api_url:
             logger.error(f"[{self.name}] api_url is empty.")
-            return LLMResponse(
-                text=None,
-                provider_name=self.name,
-                error_message="Provider api_url is empty.",
-            )
+            raise build_provider_error(self.name, provider_message="api_url is empty.", url=req.api_url)
 
         model_to_use = req.model
         msgs = self._preprocess_messages(req)
@@ -228,7 +225,12 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
         payload = self._build_payload(req, model_to_use, msgs)
 
-        resp = self._request(request_url, req, payload)
+        try:
+            resp = self._request(request_url, req, payload)
+        except Exception as e:
+            provider_error = coerce_provider_error(self.name, e, url=request_url)
+            logger.error(f"[{self.name}] {provider_error.to_console_summary()}", exc_info=True)
+            raise provider_error from e
 
         if resp.status_code == 400 and self._supports_structured_output(req):
             rf_mode = (req.capabilities or {}).get("structured_output_mode", "json_schema")
@@ -251,14 +253,15 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 err = resp.json()
             except Exception:
                 err = resp.text
-            error_text = self._stringify_error(err)
-            logger.error(f"[{self.name}] HTTP {resp.status_code}: {error_text}")
-            return LLMResponse(
-                text=None,
-                model=model_to_use,
-                provider_name=self.name,
-                error_message=f"HTTP {resp.status_code}: {error_text}",
+            provider_error = build_provider_error(
+                self.name,
+                status_code=resp.status_code,
+                payload=err,
+                url=request_url,
             )
+            logger.error(f"[{self.name}] {provider_error.to_console_summary()}")
+            logger.debug(f"[{self.name}] raw error payload: {self._stringify_error(err, limit=800)}")
+            raise provider_error
 
         if req.stream:
             return self._handle_stream(resp, request_url, req.stream_cb)
@@ -266,13 +269,14 @@ class OpenAIHTTPProviderBase(BaseProvider):
         try:
             data = resp.json()
         except Exception as e:
-            logger.error(f"[{self.name}] JSON parse error: {e}", exc_info=True)
-            return LLMResponse(
-                text=None,
-                model=model_to_use,
-                provider_name=self.name,
-                error_message=f"Failed to parse provider JSON response: {e}",
+            provider_error = build_provider_error(
+                self.name,
+                provider_message=f"JSON parse error: {e}",
+                payload=getattr(resp, "text", None),
+                url=request_url,
             )
+            logger.error(f"[{self.name}] {provider_error.to_console_summary()}", exc_info=True)
+            raise provider_error from e
 
         message = (data.get("choices", [{}])[0].get("message") or {}) if isinstance(data, dict) else {}
         finish_reason = ((data.get("choices") or [{}])[0].get("finish_reason") if isinstance(data, dict) else None)
@@ -352,7 +356,9 @@ class OpenAIHTTPProviderBase(BaseProvider):
                         logger.warning(f"[{self.name}] Failed to parse stream chunk: {last_chunk_error}. Chunk: {preview}")
                     continue
         except Exception as e:
-            logger.error(f"[{self.name}] stream error: {e}", exc_info=True)
+            provider_error = coerce_provider_error(self.name, e, url=api_url)
+            logger.error(f"[{self.name}] stream error: {provider_error.to_console_summary()}", exc_info=True)
+            raise provider_error from e
 
         error_message = None
         if not parts:
