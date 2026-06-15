@@ -99,6 +99,24 @@ def bin_filter(path: pathlib.Path) -> bool:
 
 
 EXCLUDE_CHECKPOINTS = env.get("BUILD_EXCLUDE_CHECKPOINTS", "1") == "1"
+EXCLUDE_MANAGED_BACKENDS = env.get("BUILD_EXCLUDE_MANAGED_BACKENDS", "1") == "1"
+
+# В корневой Lib игра докладывает тяжёлые runtime/backend-пакеты уже на машине
+# пользователя. В релизный zip не должны утекать следы локальной dev-среды:
+# stale torch/torchaudio dist-info, CUDA-runtime и маркеры установленных
+# бэкендов. Иначе первый запуск начинает "реактивный" reinstall того, что
+# случайно попало в билд с машины сборки.
+MANAGED_BACKEND_NAMES = {
+    ".neuromita_backends.json",
+    "torch",
+    "torchaudio",
+    "torchvision",
+    "torchtext",
+    "torchdata",
+    "nvidia",
+    "triton",
+    "pytorch_triton",
+}
 
 # Чистить выходную папку перед сборкой, чтобы не тащить в зип мусор от прошлых
 # сборок и запусков (Logs, Histories, Settings разработчика, scripts и т.п.).
@@ -159,15 +177,30 @@ def _rmtree_robust(target: Path, attempts: int = 4) -> None:
 
 def make_copy_ignore():
     """Возвращает ignore-функцию для shutil.copytree."""
-    if not EXCLUDE_DOT_DIRS and not EXCLUDE_CHECKPOINTS:
+    if not EXCLUDE_DOT_DIRS and not EXCLUDE_CHECKPOINTS and not EXCLUDE_MANAGED_BACKENDS:
         return None
     def ignore(directory, contents):
         ignored = []
+        dir_name = Path(directory).name.lower()
         for name in contents:
             if EXCLUDE_DOT_DIRS and name.startswith("."):
                 ignored.append(name)
             elif EXCLUDE_CHECKPOINTS and name == "checkpoints":
                 ignored.append(name)
+            elif EXCLUDE_MANAGED_BACKENDS and dir_name == "lib":
+                lower = name.lower()
+                if (
+                    lower in MANAGED_BACKEND_NAMES
+                    or lower.startswith("torch-")
+                    or lower.startswith("torchaudio-")
+                    or lower.startswith("torchvision-")
+                    or lower.startswith("torchtext-")
+                    or lower.startswith("torchdata-")
+                    or lower.startswith("nvidia-")
+                    or lower.startswith("triton-")
+                    or lower.startswith("pytorch_triton-")
+                ):
+                    ignored.append(name)
         if ignored:
             print(f"  Пропускаю в {directory}: {ignored}")
         return ignored
@@ -193,6 +226,7 @@ if __name__ == "__main__":
     print(f"Выходная папка      : {OUTPUT_DIR}")
     print(f"Фильтр dot-папок    : {'вкл' if EXCLUDE_DOT_DIRS else 'выкл'}")
     print(f"Фильтр checkpoints  : {'вкл' if EXCLUDE_CHECKPOINTS else 'выкл'}")
+    print(f"Фильтр backend Lib  : {'вкл' if EXCLUDE_MANAGED_BACKENDS else 'выкл'}")
     print(f"Очистка output      : {'вкл' if CLEAN_OUTPUT else 'выкл'}")
 
     if CLEAN_OUTPUT:
