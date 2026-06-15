@@ -1,26 +1,29 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget, QScrollArea
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QRectF
+from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from managers.settings_manager import SettingsManager
+from styles.theme import get_theme
 
 
 class SettingsResizeHandle(QWidget):
     def __init__(self, overlay, parent=None):
         super().__init__(parent)
         self.overlay = overlay
+        theme = get_theme()
         self._is_resizing = False
         self._drag_start_x = 0
         self._start_width = 0
         self.setObjectName("SettingsResizeHandle")
         self.setFixedWidth(6)
         self.setCursor(Qt.CursorShape.SizeHorCursor)
-        self.setStyleSheet("""
-            QWidget#SettingsResizeHandle {
+        self.setStyleSheet(f"""
+            QWidget#SettingsResizeHandle {{
                 background-color: transparent;
-                border-left: 3px solid #4f5d75;
-            }
-            QWidget#SettingsResizeHandle:hover {
-                border-left: 3px solid #7f8fb3;
-            }
+                border-left: 3px solid rgba({theme['accent_rgb']}, 0.26);
+            }}
+            QWidget#SettingsResizeHandle:hover {{
+                border-left: 3px solid rgba({theme['accent_rgb']}, 0.72);
+            }}
         """)
 
     def mousePressEvent(self, event):
@@ -51,6 +54,7 @@ class SettingsResizeHandle(QWidget):
 class SettingsOverlay(QWidget):
     def __init__(self, parent):
         super().__init__(parent)
+        self._theme = get_theme()
         self._resize_edge = 14
         self._is_resizing = False
         self._drag_start_x = 0
@@ -62,9 +66,6 @@ class SettingsOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("""
-            QWidget#SettingsOverlay {
-                background-color: #1a1a1a;
-            }
             QWidget#SettingsOverlay QStackedWidget,
             QWidget#SettingsOverlay QStackedWidget > QWidget,
             QWidget#SettingsOverlay QScrollArea,
@@ -75,7 +76,7 @@ class SettingsOverlay(QWidget):
         """)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setContentsMargins(18, 18, 18, 18)
 
         self.stack = QStackedWidget()
         lay.addWidget(self.stack)
@@ -149,3 +150,38 @@ class SettingsOverlay(QWidget):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        rect = QRectF(self.rect().adjusted(1, 1, -1, -1))
+        radius = 26
+
+        panel_path = QPainterPath()
+        panel_path.addRoundedRect(rect, radius, radius)
+
+        gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        gradient.setColorAt(0.0, QColor(16, 13, 25, 244))
+        gradient.setColorAt(0.55, QColor(12, 9, 21, 248))
+        gradient.setColorAt(1.0, QColor(8, 8, 18, 250))
+        painter.fillPath(panel_path, gradient)
+
+        painter.save()
+        painter.setClipPath(panel_path)
+        painter.setPen(QPen(QColor(219, 101, 150, 18), 1))
+        step = 26
+        rl, rt, rr, rb, rh = int(rect.left()), int(rect.top()), int(rect.right()), int(rect.bottom()), int(rect.height())
+        for x in range(rl - rh, rr + rh, step):
+            painter.drawLine(x, rt, x + rh, rb)
+        painter.setPen(QPen(QColor(219, 101, 150, 10), 1))
+        for y in range(rt, rb, step):
+            painter.drawLine(rl, y, rr, y)
+        painter.restore()
+
+        painter.setPen(QPen(QColor(219, 101, 150, 88), 1.2))
+        painter.drawPath(panel_path)
+
+        inner = rect.adjusted(10, 10, -10, -10)
+        painter.setPen(QPen(QColor(255, 255, 255, 14), 1))
+        painter.drawRoundedRect(inner, radius - 8, radius - 8)

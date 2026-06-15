@@ -56,16 +56,33 @@ class AsrEventsController(BaseController):
         mic_active = bool(self._settings_cache.get("MIC_ACTIVE", False))
         if mic_active:
             self._asr_initializing = True
+            self._arm_init_timeout_guard()
             self._emit_indicator("loading", _("Инициализация ASR...", "Initializing ASR..."))
             self._sync_indicator(force=True)
         else:
             self._emit_indicator(None, None)
 
+    def _arm_init_timeout_guard(self):
+        """Make sure the 'initializing' state can never stick forever: after a
+        grace period drop it and let _sync_indicator fall back to the real
+        ready check. Each call invalidates the previous guard via the token."""
+        self._init_token += 1
+        tok = self._init_token
+
+        def _timeout_guard():
+            time.sleep(35.0)
+            if self._init_token != tok:
+                return
+            if self._asr_initializing:
+                self._asr_initializing = False
+                self._sync_indicator(force=True)
+
+        threading.Thread(target=_timeout_guard, daemon=True).start()
+
     # ---------------- UI pills from old logic ----------------
     def _on_asr_init_started(self, _event: Event):
         self._asr_initializing = True
-        self._init_token += 1
-        tok = self._init_token
+        self._arm_init_timeout_guard()
 
         if self.view and hasattr(self.view, "asr_set_pill") and hasattr(self.view, "asr_init_status"):
             try:
@@ -78,16 +95,6 @@ class AsrEventsController(BaseController):
                 logger.debug(f"ASR init pill update failed: {e}")
 
         self._sync_indicator()
-
-        def _timeout_guard():
-            time.sleep(35.0)
-            if self._init_token != tok:
-                return
-            if self._asr_initializing:
-                self._asr_initializing = False
-                self._sync_indicator(force=True)
-
-        threading.Thread(target=_timeout_guard, daemon=True).start()
 
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 

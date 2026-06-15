@@ -186,7 +186,7 @@ class TTSService:
         produced: Optional[str] = None
         try:
             produced = await lv.voiceover(
-                text="warmup",
+                text="warmup-вармап",
                 output_file=out,
                 character=None,
             )

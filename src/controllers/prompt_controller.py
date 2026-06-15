@@ -11,6 +11,9 @@ from core.request_policy import RequestPolicy, resolve_policy
 
 _TYPE_MAP = {"float": "number", "double": "number", "int": "integer",
              "bool": "boolean", "str": "string", "string": "string"}
+_VOLATILE_SYSTEM_BLOCK_PREFIXES = (
+    "current context:",
+)
 
 
 def _build_custom_params_schema(custom_params: list) -> str:
@@ -35,6 +38,18 @@ class PromptController:
 
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.Prompt.BUILD_PROMPT, self._on_build_prompt, weak=False)
+
+    def _get_setting(self, key: str, default=None):
+        """Fetch a single setting value via the event bus."""
+        try:
+            res = self.event_bus.emit_and_wait(
+                Events.Settings.GET_SETTING,
+                {"key": key, "default": default},
+                timeout=0.5,
+            )
+            return res[0] if res else default
+        except Exception:
+            return default
 
     def _load_app_vars(self) -> Dict[str, Any]:
         app_vars: Dict[str, Any] = {}
@@ -73,7 +88,7 @@ class PromptController:
         separate_prompts: bool,
         policy: RequestPolicy | None = None,
         capabilities: Dict[str, Any] | None = None,
-    ) -> tuple[List[Dict[str, Any]], List[str]]:
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
         self._setup_character_for_prompt(character, event_type)
 
         # Expose capabilities as character variables so DSL templates can use them
@@ -116,10 +131,20 @@ class PromptController:
                 f"для персонажа {getattr(character, 'char_id', '')}: {e}",
                 exc_info=True
             )
-            return [], []
+            return [], [], []
 
-        system_messages: List[Dict[str, Any]] = []
-        system_messages.extend(build_system_prompts(blocks, separate=separate_prompts))
+        stable_system_messages: List[Dict[str, Any]] = []
+        volatile_system_messages: List[Dict[str, Any]] = []
+        stable_blocks: List[str] = []
+        volatile_blocks: List[str] = []
+        for block in blocks or []:
+            if self._is_volatile_system_block(block):
+                volatile_blocks.append(block)
+            else:
+                stable_blocks.append(block)
+
+        stable_system_messages.extend(build_system_prompts(stable_blocks, separate=separate_prompts))
+        volatile_system_messages.extend(build_system_prompts(volatile_blocks, separate=separate_prompts))
 
         memory_message_content = ""
         try:
@@ -133,20 +158,61 @@ class PromptController:
             memory_message_content = ""
 
         if memory_message_content and memory_message_content.strip():
-            system_messages.append({"role": "system", "content": memory_message_content})
+            volatile_system_messages.append({"role": "system", "content": memory_message_content})
 
         try:
             if hasattr(character, "reminder_system") and character.reminder_system:
                 reminder_content = character.reminder_system.get_reminders_formatted()
                 if reminder_content and reminder_content.strip():
-                    system_messages.append({"role": "system", "content": reminder_content})
+                    volatile_system_messages.append({"role": "system", "content": reminder_content})
         except Exception as e:
             logger.warning(
                 f"[PromptController] Ошибка получения напоминаний для персонажа "
                 f"{getattr(character, 'char_id', '')}: {e}"
             )
 
-        return system_messages, dsl_system_infos
+        return stable_system_messages, volatile_system_messages, dsl_system_infos
+
+    @staticmethod
+    def _build_behavior_state_message(character) -> Optional[Dict[str, str]]:
+        try:
+            attitude = float(character.get_variable("attitude", 60.0))
+            boredom = float(character.get_variable("boredom", 10.0))
+            stress = float(character.get_variable("stress", 5.0))
+        except Exception:
+            return None
+
+        lines = [
+            "[Behavior State]",
+            f"Attitude: {attitude:.1f}",
+            f"Boredom: {boredom:.1f}",
+            f"Stress: {stress:.1f}",
+        ]
+
+        try:
+            for param in getattr(character, "custom_params", []) or []:
+                if not isinstance(param, dict):
+                    continue
+                name = str(param.get("name") or "").strip()
+                if name.lower() != "love":
+                    continue
+                love_value = character.get_variable(name, param.get("default", param.get("initial", 0.0)))
+                if isinstance(love_value, float):
+                    lines.append(f"Love: {love_value:.1f}")
+                else:
+                    lines.append(f"Love: {love_value}")
+                break
+        except Exception:
+            pass
+
+        return {"role": "system", "content": "\n".join(lines)}
+
+    @staticmethod
+    def _is_volatile_system_block(block: Any) -> bool:
+        if not isinstance(block, str):
+            return False
+        normalized = " ".join(block.strip().split()).lower()
+        return any(normalized.startswith(prefix) for prefix in _VOLATILE_SYSTEM_BLOCK_PREFIXES)
 
     def _on_build_prompt(self, event: Event) -> Dict[str, Any]:
         data = event.data or {}
@@ -171,6 +237,7 @@ class PromptController:
         event_type: str = data.get("event_type", "chat")
         user_input: str = data.get("user_input", "") or ""
         system_input: str = data.get("system_input", "") or ""
+        hidden_user_context: str = data.get("hidden_user_context", "") or ""
         image_data = data.get("image_data") or []
 
         sender: str = str(data.get("sender") or "Player")
@@ -212,22 +279,14 @@ class PromptController:
 
         messages: List[Dict[str, Any]] = []
 
-        system_messages, dsl_system_infos = self._build_system_messages(
+        stable_system_messages, volatile_system_messages, dsl_system_infos = self._build_system_messages(
             character, event_type, separate_prompts, policy=policy,
             capabilities=capabilities,
         )
-        messages.extend(system_messages)
-
-        if game_state_prompt_content:
-            messages.append({"role": "system", "content": game_state_prompt_content})
-
-        non_player_participants = [p for p in participants if p and p != "Player"]
-        if len(non_player_participants) >= 2:
-            sys_txt = self._load_participants_system(character, non_player_participants, sender)
-            if sys_txt:
-                messages.append({"role": "system", "content": sys_txt})
+        messages.extend(stable_system_messages)
 
         history_limited: List[Dict[str, Any]] = []
+        history_summary: str = ""
         if policy.use_history_in_prompt:
             hist_res = self.event_bus.emit_and_wait(
                 Events.History.PREPARE_FOR_PROMPT,
@@ -245,20 +304,42 @@ class PromptController:
             )
             if hist_res and isinstance(hist_res[0], dict):
                 history_limited = hist_res[0].get("history", []) or []
-
-        for info in extra_system_infos:
-            if isinstance(info, dict):
-                history_limited.append(info)
-            elif isinstance(info, str):
-                history_limited.append({"role": "system", "content": info})
+                history_summary = str(hist_res[0].get("history_summary", "") or "").strip()
 
         for s in dsl_system_infos:
             if isinstance(s, str):
-                history_limited.append({"role": "system", "content": s})
+                messages.append({"role": "system", "content": s})
             elif isinstance(s, dict):
-                history_limited.append(s)
+                messages.append(s)
+
+        if history_summary:
+            messages.append({
+                "role": "system",
+                "content": f"[HISTORY SUMMARY]\n{history_summary}",
+            })
 
         messages.extend(history_limited)
+
+        if game_state_prompt_content:
+            messages.append({"role": "system", "content": game_state_prompt_content})
+
+        non_player_participants = [p for p in participants if p and p != "Player"]
+        if len(non_player_participants) >= 2:
+            sys_txt = self._load_participants_system(character, non_player_participants, sender)
+            if sys_txt:
+                messages.append({"role": "system", "content": sys_txt})
+
+        messages.extend(volatile_system_messages)
+
+        behavior_state_message = self._build_behavior_state_message(character)
+        if behavior_state_message:
+            messages.append(behavior_state_message)
+
+        for info in extra_system_infos:
+            if isinstance(info, dict):
+                messages.append(info)
+            elif isinstance(info, str):
+                messages.append({"role": "system", "content": info})
 
         current_time = datetime.datetime.now()
         messages.append({
@@ -285,6 +366,12 @@ class PromptController:
 
             messages.append({"role": role, "content": system_input})
 
+        if hidden_user_context:
+            messages.append({
+                "role": "system",
+                "content": hidden_user_context,
+            })
+
         user_message_for_history: Optional[Dict[str, Any]] = None
         user_content_chunks: List[Dict[str, Any]] = []
 
@@ -295,6 +382,9 @@ class PromptController:
                 prefix = ""
             user_content_chunks.append({"type": "text", "text": prefix + user_input})
 
+        _is_structured = bool(capabilities.get("structured_output", False))
+        inline_desc_enabled = bool(self._get_setting("IMAGE_INLINE_DESCRIPTION", False)) if image_data else False
+
         for img in image_data:
             if isinstance(img, bytes):
                 img_b64 = base64.b64encode(img).decode("utf-8")
@@ -304,6 +394,21 @@ class PromptController:
                 "type": "image_url",
                 "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
             })
+
+        if image_data and inline_desc_enabled:
+            _detail = str(self._get_setting("IMAGE_DESCRIPTION_DETAIL", "normal") or "normal")
+            if _is_structured:
+                from handlers.image_description_handler import get_structured_inline_instruction
+                messages.append({
+                    "role": "system",
+                    "content": get_structured_inline_instruction(_detail)
+                })
+            else:
+                from handlers.image_description_handler import get_inline_instruction
+                messages.append({
+                    "role": "system",
+                    "content": get_inline_instruction(_detail)
+                })
 
         if user_content_chunks:
             user_message_for_history = {"role": "user", "content": user_content_chunks}

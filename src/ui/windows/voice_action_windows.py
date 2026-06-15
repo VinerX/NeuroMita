@@ -28,9 +28,14 @@ class VoiceInstallationWindow(QDialog):
     status_updated = pyqtSignal(str)
     log_updated = pyqtSignal(str)
     window_closed = pyqtSignal()
+    minimized = pyqtSignal()
 
     def __init__(self, parent, title, initial_status=None):
         super().__init__(parent)
+        # Пока установка идёт, закрытие окна не отменяет её — окно просто
+        # прячется (логи сохраняются), и его можно открыть снова. Реальное
+        # закрытие происходит только после finalize() (задача завершена).
+        self._finished = False
         self.setWindowTitle(title)
         self.setMinimumSize(720, 420)
         self.resize(820, 520)
@@ -52,7 +57,7 @@ class VoiceInstallationWindow(QDialog):
                 text-align: center;
             }
             QProgressBar::chunk {
-                background-color: #4CAF50;
+                background-color: #db6596;
                 border-radius: 5px;
             }
             QPushButton {
@@ -113,6 +118,16 @@ class VoiceInstallationWindow(QDialog):
         self.log_text.setReadOnly(True)
         self.log_text.setFont(QFont("Consolas", 9))
         layout.addWidget(self.log_text, 1)
+
+        hint_label = QLabel(_(
+            "💡 Это окно можно закрыть — установка продолжится в фоне. "
+            "Открыть снова и посмотреть логи: «Логи установки» в боковой панели.",
+            "💡 You can close this window — the installation keeps running in the "
+            "background. Reopen it and view logs via “Install logs” in the sidebar.",
+        ))
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        layout.addWidget(hint_label)
 
         actions_layout = QHBoxLayout()
         copy_btn = QPushButton(_("Копировать лог", "Copy Log"))
@@ -249,7 +264,7 @@ class VoiceInstallationWindow(QDialog):
         QGuiApplication.clipboard().setText("\n".join(self._full_log_lines) or "")
 
     def _save_log(self):
-        fname, _ = QFileDialog.getSaveFileName(self, _("Сохранить лог", "Save Log"), "install_log.txt", "Text Files (*.txt)")
+        fname, _selected_filter = QFileDialog.getSaveFileName(self, _("Сохранить лог", "Save Log"), "install_log.txt", "Text Files (*.txt)")
         if fname:
             try:
                 with open(fname, "w", encoding="utf-8") as f:
@@ -262,7 +277,19 @@ class VoiceInstallationWindow(QDialog):
         self._display_lines.clear()
         self._render_display_lines()
 
+    def finalize(self):
+        """Mark the task as finished so the window may actually close."""
+        self._finished = True
+
     def closeEvent(self, event):
+        # While the task is still running, closing only hides the window (the
+        # install keeps going and the accumulated logs are preserved so the
+        # user can reopen it). A real close happens once finalize() was called.
+        if not self._finished:
+            event.ignore()
+            self.hide()
+            self.minimized.emit()
+            return
         self.window_closed.emit()
         super().closeEvent(event)
 
@@ -467,7 +494,7 @@ class VoiceActionWindow(QDialog):
         QGuiApplication.clipboard().setText("\n".join(self._full_log_lines) or "")
 
     def _save_log(self):
-        fname, _ = QFileDialog.getSaveFileName(self, _("Сохранить лог", "Save Log"), "action_log.txt", "Text Files (*.txt)")
+        fname, _selected_filter = QFileDialog.getSaveFileName(self, _("Сохранить лог", "Save Log"), "action_log.txt", "Text Files (*.txt)")
         if fname:
             try:
                 with open(fname, "w", encoding="utf-8") as f:
@@ -509,8 +536,8 @@ class VCRedistWarningDialog(QDialog):
                 font-weight: bold;
             }
             QPushButton:hover { background-color: #555555; }
-            #RetryButton { background-color: #4CAF50; }
-            #RetryButton:hover { background-color: #45a049; }
+            #RetryButton { background-color: #db6596; }
+            #RetryButton:hover { background-color: #e26e9e; }
         """)
         
         self.choice = 'close'
@@ -585,8 +612,8 @@ class TritonDependenciesDialog(QDialog):
                 font-weight: bold;
             }
             QPushButton:hover { background-color: #555555; }
-            #ContinueButton { background-color: #4CAF50; }
-            #ContinueButton:hover { background-color: #45a049; }
+            #ContinueButton { background-color: #db6596; }
+            #ContinueButton:hover { background-color: #e26e9e; }
         """)
         
         self.choice = 'skip'

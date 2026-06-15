@@ -139,7 +139,7 @@ class MicrophoneSettingsController(BaseController):
 
     def _open_asr_glossary(self):
         try:
-            self.event_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "asr_glossary"})
+            self.event_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "asr"}})
         except Exception:
             pass
 

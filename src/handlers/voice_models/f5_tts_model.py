@@ -10,9 +10,10 @@ from .base_model import IVoiceModel
 from main_logger import logger
 from utils import getTranslationVariant as _, get_character_voice_paths
 
+from core.backends import BackendKind, get_backend_service
 from core.install_types import InstallPlan, InstallAction
 from core.install_requirements import InstallRequirement, check_requirements
-from handlers.voice_models.install_plan_helpers import torch_install_action, pip_uninstall_action, remove_paths_action
+from handlers.voice_models.install_plan_helpers import pip_uninstall_action, remove_paths_action
 
 class F5TTSInstallSpec:
     @classmethod
@@ -25,12 +26,15 @@ class F5TTSInstallSpec:
 
     @classmethod
     def requirements(cls, model_id: str, ctx: dict) -> list[InstallRequirement]:
+        backend_kind = cls.required_backend(model_id, ctx)
         model_dir = os.path.join("checkpoints", "F5-TTS")
         ckpt = os.path.join(model_dir, "model.safetensors")
         vocab = os.path.join(model_dir, "vocab.txt")
 
         req = [
+            InstallRequirement(id=f"backend_{backend_kind.value}", kind="backend", backend_kind=backend_kind, required=True),
             InstallRequirement(id="f5_tts", kind="python_dist", spec="f5-tts", required=True),
+            InstallRequirement(id="pyarrow", kind="python_dist", spec="pyarrow<21.0.0", required=True),
             InstallRequirement(id="ckpt", kind="file", path=ckpt, required=True),
             InstallRequirement(id="vocab", kind="file", path=vocab, required=True),
         ]
@@ -46,10 +50,17 @@ class F5TTSInstallSpec:
         return bool(st.get("ok"))
 
     @classmethod
+    def required_backend(cls, model_id: str, ctx: dict) -> BackendKind:
+        return get_backend_service().preferred_torch_kind(ctx)
+
+    @classmethod
     def build_install_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
         mid = str(model_id)
+        backend_kind = cls.required_backend(mid, ctx)
         if cls.is_installed(mid, ctx):
             return InstallPlan(
+                required_backend=backend_kind,
+                backend_context=dict(ctx),
                 actions=[],
                 already_installed=True,
                 already_installed_status=_("Уже установлено", "Already installed")
@@ -61,13 +72,11 @@ class F5TTSInstallSpec:
 
         actions: list[InstallAction] = []
 
-        actions.append(torch_install_action(ctx, progress=10))
-
         pkgs = [
             "f5-tts",
+            "pyarrow<21.0.0",
             "cached_path",
             "google-api-core",
-            "numpy==1.26.0",
             "librosa==0.9.1",
             "numba==0.60.0",
             "ruaccent",
@@ -123,7 +132,12 @@ class F5TTSInstallSpec:
             )
         )
 
-        return InstallPlan(actions=actions, ok_status=_("Готово", "Done"))
+        return InstallPlan(
+            actions=actions,
+            ok_status=_("Готово", "Done"),
+            required_backend=backend_kind,
+            backend_context=dict(ctx),
+        )
 
 
     @classmethod
@@ -238,6 +252,22 @@ class F5TTSModel(IVoiceModel):
 
     def get_model_configs(self) -> List[Dict[str, Any]]:
         return self.MODEL_CONFIGS
+
+    @classmethod
+    def required_backend_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> BackendKind:
+        return F5TTSInstallSpec.required_backend(model_id, ctx)
+
+    @classmethod
+    def is_model_installed(cls, model_id: str, ctx: Dict[str, Any]) -> bool:
+        return F5TTSInstallSpec.is_installed(model_id, ctx)
+
+    @classmethod
+    def build_install_plan_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> InstallPlan:
+        return F5TTSInstallSpec.build_install_plan(model_id, ctx)
+
+    @classmethod
+    def build_uninstall_plan_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> InstallPlan:
+        return F5TTSInstallSpec.build_uninstall_plan(model_id, ctx)
 
     def get_display_name(self) -> str:
         mode = self._mode()

@@ -20,7 +20,9 @@ from managers.game_state_manager import GameState
 from managers.context_counter import ContextCounter
 from managers.conversation_event_writer import ConversationEventWriter
 from managers.history_ui_projector import HistoryUiProjector
+from managers.model_pricing_manager import ModelPricingManager
 from core.request_policy import RequestPolicy, resolve_policy
+from handlers.llm_providers.base import LLMUsage
 from utils.structured_response_parser import (
     parse_structured_response,
     structured_response_to_result_dict,
@@ -105,13 +107,18 @@ class ModelController:
         self.model.tool_manager.register(ReminderTool())
 
         self.context_counter = ContextCounter(encoding_model="gpt-4o-mini")
+        self.model_pricing_manager = ModelPricingManager()
         self._base_prompt_cache: dict[tuple[str, str], list[dict]] = {}
+        self._last_token_stats: dict[str, Any] = {}
 
         self.game_state = GameState()
         self._temporary_system_infos: list[dict] = []
 
         self.event_writer = ConversationEventWriter(character_ref_resolver=self._get_character_ref)
         self.ui_projector = HistoryUiProjector(resolve_name=lambda cid: str(getattr(self._get_character_ref(cid), "name", "") or cid))
+
+        from handlers.image_description_handler import ImageDescriptionHandler
+        self.image_description_handler = ImageDescriptionHandler(model=self.model, settings=self.settings)
 
         self._refresh_chat_model_character_refs()
 
@@ -191,6 +198,7 @@ class ModelController:
 
         self.event_bus.subscribe(Events.Model.GET_CURRENT_CONTEXT_TOKENS, self._on_get_current_context_tokens, weak=False)
         self.event_bus.subscribe(Events.Model.CALCULATE_COST, self._on_calculate_cost, weak=False)
+        self.event_bus.subscribe(Events.Model.GET_TOKEN_STATS, self._on_get_token_stats, weak=False)
 
         self.event_bus.subscribe(Events.Model.RELOAD_PROMPTS_ASYNC, self._on_reload_prompts_async, weak=False)
 
@@ -213,6 +221,7 @@ class ModelController:
 
     def _on_character_current_changed(self, event: Event):
         self._refresh_chat_model_character_refs()
+        self._last_token_stats = {}
 
     # ---------------------------------------------------------------------
     # Game state / temp system infos
@@ -233,6 +242,91 @@ class ModelController:
 
     def _on_get_game_state(self, event: Event):
         return self.game_state.to_prompt_dict()
+
+    def _summarize_image_data_for_capture(self, image_data: Any) -> dict[str, Any]:
+        items = image_data if isinstance(image_data, list) else []
+        summary_items: list[dict[str, Any]] = []
+        for idx, item in enumerate(items):
+            if isinstance(item, str):
+                summary_items.append({
+                    "index": idx,
+                    "kind": "str",
+                    "chars": len(item),
+                    "preview": item[:80],
+                })
+                continue
+            if isinstance(item, dict):
+                summary_items.append({
+                    "index": idx,
+                    "kind": "dict",
+                    "keys": sorted(str(k) for k in item.keys()),
+                    "type": str(item.get("type") or ""),
+                    "mime_type": str(item.get("mime_type") or item.get("mimeType") or ""),
+                    "chars": len(str(item.get("data") or item.get("image") or "")),
+                })
+                continue
+            summary_items.append({
+                "index": idx,
+                "kind": type(item).__name__,
+                "repr": repr(item)[:120],
+            })
+        return {
+            "count": len(items),
+            "items": summary_items,
+        }
+
+    def _capture_generation_input(
+        self,
+        *,
+        raw_event_data: dict,
+        char_id: str,
+        char_name: str,
+        event_type: str,
+        preset_id_override: Any,
+        policy: RequestPolicy,
+        build_prompt_payload: dict,
+        original_image_data: Any,
+        image_data_after_processing: Any,
+        image_descriptions: dict[str, str] | None,
+    ) -> None:
+        try:
+            from managers.generation_input_collector import GenerationInputCollector
+
+            collector = GenerationInputCollector.instance
+            if collector is None:
+                collector = GenerationInputCollector()
+                GenerationInputCollector.instance = collector
+            if not collector.is_enabled():
+                return
+
+            incoming_event = copy.deepcopy(raw_event_data or {})
+            if "stream_callback" in incoming_event:
+                incoming_event["stream_callback"] = "<omitted>"
+
+            build_prompt_copy = {
+                key: copy.deepcopy(value)
+                for key, value in (build_prompt_payload or {}).items()
+                if key != "character_ref"
+            }
+            build_prompt_copy["image_data"] = self._summarize_image_data_for_capture(
+                build_prompt_copy.get("image_data")
+            )
+
+            record = {
+                "character_id": char_id,
+                "character_name": char_name,
+                "event_type": event_type,
+                "preset_id_override": preset_id_override,
+                "policy": policy.to_dict(),
+                "incoming_event": incoming_event,
+                "original_image_data": self._summarize_image_data_for_capture(original_image_data),
+                "processed_image_data": self._summarize_image_data_for_capture(image_data_after_processing),
+                "image_descriptions": copy.deepcopy(image_descriptions or {}),
+                "build_prompt_payload": build_prompt_copy,
+            }
+            collector.save_capture(record)
+        except Exception as e:
+            logger.warning(f"[ModelController] Failed to capture generation input: {e}")
 
     # ---------------------------------------------------------------------
     # History UI
@@ -426,7 +520,7 @@ class ModelController:
         # небольшая обратная совместимость на случай странных значений
         if raw_role == "player":
             raw_role = "user"
-        if raw_role not in ("user", "assistant", "system"):
+        if raw_role not in ("user", "assistant", "system", "event"):
             return None
 
         # фильтр пустых user
@@ -635,15 +729,38 @@ class ModelController:
 
         self._base_prompt_cache[(character_id, event_type)] = safe
 
-    def _on_get_current_context_tokens(self, event: Event):
+    def _resolve_chat_preset_id(self, character_id: str, character_name: str) -> Optional[int]:
+        def _is_current_label(label: str | None) -> bool:
+            s = str(label or "").strip()
+            return s in ("", "Current", "Текущий", _("Текущий", "Current"))
+
+        def _resolve_label_to_preset_id(label: str | None) -> Optional[int]:
+            if label is None or _is_current_label(label):
+                return None
+            s = str(label).strip()
+            try:
+                return int(s)
+            except ValueError:
+                pass
+            try:
+                return self.preset_resolver.resolve_preset_id_by_name(s)
+            except Exception:
+                return None
+
+        label = self.settings.get(f"CHAR_PROVIDER_{character_id}", None)
+        if label is None and character_name:
+            label = self.settings.get(f"CHAR_PROVIDER_{character_name}", None)
+        return _resolve_label_to_preset_id(label)
+
+    def _build_current_context_messages(self) -> tuple[str, list[dict], int]:
         cid = self._get_current_character_id()
         if not cid:
-            return 0
+            return "", [], 0
 
         event_type = "chat"
         base = self._base_prompt_cache.get((cid, event_type))
         if not base:
-            return 0
+            return cid, [], 0
 
         user_input_res = self.event_bus.emit_and_wait(Events.Speech.GET_USER_INPUT, timeout=1.0)
         user_text = user_input_res[0] if user_input_res else ""
@@ -659,17 +776,154 @@ class ModelController:
             messages.extend([x for x in extra_infos if isinstance(x, dict)])
 
         messages = self.context_counter.with_user_text(messages, str(user_text or ""))
-        return self.context_counter.count_tokens(messages)
+        return cid, messages, self.context_counter.count_tokens(messages)
+
+    def _build_token_stats(self) -> dict[str, Any]:
+        cid, messages, context_tokens = self._build_current_context_messages()
+        cfg = getattr(self.model, "cfg", None)
+        char = self._get_character_ref(cid) if cid else None
+        char_name = str(getattr(char, "name", "") or "")
+        preset_id = self._resolve_chat_preset_id(cid, char_name) if cid else None
+
+        pricing_info = None
+        if cid:
+            try:
+                pricing_info = self.model_pricing_manager.resolve_for_preset(self.preset_resolver.resolve(preset_id))
+            except Exception:
+                pricing_info = None
+
+        estimated_cost = None
+        estimated_currency = None
+        estimated_source = None
+
+        if pricing_info is not None:
+            estimated_cost = pricing_info.estimate_prompt_cost(context_tokens)
+            if estimated_cost is not None:
+                estimated_currency = pricing_info.currency
+                estimated_source = pricing_info.source
+
+        if estimated_cost is None and cfg:
+            try:
+                estimated_cost = (float(context_tokens) / 1000.0) * float(cfg.token_cost_input)
+                estimated_currency = "RUB"
+                estimated_source = "manual_settings"
+            except Exception:
+                estimated_cost = None
+
+        last = dict(self._last_token_stats or {})
+        last.setdefault("actual_cost", None)
+        last.setdefault("actual_cost_currency", None)
+        last.setdefault("actual_cost_source", None)
+
+        max_context_tokens = None
+        max_completion_tokens = None
+        if pricing_info is not None:
+            max_context_tokens = pricing_info.context_length
+            max_completion_tokens = pricing_info.max_completion_tokens
+        if max_context_tokens is None:
+            try:
+                max_context_tokens = int(self.settings.get("MAX_MODEL_TOKENS", 32000))
+            except Exception:
+                max_context_tokens = 32000
+
+        return {
+            "estimated_context_tokens": int(context_tokens or 0),
+            "max_context_tokens": int(max_context_tokens or 0),
+            "max_completion_tokens": int(max_completion_tokens or 0) if max_completion_tokens else None,
+            "estimated_input_cost": estimated_cost,
+            "estimated_input_cost_currency": estimated_currency,
+            "estimated_input_cost_source": estimated_source,
+            "actual_prompt_tokens": last.get("actual_prompt_tokens"),
+            "actual_completion_tokens": last.get("actual_completion_tokens"),
+            "actual_total_tokens": last.get("actual_total_tokens"),
+            "actual_reasoning_tokens": last.get("actual_reasoning_tokens"),
+            "actual_cached_prompt_tokens": last.get("actual_cached_prompt_tokens"),
+            "actual_cost": last.get("actual_cost"),
+            "actual_cost_currency": last.get("actual_cost_currency"),
+            "actual_cost_source": last.get("actual_cost_source"),
+            "actual_model": last.get("actual_model"),
+            "actual_provider": last.get("actual_provider"),
+        }
+
+    def _store_last_usage(
+        self,
+        usage: Optional[LLMUsage],
+        *,
+        model: str = "",
+        provider: str = "",
+        cost_fallback=None,
+        cost_fallback_currency: Optional[str] = None,
+        cost_fallback_source: Optional[str] = None,
+    ) -> None:
+        snapshot = self._build_usage_snapshot(
+            usage,
+            model=model,
+            provider=provider,
+            cost_fallback=cost_fallback,
+            cost_fallback_currency=cost_fallback_currency,
+            cost_fallback_source=cost_fallback_source,
+        )
+        if not snapshot:
+            return
+
+        self._last_token_stats = {
+            "actual_prompt_tokens": snapshot.get("llm_prompt_tokens"),
+            "actual_completion_tokens": snapshot.get("llm_completion_tokens"),
+            "actual_total_tokens": snapshot.get("llm_total_tokens"),
+            "actual_reasoning_tokens": snapshot.get("llm_reasoning_tokens"),
+            "actual_cached_prompt_tokens": snapshot.get("llm_cached_prompt_tokens"),
+            "actual_cost": snapshot.get("llm_cost"),
+            "actual_cost_currency": snapshot.get("llm_cost_currency"),
+            "actual_cost_source": snapshot.get("llm_cost_source"),
+            "actual_model": snapshot.get("llm_model"),
+            "actual_provider": snapshot.get("llm_provider"),
+        }
+
+    def _build_usage_snapshot(
+        self,
+        usage: Optional[LLMUsage],
+        *,
+        model: str = "",
+        provider: str = "",
+        cost_fallback=None,
+        cost_fallback_currency: Optional[str] = None,
+        cost_fallback_source: Optional[str] = None,
+    ) -> dict[str, Any]:
+        if usage is None and cost_fallback is None:
+            return {}
+
+        actual_cost = usage.cost if usage and usage.cost is not None else cost_fallback
+        actual_cost_currency = (
+            usage.cost_currency if usage and usage.cost is not None else cost_fallback_currency
+        )
+        actual_cost_source = (
+            usage.cost_source if usage and usage.cost is not None else cost_fallback_source
+        )
+
+        return {
+            "llm_prompt_tokens": int(usage.prompt_tokens or 0) if usage else None,
+            "llm_completion_tokens": int(usage.completion_tokens or 0) if usage else None,
+            "llm_total_tokens": int(usage.total_tokens or 0) if usage else None,
+            "llm_reasoning_tokens": int(usage.reasoning_tokens or 0) if usage else None,
+            "llm_cached_prompt_tokens": int(usage.cached_prompt_tokens or 0) if usage else None,
+            "llm_cache_write_tokens": int(usage.cache_write_tokens or 0) if usage else None,
+            "llm_cost": actual_cost,
+            "llm_cost_currency": actual_cost_currency,
+            "llm_cost_source": actual_cost_source,
+            "llm_model": model or "",
+            "llm_provider": provider or "",
+        }
+
+    def _on_get_current_context_tokens(self, event: Event):
+        return self._build_token_stats().get("estimated_context_tokens", 0)
+
+    def _on_get_token_stats(self, event: Event):
+        return self._build_token_stats()
 
     def _on_calculate_cost(self, event: Event):
-        tokens = self._on_get_current_context_tokens(event)
-        cfg = getattr(self.model, "cfg", None)
-        if not cfg:
-            return 0.0
-        try:
-            return (float(tokens) / 1000.0) * float(cfg.token_cost_input)
-        except Exception:
-            return 0.0
+        stats = self._build_token_stats()
+        cost = stats.get("estimated_input_cost")
+        return float(cost) if cost is not None else 0.0
 
     # ---------------------------------------------------------------------
     # Generation
@@ -707,12 +961,35 @@ class ModelController:
         think_text = "\n\n".join(think_parts).strip()
         return visible, think_text
 
+    def _extract_image_description(self, text: str) -> tuple[str, str | None]:
+        """
+        Extracts <image_description>...</image_description> block from text.
+        Returns (clean_text_without_block, description_or_None).
+        Used when IMAGE_INLINE_DESCRIPTION is enabled.
+        """
+        if not isinstance(text, str) or not text:
+            return text, None
+        pattern = re.compile(r"<image_description\b[^>]*>(.*?)</image_description\s*>", flags=re.IGNORECASE | re.DOTALL)
+        m = pattern.search(text)
+        if not m:
+            return text, None
+        description = m.group(1).strip() or None
+        clean = pattern.sub("", text)
+        clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+        return clean, description
+
     def _on_generate_response(self, event: Event):
         data = event.data or {}
+        try:
+            original_event_data = copy.deepcopy(data)
+        except Exception:
+            original_event_data = dict(data)
 
         user_input = data.get("user_input", "") or ""
+        visible_user_input = user_input
         system_input = data.get("system_input", "") or ""
         image_data = data.get("image_data", []) or []
+        image_source = str(data.get("image_source") or "").strip().lower()
         stream_callback = data.get("stream_callback", None)
         event_type = (data.get("event_type") or "chat") or "chat"
 
@@ -783,9 +1060,10 @@ class ModelController:
 
             try:
                 result = self.model.generate(messages, stream_callback=None, preset_id=preset_id)
-                if not result:
+                if not result or not result.text:
                     logger.warning(f"[ModelController] {event_type}: model.generate() returned empty/None")
-                return result
+                    return None
+                return result.text
             except Exception as e:
                 logger.error(f"Ошибка при {event_type}: {e}", exc_info=True)
                 return None
@@ -858,29 +1136,124 @@ class ModelController:
 
         data["capabilities"] = dict(effective_capabilities)
 
+        # Non-native image fallback: describe images with a vision provider first,
+        # then pass text descriptions to the main (non-vision) model instead of images.
+        original_image_data = image_data  # kept for history storage
+        image_descriptions: dict[str, str] | None = None
+
+        # Build context hint so the vision description model knows the image source.
+        _image_context_hint = ""
+        if event_type == "camera_snapshot_result":
+            _image_context_hint = (
+                "This image was captured by the character's head-mounted camera "
+                "(their own point of view, in-game). "
+                "This is what the character is currently seeing with their own eyes, not a player photo, selfie, or drawing. "
+                "Describe the scene strictly from the character's point of view."
+            )
+        elif image_source == "mita_camera" or str((data.get("context") or {}).get("image_source") or "").strip().lower() == "mita_camera":
+            _image_context_hint = (
+                "These frames were explicitly marked as coming from the character's own in-game camera. "
+                "This is the character's current visual perception, not a player-uploaded image, selfie, or drawing. "
+                "Describe what the character is seeing from their point of view."
+            )
+        elif "[Your eyes (in-game camera)]" in system_input:
+            _image_context_hint = (
+                "These frames are from the character's own eyes (in-game camera). "
+                "Treat them as the character's current visual perception, not as a player-uploaded image, selfie, or drawing. "
+                "Describe the scene from their point of view."
+            )
+        elif event_type == "easel_drawing":
+            _image_context_hint = (
+                "This image shows the player's drawing on an easel/canvas in-game. "
+                "Treat it as artwork created by the player, not as a real-life photo or selfie. "
+                "Describe the drawing itself and any depicted characters or objects."
+            )
+
+        hidden_user_context = ""
+
+        if image_data and bool(self.settings.get("IMAGE_DESCRIPTION_ENABLED", False)):
+            _detail = str(self.settings.get("IMAGE_DESCRIPTION_DETAIL", "normal") or "normal")
+
+            _is_mita_cam = image_source in ("mita_camera",) or event_type == "camera_snapshot_result"
+            _is_easel = image_source == "easel" or event_type == "easel_drawing"
+
+            if _is_mita_cam:
+                _ctx_preamble_single = (
+                    "The following description is what you (the character) currently see through your own eyes "
+                    "(in-game camera). React naturally as if perceiving this scene yourself."
+                )
+                _ctx_preamble_seq = _ctx_preamble_single
+            elif _is_easel:
+                _ctx_preamble_single = (
+                    "The player is showing you their drawing from the in-game easel. "
+                    "React to it as artwork the player created and is presenting to you."
+                )
+                _ctx_preamble_seq = _ctx_preamble_single
+            else:
+                _ctx_preamble_single = (
+                    "The following image description is for internal context only. "
+                    "Use it to understand what is shown, but do not repeat it verbatim or present it as dialogue."
+                )
+                _ctx_preamble_seq = _ctx_preamble_single
+
+            try:
+                if len(image_data) > 1:
+                    seq_desc = self.image_description_handler.describe_sequence(image_data, context_hint=_image_context_hint)
+                    if seq_desc and not seq_desc.startswith("["):
+                        hidden_user_context = f"[Hidden image context]\n{_ctx_preamble_seq}\n[Scene: {seq_desc}]"
+                        image_descriptions = {_detail: seq_desc}
+                        logger.info(f"[ModelController] Non-native sequence mode: {len(image_data)} frames described as one scene.")
+                else:
+                    descriptions = self.image_description_handler.describe(image_data, context_hint=_image_context_hint)
+                    if descriptions:
+                        desc_text = "\n".join(
+                            f"[Image {i + 1}: {d}]" for i, d in enumerate(descriptions)
+                        )
+                        hidden_user_context = f"[Hidden image context]\n{_ctx_preamble_single}\n{desc_text}"
+                        image_descriptions = {_detail: "\n".join(descriptions)}
+                        logger.info(f"[ModelController] Non-native image mode: replaced {len(descriptions)} image(s) with text descriptions.")
+                image_data = []  # don't send images to main model
+            except Exception as _desc_exc:
+                logger.warning(f"[ModelController] Image description fallback failed: {_desc_exc}")
+
+        build_prompt_payload = {
+            "character_id": char_id,
+            "character_ref": char,
+            "event_type": event_type,
+            "user_input": user_input,
+            "system_input": system_input,
+            "hidden_user_context": hidden_user_context,
+            "image_data": image_data,
+            "memory_limit": memory_limit,
+            "is_game_master": is_game_master,
+            "save_missed_history": save_missed_history,
+            "image_quality": image_quality_cfg,
+            "separate_prompts": separate_prompts,
+            "extra_system_infos": extra_system_infos,
+            "game_state": game_state,
+            "disable_history_compression": disable_history_compression,
+            "sender": sender,
+            "participants": participants,
+            "policy": policy.to_dict(),
+            "capabilities": effective_capabilities,
+        }
+        self._capture_generation_input(
+            raw_event_data=original_event_data,
+            char_id=char_id,
+            char_name=char_name,
+            event_type=event_type,
+            preset_id_override=preset_id_override,
+            policy=policy,
+            build_prompt_payload=build_prompt_payload,
+            original_image_data=original_image_data,
+            image_data_after_processing=image_data,
+            image_descriptions=image_descriptions,
+        )
+
         try:
             prompt_res = self.event_bus.emit_and_wait(
                 Events.Prompt.BUILD_PROMPT,
-                {
-                    "character_id": char_id,
-                    "character_ref": char,
-                    "event_type": event_type,
-                    "user_input": user_input,
-                    "system_input": system_input,
-                    "image_data": image_data,
-                    "memory_limit": memory_limit,
-                    "is_game_master": is_game_master,
-                    "save_missed_history": save_missed_history,
-                    "image_quality": image_quality_cfg,
-                    "separate_prompts": separate_prompts,
-                    "extra_system_infos": extra_system_infos,
-                    "game_state": game_state,
-                    "disable_history_compression": disable_history_compression,
-                    "sender": sender,
-                    "participants": participants,
-                    "policy": policy.to_dict(),
-                    "capabilities": effective_capabilities,
-                },
+                build_prompt_payload,
                 timeout=10.0
             )
         except Exception as e:
@@ -944,6 +1317,12 @@ class ModelController:
         else:
             preset_id = _resolve_label_to_preset_id(_get_char_provider_label(char_id, char_name))
 
+        active_pricing = None
+        try:
+            active_pricing = self.model_pricing_manager.resolve_for_preset(self.preset_resolver.resolve(preset_id))
+        except Exception:
+            active_pricing = None
+
         self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
             "character_id": char_id,
             "character_name": char_name or char_id or "Мита",
@@ -965,7 +1344,7 @@ class ModelController:
 
         try:
             use_stream_cb = stream_callback if policy.allow_streaming else None
-            raw_text = self.model.generate(
+            llm_response = self.model.generate(
                 combined_messages,
                 stream_callback=use_stream_cb,
                 preset_id=preset_id,
@@ -973,18 +1352,38 @@ class ModelController:
                 structured_model=structured_model_cls,
             )
 
-            if not raw_text:
+            if not llm_response or not llm_response.text:
+                error_message = getattr(llm_response, "error_message", None) or _(
+                    "Не удалось получить ответ.",
+                    "Text generation failed."
+                )
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                    "error": _("Не удалось получить ответ.", "Text generation failed.")
+                    "error": error_message
                 })
                 return None
 
+            raw_text = llm_response.text
             visible_raw, think_text = self._extract_think_blocks(str(raw_text))
+
+            if original_image_data and bool(self.settings.get("IMAGE_INLINE_DESCRIPTION", False)):
+                _detail = str(self.settings.get("IMAGE_DESCRIPTION_DETAIL", "normal") or "normal")
+                visible_raw, _desc_text = self._extract_image_description(visible_raw)
+                if _desc_text:
+                    image_descriptions = {_detail: _desc_text}
+                else:
+                    logger.warning(
+                        f"[ModelController][{char_id}] IMAGE_INLINE_DESCRIPTION is enabled "
+                        f"but no <image_description> block was found in the model response."
+                    )
 
             if is_structured_output:
                 return self._process_structured_output(
                     visible_raw=visible_raw,
                     think_text=think_text,
+                    usage=llm_response.usage,
+                    response_model=llm_response.model or "",
+                    response_provider=llm_response.provider_name or "",
+                    pricing_info=active_pricing,
                     char=char,
                     char_id=char_id,
                     char_name=char_name,
@@ -992,8 +1391,9 @@ class ModelController:
                     policy=policy,
                     sender=sender,
                     participants=participants,
-                    user_input=user_input,
-                    image_data=image_data,
+                    user_input=visible_user_input,
+                    image_data=original_image_data,
+                    image_source=image_source,
                     req_id=req_id,
                     task_uid=task_uid,
                     event_type=event_type,
@@ -1002,6 +1402,7 @@ class ModelController:
                     tools_on=_tools_on,
                     enabled_tools=_enabled_tools,
                     tool_depth=0,
+                    image_descriptions=image_descriptions,
                     structured_model_cls=structured_model_cls,
                 )
 
@@ -1028,6 +1429,16 @@ class ModelController:
                     final_text
                 )
 
+            usage_cost_fallback = active_pricing.estimate_usage_cost(llm_response.usage) if active_pricing else None
+            usage_snapshot = self._build_usage_snapshot(
+                llm_response.usage,
+                model=llm_response.model or "",
+                provider=llm_response.provider_name or "",
+                cost_fallback=usage_cost_fallback,
+                cost_fallback_currency=getattr(active_pricing, "currency", None),
+                cost_fallback_source=getattr(active_pricing, "source", None),
+            )
+
             assistant_message_id = ""
             if policy.write_to_history:
                 origin_message_id = str(data.get("origin_message_id") or "") or None
@@ -1036,8 +1447,10 @@ class ModelController:
                     responder_character_id=char_id,
                     sender=sender,
                     participants=participants,
-                    user_input=user_input,
-                    image_data=image_data,
+                    user_input=visible_user_input,
+                    image_data=original_image_data,
+                    image_source=image_source,
+                    image_descriptions=image_descriptions,
                     req_id=req_id,
                     origin_message_id=origin_message_id,
                     assistant_text=final_text,
@@ -1045,7 +1458,17 @@ class ModelController:
                     event_type=event_type,
                     task_uid=task_uid,
                     thinking=think_text or None,
+                    llm_usage=usage_snapshot,
                 )
+
+            self._store_last_usage(
+                llm_response.usage,
+                model=llm_response.model or "",
+                provider=llm_response.provider_name or "",
+                cost_fallback=usage_cost_fallback,
+                cost_fallback_currency=getattr(active_pricing, "currency", None),
+                cost_fallback_source=getattr(active_pricing, "source", None),
+            )
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
@@ -1056,7 +1479,7 @@ class ModelController:
             self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
                 "character_id": char_id,
                 "character_ref": char,
-                "user_input": user_input,
+                "user_input": visible_user_input,
                 "assistant_output": final_text,
                 "created_memory_ids": created_memory_ids,
                 "inline_graph_json": inline_graph_json,
@@ -1215,6 +1638,10 @@ class ModelController:
         self,
         visible_raw: str,
         think_text: str,
+        usage: Optional[LLMUsage],
+        response_model: str,
+        response_provider: str,
+        pricing_info,
         char,
         char_id: str,
         char_name: str,
@@ -1224,6 +1651,7 @@ class ModelController:
         participants: list,
         user_input: str,
         image_data: list,
+        image_source: str,
         req_id: str | None,
         task_uid: str | None,
         event_type: str,
@@ -1232,6 +1660,7 @@ class ModelController:
         tools_on: bool = False,
         enabled_tools: list = None,
         tool_depth: int = 0,
+        image_descriptions: dict[str, str] | None = None,
         structured_model_cls=None,
     ) -> dict | None:
         try:
@@ -1259,6 +1688,16 @@ class ModelController:
                     voice_profile = char.to_voice_profile()
                 except Exception:
                     voice_profile = None
+
+            usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
+            self._store_last_usage(
+                usage,
+                model=response_model,
+                provider=response_provider,
+                cost_fallback=usage_cost_fallback,
+                cost_fallback_currency=getattr(pricing_info, "currency", None),
+                cost_fallback_source=getattr(pricing_info, "source", None),
+            )
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
             return {
@@ -1295,6 +1734,10 @@ class ModelController:
                 structured=structured,
                 visible_raw=visible_raw,
                 think_text=think_text,
+                usage=usage,
+                response_model=response_model,
+                response_provider=response_provider,
+                pricing_info=pricing_info,
                 char=char,
                 char_id=char_id,
                 char_name=char_name,
@@ -1346,6 +1789,25 @@ class ModelController:
                 final_text,
             )
 
+        usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
+        usage_snapshot = self._build_usage_snapshot(
+            usage,
+            model=response_model,
+            provider=response_provider,
+            cost_fallback=usage_cost_fallback,
+            cost_fallback_currency=getattr(pricing_info, "currency", None),
+            cost_fallback_source=getattr(pricing_info, "source", None),
+        )
+
+        # Extract image_description from structured response (inline description for structured mode)
+        _structured_image_descriptions: dict[str, str] | None = dict(image_descriptions or {}) or None
+        if getattr(structured, "image_description", None):
+            _detail = str(self.settings.get("IMAGE_DESCRIPTION_DETAIL", "normal") or "normal")
+            if _structured_image_descriptions is None:
+                _structured_image_descriptions = {}
+            _structured_image_descriptions[_detail] = structured.image_description.strip()
+            logger.debug(f"[ModelController][{char_id}] Structured image_description captured ({_detail}).")
+
         assistant_message_id = ""
         if policy.write_to_history:
             origin_message_id = str(data.get("origin_message_id") or "") or None
@@ -1357,6 +1819,8 @@ class ModelController:
                 participants=participants,
                 user_input=user_input,
                 image_data=image_data,
+                image_source=image_source,
+                image_descriptions=_structured_image_descriptions,
                 req_id=req_id,
                 origin_message_id=origin_message_id,
                 assistant_text=final_text,
@@ -1365,7 +1829,17 @@ class ModelController:
                 task_uid=task_uid,
                 structured_data=history_dict,
                 thinking=think_text or None,
+                llm_usage=usage_snapshot,
             )
+
+        self._store_last_usage(
+            usage,
+            model=response_model,
+            provider=response_provider,
+            cost_fallback=usage_cost_fallback,
+            cost_fallback_currency=getattr(pricing_info, "currency", None),
+            cost_fallback_source=getattr(pricing_info, "source", None),
+        )
 
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
@@ -1426,6 +1900,10 @@ class ModelController:
         structured,
         visible_raw: str,
         think_text: str,
+        usage: Optional[LLMUsage],
+        response_model: str,
+        response_provider: str,
+        pricing_info,
         char,
         char_id: str,
         char_name: str,
@@ -1478,6 +1956,16 @@ class ModelController:
                 voice_profile = None
 
         # Write first turn to history
+        usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
+        usage_snapshot = self._build_usage_snapshot(
+            usage,
+            model=response_model,
+            provider=response_provider,
+            cost_fallback=usage_cost_fallback,
+            cost_fallback_currency=getattr(pricing_info, "currency", None),
+            cost_fallback_source=getattr(pricing_info, "source", None),
+        )
+
         first_assistant_message_id = ""
         if policy.write_to_history:
             origin_message_id = str(data.get("origin_message_id") or "") or None
@@ -1487,6 +1975,8 @@ class ModelController:
                 participants=participants,
                 user_input=user_input,
                 image_data=image_data,
+                image_source=image_source,
+                image_descriptions=None,
                 req_id=req_id,
                 origin_message_id=origin_message_id,
                 assistant_text=first_text,
@@ -1495,6 +1985,7 @@ class ModelController:
                 task_uid=task_uid,
                 structured_data=result_dict,
                 thinking=think_text or None,
+                llm_usage=usage_snapshot,
             )
 
         # Emit first response to UI (shows "I'll check that" message)
@@ -1575,17 +2066,21 @@ class ModelController:
             "character_name": char_name or char_id or "Мита",
         })
 
-        raw_text_2 = self.model.generate(
+        llm_response_2 = self.model.generate(
             combined_messages_v2,
             preset_id=preset_id,
             capabilities_override=(data.get("capabilities") or None),
             structured_model=structured_model_cls,
         )
 
-        if not raw_text_2:
+        if not llm_response_2 or not llm_response_2.text:
             logger.error(f"[ModelController] Second LLM call after tool '{tool_name}' returned empty.")
+            error_message = getattr(llm_response_2, "error_message", None) or _(
+                "Не удалось получить ответ после инструмента.",
+                "Failed to get response after tool."
+            )
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                "error": _("Не удалось получить ответ после инструмента.", "Failed to get response after tool.")
+                "error": error_message
             })
             # Return first response as fallback
             return {
@@ -1598,7 +2093,8 @@ class ModelController:
                 "structured": result_dict,
             }
 
-        visible_raw_2, think_text_2 = self._extract_think_blocks(str(raw_text_2))
+        visible_raw_2, think_text_2 = self._extract_think_blocks(str(llm_response_2.text))
+        merged_usage = usage.merged_with(llm_response_2.usage) if usage else llm_response_2.usage
 
         combined_think = think_text
         if think_text_2:
@@ -1609,23 +2105,29 @@ class ModelController:
         return self._process_structured_output(
             visible_raw=visible_raw_2,
             think_text=combined_think or "",
+            usage=merged_usage,
+            response_model=llm_response_2.model or response_model,
+            response_provider=llm_response_2.provider_name or response_provider,
+            pricing_info=pricing_info,
             char=char,
             char_id=char_id,
             char_name=char_name,
             data=data,
             policy=policy,
             sender=sender,
-            participants=participants,
-            user_input="",
-            image_data=[],
-            req_id=req_id,
-            task_uid=task_uid,
-            event_type=event_type,
+                participants=participants,
+                user_input="",
+                image_data=[],
+                image_source=image_source,
+                req_id=req_id,
+                task_uid=task_uid,
+                event_type=event_type,
             combined_messages=combined_messages_v2,
             preset_id=preset_id,
             tools_on=True,
             enabled_tools=enabled_tools,
             tool_depth=tool_depth + 1,
+            image_descriptions=image_descriptions,
             structured_model_cls=structured_model_cls,
         )
 

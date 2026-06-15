@@ -65,7 +65,7 @@ Controllers bridge UI, handlers, and events. All feature `__init__` with event s
 
 - **CaptureController** ([controllers/capture_controller.py](controllers/capture_controller.py:9-305)): Screen/camera capture. Threads: `start_screen_capture_thread`, `start_camera_capture_thread`. Methods: `send_interval_image`, `get_latest_frame() -> bytes | None`.
 
-- **ServerController** ([controllers/server_controller.py](controllers/server_controller.py:7-183)): Game server (e.g., HOI4). Methods: `start_server`, `stop_server`, `_apply_initial_settings`. Legacy in `server_controller_old.py`.
+- **ServerController** ([controllers/server_controller.py](controllers/server_controller.py:7-183)): Game server (e.g., HOI4). Methods: `start_server`, `stop_server`, `_apply_initial_settings`. (The legacy `server_controller_old.py` / `server_old.py` path was removed — the new API is always used.)
 
 - **ModelController** ([controllers/model_controller.py](controllers/model_controller.py:8-320)): Character/prompt management. Methods: `change_character(character)`, `_on_generate_response`, `_async_reload_prompts`. Handles chat history compression.
 

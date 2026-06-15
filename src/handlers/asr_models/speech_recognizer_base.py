@@ -1,13 +1,92 @@
-# src/handlers/asr_models/speech_recognizer_base.py
 from abc import ABC, abstractmethod
-from typing import Optional, List
+import json
+import os
+from typing import Any, List, Optional
+
 import numpy as np
 
-from core.install_requirements import InstallRequirement
+from core.backends import BackendKind
+from core.install_requirements import InstallRequirement, check_requirements
+from core.install_types import InstallAction, InstallPlan
+from core.installables import (
+    ComponentCategory,
+    ComponentMetadata,
+    ComponentStatus,
+    ComponentStatusCode,
+    ValidationResult,
+    coerce_backend,
+    make_component_id,
+)
+from core.installables.helpers import build_runtime_ctx, noop_plan, status_from_installed
+
+
+def _asr_settings_path() -> str:
+    return os.path.join("Settings", "asr_settings.json")
+
+
+def load_asr_model_settings(engine_id: str) -> dict:
+    path = _asr_settings_path()
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            if isinstance(payload, dict):
+                models = payload.get("models", {})
+                if isinstance(models, dict):
+                    value = models.get(str(engine_id or "").strip(), {})
+                    return dict(value) if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+    return {}
+
+
+def save_asr_model_settings(engine_id: str, values: dict) -> None:
+    path = _asr_settings_path()
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
+    payload: dict[str, Any] = {}
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                payload = raw
+    except Exception:
+        payload = {}
+
+    models = payload.get("models")
+    if not isinstance(models, dict):
+        models = {}
+    models[str(engine_id or "").strip()] = dict(values or {})
+    payload["models"] = models
+
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+
+
+def validate_asr_model_settings(schema: List[dict], values: dict) -> ValidationResult:
+    if not isinstance(values, dict):
+        return ValidationResult(ok=False, errors={"_": "Settings payload must be a dictionary."})
+
+    allowed = {
+        str(item.get("key") or "").strip()
+        for item in (schema or [])
+        if isinstance(item, dict) and str(item.get("key") or "").strip()
+    }
+    errors: dict[str, str] = {}
+    for key in values.keys():
+        name = str(key or "").strip()
+        if name and name not in allowed:
+            errors[name] = "Unknown setting."
+    return ValidationResult(ok=not errors, errors=errors)
 
 
 class SpeechRecognizerInterface(ABC):
     MODEL_CONFIGS: List[dict] = []
+    category = ComponentCategory.ASR
+    legacy_kind = "asr"
 
     def get_model_configs(self) -> List[dict]:
         return list(getattr(self, "MODEL_CONFIGS", []) or [])
@@ -17,18 +96,181 @@ class SpeechRecognizerInterface(ABC):
         self.logger = logger
         self._is_initialized = False
 
+    @property
+    def item_id(self) -> str:
+        configs = self.get_model_configs()
+        if configs:
+            value = str(configs[0].get("id") or "").strip()
+            if value:
+                return value
+        return self.__class__.__name__.lower()
+
+    @property
+    def id(self) -> str:
+        return make_component_id(self.category, self.item_id)
+
     def requirements(self) -> List[InstallRequirement]:
         return []
 
     def pip_install_steps(self, ctx: dict) -> List[dict]:
         return []
 
+    def required_backend(self, ctx: dict) -> BackendKind:
+        return BackendKind.NONE
+
     def install_manifest(self) -> list[dict]:
         return []
 
+    def metadata(self) -> ComponentMetadata:
+        cfg = self.get_model_configs()[0] if self.get_model_configs() else {}
+        settings = self.load_settings()
+        run_ctx = build_runtime_ctx({"engine_settings": settings})
+        try:
+            self.apply_settings(settings)
+        except Exception:
+            pass
+        backend = coerce_backend(self.required_backend(run_ctx))
+        return ComponentMetadata(
+            id=self.id,
+            item_id=self.item_id,
+            category=self.category,
+            title=str(cfg.get("name") or self.item_id),
+            description=str(cfg.get("description") or ""),
+            backend=backend,
+            legacy_kind=self.legacy_kind,
+            tags=tuple(str(item) for item in (cfg.get("tags") or []) if str(item).strip()),
+            languages=tuple(str(item) for item in (cfg.get("languages") or []) if str(item).strip()),
+        )
+
+    def status(self, ctx: dict | None = None) -> ComponentStatus:
+        run_ctx = build_runtime_ctx(ctx)
+        settings = run_ctx.get("engine_settings") if isinstance(run_ctx.get("engine_settings"), dict) else self.load_settings()
+        try:
+            self.apply_settings(settings)
+        except Exception:
+            pass
+
+        backend = coerce_backend(self.required_backend(run_ctx))
+        try:
+            installed = bool(self.is_installed())
+        except Exception as exc:
+            return ComponentStatus(
+                id=self.id,
+                code=ComponentStatusCode.FAILED,
+                installed=False,
+                ready=False,
+                message=str(exc),
+                backend=backend,
+                backend_ok=False,
+            )
+
+        return status_from_installed(
+            component_id=self.id,
+            installed=installed,
+            backend=backend,
+            ctx=run_ctx,
+        )
+
+    def build_install_plan(self, ctx: dict | None = None) -> InstallPlan:
+        run_ctx = build_runtime_ctx(ctx)
+        settings = run_ctx.get("engine_settings") if isinstance(run_ctx.get("engine_settings"), dict) else self.load_settings()
+        try:
+            self.apply_settings(settings)
+        except Exception:
+            pass
+
+        try:
+            # Clean reinstall skips this shortcut so a broken/partial install
+            # is actually re-fetched instead of being reported "already installed".
+            if self.is_installed() and not run_ctx.get("clean"):
+                return InstallPlan(actions=[], already_installed=True, already_installed_status="Already installed")
+        except Exception:
+            pass
+
+        steps = self.pip_install_steps(run_ctx) or []
+        required_backend = coerce_backend(self.required_backend(run_ctx))
+        timeout_sec = float(run_ctx.get("timeout_sec", 3600.0) or 3600.0)
+
+        actions: list[InstallAction] = []
+        for step in steps:
+            pr = int(step.get("progress", 10) or 10)
+            desc = str(step.get("description", "Installing...") or "Installing...")
+            pkgs = step.get("packages")
+            extra = step.get("extra_args")
+
+            if isinstance(pkgs, str):
+                packages = [pkgs]
+            elif pkgs:
+                packages = list(pkgs)
+            else:
+                packages = []
+
+            actions.append(
+                InstallAction(
+                    type="pip",
+                    description=desc,
+                    progress=pr,
+                    packages=packages,
+                    extra_args=extra,
+                )
+            )
+
+        manifest = self.install_manifest() or []
+        if manifest:
+            actions.append(
+                InstallAction(
+                    type="download_http",
+                    description="Downloading model files...",
+                    progress=75,
+                    progress_to=99,
+                    files=list(manifest),
+                )
+            )
+        else:
+            async def _install_artifacts_async(**_kwargs) -> bool:
+                return bool(await self.install())
+
+            actions.append(
+                InstallAction(
+                    type="call_async",
+                    description="Downloading model files...",
+                    progress=75,
+                    fn=_install_artifacts_async,
+                    timeout_sec=timeout_sec,
+                )
+            )
+
+        def _final_check(**_kwargs) -> bool:
+            try:
+                return bool(self.is_installed())
+            except Exception:
+                return True
+
+        actions.append(
+            InstallAction(
+                type="call",
+                description="Finalizing...",
+                progress=99,
+                fn=_final_check,
+            )
+        )
+
+        return InstallPlan(
+            actions=actions,
+            already_installed=False,
+            ok_status="Done",
+            required_backend=required_backend,
+            backend_context=dict(run_ctx),
+        )
+
+    def build_uninstall_plan(self, ctx: dict | None = None) -> InstallPlan:
+        return noop_plan("ASR uninstall is not implemented yet.")
+
+    def build_initialize_plan(self, ctx: dict | None = None) -> InstallPlan | None:
+        return None
+
     @abstractmethod
     async def install(self) -> bool:
-        """Только артефакты/веса/подготовка. Pip-установка должна быть вынесена наружу."""
         pass
 
     @abstractmethod
@@ -60,6 +302,24 @@ class SpeechRecognizerInterface(ABC):
 
     def apply_settings(self, settings: dict) -> None:
         return
+
+    def settings_schema(self) -> List[dict]:
+        return list(self.settings_spec() or [])
+
+    def load_settings(self) -> dict:
+        data = load_asr_model_settings(self.item_id)
+        if data:
+            return data
+        return dict(self.get_default_settings() or {})
+
+    def validate_settings(self, values: dict) -> ValidationResult:
+        return validate_asr_model_settings(self.settings_schema(), values)
+
+    def save_settings(self, values: dict) -> None:
+        result = self.validate_settings(values)
+        if not result.ok:
+            raise ValueError(f"Invalid settings for {self.item_id}: {result.errors}")
+        save_asr_model_settings(self.item_id, values)
 
     @property
     def is_initialized(self) -> bool:

@@ -205,7 +205,7 @@ class MemorySearchTool(Tool):
         """Возвращает типы поиска доступные по текущим настройкам."""
         types = ["auto"]
         has_fts = bool(self._settings.get("RAG_USE_FTS", True))
-        has_vec = bool(self._settings.get("RAG_VECTOR_SEARCH_ENABLED", True))
+        has_vec = bool(self._settings.get("RAG_VECTOR_SEARCH_ENABLED", False))
         if has_fts:
             types.append("fts")
         if has_vec:

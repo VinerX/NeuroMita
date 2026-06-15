@@ -26,7 +26,7 @@ class SettingsController:
         self.event_bus.subscribe(Events.Settings.GET_APP_VARS, self._on_get_app_vars, weak=False)
 
     def load_api_settings(self, update_model):
-        logger.info("Начинаю загрузку настроек API")
+        logger.info("РќР°С‡РёРЅР°СЋ Р·Р°РіСЂСѓР·РєСѓ РЅР°СЃС‚СЂРѕРµРє API")
 
         preset_id = self.settings.get("LAST_API_PRESET_ID", 0)
 
@@ -35,7 +35,7 @@ class SettingsController:
             resolver = ApiPresetResolver(settings=self.settings, event_bus=self.event_bus)
             ps = resolver.resolve(int(preset_id) if preset_id else None)
         except Exception as e:
-            logger.error(f"Не удалось резолвнуть пресет API: {e}", exc_info=True)
+            logger.error(f"РќРµ СѓРґР°Р»РѕСЃСЊ СЂРµР·РѕР»РІРЅСѓС‚СЊ РїСЂРµСЃРµС‚ API: {e}", exc_info=True)
             ps = None
 
         if ps and update_model:
@@ -64,7 +64,7 @@ class SettingsController:
         speech_settings = {"settings": self.settings}
         self.event_bus.emit("speech_settings_loaded", speech_settings)
 
-        logger.info("Настройки API применены")
+        logger.info("РќР°СЃС‚СЂРѕР№РєРё API РїСЂРёРјРµРЅРµРЅС‹")
 
     def _on_get_settings(self, event: Event):
         return self.settings
@@ -87,10 +87,11 @@ class SettingsController:
         self.settings.set(key, value)
         self.settings.save_settings()
         self.event_bus.emit(Events.Core.SETTING_CHANGED, {"key": key, "value": value})
-        logger.debug(f"Настройка '{key}' успешно применена со значением: {value}")
+        logger.debug(f"РќР°СЃС‚СЂРѕР№РєР° '{key}' СѓСЃРїРµС€РЅРѕ РїСЂРёРјРµРЅРµРЅР° СЃРѕ Р·РЅР°С‡РµРЅРёРµРј: {value}")
 
     def _on_get_app_vars(self, event: Event):
         bool_keys = [
+            "ENABLE_IMAGE_ANALYSIS",
             "ENABLE_CAMERA_CAPTURE",
             "ENABLE_SCREEN_ANALYSIS",
             "MIC_ACTIVE",
@@ -100,9 +101,19 @@ class SettingsController:
             "ENABLE_GAME_CHESS",
             "ENABLE_GAME_SEABATTLE",
 
+            "BEAT_SYNC_ENABLED",
+            "BEAT_SYNC_STREAMING",
+            "BEAT_SYNC_AUTO_INSTALL",
+            "BEAT_SYNC_USE_FILE_TRANSFER",
+
             "REMINDERS_ENABLED",
 
             "GRAPH_EXTRACTION_ENABLED",
+
+            "MITA_CAMERA_ENABLED",
+            "MITA_CAMERA_CONTINUOUS",
+            "MITA_CAMERA_ON_DEMAND",
+            "MITA_CAMERA_USE_FILE_TRANSFER",
         ]
 
         custom_vars: Dict[str, Any] = {
@@ -117,11 +128,20 @@ class SettingsController:
         except Exception:
             game_connected = False
 
-        flag_vars: Dict[str, Any] = {
-            key: bool(self.settings.get(key, False))
-            for key in bool_keys
-        }
+        flag_vars: Dict[str, Any] = {}
+        for key in bool_keys:
+            if key == "BEAT_SYNC_USE_FILE_TRANSFER":
+                flag_vars[key] = True
+                continue
+            if key == "BEAT_SYNC_AUTO_INSTALL":
+                flag_vars[key] = False
+                continue
+            flag_vars[key] = bool(self.settings.get(key, False))
 
         flag_vars["GAME_CONNECTED"] = bool(game_connected)
 
         return {**flag_vars, **custom_vars}
+
+
+
+

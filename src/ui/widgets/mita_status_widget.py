@@ -2,7 +2,7 @@
 MitaStatusWidget — typing/status indicator bridge.
 
 Delegates to ChatWidget's built-in typing bar for visual display.
-Keeps the same public API so main_view.py doesn't need changes.
+Keeps the same public API so window host refactors don't need widget changes.
 """
 
 from PyQt6.QtCore import Qt, QTimer

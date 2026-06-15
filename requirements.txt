@@ -67,7 +67,6 @@ nodriver
 platformdirs
 dotenv
 pymorphy2
-bitsandbytes>=0.43.0
 # tools reqs
 ddgs
 bs4

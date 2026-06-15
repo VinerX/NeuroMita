@@ -2,6 +2,8 @@ import pathlib
 import zipfile
 import os
 import shutil
+import stat
+import time
 from pathlib import Path
 from typing import List, Tuple
 
@@ -30,6 +32,12 @@ def resolve_path(raw: str, base: Path) -> Path:
 PROJECT_DIR = Path(__file__).parent
 env = load_env(PROJECT_DIR / "build.env")
 
+# Переменные окружения переопределяют build.env — удобно для разовой сборки
+# (например, BUILD_OUTPUT_DIR в другую папку, если штатная занята запущенной игрой).
+for _k, _v in os.environ.items():
+    if _k.startswith("BUILD_") or _k in ("NEUROMITA_BACKEND", "LAUNCH_PYTHON"):
+        env[_k] = _v
+
 OUTPUT_DIR = Path(env.get("BUILD_OUTPUT_DIR", str(PROJECT_DIR / "build_output")))
 BUILD_MODE = env.get("BUILD_MODE", "full").lower()
 
@@ -48,6 +56,10 @@ _fast_dirs_raw = env.get("BUILD_FAST_COPY_DIRS", "Prompts")
 FAST_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
     (resolve_path(d.strip(), PROJECT_DIR), OUTPUT_DIR / Path(d.strip()).name)
     for d in _fast_dirs_raw.split(",") if d.strip()
+]
+
+ALWAYS_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
+    (PROJECT_DIR / "assets" / "launcher_ui", OUTPUT_DIR / "assets" / "launcher_ui"),
 ]
 
 # Файлы: поддержка абсолютных путей
@@ -87,19 +99,108 @@ def bin_filter(path: pathlib.Path) -> bool:
 
 
 EXCLUDE_CHECKPOINTS = env.get("BUILD_EXCLUDE_CHECKPOINTS", "1") == "1"
+EXCLUDE_MANAGED_BACKENDS = env.get("BUILD_EXCLUDE_MANAGED_BACKENDS", "1") == "1"
+
+# В корневой Lib игра докладывает тяжёлые runtime/backend-пакеты уже на машине
+# пользователя. В релизный zip не должны утекать следы локальной dev-среды:
+# stale torch/torchaudio dist-info, CUDA-runtime и маркеры установленных
+# бэкендов. Иначе первый запуск начинает "реактивный" reinstall того, что
+# случайно попало в билд с машины сборки.
+MANAGED_BACKEND_NAMES = {
+    ".neuromita_backends.json",
+    "torch",
+    "torchaudio",
+    "torchvision",
+    "torchtext",
+    "torchdata",
+    "nvidia",
+    "triton",
+    "pytorch_triton",
+}
+
+# Чистить выходную папку перед сборкой, чтобы не тащить в зип мусор от прошлых
+# сборок и запусков (Logs, Histories, Settings разработчика, scripts и т.п.).
+# 1 — включено (по умолчанию), 0 — выключено.
+CLEAN_OUTPUT = env.get("BUILD_CLEAN_OUTPUT", "1") == "1"
+
+
+def clean_output_dir() -> None:
+    """Полностью очищает OUTPUT_DIR перед сборкой. С защитой от опасных путей."""
+    out = OUTPUT_DIR.resolve()
+
+    # Защита: не даём случайно снести проект, диск целиком или короткий путь.
+    if out == PROJECT_DIR.resolve():
+        raise SystemExit("BUILD_OUTPUT_DIR совпадает с папкой проекта — очистка отменена.")
+    if out == out.anchor or len(out.parts) < 3:
+        raise SystemExit(f"BUILD_OUTPUT_DIR слишком близко к корню диска ({out}) — очистка отменена.")
+    if PROJECT_DIR.resolve() in out.parents:
+        raise SystemExit(f"BUILD_OUTPUT_DIR внутри проекта ({out}) — очистка отменена.")
+
+    if out.exists():
+        print(f"Очищаю выходную папку: {out}")
+        _rmtree_robust(out)
+    out.mkdir(parents=True, exist_ok=True)
+
+
+def _clear_readonly_and_retry(func, path, _exc):
+    """onexc/onerror-обработчик: снимает read-only и повторяет операцию.
+
+    Если файл реально занят (запущенная игra/uv, антивирус) — повтор
+    выбросит исключение, и _rmtree_robust перейдёт к следующей попытке.
+    """
+    try:
+        os.chmod(path, stat.S_IWRITE)
+    except OSError:
+        pass
+    func(path)
+
+
+def _rmtree_robust(target: Path, attempts: int = 4) -> None:
+    """rmtree, устойчивый к read-only и временным блокировкам (антивирус)."""
+    for attempt in range(1, attempts + 1):
+        try:
+            try:
+                shutil.rmtree(target, onexc=_clear_readonly_and_retry)  # py3.12+
+            except TypeError:
+                shutil.rmtree(target, onerror=_clear_readonly_and_retry)  # py<3.12
+            return
+        except Exception as e:
+            if attempt == attempts:
+                raise SystemExit(
+                    f"Не удалось очистить выходную папку {target}: {e}\n"
+                    f"Похоже, файл занят — закрой запущенную игру/uv из этой папки "
+                    f"(или временно антивирус) и собери снова."
+                )
+            print(f"  Попытка {attempt}/{attempts} не удалась ({e}); повтор через 1.5с...")
+            time.sleep(1.5)
 
 
 def make_copy_ignore():
     """Возвращает ignore-функцию для shutil.copytree."""
-    if not EXCLUDE_DOT_DIRS and not EXCLUDE_CHECKPOINTS:
+    if not EXCLUDE_DOT_DIRS and not EXCLUDE_CHECKPOINTS and not EXCLUDE_MANAGED_BACKENDS:
         return None
     def ignore(directory, contents):
         ignored = []
+        dir_name = Path(directory).name.lower()
         for name in contents:
             if EXCLUDE_DOT_DIRS and name.startswith("."):
                 ignored.append(name)
             elif EXCLUDE_CHECKPOINTS and name == "checkpoints":
                 ignored.append(name)
+            elif EXCLUDE_MANAGED_BACKENDS and dir_name == "lib":
+                lower = name.lower()
+                if (
+                    lower in MANAGED_BACKEND_NAMES
+                    or lower.startswith("torch-")
+                    or lower.startswith("torchaudio-")
+                    or lower.startswith("torchvision-")
+                    or lower.startswith("torchtext-")
+                    or lower.startswith("torchdata-")
+                    or lower.startswith("nvidia-")
+                    or lower.startswith("triton-")
+                    or lower.startswith("pytorch_triton-")
+                ):
+                    ignored.append(name)
         if ignored:
             print(f"  Пропускаю в {directory}: {ignored}")
         return ignored
@@ -125,7 +226,11 @@ if __name__ == "__main__":
     print(f"Выходная папка      : {OUTPUT_DIR}")
     print(f"Фильтр dot-папок    : {'вкл' if EXCLUDE_DOT_DIRS else 'выкл'}")
     print(f"Фильтр checkpoints  : {'вкл' if EXCLUDE_CHECKPOINTS else 'выкл'}")
+    print(f"Фильтр backend Lib  : {'вкл' if EXCLUDE_MANAGED_BACKENDS else 'выкл'}")
+    print(f"Очистка output      : {'вкл' if CLEAN_OUTPUT else 'выкл'}")
 
+    if CLEAN_OUTPUT:
+        clean_output_dir()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     pyz_filename = "NeuroMita.pyz"
@@ -162,6 +267,9 @@ if __name__ == "__main__":
     else:
         print("\nБыстрый режим — .pyz + requirements.txt + быстрые папки...")
         copy_entries(FAST_DIRS_TO_COPY)
+
+    print("\nКопирую обязательные launcher assets...")
+    copy_entries(ALWAYS_DIRS_TO_COPY)
 
     if ROOT_SCRIPTS:
         print("\nКопирую скрипты запуска...")

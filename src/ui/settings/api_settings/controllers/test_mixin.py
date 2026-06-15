@@ -52,8 +52,11 @@ class TestMixin:
         success = bool(data.get("success"))
         msg = str(data.get("message") or (_("Успешно", "Success") if success else _("Неизвестная ошибка", "Unknown error")))
         models = data.get("models") or []
+        model_infos = data.get("model_infos") or []
         if not isinstance(models, list):
             models = []
+        if not isinstance(model_infos, list):
+            model_infos = []
 
         # нормализуем список
         cleaned: list[str] = []
@@ -71,7 +74,7 @@ class TestMixin:
                 pass
 
             try:
-                dlg = ModelsLoadedDialog(v, models=cleaned, message=msg)
+                dlg = ModelsLoadedDialog(v, models=cleaned, model_infos=model_infos, message=msg)
                 if dlg.exec() == dlg.DialogCode.Accepted:
                     chosen = dlg.selected_model()
                     if chosen:

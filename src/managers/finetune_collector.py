@@ -36,9 +36,25 @@ class FineTuneCollector:
     def is_enabled(self) -> bool:
         try:
             from managers.settings_manager import SettingsManager
-            return bool(SettingsManager.get("FINETUNE_COLLECTION_ENABLED", False))
+            return bool(SettingsManager.get("FINETUNE_COLLECTION_ENABLED", True))
         except Exception:
-            return False
+            return True
+
+    def _record_limit(self) -> Optional[int]:
+        """How many most-recent samples to keep, or None for unlimited.
+
+        Default keeps the last 50 so the on-disk store stays small and the
+        "view last request" debugging stays snappy. The unlimited flag overrides
+        the cap for users who want to accumulate a full fine-tuning corpus.
+        """
+        try:
+            from managers.settings_manager import SettingsManager
+            if bool(SettingsManager.get("FINETUNE_UNLIMITED", False)):
+                return None
+            limit = int(SettingsManager.get("FINETUNE_MAX_RECORDS", 50) or 50)
+            return limit if limit > 0 else None
+        except Exception:
+            return 50
 
     # ── Core save ────────────────────────────────────────────────────────────
 
@@ -91,12 +107,50 @@ class FineTuneCollector:
                     f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 self._pending_sample_id = sample_id
 
+            self._enforce_limit()
+
             logger.debug(f"[FineTuneCollector] Saved sample {sample_id} to {file_path.name}")
             return sample_id
 
         except Exception as e:
             logger.error(f"[FineTuneCollector] Failed to save sample: {e}", exc_info=True)
             return None
+
+    def _enforce_limit(self) -> None:
+        """Trim the oldest samples so at most `_record_limit()` remain.
+
+        Operates across all monthly JSONL files in chronological order, dropping
+        the oldest lines first and deleting any file left empty. No-op when
+        unlimited or under the cap.
+        """
+        limit = self._record_limit()
+        if limit is None:
+            return
+        try:
+            with self._lock:
+                files = sorted(self.data_dir.glob("samples_*.jsonl"))
+                per_file: List[tuple] = []
+                total = 0
+                for fp in files:
+                    lines = [l for l in fp.read_text(encoding="utf-8").splitlines() if l.strip()]
+                    per_file.append((fp, lines))
+                    total += len(lines)
+
+                to_drop = total - limit
+                if to_drop <= 0:
+                    return
+
+                for fp, lines in per_file:
+                    if to_drop <= 0:
+                        break
+                    if to_drop >= len(lines):
+                        to_drop -= len(lines)
+                        fp.unlink()
+                    else:
+                        fp.write_text("\n".join(lines[to_drop:]) + "\n", encoding="utf-8")
+                        to_drop = 0
+        except Exception as e:
+            logger.error(f"[FineTuneCollector] _enforce_limit error: {e}", exc_info=True)
 
     # ── Rating ────────────────────────────────────────────────────────────────
 

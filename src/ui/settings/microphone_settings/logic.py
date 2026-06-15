@@ -20,7 +20,7 @@ def wire_microphone_settings_logic(self):
             br = "rgba(214,69,69,0.45)"
         elif kind == "progress":
             fg = theme["accent"]
-            bg = "rgba(138,43,226,0.12)"
+            bg = f"rgba({theme['accent_rgb']},0.12)"
             br = theme["accent_border"]
         else:
             fg = theme["text"]

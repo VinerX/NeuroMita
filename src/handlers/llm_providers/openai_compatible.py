@@ -6,8 +6,12 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 from main_logger import logger
-from .base import BaseProvider, LLMRequest
+from .base import BaseProvider, LLMRequest, LLMResponse, normalize_usage_payload
 from schemas.structured_response import StructuredResponse
+from utils.openrouter_routing import (
+    annotate_openrouter_prompt_cache,
+    normalize_openrouter_routing,
+)
 
 
 class OpenAICompatibleProvider(BaseProvider, ABC):
@@ -24,24 +28,58 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
     def _get_model_to_use(self, req: LLMRequest) -> str:
         return req.model
 
-    def generate(self, req: LLMRequest) -> Optional[str]:
+    @staticmethod
+    def _stringify_error(value: Any, limit: int = 400) -> str:
+        try:
+            if isinstance(value, str):
+                text = value
+            else:
+                text = json.dumps(value, ensure_ascii=False)
+        except Exception:
+            text = str(value)
+
+        text = (text or "").strip()
+        return text[:limit]
+
+    def generate(self, req: LLMRequest) -> LLMResponse:
         return self._generate(req)
 
-    def _generate(self, req: LLMRequest) -> Optional[str]:
+    def _generate(self, req: LLMRequest) -> LLMResponse:
         if req.depth > 3:
             logger.error(f"Слишком много рекурсивных tool-вызовов ({self.name}).")
-            return None
+            return LLMResponse(
+                text=None,
+                provider_name=self.name,
+                error_message="Too deep tool recursion.",
+            )
 
         model_to_use = self._get_model_to_use(req)
         client = self._get_client(req)
         if not client:
-            return None
+            return LLMResponse(
+                text=None,
+                model=model_to_use,
+                provider_name=self.name,
+                error_message="Failed to initialize provider client.",
+            )
 
         try:
             cleaned_messages = [{k: v for k, v in m.items() if k != "time"} for m in (req.messages or [])]
+            if req.protocol_id == "openrouter_default":
+                cleaned_messages = annotate_openrouter_prompt_cache(cleaned_messages, model_to_use)
 
             params: Dict[str, Any] = {"model": model_to_use, "messages": cleaned_messages}
             params.update(self._map_unified_params(req.extra or {}, model_to_use))
+            if req.protocol_id == "openrouter_default":
+                extra_body = dict(params.get("extra_body") or {})
+                routing = normalize_openrouter_routing((req.extra or {}).get("openrouter_routing"))
+                if routing:
+                    extra_body["provider"] = routing
+                session_id = str((req.extra or {}).get("openrouter_session_id") or "").strip()
+                if session_id:
+                    extra_body["session_id"] = session_id
+                if extra_body:
+                    params["extra_body"] = extra_body
 
             caps = req.capabilities or {}
             if caps.get("structured_output"):
@@ -76,14 +114,40 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                         content = msg_dict.get("reasoning_content")
                     except Exception:
                         pass
-                return content.strip() if content else None
+                usage = self._extract_usage(getattr(completion, "usage", None))
+                finish_reason = None
+                try:
+                    finish_reason = completion.choices[0].finish_reason
+                except Exception:
+                    pass
+                return LLMResponse(
+                    text=content.strip() if content else None,
+                    usage=usage,
+                    model=getattr(completion, "model", None) or model_to_use,
+                    provider_name=self.name,
+                    finish_reason=finish_reason,
+                    error_message=None if content else (
+                        "Provider returned completion without message content."
+                        + (f" finish_reason={finish_reason}." if finish_reason else "")
+                    ),
+                )
 
             logger.warning(f"[{self.name}] No completion choices.")
-            return None
+            return LLMResponse(
+                text=None,
+                model=model_to_use,
+                provider_name=self.name,
+                error_message="Provider returned no completion choices.",
+            )
 
         except Exception as e:
             logger.error(f"[{self.name}] Error during API call: {e}", exc_info=True)
-            return None
+            return LLMResponse(
+                text=None,
+                model=model_to_use,
+                provider_name=self.name,
+                error_message=f"Provider API call failed: {e}",
+            )
 
     def _map_unified_params(self, unified: Dict[str, Any], model_to_use: str) -> Dict[str, Any]:
         u = unified or {}
@@ -106,10 +170,25 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
 
         return out
 
-    def _handle_stream(self, completion, stream_callback=None) -> str:
+    def _handle_stream(self, completion, stream_callback=None) -> LLMResponse:
         parts: List[str] = []
+        final_usage = None
+        finish_reason = None
+        chunk_error_count = 0
+        last_chunk_error = ""
         try:
             for chunk in completion:
+                try:
+                    final_usage = final_usage or self._extract_usage(getattr(chunk, "usage", None))
+                except Exception:
+                    pass
+
+                try:
+                    if chunk.choices and getattr(chunk.choices[0], "finish_reason", None):
+                        finish_reason = chunk.choices[0].finish_reason
+                except Exception:
+                    pass
+
                 text = ""
                 try:
                     if chunk.choices and chunk.choices[0].delta:
@@ -120,7 +199,12 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                             text = getattr(delta, "reasoning_content", None) or ""
                         if not text:
                             text = (getattr(delta, "model_extra", None) or {}).get("reasoning_content", "")
-                except Exception:
+                except Exception as e:
+                    chunk_error_count += 1
+                    last_chunk_error = f"{type(e).__name__}: {e}"
+                    if chunk_error_count <= 3:
+                        preview = self._stringify_error(getattr(chunk, "model_dump", lambda: chunk)(), limit=240)
+                        logger.warning(f"[{self.name}] Failed to parse stream chunk: {last_chunk_error}. Chunk: {preview}")
                     continue
 
                 if text:
@@ -130,4 +214,41 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
         except Exception as e:
             logger.error(f"[{self.name}] stream error: {e}", exc_info=True)
 
-        return "".join(parts)
+        error_message = None
+        if not parts:
+            if chunk_error_count > 0:
+                error_message = (
+                    "Provider stream ended without content. "
+                    f"Chunk parse errors: {chunk_error_count}, last error: {last_chunk_error}"
+                )
+            elif finish_reason and finish_reason != "stop":
+                error_message = f"Provider stream ended without content (finish_reason={finish_reason})."
+
+        return LLMResponse(
+            text="".join(parts) or None,
+            usage=final_usage,
+            provider_name=self.name,
+            finish_reason=finish_reason,
+            error_message=error_message,
+        )
+
+    def _extract_usage(self, usage_obj: Any):
+        if usage_obj is None:
+            return None
+        try:
+            if hasattr(usage_obj, "model_dump"):
+                payload = usage_obj.model_dump()
+            elif isinstance(usage_obj, dict):
+                payload = usage_obj
+            else:
+                payload = {
+                    "prompt_tokens": getattr(usage_obj, "prompt_tokens", None),
+                    "completion_tokens": getattr(usage_obj, "completion_tokens", None),
+                    "total_tokens": getattr(usage_obj, "total_tokens", None),
+                    "prompt_tokens_details": getattr(usage_obj, "prompt_tokens_details", None),
+                    "completion_tokens_details": getattr(usage_obj, "completion_tokens_details", None),
+                    "cost": getattr(usage_obj, "cost", None),
+                }
+            return normalize_usage_payload(payload)
+        except Exception:
+            return None

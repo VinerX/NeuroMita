@@ -98,10 +98,32 @@ def setup_debug_panel_controls(view, parent_layout):
     ctx_label.setObjectName('SeparatorLabel')
     parent_layout.addWidget(ctx_label)
 
-    ctx_btn = QPushButton(_('Посмотреть последний запрос', 'View last request'))
-    ctx_btn.setToolTip(
+    ctx_req_btn = QPushButton(_('Посмотреть последний запрос', 'View last request'))
+    ctx_req_btn.setToolTip(
         _('Открыть просмотр контекста последнего запроса к нейросети (сообщения, системные промты, параметры)',
           'Open context viewer for the last request sent to the neural network')
     )
-    ctx_btn.clicked.connect(view._on_debug_view_last_context)
-    parent_layout.addWidget(ctx_btn)
+    ctx_req_btn.clicked.connect(view._on_debug_view_last_context)
+
+    ctx_resp_btn = QPushButton(_('Посмотреть последний ответ', 'View last response'))
+    ctx_resp_btn.setToolTip(
+        _('Открыть просмотр последнего ответа модели и usage-метрик, если они сохранены.',
+          'Open the latest model response and usage metrics if they were saved.')
+    )
+    ctx_resp_btn.clicked.connect(view._on_debug_view_last_response_context)
+
+    ctx_row = QHBoxLayout()
+    ctx_row.addWidget(ctx_req_btn)
+    ctx_row.addWidget(ctx_resp_btn)
+    parent_layout.addLayout(ctx_row)
+
+    capture_cb = QCheckBox(_('Сохранять вход генерации', 'Capture generation input'))
+    capture_cb.setToolTip(
+        _('Сохранять вход события GENERATE_RESPONSE до сборки промпта: сырой payload, состояние перед BUILD_PROMPT и краткую сводку по изображениям.',
+          'Save GENERATE_RESPONSE ingress before prompt build: raw payload, pre-BUILD_PROMPT state, and compact image summaries.')
+    )
+    capture_cb.setChecked(bool(view._get_setting("DEBUG_CAPTURE_GENERATION_INPUT_ENABLED", False)))
+    capture_cb.toggled.connect(
+        lambda checked: view._save_setting("DEBUG_CAPTURE_GENERATION_INPUT_ENABLED", checked)
+    )
+    parent_layout.addWidget(capture_cb)

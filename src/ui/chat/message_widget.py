@@ -7,8 +7,8 @@ import math
 import time as _time
 import base64
 from PyQt6.QtWidgets import (
-    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QWidget, QSizePolicy,
-    QMenu, QApplication,
+    QDialog, QFrame, QHBoxLayout, QScrollArea, QVBoxLayout,
+    QLabel, QWidget, QSizePolicy, QMenu, QApplication,
 )
 from PyQt6.QtCore import Qt, QSize, QRectF, QPointF, pyqtSignal
 from PyQt6.QtGui import (
@@ -40,40 +40,46 @@ BUBBLE_RADIUS = 12
 
 # Modern, balanced chat colors (Telegram/Discord inspired)
 ROLE_COLORS = {
-    "user":      "#F4D35E",  # Soft Gold
-    "assistant": "#A78BFA",  # Soft Purple
-    "system":    "#60A5FA",  # Soft Blue
-    "think":     "#9CA3AF",  # Soft Gray
+    "user":      "#ff7ab8",
+    "assistant": "#ff9cd2",
+    "system":    "#9aa1b8",
+    "event":     "#9aa1b8",
+    "think":     "#bdb4c7",
 }
 CARD_BG = {
-    "user":      QColor(232, 203, 100, 245),
-    "assistant": QColor(38, 43, 68, 245), 
-    "system":    QColor(96, 165, 250, 30),
-    "think":     QColor(156, 163, 175, 20),
+    "user":      QColor(171, 44, 102, 242),
+    "assistant": QColor(46, 24, 52, 244),
+    "system":    QColor(255, 255, 255, 13),
+    "event":     QColor(255, 255, 255, 13),
+    "think":     QColor(74, 58, 82, 72),
 }
 CARD_BORDER = {
-    "user":      QColor(232, 203, 100, 100),
-    "assistant": QColor(255, 255, 255, 15),
-    "system":    QColor(96, 165, 250, 50),
-    "think":     QColor(156, 163, 175, 30),
+    "user":      QColor(255, 133, 188, 165),
+    "assistant": QColor(255, 132, 191, 70),
+    "system":    QColor(255, 255, 255, 30),
+    "event":     QColor(255, 255, 255, 30),
+    "think":     QColor(189, 180, 199, 42),
 }
 TEXT_COLOR = {
-    "user":      "#1E1E24", 
-    "assistant": "#EAEAEA",
-    "system":    "#EAEAEA",
-    "think":     "#A0A0A5",
+    "user":      "#fff6fb",
+    "assistant": "#f3eaf3",
+    "system":    "#c7ccdc",
+    "event":     "#c7ccdc",
+    "think":     "#cbc1d1",
 }
 NAME_COLOR = {
-    "user":      "#8C6B14",
-    "assistant": "#D896FF",
-    "system":    "#60A5FA",
-    "think":     "#9CA3AF",
+    "user":      "#ffd7ea",
+    "assistant": "#ff8fc8",
+    "system":    "#9aa1b8",
+    "event":     "#9aa1b8",
+    "think":     "#bdb4c7",
 }
 TIME_COLOR = {
-    "user":      "rgba(0,0,0,0.4)",
-    "assistant": "rgba(255,255,255,0.35)",
-    "system":    "rgba(255,255,255,0.35)",
-    "think":     "rgba(255,255,255,0.25)",
+    "user":      "rgba(255,255,255,0.55)",
+    "assistant": "rgba(255,255,255,0.42)",
+    "system":    "rgba(255,255,255,0.42)",
+    "event":     "rgba(255,255,255,0.42)",
+    "think":     "rgba(255,255,255,0.28)",
 }
 
 def _round_pixmap(pixmap: QPixmap, size: int) -> QPixmap:
@@ -323,6 +329,7 @@ class MessageWidget(QWidget):
     regenerate_from_requested = pyqtSignal(str)
     copy_requested = pyqtSignal(str)
     view_context_requested = pyqtSignal(str)  # emits sample_id
+    view_response_context_requested = pyqtSignal(str)  # emits sample_id
 
     def __init__(self, role="assistant", speaker_name="", content_text="", show_avatar=True, font_size=12,
                  message_time="", show_timestamp=True, max_bubble_width=600, sample_id=None, message_id=None, parent=None):
@@ -349,11 +356,11 @@ class MessageWidget(QWidget):
         outer.setAlignment(Qt.AlignmentFlag.AlignBottom)
 
         tail_side = None
-        if role not in ("system", "think", "structured"):
+        if role not in ("system", "event", "think", "structured"):
             tail_side = "right" if is_user else "left"
 
         self._avatar_label = None
-        if show_avatar and role not in ("system", "think", "structured"):
+        if show_avatar and role not in ("system", "event", "think", "structured"):
             self._avatar_label = QLabel(self)
             self._avatar_label.setFixedSize(AVATAR_SIZE, AVATAR_SIZE)
             self._avatar_label.setStyleSheet("background: transparent; border: none;")
@@ -361,7 +368,7 @@ class MessageWidget(QWidget):
 
         # Placeholder to keep bubble aligned if avatar is hidden (for split messages)
         spacer = None
-        if not show_avatar and role not in ("system", "think", "structured"):
+        if not show_avatar and role not in ("system", "event", "think", "structured"):
             spacer = QWidget()
             spacer.setFixedSize(AVATAR_SIZE, AVATAR_SIZE)
 
@@ -369,7 +376,7 @@ class MessageWidget(QWidget):
             if self._avatar_label: outer.addWidget(self._avatar_label, 0, Qt.AlignmentFlag.AlignBottom)
             elif spacer: outer.addWidget(spacer, 0, Qt.AlignmentFlag.AlignBottom)
 
-        if is_user or role == "system": outer.addStretch()
+        if is_user or role in ("system", "event"): outer.addStretch()
 
         self._card = BubbleFrame(role, tail_side, self)
         if max_bubble_width > 0: self._card.setMaximumWidth(max_bubble_width)
@@ -493,9 +500,9 @@ class MessageWidget(QWidget):
     def contextMenuEvent(self, event):
         menu = QMenu(self)
         menu.setStyleSheet("""
-            QMenu { background-color: #1E1E24; color: #EAEAEA; border: 1px solid #3A3A4A; border-radius: 6px; padding: 4px; }
+            QMenu { background-color: rgba(16,13,25,0.96); color: #f3edf6; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 4px; }
             QMenu::item { padding: 6px 20px; border-radius: 4px; }
-            QMenu::item:selected { background-color: #383A59; }
+            QMenu::item:selected { background-color: rgba(219,101,150,0.20); }
         """)
 
         if self._role == "user":
@@ -515,6 +522,9 @@ class MessageWidget(QWidget):
                 _sid = self._sample_id or ""
                 ctx_action.triggered.connect(lambda: self.view_context_requested.emit(_sid))
                 menu.addAction(ctx_action)
+                resp_ctx_action = QAction(_("Просмотреть контекст ответа", "View response context"), self)
+                resp_ctx_action.triggered.connect(lambda: self.view_response_context_requested.emit(_sid))
+                menu.addAction(resp_ctx_action)
             if self._message_id:
                 regen_from_action = QAction(_("Регенерировать отсюда", "Regenerate from here"), self)
                 regen_from_action.triggered.connect(lambda: self.regenerate_from_requested.emit(self._message_id))
@@ -543,41 +553,75 @@ class MessageWidget(QWidget):
         self.copy_requested.emit(text)
 
 class ImageWidget(QWidget):
-    def __init__(self, image_data, role="assistant", max_bubble_width=600, parent=None):
+    """
+    A single image in the chat, displayed inside a BubbleFrame (same visual
+    style as text messages).  Left-click opens the image at full resolution.
+    """
+
+    _THUMB_MAX_W = 360
+    _THUMB_MAX_H = 400
+
+    def __init__(self, image_data, role="assistant", max_bubble_width=600, description="", parent=None):
         super().__init__(parent)
         self.setStyleSheet("background: transparent; border: none;")
-        self.MAX_WIDTH = min(400, max_bubble_width)
-        self.MAX_HEIGHT = 400
+        self._description = description or ""
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        thumb_w = min(self._THUMB_MAX_W, max_bubble_width - TAIL_W - 24)
 
-        frame = QFrame(self)
-        frame.setStyleSheet("""
-            QFrame { background-color: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 0px; }
-        """)
-        frame_layout = QVBoxLayout(frame)
-        frame_layout.setContentsMargins(0, 0, 0, 0)
-        frame_layout.setSpacing(0)
+        # Load once; keep original for full-size view
+        self._original_pixmap = self._load_image(image_data)
 
-        pixmap = self._load_image(image_data)
-        if not pixmap.isNull():
-            scaled = pixmap.scaledToWidth(self.MAX_WIDTH, Qt.TransformationMode.SmoothTransformation)
-            if scaled.height() > self.MAX_HEIGHT:
-                scaled = pixmap.scaledToHeight(self.MAX_HEIGHT, Qt.TransformationMode.SmoothTransformation)
-            img_label = QLabel(frame)
+        # Bubble consistent with text messages
+        tail_side = "right" if role == "user" else "left"
+        bubble = BubbleFrame(role, tail_side=tail_side, parent=self)
+
+        bubble_layout = QVBoxLayout(bubble)
+        bubble_layout.setContentsMargins(0, 0, 0, 0)
+        bubble_layout.setSpacing(0)
+
+        if not self._original_pixmap.isNull():
+            scaled = self._scale_pixmap(self._original_pixmap, thumb_w, self._THUMB_MAX_H)
+
+            img_label = QLabel(bubble)
             img_label.setPixmap(scaled)
-            img_label.setStyleSheet("background: transparent; border: none; padding: 0px;")
-            frame_layout.addWidget(img_label)
+            img_label.setStyleSheet(
+                "background: transparent; border: none; border-radius: 6px; padding: 0px;")
+            img_label.setCursor(Qt.CursorShape.PointingHandCursor)
+            if self._description:
+                img_label.setToolTip(
+                    _("Нажмите для просмотра (есть описание ↓)",
+                      "Click to view (description available ↓)")
+                )
+            else:
+                img_label.setToolTip(
+                    _("Нажмите для просмотра в полном размере",
+                      "Click to view full size")
+                )
+            img_label.mousePressEvent = self._on_click
+            bubble_layout.addWidget(img_label)
         else:
-            err_label = QLabel("⚠️ " + _("Ошибка загрузки", "Load error"), frame)
+            err_label = QLabel("⚠️ " + _("Ошибка загрузки", "Load error"), bubble)
             err_label.setStyleSheet("color: #EF4444; padding: 12px; font-weight: bold;")
-            frame_layout.addWidget(err_label)
+            bubble_layout.addWidget(err_label)
 
-        layout.addWidget(frame)
-        self.setMaximumWidth(self.MAX_WIDTH + 20)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(bubble)
+
+        self.setMaximumWidth(thumb_w + TAIL_W + 24 + 4)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _scale_pixmap(pixmap: QPixmap, max_w: int, max_h: int) -> QPixmap:
+        if pixmap.width() <= max_w and pixmap.height() <= max_h:
+            return pixmap
+        scaled = pixmap.scaledToWidth(max_w, Qt.TransformationMode.SmoothTransformation)
+        if scaled.height() > max_h:
+            scaled = pixmap.scaledToHeight(max_h, Qt.TransformationMode.SmoothTransformation)
+        return scaled
 
     def _load_image(self, image_data) -> QPixmap:
         try:
@@ -585,11 +629,83 @@ class ImageWidget(QWidget):
             if isinstance(image_data, str):
                 if image_data.startswith("data:image"):
                     parts = image_data.split(",", 1)
-                    if len(parts) == 2: pixmap.loadFromData(base64.b64decode(parts[1]))
-                else: pixmap.load(image_data)
-            elif isinstance(image_data, bytes): pixmap.loadFromData(image_data)
+                    if len(parts) == 2:
+                        pixmap.loadFromData(base64.b64decode(parts[1]))
+                else:
+                    pixmap.load(image_data)
+            elif isinstance(image_data, bytes):
+                pixmap.loadFromData(image_data)
             return pixmap
-        except Exception: return QPixmap()
+        except Exception:
+            return QPixmap()
+
+    # ── click → full-size viewer ──────────────────────────────────────────────
+
+    def _on_click(self, event=None) -> None:
+        if event is not None and event.button() != Qt.MouseButton.LeftButton:
+            return
+        if self._original_pixmap.isNull():
+            return
+        self._show_fullsize()
+
+    def _show_fullsize(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_("Изображение", "Image"))
+        dlg.setModal(True)
+        dlg.setWindowFlags(
+            dlg.windowFlags()
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+
+        screen = QApplication.primaryScreen()
+        if screen:
+            avail  = screen.availableGeometry()
+            max_w  = max(400, avail.width()  - 80)
+            # Reserve vertical space for description if present
+            max_h  = max(300, avail.height() - (200 if self._description else 80))
+        else:
+            max_w, max_h = 1200, 800
+
+        pix = self._scale_pixmap(self._original_pixmap, max_w, max_h)
+
+        img_lbl = QLabel()
+        img_lbl.setPixmap(pix)
+        img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        img_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        img_lbl.setToolTip(_("Нажмите для закрытия", "Click to close"))
+        img_lbl.mousePressEvent = lambda _e: dlg.accept()
+
+        scroll = QScrollArea(dlg)
+        scroll.setWidget(img_lbl)
+        scroll.setWidgetResizable(False)
+        scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
+        root.addWidget(scroll, 1)
+
+        if self._description:
+            from PyQt6.QtWidgets import QPlainTextEdit
+            desc_box = QPlainTextEdit()
+            desc_box.setPlainText(self._description)
+            desc_box.setReadOnly(True)
+            desc_box.setMinimumHeight(150)
+            desc_box.setMaximumHeight(160)
+            desc_box.setStyleSheet(
+                "background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.85); "
+                "border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; "
+                "font-size: 11pt; padding: 6px;"
+            )
+            root.addWidget(desc_box)
+
+        # Minimum width: 520 so long descriptions don't get squished in a tiny column
+        dlg_w = max(520, min(pix.width() + 32, max_w))
+        dlg_h = min(pix.height() + (180 if self._description else 32),
+                    avail.height() - 40 if screen else max_h)
+        dlg.resize(dlg_w, dlg_h)
+        dlg.exec()
 
 class ThinkBlockWidget(QFrame):
     def __init__(self, speaker_name="", content_text="", is_streaming=False, font_size=12, max_bubble_width=600, parent=None):

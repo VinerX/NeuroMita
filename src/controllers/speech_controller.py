@@ -144,7 +144,7 @@ class SpeechController:
 
         if key == "MIC_ACTIVE":
             if bool(value):
-                self._start_maybe_install()
+                self._start_maybe_install_async()
             else:
                 SpeechRecognition.speech_recognition_stop()
                 self.mic_recognition_active = False
@@ -175,7 +175,7 @@ class SpeechController:
             logger.info(f"Тип распознавателя установлен на: {engine}")
 
             if self.settings and self.settings.get("MIC_ACTIVE", False):
-                self._start_maybe_install()
+                self._start_maybe_install_async()
 
         elif key in ("SILENCE_THRESHOLD", "VAD_THRESHOLD"):
             try:
@@ -213,6 +213,19 @@ class SpeechController:
             except Exception:
                 pass
 
+    def _start_maybe_install_async(self):
+        """Run the (potentially slow) ASR start off the caller's thread.
+
+        SETTING_CHANGED handlers fire on the event-bus thread; starting ASR
+        loads the model and can block for many seconds (CUDA init), which would
+        stall the whole bus. Always do it on a worker thread."""
+        def _worker():
+            try:
+                self._start_maybe_install()
+            except Exception as e:
+                logger.error(f"Запуск распознавания не удался: {e}")
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _start_maybe_install(self):
         if self.mic_recognition_active:
             return
@@ -223,8 +236,8 @@ class SpeechController:
             self.events_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
                 'title': _('Требуется установка', 'Installation required'),
                 'message': _(
-                    'ASR-модель не установлена. Установите её через "Каталог ASR моделей".',
-                    'ASR model is not installed. Install it via the "ASR Model Catalogue".'
+                    'ASR-модель не установлена. Установите её через AI Hub.',
+                    'ASR model is not installed. Install it via AI Hub.'
                 )
             })
 
@@ -241,7 +254,7 @@ class SpeechController:
                 pass
 
             try:
-                self.events_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "asr_glossary"})
+                self.events_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "asr"}})
             except Exception:
                 pass
 
@@ -251,8 +264,8 @@ class SpeechController:
         loop = loop_res[0] if loop_res else None
         if loop:
             self.asr_is_ready = False
-            SpeechRecognition.speech_recognition_start(self.device_id or 0, loop)
-            self.mic_recognition_active = True
+            started = bool(SpeechRecognition.speech_recognition_start(self.device_id or 0, loop))
+            self.mic_recognition_active = started
         else:
             logger.error("Не удалось получить event loop для запуска распознавания речи")
 
@@ -439,8 +452,8 @@ class SpeechController:
         loop = loop_result[0] if loop_result else None
         if loop:
             self.asr_is_ready = False
-            SpeechRecognition.speech_recognition_start(dev_id, loop)
-            self.mic_recognition_active = True
+            started = bool(SpeechRecognition.speech_recognition_start(dev_id, loop))
+            self.mic_recognition_active = started
         else:
             logger.error("Не удалось получить event loop для запуска распознавания речи")
 
@@ -524,6 +537,15 @@ class SpeechController:
                 models_map = self._asr_settings.get("models", {}) or {}
                 registry = getattr(SpeechRecognition, "_registry", {}) or {}
                 engines = list(registry.keys())
+                try:
+                    from core.installables import ComponentCategory, make_component_id
+                    from installables import get_installable_registry
+
+                    installable_registry = get_installable_registry()
+                except Exception:
+                    installable_registry = None
+                    ComponentCategory = None
+                    make_component_id = None
 
                 result = []
                 for engine in engines:
@@ -558,24 +580,44 @@ class SpeechController:
                     ctx = {
                         "device": engine_settings.get("device"),
                         "gpu_vendor": gpu_vendor,
+                        "engine_settings": engine_settings,
                     }
 
                     status = check_requirements(reqs, ctx=ctx) if reqs else {
                         "ok": True, "missing_required": [], "missing_optional": [], "details": []
                     }
+                    component_id = ""
+                    component_status = None
+                    if installable_registry is not None and ComponentCategory is not None and make_component_id is not None:
+                        try:
+                            component_id = make_component_id(ComponentCategory.ASR, engine)
+                            component = installable_registry.get(component_id)
+                            if component is not None:
+                                component_status = component.status(ctx)
+                        except Exception:
+                            component_status = None
+
+                    installed = bool(component_status.ready) if component_status is not None else bool(status.get("ok"))
+                    missing_required = list(status.get("missing_required", []))
+                    details = list(status.get("details", []))
+                    if component_status is not None:
+                        if not component_status.ready and component_status.installed and not component_status.backend_ok:
+                            missing_required = ["backend"]
+                        details.append(component_status.as_dict())
 
                     result.append({
                         "id": engine,
+                        "component_id": component_id,
                         "name": meta.get("name") or engine,
                         "description": meta.get("description") or "",
                         "languages": meta.get("languages", []) if isinstance(meta.get("languages"), list) else [],
                         "gpu_vendor": meta.get("gpu_vendor", []) if isinstance(meta.get("gpu_vendor"), list) else [],
                         "tags": meta.get("tags", []) if isinstance(meta.get("tags"), list) else [],
                         "links": meta.get("links", []) if isinstance(meta.get("links"), list) else [],
-                        "installed": bool(status.get("ok")),
-                        "missing_required": status.get("missing_required", []),
+                        "installed": installed,
+                        "missing_required": missing_required,
                         "missing_optional": status.get("missing_optional", []),
-                        "details": status.get("details", []),
+                        "details": details,
                     })
 
                 return result

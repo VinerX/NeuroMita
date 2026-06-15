@@ -1,0 +1,209 @@
+from __future__ import annotations
+
+import shutil
+import unittest
+import uuid
+from pathlib import Path
+from unittest.mock import patch
+
+from core.backends import (
+    BACKEND_NUMPY_SPEC,
+    BackendKind,
+    BackendService,
+    CUDA_INDEX_URL,
+    ONNX_DIRECTML_PACKAGE,
+    TORCH_VERSION,
+    get_backend_service,
+)
+from core.install_requirements import InstallRequirement, check_requirements
+from handlers.asr_handler import SpeechRecognition
+
+
+_TMP_ROOT = Path(__file__).resolve().parents[3] / ".tmp_test_backend_service_runtime"
+
+
+def _write_dist_info(root: Path, dist_name: str, version: str) -> None:
+    dist_dir = root / f"{dist_name}-{version}.dist-info"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    (dist_dir / "METADATA").write_text(
+        "\n".join(
+            (
+                "Metadata-Version: 2.1",
+                f"Name: {dist_name}",
+                f"Version: {version}",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_module(root: Path, module_name: str) -> None:
+    parts = [part for part in str(module_name or "").split(".") if part]
+    if not parts:
+        return
+
+    module_dir = root
+    for part in parts:
+        module_dir /= part
+        module_dir.mkdir(parents=True, exist_ok=True)
+        init_path = module_dir / "__init__.py"
+        if not init_path.exists():
+            init_path.write_text("", encoding="utf-8")
+
+
+def _install_fake_dist(
+    root: Path,
+    *,
+    dist_name: str,
+    version: str,
+    module_name: str | None = None,
+) -> None:
+    _write_dist_info(root, dist_name, version)
+    if module_name:
+        _write_module(root, module_name)
+
+
+def _install_torch_cpu_stack(root: Path) -> None:
+    _install_fake_dist(root, dist_name="torch", version=TORCH_VERSION, module_name="torch")
+    _install_fake_dist(root, dist_name="torchaudio", version=TORCH_VERSION, module_name="torchaudio")
+    _install_fake_dist(root, dist_name="numpy", version="1.26.0", module_name="numpy")
+
+
+class _FakeBackendAwareRecognizer:
+    def __init__(self, pip_installer, logger):
+        self.pip_installer = pip_installer
+        self.logger = logger
+
+    def apply_settings(self, settings):
+        self.settings = dict(settings or {})
+
+    def is_installed(self):
+        return False
+
+    def pip_install_steps(self, ctx):
+        return [
+            {
+                "description": "Installing recognizer package...",
+                "progress": 20,
+                "packages": ["faster-whisper"],
+            }
+        ]
+
+    def required_backend(self, ctx):
+        return get_backend_service().preferred_torch_kind(ctx)
+
+    async def install(self):
+        return True
+
+
+class BackendServiceTests(unittest.TestCase):
+    def setUp(self):
+        _TMP_ROOT.mkdir(parents=True, exist_ok=True)
+        self.libs_dir = _TMP_ROOT / f"case_{uuid.uuid4().hex}"
+        self.libs_dir.mkdir(parents=True, exist_ok=False)
+        self.service = BackendService()
+
+    def tearDown(self):
+        shutil.rmtree(self.libs_dir, ignore_errors=True)
+
+    def test_cpu_backend_status_is_ready_for_fake_lib(self):
+        _install_torch_cpu_stack(self.libs_dir)
+
+        status = self.service.get_status(
+            BackendKind.CPU,
+            ctx={"gpu_vendor": "CPU", "libs_dir": str(self.libs_dir)},
+        )
+
+        self.assertTrue(status.ok)
+        self.assertEqual(status.action, "skip")
+        self.assertEqual(status.variant, "torch_cpu")
+        self.assertEqual(status.provider, "cpu")
+        self.assertEqual(status.resolved_kind, BackendKind.CPU)
+
+    def test_cuda_backend_plan_requests_reinstall_for_cpu_runtime_on_nvidia(self):
+        _install_torch_cpu_stack(self.libs_dir)
+
+        plan = self.service.build_install_plan(
+            BackendKind.CUDA,
+            ctx={"gpu_vendor": "NVIDIA", "libs_dir": str(self.libs_dir)},
+        )
+
+        self.assertFalse(plan.ok)
+        self.assertEqual(plan.action, "reinstall")
+        self.assertEqual(plan.status.variant, "torch_cpu")
+        self.assertEqual(plan.uninstall_packages, ("torch", "torchaudio"))
+        self.assertEqual(plan.install_packages, (f"torch=={TORCH_VERSION}", f"torchaudio=={TORCH_VERSION}", BACKEND_NUMPY_SPEC))
+        self.assertIn("--index-url", plan.extra_args)
+        self.assertIn(CUDA_INDEX_URL, plan.extra_args)
+
+    def test_onnx_backend_status_prefers_dml_on_amd(self):
+        _install_torch_cpu_stack(self.libs_dir)
+        _install_fake_dist(
+            self.libs_dir,
+            dist_name=ONNX_DIRECTML_PACKAGE,
+            version="1.20.1",
+            module_name="onnxruntime",
+        )
+
+        status = self.service.get_status(
+            BackendKind.ONNX,
+            ctx={"gpu_vendor": "AMD", "libs_dir": str(self.libs_dir)},
+        )
+
+        self.assertTrue(status.ok)
+        self.assertEqual(status.variant, "onnx_dml")
+        self.assertEqual(status.provider, "dml")
+        self.assertIn("DmlExecutionProvider", status.onnx_providers)
+
+    def test_uv_overrides_hide_backend_managed_packages(self):
+        overrides = self.service.build_uv_overrides(
+            BackendKind.CUDA,
+            requested_specs=["faster-whisper"],
+        )
+
+        self.assertEqual(
+            overrides,
+            (
+                "torch; sys_platform == 'never'",
+                "torchaudio; sys_platform == 'never'",
+                "numpy; sys_platform == 'never'",
+            ),
+        )
+
+    def test_backend_requirement_fails_when_runtime_missing(self):
+        result = check_requirements(
+            [
+                InstallRequirement(
+                    id="backend_cpu",
+                    kind="backend",
+                    backend_kind=BackendKind.CPU,
+                    required=True,
+                )
+            ],
+            ctx={"gpu_vendor": "CPU", "libs_dir": str(self.libs_dir)},
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["missing_required"], ["backend_cpu"])
+
+    def test_asr_install_plan_carries_backend_prerequisite(self):
+        original_registry = getattr(SpeechRecognition, "_registry", {})
+        SpeechRecognition._registry = {"dummy": _FakeBackendAwareRecognizer}
+        try:
+            with patch("utils.gpu_utils.check_gpu_provider", return_value="NVIDIA"):
+                plan = SpeechRecognition.build_install_plan(
+                    "dummy",
+                    pip_installer=object(),
+                    engine_settings={"device": "auto"},
+                )
+        finally:
+            SpeechRecognition._registry = original_registry
+
+        self.assertEqual(plan.required_backend, BackendKind.CUDA)
+        self.assertEqual(plan.backend_context["gpu_vendor"], "NVIDIA")
+        self.assertEqual(plan.actions[0].type, "pip")
+
+
+if __name__ == "__main__":
+    unittest.main()

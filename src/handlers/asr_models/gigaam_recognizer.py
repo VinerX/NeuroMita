@@ -10,10 +10,20 @@ import urllib.request
 import urllib.error
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from core.backends import BackendKind, get_backend_service
 from core.install_requirements import InstallRequirement, check_requirements
 
-from utils import getTranslationVariant as _
-from utils.gpu_utils import check_gpu_provider
+
+def _(ru_str, en_str=""):
+    return en_str or ru_str
+
+
+def check_gpu_provider() -> str:
+    try:
+        import torch
+        return "NVIDIA" if torch.cuda.is_available() else "CPU"
+    except Exception:
+        return "CPU"
 
 
 class GigaAMRecognizer(SpeechRecognizerInterface):
@@ -143,40 +153,27 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
         name = self._normalized_ckpt_name()
         return os.path.join(self.gigaam_model_path, f"{name}_tokenizer.model")
 
+    def _model_root_abs(self) -> str:
+        return os.path.abspath(self.gigaam_model_path)
+
     # ---------- dependency model ----------
     def requirements(self):
+        backend_kind = self.required_backend({
+            "device": self.gigaam_device,
+            "gpu_vendor": self._current_gpu or "CPU",
+        })
         return [
-            InstallRequirement(id="torch", kind="python_module", module="torch", required=True),
-            InstallRequirement(id="torchaudio", kind="python_module", module="torchaudio", required=True),
+            InstallRequirement(id=f"backend_{backend_kind.value}", kind="backend", backend_kind=backend_kind, required=True),
             InstallRequirement(id="omegaconf", kind="python_module", module="omegaconf", required=True),
             InstallRequirement(id="hydra", kind="python_module", module="hydra", required=True),
             InstallRequirement(id="sentencepiece", kind="python_module", module="sentencepiece", required=True),
 
             InstallRequirement(id="silero_vad", kind="python_module", module="silero_vad", required=True),
             InstallRequirement(id="sounddevice", kind="python_module", module="sounddevice", required=True),
-            InstallRequirement(id="numpy", kind="python_module", module="numpy", required=True),
         ]
 
     def pip_install_steps(self, ctx: dict) -> List[dict]:
-        gpu = (ctx.get("gpu_vendor") or "CPU")
-        device = str(ctx.get("device") or "auto").strip().lower()
-
         steps: List[dict] = []
-
-        if gpu == "NVIDIA" and device in ("auto", "cuda"):
-            steps.append({
-                "progress": 10,
-                "description": _("Installing PyTorch with CUDA (cu128)...", "Installing PyTorch with CUDA (cu128)..."),
-                "packages": ["torch==2.7.1", "torchaudio==2.7.1"],
-                "extra_args": ["--index-url", "https://download.pytorch.org/whl/cu128"]
-            })
-        else:
-            steps.append({
-                "progress": 10,
-                "description": _("Installing PyTorch CPU...", "Installing PyTorch CPU..."),
-                "packages": ["torch==2.7.1", "torchaudio==2.7.1"],
-                "extra_args": None
-            })
 
         steps.append({
             "progress": 30,
@@ -197,14 +194,19 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             "packages": ["sounddevice"],
             "extra_args": None
         })
-        steps.append({
-            "progress": 65,
-            "description": _("Installing numpy...", "Installing numpy..."),
-            "packages": ["numpy"],
-            "extra_args": None
-        })
 
         return steps
+
+    def required_backend(self, ctx: dict) -> BackendKind:
+        return get_backend_service().preferred_torch_kind(ctx)
+
+    @staticmethod
+    def _sentencepiece_available() -> bool:
+        try:
+            from sentencepiece import SentencePieceProcessor  # noqa: F401
+            return True
+        except Exception:
+            return False
 
     def is_installed(self) -> bool:
         if self._current_gpu is None:
@@ -215,7 +217,17 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
 
         ctx = {"device": self.gigaam_device, "gpu_vendor": self._current_gpu}
         st = check_requirements(self.requirements(), ctx=ctx)
-        return bool(st.get("ok"))
+        if not bool(st.get("ok")):
+            return False
+        if not self._sentencepiece_available():
+            return False
+
+        for item in self.install_manifest():
+            dest = str(item.get("dest") or "").strip()
+            if not dest or not os.path.exists(dest) or os.path.getsize(dest) <= 0:
+                return False
+
+        return True
     
     def install_manifest(self) -> list[dict]:
         model_name = self._normalized_ckpt_name()
@@ -228,7 +240,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             {"url": f"{self._url_dir}/{model_name}.ckpt", "dest": ckpt_dest},
         ]
 
-        if model_name == "v1_rnnt":
+        if model_name == "v1_rnnt" or "e2e" in model_name:
             items.append({
                 "url": f"{self._url_dir}/{model_name}_tokenizer.model",
                 "dest": self._tokenizer_path(),
@@ -353,7 +365,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             self._model = gigaam.load_model(
                 self.gigaam_model,
                 device=device_choice,
-                download_root=self.gigaam_model_path,
+                download_root=self._model_root_abs(),
                 use_flash=False,
             )
 

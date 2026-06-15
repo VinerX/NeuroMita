@@ -11,6 +11,44 @@ from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget,
 from ui.chat.structured_panel import StructuredOutputPanel
 from core.events import get_event_bus, Events
 
+def _strip_hidden_image_descriptions(text: str) -> str:
+    import re
+
+    if not text:
+        return ""
+
+    cleaned = str(text)
+    cleaned = re.sub(
+        r"<image_description\b[^>]*>.*?</image_description\s*>",
+        "",
+        cleaned,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    cleaned = re.sub(r"^\s*\[Scene:[^\n]*\]\s*$", "", cleaned, flags=re.MULTILINE)
+
+    lines = cleaned.splitlines()
+    kept: list[str] = []
+    skipping_image_block = False
+
+    for line in lines:
+        stripped = line.strip()
+        if not skipping_image_block and re.match(r"^\[Image(?:\s+\d+)?:", stripped):
+            needs_multiline_skip = (not stripped.endswith("]")) or ("{" in stripped and not stripped.endswith("}]"))
+            if needs_multiline_skip:
+                skipping_image_block = True
+            continue
+
+        if skipping_image_block:
+            if stripped.endswith("}]") or stripped == "]" or stripped.endswith("]"):
+                skipping_image_block = False
+            continue
+
+        kept.append(line)
+
+    cleaned = "\n".join(kept)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
 def _wrap_panel_aligned(panel, role="assistant", parent=None):
     """
     Wrap a structured/think panel in a container to align perfectly with the message text bubble.
@@ -142,12 +180,12 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
         if dlg.exec() == QDialog.DialogCode.Accepted:
             bus.emit(Events.Chat.REGENERATE_FROM, {"message_id": mid, "character_id": character_id})
 
-    def on_view_context(sample_id: str):
+    def on_view_context(sample_id: str, initial_tab: str = "request"):
         import json
         import os
         import traceback
-        from PyQt6.QtWidgets import QMessageBox
         from ui.dialogs.context_viewer_dialog import ContextViewerDialog
+        from ui.dialogs.styled_message import show_styled_message
 
         data = None
 
@@ -160,7 +198,7 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
                     samples = fc.load_samples()
                     data = next((s for s in samples if s.get("id") == sample_id), None)
             except Exception as e:
-                QMessageBox.critical(None, _("Ошибка", "Error"), str(e))
+                show_styled_message(widget, _("Ошибка", "Error"), str(e), level="error")
                 return
 
         # 2. Fallback — последний сохранённый запрос (всегда доступен)
@@ -180,40 +218,47 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
                     pass
 
         if data is None:
-            QMessageBox.warning(
-                None,
+            show_styled_message(
+                widget,
                 _("Не найдено", "Not found"),
                 _("Данные не найдены. Убедитесь, что хотя бы одно сообщение было отправлено.",
-                  "No data found. Make sure at least one message has been sent.")
+                  "No data found. Make sure at least one message has been sent."),
+                level="warning",
             )
             return
 
         if used_fallback:
-            QMessageBox.information(
-                None,
+            show_styled_message(
+                widget,
                 _("Данные конкретного сообщения недоступны", "Message-specific data not available"),
                 _("Сбор данных для дообучения был отключён для этого сообщения.\n"
                   "Показан последний сохранённый запрос — он может не совпадать с этим сообщением.",
                   "Finetune collection was disabled for this message.\n"
-                  "Showing the last saved request — it may not match this message.")
+                  "Showing the last saved request — it may not match this message."),
+                level="info",
             )
 
         try:
-            dlg = ContextViewerDialog(data, parent=widget)
+            dlg = ContextViewerDialog(data, parent=widget, initial_tab=initial_tab)
             dlg.exec()
         except Exception as e:
-            QMessageBox.critical(
-                None, _("Ошибка открытия диалога", "Dialog error"),
-                f"{e}\n\n{traceback.format_exc()}"
+            show_styled_message(
+                widget, _("Ошибка открытия диалога", "Dialog error"),
+                f"{e}\n\n{traceback.format_exc()}",
+                level="error",
             )
+
+    def on_view_response_context(sample_id: str):
+        on_view_context(sample_id, initial_tab="response")
 
     widget.delete_requested.connect(on_delete)
     widget.edit_requested.connect(on_edit)
     widget.regenerate_requested.connect(on_regenerate)
     widget.regenerate_from_requested.connect(on_regenerate_from)
     widget.view_context_requested.connect(on_view_context)
+    widget.view_response_context_requested.connect(on_view_response_context)
 
-def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None):
+def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None, ui_images=None):
     font_size = _get_font_size(gui)
     max_bw = int(gui._get_setting("CHAT_MAX_BUBBLE_WIDTH", 600))
     chat_parent = gui.chat_window.get_layout_parent()
@@ -271,6 +316,11 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         if isinstance(raw, str) and raw.lstrip().startswith(_SYS_PREFIX):
             role = "system"
 
+    # System notes (engine/context messages like "[Easel drawing]…") are hidden
+    # by default — they aren't part of the conversation. Optional via the setting.
+    if role == "system" and not bool(gui._get_setting("SHOW_SYSTEM_MESSAGES", False)):
+        return
+
     text_parts = []
     speaker_name = ""
     images = []
@@ -284,16 +334,27 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
                 text_parts.append(item.get("text") or item.get("content", ""))
             elif item.get("type") == "image_url":
                 image_url = item.get("image_url", {}).get("url", "")
-                if image_url: images.append(image_url)
+                if image_url:
+                    images.append({
+                        "url": image_url,
+                        "display_role": item.get("display_role"),
+                    })
     elif isinstance(content, str):
         text_parts.append(content)
 
     if not speaker_name:
         if role == "user": speaker_name = _("Вы", "You")
         elif role == "assistant" and hasattr(gui, "_get_character_name"): speaker_name = gui._get_character_name()
-        elif role == "system": speaker_name = _("Система", "System")
+        elif role in ("system", "event"): speaker_name = _("ⓘ Система", "ⓘ System")
 
     full_text = "".join(text_parts).strip()
+    has_any_images = bool(images or ui_images)
+
+    # When ui_images are provided the real images will be shown as bubbles below.
+    # Strip the "[Image: ...]" placeholder text so it doesn't clutter the chat.
+    if has_any_images:
+        full_text = _strip_hidden_image_descriptions(full_text)
+
     hide_tags = gui._get_setting("HIDE_CHAT_TAGS", False)
     if hide_tags:
         import re
@@ -301,6 +362,9 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         full_text = re.sub(r' +', ' ', full_text).strip()
 
     show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
+    # System/event notes read cleaner without a timestamp row.
+    if role in ("system", "event"):
+        show_ts = False
     mode = _struct_mode(gui)
     _pending_struct_panel = None
     
@@ -322,17 +386,22 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
     if len(target_groups) > 1:
         for i, (target, texts) in enumerate(target_groups):
             group_text = " ".join(t.strip() for t in texts).strip()
+            if has_any_images:
+                group_text = _strip_hidden_image_descriptions(group_text)
             if hide_tags:
                 import re
                 group_text = re.sub(r'(<([^>]+)>)(.*?)(</\2>)|(<([^>]+)>)', "", group_text, flags=re.DOTALL)
                 group_text = re.sub(r' +', ' ', group_text).strip()
+
+            if not group_text:
+                continue
                 
             is_last = (i == len(target_groups) - 1)
             is_self = target and speaker_name.lower().startswith(target.lower())
             display_name = f"{speaker_name} → {target}" if target and target.lower() != "player" and not is_self else speaker_name
             
             # Show avatar only on the last bubble of the split sequence to avoid spam
-            show_av = is_last and (role not in ("system", "think", "structured"))
+            show_av = is_last and (role not in ("system", "event", "think", "structured"))
 
             w = MessageWidget(
                 role=role, speaker_name=display_name, content_text=group_text,
@@ -346,10 +415,10 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             if is_last and _pending_struct_panel is not None:
                 w.set_structured_ref(_pending_struct_panel)
             gui.chat_window.add_message_widget(w, at_start=insert_at_start)
-    else:
+    elif full_text:
         msg_widget = MessageWidget(
             role=role, speaker_name=speaker_name, content_text=full_text,
-            show_avatar=(role not in ("system", "think", "structured")),
+            show_avatar=(role not in ("system", "event", "think", "structured")),
             font_size=font_size, message_time=message_time, show_timestamp=show_ts,
             max_bubble_width=max_bw, sample_id=_ft_sample_id, message_id=message_id, parent=chat_parent
         )
@@ -363,9 +432,49 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         wrapped = _wrap_panel_aligned(_pending_struct_panel, role, parent=chat_parent)
         gui.chat_window.add_message_widget(wrapped, at_start=insert_at_start)
 
-    for image_data in images:
-        img_widget = ImageWidget(image_data, role=role, max_bubble_width=max_bw, parent=chat_parent)
-        wrapped_img = _wrap_panel_aligned(img_widget, role, parent=chat_parent)
+    ui_image_entries = list(ui_images or [])
+    ui_image_by_url = {
+        str(img.get("url") or ""): img
+        for img in ui_image_entries
+        if isinstance(img, dict) and img.get("url")
+    }
+    rendered_urls = set()
+
+    # Images from the current live message or reconstructed history.
+    for image_entry in images:
+        image_url = image_entry.get("url", "") if isinstance(image_entry, dict) else str(image_entry or "")
+        image_key = str(image_url or "")
+        img_info = ui_image_by_url.get(image_key, {})
+        image_role = (
+            img_info.get("display_role")
+            or (image_entry.get("display_role") if isinstance(image_entry, dict) else None)
+            or role
+        )
+        img_widget = ImageWidget(
+            image_url,
+            role=image_role,
+            max_bubble_width=max_bw,
+            description=img_info.get("description", ""),
+            parent=chat_parent,
+        )
+        wrapped_img = _wrap_panel_aligned(img_widget, image_role, parent=chat_parent)
+        gui.chat_window.add_message_widget(wrapped_img, at_start=insert_at_start)
+        if image_key:
+            rendered_urls.add(image_key)
+
+    # Legacy fallback for history entries that still only have UI-side image metadata.
+    for img_info in ui_image_entries:
+        image_url = str(img_info.get("url", "") or "")
+        if not image_url or image_url in rendered_urls:
+            continue
+        img_widget = ImageWidget(
+            image_url,
+            role=img_info.get("display_role") or role,
+            max_bubble_width=max_bw,
+            description=img_info.get("description", ""),
+            parent=chat_parent,
+        )
+        wrapped_img = _wrap_panel_aligned(img_widget, img_info.get("display_role") or role, parent=chat_parent)
         gui.chat_window.add_message_widget(wrapped_img, at_start=insert_at_start)
 
 
@@ -403,7 +512,7 @@ def prepare_stream_slot(gui, role="assistant"):
         _ft_stream_sample_id = _pop_sample_id_if_collecting() if role == "assistant" else None
         msg = MessageWidget(
             role=role, speaker_name=speaker_name, content_text="",
-            show_avatar=(role not in ("system", "think", "structured")),
+            show_avatar=(role not in ("system", "event", "think", "structured")),
             font_size=font_size, show_timestamp=show_ts, max_bubble_width=max_bw,
             sample_id=_ft_stream_sample_id, parent=chat_parent
         )

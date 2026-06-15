@@ -19,18 +19,19 @@ class LocalEmbeddingProvider(BaseEmbeddingProvider):
         return True  # always last-resort fallback
 
     def embed(self, req: EmbeddingRequest) -> List[Optional[np.ndarray]]:
-        from handlers.embedding_handler import EmbeddingModelHandler
+        from handlers.ai_engine.rag_client import get_embeddings as rag_get_embeddings
 
         model_id = (req.api_url or "").strip() or (req.model or "").strip()
         prefix = req.query_prefix if req.is_query else ""
 
         try:
-            handler = EmbeddingModelHandler.shared(
+            return rag_get_embeddings(
+                req.texts,
                 model_name=model_id,
                 query_prefix=req.query_prefix,
+                prefix=prefix,
+                batch_size=req.extra.get("batch_size") if isinstance(req.extra, dict) else None,
             )
         except Exception as e:
-            logger.error(f"LocalEmbeddingProvider: failed to load model '{model_id}': {e}", exc_info=True)
+            logger.error(f"LocalEmbeddingProvider: failed to embed via AI engine for '{model_id}': {e}", exc_info=True)
             return [None] * len(req.texts)
-
-        return handler.get_embeddings(req.texts, prefix=prefix)

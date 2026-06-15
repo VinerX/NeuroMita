@@ -1,84 +1,134 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout
-from PyQt6.QtCore import Qt
-from ui.widgets.settings_overlay_widget import SettingsOverlay, SettingsResizeHandle
-from ui.widgets.settings_icon_button import SettingsIconButton
-from utils import _
+from __future__ import annotations
 
-_MODE_RANK = {"basic": 0, "advanced": 1, "full": 2}
+from PyQt6.QtWidgets import QWidget
+
+from ui.pages.settings.section_registry import get_settings_section_specs
+from ui.pages.settings.settings_page_widget import SettingsPage, normalize_mode
+
+# ---------------------------------------------------------------------------
+# Per-section enable/disable
+# ---------------------------------------------------------------------------
+# The old INTERFACE_MODE (Basic/Advanced/Full) dropdown is replaced by
+# independent per-section toggles. Each toggleable category gets a setting
+# key in the SettingsManager (SECTION_<CAT>_ENABLED). Defaults reproduce the
+# old "Basic" set: sections whose registry spec.min_mode == "basic" start
+# enabled, the rest start disabled. "general" is always on (it hosts the
+# section toggles themselves, so it must stay reachable).
+
+ALWAYS_ON_SECTIONS = frozenset({"general"})
+
+# The launcher's main-nav "developer" page is gated the same way as a
+# settings section even though it is not part of the settings registry.
+_EXTRA_SECTION_DEFAULTS = {"developer": False}
+_EXTRA_SECTION_LABELS = {"developer": ("Дев", "Dev")}
 
 
-def normalize_mode(v):
-    m = (v or '').strip().lower()
-    if m in ('advanced', 'продвинутый'):
-        return 'advanced'
-    if m in ('full', 'полный'):
-        return 'full'
-    return 'basic'
+def _build_section_defaults() -> dict[str, bool]:
+    defaults: dict[str, bool] = {}
+    for spec in get_settings_section_specs():
+        if spec.key in ALWAYS_ON_SECTIONS:
+            continue
+        defaults[spec.key] = spec.min_mode == "basic"
+    for key, value in _EXTRA_SECTION_DEFAULTS.items():
+        defaults.setdefault(key, value)
+    return defaults
 
 
-def apply_interface_mode(gui, mode_value):
-    mode = normalize_mode(mode_value)
-    cur_rank = _MODE_RANK[mode]
-    for cat, btn in gui.settings_buttons.items():
-        need = _MODE_RANK[gui._category_modes.get(cat, 'basic')]
-        btn.setVisible(need <= cur_rank)
-    # если активная категория стала скрытой — свернуть overlay
-    active = getattr(gui, 'current_settings_category', None)
-    if active:
-        active_rank = _MODE_RANK[gui._category_modes.get(active, 'basic')]
-        if active_rank > cur_rank:
-            gui.show_settings_category(active)  # toggle = hide
-    # обновить индикаторы захвата
+def _build_section_labels() -> dict[str, tuple[str, str]]:
+    labels: dict[str, tuple[str, str]] = {}
+    for spec in get_settings_section_specs():
+        labels[spec.key] = spec.nav_label
+    labels.update(_EXTRA_SECTION_LABELS)
+    return labels
+
+
+SECTION_DEFAULTS: dict[str, bool] = _build_section_defaults()
+SECTION_LABELS: dict[str, tuple[str, str]] = _build_section_labels()
+TOGGLEABLE_SECTIONS: tuple[str, ...] = tuple(SECTION_DEFAULTS.keys())
+
+
+def _section_key(cat: str) -> str:
+    return f"SECTION_{cat.upper()}_ENABLED"
+
+
+def is_section_enabled(cat: str) -> bool:
+    """Whether the category should appear in the UI.
+
+    'general' is always enabled (it hosts the section toggles). Unknown
+    categories stay visible so we never accidentally hide something new."""
+    if cat in ALWAYS_ON_SECTIONS:
+        return True
+    if cat not in SECTION_DEFAULTS:
+        return True
+    default = SECTION_DEFAULTS[cat]
     try:
-        from ui.widgets.status_indicators_widget import apply_capture_visibility
-        apply_capture_visibility(gui, mode)
+        from managers.settings_manager import SettingsManager
+
+        return bool(SettingsManager.get(_section_key(cat), default))
+    except Exception:
+        return default
+
+
+def set_section_enabled(cat: str, enabled: bool) -> None:
+    if cat in ALWAYS_ON_SECTIONS or cat not in SECTION_DEFAULTS:
+        return
+    try:
+        from managers.settings_manager import SettingsManager
+
+        SettingsManager.set(_section_key(cat), bool(enabled))
     except Exception:
         pass
 
 
-def setup_settings_panel(gui, main_layout):
-    settings_panel = QWidget()
-    settings_panel.setFixedWidth(50)
-    gui.SETTINGS_SIDEBAR_WIDTH = 50
-    settings_panel.setObjectName("SettingsSidebar")
+def apply_section_visibility(gui) -> None:
+    """Refresh every consumer of the per-section toggles."""
+    page = getattr(gui, "settings_page", None)
+    if page is not None and hasattr(page, "apply_section_visibility"):
+        page.apply_section_visibility()
+        return
 
-    panel_layout = QVBoxLayout(settings_panel)
-    panel_layout.setContentsMargins(5, 10, 5, 10)
-    panel_layout.setSpacing(5)
+    # Fallback for early-startup / detached usage: drive raw button maps.
+    for cat, btn in getattr(gui, "settings_buttons", {}).items():
+        btn.setVisible(is_section_enabled(cat))
 
-    gui.settings_overlay = SettingsOverlay(gui)
-    gui.settings_overlay.setMaximumWidth(0)
-    gui.settings_overlay.hide()
-    gui.settings_resize_handle = SettingsResizeHandle(gui.settings_overlay, gui)
-    gui.SETTINGS_RESIZE_HANDLE_WIDTH = gui.settings_resize_handle.width()
-    gui.settings_resize_handle.hide()
+    active = getattr(gui, "current_settings_category", None)
+    if active and not is_section_enabled(active) and hasattr(gui, "show_settings_category"):
+        gui.show_settings_category(active)
 
-    gui.settings_buttons = {}
-    gui._category_modes = {}
+    try:
+        from ui.widgets.status_indicators_widget import apply_capture_visibility
 
-    settings_categories = [
-        ("fa6s.gear",       _("Общие",      "General"),     "general",    "basic"),
-        ("fa6s.plug",       _("API",         "API"),         "api",        "basic"),
-        ("fa6s.user",       _("Персонажи",   "Characters"),  "characters", "basic"),
-        ("fa6s.volume-high",_("Озвучка",     "Voice"),       "voice",      "advanced"),
-        ("fa6s.microphone", _("Микрофон",    "Microphone"),  "microphone", "advanced"),
-        ("fa5s.gamepad",    _("Игра",        "Game"),        "game",       "advanced"),
-        ("fa6s.robot",      _("Модели",      "Models"),      "models",     "full"),
-        ("fa6s.display",    _("Экран",       "Screen"),      "screen",     "full"),
-        ("fa6s.bug",        _("Отладка",     "Debug"),       "debug",      "full"),
-        ("fa6s.newspaper",  _("Новости",     "News"),        "news",       "full"),
-        ("fa5s.database",   _("Данные",      "Data"),        "data",       "full"),
-    ]
+        apply_capture_visibility(gui)
+    except Exception:
+        pass
 
-    for icon_name, tooltip, category, min_mode in settings_categories:
-        btn = SettingsIconButton(icon_name, tooltip)
-        btn.clicked.connect(lambda checked, cat=category: gui.show_settings_category(cat))
-        panel_layout.addWidget(btn)
-        gui.settings_buttons[category] = btn
-        gui._category_modes[category] = min_mode
+    sidebar = getattr(gui, "shell_sidebar", None)
+    if sidebar is not None and hasattr(sidebar, "apply_section_visibility"):
+        sidebar.apply_section_visibility(is_section_enabled)
 
-    panel_layout.addStretch()
 
-    main_layout.addWidget(gui.settings_resize_handle)
-    main_layout.addWidget(gui.settings_overlay)
-    main_layout.addWidget(settings_panel)
+def apply_interface_mode(gui, mode_value=None):
+    """Back-compat shim. The interface is now driven by per-section toggles,
+    so the mode argument is ignored — we just re-apply the visibility map."""
+    apply_section_visibility(gui)
+
+
+def create_settings_page(gui) -> QWidget:
+    page = SettingsPage(gui)
+    gui.settings_page = page
+    return page
+
+
+__all__ = [
+    "ALWAYS_ON_SECTIONS",
+    "SECTION_DEFAULTS",
+    "SECTION_LABELS",
+    "TOGGLEABLE_SECTIONS",
+    "_section_key",
+    "is_section_enabled",
+    "set_section_enabled",
+    "apply_section_visibility",
+    "apply_interface_mode",
+    "normalize_mode",
+    "create_settings_page",
+]

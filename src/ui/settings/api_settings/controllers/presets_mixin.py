@@ -111,6 +111,7 @@ class PresetsMixin:
         if not isinstance(cur_item, Item):
             v.remove_preset_btn.setEnabled(False)
             v.rename_preset_btn.setEnabled(False)
+            v.copy_preset_btn.setEnabled(False)
             v.move_up_btn.setEnabled(False)
             v.move_down_btn.setEnabled(False)
             v.api_settings_container.setVisible(False)
@@ -138,6 +139,7 @@ class PresetsMixin:
 
         v.remove_preset_btn.setEnabled(True)
         v.rename_preset_btn.setEnabled(True)
+        v.copy_preset_btn.setEnabled(True)
         v.move_up_btn.setEnabled(v.custom_presets_list.currentRow() > 0)
         v.move_down_btn.setEnabled(v.custom_presets_list.currentRow() < v.custom_presets_list.count() - 1)
 
@@ -211,6 +213,12 @@ class PresetsMixin:
             if isinstance(gen_overrides, dict):
                 self._write_generation_overrides(gen_overrides)
 
+            openrouter_routing = preset.get("openrouter_routing") or {}
+            if isinstance(openrouter_routing, dict):
+                self._write_openrouter_routing(openrouter_routing)
+            else:
+                self._write_openrouter_routing({})
+
             v.api_url_row.set_enabled(base is None)
 
             self._apply_help_links(preset)
@@ -222,6 +230,7 @@ class PresetsMixin:
             v.provider_label.setText(f"{_('Пресет', 'Preset')}: {preset.get('name', '')}")
             v.api_settings_container.setVisible(True)
 
+            self.event_bus.emit(Events.ApiPresets.SET_CURRENT_PRESET_ID, {"id": int(preset_id)})
             self.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": "LAST_API_PRESET_ID", "value": int(preset_id)})
 
             self._snapshot = self._get_snapshot()

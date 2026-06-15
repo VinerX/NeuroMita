@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Optional, Type, Any
+from typing import Optional, Type, Any, get_args, get_origin
 
 from main_logger import logger
 from schemas.structured_response import StructuredResponse, ResponseSegment
@@ -200,7 +200,7 @@ def _validate_with_coerce(data: dict, *, model_cls: Type[StructuredResponse]) ->
         return model_cls.model_validate(data)
     except Exception as first_error:
         try:
-            data = _schema_aware_coerce(data)
+            data = _schema_aware_coerce(data, model_cls=model_cls)
             return model_cls.model_validate(data)
         except Exception as second_error:
             raise StructuredResponseParseError(
@@ -209,10 +209,72 @@ def _validate_with_coerce(data: dict, *, model_cls: Type[StructuredResponse]) ->
             ) from first_error
 
 
-def _schema_aware_coerce(data: dict) -> dict:
+def _extract_custom_field_names(model_cls: Type[StructuredResponse]) -> set[str]:
+    custom_fields = getattr(model_cls, "model_fields", {}).get("custom_fields")
+    if custom_fields is None:
+        return set()
+
+    annotation = getattr(custom_fields, "annotation", None)
+    if annotation is None:
+        return set()
+
+    candidates = [annotation]
+    origin = get_origin(annotation)
+    if origin is not None:
+        candidates.extend(arg for arg in get_args(annotation) if arg is not type(None))
+
+    for candidate in candidates:
+        fields = getattr(candidate, "model_fields", None)
+        if isinstance(fields, dict):
+            return {str(name) for name in fields.keys()}
+
+    return set()
+
+
+def _schema_aware_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> dict:
     import copy
     data = copy.deepcopy(data)
 
+    segment_list_fields = (
+        "emotions",
+        "animations",
+        "idle_animations",
+        "commands",
+        "movement_modes",
+        "visual_effects",
+        "clothes",
+        "music",
+        "interactions",
+        "face_params",
+    )
+
+    def _coerce_string_list(value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item) for item in value if item is not None]
+        return [str(value)]
+
+    custom_field_names = _extract_custom_field_names(model_cls)
+    if custom_field_names:
+        custom_fields = data.get("custom_fields")
+        if not isinstance(custom_fields, dict):
+            custom_fields = {}
+
+        hoisted_fields = []
+        for field_name in custom_field_names:
+            if field_name in data and field_name not in custom_fields:
+                custom_fields[field_name] = data.pop(field_name)
+                hoisted_fields.append(field_name)
+
+        if hoisted_fields:
+            data["custom_fields"] = custom_fields
+            logger.warning(
+                "[StructuredResponseParser] Hoisted top-level custom fields into custom_fields: %s",
+                ", ".join(sorted(hoisted_fields)),
+            )
+
+    # 1. Приведение числовых статов
     for field in ("attitude_change", "boredom_change", "stress_change"):
         val = data.get(field)
         if isinstance(val, str):
@@ -221,28 +283,71 @@ def _schema_aware_coerce(data: dict) -> dict:
             except ValueError:
                 data[field] = 0.0
 
-    for field in ("memory_add", "memory_update", "memory_delete", "memory_merge", "segments", "reminder_add", "reminder_delete"):
+    # 2. Исправление null в списках (добавили entities и relations)
+    for field in ("memory_add", "memory_update", "memory_delete", "memory_merge",
+                  "segments", "reminder_add", "reminder_delete", "entities", "relations"):
         if data.get(field) is None:
             data[field] = []
 
+    # 3. Базовая починка сегментов
     if isinstance(data.get("segments"), list):
         for seg in data["segments"]:
-            if isinstance(seg, dict) and "text" not in seg:
-                seg["text"] = ""
+            if not isinstance(seg, dict):
+                continue
 
+            if "text" not in seg or seg["text"] is None:
+                seg["text"] = ""
+            elif not isinstance(seg["text"], str):
+                seg["text"] = str(seg["text"])
+
+            for field in segment_list_fields:
+                if field in seg:
+                    seg[field] = _coerce_string_list(seg.get(field))
+
+            for field in ("start_game", "end_game", "target", "hint"):
+                if field in seg and seg[field] is not None and not isinstance(seg[field], str):
+                    seg[field] = str(seg[field])
+
+            if "allow_sleep" in seg and seg["allow_sleep"] is not None and not isinstance(seg["allow_sleep"], bool):
+                value = seg["allow_sleep"]
+                if isinstance(value, str):
+                    lowered = value.strip().lower()
+                    if lowered in {"true", "1", "yes", "on"}:
+                        seg["allow_sleep"] = True
+                    elif lowered in {"false", "0", "no", "off"}:
+                        seg["allow_sleep"] = False
+                    else:
+                        seg["allow_sleep"] = None
+                else:
+                    seg["allow_sleep"] = bool(value)
+
+    # 4. Если текста много, а сегментов нет — создаем сегмент
     if not data.get("segments") and isinstance(data.get("text"), str):
         data["segments"] = [{"text": data["text"]}]
 
-    # Hoist fields the LLM accidentally placed inside a segment to top level.
-    # Happens when the model confuses segment-level and response-level fields.
+    # 5. Hoisting (поднятие полей из сегмента наверх)
     if isinstance(data.get("segments"), list) and data["segments"]:
         seg0 = data["segments"][0]
         if isinstance(seg0, dict):
-            # custom_fields: may be required at top level
             if not data.get("custom_fields") and "custom_fields" in seg0:
                 data["custom_fields"] = seg0.pop("custom_fields")
 
-            # numeric stat changes — hoist if top-level is missing/zero but segment has values
+            custom_fields = data.get("custom_fields")
+            if custom_field_names and not isinstance(custom_fields, dict):
+                custom_fields = {}
+            if custom_field_names and isinstance(custom_fields, dict):
+                hoisted_segment_fields = []
+                for field_name in custom_field_names:
+                    if field_name in seg0 and field_name not in custom_fields:
+                        custom_fields[field_name] = seg0.pop(field_name)
+                        hoisted_segment_fields.append(field_name)
+                if hoisted_segment_fields:
+                    data["custom_fields"] = custom_fields
+                    logger.warning(
+                        "[StructuredResponseParser] Hoisted segment custom fields into custom_fields: %s",
+                        ", ".join(sorted(hoisted_segment_fields)),
+                    )
+
             for stat_field in ("attitude_change", "boredom_change", "stress_change"):
                 if stat_field not in data and stat_field in seg0:
                     try:
@@ -250,11 +355,35 @@ def _schema_aware_coerce(data: dict) -> dict:
                     except (TypeError, ValueError):
                         seg0.pop(stat_field, None)
 
-            # memory lists — hoist if top-level is empty
-            for mem_field in ("memory_add", "memory_update", "memory_delete", "memory_merge",
-                              "reminder_add", "reminder_delete"):
-                if not data.get(mem_field) and seg0.get(mem_field):
-                    data[mem_field] = seg0.pop(mem_field)
+            # Добавили entities и relations в список на "поднятие"
+            for field in ("memory_add", "memory_update", "memory_delete", "memory_merge",
+                          "reminder_add", "reminder_delete", "entities", "relations"):
+                if not data.get(field) and seg0.get(field):
+                    data[field] = seg0.pop(field)
+
+    # 6. Трансформация объектов в строки "name:type"
+    if isinstance(data.get("entities"), list):
+        coerced_entities = []
+        for ent in data["entities"]:
+            if isinstance(ent, dict):
+                name = ent.get("name") or ent.get("entity") or "unknown"
+                etype = ent.get("type") or "thing"
+                coerced_entities.append(f"{name}:{etype}")
+            else:
+                coerced_entities.append(str(ent))
+        data["entities"] = coerced_entities
+
+    if isinstance(data.get("relations"), list):
+        coerced_relations = []
+        for rel in data["relations"]:
+            if isinstance(rel, dict):
+                src = rel.get("source") or rel.get("from") or rel.get("s") or "unknown"
+                rtype = rel.get("type") or rel.get("p") or "related"
+                dst = rel.get("target") or rel.get("to") or rel.get("o") or "unknown"
+                coerced_relations.append(f"{src}:{rtype}:{dst}")
+            else:
+                coerced_relations.append(str(rel))
+        data["relations"] = coerced_relations
 
     return data
 

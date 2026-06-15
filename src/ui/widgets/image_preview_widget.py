@@ -5,6 +5,7 @@ import qtawesome as qta
 import base64
 import io
 from PIL import Image
+from styles.theme import get_theme
 
 class ImageThumbnail(QFrame):
     """Отдельная миниатюра изображения"""
@@ -14,22 +15,23 @@ class ImageThumbnail(QFrame):
     
     def __init__(self, image_data, index, parent=None):
         super().__init__(parent)
+        self._theme = get_theme()
         self.image_data = image_data
         self.index = index
         self.pixmap = None
         
         self.setFixedSize(48, 48)  # Уменьшили размер
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setStyleSheet("""
-            ImageThumbnail {
-                background-color: #383838;
-                border: 2px solid #4a4a4a;
+        self.setStyleSheet(f"""
+            ImageThumbnail {{
+                background-color: {self._theme["settings_panel_bg"]};
+                border: 2px solid rgba({self._theme["sidebar_panel_rgb"]}, 0.98);
                 border-radius: 6px;
-            }
-            ImageThumbnail:hover {
-                border: 2px solid #8a2be2;
-                background-color: #404040;
-            }
+            }}
+            ImageThumbnail:hover {{
+                border: 2px solid {self._theme["accent_alt"]};
+                background-color: rgba({self._theme["accent_rgb"]}, 0.10);
+            }}
         """)
         
         # Кнопка удаления
@@ -105,7 +107,7 @@ class ImageThumbnail(QFrame):
         painter.setClipRect(rect)
         
         # Рисуем фон
-        painter.fillRect(rect, QColor("#383838"))
+        painter.fillRect(rect, QColor(self._theme["settings_panel_bg"]))
         
         # Рисуем изображение на весь квадрат
         if self.pixmap:

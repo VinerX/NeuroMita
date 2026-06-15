@@ -1,13 +1,14 @@
-# src/handlers/llm_providers/gemini_provider.py
 from __future__ import annotations
 
-from .base import BaseProvider, LLMRequest
-import requests
 import json
-import copy
+
+import requests
+
 from main_logger import logger
 from handlers.llm_providers.param_mapper import filter_jsonable_params
 from schemas.structured_response import StructuredResponse
+
+from .base import BaseProvider, LLMRequest, LLMResponse, normalize_usage_payload
 
 
 class GeminiProvider(BaseProvider):
@@ -21,7 +22,7 @@ class GeminiProvider(BaseProvider):
     def is_applicable(self, req: LLMRequest) -> bool:
         return bool(req.provider_name == self.name)
 
-    def generate(self, req: LLMRequest) -> str:
+    def generate(self, req: LLMRequest) -> LLMResponse:
         return self.generate_request_gemini(req)
 
     def _supports_system_instruction(self, model: str) -> bool:
@@ -52,7 +53,7 @@ class GeminiProvider(BaseProvider):
         if not contents:
             return [{
                 "role": "user",
-                "parts": [{"text": prefix}]
+                "parts": [{"text": prefix}],
             }]
 
         for msg in contents:
@@ -149,10 +150,10 @@ class GeminiProvider(BaseProvider):
 
         return filter_jsonable_params(cfg)
 
-    def generate_request_gemini(self, req: LLMRequest) -> str:
+    def generate_request_gemini(self, req: LLMRequest) -> LLMResponse:
         if req.depth > 3:
             logger.error("Превышена глубина рекурсии для Gemini tool calls")
-            return None
+            return LLMResponse(text=None, provider_name=self.name)
 
         formatted = self._format_messages_for_gemini_api(req.messages)
 
@@ -173,7 +174,7 @@ class GeminiProvider(BaseProvider):
         if not data["contents"]:
             data["contents"] = [{
                 "role": "user",
-                "parts": [{"text": "Generate an appropriate reaction."}]
+                "parts": [{"text": "Generate an appropriate reaction."}],
             }]
 
         if data["contents"] and data["contents"][-1].get("role") != "user":
@@ -216,6 +217,7 @@ class GeminiProvider(BaseProvider):
         logger.info(f"[GeminiProvider] need_stream={need_stream}, generationConfig keys: {list(gen_cfg_log.keys())}")
 
         import time as _time
+
         _t0 = _time.time()
         response = requests.post(
             req.api_url,
@@ -228,7 +230,7 @@ class GeminiProvider(BaseProvider):
 
         if response.status_code != 200:
             logger.error(f"Gemini API error: {response.status_code} - {response.text[:500]}")
-            return None
+            return LLMResponse(text=None, model=req.model, provider_name=self.name)
 
         if need_stream:
             return self._handle_gemini_stream(response, req.stream_cb)
@@ -252,25 +254,39 @@ class GeminiProvider(BaseProvider):
                     if t:
                         text_parts_list.append(t)
 
-            response_text = "".join(text_parts_list) or "…"
+            response_text = "".join(text_parts_list) or "..."
             if think_texts:
                 think_block = "<think>" + "\n".join(think_texts) + "</think>"
                 response_text = think_block + "\n" + response_text
-            return response_text
+
+            return LLMResponse(
+                text=response_text,
+                usage=self._extract_usage(response_data),
+                model=(response_data.get("modelVersion") if isinstance(response_data, dict) else None) or req.model,
+                provider_name=self.name,
+                raw=response_data if isinstance(response_data, dict) else {},
+            )
         except Exception as e:
             logger.error(f"Ошибка парсинга Gemini response: {e}", exc_info=True)
-            return None
+            return LLMResponse(text=None, model=req.model, provider_name=self.name)
 
-    def _handle_gemini_stream(self, response, stream_callback: callable = None) -> str:
+    def _handle_gemini_stream(self, response, stream_callback: callable = None) -> LLMResponse:
         full_response_parts = []
-        json_buffer = ''
+        json_buffer = ""
         decoder = json.JSONDecoder()
+        usage = None
+        response_model = None
+
         try:
             for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
                 json_buffer += chunk
                 while json_buffer.strip():
                     try:
                         result, index = decoder.raw_decode(json_buffer)
+                        if response_model is None and isinstance(result, dict):
+                            response_model = result.get("modelVersion")
+                        usage = usage or self._extract_usage(result)
+
                         parts = (
                             result.get("candidates", [{}])[0]
                             .get("content", {})
@@ -290,10 +306,37 @@ class GeminiProvider(BaseProvider):
                                     stream_callback(text)
                             if not is_thought:
                                 full_response_parts.append(text)
+
                         json_buffer = json_buffer[index:].lstrip()
                     except json.JSONDecodeError:
                         break
-            return "".join(full_response_parts)
+
+            return LLMResponse(
+                text="".join(full_response_parts),
+                usage=usage,
+                model=response_model,
+                provider_name=self.name,
+            )
         except Exception as e:
             logger.error(f"Ошибка обработки Gemini stream: {e}", exc_info=True)
-            return "".join(full_response_parts)
+            return LLMResponse(
+                text="".join(full_response_parts),
+                usage=usage,
+                model=response_model,
+                provider_name=self.name,
+            )
+
+    def _extract_usage(self, response_data):
+        if not isinstance(response_data, dict):
+            return None
+
+        usage_meta = response_data.get("usageMetadata") or response_data.get("usage_metadata")
+        if not isinstance(usage_meta, dict):
+            return None
+
+        payload = {
+            "prompt_tokens": usage_meta.get("promptTokenCount") or usage_meta.get("prompt_token_count"),
+            "completion_tokens": usage_meta.get("candidatesTokenCount") or usage_meta.get("candidates_token_count"),
+            "total_tokens": usage_meta.get("totalTokenCount") or usage_meta.get("total_token_count"),
+        }
+        return normalize_usage_payload(payload)

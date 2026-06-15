@@ -11,6 +11,7 @@ from main_logger import logger
 from managers.settings_manager import SettingsManager
 from utils import getTranslationVariant as _
 
+from core.backends import get_backend_service
 from core.events import get_event_bus, Events, Event
 
 try:
@@ -22,19 +23,12 @@ except Exception:
         return []
     def get_gpu_name_by_id(_id):
         return None
-
-
-def _get_voice_spec(model_id: str):
-    from handlers.voice_models.catalog import get_voice_spec
-    return get_voice_spec(model_id)
-
-
 class VoiceModelController:
     """
     Backend-контроллер локальных голосовых моделей.
     - source of truth for model catalog/settings (GET_MODEL_DATA)
     - source of truth for installed set (GET_INSTALLED_MODELS)
-    - runs install/uninstall via InstallController (Events.Install.RUN_WITH_UI/HEADLESS)
+    - routes install/uninstall through InstallableController
     """
 
     def __init__(self, config_dir: str = "Settings"):
@@ -55,14 +49,10 @@ class VoiceModelController:
             "Hover over an interface element to get a description."
         )
 
-        self.detected_gpu_vendor = check_gpu_provider()
-        self.detected_cuda_devices = get_cuda_devices()
+        self.detected_gpu_vendor = "CPU"
+        self.detected_cuda_devices = []
         self.gpu_name = None
-        if self.detected_cuda_devices:
-            try:
-                self.gpu_name = get_gpu_name_by_id(self.detected_cuda_devices[0])
-            except Exception:
-                self.gpu_name = None
+        self._refresh_gpu_runtime_info()
 
         self.installed_models: set[str] = set()
         self.local_voice_models: list[dict] = []
@@ -123,7 +113,104 @@ class VoiceModelController:
             "cuda_devices": list(self.detected_cuda_devices or []),
             "gpu_name": self.gpu_name,
             "platform": platform.system(),
+            "libs_dir": os.environ.get("NEUROMITA_LIB_DIR"),
         }
+
+    def _refresh_gpu_runtime_info(self) -> tuple[bool, bool]:
+        had_cuda = bool(getattr(self, "detected_cuda_devices", None))
+
+        try:
+            self.detected_gpu_vendor = check_gpu_provider()
+        except Exception:
+            self.detected_gpu_vendor = "CPU"
+
+        try:
+            self.detected_cuda_devices = list(get_cuda_devices() or [])
+        except Exception:
+            self.detected_cuda_devices = []
+
+        self.gpu_name = None
+        if self.detected_cuda_devices:
+            try:
+                self.gpu_name = get_gpu_name_by_id(self.detected_cuda_devices[0])
+            except Exception:
+                self.gpu_name = None
+
+        return had_cuda, bool(self.detected_cuda_devices)
+
+    def _auto_promote_saved_device_settings_to_cuda(self) -> None:
+        if self.detected_gpu_vendor != "NVIDIA" or not self.detected_cuda_devices:
+            return
+        if not os.path.exists(self.settings_values_file):
+            return
+
+        try:
+            with open(self.settings_values_file, "r", encoding="utf-8") as f:
+                saved_values = json.load(f)
+        except Exception:
+            return
+
+        if not isinstance(saved_values, dict) or not saved_values:
+            return
+
+        try:
+            models = self.finalize_model_settings(
+                self.get_default_model_structure(),
+                self.detected_gpu_vendor,
+                self.detected_cuda_devices,
+            )
+        except Exception:
+            return
+
+        first_cuda = str(self.detected_cuda_devices[0])
+        changed = False
+
+        for model in models or []:
+            model_id = str(model.get("id") or "").strip()
+            if not model_id:
+                continue
+
+            model_saved = saved_values.get(model_id)
+            if not isinstance(model_saved, dict):
+                continue
+
+            for setting in model.get("settings", []) or []:
+                if not isinstance(setting, dict):
+                    continue
+
+                setting_key = str(setting.get("key") or "").strip()
+                if "device" not in setting_key.lower():
+                    continue
+
+                options = setting.get("options") if isinstance(setting.get("options"), dict) else {}
+                values = [str(v) for v in (options.get("values") or []) if str(v).strip()]
+                if not any(v.startswith("cuda:") for v in values):
+                    continue
+
+                current_value = str(model_saved.get(setting_key) or "").strip().lower()
+                valid_values_lower = {str(v).strip().lower() for v in values}
+                if current_value in ("", "cpu") or current_value not in valid_values_lower:
+                    model_saved[setting_key] = first_cuda
+                    changed = True
+
+        if not changed:
+            return
+
+        tmp_path = self.settings_values_file + ".tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(saved_values, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, self.settings_values_file)
+            logger.info(
+                f"Voice model settings auto-switched to CUDA after runtime refresh: {self.detected_cuda_devices}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to auto-switch voice model device settings to CUDA: {e}")
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
 
     def _is_voice_task(self, data: dict) -> bool:
         if not isinstance(data, dict):
@@ -172,6 +259,9 @@ class VoiceModelController:
         status = status.copy() if isinstance(status, dict) else {}
         status["show_triton_checks"] = (platform.system() == "Windows")
         status["detected_gpu_vendor"] = self.detected_gpu_vendor
+        status["cuda_devices"] = list(self.detected_cuda_devices or [])
+        status["gpu_name"] = self.gpu_name
+        status["backend_statuses"] = get_backend_service().status_snapshot(ctx=self._ctx())
 
         with self._lock:
             self._dependencies_status_cache = status
@@ -198,6 +288,9 @@ class VoiceModelController:
         self.open_doc(event.data)
 
     def reload(self):
+        had_cuda, has_cuda = self._refresh_gpu_runtime_info()
+        if (not had_cuda) and has_cuda:
+            self._auto_promote_saved_device_settings_to_cuda()
         self.load_settings()
         self.refresh_installed_models()
         with self._lock:
@@ -345,6 +438,15 @@ class VoiceModelController:
     def refresh_installed_models(self):
         ctx_base = self._ctx()
         vendors = [self.detected_gpu_vendor] if self.detected_gpu_vendor else ["NVIDIA", "AMD", "CPU"]
+        try:
+            from core.installables import ComponentCategory, make_component_id
+            from installables import get_installable_registry
+
+            registry = get_installable_registry()
+        except Exception:
+            registry = None
+            ComponentCategory = None
+            make_component_id = None
 
         installed = set()
         for m in self.get_default_model_structure():
@@ -352,8 +454,14 @@ class VoiceModelController:
             if not mid:
                 continue
 
-            spec = _get_voice_spec(mid)
-            if not spec:
+            component = None
+            if registry is not None and ComponentCategory is not None and make_component_id is not None:
+                try:
+                    component = registry.get(make_component_id(ComponentCategory.TTS, str(mid)))
+                except Exception:
+                    component = None
+
+            if component is None:
                 continue
 
             ok = False
@@ -361,7 +469,7 @@ class VoiceModelController:
                 ctx = dict(ctx_base)
                 ctx["gpu_vendor"] = v
                 try:
-                    if spec.is_installed(mid, ctx):
+                    if component.status(ctx).installed:
                         ok = True
                         break
                 except Exception:
@@ -375,64 +483,67 @@ class VoiceModelController:
 
     def start_install(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = 3600.0) -> bool:
         mid = str(model_id or "").strip()
-        spec = _get_voice_spec(mid)
-        if not spec:
-            logger.error(f"Unknown voice model spec for '{mid}'")
+        try:
+            from core.installables import ComponentCategory, make_component_id
+            from installables import get_installable_registry
+
+            component_id = make_component_id(ComponentCategory.TTS, mid)
+            component = get_installable_registry().require(component_id)
+            title = component.metadata().title
+        except Exception as exc:
+            logger.error(f"Unknown voice installable component for '{mid}': {exc}")
             return False
 
         ctx = self._ctx()
 
-        def runner(*args, **kwargs):
-            run_ctx = (kwargs.get("ctx") or {})
-            merged = dict(ctx)
-            merged.update(run_ctx)
-            return spec.build_install_plan(mid, merged)
-
         self.event_bus.emit(Events.VoiceModel.MODEL_INSTALL_STARTED, {"model_id": mid})
 
         self.event_bus.emit(
-            Events.Install.RUN_WITH_UI if with_ui else Events.Install.RUN_HEADLESS,
+            Events.Installable.INSTALL,
             {
+                "component_id": component_id,
                 "kind": "voice",
                 "item_id": mid,
                 "task_id": f"voice:install:{mid}",
-                "title": spec.title(mid),
+                "title": title,
                 "initial_status": _("Подготовка...", "Preparing..."),
                 "timeout_sec": float(timeout_sec or 3600.0),
+                "with_ui": bool(with_ui),
+                "ctx": ctx,
                 "meta": {"kind": "voice", "item_id": mid, "op": "install"},
-                "runner": runner,
             },
         )
         return True
 
     def start_uninstall(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = 3600.0) -> bool:
         mid = str(model_id or "").strip()
-        spec = _get_voice_spec(mid)
-        if not spec:
-            logger.error(f"Unknown voice model spec for '{mid}'")
+        try:
+            from core.installables import ComponentCategory, make_component_id
+            from installables import get_installable_registry
+
+            component_id = make_component_id(ComponentCategory.TTS, mid)
+            get_installable_registry().require(component_id)
+        except Exception as exc:
+            logger.error(f"Unknown voice installable component for '{mid}': {exc}")
             return False
 
         ctx = self._ctx()
 
-        def runner(*args, **kwargs):
-            run_ctx = (kwargs.get("ctx") or {})
-            merged = dict(ctx)
-            merged.update(run_ctx)
-            return spec.build_uninstall_plan(mid, merged)
-
         self.event_bus.emit(Events.VoiceModel.MODEL_UNINSTALL_STARTED, {"model_id": mid})
 
         self.event_bus.emit(
-            Events.Install.RUN_WITH_UI if with_ui else Events.Install.RUN_HEADLESS,
+            Events.Installable.UNINSTALL,
             {
+                "component_id": component_id,
                 "kind": "voice",
                 "item_id": mid,
                 "task_id": f"voice:uninstall:{mid}",
                 "title": _("Удаление локальной модели: ", "Uninstalling local model: ") + mid,
                 "initial_status": _("Подготовка...", "Preparing..."),
                 "timeout_sec": float(timeout_sec or 3600.0),
+                "with_ui": bool(with_ui),
+                "ctx": ctx,
                 "meta": {"kind": "voice", "item_id": mid, "op": "uninstall"},
-                "runner": runner,
             },
         )
         return True
@@ -446,13 +557,14 @@ class VoiceModelController:
             return
 
         op = self._task_op(data)
-        self.refresh_installed_models()
+        self.reload()
 
         if op == "uninstall":
             self.event_bus.emit(Events.VoiceModel.MODEL_UNINSTALL_FINISHED, {"model_id": str(mid), "success": True})
         else:
             self.event_bus.emit(Events.VoiceModel.MODEL_INSTALL_FINISHED, {"model_id": str(mid), "success": True})
 
+        self.event_bus.emit(Events.VoiceModel.REFRESH_SETTINGS_DISPLAY)
         self.event_bus.emit(Events.VoiceModel.REFRESH_MODEL_PANELS)
 
     def _on_install_task_failed(self, event: Event):
@@ -464,7 +576,7 @@ class VoiceModelController:
             return
 
         op = self._task_op(data)
-        self.refresh_installed_models()
+        self.reload()
         err = str(data.get("error", "") or "")
 
         if op == "uninstall":
@@ -472,6 +584,7 @@ class VoiceModelController:
         else:
             self.event_bus.emit(Events.VoiceModel.MODEL_INSTALL_FINISHED, {"model_id": str(mid), "success": False, "error": err})
 
+        self.event_bus.emit(Events.VoiceModel.REFRESH_SETTINGS_DISPLAY)
         self.event_bus.emit(Events.VoiceModel.REFRESH_MODEL_PANELS)
 
     def finalize_model_settings(self, models_list, detected_vendor, cuda_devices):

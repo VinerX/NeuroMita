@@ -23,8 +23,8 @@ QListWidget#ModelsList::item {
     border-radius: 4px;
     background: transparent;
 }
-QListWidget#ModelsList::item:hover { background: rgba(138, 43, 226, 0.08); }
-QListWidget#ModelsList::item:selected { background: rgba(138, 43, 226, 0.15); }
+QListWidget#ModelsList::item:hover { background: rgba({accent_rgb}, 0.08); }
+QListWidget#ModelsList::item:selected { background: rgba({accent_rgb}, 0.15); }
 
 QLineEdit#SearchBox { border-radius: 10px; }
 
@@ -172,7 +172,22 @@ QFrame#SettingWidget QComboBox::drop-down {
 QFrame#SettingWidget QCheckBox {
     min-height: 28px;
     max-height: 28px;
-    padding-left: 6px;
+    /* spacing (а не padding-left): padding в некоторых сборках Qt
+       растягивает фон индикатора и чекбокс выглядит как «слайдер». */
+    spacing: 8px;
+    margin-left: 6px;
+    background: transparent;
+}
+QFrame#SettingWidget QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 5px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background-color: {chip_bg};
+}
+QFrame#SettingWidget QCheckBox::indicator:checked {
+    background-color: {accent};
+    border: 1px solid {accent_alt};
 }
 
 QFrame#DepRow {
