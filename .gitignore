@@ -34,3 +34,4 @@ CLAUDE.md
 /beat_sync_cache
 /.tmp_test_beat_service
 /.tmp_test_beat_service_runtime
+/.tmp_test_backend_service_runtime
