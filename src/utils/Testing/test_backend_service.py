@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import unittest
 import uuid
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,10 +13,12 @@ from core.backends import (
     BackendService,
     CUDA_INDEX_URL,
     ONNX_DIRECTML_PACKAGE,
+    TORCH_CUDA_PACKAGES,
     TORCH_VERSION,
     get_backend_service,
 )
 from core.install_requirements import InstallRequirement, check_requirements
+from core.install_types import InstallAction, InstallPlan
 from handlers.asr_handler import SpeechRecognition
 
 
@@ -93,6 +96,20 @@ class _FakeBackendAwareRecognizer:
     def required_backend(self, ctx):
         return get_backend_service().preferred_torch_kind(ctx)
 
+    def build_install_plan(self, ctx):
+        return InstallPlan(
+            required_backend=self.required_backend(ctx),
+            backend_context=dict(ctx or {}),
+            actions=[
+                InstallAction(
+                    type="pip",
+                    description="Installing recognizer package...",
+                    progress=20,
+                    packages=["faster-whisper"],
+                )
+            ],
+        )
+
     async def install(self):
         return True
 
@@ -103,8 +120,14 @@ class BackendServiceTests(unittest.TestCase):
         self.libs_dir = _TMP_ROOT / f"case_{uuid.uuid4().hex}"
         self.libs_dir.mkdir(parents=True, exist_ok=False)
         self.service = BackendService()
+        self._old_lib_dir = os.environ.get("NEUROMITA_LIB_DIR")
+        os.environ["NEUROMITA_LIB_DIR"] = str(self.libs_dir)
 
     def tearDown(self):
+        if self._old_lib_dir is None:
+            os.environ.pop("NEUROMITA_LIB_DIR", None)
+        else:
+            os.environ["NEUROMITA_LIB_DIR"] = self._old_lib_dir
         shutil.rmtree(self.libs_dir, ignore_errors=True)
 
     def test_cpu_backend_status_is_ready_for_fake_lib(self):
@@ -133,8 +156,8 @@ class BackendServiceTests(unittest.TestCase):
         self.assertEqual(plan.action, "reinstall")
         self.assertEqual(plan.status.variant, "torch_cpu")
         self.assertEqual(plan.uninstall_packages, ("torch", "torchaudio"))
-        self.assertEqual(plan.install_packages, (f"torch=={TORCH_VERSION}", f"torchaudio=={TORCH_VERSION}", BACKEND_NUMPY_SPEC))
-        self.assertIn("--index-url", plan.extra_args)
+        self.assertEqual(plan.install_packages, TORCH_CUDA_PACKAGES + (BACKEND_NUMPY_SPEC,))
+        self.assertIn("--extra-index-url", plan.extra_args)
         self.assertIn(CUDA_INDEX_URL, plan.extra_args)
 
     def test_onnx_backend_status_prefers_dml_on_amd(self):
@@ -156,7 +179,9 @@ class BackendServiceTests(unittest.TestCase):
         self.assertEqual(status.provider, "dml")
         self.assertIn("DmlExecutionProvider", status.onnx_providers)
 
-    def test_uv_overrides_hide_backend_managed_packages(self):
+    def test_uv_overrides_pin_installed_backend_managed_packages(self):
+        _install_torch_cpu_stack(self.libs_dir)
+
         overrides = self.service.build_uv_overrides(
             BackendKind.CUDA,
             requested_specs=["faster-whisper"],
@@ -165,9 +190,9 @@ class BackendServiceTests(unittest.TestCase):
         self.assertEqual(
             overrides,
             (
-                "torch; sys_platform == 'never'",
-                "torchaudio; sys_platform == 'never'",
-                "numpy; sys_platform == 'never'",
+                f"torch=={TORCH_VERSION}",
+                f"torchaudio=={TORCH_VERSION}",
+                "numpy==1.26.0",
             ),
         )
 

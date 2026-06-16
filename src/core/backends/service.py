@@ -14,6 +14,7 @@ from packaging.utils import canonicalize_name
 
 TORCH_VERSION = "2.7.1"
 TORCH_PACKAGES = (f"torch=={TORCH_VERSION}", f"torchaudio=={TORCH_VERSION}")
+TORCH_CUDA_PACKAGES = (f"torch=={TORCH_VERSION}+cu128", f"torchaudio=={TORCH_VERSION}+cu128")
 CUDA_INDEX_URL = "https://download.pytorch.org/whl/cu128"
 BACKEND_NUMPY_SPEC = "numpy==1.26.0"
 ONNX_PACKAGE = "onnxruntime"
@@ -167,7 +168,8 @@ class BackendService:
     def torch_package_specs(self, *, kind: BackendKind) -> tuple[str, ...]:
         if kind not in (BackendKind.CPU, BackendKind.CUDA):
             return ()
-        return TORCH_PACKAGES + (BACKEND_NUMPY_SPEC,)
+        torch_specs = TORCH_CUDA_PACKAGES if kind == BackendKind.CUDA else TORCH_PACKAGES
+        return torch_specs + (BACKEND_NUMPY_SPEC,)
 
     def onnx_package_specs(self, *, provider: str) -> tuple[str, ...]:
         runtime_pkg = ONNX_DIRECTML_PACKAGE if provider == "dml" else ONNX_PACKAGE
@@ -426,17 +428,17 @@ class BackendService:
                 reason = "Reinstalling PyTorch backend: CPU -> CUDA (cu128)..."
                 install_packages = supplemental_specs
                 uninstall_packages = ("torch", "torchaudio")
-                extra_args = ("--reinstall", "--index-url", CUDA_INDEX_URL)
+                extra_args = ("--reinstall", "--extra-index-url", CUDA_INDEX_URL)
             else:
                 action = "install"
                 reason = "Installing PyTorch backend with CUDA (cu128)..." if requirement.kind == BackendKind.CUDA else "Installing PyTorch CPU backend..."
                 install_packages = supplemental_specs
-                extra_args = ("--index-url", CUDA_INDEX_URL) if requirement.kind == BackendKind.CUDA else ()
+                extra_args = ("--extra-index-url", CUDA_INDEX_URL) if requirement.kind == BackendKind.CUDA else ()
         elif missing_specs:
             action = "install"
             reason = "Installing missing backend-managed runtime packages..."
             install_packages = tuple(missing_specs)
-            extra_args = ("--index-url", CUDA_INDEX_URL) if supplemental_kind == BackendKind.CUDA and any(
+            extra_args = ("--extra-index-url", CUDA_INDEX_URL) if supplemental_kind == BackendKind.CUDA and any(
                 spec.startswith("torch") or spec.startswith("torchaudio")
                 for spec in missing_specs
             ) else ()
