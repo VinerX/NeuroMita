@@ -380,6 +380,40 @@ def _fetch_full_fallback_asset(repo: str, channel: str):
     return None
 
 
+def _fetch_latest_unity_release_asset(repo: str, channel: str):
+    """Walk releases to find the latest Unity asset, even if newer releases are Python-only."""
+    try:
+        from utils.release_assets import parse_release, find_latest_unity_asset
+        releases = [parse_release(r) for r in _fetch_releases(repo)]
+        release, unity_asset = find_latest_unity_asset(releases, channel)
+        return release, unity_asset
+    except Exception:
+        pass
+
+    candidates = [r for r in _fetch_releases(repo) if not r.get("draft")]
+    candidates.sort(key=_published_sort_key, reverse=True)
+    for r in candidates:
+        if channel == "stable" and r.get("prerelease"):
+            continue
+        raw = next(
+            (
+                a for a in (r.get("assets") or [])
+                if "unity" in str(a.get("name", "")).lower()
+                and str(a.get("name", "")).lower().endswith((".zip", ".7z"))
+            ),
+            None,
+        )
+        if raw is None:
+            continue
+
+        class _A:
+            url = raw["browser_download_url"]
+            name = raw["name"]
+
+        return r, _A()
+    return None, None
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def get_python_update_info(
@@ -439,13 +473,13 @@ def get_unity_update_info(
         else "0.0.0.0"
     )
 
-    release = _select_release(repo, channel)
+    release, unity_asset = _fetch_latest_unity_release_asset(repo, channel)
     if release is None:
         return {
             "ok": False,
             "component": "unity",
             "current_version": local_version,
-            "error": "Could not reach GitHub to check for Unity updates",
+            "error": "Could not find a Unity release asset to check for updates",
         }
 
     remote_tag = str(release.get("tag_name", "") or "")
@@ -464,6 +498,7 @@ def get_unity_update_info(
         "body": str(release.get("body", "") or ""),
         "published_at": str(release.get("published_at", "") or ""),
         "html_url": str(release.get("html_url", "") or ""),
+        "asset_name": getattr(unity_asset, "name", "") if unity_asset is not None else "",
     }
 
 def check_for_updates(
@@ -686,9 +721,9 @@ def check_for_unity_updates(
 
     log(f"Checking Unity updates ({repo}, channel={channel}) ...")
 
-    release = _select_release(repo, channel)
+    release, unity_asset = _fetch_latest_unity_release_asset(repo, channel)
     if release is None:
-        log("Could not reach GitHub to check for Unity updates", "warning")
+        log("Could not find a Unity release asset to check for updates", "warning")
         return
 
     remote_tag = release.get("tag_name", "")
@@ -708,25 +743,29 @@ def check_for_unity_updates(
         return
 
     # Select Unity asset
-    picked = _pick_assets(release)
-    unity_url = None
-    unity_name = None
-
-    if picked is not None and picked.unity is not None:
-        unity_url = picked.unity.url
-        unity_name = picked.unity.name
+    if unity_asset is not None:
+        unity_url = unity_asset.url
+        unity_name = unity_asset.name
     else:
-        raw = next(
-            (a for a in release.get("assets", [])
-             if "unity" in a.get("name", "").lower()
-             and a.get("name", "").lower().endswith((".zip", ".7z"))),
-            None,
-        )
-        if raw is None:
-            log("No Unity asset found in release", "warning")
-            return
-        unity_url = raw["browser_download_url"]
-        unity_name = raw["name"]
+        picked = _pick_assets(release)
+        unity_url = None
+        unity_name = None
+
+        if picked is not None and picked.unity is not None:
+            unity_url = picked.unity.url
+            unity_name = picked.unity.name
+        else:
+            raw = next(
+                (a for a in release.get("assets", [])
+                 if "unity" in a.get("name", "").lower()
+                 and a.get("name", "").lower().endswith((".zip", ".7z"))),
+                None,
+            )
+            if raw is None:
+                log("No Unity asset found in release", "warning")
+                return
+            unity_url = raw["browser_download_url"]
+            unity_name = raw["name"]
 
     dl_dir = base_path / "_update_download"
     dl_dir.mkdir(parents=True, exist_ok=True)

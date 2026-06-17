@@ -19,6 +19,37 @@ def filter_jsonable_params(params: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in (params or {}).items() if isinstance(v, allowed)}
 
 
+def drop_unsupported_thinking_params(
+    params: Dict[str, Any],
+    *,
+    provider_name: str | None = None,
+    capabilities: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Strip thinking toggles unless the target protocol explicitly supports them.
+
+    This keeps legacy/global ENABLE_THINKING settings from leaking into generic
+    OpenAI-compatible providers like Mistral, which reject unknown `thinking`
+    payload members with 4xx errors.
+    """
+    out = dict(params or {})
+    caps = capabilities or {}
+    reasoning_transport = str(caps.get("reasoning_control") or "").strip().lower()
+    provider = str(provider_name or "").strip().lower()
+
+    supports_native_thinking = bool(
+        provider == "gemini" or reasoning_transport in {"openrouter", "deepseek"}
+    )
+
+    if not supports_native_thinking:
+        out.pop("enable_thinking", None)
+        out.pop("gemini_thinking_budget", None)
+
+    if reasoning_transport not in {"openrouter", "deepseek"}:
+        out.pop("thinking_budget", None)
+
+    return out
+
+
 def build_unified_generation_params(
     *,
     settings: Any,

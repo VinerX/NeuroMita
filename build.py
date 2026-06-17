@@ -70,7 +70,7 @@ FILES_TO_COPY: List[Tuple[Path, Path]] = [
 ]
 
 # Скрипты запуска/установки для копирования в корень билда
-_root_scripts_raw = env.get("BUILD_ROOT_SCRIPTS", "")
+_root_scripts_raw = env.get("BUILD_ROOT_SCRIPTS", "scripts/run.bat,scripts/run.py,scripts/init_triton.bat")
 ROOT_SCRIPTS: List[Tuple[Path, Path]] = [
     (resolve_path(s.strip(), PROJECT_DIR), OUTPUT_DIR / Path(s.strip()).name)
     for s in _root_scripts_raw.split(",") if s.strip()
@@ -187,7 +187,7 @@ def make_copy_ignore():
                 ignored.append(name)
             elif EXCLUDE_CHECKPOINTS and name == "checkpoints":
                 ignored.append(name)
-            elif EXCLUDE_MANAGED_BACKENDS and dir_name == "lib":
+            elif EXCLUDE_MANAGED_BACKENDS and dir_name in ("lib", "libs"):
                 lower = name.lower()
                 if (
                     lower in MANAGED_BACKEND_NAMES

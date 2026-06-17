@@ -302,9 +302,17 @@ else:
 
 build_py_path = os.path.join(libs_dir, "triton", "runtime", "build.py")
 
-os.environ["CC"] = os.path.join(os.path.abspath(libs_dir), "triton", "runtime", "tcc", "tcc.exe")
+_triton_tcc_path = os.path.join(os.path.abspath(libs_dir), "triton", "runtime", "tcc", "tcc.exe")
+if os.path.exists(_triton_tcc_path):
+    os.environ["CC"] = _triton_tcc_path
+else:
+    # Не засоряем глобальный CC несуществующим Triton-компилятором:
+    # это ломает последующие pip/uv-установки (например numpy backend bootstrap).
+    current_cc = str(os.environ.get("CC", "") or "")
+    if current_cc.replace("/", "\\").lower() == _triton_tcc_path.replace("/", "\\").lower():
+        os.environ.pop("CC", None)
 
-if os.path.exists(compiler_path):
+if os.path.exists(build_py_path):
     with open(build_py_path, "r", encoding="utf-8") as f:
         source = f.read()
                         

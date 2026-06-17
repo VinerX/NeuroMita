@@ -14,6 +14,7 @@ from utils.release_assets import (  # noqa: E402
     Release,
     ReleaseAsset,
     find_latest_python_full,
+    find_latest_unity_asset,
     parse_release,
     pick_from_release,
     pick_latest,
@@ -139,6 +140,14 @@ def test_find_latest_full_returns_none_if_all_patches():
     ]
     r, a = find_latest_python_full(releases, "stable")
     assert r is None and a is None
+
+
+def test_find_latest_unity_asset_skips_python_only_releases():
+    python_only = _r("v1.2.0", "v1.2.0", [_a("PythonBuild-v1.2.0.zip")])
+    unity_release = _r("v1.1.0", "v1.1.0", [_a("UnityBuild-v1.1.0.7z")])
+    r, a = find_latest_unity_asset([python_only, unity_release], "stable")
+    assert r is unity_release
+    assert a is not None and a.name == "UnityBuild-v1.1.0.7z"
 
 
 # ── parse_release ─────────────────────────────────────────────────────────────

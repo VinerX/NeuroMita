@@ -46,15 +46,15 @@ jobs:
           runner_temp = Path(os.environ["RUNNER_TEMP"])
           version   = os.environ["VERSION"]
           output    = runner_temp / "neuromita_ci_build"
-          archive   = workspace / f"NeuroMita-{version}"
+          archive   = workspace / f"PythonBuild-v{version}"
 
           content = "\n".join([
               f"BUILD_MODE=full",
               f"BUILD_OUTPUT_DIR={output}",
-              f"BUILD_COPY_DIRS=Prompts,scripts,assets",
-              f"BUILD_FAST_COPY_DIRS=Prompts",
-              f"BUILD_COPY_FILES=",
-              f"BUILD_ROOT_SCRIPTS=",
+              f"BUILD_COPY_DIRS=extra\\Prompts,assets,libs",
+              f"BUILD_FAST_COPY_DIRS=extra\\Prompts",
+              f"BUILD_COPY_FILES=extra\\init.py,extra\\Icon.png",
+              f"BUILD_ROOT_SCRIPTS=scripts\\run.bat,scripts\\run.py,scripts\\init_triton.bat",
               f"BUILD_EXCLUDE_DOT_DIRS=1",
               f"BUILD_EXCLUDE_CHECKPOINTS=1",
               f"BUILD_CLEAN_OUTPUT=1",
@@ -74,6 +74,12 @@ jobs:
         env:
           PYTHONUTF8: '1'
 
+      - name: Validate release contract
+        shell: bash
+        run: python scripts/validate_release_contract.py --tag v${{ steps.ver.outputs.version }} --asset PythonBuild-v${{ steps.ver.outputs.version }}.zip
+        env:
+          PYTHONUTF8: '1'
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -83,7 +89,7 @@ jobs:
             Automated build from `releases` branch.
 
             **Install:** extract the archive over your existing installation.
-          files: NeuroMita-${{ steps.ver.outputs.version }}.zip
+          files: PythonBuild-v${{ steps.ver.outputs.version }}.zip
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
