@@ -610,6 +610,8 @@ def setup_updates_settings_controls(self, parent):
     tester_layout.addWidget(tester_entry)
     parent.addWidget(tester_row)
 
+    self._tester_code_entry = tester_entry
+
     # Unity install dir
     unity_row = QWidget()
     unity_row.setObjectName("UpdatesUnityRow")
