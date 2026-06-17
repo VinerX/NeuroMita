@@ -408,6 +408,10 @@ class SettingsPage(QWidget):
             first_key = self._first_available_category() or "api"
             self._activate_category(first_key, smooth_scroll=False)
 
+        entry = getattr(self.gui, '_tester_code_entry', None)
+        if entry is not None:
+            entry.setText(self.gui.settings.get("TESTER_CODE", ""))
+
     def show_overview(self, *, scroll_to_top: bool = False):
         fallback = self._first_available_category()
         if fallback is not None:
@@ -449,6 +453,10 @@ class SettingsPage(QWidget):
             self._settings_stack.setCurrentWidget(page)
         self.settings_scroll = getattr(page, "scroll", None)
         self._update_nav_state()
+        if category == "updates":
+            entry = getattr(self.gui, '_tester_code_entry', None)
+            if entry is not None:
+                entry.setText(self.gui.settings.get("TESTER_CODE", ""))
         if smooth_scroll:
             QTimer.singleShot(0, lambda key=category: self._scroll_to_category(key, smooth=True))
 
