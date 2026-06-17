@@ -221,6 +221,26 @@ def copy_entries(entries: List[Tuple[Path, Path]]) -> None:
             print(f"Предупреждение: {src} не существует, пропускаю")
 
 
+def create_flat_zip_from_directory(source_dir: Path, archive_base: Path) -> Path:
+    """Create a zip archive whose root contains source_dir contents, not source_dir itself.
+
+    This matches launcher update expectations: extracting the archive over an
+    existing install should replace runtime files in-place instead of creating
+    an extra top-level folder such as `neuromita_ci_build/`.
+    """
+    archive_path = archive_base.with_suffix(".zip")
+    if archive_path.exists():
+        archive_path.unlink()
+
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+        for path in sorted(source_dir.rglob("*")):
+            if path.is_dir():
+                continue
+            arcname = path.relative_to(source_dir)
+            zf.write(path, arcname.as_posix())
+    return archive_path
+
+
 if __name__ == "__main__":
     print(f"Режим сборки        : {BUILD_MODE}")
     print(f"Выходная папка      : {OUTPUT_DIR}")
@@ -283,7 +303,7 @@ if __name__ == "__main__":
             archive_base = Path(archive_path)
             archive_base.parent.mkdir(parents=True, exist_ok=True)
             print(f"\nУпаковываю {OUTPUT_DIR} -> {archive_base}.zip ...")
-            shutil.make_archive(str(archive_base), "zip", root_dir=OUTPUT_DIR.parent, base_dir=OUTPUT_DIR.name)
-            print(f"Архив готов: {archive_base}.zip")
+            archive_file = create_flat_zip_from_directory(OUTPUT_DIR, archive_base)
+            print(f"Архив готов: {archive_file}")
 
     print(f"\nСборка завершена! Результат: {OUTPUT_DIR}")

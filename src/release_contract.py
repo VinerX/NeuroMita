@@ -183,12 +183,20 @@ def validate_archive_contract(path: Path, kind: str) -> AssetValidationResult:
     file_set = set(files)
 
     if kind == PYTHON_FULL_KIND:
+        missing_required = []
         for required in PYTHON_FULL_REQUIRED_FILES:
             if required not in file_set:
+                missing_required.append(required)
                 result.add_error(f"Missing required file: {required}")
+        missing_prefixes = []
         for prefix in PYTHON_FULL_REQUIRED_PREFIXES:
             if not any(name.startswith(prefix) for name in files):
+                missing_prefixes.append(prefix)
                 result.add_error(f"Missing required folder content: {prefix}")
+        if missing_required or missing_prefixes:
+            preview = ", ".join(files[:10])
+            if preview:
+                result.add_info(f"Archive preview: {preview}")
     elif kind == PYTHON_PATCH_KIND:
         if not any(
             name == "NeuroMita.pyz"
