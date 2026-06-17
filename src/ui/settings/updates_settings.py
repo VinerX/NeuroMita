@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -217,6 +219,41 @@ def setup_updates_settings_controls(self, parent):
             _hide_progress()
             _set_buttons_enabled(True)
 
+    def _restart_python_app(app) -> bool:
+        base_dir_raw = str(os.environ.get("NEUROMITA_BASE_DIR", "") or "").strip()
+        if not base_dir_raw:
+            logger.warning("[updates_ui] Direct restart skipped: NEUROMITA_BASE_DIR is empty")
+            return False
+
+        base_dir = Path(base_dir_raw)
+        run_script = base_dir / "run.py"
+        python_exe = base_dir / "libs" / "python" / "python.exe"
+        if not run_script.exists() or not python_exe.exists():
+            logger.warning(
+                f"[updates_ui] Direct restart unavailable: run.py exists={run_script.exists()}, "
+                f"python.exe exists={python_exe.exists()}"
+            )
+            return False
+
+        try:
+            logger.info(f"[updates_ui] Spawning detached restart process: {python_exe} {run_script}")
+            creationflags = 0
+            creationflags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) or 0)
+            creationflags |= int(getattr(subprocess, "DETACHED_PROCESS", 0) or 0)
+            subprocess.Popen(
+                [str(python_exe), str(run_script)],
+                cwd=str(base_dir),
+                env=dict(os.environ),
+                close_fds=(sys.platform == "win32"),
+                creationflags=creationflags,
+            )
+            QTimer.singleShot(100, app.quit)
+            QTimer.singleShot(400, lambda: os._exit(0))
+            return True
+        except Exception:
+            logger.error("[updates_ui] Failed to spawn detached restart process", exc_info=True)
+            return False
+
     def _prompt_restart():
         # Вызывается на UI-потоке после успешной установки Python-обновления.
         from PyQt6.QtWidgets import QApplication
@@ -236,8 +273,9 @@ def setup_updates_settings_controls(self, parent):
         box.setDefaultButton(QMessageBox.StandardButton.Yes)
         if box.exec() == QMessageBox.StandardButton.Yes:
             app = QApplication.instance()
+            if app is not None and _restart_python_app(app):
+                return
             if app is not None:
-                # exec() в __main__ вернёт 42 -> sys.exit(42) -> run.bat перезапустит.
                 app.exit(42)
         else:
             _set_status_level(

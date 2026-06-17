@@ -82,6 +82,22 @@ def _looks_like_unsupported_thinking_error(status_code: Optional[int], provider_
 def _friendly_message(status_code: Optional[int], provider_message: str) -> tuple[str, str]:
     low = (provider_message or "").lower()
 
+    if (
+        "provider not configured" in low
+        or "api provider not configured" in low
+        or "api preset not configured" in low
+        or "missing api url" in low
+        or "missing api model" in low
+        or "no provider can handle this request" in low
+    ):
+        return (
+            _(
+                "API-провайдер не настроен. Откройте Настройки -> API и заполните пресет.",
+                "The API provider is not configured. Open Settings -> API and complete the preset.",
+            ),
+            _("Provider configuration is missing.", "Provider configuration is missing."),
+        )
+
     if _looks_like_unsupported_thinking_error(status_code, provider_message):
         return (
             _(
@@ -218,6 +234,19 @@ def build_provider_error(
         raw_payload=payload,
         retryable=retryable,
         code=code,
+        url=url,
+    )
+
+
+def build_configuration_error(
+    provider: str,
+    provider_message: str,
+    *,
+    url: Optional[str] = None,
+) -> LLMProviderError:
+    return build_provider_error(
+        provider,
+        provider_message=provider_message,
         url=url,
     )
 

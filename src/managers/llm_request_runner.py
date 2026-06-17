@@ -1,4 +1,4 @@
-﻿# src/managers/llm_request_runner.py
+# src/managers/llm_request_runner.py
 from __future__ import annotations
 
 import concurrent.futures
@@ -8,7 +8,12 @@ from typing import Any, Callable, Optional
 
 from main_logger import logger
 from core.events import Events
-from handlers.llm_providers.errors import LLMProviderError, build_provider_error, coerce_provider_error
+from handlers.llm_providers.errors import (
+    LLMProviderError,
+    build_configuration_error,
+    build_provider_error,
+    coerce_provider_error,
+)
 from utils import _, save_combined_messages
 
 from managers.api_preset_resolver import ApiPresetResolver, PresetSettings
@@ -102,6 +107,16 @@ class LLMRequestRunner:
                     time.sleep(float(retry_delay))
                 continue
 
+            validation_error = self._validate_request(req)
+            if validation_error is not None:
+                self.last_error = validation_error
+                last_error_message = validation_error.to_user_message()
+                logger.error(
+                    f"Generation attempt {attempt} aborted before provider call: "
+                    f"{validation_error.to_console_summary()}"
+                )
+                break
+
             try:
                 response = self._call_with_timeout(
                     pm.generate,
@@ -152,10 +167,15 @@ class LLMRequestRunner:
                     e,
                     url=getattr(req, "api_url", None),
                 )
-                logger.error(
-                    f"Error during generation attempt {attempt}: {self.last_error.to_console_summary()}",
-                    exc_info=True,
-                )
+                if isinstance(self.last_error, LLMProviderError):
+                    logger.error(
+                        f"Error during generation attempt {attempt}: {self.last_error.to_console_summary()}"
+                    )
+                else:
+                    logger.error(
+                        f"Error during generation attempt {attempt}: {self.last_error.to_console_summary()}",
+                        exc_info=True,
+                    )
 
             if attempt < max_attempts:
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE_ATTEMPT)
@@ -187,3 +207,40 @@ class LLMRequestRunner:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(func, *args, **kwargs)
             return future.result(timeout=timeout)
+
+    def _validate_request(self, req) -> Optional[LLMProviderError]:
+        provider = getattr(req, "provider_name", "unknown") or "unknown"
+        url = getattr(req, "api_url", None)
+        model = str(getattr(req, "model", "") or "").strip()
+
+        if not str(provider).strip():
+            return build_configuration_error(
+                "unknown",
+                "API provider not configured",
+                url=url,
+            )
+        if not str(url or "").strip():
+            return build_configuration_error(
+                provider,
+                "API preset not configured: missing API URL",
+                url=url,
+            )
+        if not model:
+            return build_configuration_error(
+                provider,
+                "API preset not configured: missing API model",
+                url=url,
+            )
+        if (
+            provider in {"common", "openai", "gemini"}
+            and str(url or "").startswith(("http://", "https://"))
+            and "localhost" not in str(url or "").lower()
+            and "127.0.0.1" not in str(url or "").lower()
+            and not str(getattr(req, "api_key", "") or "").strip()
+        ):
+            return build_configuration_error(
+                provider,
+                "API preset not configured: missing API key",
+                url=url,
+            )
+        return None

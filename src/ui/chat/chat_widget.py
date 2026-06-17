@@ -225,6 +225,25 @@ class ChatWidget(QFrame):
         if self._auto_scroll:
             QTimer.singleShot(10, self.scroll_to_bottom)
 
+    def show_status(self, text: str, avatar_pixmap=None):
+        """Show a persistent status line without the typing suffix."""
+        self._typing_label.setText(str(text or ""))
+        if avatar_pixmap and not avatar_pixmap.isNull():
+            scaled = avatar_pixmap.scaled(
+                24,
+                24,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self._typing_avatar.setPixmap(scaled)
+            self._typing_avatar.show()
+        else:
+            self._typing_avatar.hide()
+        self._typing_bar.setMaximumHeight(32)
+        self._typing_bar.show()
+        if self._auto_scroll:
+            QTimer.singleShot(10, self.scroll_to_bottom)
+
     def hide_typing(self):
         self._typing_bar.setMaximumHeight(0)
         self._typing_bar.hide()
