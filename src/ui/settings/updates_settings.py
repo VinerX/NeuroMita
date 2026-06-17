@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
 import threading
 from pathlib import Path
 
@@ -219,44 +217,9 @@ def setup_updates_settings_controls(self, parent):
             _hide_progress()
             _set_buttons_enabled(True)
 
-    def _restart_python_app(app) -> bool:
-        base_dir_raw = str(os.environ.get("NEUROMITA_BASE_DIR", "") or "").strip()
-        if not base_dir_raw:
-            logger.warning("[updates_ui] Direct restart skipped: NEUROMITA_BASE_DIR is empty")
-            return False
-
-        base_dir = Path(base_dir_raw)
-        run_script = base_dir / "run.py"
-        python_exe = base_dir / "libs" / "python" / "python.exe"
-        if not run_script.exists() or not python_exe.exists():
-            logger.warning(
-                f"[updates_ui] Direct restart unavailable: run.py exists={run_script.exists()}, "
-                f"python.exe exists={python_exe.exists()}"
-            )
-            return False
-
-        try:
-            logger.info(f"[updates_ui] Spawning detached restart process: {python_exe} {run_script}")
-            creationflags = 0
-            creationflags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) or 0)
-            creationflags |= int(getattr(subprocess, "DETACHED_PROCESS", 0) or 0)
-            subprocess.Popen(
-                [str(python_exe), str(run_script)],
-                cwd=str(base_dir),
-                env=dict(os.environ),
-                close_fds=(sys.platform == "win32"),
-                creationflags=creationflags,
-            )
-            QTimer.singleShot(100, app.quit)
-            QTimer.singleShot(400, lambda: os._exit(0))
-            return True
-        except Exception:
-            logger.error("[updates_ui] Failed to spawn detached restart process", exc_info=True)
-            return False
-
     def _prompt_restart():
         # Вызывается на UI-потоке после успешной установки Python-обновления.
-        from PyQt6.QtWidgets import QApplication
+        from utils.app_restart import restart_app
 
         box = QMessageBox(btn_install)
         box.setIcon(QMessageBox.Icon.Question)
@@ -272,11 +235,7 @@ def setup_updates_settings_controls(self, parent):
         box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         box.setDefaultButton(QMessageBox.StandardButton.Yes)
         if box.exec() == QMessageBox.StandardButton.Yes:
-            app = QApplication.instance()
-            if app is not None and _restart_python_app(app):
-                return
-            if app is not None:
-                app.exit(42)
+            restart_app()
         else:
             _set_status_level(
                 _("Обновление применится при следующем запуске.",
@@ -562,6 +521,26 @@ def setup_updates_settings_controls(self, parent):
 
     chk_keep_prompts.stateChanged.connect(_save_keep_prompts)
     parent.addWidget(chk_keep_prompts)
+
+    # Background update check (notify only, no auto-apply)
+    chk_check_startup = QCheckBox(_("Проверять обновления при запуске", "Check for updates on startup"))
+    chk_check_startup.setToolTip(
+        _(
+            "Фоновая проверка наличия обновлений и показ плашки на главном экране.\n"
+            "Ничего не скачивает и не устанавливает само.",
+            "Background check for updates and a banner on the home screen.\n"
+            "Does not download or install anything by itself.",
+        )
+    )
+    chk_check_startup.setChecked(bool(self.settings.get("UPDATE_CHECK_ON_STARTUP", True)))
+
+    def _save_check_startup(state):
+        enabled = bool(state)
+        logger.info(f"[updates_ui] UPDATE_CHECK_ON_STARTUP -> {enabled}")
+        _persist_setting("UPDATE_CHECK_ON_STARTUP", enabled)
+
+    chk_check_startup.stateChanged.connect(_save_check_startup)
+    parent.addWidget(chk_check_startup)
 
     # Auto-update checkboxes
     chk_auto = QCheckBox(_("Авто-обновление Python при запуске", "Auto-update Python on startup"))

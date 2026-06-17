@@ -3,15 +3,18 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 import qtawesome as qta
 from PyQt6.QtCore import QPoint, QRectF, QSize, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPixmap
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMenu,
     QMessageBox,
     QProgressBar,
@@ -21,11 +24,27 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+# Минимальный интервал между фоновыми проверками обновлений (сек), чтобы не
+# дёргать GitHub на каждой активации главной страницы.
+_UPDATE_CHECK_THROTTLE_SEC = 600
+
 from core.events import Events
 from main_logger import logger
 from ui.pages.news_support import build_release_news_items, get_news_content, parse_news_items
 from ui.widgets.launcher_dashboard_helpers import NewsItem
 from utils import _
+
+
+def _strip_v(version: str) -> str:
+    """Срезать единственный ведущий 'v', чтобы подписи не давали 'vv2026...'.
+
+    Версия Unity из _version.txt хранится с префиксом 'v', а подпись добавляет
+    свой. Срез опционален: если префикса нет (Python-часть), строка не меняется.
+    """
+    text = str(version or "").strip()
+    if text[:1] in ("v", "V"):
+        return text[1:]
+    return text
 
 
 class LauncherHomeBackground(QWidget):
@@ -88,6 +107,17 @@ class HomePage(LauncherHomeBackground):
         self._status_line_label = None
         self._news_items_layout = None
         self._news_panel_placeholder = None
+
+        # Выборочное обновление: чекбоксы на карточках + баннер-обнова.
+        self._py_update_check = None
+        self._unity_update_check = None
+        self._update_banner = None
+        self._update_banner_label = None
+        self._update_button = None
+        self._tester_field = None
+        self._update_info_py = None
+        self._update_info_unity = None
+        self._update_check_inflight = False
 
         self.primary_button = None
         self.progress_bar = None
@@ -158,7 +188,7 @@ class HomePage(LauncherHomeBackground):
 
         backend_row = QHBoxLayout()
         backend_row.setSpacing(12)
-        backend_card, self._backend_status_value = self._build_home_status_card(
+        backend_card, self._backend_status_value, self._py_update_check = self._build_home_status_card(
             "fa6b.python",
             _("Python-бэкенд", "Python backend"),
             "",
@@ -166,7 +196,7 @@ class HomePage(LauncherHomeBackground):
         )
         backend_row.addWidget(backend_card)
 
-        unity_card, self._unity_status_value = self._build_home_status_card(
+        unity_card, self._unity_status_value, self._unity_update_check = self._build_home_status_card(
             "mdi.unity",
             "Unity",
             "",
@@ -174,6 +204,9 @@ class HomePage(LauncherHomeBackground):
         )
         backend_row.addWidget(unity_card)
         left_column.addLayout(backend_row)
+
+        self._update_banner = self._build_update_banner()
+        left_column.addWidget(self._update_banner)
 
         button_row = QHBoxLayout()
         button_row.setSpacing(0)
@@ -277,7 +310,164 @@ class HomePage(LauncherHomeBackground):
         layout.addWidget(link)
         return card
 
-    def _build_home_status_card(self, icon_name: str, title_text: str, value_text: str, color: str) -> tuple[QFrame, QLabel]:
+    def _build_update_banner(self) -> QFrame:
+        """Тонкий баннер «доступно обновление». Скрыт, пока обнов нет.
+
+        Содержит текст с версиями, опциональное поле кода тестера (если код не
+        сохранён) и кнопку «Обновить выбранное» — ставит отмеченные на карточках
+        части (Python качается/применяется первым).
+        """
+        banner = QFrame()
+        banner.setObjectName("LauncherHomeUpdateChip")
+        banner.setVisible(False)
+        layout = QHBoxLayout(banner)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+
+        dot = QLabel()
+        dot.setObjectName("LauncherHomeUpdateDot")
+        dot.setFixedSize(10, 10)
+        layout.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._update_banner_label = QLabel("")
+        self._update_banner_label.setObjectName("LauncherHomeUpdateText")
+        self._update_banner_label.setWordWrap(True)
+        layout.addWidget(self._update_banner_label, 1)
+
+        self._tester_field = QLineEdit()
+        self._tester_field.setObjectName("LauncherHomeUpdateField")
+        self._tester_field.setEchoMode(QLineEdit.EchoMode.Password)
+        self._tester_field.setPlaceholderText(_("🔒 код тестера", "🔒 tester code"))
+        self._tester_field.setFixedWidth(150)
+        self._tester_field.setVisible(False)
+        self._tester_field.setText(str(self.gui.settings.get("TESTER_CODE", "") or ""))
+        self._tester_field.editingFinished.connect(self._save_tester_field)
+        layout.addWidget(self._tester_field, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._update_button = QPushButton(_("Обновить выбранное", "Update selected"))
+        self._update_button.setObjectName("LauncherHomeUpdateButton")
+        self._update_button.clicked.connect(self.run_selective_update)
+        layout.addWidget(self._update_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        return banner
+
+    def _save_tester_field(self):
+        if self._tester_field is None:
+            return
+        code = self._tester_field.text().strip()
+        try:
+            self.gui._save_setting("TESTER_CODE", code)
+        except Exception:
+            logger.warning("[home_update] Failed to persist tester code", exc_info=True)
+
+    def _effective_tester_code(self) -> str:
+        text = ""
+        if self._tester_field is not None:
+            text = self._tester_field.text().strip()
+        if not text:
+            text = str(self.gui.settings.get("TESTER_CODE", "") or "").strip()
+        return text
+
+    def _prompt_tester_code(self) -> str | None:
+        """Запросить код тестера модалкой. None — пользователь отменил."""
+        from PyQt6.QtWidgets import QInputDialog
+
+        code, ok = QInputDialog.getText(
+            self,
+            _("Код тестера", "Tester code"),
+            _(
+                "Введите код тестера для установки релизных архивов.",
+                "Enter the tester code required to install release archives.",
+            ),
+            QLineEdit.EchoMode.Password,
+            "",
+        )
+        if not ok:
+            return None
+        code = str(code or "").strip()
+        if not code:
+            return None
+        try:
+            self.gui._save_setting("TESTER_CODE", code)
+        except Exception:
+            pass
+        if self._tester_field is not None:
+            self._tester_field.setText(code)
+        return code
+
+    def _refresh_update_state(self, force: bool = False):
+        """Фоновая проверка обновлений → обновляет чекбоксы и баннер.
+
+        По умолчанию проверка идёт не чаще _UPDATE_CHECK_THROTTLE_SEC и только
+        если включена настройка UPDATE_CHECK_ON_STARTUP. force=True (кнопка из
+        меню) игнорирует и троттлинг, и настройку.
+        """
+        if not force:
+            if not bool(self.gui.settings.get("UPDATE_CHECK_ON_STARTUP", True)):
+                return
+            last = float(getattr(self.gui, "_home_update_check_ts", 0.0) or 0.0)
+            if (time.monotonic() - last) < _UPDATE_CHECK_THROTTLE_SEC:
+                return
+        if self._update_check_inflight:
+            return
+        self._update_check_inflight = True
+        self.gui._home_update_check_ts = time.monotonic()
+
+        def worker():
+            try:
+                from updater import get_python_update_info, get_unity_update_info
+                channel = self.gui.settings.get("UPDATE_CHANNEL", "stable")
+                base_dir = os.environ.get("NEUROMITA_BASE_DIR") or None
+                unity_dir = self.gui.settings.get("UNITY_INSTALL_DIR") or None
+
+                py_info = get_python_update_info(base_dir=base_dir, channel=channel)
+                unity_info = get_unity_update_info(base_dir=base_dir, unity_dir=unity_dir, channel=channel)
+                self._queue_ui_call(lambda: self._apply_update_state(py_info, unity_info))
+            except Exception as exc:
+                logger.warning(f"[home_update] background check failed: {exc}")
+            finally:
+                self._update_check_inflight = False
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_update_state(self, py_info: dict | None, unity_info: dict | None):
+        """Применить результат проверки к UI (вызывается на GUI-потоке)."""
+        self._update_info_py = py_info
+        self._update_info_unity = unity_info
+
+        py_avail = bool((py_info or {}).get("available"))
+        unity_avail = bool((unity_info or {}).get("available"))
+
+        if self._py_update_check is not None:
+            self._py_update_check.setVisible(py_avail)
+            if py_avail:
+                self._py_update_check.setChecked(True)
+        if self._unity_update_check is not None:
+            self._unity_update_check.setVisible(unity_avail)
+            if unity_avail:
+                self._unity_update_check.setChecked(True)
+
+        if not py_avail and not unity_avail:
+            if self._update_banner is not None:
+                self._update_banner.setVisible(False)
+            return
+
+        parts = []
+        if py_avail:
+            parts.append(_("Python {ver}", "Python {ver}").format(ver=_strip_v(str((py_info or {}).get("latest_version", "")))))
+        if unity_avail:
+            parts.append(_("Unity {ver}", "Unity {ver}").format(ver=_strip_v(str((unity_info or {}).get("latest_version", "")))))
+        text = _("Доступно обновление: {p}", "Update available: {p}").format(p=" • ".join(parts))
+        if self._update_banner_label is not None:
+            self._update_banner_label.setText(text)
+
+        # Поле кода показываем только когда код ещё не сохранён.
+        if self._tester_field is not None:
+            self._tester_field.setVisible(not self._effective_tester_code())
+
+        if self._update_banner is not None:
+            self._update_banner.setVisible(True)
+
+    def _build_home_status_card(self, icon_name: str, title_text: str, value_text: str, color: str) -> tuple[QFrame, QLabel, QCheckBox]:
         card = QFrame()
         card.setObjectName("LauncherHomeStatusCard")
         layout = QHBoxLayout(card)
@@ -299,7 +489,16 @@ class HomePage(LauncherHomeBackground):
         text_column.addWidget(value)
 
         layout.addLayout(text_column, 1)
-        return card, value
+
+        # Чекбокс «включить в обновление». Виден только когда по этой части есть
+        # обнова — в обычном состоянии карточка выглядит как раньше.
+        update_check = QCheckBox()
+        update_check.setObjectName("LauncherHomeStatusCheck")
+        update_check.setChecked(True)
+        update_check.setVisible(False)
+        update_check.setToolTip(_("Включить в обновление", "Include in update"))
+        layout.addWidget(update_check, 0, Qt.AlignmentFlag.AlignTop)
+        return card, value, update_check
 
     def _build_home_news_panel(self) -> QFrame:
         panel = QFrame()
@@ -391,7 +590,7 @@ class HomePage(LauncherHomeBackground):
         try:
             from _version import __version__ as version
 
-            return _("Установлен v{ver}", "Installed v{ver}").format(ver=version)
+            return _("Установлен v{ver}", "Installed v{ver}").format(ver=_strip_v(version))
         except Exception:
             return _("Установлен", "Installed")
 
@@ -438,7 +637,7 @@ class HomePage(LauncherHomeBackground):
             if version_file.exists():
                 version = version_file.read_text(encoding="utf-8").strip()
                 if version:
-                    return _("Установлен v{ver}", "Installed v{ver}").format(ver=version)
+                    return _("Установлен v{ver}", "Installed v{ver}").format(ver=_strip_v(version))
         except Exception:
             pass
         return _("Установлен", "Installed")
@@ -509,6 +708,7 @@ class HomePage(LauncherHomeBackground):
     def on_activated(self):
         self.refresh_status_cards()
         self.refresh_news_content()
+        self._refresh_update_state()
 
     def set_progress(self, text: str, value: int, maximum: int, *, busy: bool = False):
         if self.progress_bar is None or self.progress_label is None:
@@ -594,14 +794,18 @@ class HomePage(LauncherHomeBackground):
                 py_info = get_python_update_info(base_dir=base_dir, channel=channel)
                 unity_info = get_unity_update_info(base_dir=base_dir, unity_dir=unity_dir, channel=channel)
 
+                # Обновляем чекбоксы на карточках и баннер-обнову.
+                self.gui._home_update_check_ts = time.monotonic()
+                self._queue_ui_call(lambda: self._apply_update_state(py_info, unity_info))
+
                 parts = []
                 if py_info.get("available"):
                     parts.append(
-                        _("Python: {ver}", "Python: {ver}").format(ver=py_info.get("latest_version", ""))
+                        _("Python: {ver}", "Python: {ver}").format(ver=_strip_v(str(py_info.get("latest_version", ""))))
                     )
                 if unity_info.get("available"):
                     parts.append(
-                        _("Unity: {ver}", "Unity: {ver}").format(ver=unity_info.get("latest_version", ""))
+                        _("Unity: {ver}", "Unity: {ver}").format(ver=_strip_v(str(unity_info.get("latest_version", ""))))
                     )
 
                 if parts:
@@ -846,6 +1050,207 @@ class HomePage(LauncherHomeBackground):
                     self.refresh_primary_label()
                     self.refresh_status_cards()
                     QTimer.singleShot(4000, self.hide_progress)
+
+                self._queue_ui_call(done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _prompt_restart_after_update(self):
+        """Спросить про перезапуск после применения Python-обновления."""
+        from utils.app_restart import restart_app
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(_("Обновление установлено", "Update installed"))
+        box.setText(_(
+            "Python-обновление установлено.\n\n"
+            "Перезапустить приложение сейчас, чтобы применить его?\n"
+            "(До перезапуска программа работает на старой версии.)",
+            "The Python update has been installed.\n\n"
+            "Restart the app now to apply it?\n"
+            "(Until you restart, the app keeps running the old version.)",
+        ))
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        if box.exec() == QMessageBox.StandardButton.Yes:
+            restart_app()
+
+    def run_selective_update(self):
+        """Установить отмеченные на карточках части. Python — первым."""
+        if self._home_install_thread_running:
+            return
+
+        want_py = bool(
+            self._py_update_check is not None
+            and self._py_update_check.isVisible()
+            and self._py_update_check.isChecked()
+        )
+        want_unity = bool(
+            self._unity_update_check is not None
+            and self._unity_update_check.isVisible()
+            and self._unity_update_check.isChecked()
+        )
+        if not want_py and not want_unity:
+            self.set_progress(
+                _("Нечего обновлять: отметь Python или Unity.", "Nothing selected: check Python or Unity."),
+                0, 100, busy=False,
+            )
+            QTimer.singleShot(3500, self.hide_progress)
+            return
+
+        # Код тестера: из поля/настроек, иначе спрашиваем модалкой.
+        tester_code = self._effective_tester_code()
+        if not tester_code:
+            tester_code = self._prompt_tester_code()
+            if tester_code is None:
+                self.set_progress(
+                    _("Обновление отменено: код тестера не введён.", "Update cancelled: tester code not entered."),
+                    0, 100, busy=False,
+                )
+                QTimer.singleShot(3500, self.hide_progress)
+                return
+
+        self._home_install_thread_running = True
+        self._cancel_event = threading.Event()
+        if self.primary_button is not None:
+            self.primary_button.setEnabled(False)
+        if self._update_button is not None:
+            self._update_button.setEnabled(False)
+        if self._cancel_button is not None:
+            self._cancel_button.setEnabled(True)
+            self._cancel_button.setVisible(True)
+
+        self.set_progress(_("Подготовка к установке…", "Preparing installation…"), 0, 0, busy=True)
+        cancel_event = self._cancel_event
+
+        def on_progress(downloaded: int, total: int):
+            def apply():
+                if total > 0:
+                    pct = int(max(0, min(100, downloaded * 100 / total)))
+                    mb_done = downloaded / (1024 * 1024)
+                    mb_total = total / (1024 * 1024)
+                    self.set_progress(
+                        _("Загрузка… {done:.1f} / {total:.1f} MB", "Downloading… {done:.1f} / {total:.1f} MB").format(
+                            done=mb_done, total=mb_total),
+                        pct, 100, busy=False,
+                    )
+                else:
+                    mb_done = downloaded / (1024 * 1024)
+                    self.set_progress(
+                        _("Загрузка… {done:.1f} MB", "Downloading… {done:.1f} MB").format(done=mb_done),
+                        0, 0, busy=True,
+                    )
+            self._queue_ui_call(apply)
+
+        def on_extract_progress(extracted: int, total: int):
+            def apply():
+                if total > 0:
+                    pct = int(max(0, min(100, extracted * 100 / total)))
+                    self.set_progress(_("Распаковка…", "Extracting…"), pct, 100, busy=False)
+                else:
+                    self.set_progress(_("Распаковка…", "Extracting…"), 0, 0, busy=True)
+            self._queue_ui_call(apply)
+
+        class ThreadLogger:
+            def __init__(self, page):
+                self.page = page
+
+            def _set(self, prefix: str, message, level: str):
+                getattr(logger, level, logger.info)(f"[home_update] {message}")
+                text = f"{prefix}{message}" if prefix else str(message)
+                self.page._queue_ui_call(lambda value=text: self.page.set_progress(value, 0, 0, busy=True))
+
+            def info(self, message):
+                self._set("", message, "info")
+
+            def warning(self, message):
+                self._set("⚠ ", message, "warning")
+
+            def error(self, message):
+                self._set("✗ ", message, "error")
+
+            def success(self, message):
+                self._set("✓ ", message, "info")
+
+            def notify(self, message):
+                self._set("★ ", message, "info")
+
+        ui_log = ThreadLogger(self)
+
+        def worker():
+            logger.info(f"[home_update] selective update started: py={want_py}, unity={want_unity}")
+            py_applied = False
+            try:
+                from updater import check_for_unity_updates, check_for_updates
+
+                channel = self.gui.settings.get("UPDATE_CHANNEL", "stable")
+                base_dir = os.environ.get("NEUROMITA_BASE_DIR") or None
+                unity_dir = self.gui.settings.get("UNITY_INSTALL_DIR") or None
+
+                # Python — первым: лёгкий и требует перезапуска, не ждём Unity.
+                if want_py:
+                    self._queue_ui_call(
+                        lambda: self.set_progress(_("Обновление Python…", "Updating Python…"), 0, 0, busy=True)
+                    )
+                    py_applied = bool(check_for_updates(
+                        base_dir=base_dir,
+                        logger=ui_log,
+                        channel=channel,
+                        tester_code=tester_code,
+                        on_progress=on_progress,
+                        auto_update=True,
+                        restart_on_success=False,
+                        update_mode=(self.gui.settings.get("UPDATE_MODE", "diff") or "diff"),
+                        preserve_prompts=bool(self.gui.settings.get("UPDATE_PRESERVE_PROMPTS", True)),
+                    ))
+
+                if want_unity and not cancel_event.is_set():
+                    self._queue_ui_call(
+                        lambda: self.set_progress(_("Обновление Unity…", "Updating Unity…"), 0, 0, busy=True)
+                    )
+                    check_for_unity_updates(
+                        base_dir=base_dir,
+                        logger=ui_log,
+                        unity_dir=unity_dir,
+                        channel=channel,
+                        tester_code=tester_code,
+                        on_progress=on_progress,
+                        on_extract_progress=on_extract_progress,
+                        auto_update=True,
+                        stop_event=cancel_event,
+                    )
+
+                if cancel_event.is_set():
+                    self._queue_ui_call(
+                        lambda: self.set_progress(_("Установка отменена.", "Installation cancelled."), 0, 100, busy=False)
+                    )
+                else:
+                    self._queue_ui_call(
+                        lambda: self.set_progress(_("Установка завершена.", "Installation finished."), 100, 100, busy=False)
+                    )
+            except Exception as exc:
+                logger.error(f"[home_update] selective update failed: {exc}", exc_info=True)
+                self._queue_ui_call(
+                    lambda e=exc: self.set_progress(_("Ошибка: {err}", "Error: {err}").format(err=e), 0, 0, busy=False)
+                )
+            finally:
+                def done():
+                    self._home_install_thread_running = False
+                    self._cancel_event = None
+                    if self._cancel_button is not None:
+                        self._cancel_button.setVisible(False)
+                        self._cancel_button.setEnabled(True)
+                    if self.primary_button is not None:
+                        self.primary_button.setEnabled(True)
+                    if self._update_button is not None:
+                        self._update_button.setEnabled(True)
+                    self.refresh_status_cards()
+                    # Перепроверим состояние обновлений (баннер/чекбоксы).
+                    self._refresh_update_state(force=True)
+                    if py_applied and not cancel_event.is_set():
+                        self._prompt_restart_after_update()
+                    else:
+                        QTimer.singleShot(4000, self.hide_progress)
 
                 self._queue_ui_call(done)
 

@@ -250,4 +250,50 @@ QPushButton#LauncherHomeCancelButton:disabled {
     color: rgba(255, 255, 255, 0.25);
     border-color: rgba({accent_rgb}, 0.10);
 }
+
+QCheckBox#LauncherHomeStatusCheck {
+    background: transparent;
+    spacing: 0;
+}
+QCheckBox#LauncherHomeStatusCheck::indicator {
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    border: 1px solid rgba({accent_rgb}, 0.55);
+    background-color: rgba({settings_panel_rgb}, 0.65);
+}
+QCheckBox#LauncherHomeStatusCheck::indicator:checked {
+    background-color: {accent};
+    border: 1px solid {accent};
+}
+
+QPushButton#LauncherHomeUpdateButton {
+    background-color: {accent};
+    border: 1px solid rgba({accent_rgb_alt}, 0.42);
+    border-radius: 10px;
+    color: #ffffff;
+    padding: 6px 14px;
+    font-size: 9.5pt;
+    font-weight: 700;
+    letter-spacing: 0px;
+}
+QPushButton#LauncherHomeUpdateButton:hover {
+    background-color: {accent_hover};
+}
+QPushButton#LauncherHomeUpdateButton:disabled {
+    background-color: rgba({settings_panel_rgb}, 0.90);
+    color: {muted};
+}
+
+QLineEdit#LauncherHomeUpdateField {
+    background-color: rgba({settings_panel_rgb}, 0.90);
+    border: 1px solid rgba({accent_rgb}, 0.30);
+    border-radius: 8px;
+    color: {text};
+    padding: 5px 8px;
+    font-size: 9pt;
+}
+QLineEdit#LauncherHomeUpdateField:focus {
+    border: 1px solid rgba({accent_rgb}, 0.55);
+}
 """
