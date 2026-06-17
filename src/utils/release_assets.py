@@ -126,6 +126,20 @@ def find_latest_python_full(
     return None, None
 
 
+def find_latest_unity_asset(
+    releases: list[Release],
+    channel: str,
+) -> tuple[Optional[Release], Optional[ReleaseAsset]]:
+    """Walk releases newest-first; return the first one with a Unity asset."""
+    for r in releases:
+        if channel == "stable" and r.prerelease:
+            continue
+        picked = pick_from_release(r)
+        if picked.unity is not None:
+            return r, picked.unity
+    return None, None
+
+
 # ── GitHub API parsing ────────────────────────────────────────────────────────
 
 def parse_release(item: dict) -> Release:
