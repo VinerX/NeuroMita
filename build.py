@@ -228,7 +228,7 @@ def create_flat_zip_from_directory(source_dir: Path, archive_base: Path) -> Path
     existing install should replace runtime files in-place instead of creating
     an extra top-level folder such as `neuromita_ci_build/`.
     """
-    archive_path = archive_base.with_suffix(".zip")
+    archive_path = archive_base.parent / f"{archive_base.name}.zip"
     if archive_path.exists():
         archive_path.unlink()
 
