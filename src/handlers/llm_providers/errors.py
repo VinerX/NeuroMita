@@ -201,9 +201,12 @@ class LLMProviderError(RuntimeError):
         else:
             parts.insert(0, "Provider error")
 
-        detail = self.provider_message or self.friendly_message
+        friendly = _compact_text(self.friendly_message)
+        detail = _compact_text(self.provider_message)
+        if friendly:
+            parts.append(f"user_message={friendly}")
         if detail:
-            parts.append(detail)
+            parts.append(f"provider_message={detail}")
         parts.append(f"retryable={'yes' if self.retryable else 'no'}")
         if self.url:
             parts.append(f"url={self.url}")

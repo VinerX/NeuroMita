@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Optional, Any
 
@@ -464,19 +464,42 @@ class EditorMixin:
             logger.info("[API UI] add preset cancelled/empty")
             return
 
+        template_options: list[tuple[str, object]] = []
+        for i in range(v.template_combo.count()):
+            template_options.append((v.template_combo.itemText(i), v.template_combo.itemData(i)))
+
+        selected_base = None
+        if template_options:
+            labels = [label for label, _data in template_options]
+            selected_label, tpl_ok = QInputDialog.getItem(
+                v,
+                _("Шаблон для пресета", "Preset template"),
+                _("Шаблон (опционально):", "Template (optional):"),
+                labels,
+                0,
+                False,
+            )
+            if not tpl_ok:
+                logger.info("[API UI] add preset cancelled at template selection")
+                return
+            for label, data in template_options:
+                if label == selected_label:
+                    selected_base = self._parse_base(data)
+                    break
+
         payload = {
             "name": str(name).strip(),
             "id": None,
             "pricing": "mixed",
-            "base": None,
+            "base": selected_base,
             "url": "",
             "default_model": "",
             "key": "",
             "reserve_keys": [],
-            "protocol_id": getattr(self, "_protocol_default_id", "") or "",
+            "protocol_id": "" if selected_base is not None else (getattr(self, "_protocol_default_id", "") or ""),
         }
 
-        logger.info(f"[API UI] Creating preset name='{payload['name']}'")
+        logger.info(f"[API UI] Creating preset name='{payload['name']}', base={payload['base']}")
 
         def _call():
             logger.info("[API UI] calling SAVE_CUSTOM_PRESET via emit_and_wait...")

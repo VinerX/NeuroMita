@@ -1,10 +1,14 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from PyQt6.QtWidgets import QMessageBox
 
 from utils import _
 from core.events import Events
 from ui.settings.api_settings.dialogs.models_loaded_dialog import ModelsLoadedDialog
+
+
+_TEST_BUTTON_LABEL = _("Тест подключения (Получить список моделей)", "Test connection (Fetch model list)")
+
 
 class TestMixin:
     def _test_connection(self) -> None:
@@ -24,7 +28,7 @@ class TestMixin:
             return
 
         v.test_button.setEnabled(False)
-        v.test_button.setText(_("Тестирование...", "Testing..."))
+        v.test_button.setText(_("Тестирование списка моделей...", "Fetching model list..."))
 
         self.event_bus.emit(Events.ApiPresets.TEST_CONNECTION, {
             "id": self.current_preset_id,
@@ -47,7 +51,7 @@ class TestMixin:
     def _process_test_result(self, data: dict):
         v = self.view
         v.test_button.setEnabled(True)
-        v.test_button.setText(_("Тест подключения", "Test connection"))
+        v.test_button.setText(_TEST_BUTTON_LABEL)
 
         success = bool(data.get("success"))
         msg = str(data.get("message") or (_("Успешно", "Success") if success else _("Неизвестная ошибка", "Unknown error")))
@@ -96,6 +100,6 @@ class TestMixin:
     def _process_test_failed(self, data: dict):
         v = self.view
         v.test_button.setEnabled(True)
-        v.test_button.setText(_("Тест подключения", "Test connection"))
+        v.test_button.setText(_TEST_BUTTON_LABEL)
         msg = str(data.get("message") or _("Неизвестная ошибка", "Unknown error"))
         QMessageBox.warning(v, _("Ошибка тестирования", "Test Error"), msg)
