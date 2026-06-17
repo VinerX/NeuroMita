@@ -667,38 +667,7 @@ def setup_updates_settings_controls(self, parent):
     unity_entry.editingFinished.connect(_save_unity_dir)
     parent.addWidget(unity_row)
 
-    # Release info
-    info_title = QLabel(_("Информация об обновлении", "Update information"))
-    info_title.setStyleSheet("QLabel { color: #bca9bb; font-size: 12px; }")
-    parent.addWidget(info_title)
-
-    release_info = QTextEdit()
-    release_info.setReadOnly(True)
-    release_info.setMinimumHeight(180)
-    release_info.setPlaceholderText(_("Сначала нажми «Проверить».", "Press 'Check' first."))
-    release_info.setStyleSheet(
-        "QTextEdit { background-color: rgba(16,13,25,0.76); border: 1px solid rgba(255,255,255,0.05); border-radius: 10px; "
-        "color: #f3edf6; padding: 7px 10px; }"
-    )
-    parent.addWidget(release_info)
-
-    # Progress + status
-    progress_bar = QProgressBar()
-    progress_bar.setRange(0, 100)
-    progress_bar.setValue(0)
-    progress_bar.setVisible(False)
-    progress_bar.setStyleSheet(
-        "QProgressBar { border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; background: rgba(16,13,25,0.96); height: 14px; text-align: center; color: #bca9bb; font-size: 10px; }"
-        "QProgressBar::chunk { background: #db6596; border-radius: 3px; }"
-    )
-    parent.addWidget(progress_bar)
-
-    status_lbl = QLabel("")
-    status_lbl.setWordWrap(True)
-    status_lbl.setStyleSheet("QLabel { color: #bca9bb; font-size: 11px; padding: 2px 0; }")
-    parent.addWidget(status_lbl)
-
-    # Action buttons
+    # Action buttons (подняты НАД описанием обновления)
     buttons_row = QWidget()
     buttons_row.setObjectName("UpdatesButtonsRow")
     buttons_row.setStyleSheet("QWidget#UpdatesButtonsRow { background: transparent; }")
@@ -763,3 +732,34 @@ def setup_updates_settings_controls(self, parent):
     buttons_layout.addWidget(btn_install)
     buttons_layout.addStretch()
     parent.addWidget(buttons_row)
+
+    # Progress + status (под кнопками)
+    progress_bar = QProgressBar()
+    progress_bar.setRange(0, 100)
+    progress_bar.setValue(0)
+    progress_bar.setVisible(False)
+    progress_bar.setStyleSheet(
+        "QProgressBar { border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; background: rgba(16,13,25,0.96); height: 14px; text-align: center; color: #bca9bb; font-size: 10px; }"
+        "QProgressBar::chunk { background: #db6596; border-radius: 3px; }"
+    )
+    parent.addWidget(progress_bar)
+
+    status_lbl = QLabel("")
+    status_lbl.setWordWrap(True)
+    status_lbl.setStyleSheet("QLabel { color: #bca9bb; font-size: 11px; padding: 2px 0; }")
+    parent.addWidget(status_lbl)
+
+    # Release info (описание обновы — под кнопками и статусом)
+    info_title = QLabel(_("Информация об обновлении", "Update information"))
+    info_title.setStyleSheet("QLabel { color: #bca9bb; font-size: 12px; }")
+    parent.addWidget(info_title)
+
+    release_info = QTextEdit()
+    release_info.setReadOnly(True)
+    release_info.setMinimumHeight(180)
+    release_info.setPlaceholderText(_("Сначала нажми «Проверить».", "Press 'Check' first."))
+    release_info.setStyleSheet(
+        "QTextEdit { background-color: rgba(16,13,25,0.76); border: 1px solid rgba(255,255,255,0.05); border-radius: 10px; "
+        "color: #f3edf6; padding: 7px 10px; }"
+    )
+    parent.addWidget(release_info)
