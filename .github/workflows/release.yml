@@ -45,10 +45,13 @@ jobs:
         run: >
           python scripts/bootstrap_release_runtime.py
           --repo "${{ github.repository }}"
+          --prefer-tag "v2026.06.12_Full"
           --exclude-tag "v${{ steps.ver.outputs.version }}"
           --target libs
         env:
           PYTHONUTF8: '1'
+        # TEMPORARY: pin the baseline runtime to the known-small v2026.06.12_Full release.
+        # Replace this with a dedicated canonical runtime asset/release after release testing.
 
       - name: Verify embedded Python runtime
         shell: bash

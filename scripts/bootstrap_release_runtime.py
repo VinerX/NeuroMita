@@ -4,8 +4,8 @@ import argparse
 import shutil
 import sys
 import tempfile
-from pathlib import Path
 import zipfile
+from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,7 +13,12 @@ SRC_DIR = ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from release_contract import download_asset, fetch_releases, find_previous_python_full_asset, temp_download_path  # noqa: E402
+from release_contract import (  # noqa: E402
+    download_asset,
+    fetch_releases,
+    find_previous_python_full_asset,
+    temp_download_path,
+)
 
 
 def _configure_stdio() -> None:
@@ -44,6 +49,11 @@ def _parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help="Теги, которые нельзя использовать как источник bootstrap-runtime.",
+    )
+    parser.add_argument(
+        "--prefer-tag",
+        default=None,
+        help="Явный full-release tag для временного pinned baseline runtime.",
     )
     return parser.parse_args()
 
@@ -89,23 +99,58 @@ def _preview_entries(path: Path, limit: int = 10) -> str:
     return preview
 
 
+def _find_release_by_tag(releases: list[dict], tag: str | None) -> dict | None:
+    wanted = str(tag or "").strip().lower()
+    if not wanted:
+        return None
+    for release in releases:
+        if str(release.get("tag_name") or "").strip().lower() == wanted:
+            return release
+    return None
+
+
+def _pick_full_python_asset(release: dict) -> dict | None:
+    for asset in list(release.get("assets") or []):
+        name = str(asset.get("name") or "")
+        low = name.lower()
+        if low.endswith((".zip", ".7z")) and "pythonbuild" in low and "patch" not in low:
+            return asset
+    return None
+
+
 def main() -> int:
     _configure_stdio()
     args = _parse_args()
     releases = fetch_releases(args.repo)
-    found = find_previous_python_full_asset(
-        releases,
-        channel=args.channel,
-        exclude_tags=args.exclude_tag,
-    )
-    if found is None:
+
+    release = asset = None
+    preferred_release = _find_release_by_tag(releases, args.prefer_tag)
+    if preferred_release is not None:
+        asset = _pick_full_python_asset(preferred_release)
+        if asset is None:
+            print(
+                f"ERROR: Preferred release {args.prefer_tag} exists, "
+                "but it has no full Python asset named PythonBuild-*.zip/.7z."
+            )
+            return 1
+        release = preferred_release
+        print(f"Using pinned runtime baseline tag: {args.prefer_tag}")
+    else:
+        found = find_previous_python_full_asset(
+            releases,
+            channel=args.channel,
+            exclude_tags=args.exclude_tag,
+        )
+        if found is not None:
+            release, asset = found
+
+    if release is None or asset is None:
         print(
             "ERROR: Не найден предыдущий опубликованный full Python release с asset вида "
             "'PythonBuild-vX.Y.Z.zip/.7z'. Сборка не может восстановить libs/ автоматически."
         )
         return 1
 
-    release, asset = found
     source_tag = str(release.get("tag_name") or "")
     source_name = str(asset.get("name") or "")
     download_url = str(asset.get("browser_download_url") or "")
