@@ -18,6 +18,29 @@ build_provider_error = _MODULE.build_provider_error
 
 
 class ProviderErrorMappingTests(unittest.TestCase):
+    def test_401_invalid_key_is_user_friendly(self):
+        err = build_provider_error(
+            "common",
+            status_code=401,
+            payload={"error": {"message": "Invalid API key"}},
+            url="https://api.example.test/v1/chat/completions",
+        )
+
+        self.assertIn("401", err.friendly_message)
+        self.assertIn("API", err.friendly_message)
+        self.assertFalse(err.retryable)
+
+    def test_403_access_denied_is_user_friendly(self):
+        err = build_provider_error(
+            "common",
+            status_code=403,
+            payload={"error": {"message": "Forbidden"}},
+            url="https://api.example.test/v1/chat/completions",
+        )
+
+        self.assertIn("403", err.friendly_message)
+        self.assertFalse(err.retryable)
+
     def test_404_endpoint_error_is_user_friendly(self):
         err = build_provider_error(
             "common",
@@ -29,6 +52,17 @@ class ProviderErrorMappingTests(unittest.TestCase):
         self.assertIn("404", err.friendly_message)
         self.assertIn("Endpoint", err.friendly_message)
         self.assertFalse(err.retryable)
+
+    def test_429_rate_limit_is_retryable(self):
+        err = build_provider_error(
+            "common",
+            status_code=429,
+            payload={"error": {"message": "Rate limit exceeded"}},
+            url="https://api.example.test/v1/chat/completions",
+        )
+
+        self.assertIn("429", err.friendly_message)
+        self.assertTrue(err.retryable)
 
     def test_422_thinking_error_explains_how_to_fix_preset(self):
         err = build_provider_error(

@@ -408,10 +408,14 @@ class HomePage(LauncherHomeBackground):
             self._py_update_check.setVisible(py_avail)
             if py_avail:
                 self._py_update_check.setChecked(True)
+            else:
+                self._py_update_check.setChecked(False)
         if self._unity_update_check is not None:
             self._unity_update_check.setVisible(unity_avail)
             if unity_avail:
                 self._unity_update_check.setChecked(True)
+            else:
+                self._unity_update_check.setChecked(False)
 
         if not py_avail and not unity_avail:
             if self._update_banner is not None:
@@ -618,6 +622,12 @@ class HomePage(LauncherHomeBackground):
     def _has_any_update(self) -> bool:
         return self._has_py_update() or self._has_unity_update()
 
+    def _has_selectable_update(self) -> bool:
+        for control in (self._py_update_check, self._unity_update_check):
+            if control is not None and control.isVisible():
+                return True
+        return False
+
     def _lock_suffix(self) -> str:
         # Подсказка про код тестера, когда действие потянет зашифрованный архив.
         if not self._effective_tester_code():
@@ -628,10 +638,10 @@ class HomePage(LauncherHomeBackground):
         # Unity ещё нет — это «Установить», даже если по нему «доступна обнова»
         # (фоновая проверка помечает неполную установку как available).
         if self.find_unity_executable() is None:
-            suffix = self._lock_suffix() if self._has_any_update() else ""
+            suffix = self._lock_suffix() if self._has_selectable_update() else ""
             return _("↓ Установить", "↓ Install") + suffix
         # Unity установлен и есть обнова — кнопка становится «Обновить».
-        if self._has_py_update() or self._has_unity_update():
+        if self._has_selectable_update():
             return _("⟳ Обновить", "⟳ Update") + self._lock_suffix()
         return _("▶ Играть", "▶ Play")
 
@@ -816,7 +826,7 @@ class HomePage(LauncherHomeBackground):
     def run_primary_action(self):
         # Есть обнова → центральная кнопка обновляет (выбор частей — чекбоксы,
         # код тестера спросит всплывающим окном).
-        if self._has_any_update():
+        if self._has_selectable_update():
             self.run_selective_update()
             return
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, List
 
 from PyQt6.QtCore import Qt
@@ -35,17 +36,29 @@ class SortableTableWidgetItem(QTableWidgetItem):
 
 
 class ModelsLoadedDialog(QDialog):
-    _COLUMN_HEADERS = [
+    _BASE_COLUMN_HEADERS = [
         _("Модель", "Model"),
         _("Тип", "Type"),
         _("Контекст", "Context"),
+    ]
+    _PRICE_COLUMN_HEADERS = [
         _("Input $/1M", "Input $/1M"),
         _("Output $/1M", "Output $/1M"),
         _("Cache read $/1M", "Cache read $/1M"),
         _("Cache write $/1M", "Cache write $/1M"),
+    ]
+    _TAIL_COLUMN_HEADERS = [
         _("Latency", "Latency"),
         _("Tok/s", "Tok/s"),
     ]
+    _RATE_LIMIT_PREFERRED_KEYS = (
+        "requests_per_minute",
+        "requests_per_day",
+        "tokens_per_minute",
+        "tokens_per_day",
+        "images_per_minute",
+        "images_per_day",
+    )
 
     def __init__(self, parent, *, models: List[str], model_infos: List[dict] | None = None, message: str = ""):
         super().__init__(parent)
@@ -56,6 +69,7 @@ class ModelsLoadedDialog(QDialog):
         self._model_infos = self._normalize_model_infos(models=models, model_infos=model_infos or [])
         self._has_free_models = any(bool(info.get("is_free")) for info in self._model_infos)
         self._has_paid_models = any(not bool(info.get("is_free")) for info in self._model_infos)
+        self._active_rate_limit_keys: list[str] = []
 
         lay = QVBoxLayout(self)
 
@@ -78,8 +92,8 @@ class ModelsLoadedDialog(QDialog):
         self.status_label = QLabel("")
         lay.addWidget(self.status_label)
 
-        self.table = QTableWidget(0, len(self._COLUMN_HEADERS))
-        self.table.setHorizontalHeaderLabels(self._COLUMN_HEADERS)
+        self.table = QTableWidget(0, len(self._base_headers()))
+        self.table.setHorizontalHeaderLabels(self._base_headers())
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -132,6 +146,7 @@ class ModelsLoadedDialog(QDialog):
                 "max_completion_tokens": info.get("max_completion_tokens"),
                 "is_free": bool(info.get("is_free")),
                 "pricing": info.get("pricing") if isinstance(info.get("pricing"), dict) else {},
+                "rate_limits": info.get("rate_limits") if isinstance(info.get("rate_limits"), dict) else {},
                 "top_provider": info.get("top_provider") if isinstance(info.get("top_provider"), dict) else {},
                 "latency": info.get("latency"),
                 "tokens_per_second": info.get("tokens_per_second"),
@@ -199,6 +214,100 @@ class ModelsLoadedDialog(QDialog):
         text = text.rstrip("0").rstrip(".")
         return f"{text}{suffix}"
 
+    @classmethod
+    def _base_headers(cls) -> list[str]:
+        return [*cls._BASE_COLUMN_HEADERS, *cls._PRICE_COLUMN_HEADERS, *cls._TAIL_COLUMN_HEADERS]
+
+    @staticmethod
+    def _humanize_rate_limit_key(key: str) -> str:
+        parts = [chunk for chunk in str(key or "").replace("-", "_").split("_") if chunk]
+        if not parts:
+            return "-"
+        acronyms = {
+            "rpm": "RPM",
+            "rpd": "RPD",
+            "tpm": "TPM",
+            "tpd": "TPD",
+            "ipm": "IPM",
+            "ipd": "IPD",
+        }
+        joined = "_".join(parts).lower()
+        if joined in acronyms:
+            return acronyms[joined]
+        return " ".join(part.upper() if len(part) <= 3 else part.capitalize() for part in parts)
+
+    @classmethod
+    def _format_rate_limit_value(cls, value: Any) -> str:
+        if value in (None, ""):
+            return "-"
+        if isinstance(value, bool):
+            return "yes" if value else "no"
+        if isinstance(value, int):
+            return f"{value:,}".replace(",", " ")
+        if isinstance(value, float):
+            if value.is_integer():
+                return f"{int(value):,}".replace(",", " ")
+            return f"{value:.2f}".rstrip("0").rstrip(".")
+        if isinstance(value, str):
+            text = value.strip()
+            return text or "-"
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)
+
+    @classmethod
+    def _sortable_rate_limit_value(cls, value: Any) -> Any:
+        numeric = cls._parse_float(value)
+        if numeric is not None:
+            return numeric
+        if isinstance(value, bool):
+            return int(value)
+        if value in (None, ""):
+            return None
+        return str(value)
+
+    def _resolve_rate_limit_keys(self, visible: List[dict]) -> list[str]:
+        discovered: list[str] = []
+        seen: set[str] = set()
+        for key in self._RATE_LIMIT_PREFERRED_KEYS:
+            for info in visible:
+                limits = info.get("rate_limits") if isinstance(info.get("rate_limits"), dict) else {}
+                if key in limits and key not in seen:
+                    discovered.append(key)
+                    seen.add(key)
+                    break
+
+        for info in visible:
+            limits = info.get("rate_limits") if isinstance(info.get("rate_limits"), dict) else {}
+            for key in limits.keys():
+                key_text = str(key or "").strip()
+                if key_text and key_text not in seen:
+                    discovered.append(key_text)
+                    seen.add(key_text)
+
+        return discovered[:4]
+
+    def _use_rate_limit_columns(self, visible: List[dict]) -> bool:
+        if not self.include_paid_cb.isChecked():
+            return False
+        return bool(self._resolve_rate_limit_keys(visible))
+
+    def _apply_headers(self, visible: List[dict]) -> None:
+        if self._use_rate_limit_columns(visible):
+            self._active_rate_limit_keys = self._resolve_rate_limit_keys(visible)
+            rate_headers = [self._humanize_rate_limit_key(key) for key in self._active_rate_limit_keys]
+            while len(rate_headers) < 4:
+                rate_headers.append(_("Rate limit", "Rate limit"))
+            headers = [*self._BASE_COLUMN_HEADERS, *rate_headers[:4], *self._TAIL_COLUMN_HEADERS]
+        else:
+            self._active_rate_limit_keys = []
+            headers = self._base_headers()
+
+        if self.table.columnCount() != len(headers):
+            self.table.setColumnCount(len(headers))
+        self.table.setHorizontalHeaderLabels(headers)
+
     def _matches_filters(self, info: dict, needle: str) -> bool:
         if self._has_free_models and not self.include_paid_cb.isChecked() and not bool(info.get("is_free")):
             return False
@@ -228,6 +337,7 @@ class ModelsLoadedDialog(QDialog):
 
     def _rebuild_table(self, *_args) -> None:
         visible = self._visible_model_infos()
+        self._apply_headers(visible)
 
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(visible))
@@ -237,6 +347,7 @@ class ModelsLoadedDialog(QDialog):
             display_name = str(info.get("name") or model_id).strip()
             tooltip = display_name if display_name and display_name != model_id else None
             pricing = info.get("pricing") if isinstance(info.get("pricing"), dict) else {}
+            rate_limits = info.get("rate_limits") if isinstance(info.get("rate_limits"), dict) else {}
             if self._has_free_models:
                 type_text = _("Free", "Free") if bool(info.get("is_free")) else _("Paid", "Paid")
                 type_sort = 0 if bool(info.get("is_free")) else 1
@@ -247,10 +358,22 @@ class ModelsLoadedDialog(QDialog):
             self._set_cell(row, 0, model_id, sort_value=model_id, tooltip=tooltip)
             self._set_cell(row, 1, type_text, sort_value=type_sort)
             self._set_cell(row, 2, self._format_integer(info.get("context_length")), sort_value=self._parse_float(info.get("context_length")) or 0)
-            self._set_cell(row, 3, self._format_price_per_million(pricing.get("prompt")), sort_value=self._parse_float(pricing.get("prompt")))
-            self._set_cell(row, 4, self._format_price_per_million(pricing.get("completion")), sort_value=self._parse_float(pricing.get("completion")))
-            self._set_cell(row, 5, self._format_price_per_million(pricing.get("input_cache_read")), sort_value=self._parse_float(pricing.get("input_cache_read")))
-            self._set_cell(row, 6, self._format_price_per_million(pricing.get("input_cache_write")), sort_value=self._parse_float(pricing.get("input_cache_write")))
+            if self._active_rate_limit_keys:
+                for offset in range(4):
+                    col = 3 + offset
+                    key = self._active_rate_limit_keys[offset] if offset < len(self._active_rate_limit_keys) else ""
+                    value = rate_limits.get(key) if key else None
+                    self._set_cell(
+                        row,
+                        col,
+                        self._format_rate_limit_value(value),
+                        sort_value=self._sortable_rate_limit_value(value),
+                    )
+            else:
+                self._set_cell(row, 3, self._format_price_per_million(pricing.get("prompt")), sort_value=self._parse_float(pricing.get("prompt")))
+                self._set_cell(row, 4, self._format_price_per_million(pricing.get("completion")), sort_value=self._parse_float(pricing.get("completion")))
+                self._set_cell(row, 5, self._format_price_per_million(pricing.get("input_cache_read")), sort_value=self._parse_float(pricing.get("input_cache_read")))
+                self._set_cell(row, 6, self._format_price_per_million(pricing.get("input_cache_write")), sort_value=self._parse_float(pricing.get("input_cache_write")))
             self._set_cell(row, 7, self._format_metric(info.get("latency")), sort_value=self._parse_float(info.get("latency")))
             self._set_cell(row, 8, self._format_metric(info.get("tokens_per_second")), sort_value=self._parse_float(info.get("tokens_per_second")))
 

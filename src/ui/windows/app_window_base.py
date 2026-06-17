@@ -465,12 +465,17 @@ class AppWindowBase(QMainWindow):
                 except Exception:
                     pass
             self.shell_sidebar.set_active_language(code.lower())
-            QMessageBox.information(
-                self,
-                _("Язык", "Language"),
-                _("Перезапусти программу, чтобы применить язык.",
-                  "Restart the program to apply the language."),
-            )
+            try:
+                from ui.language_restart import prompt_language_restart
+
+                prompt_language_restart(self)
+            except Exception:
+                QMessageBox.information(
+                    self,
+                    _("Язык", "Language"),
+                    _("Перезапусти программу, чтобы применить язык.",
+                      "Restart the program to apply the language."),
+                )
             return
         if action == "language":
             self.show_settings_category("general")

@@ -929,12 +929,33 @@ class ApiPresetsController:
             return model_id.split("/", 1)[1].strip()
         return model_id
 
+    @staticmethod
+    def _normalize_rate_limits(raw_value: Any) -> Dict[str, Any]:
+        if not isinstance(raw_value, dict):
+            return {}
+
+        normalized: Dict[str, Any] = {}
+        for key, value in raw_value.items():
+            key_text = str(key or "").strip()
+            if not key_text:
+                continue
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                normalized[key_text] = value
+        return normalized
+
     def _normalize_test_model_entry(self, raw_entry: Any) -> Optional[Dict[str, Any]]:
         if isinstance(raw_entry, dict):
             model_id = self._normalize_test_model_id(raw_entry.get("id") or raw_entry.get("name"))
             display_name = str(raw_entry.get("name") or model_id).strip()
             pricing = raw_entry.get("pricing") if isinstance(raw_entry.get("pricing"), dict) else {}
             top_provider = raw_entry.get("top_provider") if isinstance(raw_entry.get("top_provider"), dict) else {}
+            rate_limits = self._normalize_rate_limits(raw_entry.get("per_request_limits"))
+            if not rate_limits:
+                rate_limits = self._normalize_rate_limits(raw_entry.get("rate_limits"))
+            if not rate_limits and isinstance(top_provider, dict):
+                rate_limits = self._normalize_rate_limits(top_provider.get("per_request_limits"))
+            if not rate_limits and isinstance(top_provider, dict):
+                rate_limits = self._normalize_rate_limits(top_provider.get("rate_limits"))
 
             if not model_id:
                 return None
@@ -948,6 +969,7 @@ class ApiPresetsController:
                 "max_completion_tokens": raw_entry.get("max_completion_tokens") or top_provider.get("max_completion_tokens"),
                 "is_free": bool(raw_entry.get("is_free")),
                 "pricing": pricing,
+                "rate_limits": rate_limits,
                 "top_provider": top_provider,
                 "latency": raw_entry.get("latency"),
                 "tokens_per_second": raw_entry.get("tokens_per_second"),
@@ -966,6 +988,7 @@ class ApiPresetsController:
             "max_completion_tokens": None,
             "is_free": False,
             "pricing": {},
+            "rate_limits": {},
             "top_provider": {},
             "latency": None,
             "tokens_per_second": None,

@@ -93,6 +93,16 @@ def _pop_sample_id_if_collecting() -> str | None:
         pass
     return None
 
+def _should_show_rating_controls(gui) -> bool:
+    try:
+        if not bool(gui._get_setting("SHOW_MESSAGE_RATING_CONTROLS", False)):
+            return False
+        from managers.finetune_collector import FineTuneCollector
+        fc = FineTuneCollector.instance
+        return bool(fc and fc.is_enabled())
+    except Exception:
+        return False
+
 def _get_delegate(gui) -> ChatMessageDelegate:
     if hasattr(gui, "chat_delegate") and gui.chat_delegate:
         return gui.chat_delegate
@@ -378,7 +388,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         gui._think_block_counter += 1
         _think_blocks[gui._think_block_counter - 1] = _pending_struct_panel
 
-    _ft_sample_id = _pop_sample_id_if_collecting() if role == "assistant" else None
+    _ft_sample_id = _pop_sample_id_if_collecting() if role == "assistant" and _should_show_rating_controls(gui) else None
 
     segments = (structured_data.get("segments") or []) if isinstance(structured_data, dict) else []
     target_groups = _group_segments_by_target(segments) if role == "assistant" and len(segments) > 0 else []
@@ -509,7 +519,7 @@ def prepare_stream_slot(gui, role="assistant"):
         elif not speaker_name and role == "user": speaker_name = _("Вы", "You")
 
         show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
-        _ft_stream_sample_id = _pop_sample_id_if_collecting() if role == "assistant" else None
+        _ft_stream_sample_id = _pop_sample_id_if_collecting() if role == "assistant" and _should_show_rating_controls(gui) else None
         msg = MessageWidget(
             role=role, speaker_name=speaker_name, content_text="",
             show_avatar=(role not in ("system", "event", "think", "structured")),

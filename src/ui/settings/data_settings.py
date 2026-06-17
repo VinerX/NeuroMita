@@ -95,6 +95,27 @@ def setup_data_settings_controls(self, parent):
     chk.stateChanged.connect(_on_toggle)
     parent.addWidget(chk)
 
+    rating_chk = QCheckBox(_("Показывать элементы оценки", "Show rating controls"))
+    rating_chk.setStyleSheet("background: transparent; border: none;")
+    rating_chk.setToolTip(_(
+        "Показывать кнопки оценки на пузырьках ответов ассистента. Работает только при включённом сборе данных.",
+        "Show rating buttons on assistant message bubbles. Works only when data collection is enabled."
+    ))
+    try:
+        rating_chk.setChecked(bool(self.settings.get("SHOW_MESSAGE_RATING_CONTROLS", False)))
+    except Exception:
+        pass
+
+    def _on_rating_toggle(state):
+        val = state == Qt.CheckState.Checked.value
+        try:
+            self._save_setting("SHOW_MESSAGE_RATING_CONTROLS", val)
+        except Exception:
+            pass
+
+    rating_chk.stateChanged.connect(_on_rating_toggle)
+    parent.addWidget(rating_chk)
+
     # ── Record limit (keep last N) + unlimited ────────────────────────────────
     # Default keeps only the last 50 samples so the latest requests stay easy to
     # inspect/debug without the store growing unbounded. "Без лимита" disables

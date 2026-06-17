@@ -20,25 +20,10 @@ def _on_language_changed(gui, value=None):
     спрашиваем и при согласии перезапускаем приложение.
     """
     try:
-        from PyQt6.QtWidgets import QMessageBox
-        from utils.app_restart import restart_app
+        from ui.language_restart import prompt_language_restart
 
-        parent = gui if hasattr(gui, "window") else None
-        box = QMessageBox(parent)
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle(_("Смена языка", "Language change"))
-        box.setText(_(
-            "Язык интерфейса изменён.\n\n"
-            "Чтобы он применился полностью, нужен перезапуск.\n"
-            "Перезапустить приложение сейчас?",
-            "The interface language has been changed.\n\n"
-            "A restart is required to apply it fully.\n"
-            "Restart the app now?",
-        ))
-        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        box.setDefaultButton(QMessageBox.StandardButton.Yes)
-        if box.exec() == QMessageBox.StandardButton.Yes:
-            restart_app()
+        parent = gui if hasattr(gui, "window") else gui
+        prompt_language_restart(parent)
     except Exception:
         pass
 
@@ -246,8 +231,6 @@ def setup_general_settings_controls(self, parent):
         {'label': 'Язык / Language', 'key': 'LANGUAGE', 'type': 'combobox',
          'options': ["RU", "EN"], 'default': "RU",
          'command': lambda v: _on_language_changed(self, v)},
-        {'label': 'Перезапусти программу после смены!', 'type': 'text'},
-        {'label': 'Restart program after change!', 'type': 'text'},
     ]
 
     create_settings_section(

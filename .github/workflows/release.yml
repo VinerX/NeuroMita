@@ -117,8 +117,16 @@ jobs:
         run: |
           # Предыдущий релизный тег (текущий ещё не создан — его поставит шаг
           # релиза ниже), поэтому describe вернёт прошлую версию.
-          PREV=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          CURRENT_TAG="v${{ steps.ver.outputs.version }}"
+          PREV=$(
+            git tag --sort=-creatordate --merged HEAD --list 'v*' \
+              | grep -vxF "$CURRENT_TAG" \
+              | grep -vE '_Full$' \
+              | head -n1 \
+              || true
+          )
           RANGE="${PREV:+$PREV..}HEAD"
+          echo "Current tag: ${CURRENT_TAG}"
           echo "Previous tag: ${PREV:-<none>} (range: $RANGE)"
 
           # Чистый список: без merge-коммитов и служебного шума (bump версии,

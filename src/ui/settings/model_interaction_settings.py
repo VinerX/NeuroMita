@@ -33,7 +33,7 @@ def setup_model_interaction_controls(self, parent):
                       'Disable if using native thinking or to save tokens.')},
         {'label': _('Режим размышлений (enable_thinking)', 'Enable thinking mode'), 'key': 'ENABLE_THINKING',
          'type': 'checkbutton',
-         'default_checkbutton': True,
+         'default_checkbutton': False,
          'tooltip': _('Для моделей Qwen3 и аналогичных: включает thinking-режим. '
                       'Выключите если модель кладёт ответ в reasoning_content вместо content.',
                       'For Qwen3 and similar models: enables thinking mode. '
