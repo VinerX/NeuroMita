@@ -16,6 +16,14 @@ if str(SRC_DIR) not in sys.path:
 from release_contract import download_asset, fetch_releases, find_previous_python_full_asset, temp_download_path  # noqa: E402
 
 
+def _configure_stdio() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -82,6 +90,7 @@ def _preview_entries(path: Path, limit: int = 10) -> str:
 
 
 def main() -> int:
+    _configure_stdio()
     args = _parse_args()
     releases = fetch_releases(args.repo)
     found = find_previous_python_full_asset(

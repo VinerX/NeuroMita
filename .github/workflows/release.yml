@@ -47,6 +47,8 @@ jobs:
           --repo "${{ github.repository }}"
           --exclude-tag "v${{ steps.ver.outputs.version }}"
           --target libs
+        env:
+          PYTHONUTF8: '1'
 
       - name: Verify embedded Python runtime
         shell: bash
