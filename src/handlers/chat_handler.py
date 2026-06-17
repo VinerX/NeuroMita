@@ -17,6 +17,7 @@ from utils.openrouter_routing import (
     normalize_openrouter_routing,
 )
 from handlers.llm_providers.param_mapper import build_unified_generation_params
+from handlers.llm_providers.param_mapper import drop_unsupported_thinking_params
 
 from core.events import get_event_bus
 
@@ -223,6 +224,11 @@ class ChatModel:
             caps = dict(preset_settings.capabilities or {})
             if isinstance(capabilities_override, dict):
                 caps.update(capabilities_override)
+            params = drop_unsupported_thinking_params(
+                params,
+                provider_name=preset_settings.provider_name,
+                capabilities=caps,
+            )
 
             req = LLMRequest(
                 model=effective_model,
