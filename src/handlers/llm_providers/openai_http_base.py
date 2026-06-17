@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -144,6 +145,24 @@ class OpenAIHTTPProviderBase(BaseProvider):
         caps = req.capabilities or {}
         return bool(caps.get("structured_output", False))
 
+    def _resolve_request_url(self, req: LLMRequest) -> str:
+        url = str(req.api_url or "").strip()
+        if not url:
+            return ""
+
+        if str(req.dialect_id or "").strip() != "openai_chat_completions":
+            return url
+
+        parsed = urlsplit(url)
+        path = (parsed.path or "").rstrip("/")
+        lowered = path.lower()
+
+        if lowered.endswith("/chat/completions") or lowered.endswith("/completions"):
+            return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
+
+        normalized_path = f"{path}/chat/completions" if path else "/chat/completions"
+        return urlunsplit((parsed.scheme, parsed.netloc, normalized_path, parsed.query, parsed.fragment))
+
     def _build_payload(self, req: LLMRequest, model_to_use: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         if req.protocol_id == "openrouter_default":
             messages = annotate_openrouter_prompt_cache(messages, model_to_use)
@@ -178,12 +197,12 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
         return payload
 
-    def _request(self, req: LLMRequest, payload: Dict[str, Any]) -> requests.Response:
+    def _request(self, request_url: str, req: LLMRequest, payload: Dict[str, Any]) -> requests.Response:
         headers = self._headers(req)
         if req.stream:
             payload["stream"] = True
         timeout = float((req.extra or {}).get("http_timeout_seconds") or 120)
-        return requests.post(req.api_url, headers=headers, json=payload, stream=req.stream, timeout=timeout)
+        return requests.post(request_url, headers=headers, json=payload, stream=req.stream, timeout=timeout)
 
     def generate(self, req: LLMRequest) -> LLMResponse:
         if req.depth > 3:
@@ -205,10 +224,11 @@ class OpenAIHTTPProviderBase(BaseProvider):
         model_to_use = req.model
         msgs = self._preprocess_messages(req)
         msgs = self._normalize_messages(req, msgs)
+        request_url = self._resolve_request_url(req)
 
         payload = self._build_payload(req, model_to_use, msgs)
 
-        resp = self._request(req, payload)
+        resp = self._request(request_url, req, payload)
 
         if resp.status_code == 400 and self._supports_structured_output(req):
             rf_mode = (req.capabilities or {}).get("structured_output_mode", "json_schema")
@@ -224,7 +244,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
                         f"Error: {err_msg[:200]}"
                     )
                     payload["response_format"] = {"type": "json_object"}
-                    resp = self._request(req, payload)
+                    resp = self._request(request_url, req, payload)
 
         if resp.status_code != 200:
             try:
@@ -241,7 +261,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
             )
 
         if req.stream:
-            return self._handle_stream(resp, req.api_url, req.stream_cb)
+            return self._handle_stream(resp, request_url, req.stream_cb)
 
         try:
             data = resp.json()
@@ -265,7 +285,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
             logger.error(f"[{self.name}] {error_message} Raw response: {response_preview}")
             return LLMResponse(
                 text=None,
-                usage=self._extract_usage(data, req.api_url),
+                usage=self._extract_usage(data, request_url),
                 model=(data.get("model") if isinstance(data, dict) else None) or model_to_use,
                 provider_name=self.name,
                 finish_reason=finish_reason,
@@ -275,7 +295,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
         return LLMResponse(
             text=content.strip() if content else None,
-            usage=self._extract_usage(data, req.api_url),
+            usage=self._extract_usage(data, request_url),
             model=(data.get("model") if isinstance(data, dict) else None) or model_to_use,
             provider_name=self.name,
             finish_reason=finish_reason,
