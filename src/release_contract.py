@@ -260,34 +260,63 @@ def _release_assets(raw_release: dict) -> list[dict]:
     return list(raw_release.get("assets") or [])
 
 
-def _find_previous_python_full_release(releases: Iterable[dict], channel: str = "stable") -> Optional[tuple[str, str]]:
+def _published_sort_key(release: dict) -> str:
+    return str(release.get("published_at") or release.get("created_at") or "")
+
+
+def _iter_release_candidates(
+    releases: Iterable[dict],
+    channel: str = "stable",
+    exclude_tags: Iterable[str] = (),
+) -> list[dict]:
+    excluded = {str(tag or "").lower() for tag in exclude_tags if str(tag or "").strip()}
+    candidates = []
     for release in releases:
+        if bool(release.get("draft")):
+            continue
         if channel == "stable" and bool(release.get("prerelease")):
             continue
+        tag_name = str(release.get("tag_name") or "")
+        if tag_name.lower() in excluded:
+            continue
+        candidates.append(release)
+    candidates.sort(key=_published_sort_key, reverse=True)
+    return candidates
 
-        release_name = f"{release.get('tag_name', '')} {release.get('name', '')}".lower()
+
+def find_previous_python_full_asset(
+    releases: Iterable[dict],
+    channel: str = "stable",
+    exclude_tags: Iterable[str] = (),
+) -> Optional[tuple[dict, dict]]:
+    for release in _iter_release_candidates(releases, channel=channel, exclude_tags=exclude_tags):
+        tag_name = str(release.get("tag_name") or "")
+        release_name = f"{tag_name} {release.get('name', '')}".lower()
         if "patch" in release_name:
             continue
 
         for asset in _release_assets(release):
             asset_name = str(asset.get("name") or "")
-            low = asset_name.lower()
             if not _asset_name_looks_supported(asset_name):
                 continue
-            if "pythonbuild" in low and "patch" not in low:
-                return str(release.get("tag_name") or ""), asset_name
+            if classify_asset_name(asset_name, tag_name) == PYTHON_FULL_KIND:
+                return release, asset
     return None
 
 
-def _find_previous_unity_release(releases: Iterable[dict], channel: str = "stable") -> Optional[tuple[str, str]]:
-    for release in releases:
-        if channel == "stable" and bool(release.get("prerelease")):
-            continue
+def find_previous_unity_asset(
+    releases: Iterable[dict],
+    channel: str = "stable",
+    exclude_tags: Iterable[str] = (),
+) -> Optional[tuple[dict, dict]]:
+    for release in _iter_release_candidates(releases, channel=channel, exclude_tags=exclude_tags):
+        tag_name = str(release.get("tag_name") or "")
         for asset in _release_assets(release):
             asset_name = str(asset.get("name") or "")
-            low = asset_name.lower()
-            if _asset_name_looks_supported(asset_name) and "unitybuild" in low:
-                return str(release.get("tag_name") or ""), asset_name
+            if not _asset_name_looks_supported(asset_name):
+                continue
+            if classify_asset_name(asset_name, tag_name) == UNITY_KIND:
+                return release, asset
     return None
 
 
@@ -303,27 +332,29 @@ def explain_release_fallbacks(
     has_unity = any(classify_asset_name(name, result.tag) == UNITY_KIND for name in current_assets)
 
     if has_python_patch and not has_python_full:
-        previous_full = _find_previous_python_full_release(other_releases, channel=channel)
+        previous_full = find_previous_python_full_asset(other_releases, channel=channel)
         if previous_full is None:
             result.add_warning(
                 "Release contains only a Python patch asset and no older full Python release was found. "
                 "Fresh installs or patch fallback may fail."
             )
         else:
-            prev_tag, prev_asset = previous_full
+            prev_tag = str(previous_full[0].get("tag_name") or "")
+            prev_asset = str(previous_full[1].get("name") or "")
             result.add_info(
                 f"Python patch fallback is available via older full release {prev_tag} ({prev_asset})."
             )
 
     if not has_unity:
-        previous_unity = _find_previous_unity_release(other_releases, channel=channel)
+        previous_unity = find_previous_unity_asset(other_releases, channel=channel)
         if previous_unity is None:
             result.add_warning(
                 "Current release has no Unity asset and no older Unity release was found. "
                 "Launcher will have nothing to offer for Unity updates."
             )
         else:
-            prev_tag, prev_asset = previous_unity
+            prev_tag = str(previous_unity[0].get("tag_name") or "")
+            prev_asset = str(previous_unity[1].get("name") or "")
             result.add_info(
                 f"Unity updates remain available from older release {prev_tag} ({prev_asset})."
             )
