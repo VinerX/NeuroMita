@@ -113,8 +113,6 @@ class HomePage(LauncherHomeBackground):
         self._unity_update_check = None
         self._update_banner = None
         self._update_banner_label = None
-        self._update_button = None
-        self._tester_field = None
         self._update_info_py = None
         self._update_info_unity = None
         self._update_check_inflight = False
@@ -313,9 +311,9 @@ class HomePage(LauncherHomeBackground):
     def _build_update_banner(self) -> QFrame:
         """Тонкий баннер «доступно обновление». Скрыт, пока обнов нет.
 
-        Содержит текст с версиями, опциональное поле кода тестера (если код не
-        сохранён) и кнопку «Обновить выбранное» — ставит отмеченные на карточках
-        части (Python качается/применяется первым).
+        Только информация о версиях. Само обновление запускает центральная
+        кнопка (она же показывает, что нужен код тестера); выбор частей — на
+        чекбоксах карточек. Код тестера спрашивается всплывающим окном.
         """
         banner = QFrame()
         banner.setObjectName("LauncherHomeUpdateChip")
@@ -333,39 +331,10 @@ class HomePage(LauncherHomeBackground):
         self._update_banner_label.setObjectName("LauncherHomeUpdateText")
         self._update_banner_label.setWordWrap(True)
         layout.addWidget(self._update_banner_label, 1)
-
-        self._tester_field = QLineEdit()
-        self._tester_field.setObjectName("LauncherHomeUpdateField")
-        self._tester_field.setEchoMode(QLineEdit.EchoMode.Password)
-        self._tester_field.setPlaceholderText(_("🔒 код тестера", "🔒 tester code"))
-        self._tester_field.setFixedWidth(150)
-        self._tester_field.setVisible(False)
-        self._tester_field.setText(str(self.gui.settings.get("TESTER_CODE", "") or ""))
-        self._tester_field.editingFinished.connect(self._save_tester_field)
-        layout.addWidget(self._tester_field, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        self._update_button = QPushButton(_("Обновить выбранное", "Update selected"))
-        self._update_button.setObjectName("LauncherHomeUpdateButton")
-        self._update_button.clicked.connect(self.run_selective_update)
-        layout.addWidget(self._update_button, 0, Qt.AlignmentFlag.AlignVCenter)
         return banner
 
-    def _save_tester_field(self):
-        if self._tester_field is None:
-            return
-        code = self._tester_field.text().strip()
-        try:
-            self.gui._save_setting("TESTER_CODE", code)
-        except Exception:
-            logger.warning("[home_update] Failed to persist tester code", exc_info=True)
-
     def _effective_tester_code(self) -> str:
-        text = ""
-        if self._tester_field is not None:
-            text = self._tester_field.text().strip()
-        if not text:
-            text = str(self.gui.settings.get("TESTER_CODE", "") or "").strip()
-        return text
+        return str(self.gui.settings.get("TESTER_CODE", "") or "").strip()
 
     def _prompt_tester_code(self) -> str | None:
         """Запросить код тестера модалкой. None — пользователь отменил."""
@@ -390,8 +359,6 @@ class HomePage(LauncherHomeBackground):
             self.gui._save_setting("TESTER_CODE", code)
         except Exception:
             pass
-        if self._tester_field is not None:
-            self._tester_field.setText(code)
         return code
 
     def _refresh_update_state(self, force: bool = False):
@@ -449,6 +416,7 @@ class HomePage(LauncherHomeBackground):
         if not py_avail and not unity_avail:
             if self._update_banner is not None:
                 self._update_banner.setVisible(False)
+            self.refresh_primary_label()
             return
 
         parts = []
@@ -460,12 +428,11 @@ class HomePage(LauncherHomeBackground):
         if self._update_banner_label is not None:
             self._update_banner_label.setText(text)
 
-        # Поле кода показываем только когда код ещё не сохранён.
-        if self._tester_field is not None:
-            self._tester_field.setVisible(not self._effective_tester_code())
-
         if self._update_banner is not None:
             self._update_banner.setVisible(True)
+
+        # Центральная кнопка берёт роль «Обновить» — обновляем её подпись.
+        self.refresh_primary_label()
 
     def _build_home_status_card(self, icon_name: str, title_text: str, value_text: str, color: str) -> tuple[QFrame, QLabel, QCheckBox]:
         card = QFrame()
@@ -642,9 +609,30 @@ class HomePage(LauncherHomeBackground):
             pass
         return _("Установлен", "Installed")
 
+    def _has_py_update(self) -> bool:
+        return bool((self._update_info_py or {}).get("available"))
+
+    def _has_unity_update(self) -> bool:
+        return bool((self._update_info_unity or {}).get("available"))
+
+    def _has_any_update(self) -> bool:
+        return self._has_py_update() or self._has_unity_update()
+
+    def _lock_suffix(self) -> str:
+        # Подсказка про код тестера, когда действие потянет зашифрованный архив.
+        if not self._effective_tester_code():
+            return _(" (🔒 нужен код тестера)", " (🔒 tester code needed)")
+        return ""
+
     def _get_primary_action_label(self) -> str:
+        # Unity ещё нет — это «Установить», даже если по нему «доступна обнова»
+        # (фоновая проверка помечает неполную установку как available).
         if self.find_unity_executable() is None:
-            return _("↓ Установить", "↓ Install")
+            suffix = self._lock_suffix() if self._has_any_update() else ""
+            return _("↓ Установить", "↓ Install") + suffix
+        # Unity установлен и есть обнова — кнопка становится «Обновить».
+        if self._has_py_update() or self._has_unity_update():
+            return _("⟳ Обновить", "⟳ Update") + self._lock_suffix()
         return _("▶ Играть", "▶ Play")
 
     def _get_status_line(self, news_items: list[NewsItem]) -> str:
@@ -826,6 +814,12 @@ class HomePage(LauncherHomeBackground):
         threading.Thread(target=check_worker, daemon=True).start()
 
     def run_primary_action(self):
+        # Есть обнова → центральная кнопка обновляет (выбор частей — чекбоксы,
+        # код тестера спросит всплывающим окном).
+        if self._has_any_update():
+            self.run_selective_update()
+            return
+
         exe = self.find_unity_executable()
         if exe is None:
             self.run_install_unity()
@@ -1114,8 +1108,6 @@ class HomePage(LauncherHomeBackground):
         self._cancel_event = threading.Event()
         if self.primary_button is not None:
             self.primary_button.setEnabled(False)
-        if self._update_button is not None:
-            self._update_button.setEnabled(False)
         if self._cancel_button is not None:
             self._cancel_button.setEnabled(True)
             self._cancel_button.setVisible(True)
@@ -1242,8 +1234,6 @@ class HomePage(LauncherHomeBackground):
                         self._cancel_button.setEnabled(True)
                     if self.primary_button is not None:
                         self.primary_button.setEnabled(True)
-                    if self._update_button is not None:
-                        self._update_button.setEnabled(True)
                     self.refresh_status_cards()
                     # Перепроверим состояние обновлений (баннер/чекбоксы).
                     self._refresh_update_state(force=True)
