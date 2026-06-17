@@ -49,8 +49,10 @@ jobs:
           --exclude-tag "v${{ steps.ver.outputs.version }}"
           --target libs
         env:
+          BOOTSTRAP_TESTER_CODE: ${{ secrets.TESTER_CODE }}
           PYTHONUTF8: '1'
         # TEMPORARY: pin the baseline runtime to the known-small v2026.06.12_Full release.
+        # That legacy asset is password-protected, so CI must receive TESTER_CODE to unpack it.
         # Replace this with a dedicated canonical runtime asset/release after release testing.
 
       - name: Verify embedded Python runtime

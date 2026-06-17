@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 import tempfile
-import zipfile
 from pathlib import Path
 
 
@@ -20,6 +20,7 @@ from release_contract import (  # noqa: E402
     find_previous_python_full_asset,
     temp_download_path,
 )
+from utils.archive_utils import PasswordError, extract_archive  # noqa: E402
 
 
 def _configure_stdio() -> None:
@@ -56,24 +57,22 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Явный full-release tag для временного pinned baseline runtime.",
     )
+    parser.add_argument(
+        "--tester-code",
+        default=None,
+        help="Пароль для зашифрованных release-архивов. Если не задан, берётся из TESTER_CODE/BOOTSTRAP_TESTER_CODE.",
+    )
     return parser.parse_args()
 
 
-def _extract_archive(archive: Path, target: Path) -> None:
-    suffix = archive.suffix.lower()
-    if suffix == ".zip":
-        with zipfile.ZipFile(archive) as zf:
-            zf.extractall(target)
-        return
-    if suffix == ".7z":
-        try:
-            import py7zr  # type: ignore
-        except Exception as exc:
-            raise RuntimeError("py7zr is not installed; cannot extract .7z runtime archive") from exc
-        with py7zr.SevenZipFile(archive, mode="r") as zf:
-            zf.extractall(path=target)
-        return
-    raise ValueError(f"Unsupported archive type: {archive.suffix}")
+def _resolve_tester_code(cli_value: str | None) -> str | None:
+    if cli_value:
+        return cli_value
+    for env_name in ("BOOTSTRAP_TESTER_CODE", "TESTER_CODE"):
+        value = os.environ.get(env_name)
+        if value:
+            return value
+    return None
 
 
 def _collapse_single_root(root: Path) -> Path:
@@ -173,8 +172,17 @@ def main() -> int:
     print(f"Downloaded archive: {archive_path}")
 
     extract_root = Path(tempfile.mkdtemp(prefix="neuromita_runtime_bootstrap_"))
+    tester_code = _resolve_tester_code(args.tester_code)
     try:
-        _extract_archive(archive_path, extract_root)
+        try:
+            extract_archive(archive_path, extract_root, password=tester_code)
+        except PasswordError:
+            print(
+                "ERROR: Runtime baseline archive is encrypted, but no valid tester code was provided. "
+                "Pass --tester-code or set BOOTSTRAP_TESTER_CODE/TESTER_CODE in the environment."
+            )
+            return 1
+
         normalized_root = _collapse_single_root(extract_root)
         libs_dir = normalized_root / "libs"
         if not libs_dir.is_dir():
