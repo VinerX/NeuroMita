@@ -24,6 +24,10 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install release tooling
+        shell: bash
+        run: python -m pip install py7zr
+
       - name: Get version
         id: ver
         shell: bash
@@ -35,6 +39,22 @@ jobs:
           ")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
+
+      - name: Restore embedded Python runtime from previous full release
+        shell: bash
+        run: >
+          python scripts/bootstrap_release_runtime.py
+          --repo "${{ github.repository }}"
+          --exclude-tag "v${{ steps.ver.outputs.version }}"
+          --target libs
+
+      - name: Verify embedded Python runtime
+        shell: bash
+        run: |
+          test -f "libs/python/python.exe" || {
+            echo "Embedded runtime bootstrap failed: libs/python/python.exe is missing."
+            exit 1
+          }
 
       - name: Create build.env
         shell: python
