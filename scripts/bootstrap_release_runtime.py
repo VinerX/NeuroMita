@@ -14,6 +14,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from release_contract import (  # noqa: E402
+    classify_asset_name_loose,
     download_asset,
     fetch_releases,
     find_previous_python_full_asset,
@@ -110,11 +111,19 @@ def _find_release_by_tag(releases: list[dict], tag: str | None) -> dict | None:
 
 
 def _pick_full_python_asset(release: dict) -> dict | None:
+    archive_candidates: list[dict] = []
     for asset in list(release.get("assets") or []):
         name = str(asset.get("name") or "")
         low = name.lower()
-        if low.endswith((".zip", ".7z")) and "pythonbuild" in low and "patch" not in low:
+        if classify_asset_name_loose(name) == "python_full":
             return asset
+        if low.endswith((".zip", ".7z")) and "unity" not in low and "patch" not in low:
+            archive_candidates.append(asset)
+    if len(archive_candidates) == 1:
+        return archive_candidates[0]
+    if archive_candidates:
+        archive_candidates.sort(key=lambda item: int(item.get("size") or 0), reverse=True)
+        return archive_candidates[0]
     return None
 
 

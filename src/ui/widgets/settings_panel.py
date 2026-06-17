@@ -28,7 +28,7 @@ def _build_section_defaults() -> dict[str, bool]:
     for spec in get_settings_section_specs():
         if spec.key in ALWAYS_ON_SECTIONS:
             continue
-        defaults[spec.key] = spec.min_mode == "basic"
+        defaults[spec.key] = spec.min_mode == "basic" or spec.key == "updates"
     for key, value in _EXTRA_SECTION_DEFAULTS.items():
         defaults.setdefault(key, value)
     return defaults

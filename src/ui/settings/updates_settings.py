@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -356,6 +357,40 @@ def setup_updates_settings_controls(self, parent):
             logger.error("[updates_ui] Failed to launch Unity", exc_info=True)
             _set_status_level(f"{_('Ошибка запуска Unity', 'Unity launch error')}: {e}", "error")
 
+    def _ensure_tester_code() -> bool:
+        current = tester_entry.text().strip()
+        if current:
+            return True
+
+        code, ok = QInputDialog.getText(
+            btn_install,
+            _("Код тестера", "Tester code"),
+            _(
+                "Введите код тестера для установки релизных архивов.",
+                "Enter the tester code required to install release archives.",
+            ),
+            QLineEdit.EchoMode.Password,
+            "",
+        )
+        if not ok:
+            _set_status_level(
+                _("Установка отменена: код тестера не введён.", "Installation cancelled: tester code was not entered."),
+                "warning",
+            )
+            return False
+
+        code = str(code or "").strip()
+        if not code:
+            _set_status_level(
+                _("Установка отменена: код тестера пустой.", "Installation cancelled: tester code is empty."),
+                "warning",
+            )
+            return False
+
+        tester_entry.setText(code)
+        _save_tester()
+        return True
+
     # Current versions
     try:
         from _version import __version__ as py_ver
@@ -667,6 +702,8 @@ def setup_updates_settings_controls(self, parent):
     )
 
     def _confirm_and_install():
+        if not _ensure_tester_code():
+            return
         # Предупреждаем про перезапись промптов, если их сохранение выключено.
         keep_prompts = bool(self.settings.get("UPDATE_PRESERVE_PROMPTS", True))
         box = QMessageBox(btn_install)
