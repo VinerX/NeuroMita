@@ -39,15 +39,17 @@ class SystemController(BaseController):
             logger.info("FFmpeg found. No installation needed.")
             
     def _ffmpeg_install_thread_target(self):
-        if self.view:
-            QTimer.singleShot(0, self.view._show_ffmpeg_installing_popup)
+        # Окно «Идёт установка FFmpeg» временно отключено по просьбе —
+        # установка идёт тихо в фоне. Возврат окна: раскомментировать показ/закрытие.
+        # if self.view:
+        #     QTimer.singleShot(0, self.view._show_ffmpeg_installing_popup)
 
         logger.info("Starting FFmpeg installation attempt...")
         success = install_ffmpeg()
         logger.info(f"FFmpeg installation attempt finished. Success: {success}")
 
-        if self.view:
-            QTimer.singleShot(0, self.view._close_ffmpeg_installing_popup)
+        # if self.view:
+        #     QTimer.singleShot(0, self.view._close_ffmpeg_installing_popup)
 
         if not success and self.view:
             QTimer.singleShot(0, self.view._show_ffmpeg_error_popup)
