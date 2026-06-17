@@ -129,6 +129,17 @@ def classify_asset_name(name: str, tag: str) -> str:
     return "other"
 
 
+def classify_asset_name_loose(name: str) -> str:
+    lowered = str(name or "").lower()
+    if not _asset_name_looks_supported(name):
+        return "other"
+    if "pythonbuild" in lowered:
+        return PYTHON_PATCH_KIND if "patch" in lowered else PYTHON_FULL_KIND
+    if "unitybuild" in lowered:
+        return UNITY_KIND
+    return "other"
+
+
 def validate_release_assets(tag: str, asset_names: Iterable[str]) -> ReleaseValidationResult:
     result = ReleaseValidationResult(tag=tag)
     python_fulls: list[str] = []
@@ -297,9 +308,9 @@ def find_previous_python_full_asset(
 
         for asset in _release_assets(release):
             asset_name = str(asset.get("name") or "")
-            if not _asset_name_looks_supported(asset_name):
-                continue
-            if classify_asset_name(asset_name, tag_name) == PYTHON_FULL_KIND:
+            strict_kind = classify_asset_name(asset_name, tag_name)
+            loose_kind = classify_asset_name_loose(asset_name)
+            if strict_kind == PYTHON_FULL_KIND or loose_kind == PYTHON_FULL_KIND:
                 return release, asset
     return None
 
@@ -313,9 +324,9 @@ def find_previous_unity_asset(
         tag_name = str(release.get("tag_name") or "")
         for asset in _release_assets(release):
             asset_name = str(asset.get("name") or "")
-            if not _asset_name_looks_supported(asset_name):
-                continue
-            if classify_asset_name(asset_name, tag_name) == UNITY_KIND:
+            strict_kind = classify_asset_name(asset_name, tag_name)
+            loose_kind = classify_asset_name_loose(asset_name)
+            if strict_kind == UNITY_KIND or loose_kind == UNITY_KIND:
                 return release, asset
     return None
 

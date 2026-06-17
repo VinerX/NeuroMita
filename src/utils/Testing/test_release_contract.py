@@ -167,3 +167,31 @@ def test_find_previous_python_full_asset_prefers_latest_full_release():
     release, asset = found
     assert release["tag_name"] == "v1.2.2"
     assert asset["name"] == "PythonBuild-v1.2.2.zip"
+
+
+def test_find_previous_python_full_asset_accepts_legacy_full_tag_suffix():
+    releases = [
+        _raw_release(
+            "v2026.06.15",
+            "v2026.06.15",
+            ["PythonBuild-v2026.06.15-Patch.zip"],
+            published_at="2026-06-15T00:00:00Z",
+        ),
+        _raw_release(
+            "v2026.06.12_Full",
+            "v2026.06.12 Full",
+            ["PythonBuild-v2026.06.12.zip"],
+            published_at="2026-06-12T00:00:00Z",
+        ),
+    ]
+
+    found = release_contract.find_previous_python_full_asset(
+        releases,
+        channel="stable",
+        exclude_tags=["v2026.06.15"],
+    )
+
+    assert found is not None
+    release, asset = found
+    assert release["tag_name"] == "v2026.06.12_Full"
+    assert asset["name"] == "PythonBuild-v2026.06.12.zip"
