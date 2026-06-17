@@ -259,6 +259,25 @@ def _published_sort_key(release: dict) -> str:
     return str(release.get("published_at") or release.get("created_at") or "")
 
 
+def _release_field(release, key: str, default=None):
+    """Read a release field from either raw GitHub dict or utils.release_assets.Release."""
+    if release is None:
+        return default
+    if isinstance(release, dict):
+        return release.get(key, default)
+    attr_map = {
+        "tag_name": "tag",
+        "name": "name",
+        "prerelease": "prerelease",
+        "body": "body",
+        "published_at": "published_at",
+        "assets": "assets",
+        "html_url": "html_url",
+    }
+    attr_name = attr_map.get(key, key)
+    return getattr(release, attr_name, default)
+
+
 def _select_release(repo: str, channel: str) -> Optional[dict]:
     """Return newest release suitable for the given channel.
 
@@ -434,7 +453,7 @@ def get_python_update_info(
             "error": "Could not reach GitHub to check for updates",
         }
 
-    remote_tag = str(release.get("tag_name", "") or "")
+    remote_tag = str(_release_field(release, "tag_name", "") or "")
     available = bool(remote_tag) and _is_newer(remote_tag, local_version)
     return {
         "ok": True,
@@ -444,11 +463,11 @@ def get_python_update_info(
         "current_version": local_version,
         "latest_version": remote_tag,
         "available": available,
-        "prerelease": bool(release.get("prerelease", False)),
-        "name": str(release.get("name", "") or ""),
-        "body": str(release.get("body", "") or ""),
-        "published_at": str(release.get("published_at", "") or ""),
-        "html_url": str(release.get("html_url", "") or ""),
+        "prerelease": bool(_release_field(release, "prerelease", False)),
+        "name": str(_release_field(release, "name", "") or ""),
+        "body": str(_release_field(release, "body", "") or ""),
+        "published_at": str(_release_field(release, "published_at", "") or ""),
+        "html_url": str(_release_field(release, "html_url", "") or ""),
     }
 
 
@@ -482,7 +501,7 @@ def get_unity_update_info(
             "error": "Could not find a Unity release asset to check for updates",
         }
 
-    remote_tag = str(release.get("tag_name", "") or "")
+    remote_tag = str(_release_field(release, "tag_name", "") or "")
     available = bool(remote_tag) and (_is_newer(remote_tag, local_version) or not install_complete)
     return {
         "ok": True,
@@ -493,11 +512,11 @@ def get_unity_update_info(
         "latest_version": remote_tag,
         "available": available,
         "install_complete": install_complete,
-        "prerelease": bool(release.get("prerelease", False)),
-        "name": str(release.get("name", "") or ""),
-        "body": str(release.get("body", "") or ""),
-        "published_at": str(release.get("published_at", "") or ""),
-        "html_url": str(release.get("html_url", "") or ""),
+        "prerelease": bool(_release_field(release, "prerelease", False)),
+        "name": str(_release_field(release, "name", "") or ""),
+        "body": str(_release_field(release, "body", "") or ""),
+        "published_at": str(_release_field(release, "published_at", "") or ""),
+        "html_url": str(_release_field(release, "html_url", "") or ""),
         "asset_name": getattr(unity_asset, "name", "") if unity_asset is not None else "",
     }
 
@@ -554,7 +573,7 @@ def check_for_updates(
         log("Could not reach GitHub to check for updates", "warning")
         return
 
-    remote_tag = release.get("tag_name", "")
+    remote_tag = _release_field(release, "tag_name", "")
     if not remote_tag:
         return
 
@@ -582,7 +601,11 @@ def check_for_updates(
 
     if python_asset is None:
         # Plain fallback: first .zip in assets
-        raw = next((a for a in release.get("assets", []) if a.get("name", "").endswith(".zip")), None)
+        raw_assets = _release_field(release, "assets", []) or []
+        raw = next(
+            (a for a in raw_assets if isinstance(a, dict) and a.get("name", "").endswith(".zip")),
+            None,
+        )
         if raw is None:
             log("No suitable Python asset found in release", "warning")
             return
@@ -726,7 +749,7 @@ def check_for_unity_updates(
         log("Could not find a Unity release asset to check for updates", "warning")
         return
 
-    remote_tag = release.get("tag_name", "")
+    remote_tag = _release_field(release, "tag_name", "")
     if not remote_tag:
         return
 
@@ -756,9 +779,12 @@ def check_for_unity_updates(
             unity_name = picked.unity.name
         else:
             raw = next(
-                (a for a in release.get("assets", [])
-                 if "unity" in a.get("name", "").lower()
-                 and a.get("name", "").lower().endswith((".zip", ".7z"))),
+                (
+                    a for a in (_release_field(release, "assets", []) or [])
+                    if isinstance(a, dict)
+                    and "unity" in a.get("name", "").lower()
+                    and a.get("name", "").lower().endswith((".zip", ".7z"))
+                ),
                 None,
             )
             if raw is None:
