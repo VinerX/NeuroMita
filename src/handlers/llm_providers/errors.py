@@ -64,8 +64,32 @@ def _extract_provider_message(payload: Any) -> str:
     return _compact_text(payload)
 
 
+def _looks_like_unsupported_thinking_error(status_code: Optional[int], provider_message: str) -> bool:
+    if status_code != 422:
+        return False
+
+    low = (provider_message or "").lower()
+    return (
+        "thinking" in low
+        and (
+            "extra_forbidden" in low
+            or "extra inputs are not permitted" in low
+            or "not permitted" in low
+        )
+    )
+
+
 def _friendly_message(status_code: Optional[int], provider_message: str) -> tuple[str, str]:
     low = (provider_message or "").lower()
+
+    if _looks_like_unsupported_thinking_error(status_code, provider_message):
+        return (
+            _(
+                "Провайдер не поддерживает параметр thinking. Отключите режим мышления для этого пресета.",
+                "This provider does not support the thinking parameter. Disable thinking mode for this preset.",
+            ),
+            _("Unsupported thinking parameter.", "Unsupported thinking parameter."),
+        )
 
     if status_code == 400:
         return (
