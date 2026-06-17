@@ -49,7 +49,9 @@ jobs:
           --exclude-tag "v${{ steps.ver.outputs.version }}"
           --target libs
         env:
-          BOOTSTRAP_TESTER_CODE: ${{ secrets.TESTER_CODE }}
+          # TEMPORARY TEST-ONLY HARDCODE: move this value into repo secret TESTER_CODE
+          # as soon as repository settings access is available again.
+          BOOTSTRAP_TESTER_CODE: '23'
           PYTHONUTF8: '1'
         # TEMPORARY: pin the baseline runtime to the known-small v2026.06.12_Full release.
         # That legacy asset is password-protected, so CI must receive TESTER_CODE to unpack it.
