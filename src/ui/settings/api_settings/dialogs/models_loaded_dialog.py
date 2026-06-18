@@ -103,7 +103,7 @@ class ModelsLoadedDialog(QDialog):
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for idx in range(1, len(self._COLUMN_HEADERS)):
+        for idx in range(1, len(self._base_headers())):
             header.setSectionResizeMode(idx, QHeaderView.ResizeMode.ResizeToContents)
 
         lay.addWidget(self.table, 1)
