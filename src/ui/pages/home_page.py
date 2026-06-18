@@ -536,6 +536,7 @@ class HomePage(LauncherHomeBackground):
         summary.setObjectName("LauncherHomeNewsItemBody")
         summary.setWordWrap(False)
         summary.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        summary.setToolTip(str(item.full_text or item.summary or ""))
         text_column.addWidget(summary)
         layout.addLayout(text_column, 1)
 

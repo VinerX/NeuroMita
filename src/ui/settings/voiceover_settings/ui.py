@@ -28,7 +28,7 @@ def build_voiceover_settings_ui(self, parent_layout):
          'default_checkbutton': False, 'widget_name': 'use_voice_checkbox'},
         {'label': _("Вариант озвучки", "Voiceover Method"),
          'key': 'VOICEOVER_METHOD', 'type': 'combobox',
-         'options': ["TG", "Local"], 'default': 'TG',
+         'options': ["TG", "Local"], 'default': 'Local',
          'widget_name': 'method_combobox'},
     ]
 

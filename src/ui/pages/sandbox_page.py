@@ -165,7 +165,9 @@ class _SandboxStatusRow(QWidget):
         self._apply_dot()
 
     def set_value(self, text: str):
-        self._value.setText(text or "—")
+        value = text or "—"
+        self._value.setText(value)
+        self._value.setToolTip(value)
 
     # ----- dot rendering -----
     def _resolve_state(self) -> str:
@@ -337,13 +339,13 @@ class SandboxPage(QWidget):
 
         if self._voice_status_row is not None:
             use_voice = bool(get("USE_VOICEOVER", False))
-            method = str(get("VOICEOVER_METHOD", "TG") or "TG")
+            method = str(get("VOICEOVER_METHOD", "Local") or "Local")
             self._voice_status_row.set_enabled_state(use_voice)
             if not use_voice:
                 voice_val = _("Выключено", "Off")
             elif method.lower() == "local":
-                model_id = str(get("LOCAL_VOICE_MODEL_ID", "") or "").strip()
-                voice_val = _("Локально", "Local") + (f": {self._local_voice_name(model_id)}" if model_id else "")
+                model_id = str(get("NM_CURRENT_VOICEOVER", "") or get("LOCAL_VOICE_MODEL_ID", "") or "").strip()
+                voice_val = self._format_local_voice_value(model_id)
             else:
                 voice_val = "Telegram"
             self._voice_status_row.set_value(voice_val)
@@ -370,6 +372,19 @@ class SandboxPage(QWidget):
         except Exception:
             pass
         return model_id
+
+    @staticmethod
+    def _shorten_text(text: str, limit: int = 34) -> str:
+        clean = str(text or "").strip()
+        if len(clean) <= limit:
+            return clean
+        return clean[: max(0, limit - 3)].rstrip() + "..."
+
+    def _format_local_voice_value(self, model_id: str) -> str:
+        base = _("Локально", "Local")
+        if not model_id:
+            return base
+        return f"{base}: {self._shorten_text(self._local_voice_name(model_id))}"
 
     # --------- Avatar -----------
     def _resolve_avatar_pixmap(self, character_id: str, size: int = 32) -> QPixmap:
@@ -787,7 +802,7 @@ class SandboxPage(QWidget):
         if "model" in self._debug_summary_values:
             safe("model", lambda: self._current_preset_name() or "—")
         if "voice" in self._debug_summary_values:
-            safe("voice", lambda: str(get("VOICEOVER_METHOD", "TG")))
+            safe("voice", lambda: str(get("VOICEOVER_METHOD", "Local")))
         if "asr" in self._debug_summary_values:
             safe("asr", lambda: str(get("RECOGNIZER_TYPE", "") or "—"))
         if "rag" in self._debug_summary_values:

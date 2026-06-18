@@ -55,6 +55,7 @@ class NewsItem:
     summary: str
     tag: str = "Update"
     timestamp: str = ""
+    full_text: str = ""
     action: DashboardAction | None = None
 
 
@@ -302,10 +303,37 @@ def _create_news_card(item: NewsItem) -> QFrame:
     summary.setWordWrap(True)
     layout.addWidget(summary)
 
-    if item.action is not None:
+    details = None
+    toggle_btn = None
+    full_text = str(item.full_text or "").strip()
+    if full_text and full_text != str(item.summary or "").strip():
+        details = QLabel(full_text)
+        details.setObjectName("LauncherShellBody")
+        details.setWordWrap(True)
+        details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        details.setVisible(False)
+        layout.addWidget(details)
+
+        toggle_btn = QPushButton(_("Развернуть", "Expand"))
+        toggle_btn.setObjectName("LauncherShellGhostButton")
+        toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        toggle_btn.setIcon(qta.icon("fa6s.angle-down", color="#ffd2ec"))
+
+        def _toggle_details(_checked=False, label=details, button=toggle_btn):
+            expanded = not label.isVisible()
+            label.setVisible(expanded)
+            button.setText(_("Свернуть", "Collapse") if expanded else _("Развернуть", "Expand"))
+            button.setIcon(qta.icon("fa6s.angle-up" if expanded else "fa6s.angle-down", color="#ffd2ec"))
+
+        toggle_btn.clicked.connect(_toggle_details)
+
+    if item.action is not None or toggle_btn is not None:
         row = QHBoxLayout()
         row.setContentsMargins(0, 2, 0, 0)
-        row.addWidget(_create_action_button(item.action))
+        if toggle_btn is not None:
+            row.addWidget(toggle_btn)
+        if item.action is not None:
+            row.addWidget(_create_action_button(item.action))
         row.addStretch(1)
         layout.addLayout(row)
 

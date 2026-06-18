@@ -372,8 +372,8 @@ class VoiceoverGuiController(BaseController):
         w = getattr(self.view, "method_combobox", None)
         if w is not None and hasattr(w, "currentText"):
             t = str(w.currentText() or "").strip()
-            return t or "TG"
-        return str(self._get_setting("VOICEOVER_METHOD", "TG") or "TG")
+            return t or "Local"
+        return str(self._get_setting("VOICEOVER_METHOD", "Local") or "Local")
 
     def _apply_voiceover_visibility_from_widgets(self):
         use_voice = self._effective_use_voice()

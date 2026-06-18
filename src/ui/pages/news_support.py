@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from PyQt6.QtCore import QUrl
@@ -11,6 +12,15 @@ from utils import _
 
 
 NEWS_REPO = "Atm4x/NeuroMita"
+
+
+_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_AUTOLINK_RE = re.compile(r"<(https?://[^>]+)>")
+_FENCE_RE = re.compile(r"^```")
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s*")
+_BULLET_RE = re.compile(r"^\s*[-*+]\s+")
+_ORDERED_RE = re.compile(r"^\s*(\d+)\.\s+")
+_MD_DECORATION_RE = re.compile(r"[*_~`>#]")
 
 
 def invalidate_news_releases(gui) -> None:
@@ -56,6 +66,63 @@ def get_news_content(gui) -> str:
         if body:
             chunks.append(body)
     return "\n".join(chunks)
+
+
+def _clean_release_line(raw_line: str) -> str:
+    line = str(raw_line or "").strip()
+    if not line:
+        return ""
+    if _FENCE_RE.match(line):
+        return ""
+    line = _HEADING_RE.sub("", line)
+    line = _BULLET_RE.sub("- ", line)
+    line = _ORDERED_RE.sub(r"\1. ", line)
+    line = _LINK_RE.sub(r"\1", line)
+    line = _AUTOLINK_RE.sub(r"\1", line)
+    line = _MD_DECORATION_RE.sub("", line)
+    line = re.sub(r"\s+", " ", line).strip()
+    return line
+
+
+def normalize_release_body(body: str) -> str:
+    lines: list[str] = []
+    last_blank = False
+    for raw_line in str(body or "").splitlines():
+        if not raw_line.strip():
+            if lines and not last_blank:
+                lines.append("")
+                last_blank = True
+            continue
+        line = _clean_release_line(raw_line)
+        if not line:
+            continue
+        lines.append(line)
+        last_blank = False
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
+def build_release_summary(body: str, *, limit: int = 280) -> str:
+    normalized = normalize_release_body(body)
+    if not normalized:
+        return _("Без описания.", "No description.")
+
+    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    preferred: list[str] = []
+    fallback: list[str] = []
+    for line in lines:
+        lower = line.lower()
+        if lower.startswith("установка:") or lower.startswith("installation:"):
+            fallback.append(line)
+            continue
+        if lower.startswith("изменения") or lower.startswith("changes"):
+            continue
+        preferred.append(line)
+
+    candidate_lines = preferred or fallback or lines
+    text = " ".join(candidate_lines[:3]).strip()
+    return text[:limit]
 
 
 def parse_news_items(raw_text: str) -> list[NewsItem]:
@@ -143,8 +210,8 @@ def build_release_news_items(gui, *, limit: int | None = 8) -> list[NewsItem]:
         tag_name = str(release.get("tag_name") or "")
         name = str(release.get("name") or "").strip() or tag_name or _("Релиз", "Release")
         body = str(release.get("body") or "").strip()
-        summary_lines = [line.strip("-* ").strip() for line in body.splitlines() if line.strip()]
-        summary = " ".join(summary_lines)[:280] if summary_lines else _("Без описания.", "No description.")
+        summary = build_release_summary(body, limit=280)
+        full_text = normalize_release_body(body)
         published = str(release.get("published_at") or "")[:10]
         tag = "PRE-RELEASE" if release.get("prerelease") else "RELEASE"
         url = str(release.get("html_url") or repo_url)
@@ -154,6 +221,7 @@ def build_release_news_items(gui, *, limit: int | None = 8) -> list[NewsItem]:
                 summary,
                 tag=tag,
                 timestamp=published,
+                full_text=full_text,
                 action=DashboardAction(
                     _("Открыть релиз", "Open release"),
                     callback=lambda _checked=False, target_url=url: QDesktopServices.openUrl(QUrl(target_url)),

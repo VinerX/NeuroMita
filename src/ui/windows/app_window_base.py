@@ -1264,7 +1264,7 @@ class AppWindowBase(QMainWindow):
         rag_enabled = SettingsManager.get("RAG_ENABLED", False)
 
         use_voice = bool(SettingsManager.get("USE_VOICEOVER", False))
-        method = str(SettingsManager.get("VOICEOVER_METHOD", "TG") or "TG")
+        method = str(SettingsManager.get("VOICEOVER_METHOD", "Local") or "Local")
 
         registry = getattr(self, "_status_indicator_registry", {})
 
@@ -1491,7 +1491,7 @@ class AppWindowBase(QMainWindow):
 
     def _update_voice_settings_icon_indicator(self) -> None:
         use_voice = bool(self._get_setting("USE_VOICEOVER", False))
-        method = self._get_setting("VOICEOVER_METHOD", "TG")
+        method = self._get_setting("VOICEOVER_METHOD", "Local")
 
         if not use_voice or method != "Local":
             self.set_settings_icon_indicator("voice", None, None)

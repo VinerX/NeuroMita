@@ -23,7 +23,7 @@ class AudioController:
         self.settings = main_controller.settings
         self.event_bus = get_event_bus()
 
-        self.voiceover_method = self.settings.get("VOICEOVER_METHOD", "TG")
+        self.voiceover_method = self.settings.get("VOICEOVER_METHOD", "Local")
         self.current_local_voice_id = self.settings.get("NM_CURRENT_VOICEOVER", None)
         self.last_voice_model_selected = None
         if self.current_local_voice_id:
@@ -98,7 +98,7 @@ class AudioController:
             return
 
         self.waiting_answer = True
-        self.voiceover_method = self.settings.get("VOICEOVER_METHOD", "TG")
+        self.voiceover_method = self.settings.get("VOICEOVER_METHOD", "Local")
 
         try:
             if self.voiceover_method == "TG":
