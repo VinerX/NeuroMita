@@ -64,6 +64,30 @@ def _extract_provider_message(payload: Any) -> str:
     return _compact_text(payload)
 
 
+def _should_surface_provider_message(friendly_message: str, provider_message: str) -> bool:
+    detail = _compact_text(provider_message)
+    friendly = _compact_text(friendly_message)
+    if not detail:
+        return False
+
+    low = detail.lower()
+    if low in {friendly.lower(), "bad request from provider.", "unauthorized request.", "access forbidden.", "endpoint not found."}:
+        return False
+    if len(detail) > 180:
+        return False
+    if any(marker in detail for marker in ("Traceback", "provider=", "retryable=", "url=", "\n")):
+        return False
+    if detail.startswith("{") or detail.startswith("["):
+        return False
+    if detail.count(":") > 4:
+        return False
+    if "error during generation attempt" in low or "json parse error" in low:
+        return False
+    if friendly and low in friendly.lower():
+        return False
+    return True
+
+
 def _looks_like_unsupported_thinking_error(status_code: Optional[int], provider_message: str) -> bool:
     if status_code != 422:
         return False
@@ -190,8 +214,14 @@ class LLMProviderError(RuntimeError):
         super().__init__(self.friendly_message)
 
     def to_user_message(self) -> str:
-        if self.status_code is not None:
-            return self.friendly_message
+        if _should_surface_provider_message(self.friendly_message, self.provider_message):
+            return _(
+                "{friendly} Причина: {detail}",
+                "{friendly} Reason: {detail}",
+            ).format(
+                friendly=self.friendly_message,
+                detail=_compact_text(self.provider_message),
+            )
         return self.friendly_message
 
     def to_console_summary(self) -> str:

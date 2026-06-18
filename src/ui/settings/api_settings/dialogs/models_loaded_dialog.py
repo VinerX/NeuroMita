@@ -142,6 +142,7 @@ class ModelsLoadedDialog(QDialog):
                 "id": model_id,
                 "name": str(info.get("name") or model_id).strip(),
                 "canonical_slug": info.get("canonical_slug"),
+                "currency": str(info.get("currency") or "").strip().upper(),
                 "context_length": info.get("context_length") or info.get("top_provider_context_length"),
                 "max_completion_tokens": info.get("max_completion_tokens"),
                 "is_free": bool(info.get("is_free")),
@@ -174,7 +175,7 @@ class ModelsLoadedDialog(QDialog):
             return None
 
     @classmethod
-    def _format_price_per_million(cls, value: Any) -> str:
+    def _format_price_per_million(cls, value: Any, currency: str = "USD") -> str:
         numeric = cls._parse_float(value)
         if numeric is None:
             return "-"
@@ -188,7 +189,9 @@ class ModelsLoadedDialog(QDialog):
             text = f"{per_million:.4f}"
         else:
             text = f"{per_million:.6f}"
-        return f"${text.rstrip('0').rstrip('.')}"
+        formatted = text.rstrip('0').rstrip('.')
+        symbol = "₽" if str(currency or "").upper() == "RUB" else "$"
+        return f"{symbol}{formatted}"
 
     @staticmethod
     def _format_integer(value: Any) -> str:
@@ -293,6 +296,22 @@ class ModelsLoadedDialog(QDialog):
             return False
         return bool(self._resolve_rate_limit_keys(visible))
 
+    def _price_headers(self, visible: List[dict]) -> list[str]:
+        currency = ""
+        for info in visible:
+            pricing = info.get("pricing") if isinstance(info.get("pricing"), dict) else {}
+            if pricing:
+                currency = str(info.get("currency") or "").strip().upper()
+                if currency:
+                    break
+        symbol = "₽" if currency == "RUB" else "$"
+        return [
+            _("Input {symbol}/1M", "Input {symbol}/1M").format(symbol=symbol),
+            _("Output {symbol}/1M", "Output {symbol}/1M").format(symbol=symbol),
+            _("Cache read {symbol}/1M", "Cache read {symbol}/1M").format(symbol=symbol),
+            _("Cache write {symbol}/1M", "Cache write {symbol}/1M").format(symbol=symbol),
+        ]
+
     def _apply_headers(self, visible: List[dict]) -> None:
         if self._use_rate_limit_columns(visible):
             self._active_rate_limit_keys = self._resolve_rate_limit_keys(visible)
@@ -302,7 +321,7 @@ class ModelsLoadedDialog(QDialog):
             headers = [*self._BASE_COLUMN_HEADERS, *rate_headers[:4], *self._TAIL_COLUMN_HEADERS]
         else:
             self._active_rate_limit_keys = []
-            headers = self._base_headers()
+            headers = [*self._BASE_COLUMN_HEADERS, *self._price_headers(visible), *self._TAIL_COLUMN_HEADERS]
 
         if self.table.columnCount() != len(headers):
             self.table.setColumnCount(len(headers))
@@ -348,6 +367,7 @@ class ModelsLoadedDialog(QDialog):
             tooltip = display_name if display_name and display_name != model_id else None
             pricing = info.get("pricing") if isinstance(info.get("pricing"), dict) else {}
             rate_limits = info.get("rate_limits") if isinstance(info.get("rate_limits"), dict) else {}
+            currency = str(info.get("currency") or "").strip().upper()
             if self._has_free_models:
                 type_text = _("Free", "Free") if bool(info.get("is_free")) else _("Paid", "Paid")
                 type_sort = 0 if bool(info.get("is_free")) else 1
@@ -370,10 +390,10 @@ class ModelsLoadedDialog(QDialog):
                         sort_value=self._sortable_rate_limit_value(value),
                     )
             else:
-                self._set_cell(row, 3, self._format_price_per_million(pricing.get("prompt")), sort_value=self._parse_float(pricing.get("prompt")))
-                self._set_cell(row, 4, self._format_price_per_million(pricing.get("completion")), sort_value=self._parse_float(pricing.get("completion")))
-                self._set_cell(row, 5, self._format_price_per_million(pricing.get("input_cache_read")), sort_value=self._parse_float(pricing.get("input_cache_read")))
-                self._set_cell(row, 6, self._format_price_per_million(pricing.get("input_cache_write")), sort_value=self._parse_float(pricing.get("input_cache_write")))
+                self._set_cell(row, 3, self._format_price_per_million(pricing.get("prompt"), currency), sort_value=self._parse_float(pricing.get("prompt")))
+                self._set_cell(row, 4, self._format_price_per_million(pricing.get("completion"), currency), sort_value=self._parse_float(pricing.get("completion")))
+                self._set_cell(row, 5, self._format_price_per_million(pricing.get("input_cache_read"), currency), sort_value=self._parse_float(pricing.get("input_cache_read")))
+                self._set_cell(row, 6, self._format_price_per_million(pricing.get("input_cache_write"), currency), sort_value=self._parse_float(pricing.get("input_cache_write")))
             self._set_cell(row, 7, self._format_metric(info.get("latency")), sort_value=self._parse_float(info.get("latency")))
             self._set_cell(row, 8, self._format_metric(info.get("tokens_per_second")), sort_value=self._parse_float(info.get("tokens_per_second")))
 

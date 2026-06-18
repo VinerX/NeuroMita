@@ -943,19 +943,89 @@ class ApiPresetsController:
                 normalized[key_text] = value
         return normalized
 
+    @staticmethod
+    def _normalize_pricing(raw_value: Any) -> Dict[str, Any]:
+        if not isinstance(raw_value, dict):
+            return {}
+
+        normalized: Dict[str, Any] = {}
+        for key, value in raw_value.items():
+            key_text = str(key or "").strip()
+            if not key_text:
+                continue
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                normalized[key_text] = value
+        return normalized
+
+    @classmethod
+    def _extract_compat_pricing(cls, raw_entry: dict, top_provider: dict) -> Dict[str, Any]:
+        pricing = cls._normalize_pricing(raw_entry.get("pricing"))
+        if pricing:
+            return pricing
+
+        alias_map = {
+            "prompt": ("prompt", "input", "input_price", "input_cost", "prompt_price", "prompt_cost"),
+            "completion": ("completion", "output", "output_price", "output_cost", "completion_price", "completion_cost"),
+            "request": ("request", "request_price", "request_cost"),
+            "internal_reasoning": ("internal_reasoning", "reasoning", "reasoning_price", "reasoning_cost"),
+            "input_cache_read": ("input_cache_read", "cache_read", "cache_read_price", "cache_read_cost"),
+            "input_cache_write": ("input_cache_write", "cache_write", "cache_write_price", "cache_write_cost"),
+        }
+
+        extracted: Dict[str, Any] = {}
+        for target_key, aliases in alias_map.items():
+            for source in (raw_entry, top_provider):
+                if not isinstance(source, dict):
+                    continue
+                for alias in aliases:
+                    if alias in source and source.get(alias) not in (None, ""):
+                        extracted[target_key] = source.get(alias)
+                        break
+                if target_key in extracted:
+                    break
+        return extracted
+
+    @classmethod
+    def _extract_compat_rate_limits(cls, raw_entry: dict, top_provider: dict) -> Dict[str, Any]:
+        rate_limits = cls._normalize_rate_limits(raw_entry.get("per_request_limits"))
+        if not rate_limits:
+            rate_limits = cls._normalize_rate_limits(raw_entry.get("rate_limits"))
+        if not rate_limits and isinstance(top_provider, dict):
+            rate_limits = cls._normalize_rate_limits(top_provider.get("per_request_limits"))
+        if not rate_limits and isinstance(top_provider, dict):
+            rate_limits = cls._normalize_rate_limits(top_provider.get("rate_limits"))
+        if rate_limits:
+            return rate_limits
+
+        alias_map = {
+            "requests_per_minute": ("requests_per_minute", "rpm"),
+            "requests_per_day": ("requests_per_day", "rpd"),
+            "tokens_per_minute": ("tokens_per_minute", "tpm"),
+            "tokens_per_day": ("tokens_per_day", "tpd"),
+            "images_per_minute": ("images_per_minute", "ipm"),
+            "images_per_day": ("images_per_day", "ipd"),
+        }
+
+        extracted: Dict[str, Any] = {}
+        for target_key, aliases in alias_map.items():
+            for source in (raw_entry, top_provider):
+                if not isinstance(source, dict):
+                    continue
+                for alias in aliases:
+                    if alias in source and source.get(alias) not in (None, ""):
+                        extracted[target_key] = source.get(alias)
+                        break
+                if target_key in extracted:
+                    break
+        return extracted
+
     def _normalize_test_model_entry(self, raw_entry: Any) -> Optional[Dict[str, Any]]:
         if isinstance(raw_entry, dict):
             model_id = self._normalize_test_model_id(raw_entry.get("id") or raw_entry.get("name"))
             display_name = str(raw_entry.get("name") or model_id).strip()
-            pricing = raw_entry.get("pricing") if isinstance(raw_entry.get("pricing"), dict) else {}
             top_provider = raw_entry.get("top_provider") if isinstance(raw_entry.get("top_provider"), dict) else {}
-            rate_limits = self._normalize_rate_limits(raw_entry.get("per_request_limits"))
-            if not rate_limits:
-                rate_limits = self._normalize_rate_limits(raw_entry.get("rate_limits"))
-            if not rate_limits and isinstance(top_provider, dict):
-                rate_limits = self._normalize_rate_limits(top_provider.get("per_request_limits"))
-            if not rate_limits and isinstance(top_provider, dict):
-                rate_limits = self._normalize_rate_limits(top_provider.get("rate_limits"))
+            pricing = self._extract_compat_pricing(raw_entry, top_provider)
+            rate_limits = self._extract_compat_rate_limits(raw_entry, top_provider)
 
             if not model_id:
                 return None
@@ -964,6 +1034,7 @@ class ApiPresetsController:
                 "id": model_id,
                 "name": display_name or model_id,
                 "canonical_slug": raw_entry.get("canonical_slug"),
+                "currency": str(raw_entry.get("currency") or top_provider.get("currency") or ""),
                 "context_length": raw_entry.get("context_length") or top_provider.get("context_length"),
                 "top_provider_context_length": raw_entry.get("top_provider_context_length") or top_provider.get("context_length"),
                 "max_completion_tokens": raw_entry.get("max_completion_tokens") or top_provider.get("max_completion_tokens"),
@@ -983,6 +1054,7 @@ class ApiPresetsController:
             "id": model_id,
             "name": model_id,
             "canonical_slug": None,
+            "currency": "",
             "context_length": None,
             "top_provider_context_length": None,
             "max_completion_tokens": None,
@@ -1073,6 +1145,10 @@ class ApiPresetsController:
 
                     model_infos = self._extract_test_models(data)
                     if model_infos:
+                        if "proxyapi.ru" in final_url.lower():
+                            for info in model_infos:
+                                if isinstance(info, dict) and not str(info.get("currency") or "").strip():
+                                    info["currency"] = "RUB"
                         models = [str(m.get("id") or "").strip() for m in model_infos if str(m.get("id") or "").strip()]
                         success = True
                         message = f"Found {len(models)} models"

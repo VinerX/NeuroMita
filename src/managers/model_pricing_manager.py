@@ -132,6 +132,8 @@ class ModelPricingManager:
             try:
                 if protocol_id == "openrouter_default":
                     info = self._fetch_openrouter_model_info(preset)
+                elif protocol_id == "openai_compatible_default":
+                    info = self._fetch_openai_compatible_model_info(preset)
             except Exception as e:
                 logger.debug(f"[ModelPricingManager] metadata fetch failed for {protocol_id}/{model}: {e}")
             finally:
@@ -155,22 +157,63 @@ class ModelPricingManager:
             logger.debug(f"[ModelPricingManager] OpenRouter models HTTP {resp.status_code}")
             return None
 
-        data = resp.json()
-        models = data.get("data") if isinstance(data, dict) else None
+        return self._extract_pricing_info_from_models_payload(
+            resp.json(),
+            wanted_model=str(preset.api_model or ""),
+            api_url=str(preset.api_url or ""),
+            source="openrouter_models_api",
+        )
+
+    def _fetch_openai_compatible_model_info(self, preset: PresetSettings) -> Optional[ModelPricingInfo]:
+        models_url = self._build_models_url(preset.api_url)
+        if not models_url:
+            return None
+
+        headers = dict(getattr(preset, "headers", {}) or {})
+        if preset.api_key and "Authorization" not in headers:
+            headers["Authorization"] = f"Bearer {preset.api_key}"
+
+        resp = requests.get(models_url, headers=headers, timeout=3)
+        if resp.status_code != 200:
+            logger.debug(f"[ModelPricingManager] generic models HTTP {resp.status_code} for {models_url}")
+            return None
+
+        return self._extract_pricing_info_from_models_payload(
+            resp.json(),
+            wanted_model=str(preset.api_model or ""),
+            api_url=str(preset.api_url or ""),
+            source="openai_compatible_models_api",
+        )
+
+    def _extract_pricing_info_from_models_payload(
+        self,
+        payload: Any,
+        *,
+        wanted_model: str,
+        api_url: str = "",
+        source: str,
+    ) -> Optional[ModelPricingInfo]:
+        models = None
+        if isinstance(payload, dict):
+            if isinstance(payload.get("data"), list):
+                models = payload.get("data")
+            elif isinstance(payload.get("models"), list):
+                models = payload.get("models")
         if not isinstance(models, list):
             return None
 
-        wanted = str(preset.api_model or "")
-        entry = next((m for m in models if isinstance(m, dict) and str(m.get("id") or "") == wanted), None)
+        entry = next((m for m in models if isinstance(m, dict) and str(m.get("id") or "") == wanted_model), None)
         if not isinstance(entry, dict):
             return None
 
-        pricing = entry.get("pricing") if isinstance(entry.get("pricing"), dict) else {}
         top_provider = entry.get("top_provider") if isinstance(entry.get("top_provider"), dict) else {}
+        pricing = entry.get("pricing") if isinstance(entry.get("pricing"), dict) else {}
+        if not pricing:
+            pricing = self._build_flat_pricing(entry, top_provider)
 
         return ModelPricingInfo(
-            model=wanted,
-            currency="USD",
+            model=wanted_model,
+            currency=self._resolve_currency(entry, api_url),
             context_length=int(entry.get("context_length")) if entry.get("context_length") not in (None, "") else None,
             max_completion_tokens=int(top_provider.get("max_completion_tokens")) if top_provider.get("max_completion_tokens") not in (None, "") else None,
             prompt_cost_per_token=_to_float(pricing.get("prompt")),
@@ -179,14 +222,54 @@ class ModelPricingManager:
             internal_reasoning_cost_per_token=_to_float(pricing.get("internal_reasoning")),
             cache_read_cost_per_token=_to_float(pricing.get("input_cache_read")),
             cache_write_cost_per_token=_to_float(pricing.get("input_cache_write")),
-            source="openrouter_models_api",
+            source=source,
         )
 
+    @staticmethod
+    def _resolve_currency(entry: dict, api_url: str) -> str:
+        currency = str(entry.get("currency") or "").strip().upper()
+        if currency:
+            return currency
+        host = urlparse(str(api_url or "")).netloc.lower()
+        if "proxyapi.ru" in host:
+            return "RUB"
+        return "USD"
+
+    @staticmethod
+    def _build_flat_pricing(entry: dict, top_provider: dict) -> Dict[str, Any]:
+        alias_map = {
+            "prompt": ("prompt", "input", "input_price", "input_cost", "prompt_price", "prompt_cost"),
+            "completion": ("completion", "output", "output_price", "output_cost", "completion_price", "completion_cost"),
+            "request": ("request", "request_price", "request_cost"),
+            "internal_reasoning": ("internal_reasoning", "reasoning", "reasoning_price", "reasoning_cost"),
+            "input_cache_read": ("input_cache_read", "cache_read", "cache_read_price", "cache_read_cost"),
+            "input_cache_write": ("input_cache_write", "cache_write", "cache_write_price", "cache_write_cost"),
+        }
+        extracted: Dict[str, Any] = {}
+        for target_key, aliases in alias_map.items():
+            for source in (entry, top_provider):
+                if not isinstance(source, dict):
+                    continue
+                for alias in aliases:
+                    if alias in source and source.get(alias) not in (None, ""):
+                        extracted[target_key] = source.get(alias)
+                        break
+                if target_key in extracted:
+                    break
+        return extracted
+
     def _build_openrouter_models_url(self, api_url: str) -> Optional[str]:
+        return self._build_models_url(api_url)
+
+    def _build_models_url(self, api_url: str) -> Optional[str]:
         try:
             parsed = urlparse(str(api_url or ""))
             if not parsed.scheme or not parsed.netloc:
                 return None
-            return f"{parsed.scheme}://{parsed.netloc}/api/v1/models"
+            path = str(parsed.path or "")
+            if "/v1/" in path:
+                prefix = path.split("/v1/", 1)[0]
+                return f"{parsed.scheme}://{parsed.netloc}{prefix}/v1/models"
+            return f"{parsed.scheme}://{parsed.netloc}/v1/models"
         except Exception:
             return None

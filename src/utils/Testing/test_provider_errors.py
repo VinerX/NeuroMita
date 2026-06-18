@@ -18,6 +18,18 @@ build_provider_error = _MODULE.build_provider_error
 
 
 class ProviderErrorMappingTests(unittest.TestCase):
+    def test_readable_provider_message_is_appended_for_user(self):
+        err = build_provider_error(
+            "common",
+            status_code=400,
+            payload={"error": {"message": "Reasoning is mandatory for this endpoint and cannot be disabled."}},
+            url="https://openrouter.ai/api/v1/chat/completions",
+        )
+
+        rendered = err.to_user_message()
+        self.assertIn("Ошибка 400", rendered)
+        self.assertIn("Reasoning is mandatory for this endpoint and cannot be disabled.", rendered)
+
     def test_401_invalid_key_is_user_friendly(self):
         err = build_provider_error(
             "common",
@@ -63,6 +75,18 @@ class ProviderErrorMappingTests(unittest.TestCase):
 
         self.assertIn("429", err.friendly_message)
         self.assertTrue(err.retryable)
+
+    def test_structured_provider_message_is_not_appended_for_user(self):
+        err = build_provider_error(
+            "common",
+            status_code=400,
+            payload={"error": {"message": "{\"detail\": [{\"type\": \"extra_forbidden\"}]}" }},
+            url="https://api.example.test/v1/chat/completions",
+        )
+
+        rendered = err.to_user_message()
+        self.assertIn("Ошибка 400", rendered)
+        self.assertNotIn("extra_forbidden", rendered)
 
     def test_422_thinking_error_explains_how_to_fix_preset(self):
         err = build_provider_error(

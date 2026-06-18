@@ -5,6 +5,7 @@ from typing import Optional, Any
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QMessageBox, QInputDialog
 
+from ui.settings.api_settings.dialogs.new_preset_dialog import NewPresetDialog
 from ui.settings.api_settings.widgets import CustomPresetListItem
 import qtawesome as qta
 
@@ -459,6 +460,54 @@ class EditorMixin:
     def _add_custom_preset_async(self) -> None:
         logger.info("[API UI] add preset clicked")
         v = self.view
+        template_options: list[tuple[str, object]] = []
+        for i in range(v.template_combo.count()):
+            template_options.append((v.template_combo.itemText(i), v.template_combo.itemData(i)))
+
+        initial_template = v.template_combo.currentData() if getattr(v, "template_combo", None) is not None else None
+        dlg = NewPresetDialog(v, template_options=template_options, initial_template_data=initial_template)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            logger.info("[API UI] add preset cancelled")
+            return
+
+        name = dlg.preset_name()
+        selected_base = self._parse_base(dlg.selected_template_data())
+
+        payload = {
+            "name": str(name).strip(),
+            "id": None,
+            "pricing": "mixed",
+            "base": selected_base,
+            "url": "",
+            "default_model": "",
+            "key": "",
+            "reserve_keys": [],
+            "protocol_id": "" if selected_base is not None else (getattr(self, "_protocol_default_id", "") or ""),
+        }
+
+        logger.info(f"[API UI] Creating preset name='{payload['name']}', base={payload['base']}")
+
+        def _call():
+            logger.info("[API UI] calling SAVE_CUSTOM_PRESET via emit_and_wait...")
+            res = self.event_bus.emit_and_wait(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": payload}, timeout=2.0)
+            logger.info(f"[API UI] SAVE_CUSTOM_PRESET result={res}")
+            return res[0] if res else None
+
+        def _apply(new_id):
+            logger.info(f"[API UI] Created preset new_id={new_id} type={type(new_id)}")
+            if not isinstance(new_id, int):
+                QMessageBox.warning(
+                    v,
+                    _("РћС€РёР±РєР°", "Error"),
+                    _("РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕР·РґР°С‚СЊ РїСЂРµСЃРµС‚. РџСЂРѕРІРµСЂСЊ Р»РѕРіРё (SAVE_CUSTOM_PRESET).",
+                    "Failed to create preset. Check logs (SAVE_CUSTOM_PRESET).")
+                )
+                return
+            self.reload_presets_async()
+            QTimer.singleShot(200, lambda: self._select_custom_preset(int(new_id)))
+
+        self._bus_call_async(_call, _apply, name="add_preset")
+        return
         name, ok = QInputDialog.getText(v, _("Новый пресет", "New preset"), _("Название пресета:", "Preset name:"))
         if not ok or not str(name or "").strip():
             logger.info("[API UI] add preset cancelled/empty")
