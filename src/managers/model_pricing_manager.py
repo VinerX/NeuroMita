@@ -22,6 +22,26 @@ def _to_float(value: Any) -> Optional[float]:
         return None
 
 
+def _normalize_openai_compat_pricing_units(pricing: Dict[str, Any], api_url: str) -> Dict[str, Any]:
+    if not pricing:
+        return {}
+
+    host = urlparse(str(api_url or "")).netloc.lower()
+    if "chutes.ai" not in host:
+        return pricing
+
+    normalized: Dict[str, Any] = {}
+    for key, value in pricing.items():
+        if isinstance(value, bool) or value in (None, ""):
+            normalized[key] = value
+            continue
+        try:
+            normalized[key] = float(value) / 1_000_000
+        except Exception:
+            normalized[key] = value
+    return normalized
+
+
 @dataclass(frozen=True)
 class ModelPricingInfo:
     model: str
@@ -210,6 +230,7 @@ class ModelPricingManager:
         pricing = entry.get("pricing") if isinstance(entry.get("pricing"), dict) else {}
         if not pricing:
             pricing = self._build_flat_pricing(entry, top_provider)
+        pricing = _normalize_openai_compat_pricing_units(pricing, api_url)
 
         return ModelPricingInfo(
             model=wanted_model,
@@ -238,12 +259,12 @@ class ModelPricingManager:
     @staticmethod
     def _build_flat_pricing(entry: dict, top_provider: dict) -> Dict[str, Any]:
         alias_map = {
-            "prompt": ("prompt", "input", "input_price", "input_cost", "prompt_price", "prompt_cost"),
-            "completion": ("completion", "output", "output_price", "output_cost", "completion_price", "completion_cost"),
+            "prompt": ("prompt", "input", "input_price", "input_cost", "prompt_price", "prompt_cost", "input_token_price"),
+            "completion": ("completion", "output", "output_price", "output_cost", "completion_price", "completion_cost", "output_token_price"),
             "request": ("request", "request_price", "request_cost"),
             "internal_reasoning": ("internal_reasoning", "reasoning", "reasoning_price", "reasoning_cost"),
-            "input_cache_read": ("input_cache_read", "cache_read", "cache_read_price", "cache_read_cost"),
-            "input_cache_write": ("input_cache_write", "cache_write", "cache_write_price", "cache_write_cost"),
+            "input_cache_read": ("input_cache_read", "cache_read", "cache_read_price", "cache_read_cost", "cache_read_token_price"),
+            "input_cache_write": ("input_cache_write", "cache_write", "cache_write_price", "cache_write_cost", "cache_write_token_price"),
         }
         extracted: Dict[str, Any] = {}
         for target_key, aliases in alias_map.items():

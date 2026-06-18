@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict, field
+from urllib.parse import urlparse
 
 from core.events import get_event_bus, Events, Event
 from main_logger import logger
@@ -957,6 +958,26 @@ class ApiPresetsController:
                 normalized[key_text] = value
         return normalized
 
+    @staticmethod
+    def _normalize_compat_pricing_units(pricing: Dict[str, Any], source_url: str) -> Dict[str, Any]:
+        if not pricing:
+            return {}
+
+        host = urlparse(str(source_url or "")).netloc.lower()
+        if "chutes.ai" not in host:
+            return pricing
+
+        normalized: Dict[str, Any] = {}
+        for key, value in pricing.items():
+            if isinstance(value, bool) or value in (None, ""):
+                normalized[key] = value
+                continue
+            try:
+                normalized[key] = float(value) / 1_000_000
+            except Exception:
+                normalized[key] = value
+        return normalized
+
     @classmethod
     def _extract_compat_pricing(cls, raw_entry: dict, top_provider: dict) -> Dict[str, Any]:
         pricing = cls._normalize_pricing(raw_entry.get("pricing"))
@@ -964,12 +985,12 @@ class ApiPresetsController:
             return pricing
 
         alias_map = {
-            "prompt": ("prompt", "input", "input_price", "input_cost", "prompt_price", "prompt_cost"),
-            "completion": ("completion", "output", "output_price", "output_cost", "completion_price", "completion_cost"),
+            "prompt": ("prompt", "input", "input_price", "input_cost", "prompt_price", "prompt_cost", "input_token_price"),
+            "completion": ("completion", "output", "output_price", "output_cost", "completion_price", "completion_cost", "output_token_price"),
             "request": ("request", "request_price", "request_cost"),
             "internal_reasoning": ("internal_reasoning", "reasoning", "reasoning_price", "reasoning_cost"),
-            "input_cache_read": ("input_cache_read", "cache_read", "cache_read_price", "cache_read_cost"),
-            "input_cache_write": ("input_cache_write", "cache_write", "cache_write_price", "cache_write_cost"),
+            "input_cache_read": ("input_cache_read", "cache_read", "cache_read_price", "cache_read_cost", "cache_read_token_price"),
+            "input_cache_write": ("input_cache_write", "cache_write", "cache_write_price", "cache_write_cost", "cache_write_token_price"),
         }
 
         extracted: Dict[str, Any] = {}
@@ -1019,12 +1040,13 @@ class ApiPresetsController:
                     break
         return extracted
 
-    def _normalize_test_model_entry(self, raw_entry: Any) -> Optional[Dict[str, Any]]:
+    def _normalize_test_model_entry(self, raw_entry: Any, *, source_url: str = "") -> Optional[Dict[str, Any]]:
         if isinstance(raw_entry, dict):
             model_id = self._normalize_test_model_id(raw_entry.get("id") or raw_entry.get("name"))
             display_name = str(raw_entry.get("name") or model_id).strip()
             top_provider = raw_entry.get("top_provider") if isinstance(raw_entry.get("top_provider"), dict) else {}
             pricing = self._extract_compat_pricing(raw_entry, top_provider)
+            pricing = self._normalize_compat_pricing_units(pricing, source_url)
             rate_limits = self._extract_compat_rate_limits(raw_entry, top_provider)
 
             if not model_id:
@@ -1035,9 +1057,9 @@ class ApiPresetsController:
                 "name": display_name or model_id,
                 "canonical_slug": raw_entry.get("canonical_slug"),
                 "currency": str(raw_entry.get("currency") or top_provider.get("currency") or ""),
-                "context_length": raw_entry.get("context_length") or top_provider.get("context_length"),
-                "top_provider_context_length": raw_entry.get("top_provider_context_length") or top_provider.get("context_length"),
-                "max_completion_tokens": raw_entry.get("max_completion_tokens") or top_provider.get("max_completion_tokens"),
+                "context_length": raw_entry.get("context_length") or raw_entry.get("context_window") or top_provider.get("context_length") or top_provider.get("context_window"),
+                "top_provider_context_length": raw_entry.get("top_provider_context_length") or top_provider.get("context_length") or top_provider.get("context_window"),
+                "max_completion_tokens": raw_entry.get("max_completion_tokens") or raw_entry.get("max_tokens") or top_provider.get("max_completion_tokens") or top_provider.get("max_tokens"),
                 "is_free": bool(raw_entry.get("is_free")),
                 "pricing": pricing,
                 "rate_limits": rate_limits,
@@ -1066,7 +1088,7 @@ class ApiPresetsController:
             "tokens_per_second": None,
         }
 
-    def _extract_test_models(self, data: Any) -> List[Dict[str, Any]]:
+    def _extract_test_models(self, data: Any, *, source_url: str = "") -> List[Dict[str, Any]]:
         if not isinstance(data, dict):
             return []
 
@@ -1079,7 +1101,7 @@ class ApiPresetsController:
         normalized: List[Dict[str, Any]] = []
         seen: set[str] = set()
         for entry in raw_models:
-            model_info = self._normalize_test_model_entry(entry)
+            model_info = self._normalize_test_model_entry(entry, source_url=source_url)
             if not model_info:
                 continue
 
@@ -1143,7 +1165,7 @@ class ApiPresetsController:
                         from utils.api_filters import apply_filter
                         data = apply_filter(tpl.filter_fn, data)
 
-                    model_infos = self._extract_test_models(data)
+                    model_infos = self._extract_test_models(data, source_url=final_url)
                     if model_infos:
                         if "proxyapi.ru" in final_url.lower():
                             for info in model_infos:
@@ -1158,6 +1180,7 @@ class ApiPresetsController:
                 except Exception as e:
                     success = False
                     message = f"Parsing error: {str(e)}"
+                    logger.error(f"Test parsing error for {preset_id}: {e}", exc_info=True)
             elif status == 401:
                 message = "Invalid API key (Unauthorized)"
             elif status == 403:

@@ -59,7 +59,7 @@ API_TEMPLATES_DATA = [
     {
         "id": 4,
         "name": "Ai.iO",
-        "pricing": "mixed",
+        "pricing": "paid",
         "url": "https://api.intelligence.io.solutions/api/v1/chat/completions",
         "default_model": "deepseek-ai/DeepSeek-V3.2",
         "known_models": [],
@@ -73,7 +73,7 @@ API_TEMPLATES_DATA = [
     {
         "id": 5,
         "name": "ProxyAPI",
-        "pricing": "mixed",
+        "pricing": "paid",
         "url": "https://openai.api.proxyapi.ru/v1/chat/completions",
         "default_model": "gemini/gemini-2.0-flash",
         "known_models": [
@@ -84,7 +84,7 @@ API_TEMPLATES_DATA = [
         "protocol_id": "openai_compatible_default",
         "test_url": "https://openai.api.proxyapi.ru/v1/models",
         "documentation_url": "https://proxyapi.ru/docs/openai-compatible-api",
-        "models_url": "https://proxyapi.ru/docs/openai-compatible-api",
+        "models_url": "https://proxyapi.ru/docs/openai-models",
         "key_url": "https://console.proxyapi.ru/",
     },
     {
@@ -120,5 +120,22 @@ API_TEMPLATES_DATA = [
         "documentation_url": "https://docs.together.ai/docs/inference/openai-compatibility",
         "models_url": "https://docs.together.ai/docs/serverless-models",
         "key_url": "https://api.together.ai/settings/api-keys",
+    },
+    {
+        "id": 8,
+        "name": "Chutes",
+        "pricing": "paid",
+        "url": "https://llm.chutes.ai/v1/chat/completions",
+        "default_model": "deepseek-ai/DeepSeek-V3-0324",
+        "known_models": [
+            "deepseek-ai/DeepSeek-V3-0324",
+            "deepseek-ai/DeepSeek-R1",
+            "moonshotai/Kimi-K2-Instruct",
+        ],
+        "protocol_id": "openai_compatible_default",
+        "test_url": "https://llm.chutes.ai/v1/models",
+        "documentation_url": "https://chutes.ai/docs/examples/llm-chat",
+        "models_url": "https://chutes.ai/docs/examples/llm-chat",
+        "key_url": "https://chutes.ai/docs/getting-started/authentication",
     },
 ]

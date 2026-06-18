@@ -36,21 +36,6 @@ class SortableTableWidgetItem(QTableWidgetItem):
 
 
 class ModelsLoadedDialog(QDialog):
-    _BASE_COLUMN_HEADERS = [
-        _("Модель", "Model"),
-        _("Тип", "Type"),
-        _("Контекст", "Context"),
-    ]
-    _PRICE_COLUMN_HEADERS = [
-        _("Input $/1M", "Input $/1M"),
-        _("Output $/1M", "Output $/1M"),
-        _("Cache read $/1M", "Cache read $/1M"),
-        _("Cache write $/1M", "Cache write $/1M"),
-    ]
-    _TAIL_COLUMN_HEADERS = [
-        _("Latency", "Latency"),
-        _("Tok/s", "Tok/s"),
-    ]
     _RATE_LIMIT_PREFERRED_KEYS = (
         "requests_per_minute",
         "requests_per_day",
@@ -70,6 +55,7 @@ class ModelsLoadedDialog(QDialog):
         self._has_free_models = any(bool(info.get("is_free")) for info in self._model_infos)
         self._has_paid_models = any(not bool(info.get("is_free")) for info in self._model_infos)
         self._active_rate_limit_keys: list[str] = []
+        self._active_columns: list[dict[str, Any]] = []
 
         lay = QVBoxLayout(self)
 
@@ -86,14 +72,15 @@ class ModelsLoadedDialog(QDialog):
         self.include_paid_cb = QCheckBox(_("Включать платные", "Include paid"))
         self.include_paid_cb.setChecked(False)
         self.include_paid_cb.setEnabled(self._has_free_models and self._has_paid_models)
+        self.include_paid_cb.setVisible(self._has_free_models and self._has_paid_models)
         controls_row.addWidget(self.include_paid_cb)
         lay.addLayout(controls_row)
 
         self.status_label = QLabel("")
         lay.addWidget(self.status_label)
 
-        self.table = QTableWidget(0, len(self._base_headers()))
-        self.table.setHorizontalHeaderLabels(self._base_headers())
+        self.table = QTableWidget(0, 1)
+        self.table.setHorizontalHeaderLabels([_("Model", "Model")])
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -103,8 +90,6 @@ class ModelsLoadedDialog(QDialog):
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for idx in range(1, len(self._base_headers())):
-            header.setSectionResizeMode(idx, QHeaderView.ResizeMode.ResizeToContents)
 
         lay.addWidget(self.table, 1)
 
@@ -189,7 +174,7 @@ class ModelsLoadedDialog(QDialog):
             text = f"{per_million:.4f}"
         else:
             text = f"{per_million:.6f}"
-        formatted = text.rstrip('0').rstrip('.')
+        formatted = text.rstrip("0").rstrip(".")
         symbol = "₽" if str(currency or "").upper() == "RUB" else "$"
         return f"{symbol}{formatted}"
 
@@ -216,10 +201,6 @@ class ModelsLoadedDialog(QDialog):
             text = f"{numeric:.2f}"
         text = text.rstrip("0").rstrip(".")
         return f"{text}{suffix}"
-
-    @classmethod
-    def _base_headers(cls) -> list[str]:
-        return [*cls._BASE_COLUMN_HEADERS, *cls._PRICE_COLUMN_HEADERS, *cls._TAIL_COLUMN_HEADERS]
 
     @staticmethod
     def _humanize_rate_limit_key(key: str) -> str:
@@ -276,16 +257,16 @@ class ModelsLoadedDialog(QDialog):
         for key in self._RATE_LIMIT_PREFERRED_KEYS:
             for info in visible:
                 limits = info.get("rate_limits") if isinstance(info.get("rate_limits"), dict) else {}
-                if key in limits and key not in seen:
+                if key in limits and limits.get(key) not in (None, "") and key not in seen:
                     discovered.append(key)
                     seen.add(key)
                     break
 
         for info in visible:
             limits = info.get("rate_limits") if isinstance(info.get("rate_limits"), dict) else {}
-            for key in limits.keys():
+            for key, value in limits.items():
                 key_text = str(key or "").strip()
-                if key_text and key_text not in seen:
+                if key_text and value not in (None, "") and key_text not in seen:
                     discovered.append(key_text)
                     seen.add(key_text)
 
@@ -295,6 +276,14 @@ class ModelsLoadedDialog(QDialog):
         if not self.include_paid_cb.isChecked():
             return False
         return bool(self._resolve_rate_limit_keys(visible))
+
+    @staticmethod
+    def _has_any_value(visible: List[dict], getter) -> bool:
+        for info in visible:
+            value = getter(info)
+            if value not in (None, "", {}, []):
+                return True
+        return False
 
     def _price_headers(self, visible: List[dict]) -> list[str]:
         currency = ""
@@ -313,19 +302,59 @@ class ModelsLoadedDialog(QDialog):
         ]
 
     def _apply_headers(self, visible: List[dict]) -> None:
+        columns: list[dict[str, Any]] = [
+            {"kind": "model", "header": _("Model", "Model")},
+        ]
+
+        if self._has_free_models and self._has_paid_models:
+            columns.append({"kind": "type", "header": _("Type", "Type")})
+
+        if self._has_any_value(visible, lambda info: info.get("context_length")):
+            columns.append({"kind": "context", "header": _("Context", "Context")})
+
         if self._use_rate_limit_columns(visible):
             self._active_rate_limit_keys = self._resolve_rate_limit_keys(visible)
-            rate_headers = [self._humanize_rate_limit_key(key) for key in self._active_rate_limit_keys]
-            while len(rate_headers) < 4:
-                rate_headers.append(_("Rate limit", "Rate limit"))
-            headers = [*self._BASE_COLUMN_HEADERS, *rate_headers[:4], *self._TAIL_COLUMN_HEADERS]
+            for key in self._active_rate_limit_keys:
+                columns.append({
+                    "kind": "rate_limit",
+                    "key": key,
+                    "header": self._humanize_rate_limit_key(key),
+                })
         else:
             self._active_rate_limit_keys = []
-            headers = [*self._BASE_COLUMN_HEADERS, *self._price_headers(visible), *self._TAIL_COLUMN_HEADERS]
+            price_headers = self._price_headers(visible)
+            price_specs = [
+                ("prompt", price_headers[0]),
+                ("completion", price_headers[1]),
+                ("input_cache_read", price_headers[2]),
+                ("input_cache_write", price_headers[3]),
+            ]
+            for key, header in price_specs:
+                if self._has_any_value(
+                    visible,
+                    lambda info, pricing_key=key: self._parse_float(
+                        (info.get("pricing") if isinstance(info.get("pricing"), dict) else {}).get(pricing_key)
+                    ),
+                ):
+                    columns.append({"kind": "price", "key": key, "header": header})
+
+        if self._has_any_value(visible, lambda info: self._parse_float(info.get("latency"))):
+            columns.append({"kind": "latency", "header": _("Latency", "Latency")})
+
+        if self._has_any_value(visible, lambda info: self._parse_float(info.get("tokens_per_second"))):
+            columns.append({"kind": "tokens_per_second", "header": _("Tok/s", "Tok/s")})
+
+        self._active_columns = columns
+        headers = [str(col.get("header") or "") for col in columns]
 
         if self.table.columnCount() != len(headers):
             self.table.setColumnCount(len(headers))
         self.table.setHorizontalHeaderLabels(headers)
+
+        header = self.table.horizontalHeader()
+        for idx in range(len(headers)):
+            mode = QHeaderView.ResizeMode.Stretch if idx == 0 else QHeaderView.ResizeMode.ResizeToContents
+            header.setSectionResizeMode(idx, mode)
 
     def _matches_filters(self, info: dict, needle: str) -> bool:
         if self._has_free_models and not self.include_paid_cb.isChecked() and not bool(info.get("is_free")):
@@ -368,34 +397,60 @@ class ModelsLoadedDialog(QDialog):
             pricing = info.get("pricing") if isinstance(info.get("pricing"), dict) else {}
             rate_limits = info.get("rate_limits") if isinstance(info.get("rate_limits"), dict) else {}
             currency = str(info.get("currency") or "").strip().upper()
-            if self._has_free_models:
+
+            if self._has_free_models and self._has_paid_models:
                 type_text = _("Free", "Free") if bool(info.get("is_free")) else _("Paid", "Paid")
                 type_sort = 0 if bool(info.get("is_free")) else 1
             else:
                 type_text = "-"
                 type_sort = 0
 
-            self._set_cell(row, 0, model_id, sort_value=model_id, tooltip=tooltip)
-            self._set_cell(row, 1, type_text, sort_value=type_sort)
-            self._set_cell(row, 2, self._format_integer(info.get("context_length")), sort_value=self._parse_float(info.get("context_length")) or 0)
-            if self._active_rate_limit_keys:
-                for offset in range(4):
-                    col = 3 + offset
-                    key = self._active_rate_limit_keys[offset] if offset < len(self._active_rate_limit_keys) else ""
+            for col_index, spec in enumerate(self._active_columns):
+                kind = str(spec.get("kind") or "")
+
+                if kind == "model":
+                    self._set_cell(row, col_index, model_id, sort_value=model_id, tooltip=tooltip)
+                elif kind == "type":
+                    self._set_cell(row, col_index, type_text, sort_value=type_sort)
+                elif kind == "context":
+                    self._set_cell(
+                        row,
+                        col_index,
+                        self._format_integer(info.get("context_length")),
+                        sort_value=self._parse_float(info.get("context_length")) or 0,
+                    )
+                elif kind == "rate_limit":
+                    key = str(spec.get("key") or "")
                     value = rate_limits.get(key) if key else None
                     self._set_cell(
                         row,
-                        col,
+                        col_index,
                         self._format_rate_limit_value(value),
                         sort_value=self._sortable_rate_limit_value(value),
                     )
-            else:
-                self._set_cell(row, 3, self._format_price_per_million(pricing.get("prompt"), currency), sort_value=self._parse_float(pricing.get("prompt")))
-                self._set_cell(row, 4, self._format_price_per_million(pricing.get("completion"), currency), sort_value=self._parse_float(pricing.get("completion")))
-                self._set_cell(row, 5, self._format_price_per_million(pricing.get("input_cache_read"), currency), sort_value=self._parse_float(pricing.get("input_cache_read")))
-                self._set_cell(row, 6, self._format_price_per_million(pricing.get("input_cache_write"), currency), sort_value=self._parse_float(pricing.get("input_cache_write")))
-            self._set_cell(row, 7, self._format_metric(info.get("latency")), sort_value=self._parse_float(info.get("latency")))
-            self._set_cell(row, 8, self._format_metric(info.get("tokens_per_second")), sort_value=self._parse_float(info.get("tokens_per_second")))
+                elif kind == "price":
+                    key = str(spec.get("key") or "")
+                    value = pricing.get(key)
+                    self._set_cell(
+                        row,
+                        col_index,
+                        self._format_price_per_million(value, currency),
+                        sort_value=self._parse_float(value),
+                    )
+                elif kind == "latency":
+                    self._set_cell(
+                        row,
+                        col_index,
+                        self._format_metric(info.get("latency")),
+                        sort_value=self._parse_float(info.get("latency")),
+                    )
+                elif kind == "tokens_per_second":
+                    self._set_cell(
+                        row,
+                        col_index,
+                        self._format_metric(info.get("tokens_per_second")),
+                        sort_value=self._parse_float(info.get("tokens_per_second")),
+                    )
 
         self.table.setSortingEnabled(True)
         self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
@@ -421,8 +476,17 @@ class ModelsLoadedDialog(QDialog):
             self.accept()
 
     def _copy_visible(self) -> None:
-        visible_models = [str(info.get("id") or "").strip() for info in self._visible_model_infos() if str(info.get("id") or "").strip()]
-        QApplication.clipboard().setText("\n".join(visible_models))
+        headers = [self.table.horizontalHeaderItem(i).text() for i in range(self.table.columnCount())]
+        lines = ["\t".join(headers)]
+
+        for row in range(self.table.rowCount()):
+            values = []
+            for col in range(self.table.columnCount()):
+                item = self.table.item(row, col)
+                values.append(item.text() if item else "")
+            lines.append("\t".join(values))
+
+        QApplication.clipboard().setText("\n".join(lines))
 
     def selected_model(self) -> str:
         return self._selected
