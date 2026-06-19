@@ -119,7 +119,7 @@ jobs:
           # релиза ниже), поэтому describe вернёт прошлую версию.
           CURRENT_TAG="v${{ steps.ver.outputs.version }}"
           PREV=$(
-            git tag --sort=-creatordate --merged HEAD --list 'v*' \
+            git tag --merged HEAD --list 'v*' --sort=-version:refname \
               | grep -vxF "$CURRENT_TAG" \
               | grep -vE '_Full$' \
               | head -n1 \

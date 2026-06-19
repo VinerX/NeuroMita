@@ -531,13 +531,10 @@ class HomePage(LauncherHomeBackground):
         top.addStretch(1)
         text_column.addLayout(top)
 
-        summary_text = (item.summary or "").splitlines()[0] if item.summary else ""
-        summary = QLabel(summary_text)
-        summary.setObjectName("LauncherHomeNewsItemBody")
-        summary.setWordWrap(False)
-        summary.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        summary.setToolTip(str(item.full_text or item.summary or ""))
-        text_column.addWidget(summary)
+        tooltip_text = str(item.full_text or item.summary or "").strip()
+        if tooltip_text:
+            row.setToolTip(tooltip_text)
+            title.setToolTip(tooltip_text)
         layout.addLayout(text_column, 1)
 
         if item.timestamp:
