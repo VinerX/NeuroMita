@@ -253,11 +253,18 @@ class LauncherSidebarWidget(QFrame):
         return wrapper
 
     def _read_version_string(self) -> str:
+        pending_version = str(getattr(self.window(), "_pending_python_restart_version", "") or "").strip()
+        if pending_version:
+            return f"v{pending_version} ↻"
         try:
             from _version import __version__ as ver
             return f"v{ver}"
         except Exception:
             return ""
+
+    def refresh_version_label(self) -> None:
+        if self._version_label is not None:
+            self._version_label.setText(self._read_version_string())
 
     def request_page(self, page_key: str) -> None:
         self.set_active_page(page_key)

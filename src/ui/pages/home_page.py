@@ -116,7 +116,6 @@ class HomePage(LauncherHomeBackground):
         self._update_info_py = None
         self._update_info_unity = None
         self._update_check_inflight = False
-
         self.primary_button = None
         self.progress_bar = None
         self.progress_label = None
@@ -403,6 +402,8 @@ class HomePage(LauncherHomeBackground):
 
         py_avail = bool((py_info or {}).get("available"))
         unity_avail = bool((unity_info or {}).get("available"))
+        if self._has_pending_python_restart():
+            py_avail = False
 
         if self._py_update_check is not None:
             self._py_update_check.setVisible(py_avail)
@@ -556,6 +557,13 @@ class HomePage(LauncherHomeBackground):
         return value
 
     def _get_backend_status(self) -> str:
+        if self._has_pending_python_restart():
+            version = self._get_pending_python_restart_version()
+            if version:
+                return _("Установлен v{ver} • нужен перезапуск", "Installed v{ver} • restart required").format(
+                    ver=_strip_v(version)
+                )
+            return _("Обновление установлено • нужен перезапуск", "Update installed • restart required")
         try:
             from _version import __version__ as version
 
@@ -612,6 +620,8 @@ class HomePage(LauncherHomeBackground):
         return _("Установлен", "Installed")
 
     def _has_py_update(self) -> bool:
+        if self._has_pending_python_restart():
+            return False
         return bool((self._update_info_py or {}).get("available"))
 
     def _has_unity_update(self) -> bool:
@@ -632,7 +642,27 @@ class HomePage(LauncherHomeBackground):
             return _(" (🔒 нужен код тестера)", " (🔒 tester code needed)")
         return ""
 
+    def _has_pending_python_restart(self) -> bool:
+        return bool(self._get_pending_python_restart_version())
+
+    def _get_pending_python_restart_version(self) -> str:
+        return str(getattr(self.gui, "_pending_python_restart_version", "") or "").strip()
+
+    def _mark_python_restart_required(self, version: str | None) -> None:
+        self.gui._pending_python_restart_version = str(version or "").strip() or None
+        if self._py_update_check is not None:
+            self._py_update_check.setVisible(False)
+            self._py_update_check.setChecked(False)
+        sidebar = getattr(self.gui, "shell_sidebar", None)
+        if sidebar is not None and hasattr(sidebar, "refresh_version_label"):
+            try:
+                sidebar.refresh_version_label()
+            except Exception:
+                logger.warning("[home_update] Failed to refresh sidebar version label", exc_info=True)
+
     def _get_primary_action_label(self) -> str:
+        if self._has_pending_python_restart():
+            return _("↻ Перезапустить", "↻ Restart")
         # Unity ещё нет — это «Установить», даже если по нему «доступна обнова»
         # (фоновая проверка помечает неполную установку как available).
         if self.find_unity_executable() is None:
@@ -822,6 +852,9 @@ class HomePage(LauncherHomeBackground):
         threading.Thread(target=check_worker, daemon=True).start()
 
     def run_primary_action(self):
+        if self._has_pending_python_restart():
+            self._prompt_restart_after_update()
+            return
         # Есть обнова → центральная кнопка обновляет (выбор частей — чекбоксы,
         # код тестера спросит всплывающим окном).
         if self._has_selectable_update():
@@ -1083,6 +1116,7 @@ class HomePage(LauncherHomeBackground):
         if self._home_install_thread_running:
             return
 
+        pending_python_version = str((self._update_info_py or {}).get("latest_version") or "").strip()
         want_py = bool(
             self._py_update_check is not None
             and self._py_update_check.isVisible()
@@ -1243,9 +1277,11 @@ class HomePage(LauncherHomeBackground):
                         self._cancel_button.setEnabled(True)
                     if self.primary_button is not None:
                         self.primary_button.setEnabled(True)
+                    if py_applied and not cancel_event.is_set():
+                        self._mark_python_restart_required(pending_python_version)
                     try:
                         self.refresh_status_cards()
-                    # Перепроверим состояние обновлений (баннер/чекбоксы).
+                        # Перепроверим состояние обновлений (баннер/чекбоксы).
                         self._refresh_update_state(force=True)
                     except Exception:
                         logger.error("[home_update] Post-update UI refresh failed", exc_info=True)

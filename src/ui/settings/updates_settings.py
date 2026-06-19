@@ -69,6 +69,21 @@ def setup_updates_settings_controls(self, parent):
             logger.warning("[updates_ui] Failed to read Unity version", exc_info=True)
         return "?"
 
+    def _pending_python_restart_version() -> str:
+        return str(getattr(self, "_pending_python_restart_version", "") or "").strip()
+
+    def _has_pending_python_restart() -> bool:
+        return bool(_pending_python_restart_version())
+
+    def _mark_python_restart_required(version: str | None) -> None:
+        self._pending_python_restart_version = str(version or "").strip() or None
+        sidebar = getattr(self, "shell_sidebar", None)
+        if sidebar is not None and hasattr(sidebar, "refresh_version_label"):
+            try:
+                sidebar.refresh_version_label()
+            except Exception:
+                logger.warning("[updates_ui] Failed to refresh sidebar version label", exc_info=True)
+
     def _find_unity_executable(unity_dir: Path) -> Path | None:
         if not unity_dir.exists() or not unity_dir.is_dir():
             return None
@@ -96,11 +111,14 @@ def setup_updates_settings_controls(self, parent):
         return exe_files[0]
 
     def _refresh_version_labels():
-        try:
-            from _version import __version__ as py_ver
-        except Exception:
-            py_ver = "?"
-        lbl_py.setText(_("Python-часть: ", "Python part: ") + f"<b>{py_ver}</b>")
+        py_ver = _pending_python_restart_version()
+        if not py_ver:
+            try:
+                from _version import __version__ as py_ver
+            except Exception:
+                py_ver = "?"
+        py_suffix = _(" • нужен перезапуск", " • restart required") if _has_pending_python_restart() else ""
+        lbl_py.setText(_("Python-часть: ", "Python part: ") + f"<b>{py_ver}</b>{py_suffix}")
         lbl_unity.setText(_("Unity-часть: ", "Unity part: ") + f"<b>{_current_unity_version()}</b>")
 
     def _set_status(msg: str):
@@ -150,6 +168,9 @@ def setup_updates_settings_controls(self, parent):
         current_version = info.get("current_version") or "?"
         latest_version = info.get("latest_version") or "?"
         available = bool(info.get("available"))
+        if title == _("Python", "Python") and _has_pending_python_restart():
+            current_version = _pending_python_restart_version() or current_version
+            available = False
         prerelease = bool(info.get("prerelease"))
         name = str(info.get("name") or "")
         published_at = str(info.get("published_at") or "")
@@ -204,6 +225,10 @@ def setup_updates_settings_controls(self, parent):
 
             py_info = get_python_update_info(base_dir=base_dir, channel=channel)
             unity_info = get_unity_update_info(base_dir=base_dir, unity_dir=unity_dir, channel=channel)
+            if _has_pending_python_restart():
+                py_info = dict(py_info or {})
+                py_info["current_version"] = _pending_python_restart_version() or py_info.get("current_version") or "?"
+                py_info["available"] = False
             _render_update_info(py_info, unity_info)
 
             if bool(py_info.get("available")) or bool(unity_info.get("available")):
@@ -267,6 +292,10 @@ def setup_updates_settings_controls(self, parent):
 
             py_info = get_python_update_info(base_dir=base_dir, channel=channel)
             unity_info = get_unity_update_info(base_dir=base_dir, unity_dir=unity_dir, channel=channel)
+            if _has_pending_python_restart():
+                py_info = dict(py_info or {})
+                py_info["current_version"] = _pending_python_restart_version() or py_info.get("current_version") or "?"
+                py_info["available"] = False
             _render_update_info(py_info, unity_info)
 
             if not bool(py_info.get("available")) and not bool(unity_info.get("available")):
@@ -292,6 +321,7 @@ def setup_updates_settings_controls(self, parent):
             ui_log = _UiLogger()
 
             py_applied = False
+            pending_python_version = str(py_info.get("latest_version") or "").strip()
             if bool(py_info.get("available")):
                 _set_status(_("Устанавливаю Python-обновление...", "Installing Python update..."))
                 py_applied = bool(check_for_updates(
@@ -321,6 +351,8 @@ def setup_updates_settings_controls(self, parent):
             _refresh_version_labels()
 
             if py_applied:
+                _dispatch.schedule(lambda ver=pending_python_version: _mark_python_restart_required(ver))
+                _dispatch.schedule(_refresh_version_labels)
                 # Python-часть заменена на диске — предлагаем управляемый
                 # перезапуск (диалог показываем на UI-потоке).
                 _dispatch.schedule(_prompt_restart)
@@ -389,10 +421,12 @@ def setup_updates_settings_controls(self, parent):
         return True
 
     # Current versions
-    try:
-        from _version import __version__ as py_ver
-    except Exception:
-        py_ver = "?"
+    py_ver = _pending_python_restart_version()
+    if not py_ver:
+        try:
+            from _version import __version__ as py_ver
+        except Exception:
+            py_ver = "?"
 
     ver_widget = QWidget()
     ver_widget.setStyleSheet(
@@ -412,6 +446,7 @@ def setup_updates_settings_controls(self, parent):
     lbl_unity.setTextFormat(Qt.TextFormat.RichText)
     ver_layout.addWidget(lbl_unity)
     parent.addWidget(ver_widget)
+    _refresh_version_labels()
 
     # Channel
     channel_row = QWidget()
