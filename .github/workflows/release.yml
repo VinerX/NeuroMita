@@ -43,7 +43,74 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
 
+      - name: Resolve release tags
+        id: release_meta
+        shell: bash
+        run: |
+          CURRENT_TAG="v${{ steps.ver.outputs.version }}"
+          LATEST_TAG=$(
+            git tag --list 'v*' --sort=-version:refname \
+              | grep -vE '_Full$' \
+              | head -n1 \
+              || true
+          )
+
+          SHOULD_RELEASE="true"
+          SKIP_REASON=""
+          PREV_TAG="${LATEST_TAG}"
+
+          if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" = "$CURRENT_TAG" ]; then
+            SHOULD_RELEASE="false"
+            SKIP_REASON="version-already-released"
+            PREV_TAG=$(
+              git tag --list 'v*' --sort=-version:refname \
+                | grep -vE '_Full$' \
+                | grep -vxF "$CURRENT_TAG" \
+                | head -n1 \
+                || true
+            )
+          elif [ -n "$LATEST_TAG" ]; then
+            TOP_TAG=$(
+              printf '%s\n%s\n' "$LATEST_TAG" "$CURRENT_TAG" \
+                | sort -V \
+                | tail -n1
+            )
+            if [ "$TOP_TAG" != "$CURRENT_TAG" ]; then
+              SHOULD_RELEASE="false"
+              SKIP_REASON="version-not-newer-than-latest"
+            fi
+          fi
+
+          echo "current_tag=$CURRENT_TAG" >> $GITHUB_OUTPUT
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "previous_tag=$PREV_TAG" >> $GITHUB_OUTPUT
+          echo "should_release=$SHOULD_RELEASE" >> $GITHUB_OUTPUT
+          echo "skip_reason=$SKIP_REASON" >> $GITHUB_OUTPUT
+
+          echo "Current tag: ${CURRENT_TAG}"
+          echo "Latest existing release tag: ${LATEST_TAG:-<none>}"
+          echo "Previous tag for changelog: ${PREV_TAG:-<none>}"
+          echo "Should release: ${SHOULD_RELEASE}"
+          echo "Skip reason: ${SKIP_REASON:-<none>}"
+
+      - name: Skip duplicate release version
+        if: steps.release_meta.outputs.should_release != 'true'
+        shell: bash
+        env:
+          CURRENT_VERSION: ${{ steps.ver.outputs.version }}
+          LATEST_TAG: ${{ steps.release_meta.outputs.latest_tag }}
+          SKIP_REASON: ${{ steps.release_meta.outputs.skip_reason }}
+        run: |
+          if [ "$SKIP_REASON" = "version-already-released" ]; then
+            echo "Release skipped: src/_version.py is still ${CURRENT_VERSION}, which already exists as tag ${LATEST_TAG}."
+          elif [ "$SKIP_REASON" = "version-not-newer-than-latest" ]; then
+            echo "Release skipped: src/_version.py is ${CURRENT_VERSION}, which is not newer than the latest release tag ${LATEST_TAG}."
+          else
+            echo "Release skipped."
+          fi
+
       - name: Restore embedded Python runtime from previous full release
+        if: steps.release_meta.outputs.should_release == 'true'
         shell: bash
         run: >
           python scripts/bootstrap_release_runtime.py
@@ -61,6 +128,7 @@ jobs:
         # Replace this with a dedicated canonical runtime asset/release after release testing.
 
       - name: Verify embedded Python runtime
+        if: steps.release_meta.outputs.should_release == 'true'
         shell: bash
         run: |
           test -f "libs/python/python.exe" || {
@@ -69,6 +137,7 @@ jobs:
           }
 
       - name: Create build.env
+        if: steps.release_meta.outputs.should_release == 'true'
         shell: python
         run: |
           import os
@@ -101,36 +170,33 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
 
       - name: Build
+        if: steps.release_meta.outputs.should_release == 'true'
         shell: bash
         run: python build.py
         env:
           PYTHONUTF8: '1'
 
       - name: Validate release contract
+        if: steps.release_meta.outputs.should_release == 'true'
         shell: bash
         run: python scripts/validate_release_contract.py --tag v${{ steps.ver.outputs.version }} --asset PythonBuild-v${{ steps.ver.outputs.version }}.zip
         env:
           PYTHONUTF8: '1'
 
       - name: Build changelog
+        if: steps.release_meta.outputs.should_release == 'true'
         shell: bash
         run: |
-          # Предыдущий релизный тег (текущий ещё не создан — его поставит шаг
-          # релиза ниже), поэтому describe вернёт прошлую версию.
-          CURRENT_TAG="v${{ steps.ver.outputs.version }}"
-          PREV=$(
-            git tag --merged HEAD --list 'v*' --sort=-version:refname \
-              | grep -vxF "$CURRENT_TAG" \
-              | grep -vE '_Full$' \
-              | head -n1 \
-              || true
-          )
+          CURRENT_TAG="${{ steps.release_meta.outputs.current_tag }}"
+          PREV="${{ steps.release_meta.outputs.previous_tag }}"
           RANGE="${PREV:+$PREV..}HEAD"
           echo "Current tag: ${CURRENT_TAG}"
-          echo "Previous tag: ${PREV:-<none>} (range: $RANGE)"
+          echo "Previous release tag: ${PREV:-<none>} (range: $RANGE)"
 
           # Чистый список: без merge-коммитов и служебного шума (bump версии,
-          # CI-правки релиза и т.п.). Расширять фильтр — дополнять regex ниже.
+          # CI-правки релиза и т.п.). Берём диапазон от последнего обычного
+          # релизного тега по версии, а не только от тега, который merged в HEAD:
+          # часть релизов создаётся вручную и может не попадать в ancestry-фильтр.
           LOG=$(git log $RANGE --no-merges --pretty=format:'- %s (%h)' \
             | grep -viE '(_version|\bbump\b|version bump|\[skip ci\]|tester code|release workflow|github actions?)' \
             || true)
@@ -154,6 +220,7 @@ jobs:
           cat CHANGELOG_BODY.md
 
       - name: Create GitHub Release
+        if: steps.release_meta.outputs.should_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.ver.outputs.version }}
