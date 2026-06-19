@@ -462,6 +462,9 @@ class PipInstaller:
     def _pip_base_cmd(self) -> List[str]:
         return [self.script_path, "-m", "pip"]
 
+    def _uv_executable_path(self) -> Path:
+        return self.python_root / "Scripts" / ("uv.exe" if os.name == "nt" else "uv")
+
     def _ensure_pip_available(self) -> bool:
         pip_cmd = self._pip_base_cmd()
         if self._check_installer_command(pip_cmd + ["--version"]):
@@ -482,8 +485,17 @@ class PipInstaller:
             self.update_log("uv недоступен: встроенный pip тоже не удалось подготовить.")
             return False
 
+        uv_exe = self._uv_executable_path()
+        if uv_exe.exists():
+            self.update_log(
+                f"Найден {uv_exe.name}, но модуль uv недоступен. "
+                "На Windows обновление поверх занятого uv.exe часто падает с Access Denied, "
+                "поэтому используем встроенный pip без авто-переустановки uv."
+            )
+            return False
+
         self.update_log("uv не найден во встроенном Python, устанавливаем его через python -m pip...")
-        install_cmd = self._pip_base_cmd() + ["install", "--upgrade", "uv"]
+        install_cmd = self._pip_base_cmd() + ["install", "uv"]
         if not self._run_pip_process(install_cmd, "Установка uv..."):
             self.update_log("Не удалось установить uv во встроенный Python, используем обычный pip.")
             return False
@@ -520,16 +532,6 @@ class PipInstaller:
             self.update_log("Для установки зависимостей выбран uv pip.")
             return list(self._preferred_installer_cmd)
 
-        # `python -m uv` не находит uv, если он установлен не в site-packages
-        # встроенного интерпретатора (например, лежит в Lib или поставлен как
-        # Scripts/uv.exe). launch.py умеет запускать uv.exe — повторим это,
-        # чтобы рантайм тоже пользовался uv, а не падал на pip.
-        uv_exe = self.python_root / "Scripts" / ("uv.exe" if os.name == "nt" else "uv")
-        if False and uv_exe.exists() and self._check_installer_command([str(uv_exe), "--version"]):
-            self._preferred_installer_cmd = [str(uv_exe), "--verbose", "pip"]
-            self.update_log(f"Для установки зависимостей выбран uv ({uv_exe.name}).")
-            return list(self._preferred_installer_cmd)
-
         pip_cmd = self._pip_base_cmd()
         if self._ensure_pip_available():
             self._preferred_installer_cmd = pip_cmd
@@ -538,8 +540,6 @@ class PipInstaller:
 
         self._preferred_installer_cmd = pip_cmd
         self.update_log("Не удалось заранее подготовить uv или pip, последняя попытка будет через встроенный pip.")
-        return list(self._preferred_installer_cmd)
-        self.update_log("Не удалось проверить uv/pip заранее, пробуем uv по умолчанию.")
         return list(self._preferred_installer_cmd)
 
     def _check_installer_command(self, cmd: List[str]) -> bool:
@@ -638,13 +638,14 @@ class PipInstaller:
             is_main_package = str(pkg) in main_packages_to_remove or canon in requested
             dist_path = self._find_dist_info_path(canon)
             if dist_path:
-                cmd = [
-                    self.script_path, "-m", "uv", "pip", "uninstall",
-                    "--target", str(self.libs_path_abs), str(pkg)
-                ]
-                success = self._run_pip_process(cmd, f"Удаление {pkg}")
+                base_cmd = self._resolve_installer_base_cmd()
+                if self._is_uv_command(base_cmd):
+                    cmd = list(base_cmd) + ["uninstall", "--target", str(self.libs_path_abs), str(pkg)]
+                    success = self._run_pip_process(cmd, f"Удаление {pkg}")
+                else:
+                    success = False
                 if not success:
-                    self.update_log(f"uv pip не смог удалить {pkg}, пробуем ручное удаление...")
+                    self.update_log(f"Автоматическое удаление не смогло удалить {pkg}, пробуем ручное удаление...")
                     success = self._manual_remove(dist_path, str(pkg))
                 if success and is_main_package:
                     main_packages_removed.append(str(pkg))

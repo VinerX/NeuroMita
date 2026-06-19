@@ -279,6 +279,14 @@ class InstallableController:
             "runner": runner,
         }
 
+        # Optional UI override hooks. AI Hub and other embedded installers can
+        # provide their own log/progress window; keep those objects intact so
+        # InstallGuiController uses that window instead of spawning the global one.
+        if data.get("install_window") is not None:
+            payload["install_window"] = data.get("install_window")
+        if data.get("install_callbacks") is not None:
+            payload["install_callbacks"] = data.get("install_callbacks")
+
         self.event_bus.emit(Events.Install.RUN_WITH_UI if with_ui else Events.Install.RUN_HEADLESS, payload)
         return True
 

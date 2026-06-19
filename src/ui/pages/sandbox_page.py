@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -116,7 +117,10 @@ class _SandboxStatusRow(QWidget):
         self._value = QLabel("—")
         self._value.setObjectName("SandboxInfoValue")
         self._value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._value.setMinimumWidth(0)
         h.addWidget(self._value, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        self._full_value_text = "—"
 
         from ui.widgets.toggle_switch import ToggleSwitch
         self._switch = ToggleSwitch()
@@ -165,9 +169,13 @@ class _SandboxStatusRow(QWidget):
         self._apply_dot()
 
     def set_value(self, text: str):
-        value = text or "—"
-        self._value.setText(value)
-        self._value.setToolTip(value)
+        self._full_value_text = text or "—"
+        self._value.setToolTip(self._full_value_text)
+        self._apply_value_text()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_value_text()
 
     # ----- dot rendering -----
     def _resolve_state(self) -> str:
@@ -187,6 +195,16 @@ class _SandboxStatusRow(QWidget):
         self._dot.setStyleSheet(
             f"background-color: {bg}; border: 1px solid {border}; border-radius: 6px;"
         )
+
+    def _apply_value_text(self):
+        value = self._full_value_text or "—"
+        available = max(24, self._value.width() - 2)
+        elided = self._value.fontMetrics().elidedText(
+            value,
+            Qt.TextElideMode.ElideRight,
+            available,
+        )
+        self._value.setText(elided)
 
 
 class SandboxPage(QWidget):
@@ -373,18 +391,11 @@ class SandboxPage(QWidget):
             pass
         return model_id
 
-    @staticmethod
-    def _shorten_text(text: str, limit: int = 34) -> str:
-        clean = str(text or "").strip()
-        if len(clean) <= limit:
-            return clean
-        return clean[: max(0, limit - 3)].rstrip() + "..."
-
     def _format_local_voice_value(self, model_id: str) -> str:
         base = _("Локально", "Local")
         if not model_id:
             return base
-        return f"{base}: {self._shorten_text(self._local_voice_name(model_id))}"
+        return f"{base}: {self._local_voice_name(model_id)}"
 
     # --------- Avatar -----------
     def _resolve_avatar_pixmap(self, character_id: str, size: int = 32) -> QPixmap:

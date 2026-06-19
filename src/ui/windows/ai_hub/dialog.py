@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 from core.events import Events, get_event_bus
 from main_logger import logger
 from styles.ai_hub_styles import get_stylesheet as get_ai_hub_stylesheet
+from ui.windows.voice_action_windows import VoiceInstallationWindow
 from utils import getTranslationVariant as _
 from utils.gpu_utils import check_gpu_provider
 
@@ -47,6 +48,7 @@ class AIHubDialog(QDialog):
         self._loaded_once = False
         self._last_check_ts: _dt.datetime | None = None
         self._category_buttons: dict[str, CategoryButton] = {}
+        self._active_install_window: VoiceInstallationWindow | None = None
 
         self._ui_call_requested.connect(self._execute_ui_call)
 
@@ -170,6 +172,17 @@ class AIHubDialog(QDialog):
         self.task_status_label.setWordWrap(True)
         self.task_status_label.setVisible(False)
         l.addWidget(self.task_status_label)
+
+        self._install_logs_btn = QPushButton(_("Логи установки", "Install logs"))
+        self._install_logs_btn.setObjectName("AIHubSidebarBtn")
+        self._install_logs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._install_logs_btn.setVisible(False)
+        logs_icon = qicon("fa5s.terminal", "#db6596")
+        if logs_icon is not None:
+            self._install_logs_btn.setIcon(logs_icon)
+            self._install_logs_btn.setIconSize(QSize(13, 13))
+        self._install_logs_btn.clicked.connect(self._on_reopen_install_logs)
+        l.addWidget(self._install_logs_btn)
 
         l.addStretch(1)
 
@@ -716,10 +729,13 @@ class AIHubDialog(QDialog):
     def _emit_component_action_by_id(self, component_id: str, event_name: str, extra: dict | None = None) -> None:
         if not component_id:
             return
+        install_window = self._create_install_window(component_id, event_name, extra=extra)
         payload = {
             "component_id": component_id,
             "with_ui": True,
             "meta": {"source": "ai_hub"},
+            "install_window": install_window,
+            "install_callbacks": install_window.get_threadsafe_callbacks(),
         }
         if extra:
             payload.update(extra)
@@ -727,6 +743,71 @@ class AIHubDialog(QDialog):
         self._set_task_status(_("Запуск задачи...", "Starting task..."))
 
     # ----------------------------------------------------------- task events
+    def _set_install_logs_visible(self, visible: bool) -> None:
+        self._install_logs_btn.setVisible(bool(visible))
+
+    def _on_install_window_closed(self) -> None:
+        self._active_install_window = None
+        self._set_install_logs_visible(False)
+
+    def _on_reopen_install_logs(self) -> None:
+        win = self._active_install_window
+        if win is None:
+            self._set_install_logs_visible(False)
+            return
+        self._set_install_logs_visible(False)
+        win.show()
+        win.raise_()
+        win.activateWindow()
+
+    def _title_for_component_action(self, component_id: str, event_name: str, extra: dict | None = None) -> str:
+        row = self._row_by_id(component_id) or {}
+        meta = meta_from_row(row)
+        component_title = str(
+            meta.get("title")
+            or meta.get("name")
+            or row.get("title")
+            or row.get("name")
+            or component_id
+        )
+        if event_name == Events.Installable.UNINSTALL:
+            return _("Удаление: {name}", "Removing: {name}").format(name=component_title)
+        if isinstance(extra, dict) and extra.get("clean"):
+            return _("Переустановка: {name}", "Reinstalling: {name}").format(name=component_title)
+        return _("Установка: {name}", "Installing: {name}").format(name=component_title)
+
+    def _create_install_window(self, component_id: str, event_name: str, extra: dict | None = None) -> VoiceInstallationWindow:
+        win = self._active_install_window
+        if win is not None:
+            if getattr(win, "_finished", False):
+                win.close()
+            else:
+                win.show()
+                win.raise_()
+                win.activateWindow()
+                self._set_install_logs_visible(False)
+                return win
+
+        title = self._title_for_component_action(component_id, event_name, extra=extra)
+        win = VoiceInstallationWindow(
+            self,
+            title,
+            _("Подготовка...", "Preparing..."),
+            style_variant="ai_hub",
+            reopen_hint_text=_(
+                "Это окно можно закрыть — установка продолжится в фоне. "
+                "Открыть снова и посмотреть логи можно кнопкой «Логи установки» слева в AI Hub.",
+                "You can close this window — the installation keeps running in the "
+                "background. Reopen it via the “Install logs” button on the left in AI Hub.",
+            ),
+        )
+        win.minimized.connect(lambda: self._set_install_logs_visible(True))
+        win.window_closed.connect(self._on_install_window_closed)
+        self._active_install_window = win
+        self._set_install_logs_visible(False)
+        win.show()
+        return win
+
     def _set_task_status(self, text: str) -> None:
         self._last_task_status = text or ""
         if self._last_task_status:

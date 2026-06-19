@@ -66,8 +66,15 @@ def ensure_uv() -> bool:
         return True
 
     ensure_pip()
+    uv_exe = PYTHON.parent / "Scripts" / ("uv.exe" if os.name == "nt" else "uv")
+    if uv_exe.exists():
+        log(
+            f"Найден {uv_exe.name}, но модуль uv недоступен. "
+            "Чтобы не упереться в блокировку uv.exe на Windows, пропускаю автоустановку uv и использую pip."
+        )
+        return False
     log("uv не найден во встроенном Python, устанавливаю его через python -m pip...")
-    if run([str(PYTHON), "-m", "pip", "install", "--upgrade", "uv"]) != 0:
+    if run([str(PYTHON), "-m", "pip", "install", "uv"]) != 0:
         log("Не удалось установить uv во встроенный Python.")
         return False
     return run_quiet([str(PYTHON), "-m", "uv", "--version"])
