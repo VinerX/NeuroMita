@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 
 class ProviderDelegate(QStyledItemDelegate):
     _free_pm = None
+    _local_pm = None
 
     @classmethod
     def _free_pixmap(cls):
@@ -34,6 +35,30 @@ class ProviderDelegate(QStyledItemDelegate):
             cls._free_pm = pm
         return cls._free_pm
 
+    @classmethod
+    def _local_pixmap(cls):
+        if cls._local_pm is None:
+            font = QFont("Segoe UI", 7, QFont.Weight.Bold)
+            metrics = QFontMetrics(font)
+            text_w = metrics.horizontalAdvance("LOCAL")
+            w, h = text_w + 10, 14
+            pm = QPixmap(w, h)
+            pm.fill(Qt.GlobalColor.transparent)
+
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setBrush(QColor("#4FC3F7"))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(0, 0, w, h, 3, 3)
+
+            p.setPen(QColor("#0b1220"))
+            p.setFont(font)
+            p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, "LOCAL")
+            p.end()
+
+            cls._local_pm = pm
+        return cls._local_pm
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.presets_meta = {}
@@ -53,8 +78,10 @@ class ProviderDelegate(QStyledItemDelegate):
         if preset_id and preset_id in self.presets_meta:
             preset = self.presets_meta[preset_id]
             pricing = preset.pricing
+            badge_kind = getattr(preset, "badge_kind", "") or ""
         else:
             pricing = ""
+            badge_kind = ""
 
         dollar_font = QFont("Segoe UI", 9, QFont.Weight.Bold)
         ascent = QFontMetrics(dollar_font).ascent()
@@ -62,7 +89,11 @@ class ProviderDelegate(QStyledItemDelegate):
         x = option.rect.x() + 4
         y = option.rect.y() + (option.rect.height() - 16) // 2
 
-        if pricing == "free":
+        if badge_kind == "local":
+            painter.drawPixmap(x, y, self._local_pixmap())
+            x += self._local_pixmap().width() + 6
+
+        elif pricing == "free":
             painter.drawPixmap(x, y, self._free_pixmap())
             x += self._free_pixmap().width() + 6
 

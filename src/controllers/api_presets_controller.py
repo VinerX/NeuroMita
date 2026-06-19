@@ -19,6 +19,7 @@ class PresetMeta:
     id: int
     name: str
     pricing: str
+    badge_kind: str = ""
     protocol_id: str = ""
     dialect_id: str = ""
     provider_name: str = ""
@@ -29,6 +30,7 @@ class ApiTemplate:
     id: int
     name: str
     pricing: str = "mixed"
+    badge_kind: str = ""
     url: str = ""
     url_tpl: str = ""
     default_model: str = ""
@@ -49,6 +51,7 @@ class UserPreset:
     name: str
     base: Optional[int] = None
     pricing: str = "mixed"
+    badge_kind: str = ""
     default_model: str = ""
     url: str = ""
     key: str = ""
@@ -387,6 +390,7 @@ class ApiPresetsController:
             name=name,
             base=base,
             pricing=str(raw.get("pricing", "mixed") or "mixed"),
+            badge_kind=str(raw.get("badge_kind", "") or "").strip(),
             default_model=str(raw.get("default_model", "") or ""),
             url=url,
             key=str(raw.get("key", "") or ""),
@@ -645,6 +649,7 @@ class ApiPresetsController:
             "id": p.id,
             "name": p.name,
             "pricing": (tpl.pricing if tpl else p.pricing),
+            "badge_kind": (tpl.badge_kind if tpl else p.badge_kind),
             "base": p.base,
             "protocol_id": protocol_id,
 
@@ -682,6 +687,7 @@ class ApiPresetsController:
                 id=tpl.id,
                 name=tpl.name,
                 pricing=tpl.pricing,
+                badge_kind=str(tpl.badge_kind or ""),
                 protocol_id=str(tpl.protocol_id or ""),
                 dialect_id=str(getattr(proto, "dialect", "") or ""),
                 provider_name=str(getattr(proto, "provider", "") or ""),
@@ -705,6 +711,7 @@ class ApiPresetsController:
                 id=up.id,
                 name=up.name,
                 pricing=(tpl.pricing if tpl else up.pricing),
+                badge_kind=str((tpl.badge_kind if tpl else up.badge_kind) or ""),
                 protocol_id=protocol_id,
                 dialect_id=str(getattr(proto, "dialect", "") or ""),
                 provider_name=str(getattr(proto, "provider", "") or ""),
@@ -747,6 +754,7 @@ class ApiPresetsController:
         up.name = name
         up.base = base
         up.pricing = str(data.get("pricing", up.pricing) or up.pricing)
+        up.badge_kind = str(data.get("badge_kind", up.badge_kind) or up.badge_kind).strip()
         up.default_model = str(data.get("default_model", up.default_model) or up.default_model)
         up.url = str(data.get("url", up.url) or up.url) if not base else ""
         up.key = str(data.get("key", up.key) or up.key)
@@ -858,6 +866,7 @@ class ApiPresetsController:
                 name=str(data.get("name", f"Preset {new_id}")),
                 base=base,
                 pricing=str(data.get("pricing", "mixed") or "mixed"),
+                badge_kind=str(data.get("badge_kind", "") or "").strip(),
                 default_model=str(data.get("default_model", "") or ""),
                 url=str(data.get("url", "") or "") if not base else "",
                 key=str(data.get("key", "") or ""),

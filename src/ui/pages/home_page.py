@@ -1060,7 +1060,7 @@ class HomePage(LauncherHomeBackground):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _prompt_restart_after_update(self):
+    def _prompt_restart_after_update(self) -> bool:
         """Спросить про перезапуск после применения Python-обновления."""
         from utils.app_restart import restart_app
 
@@ -1078,7 +1078,8 @@ class HomePage(LauncherHomeBackground):
         box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         box.setDefaultButton(QMessageBox.StandardButton.Yes)
         if box.exec() == QMessageBox.StandardButton.Yes:
-            restart_app()
+            return bool(restart_app())
+        return False
 
     def run_selective_update(self):
         """Установить отмеченные на карточках части. Python — первым."""
@@ -1245,12 +1246,19 @@ class HomePage(LauncherHomeBackground):
                         self._cancel_button.setEnabled(True)
                     if self.primary_button is not None:
                         self.primary_button.setEnabled(True)
-                    self.refresh_status_cards()
+                    try:
+                        self.refresh_status_cards()
                     # Перепроверим состояние обновлений (баннер/чекбоксы).
-                    self._refresh_update_state(force=True)
-                    if py_applied and not cancel_event.is_set():
-                        self._prompt_restart_after_update()
-                    else:
+                        self._refresh_update_state(force=True)
+                    except Exception:
+                        logger.error("[home_update] Post-update UI refresh failed", exc_info=True)
+                    restart_started = False
+                    try:
+                        if py_applied and not cancel_event.is_set():
+                            restart_started = self._prompt_restart_after_update()
+                    except Exception:
+                        logger.error("[home_update] Failed to show restart prompt", exc_info=True)
+                    if not restart_started:
                         QTimer.singleShot(4000, self.hide_progress)
 
                 self._queue_ui_call(done)
