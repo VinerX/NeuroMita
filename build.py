@@ -40,6 +40,7 @@ for _k, _v in os.environ.items():
 
 OUTPUT_DIR = Path(env.get("BUILD_OUTPUT_DIR", str(PROJECT_DIR / "build_output")))
 BUILD_MODE = env.get("BUILD_MODE", "full").lower()
+STRIP_EMBEDDED_UV = env.get("BUILD_STRIP_EMBEDDED_UV", "1") == "1"
 
 # Фильтровать dot-папки (.cache, .git и т.п.) при копировании папок
 EXCLUDE_DOT_DIRS = env.get("BUILD_EXCLUDE_DOT_DIRS", "1") == "1"
@@ -221,6 +222,73 @@ def copy_entries(entries: List[Tuple[Path, Path]]) -> None:
             print(f"Предупреждение: {src} не существует, пропускаю")
 
 
+def _remove_file_if_exists(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        os.chmod(path, stat.S_IWRITE)
+    except OSError:
+        pass
+    path.unlink(missing_ok=True)
+    return True
+
+
+def _remove_tree_if_exists(path: Path) -> bool:
+    if not path.exists():
+        return False
+    _rmtree_robust(path)
+    return True
+
+
+def strip_embedded_uv_runtime() -> None:
+    """Drop uv artifacts from the copied embedded runtime.
+
+    Build output must not contain a half-installed uv state where Scripts/uv.exe
+    exists but the Python module/dist-info is missing. That combination makes the
+    runtime try to self-heal via pip and often fails on Windows with Access
+    Denied while uv.exe is locked. We either ship uv fully or not at all; for
+    release builds the safer default is to strip it and let pip handle installs.
+    """
+    py_root = OUTPUT_DIR / "libs" / "python"
+    if not py_root.exists():
+        print("embedded python не найден — пропускаю очистку uv runtime.")
+        return
+
+    removed: list[str] = []
+
+    scripts_dir = py_root / "Scripts"
+    for name in ("uv.exe", "uvx.exe", "uv", "uvx"):
+        path = scripts_dir / name
+        if _remove_file_if_exists(path):
+            removed.append(str(path.relative_to(OUTPUT_DIR)))
+
+    site_packages = py_root / "Lib" / "site-packages"
+    exact_paths = [
+        site_packages / "uv",
+        site_packages / "uv.py",
+    ]
+    for path in exact_paths:
+        if path.is_dir() and _remove_tree_if_exists(path):
+            removed.append(str(path.relative_to(OUTPUT_DIR)))
+        elif path.is_file() and _remove_file_if_exists(path):
+            removed.append(str(path.relative_to(OUTPUT_DIR)))
+
+    if site_packages.exists():
+        for pattern in ("uv-*.dist-info", "uv-*.data"):
+            for path in sorted(site_packages.glob(pattern)):
+                if path.is_dir() and _remove_tree_if_exists(path):
+                    removed.append(str(path.relative_to(OUTPUT_DIR)))
+                elif path.is_file() and _remove_file_if_exists(path):
+                    removed.append(str(path.relative_to(OUTPUT_DIR)))
+
+    if removed:
+        print("Удалены uv-артефакты из embedded runtime:")
+        for item in removed:
+            print(f"  - {item}")
+    else:
+        print("uv-артефакты в embedded runtime не найдены.")
+
+
 def create_flat_zip_from_directory(source_dir: Path, archive_base: Path) -> Path:
     """Create a zip archive whose root contains source_dir contents, not source_dir itself.
 
@@ -247,6 +315,7 @@ if __name__ == "__main__":
     print(f"Фильтр dot-папок    : {'вкл' if EXCLUDE_DOT_DIRS else 'выкл'}")
     print(f"Фильтр checkpoints  : {'вкл' if EXCLUDE_CHECKPOINTS else 'выкл'}")
     print(f"Фильтр backend Lib  : {'вкл' if EXCLUDE_MANAGED_BACKENDS else 'выкл'}")
+    print(f"Очистка embedded uv : {'вкл' if STRIP_EMBEDDED_UV else 'выкл'}")
     print(f"Очистка output      : {'вкл' if CLEAN_OUTPUT else 'выкл'}")
 
     if CLEAN_OUTPUT:
@@ -294,6 +363,10 @@ if __name__ == "__main__":
     if ROOT_SCRIPTS:
         print("\nКопирую скрипты запуска...")
         copy_entries(ROOT_SCRIPTS)
+
+    if STRIP_EMBEDDED_UV:
+        print("\nОчищаю uv из embedded Python...")
+        strip_embedded_uv_runtime()
 
     if env.get("BUILD_ARCHIVE", "0") == "1":
         archive_path = env.get("BUILD_ARCHIVE_PATH")
