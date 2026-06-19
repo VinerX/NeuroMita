@@ -456,6 +456,44 @@ class PipInstaller:
         except Exception:
             return True
 
+    def _uv_base_cmd(self) -> List[str]:
+        return [self.script_path, "-m", "uv", "--verbose", "pip"]
+
+    def _pip_base_cmd(self) -> List[str]:
+        return [self.script_path, "-m", "pip"]
+
+    def _ensure_pip_available(self) -> bool:
+        pip_cmd = self._pip_base_cmd()
+        if self._check_installer_command(pip_cmd + ["--version"]):
+            return True
+
+        self.update_log("pip не найден во встроенном Python, запускаем ensurepip...")
+        bootstrap_cmd = [self.script_path, "-m", "ensurepip", "--upgrade"]
+        if not self._run_pip_process(bootstrap_cmd, "Восстановление pip..."):
+            self.update_log("ОШИБКА: Не удалось восстановить pip через ensurepip.")
+            return False
+        return self._check_installer_command(pip_cmd + ["--version"])
+
+    def _ensure_uv_available(self) -> bool:
+        if self._check_installer_command([self.script_path, "-m", "uv", "--version"]):
+            return True
+
+        if not self._ensure_pip_available():
+            self.update_log("uv недоступен: встроенный pip тоже не удалось подготовить.")
+            return False
+
+        self.update_log("uv не найден во встроенном Python, устанавливаем его через python -m pip...")
+        install_cmd = self._pip_base_cmd() + ["install", "--upgrade", "uv"]
+        if not self._run_pip_process(install_cmd, "Установка uv..."):
+            self.update_log("Не удалось установить uv во встроенный Python, используем обычный pip.")
+            return False
+        if not self._check_installer_command([self.script_path, "-m", "uv", "--version"]):
+            self.update_log("uv установился некорректно: модуль по-прежнему недоступен.")
+            return False
+
+        self.update_log("uv установлен во встроенный Python и готов к работе.")
+        return True
+
     def purge_cache(self, description: str = "Очистка кэша установщика...") -> bool:
         """Clear the pip/uv download cache (frees disk; resets resumable state)."""
         self.update_status(description)
@@ -476,8 +514,8 @@ class PipInstaller:
         if self._preferred_installer_cmd is not None:
             return list(self._preferred_installer_cmd)
 
-        uv_cmd = [self.script_path, "-m", "uv", "--verbose", "pip"]
-        if self._check_installer_command([self.script_path, "-m", "uv", "--version"]):
+        uv_cmd = self._uv_base_cmd()
+        if self._ensure_uv_available():
             self._preferred_installer_cmd = uv_cmd
             self.update_log("Для установки зависимостей выбран uv pip.")
             return list(self._preferred_installer_cmd)
@@ -487,18 +525,20 @@ class PipInstaller:
         # Scripts/uv.exe). launch.py умеет запускать uv.exe — повторим это,
         # чтобы рантайм тоже пользовался uv, а не падал на pip.
         uv_exe = self.python_root / "Scripts" / ("uv.exe" if os.name == "nt" else "uv")
-        if uv_exe.exists() and self._check_installer_command([str(uv_exe), "--version"]):
+        if False and uv_exe.exists() and self._check_installer_command([str(uv_exe), "--version"]):
             self._preferred_installer_cmd = [str(uv_exe), "--verbose", "pip"]
             self.update_log(f"Для установки зависимостей выбран uv ({uv_exe.name}).")
             return list(self._preferred_installer_cmd)
 
-        pip_cmd = [self.script_path, "-m", "pip"]
-        if self._check_installer_command(pip_cmd + ["--version"]):
+        pip_cmd = self._pip_base_cmd()
+        if self._ensure_pip_available():
             self._preferred_installer_cmd = pip_cmd
             self.update_log("uv недоступен, используем встроенный pip.")
             return list(self._preferred_installer_cmd)
 
-        self._preferred_installer_cmd = uv_cmd
+        self._preferred_installer_cmd = pip_cmd
+        self.update_log("Не удалось заранее подготовить uv или pip, последняя попытка будет через встроенный pip.")
+        return list(self._preferred_installer_cmd)
         self.update_log("Не удалось проверить uv/pip заранее, пробуем uv по умолчанию.")
         return list(self._preferred_installer_cmd)
 

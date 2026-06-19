@@ -30,7 +30,6 @@ for _stream in (sys.stdout, sys.stderr):
 
 ROOT = Path(__file__).resolve().parent
 PYTHON = Path(sys.executable)  # встроенный питон игры (libs\python\python.exe)
-UV_EXE = ROOT / "libs" / "python" / "Scripts" / "uv.exe"
 REQ_FILE = ROOT / "requirements.txt"
 HASH_FILE = ROOT / ".req_hash"
 PYZ = ROOT / "NeuroMita.pyz"
@@ -62,6 +61,18 @@ def ensure_pip() -> None:
     run([str(PYTHON), "-m", "ensurepip", "--upgrade"])
 
 
+def ensure_uv() -> bool:
+    if run_quiet([str(PYTHON), "-m", "uv", "--version"]):
+        return True
+
+    ensure_pip()
+    log("uv не найден во встроенном Python, устанавливаю его через python -m pip...")
+    if run([str(PYTHON), "-m", "pip", "install", "--upgrade", "uv"]) != 0:
+        log("Не удалось установить uv во встроенный Python.")
+        return False
+    return run_quiet([str(PYTHON), "-m", "uv", "--version"])
+
+
 def file_hash(path: Path) -> str:
     return hashlib.md5(path.read_bytes()).hexdigest()
 
@@ -83,10 +94,9 @@ def install_requirements() -> bool:
     """Ставит зависимости во встроенный питон. Сначала uv, при неудаче — pip."""
     # 1. Предпочитаем встроенный uv.exe с явным таргетом на наш питон —
     #    без --python uv ищет venv/системный питон и падает с ошибкой про venv.
-    if UV_EXE.exists():
+    if ensure_uv():
         code = run([
-            str(UV_EXE), "pip", "install",
-            "--python", str(PYTHON),
+            str(PYTHON), "-m", "uv", "pip", "install",
             "-r", str(REQ_FILE),
             "--no-cache-dir",
         ])
