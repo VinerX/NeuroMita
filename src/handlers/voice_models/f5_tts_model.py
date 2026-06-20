@@ -79,6 +79,12 @@ class F5TTSInstallSpec:
             "google-api-core",
             "librosa==0.9.1",
             "numba==0.60.0",
+            # Keep the whole stack on numpy 1.x. Without an upper bound pip drags
+            # scipy up to a numpy-2.0 build (>=1.13 uses np.long, removed in
+            # numpy 1.26), and `from transformers import pipeline` then explodes
+            # with AttributeError: module 'numpy' has no attribute 'long'.
+            "numpy<2.0",
+            "scipy<1.13",
             "ruaccent",
         ]
         if mid == "high+low":
@@ -413,6 +419,10 @@ class F5TTSModel(IVoiceModel):
                     ref_text_content = f.read().strip()
 
         if not ref_audio_path:
+            logger.info(
+                f"F5-TTS: voice asset for '{voice_paths.get('character_name') or '?'}' is not "
+                f"installed — falling back to the default reference voice."
+            )
             default_paths = get_character_voice_paths(None, self.parent.provider)
             if os.path.exists(default_paths.get("f5_voice_filename", "")):
                 ref_audio_path = default_paths["f5_voice_filename"]
@@ -426,7 +436,12 @@ class F5TTSModel(IVoiceModel):
                         ref_text_content = f.read().strip()
 
         if not ref_audio_path:
-            raise FileNotFoundError("F5-TTS requires reference audio, but none found.")
+            name = voice_paths.get("character_name") or "?"
+            logger.warning(
+                f"F5-TTS: no reference audio for '{name}' (voice asset not installed) and no "
+                f"default available — skipping voiceover; no audio for this character."
+            )
+            return None
 
         if self.ruaccent_instance is not None:
             text = self._apply_ruaccent(text)

@@ -615,7 +615,18 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
         if not self.initialized or self.initialized_for != current_mode:
             raise Exception(f"Handler is not initialized for mode '{current_mode}'.")
 
-        self._update_parent_paths(character)
+        voice_paths = self._update_parent_paths(character)
+        # Voice asset gate: RVC needs this character's trained model. If the
+        # bundle isn't installed, skip cleanly (no audio for this Mita) instead
+        # of wasting a TTS synthesis and then blowing up inside RVC.
+        pth = voice_paths.get("pth_path")
+        if not pth or not os.path.exists(pth):
+            name = voice_paths.get("character_name") or "?"
+            logger.warning(
+                f"Voice asset for '{name}' is not installed ({pth}) — "
+                f"skipping voiceover; this character will have no audio."
+            )
+            return None
         if self._pipeline_for_model(current_mode) == "edge":
             return await self._voiceover_edge_tts_rvc(
                 text,
