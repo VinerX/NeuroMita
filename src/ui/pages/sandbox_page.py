@@ -118,7 +118,7 @@ class _SandboxStatusRow(QWidget):
         self._value.setObjectName("SandboxInfoValue")
         self._value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self._value.setMinimumWidth(0)
+        self._value.setMinimumWidth(88)
         h.addWidget(self._value, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
         self._full_value_text = "—"
 
@@ -243,7 +243,7 @@ class SandboxPage(QWidget):
         self._budget_value = None
         self._lr_values = {}
         self._lr_t0 = None
-        self._inspector_expanded_width = 380
+        self._inspector_expanded_width = 420
         self._inspector_collapsed_width = 56
         self._inspector_tab_indexes = {}
 
