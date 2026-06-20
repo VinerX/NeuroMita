@@ -7,7 +7,8 @@ import sys
 from main_logger import logger
 
 def install_ffmpeg(target_directory=".",
-                   url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"):
+                   url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+                   log=None):
     """
     Downloads the FFmpeg zip archive from the specified URL, extracts ONLY
     ffmpeg.exe to the target directory (root), and deletes the downloaded
@@ -19,11 +20,24 @@ def install_ffmpeg(target_directory=".",
                                         current working directory (".").
                                         This is NOT relative to sys.executable.
         url (str): The URL to download the FFmpeg zip archive from.
+        log (callable or None): Optional sink for user-facing messages (e.g. the
+                                AI Hub install log). Errors are reported through
+                                it *and* the file logger, so the real failure
+                                reason (network reset, bad zip, ...) reaches the
+                                install window instead of just "failed".
 
     Returns:
         bool: True if ffmpeg.exe was successfully placed in the target
               directory, False otherwise.
     """
+    def _emit(msg):
+        logger.info(msg)
+        if log is not None:
+            try:
+                log(msg)
+            except Exception:
+                pass
+
     target_dir = Path(target_directory).resolve()
     # Ensure target directory exists, create if not
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -42,7 +56,7 @@ def install_ffmpeg(target_directory=".",
     zip_filepath = target_dir / zip_filename
 
     logger.info(f"Target directory: {target_dir}")
-    logger.info(f"Downloading FFmpeg from {url}...")
+    _emit(f"Downloading FFmpeg from {url}...")
     try:
         # Use stream=True for potentially large files and add a timeout
         response = requests.get(url, stream=True, timeout=60)
@@ -55,13 +69,13 @@ def install_ffmpeg(target_directory=".",
         logger.info(f"Download complete: '{zip_filepath}'")
 
     except requests.exceptions.RequestException as e:
-        logger.info(f"Error downloading file: {e}")
+        _emit(f"Error downloading file: {e}")
         # Clean up potentially incomplete download
         if zip_filepath.exists():
             os.remove(zip_filepath)
         return False
     except Exception as e:
-        logger.info(f"An unexpected error occurred during download: {e}")
+        _emit(f"An unexpected error occurred during download: {e}")
         if zip_filepath.exists():
             os.remove(zip_filepath)
         return False
@@ -78,7 +92,7 @@ def install_ffmpeg(target_directory=".",
             possible_paths = [m.filename for m in zip_ref.infolist() if m.filename.endswith(ffmpeg_exe_name) and not m.is_dir()]
 
             if not possible_paths:
-                logger.info(f"Error: '{ffmpeg_exe_name}' not found within the zip file '{zip_filepath}'.")
+                _emit(f"Error: '{ffmpeg_exe_name}' not found within the zip file '{zip_filepath}'.")
                 return False # Failure, ffmpeg.exe not found
 
             # Prefer a path that includes '/bin/' if multiple matches exist
@@ -97,10 +111,10 @@ def install_ffmpeg(target_directory=".",
             return True # Success
 
     except zipfile.BadZipFile:
-        logger.info(f"Error: Downloaded file '{zip_filepath}' is not a valid zip file.")
+        _emit(f"Error: Downloaded file '{zip_filepath}' is not a valid zip file.")
         return False # Failure
     except Exception as e:
-        logger.info(f"An error occurred during extraction: {e}")
+        _emit(f"An error occurred during extraction: {e}")
         # If extraction failed but ffmpeg.exe was partially created, remove it
         if target_ffmpeg_path.exists():
              try:

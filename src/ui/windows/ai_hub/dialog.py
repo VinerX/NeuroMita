@@ -732,6 +732,19 @@ class AIHubDialog(QDialog):
         voices — those live under «Голоса Мит». Shown once, then suppressed."""
         if not str(component_id or "").startswith("tts:"):
             return
+
+        # If a voice is already installed, the engine has something to speak
+        # with — skip the nudge entirely (e.g. user grabbed a voice first, then
+        # the engine).
+        try:
+            from installables.voice_assets import MITA_VOICES
+            from utils.voice_assets_installer import is_installed
+
+            if any(is_installed(v["short_name"]) for v in MITA_VOICES):
+                return
+        except Exception:
+            pass
+
         try:
             from managers.settings_manager import SettingsManager
         except Exception:
