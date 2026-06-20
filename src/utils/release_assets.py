@@ -43,6 +43,7 @@ class Release:
     body: str
     published_at: str
     assets: list[ReleaseAsset] = field(default_factory=list)
+    html_url: str = ""
 
     @property
     def is_patch(self) -> bool:
@@ -160,4 +161,5 @@ def parse_release(item: dict) -> Release:
         body=item.get("body") or "",
         published_at=item.get("published_at") or "",
         assets=assets,
+        html_url=item.get("html_url") or "",
     )

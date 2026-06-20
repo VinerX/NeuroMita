@@ -25,6 +25,14 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from utils.archive_utils import PasswordError, extract_archive, format_bytes, make_logger, wipe_dir
+from utils.release_assets import (
+    Release,
+    ReleaseAsset,
+    find_latest_python_full,
+    find_latest_unity_asset,
+    parse_release,
+    pick_from_release,
+)
 
 _USER_AGENT = "NeuroMita-Updater/2.0"
 _LOG_PREFIX = "[updater]"
@@ -259,27 +267,8 @@ def _published_sort_key(release: dict) -> str:
     return str(release.get("published_at") or release.get("created_at") or "")
 
 
-def _release_field(release, key: str, default=None):
-    """Read a release field from either raw GitHub dict or utils.release_assets.Release."""
-    if release is None:
-        return default
-    if isinstance(release, dict):
-        return release.get(key, default)
-    attr_map = {
-        "tag_name": "tag",
-        "name": "name",
-        "prerelease": "prerelease",
-        "body": "body",
-        "published_at": "published_at",
-        "assets": "assets",
-        "html_url": "html_url",
-    }
-    attr_name = attr_map.get(key, key)
-    return getattr(release, attr_name, default)
-
-
-def _select_release(repo: str, channel: str) -> Optional[dict]:
-    """Return newest release suitable for the given channel.
+def _select_release(repo: str, channel: str) -> Optional[Release]:
+    """Return newest release suitable for the given channel as a Release.
 
     stable: последний опубликованный НЕ-prerelease (GitHub /releases/latest).
     beta:   то же самое, но с учётом prerelease — берём самый свежий по
@@ -288,12 +277,13 @@ def _select_release(repo: str, channel: str) -> Optional[dict]:
             релиз может оказаться первым; поэтому пересортировываем сами.
     """
     if channel == "beta":
-        releases = [r for r in _fetch_releases(repo) if not r.get("draft")]
-        if not releases:
+        raws = [r for r in _fetch_releases(repo) if not r.get("draft")]
+        if not raws:
             return None
-        releases.sort(key=_published_sort_key, reverse=True)
-        return releases[0]
-    return _fetch_latest_release(repo)
+        raws.sort(key=_published_sort_key, reverse=True)
+        return parse_release(raws[0])
+    raw = _fetch_latest_release(repo)
+    return parse_release(raw) if raw else None
 
 
 # ── Download ──────────────────────────────────────────────────────────────────
@@ -363,74 +353,19 @@ def _download(
 
 # ── Asset selection ───────────────────────────────────────────────────────────
 
-def _pick_assets(release: dict):
-    """Parse a GitHub release dict using release_assets module."""
-    try:
-        from utils.release_assets import parse_release, pick_from_release
-        return pick_from_release(parse_release(release))
-    except Exception:
-        return None
-
-
-def _fetch_full_fallback_asset(repo: str, channel: str):
+def _fetch_full_fallback_asset(repo: str, channel: str) -> Optional[ReleaseAsset]:
     """Walk releases to find the latest full Python asset for patch fallback."""
-    try:
-        from utils.release_assets import parse_release, find_latest_python_full
-        releases = [parse_release(r) for r in _fetch_releases(repo)]
-        _, full_asset = find_latest_python_full(releases, channel)
-        return full_asset
-    except Exception:
-        pass
-
-    # Plain fallback: first .zip in the first non-patch release
-    for r in _fetch_releases(repo):
-        if channel == "stable" and r.get("prerelease"):
-            continue
-        hay = f"{r.get('tag_name','')} {r.get('name','')}".lower()
-        if "patch" in hay:
-            continue
-        a = next((x for x in r.get("assets", []) if x.get("name","").endswith(".zip")), None)
-        if a:
-            # Return as a simple namespace to match ReleaseAsset interface
-            class _A:
-                url = a["browser_download_url"]
-                name = a["name"]
-            return _A()
-    return None
+    releases = [parse_release(r) for r in _fetch_releases(repo)]
+    _, full_asset = find_latest_python_full(releases, channel)
+    return full_asset
 
 
-def _fetch_latest_unity_release_asset(repo: str, channel: str):
-    """Walk releases to find the latest Unity asset, even if newer releases are Python-only."""
-    try:
-        from utils.release_assets import parse_release, find_latest_unity_asset
-        releases = [parse_release(r) for r in _fetch_releases(repo)]
-        release, unity_asset = find_latest_unity_asset(releases, channel)
-        return release, unity_asset
-    except Exception:
-        pass
-
-    candidates = [r for r in _fetch_releases(repo) if not r.get("draft")]
-    candidates.sort(key=_published_sort_key, reverse=True)
-    for r in candidates:
-        if channel == "stable" and r.get("prerelease"):
-            continue
-        raw = next(
-            (
-                a for a in (r.get("assets") or [])
-                if "unity" in str(a.get("name", "")).lower()
-                and str(a.get("name", "")).lower().endswith((".zip", ".7z"))
-            ),
-            None,
-        )
-        if raw is None:
-            continue
-
-        class _A:
-            url = raw["browser_download_url"]
-            name = raw["name"]
-
-        return r, _A()
-    return None, None
+def _fetch_latest_unity_release_asset(
+    repo: str, channel: str
+) -> tuple[Optional[Release], Optional[ReleaseAsset]]:
+    """Find the latest Unity asset, even if newer releases are Python-only."""
+    releases = [parse_release(r) for r in _fetch_releases(repo)]
+    return find_latest_unity_asset(releases, channel)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -453,7 +388,7 @@ def get_python_update_info(
             "error": "Could not reach GitHub to check for updates",
         }
 
-    remote_tag = str(_release_field(release, "tag_name", "") or "")
+    remote_tag = str(release.tag or "")
     available = bool(remote_tag) and _is_newer(remote_tag, local_version)
     return {
         "ok": True,
@@ -463,11 +398,11 @@ def get_python_update_info(
         "current_version": local_version,
         "latest_version": remote_tag,
         "available": available,
-        "prerelease": bool(_release_field(release, "prerelease", False)),
-        "name": str(_release_field(release, "name", "") or ""),
-        "body": str(_release_field(release, "body", "") or ""),
-        "published_at": str(_release_field(release, "published_at", "") or ""),
-        "html_url": str(_release_field(release, "html_url", "") or ""),
+        "prerelease": bool(release.prerelease),
+        "name": str(release.name or ""),
+        "body": str(release.body or ""),
+        "published_at": str(release.published_at or ""),
+        "html_url": str(release.html_url or ""),
     }
 
 
@@ -501,7 +436,7 @@ def get_unity_update_info(
             "error": "Could not find a Unity release asset to check for updates",
         }
 
-    remote_tag = str(_release_field(release, "tag_name", "") or "")
+    remote_tag = str(release.tag or "")
     available = bool(remote_tag) and (_is_newer(remote_tag, local_version) or not install_complete)
     return {
         "ok": True,
@@ -512,11 +447,11 @@ def get_unity_update_info(
         "latest_version": remote_tag,
         "available": available,
         "install_complete": install_complete,
-        "prerelease": bool(_release_field(release, "prerelease", False)),
-        "name": str(_release_field(release, "name", "") or ""),
-        "body": str(_release_field(release, "body", "") or ""),
-        "published_at": str(_release_field(release, "published_at", "") or ""),
-        "html_url": str(_release_field(release, "html_url", "") or ""),
+        "prerelease": bool(release.prerelease),
+        "name": str(release.name or ""),
+        "body": str(release.body or ""),
+        "published_at": str(release.published_at or ""),
+        "html_url": str(release.html_url or ""),
         "asset_name": getattr(unity_asset, "name", "") if unity_asset is not None else "",
     }
 
@@ -573,7 +508,7 @@ def check_for_updates(
         log("Could not reach GitHub to check for updates", "warning")
         return
 
-    remote_tag = _release_field(release, "tag_name", "")
+    remote_tag = release.tag
     if not remote_tag:
         return
 
@@ -588,31 +523,25 @@ def check_for_updates(
         return
 
     # Select best Python asset
-    picked = _pick_assets(release)
+    picked = pick_from_release(release)
     is_patch = False
     python_asset = None
 
-    if picked is not None:
-        if picked.python_patch is not None:
-            python_asset = picked.python_patch
-            is_patch = True
-        elif picked.python_full is not None:
-            python_asset = picked.python_full
+    if picked.python_patch is not None:
+        python_asset = picked.python_patch
+        is_patch = True
+    elif picked.python_full is not None:
+        python_asset = picked.python_full
 
     if python_asset is None:
         # Plain fallback: first .zip in assets
-        raw_assets = _release_field(release, "assets", []) or []
-        raw = next(
-            (a for a in raw_assets if isinstance(a, dict) and a.get("name", "").endswith(".zip")),
+        python_asset = next(
+            (a for a in release.assets if a.name.lower().endswith(".zip")),
             None,
         )
-        if raw is None:
+        if python_asset is None:
             log("No suitable Python asset found in release", "warning")
             return
-        class _A:
-            url = raw["browser_download_url"]
-            name = raw["name"]
-        python_asset = _A()
 
     if base_dir is None:
         base_dir = str(Path(sys.argv[0]).parent)
@@ -749,7 +678,7 @@ def check_for_unity_updates(
         log("Could not find a Unity release asset to check for updates", "warning")
         return
 
-    remote_tag = _release_field(release, "tag_name", "")
+    remote_tag = release.tag
     if not remote_tag:
         return
 
@@ -765,33 +694,13 @@ def check_for_unity_updates(
         log("Unity auto-update is disabled (AUTO_UPDATE_UNITY=0). Enable in settings.")
         return
 
-    # Select Unity asset
-    if unity_asset is not None:
-        unity_url = unity_asset.url
-        unity_name = unity_asset.name
-    else:
-        picked = _pick_assets(release)
-        unity_url = None
-        unity_name = None
-
-        if picked is not None and picked.unity is not None:
-            unity_url = picked.unity.url
-            unity_name = picked.unity.name
-        else:
-            raw = next(
-                (
-                    a for a in (_release_field(release, "assets", []) or [])
-                    if isinstance(a, dict)
-                    and "unity" in a.get("name", "").lower()
-                    and a.get("name", "").lower().endswith((".zip", ".7z"))
-                ),
-                None,
-            )
-            if raw is None:
-                log("No Unity asset found in release", "warning")
-                return
-            unity_url = raw["browser_download_url"]
-            unity_name = raw["name"]
+    # Select Unity asset — _fetch_latest_unity_release_asset already returned the
+    # unity-bearing release together with its asset.
+    if unity_asset is None:
+        log("No Unity asset found in release", "warning")
+        return
+    unity_url = unity_asset.url
+    unity_name = unity_asset.name
 
     dl_dir = base_path / "_update_download"
     dl_dir.mkdir(parents=True, exist_ok=True)
