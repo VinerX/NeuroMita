@@ -47,12 +47,22 @@ jobs:
         id: release_meta
         shell: bash
         run: |
+          RELEASE_TAG_PATTERN='^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$'
           CURRENT_TAG="v${{ steps.ver.outputs.version }}"
-          LATEST_TAG=$(
+          if ! printf '%s\n' "$CURRENT_TAG" | grep -Eq "$RELEASE_TAG_PATTERN"; then
+            echo "Unsupported release tag format: $CURRENT_TAG"
+            echo "Expected tags like v2026.06.20 or v2026.06.20.1."
+            exit 1
+          fi
+
+          list_release_tags() {
             git tag --list 'v*' --sort=-version:refname \
-              | grep -vE '_Full$' \
-              | head -n1 \
+              | grep -E "$RELEASE_TAG_PATTERN" \
               || true
+          }
+
+          LATEST_TAG=$(
+            list_release_tags | head -n1
           )
 
           SHOULD_RELEASE="true"
@@ -63,8 +73,7 @@ jobs:
             SHOULD_RELEASE="false"
             SKIP_REASON="version-already-released"
             PREV_TAG=$(
-              git tag --list 'v*' --sort=-version:refname \
-                | grep -vE '_Full$' \
+              list_release_tags \
                 | grep -vxF "$CURRENT_TAG" \
                 | head -n1 \
                 || true
