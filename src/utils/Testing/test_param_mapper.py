@@ -1,66 +1,62 @@
+import sys
+import types
 import unittest
-import importlib.util
 from pathlib import Path
 
-_PARAM_MAPPER_PATH = Path(__file__).resolve().parents[2] / "handlers" / "llm_providers" / "param_mapper.py"
-_SPEC = importlib.util.spec_from_file_location("test_param_mapper_module", _PARAM_MAPPER_PATH)
-_MODULE = importlib.util.module_from_spec(_SPEC)
-assert _SPEC is not None and _SPEC.loader is not None
-_SPEC.loader.exec_module(_MODULE)
-drop_unsupported_thinking_params = _MODULE.drop_unsupported_thinking_params
+_SRC_DIR = Path(__file__).resolve().parents[2]
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
+from handlers.llm_providers.openai_http_base import OpenAIHTTPProviderBase
 
 
-class ThinkingParamFilterTests(unittest.TestCase):
-    def test_generic_openai_compat_drops_thinking_params(self):
-        params = {
-            "temperature": 0.7,
-            "enable_thinking": True,
-            "thinking_budget": 1024,
-            "gemini_thinking_budget": 8192,
-        }
+def _req(*, enable_thinking=None, reasoning_control=None, thinking_budget=None):
+    extra = {}
+    if enable_thinking is not None:
+        extra["enable_thinking"] = enable_thinking
+    if thinking_budget is not None:
+        extra["thinking_budget"] = thinking_budget
+    capabilities = {}
+    if reasoning_control is not None:
+        capabilities["reasoning_control"] = reasoning_control
+    return types.SimpleNamespace(extra=extra, capabilities=capabilities)
 
-        filtered = drop_unsupported_thinking_params(
-            params,
-            provider_name="common",
-            capabilities={},
+
+class ApplyReasoningTests(unittest.TestCase):
+    """Thinking is strictly opt-in via a declared reasoning_control transport."""
+
+    def test_legacy_provider_never_receives_thinking(self):
+        # Generic OpenAI-compatible (e.g. Mistral): no reasoning_control declared.
+        payload = {}
+        OpenAIHTTPProviderBase._apply_reasoning(payload, _req(enable_thinking=True, thinking_budget=1024))
+        self.assertNotIn("thinking", payload)
+        self.assertNotIn("reasoning", payload)
+
+    def test_absent_enable_thinking_emits_nothing(self):
+        payload = {}
+        OpenAIHTTPProviderBase._apply_reasoning(payload, _req(reasoning_control="openrouter"))
+        self.assertEqual(payload, {})
+
+    def test_openrouter_transport_emits_reasoning_map(self):
+        payload = {}
+        OpenAIHTTPProviderBase._apply_reasoning(
+            payload, _req(enable_thinking=True, reasoning_control="openrouter", thinking_budget=2048)
         )
+        self.assertEqual(payload["reasoning"], {"enabled": True, "max_tokens": 2048})
 
-        self.assertEqual(filtered, {"temperature": 0.7})
-
-    def test_openrouter_keeps_reasoning_controls(self):
-        params = {
-            "enable_thinking": True,
-            "thinking_budget": 1024,
-        }
-
-        filtered = drop_unsupported_thinking_params(
-            params,
-            provider_name="common",
-            capabilities={"reasoning_control": "openrouter"},
+    def test_openrouter_disabled_still_sent(self):
+        payload = {}
+        OpenAIHTTPProviderBase._apply_reasoning(
+            payload, _req(enable_thinking=False, reasoning_control="openrouter")
         )
+        self.assertEqual(payload["reasoning"], {"enabled": False})
 
-        self.assertEqual(filtered, params)
-
-    def test_gemini_keeps_enable_and_budget_but_not_openai_thinking_budget(self):
-        params = {
-            "enable_thinking": True,
-            "thinking_budget": 1024,
-            "gemini_thinking_budget": 4096,
-        }
-
-        filtered = drop_unsupported_thinking_params(
-            params,
-            provider_name="gemini",
-            capabilities={},
+    def test_deepseek_disabled_uses_native_object(self):
+        payload = {}
+        OpenAIHTTPProviderBase._apply_reasoning(
+            payload, _req(enable_thinking=False, reasoning_control="deepseek")
         )
-
-        self.assertEqual(
-            filtered,
-            {
-                "enable_thinking": True,
-                "gemini_thinking_budget": 4096,
-            },
-        )
+        self.assertEqual(payload["thinking"], {"type": "disabled"})
 
 
 if __name__ == "__main__":

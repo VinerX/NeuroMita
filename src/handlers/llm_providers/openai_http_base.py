@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
@@ -107,9 +108,9 @@ class OpenAIHTTPProviderBase(BaseProvider):
             OpenRouter model — unsupported models normalize it away).
           - "deepseek": the native DeepSeek `thinking` object, which defaults to
             "enabled" and must be explicitly disabled to skip reasoning.
-          - otherwise (legacy/unknown): only ever ENABLE via an Anthropic-style
-            `thinking` object; never emit a disabled flag, since some providers
-            reject it (e.g. Mistral 422).
+          - otherwise (legacy/unknown): emit nothing. Generic OpenAI-compatible
+            providers (e.g. Mistral) reject unknown `thinking` members with 4xx,
+            so thinking is strictly opt-in via a declared reasoning_control.
 
         enable_thinking is tri-state: absent -> leave the provider default untouched;
         True -> enable; False -> disable.
@@ -136,11 +137,6 @@ class OpenAIHTTPProviderBase(BaseProvider):
             if enabled and budget > 0:
                 thinking["budget_tokens"] = budget
             payload["thinking"] = thinking
-        elif enabled:
-            thinking = {"type": "enabled"}
-            if budget > 0:
-                thinking["budget_tokens"] = budget
-            payload["thinking"] = thinking
 
     def _supports_structured_output(self, req: LLMRequest) -> bool:
         caps = req.capabilities or {}
@@ -158,11 +154,18 @@ class OpenAIHTTPProviderBase(BaseProvider):
         path = (parsed.path or "").rstrip("/")
         lowered = path.lower()
 
+        # Already a completions endpoint — leave it untouched.
         if lowered.endswith("/chat/completions") or lowered.endswith("/completions"):
             return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
 
-        normalized_path = f"{path}/chat/completions" if path else "/chat/completions"
-        return urlunsplit((parsed.scheme, parsed.netloc, normalized_path, parsed.query, parsed.fragment))
+        # Only auto-complete obvious "base" URLs: empty/root path or a versioned
+        # prefix like ".../v1". Custom gateway paths (e.g. ".../llm/generate") are
+        # left as the user entered them to avoid producing ".../generate/chat/completions".
+        if path == "" or re.search(r"/v\d+$", lowered):
+            normalized_path = f"{path}/chat/completions" if path else "/chat/completions"
+            return urlunsplit((parsed.scheme, parsed.netloc, normalized_path, parsed.query, parsed.fragment))
+
+        return url
 
     def _build_payload(self, req: LLMRequest, model_to_use: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         if req.protocol_id == "openrouter_default":
