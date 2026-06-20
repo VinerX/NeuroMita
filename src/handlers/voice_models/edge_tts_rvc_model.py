@@ -461,7 +461,14 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             return False
 
     def _default_model_path(self) -> str:
-        return os.path.join("Models", f"Mila.{self.MODEL_EXTENSION}")
+        # Base model for RVC init when the character's own model isn't available.
+        # Pick any installed voice (preferring Mila) instead of hard-requiring
+        # Mila, which may not be installed under per-voice downloads.
+        from utils import default_installed_voice
+
+        models_dir = os.environ.get("NEUROMITA_MODELS_DIR", os.path.abspath("Models"))
+        name = default_installed_voice(models_dir, ext=self.MODEL_EXTENSION)
+        return os.path.join(models_dir, f"{name}.{self.MODEL_EXTENSION}")
 
     def _set_edge_voice(self) -> None:
         if self.parent.voice_language == "ru":

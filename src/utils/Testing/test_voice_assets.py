@@ -86,5 +86,39 @@ class VoiceBundleExtractionTests(unittest.TestCase):
         self.assertFalse((out / "Crazy_Cuts").exists())  # emptied dir is removed
 
 
+class DefaultInstalledVoiceTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _touch(self, name):
+        Path(self.root, name).write_bytes(b"x")
+
+    def test_prefers_mila_when_present(self):
+        from utils import default_installed_voice
+        self._touch("Mila.pth")
+        self._touch("CrazyMita.pth")
+        self.assertEqual(default_installed_voice(self.root, ext="pth"), "Mila")
+
+    def test_falls_back_to_any_installed_when_mila_absent(self):
+        from utils import default_installed_voice
+        self._touch("CrazyMita.pth")
+        self.assertEqual(default_installed_voice(self.root, ext="pth"), "CrazyMita")
+
+    def test_ext_filter_is_respected(self):
+        from utils import default_installed_voice
+        self._touch("CrazyMita.onnx")  # only onnx present
+        # asking for pth, nothing matches -> preferred fallback name
+        self.assertEqual(default_installed_voice(self.root, ext="pth"), "Mila")
+        self.assertEqual(default_installed_voice(self.root, ext="onnx"), "CrazyMita")
+
+    def test_empty_dir_returns_preferred(self):
+        from utils import default_installed_voice
+        self.assertEqual(default_installed_voice(self.root), "Mila")
+
+
 if __name__ == "__main__":
     unittest.main()
