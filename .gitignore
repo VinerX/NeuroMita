@@ -37,3 +37,4 @@ CLAUDE.md
 /.tmp_test_backend_service_runtime
 /api_artifacts
 /temp
+_voice_bundles/

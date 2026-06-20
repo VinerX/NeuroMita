@@ -10,6 +10,7 @@ from core.install_types import InstallPlan
 
 class ComponentCategory(str, Enum):
     TTS = "tts"
+    VOICES = "voices"
     ASR = "asr"
     RAG = "rag"
     BEATS = "beats"

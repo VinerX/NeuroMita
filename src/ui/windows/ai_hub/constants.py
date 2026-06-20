@@ -3,10 +3,11 @@ from __future__ import annotations
 from utils import getTranslationVariant as _
 
 
-CATEGORY_ORDER = ("tts", "asr", "rag", "backend", "deps")
+CATEGORY_ORDER = ("tts", "voices", "asr", "rag", "backend", "deps")
 
 CATEGORY_LABELS = {
     "tts": _("Синтез речи (TTS)", "TTS"),
+    "voices": _("Голоса Мит", "Mita Voices"),
     "asr": _("Распознавание (ASR)", "ASR"),
     "rag": _("Поиск и память (RAG)", "RAG"),
     "backend": _("Системное ядро", "Backend"),
@@ -15,15 +16,17 @@ CATEGORY_LABELS = {
 
 CATEGORY_ICONS = {
     "tts": "fa5s.wave-square",
+    "voices": "fa5s.compact-disc",
     "asr": "fa5s.microphone",
     "rag": "fa5s.cube",
     "backend": "fa5s.microchip",
     "deps": "fa5s.plug",
 }
 
-# Map registry row categories into the 5 sidebar buckets.
+# Map registry row categories into the sidebar buckets.
 ROW_CATEGORY_MAP = {
     "tts": "tts",
+    "voices": "voices",
     "asr": "asr",
     "rag": "rag",
     "backend": "backend",

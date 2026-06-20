@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -649,7 +650,7 @@ class AIHubDialog(QDialog):
     def _update_summary(self) -> None:
         # "Models" stats — count only model categories (tts/asr/rag).
         # Backend ('Системное ядро') and deps ('Зависимости') aren't models.
-        _MODEL_CATEGORIES = {"tts", "asr", "rag"}
+        _MODEL_CATEGORIES = {"tts", "voices", "asr", "rag"}
         model_rows = [r for r in self._rows if row_category(r) in _MODEL_CATEGORIES]
         installed = sum(1 for r in model_rows if status_from_row(r).get("installed"))
         updates = sum(
@@ -726,9 +727,55 @@ class AIHubDialog(QDialog):
                 return row
         return None
 
+    def _maybe_hint_voices(self, component_id: str) -> None:
+        """One-time nudge: installing a TTS engine doesn't fetch the character
+        voices — those live under «Голоса Мит». Shown once, then suppressed."""
+        if not str(component_id or "").startswith("tts:"):
+            return
+        try:
+            from managers.settings_manager import SettingsManager
+        except Exception:
+            SettingsManager = None  # type: ignore[assignment]
+
+        if SettingsManager is not None:
+            try:
+                if bool(SettingsManager.get("VOICES_HINT_SHOWN", False)):
+                    return
+            except Exception:
+                pass
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(_("Не забудьте про голоса", "Don't forget the voices"))
+        box.setText(
+            _(
+                "Движок озвучки сам по себе не говорит голосами Мит — нужны ещё "
+                "голосовые модели персонажей.\n\nОткройте категорию «Голоса Мит» в AI Hub "
+                "и скачайте нужные (или «Все голоса Мит» сразу).",
+                "The TTS engine alone won't speak in the Mitas' voices — you also need "
+                "the character voice models.\n\nOpen the «Mita Voices» category in the AI Hub "
+                "and download the ones you need (or «All Mita voices» at once).",
+            )
+        )
+        open_btn = box.addButton(_("Открыть «Голоса Мит»", "Open «Mita Voices»"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(_("Понятно", "Got it"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+
+        if SettingsManager is not None:
+            try:
+                SettingsManager.set("VOICES_HINT_SHOWN", True)
+                SettingsManager.save()
+            except Exception:
+                pass
+
+        if box.clickedButton() is open_btn:
+            self._select_category("voices")
+
     def _emit_component_action_by_id(self, component_id: str, event_name: str, extra: dict | None = None) -> None:
         if not component_id:
             return
+        if event_name == Events.Installable.INSTALL:
+            self._maybe_hint_voices(component_id)
         install_window = self._create_install_window(component_id, event_name, extra=extra)
         payload = {
             "component_id": component_id,
