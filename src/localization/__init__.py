@@ -33,6 +33,12 @@ _loaded: set[str] = set()
 _lock = threading.RLock()
 
 BASE_LANGUAGE = "RU"
+COMPACT_UI_LANGUAGES: tuple[str, ...] = ("RU", "EN")
+LANGUAGE_DISPLAY_NAMES: dict[str, str] = {
+    "RU": "Русский",
+    "EN": "English",
+    "FR": "Français",
+}
 
 
 def _current_language() -> str:
@@ -105,7 +111,7 @@ def reload() -> None:
         _loaded.clear()
 
 
-def available_languages() -> list[str]:
+def _scan_available_languages() -> list[str]:
     """RU + все языки, для которых есть JSON (встроенный или внешний)."""
     langs = {BASE_LANGUAGE}
     # встроенные
@@ -135,12 +141,26 @@ def available_languages() -> list[str]:
     return sorted(langs)
 
 
-def translate(ru_str: str, en_str: str = "") -> str:
-    """Возвращает перевод ``ru_str`` на текущий язык.
+def available_languages(mode: str = "full") -> list[str]:
+    """Список доступных языков для конкретного UI-контекста.
 
-    RU → исходная строка; иначе catalog[lang] → инлайн en → ru.
+    mode='full' -> все найденные локали.
+    mode='compact' -> компактный список для узких панелей (RU/EN).
     """
-    lang = _current_language()
+    langs = _scan_available_languages()
+    if mode == "compact":
+        return [code for code in COMPACT_UI_LANGUAGES if code in langs]
+    return langs
+
+
+def language_display_name(code: str) -> str:
+    code = str(code or "").upper()
+    return LANGUAGE_DISPLAY_NAMES.get(code, code)
+
+
+def translate_for_language(lang: str, ru_str: str, en_str: str = "") -> str:
+    """Переводит строку в конкретный язык без чтения текущей настройки UI."""
+    lang = str(lang or BASE_LANGUAGE).upper()
     if lang == BASE_LANGUAGE:
         return ru_str
     value = _catalog(lang).get(ru_str)
@@ -149,6 +169,14 @@ def translate(ru_str: str, en_str: str = "") -> str:
     if lang == "EN" and en_str:
         return en_str
     return en_str or ru_str
+
+
+def translate(ru_str: str, en_str: str = "") -> str:
+    """Возвращает перевод ``ru_str`` на текущий язык.
+
+    RU → исходная строка; иначе catalog[lang] → инлайн en → ru.
+    """
+    return translate_for_language(_current_language(), ru_str, en_str)
 
 
 # Совместимые алиасы со старым API

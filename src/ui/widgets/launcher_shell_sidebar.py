@@ -237,7 +237,7 @@ class LauncherSidebarWidget(QFrame):
         # в localization/locales и внешней папке NEUROMITA_BASE_DIR/Localization).
         try:
             from localization import available_languages
-            langs = [c.lower() for c in available_languages()]
+            langs = [c.lower() for c in available_languages("compact")]
         except Exception:
             langs = ["ru", "en"]
         # RU всегда первым, остальные по алфавиту

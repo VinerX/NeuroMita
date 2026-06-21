@@ -5,6 +5,7 @@ from PyQt6.QtGui import QPixmap
 import qtawesome as qta
 from abc import ABC, abstractmethod
 from core.events import get_event_bus, Events
+from localization import available_languages, language_display_name, translate_for_language
 import os
 from styles.theme import get_theme
 from utils import render_qss
@@ -46,6 +47,7 @@ class GuideWidget(QWidget):
         self.current_language = "ru"
         self._guide_level = "basic"
         self._filtered_pages = []
+        self._lang_buttons: dict[str, QRadioButton] = {}
         try:
             from managers.settings_manager import SettingsManager
             from ui.widgets.settings_panel import normalize_mode
@@ -55,6 +57,7 @@ class GuideWidget(QWidget):
             else:
                 iface = SettingsManager.get("INTERFACE_MODE")
                 self._guide_level = normalize_mode(iface)
+            self.current_language = str(SettingsManager.get("LANGUAGE", "RU") or "RU").strip().lower()
         except Exception:
             pass
         self.setObjectName("GuideWidget")
@@ -204,16 +207,20 @@ class GuideWidget(QWidget):
         lang_layout.setSpacing(10)
         
         self.lang_group = QButtonGroup()
-        self.ru_radio = QRadioButton("RU")
-        self.ru_radio.setChecked(True)
-        self.en_radio = QRadioButton("EN")
-        
-        self.lang_group.addButton(self.ru_radio, 0)
-        self.lang_group.addButton(self.en_radio, 1)
+        for idx, code in enumerate(available_languages()):
+            button = QRadioButton(language_display_name(code))
+            button.setProperty("lang_code", code.lower())
+            if code.lower() == self.current_language:
+                button.setChecked(True)
+            self.lang_group.addButton(button, idx)
+            self._lang_buttons[code.lower()] = button
+            lang_layout.addWidget(button)
         self.lang_group.buttonClicked.connect(self._on_language_changed)
-        
-        lang_layout.addWidget(self.ru_radio)
-        lang_layout.addWidget(self.en_radio)
+
+        if self.current_language not in self._lang_buttons:
+            self.current_language = "ru"
+            if "ru" in self._lang_buttons:
+                self._lang_buttons["ru"].setChecked(True)
         header_layout.addLayout(lang_layout)
         
         self.skip_button = QPushButton("Пропустить")
@@ -278,22 +285,22 @@ class GuideWidget(QWidget):
         main_layout.addWidget(container)  
 
     def _on_language_changed(self):
-        self.current_language = "ru" if self.ru_radio.isChecked() else "en"
+        button = self.lang_group.checkedButton()
+        code = button.property("lang_code") if button is not None else None
+        self.current_language = str(code or "ru")
         self._update_skip_button_text()
         self._update_close_button_text()
         self.show_page(self.current_page_index)
         
     def _update_skip_button_text(self):
-        if self.current_language == "ru":
-            self.skip_button.setText("Пропустить")
-        else:
-            self.skip_button.setText("Skip")
+        self.skip_button.setText(
+            translate_for_language(self.current_language, "Пропустить", "Skip")
+        )
             
     def _update_close_button_text(self):
-        if self.current_language == "ru":
-            self.close_button.setText("Завершить")
-        else:
-            self.close_button.setText("Finish")
+        self.close_button.setText(
+            translate_for_language(self.current_language, "Завершить", "Finish")
+        )
         
     def _on_level_changed(self, btn):
         level = btn.property("level_key")
@@ -357,12 +364,12 @@ class GuideWidget(QWidget):
             self.current_page_index = index
             page = self._filtered_pages[index]
 
-            if self.current_language == "ru":
-                self.title_label.setText(page.get_title_ru())
-                self.description_label.setText(page.get_description_ru())
-            else:
-                self.title_label.setText(page.get_title_en())
-                self.description_label.setText(page.get_description_en())
+            self.title_label.setText(
+                translate_for_language(self.current_language, page.get_title_ru(), page.get_title_en())
+            )
+            self.description_label.setText(
+                translate_for_language(self.current_language, page.get_description_ru(), page.get_description_en())
+            )
 
             image_filename = page.get_image_filename()
             pixmap = self._load_image(image_filename)
