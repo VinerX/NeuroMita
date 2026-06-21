@@ -53,6 +53,38 @@ QLabel#AIHubSidebarStatus {
     padding: 4px 6px;
 }
 
+QFrame#AIHubQueuePanel {
+    background: rgba({accent_rgb}, 0.05);
+    border: 1px solid {outline};
+    border-radius: 10px;
+}
+QFrame#AIHubQueueRow {
+    background: transparent;
+    border: none;
+}
+QLabel#AIHubQueueRunning {
+    color: {text};
+    font-size: 11px;
+    font-weight: 600;
+}
+QLabel#AIHubQueuePending {
+    color: {muted};
+    font-size: 11px;
+}
+QPushButton#AIHubQueueCancel {
+    background: transparent;
+    color: {muted};
+    border: none;
+    border-radius: 9px;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 0;
+}
+QPushButton#AIHubQueueCancel:hover {
+    background: rgba({accent_rgb}, 0.15);
+    color: {text};
+}
+
 QFrame#AIHubCategoryButton {
     background: transparent;
     border: 1px solid transparent;

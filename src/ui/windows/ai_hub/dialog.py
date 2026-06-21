@@ -50,6 +50,7 @@ class AIHubDialog(QDialog):
         self._last_check_ts: _dt.datetime | None = None
         self._category_buttons: dict[str, CategoryButton] = {}
         self._active_install_window: VoiceInstallationWindow | None = None
+        self._queue_state: dict[str, Any] = {"running": None, "pending": []}
 
         self._ui_call_requested.connect(self._execute_ui_call)
 
@@ -173,6 +174,15 @@ class AIHubDialog(QDialog):
         self.task_status_label.setWordWrap(True)
         self.task_status_label.setVisible(False)
         l.addWidget(self.task_status_label)
+
+        # Панель очереди установок: текущая задача + ожидающие (с кнопкой отмены).
+        self._queue_panel = QFrame()
+        self._queue_panel.setObjectName("AIHubQueuePanel")
+        self._queue_layout = QVBoxLayout(self._queue_panel)
+        self._queue_layout.setContentsMargins(8, 8, 8, 8)
+        self._queue_layout.setSpacing(4)
+        self._queue_panel.setVisible(False)
+        l.addWidget(self._queue_panel)
 
         self._install_logs_btn = QPushButton(_("Логи установки", "Install logs"))
         self._install_logs_btn.setObjectName("AIHubSidebarBtn")
@@ -329,6 +339,21 @@ class AIHubDialog(QDialog):
         title = QLabel(_("Доступные модели", "Available models"))
         title.setObjectName("AIHubSectionTitle")
         top.addWidget(title, 0)
+
+        # «Открыть папку моделей» — показываем только в категории «Голоса Мит»,
+        # чтобы можно было вручную положить голосовые файлы (свой бандл, или
+        # когда автоустановка недоступна).
+        self._open_models_btn = QPushButton(_("Открыть папку моделей", "Open models folder"))
+        self._open_models_btn.setObjectName("AIHubSecondary")
+        self._open_models_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        folder_icon = qicon("fa5s.folder-open", "#db6596")
+        if folder_icon is not None:
+            self._open_models_btn.setIcon(folder_icon)
+            self._open_models_btn.setIconSize(QSize(13, 13))
+        self._open_models_btn.clicked.connect(self._open_models_folder)
+        self._open_models_btn.setVisible(self._selected_category == "voices")
+        top.addWidget(self._open_models_btn, 0)
+
         top.addStretch(1)
 
         # backend filter pills
@@ -435,6 +460,7 @@ class AIHubDialog(QDialog):
         self.event_bus.subscribe(Events.Install.TASK_PROGRESS, self._on_install_progress, weak=False)
         self.event_bus.subscribe(Events.Install.TASK_FINISHED, self._on_install_finished, weak=False)
         self.event_bus.subscribe(Events.Install.TASK_FAILED, self._on_install_failed, weak=False)
+        self.event_bus.subscribe(Events.Install.QUEUE_CHANGED, self._on_queue_changed, weak=False)
 
     def apply_payload(self, payload: dict[str, Any] | None) -> None:
         data = payload if isinstance(payload, dict) else {}
@@ -618,7 +644,23 @@ class AIHubDialog(QDialog):
                 w.setParent(None)
                 w.deleteLater()
 
+    def _open_models_folder(self) -> None:
+        """Открыть папку с голосовыми моделями (``Models`` или NEUROMITA_MODELS_DIR)
+        в системном файловом менеджере. Создаём её, если ещё нет."""
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+        from utils.voice_assets_installer import models_dir
+
+        try:
+            path = models_dir()
+            path.mkdir(parents=True, exist_ok=True)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        except Exception as exc:
+            logger.info(f"AI Hub: не удалось открыть папку моделей: {exc}")
+
     def _rebuild_component_list(self) -> None:
+        if hasattr(self, "_open_models_btn"):
+            self._open_models_btn.setVisible(self._selected_category == "voices")
         rows = self._filtered_rows()
         self._clear_scroll()
         if not rows:
@@ -784,14 +826,44 @@ class AIHubDialog(QDialog):
         if box.clickedButton() is open_btn:
             self._select_category("voices")
 
+    def _task_id_for(self, component_id: str, event_name: str) -> str:
+        op = "uninstall" if event_name == Events.Installable.UNINSTALL else "install"
+        return f"{component_id}:{op}"
+
+    def _is_task_active(self, task_id: str) -> bool:
+        running = self._queue_state.get("running") or {}
+        if str(running.get("task_id") or "") == task_id:
+            return True
+        return any(
+            str((j or {}).get("task_id") or "") == task_id
+            for j in self._queue_state.get("pending") or []
+        )
+
     def _emit_component_action_by_id(self, component_id: str, event_name: str, extra: dict | None = None) -> None:
         if not component_id:
             return
+
+        # Дедуп: эту же задачу уже ставят/она в очереди — не плодим дубликат,
+        # просто показываем окно и подсказываем, что задача уже в очереди.
+        task_id = self._task_id_for(component_id, event_name)
+        if self._is_task_active(task_id):
+            win = self._active_install_window
+            if win is not None:
+                try:
+                    win.show()
+                    win.raise_()
+                    win.activateWindow()
+                except Exception:
+                    pass
+            self._set_task_status(_("Уже в очереди", "Already queued"))
+            return
+
         if event_name == Events.Installable.INSTALL:
             self._maybe_hint_voices(component_id)
         install_window = self._create_install_window(component_id, event_name, extra=extra)
         payload = {
             "component_id": component_id,
+            "task_id": task_id,
             "with_ui": True,
             "meta": {"source": "ai_hub"},
             "install_window": install_window,
@@ -875,6 +947,84 @@ class AIHubDialog(QDialog):
             self.task_status_label.setVisible(True)
         else:
             self.task_status_label.setVisible(False)
+
+    # ----------------------------------------------------------- queue
+    def _on_queue_changed(self, event) -> None:
+        data = event.data if isinstance(getattr(event, "data", None), dict) else {}
+        self._on_gui_thread(lambda: self._apply_queue_state(data))
+
+    def _apply_queue_state(self, data: dict[str, Any]) -> None:
+        running = data.get("running") if isinstance(data, dict) else None
+        pending = data.get("pending") if isinstance(data, dict) else []
+        self._queue_state = {
+            "running": running if isinstance(running, dict) else None,
+            "pending": [j for j in (pending or []) if isinstance(j, dict)],
+        }
+        self._rebuild_queue_panel()
+
+    def _clear_queue_panel(self) -> None:
+        while self._queue_layout.count():
+            item = self._queue_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+
+    @staticmethod
+    def _shorten(text: str, limit: int = 26) -> str:
+        text = str(text or "")
+        return text if len(text) <= limit else text[: limit - 1] + "…"
+
+    def _rebuild_queue_panel(self) -> None:
+        self._clear_queue_panel()
+        running = self._queue_state.get("running")
+        pending = self._queue_state.get("pending") or []
+
+        if not running and not pending:
+            self._queue_panel.setVisible(False)
+            return
+
+        header = QLabel(_("ОЧЕРЕДЬ УСТАНОВКИ", "INSTALL QUEUE"))
+        header.setObjectName("AIHubSidebarHeader")
+        self._queue_layout.addWidget(header)
+
+        if running:
+            self._queue_layout.addWidget(self._make_queue_row(running, is_running=True))
+        for job in pending:
+            self._queue_layout.addWidget(self._make_queue_row(job, is_running=False))
+
+        self._queue_panel.setVisible(True)
+
+    def _make_queue_row(self, job: dict[str, Any], *, is_running: bool) -> QWidget:
+        row = QFrame()
+        row.setObjectName("AIHubQueueRow")
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(2, 2, 2, 2)
+        rl.setSpacing(6)
+
+        title = str(job.get("title") or job.get("task_id") or "")
+        prefix = "● " if is_running else "• "
+        label = QLabel(prefix + self._shorten(title))
+        label.setObjectName("AIHubQueueRunning" if is_running else "AIHubQueuePending")
+        label.setToolTip(title + (_(" — выполняется", " — running") if is_running else _(" — в очереди", " — queued")))
+        rl.addWidget(label, 1)
+
+        if not is_running:
+            cancel = QPushButton("✕")
+            cancel.setObjectName("AIHubQueueCancel")
+            cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+            cancel.setFixedSize(18, 18)
+            cancel.setToolTip(_("Убрать из очереди", "Remove from queue"))
+            task_id = str(job.get("task_id") or "")
+            cancel.clicked.connect(lambda _checked=False, tid=task_id: self._cancel_queued(tid))
+            rl.addWidget(cancel, 0)
+
+        return row
+
+    def _cancel_queued(self, task_id: str) -> None:
+        if not task_id:
+            return
+        self.event_bus.emit(Events.Install.CANCEL_QUEUED, {"task_id": task_id})
 
     def _is_installable_task(self, event) -> bool:
         data = event.data if isinstance(getattr(event, "data", None), dict) else {}

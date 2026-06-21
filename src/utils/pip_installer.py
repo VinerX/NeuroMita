@@ -638,12 +638,22 @@ class PipInstaller:
             is_main_package = str(pkg) in main_packages_to_remove or canon in requested
             dist_path = self._find_dist_info_path(canon)
             if dist_path:
+                # Пакеты без RECORD (битая/прерванная установка, ручной pip) менеджер
+                # удалить не может — uv/pip падают с "missing RECORD file" и оставляют
+                # каталоги кода на месте. Не тратим на них попытку, сразу чистим вручную.
+                has_record = os.path.isfile(os.path.join(dist_path, "RECORD"))
                 base_cmd = self._resolve_installer_base_cmd()
-                if self._is_uv_command(base_cmd):
+                use_uv = self._is_uv_command(base_cmd)
+                if use_uv and has_record:
                     cmd = list(base_cmd) + ["uninstall", "--target", str(self.libs_path_abs), str(pkg)]
                     success = self._run_pip_process(cmd, f"Удаление {pkg}")
                 else:
                     success = False
+                    if use_uv and not has_record:
+                        self.update_log(
+                            f"{pkg}: в {os.path.basename(dist_path)} нет RECORD — "
+                            f"менеджер пакетов его не удалит, сразу чистим вручную."
+                        )
                 if not success:
                     self.update_log(f"Автоматическое удаление не смогло удалить {pkg}, пробуем ручное удаление...")
                     success = self._manual_remove(dist_path, str(pkg))
@@ -669,7 +679,77 @@ class PipInstaller:
             self.update_log("ОШИБКА: Не удалось удалить ни одного основного пакета.")
             return False
 
-    def _manual_remove(self, path: str, pkg_name: str) -> bool:
+    def _collect_removal_targets(self, dist_info_path: str, pkg_name: str) -> List[str]:
+        """Список путей для ручного удаления пакета: каталоги/файлы кода + сам dist-info.
+
+        Источники имён кода (по приоритету):
+          1) RECORD — точный список установленных файлов (штатный случай);
+          2) top_level.txt — import-имена верхнего уровня (когда RECORD отсутствует/битый);
+          3) фоллбэк по канон-имени пакета (torch -> torch/) — только если 1-2 ничего не дали.
+        Всё ограничено целевой папкой Lib, чтобы случайно не выйти за её пределы.
+        dist-info всегда возвращается последним — чтобы при сбое на коде по нему можно
+        было повторить удаление.
+        """
+        libs = os.path.abspath(self.libs_path_abs)
+        dist_info_abs = os.path.abspath(dist_info_path)
+
+        def _norm(rel_or_abs: str) -> Optional[str]:
+            if not rel_or_abs:
+                return None
+            p = rel_or_abs if os.path.isabs(rel_or_abs) else os.path.join(libs, rel_or_abs)
+            p = os.path.abspath(p)
+            try:
+                if os.path.commonpath([libs, p]) != libs or p == libs:
+                    return None
+            except Exception:
+                return None
+            return p
+
+        code_targets: set[str] = set()
+
+        record = os.path.join(dist_info_path, "RECORD")
+        if os.path.isfile(record):
+            try:
+                with open(record, "r", encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        rel = line.split(",", 1)[0].strip().strip('"')
+                        if not rel or rel.startswith(("/", "\\", "..")):
+                            continue
+                        top = rel.replace("\\", "/").split("/", 1)[0]
+                        p = _norm(top)
+                        if p and p != dist_info_abs:
+                            code_targets.add(p)
+            except Exception as ex:
+                logger.warning(f"{pkg_name}: не удалось прочитать RECORD: {ex}")
+
+        top_level = os.path.join(dist_info_path, "top_level.txt")
+        if os.path.isfile(top_level):
+            try:
+                with open(top_level, "r", encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        name = line.strip()
+                        if not name:
+                            continue
+                        for cand in (name, name + ".py"):
+                            p = _norm(cand)
+                            if p and p != dist_info_abs:
+                                code_targets.add(p)
+            except Exception as ex:
+                logger.warning(f"{pkg_name}: не удалось прочитать top_level.txt: {ex}")
+
+        if not code_targets:
+            base = canonicalize_name(pkg_name).replace("-", "_")
+            for cand in (base, base + ".py"):
+                p = _norm(cand)
+                if p and p != dist_info_abs:
+                    code_targets.add(p)
+
+        targets = sorted(t for t in code_targets if os.path.exists(t))
+        if os.path.exists(dist_info_abs):
+            targets.append(dist_info_abs)
+        return targets
+
+    def _rmtree_with_retries(self, path: str, pkg_name: str) -> bool:
         if not os.path.exists(path):
             return True
 
@@ -677,26 +757,46 @@ class PipInstaller:
         wait = [0.5, 1, 2, 3, 5]
         for attempt in range(retries):
             try:
-                shutil.rmtree(path, ignore_errors=False)
+                if os.path.isdir(path):
+                    shutil.rmtree(path, ignore_errors=False)
+                else:
+                    os.remove(path)
                 if not os.path.exists(path):
-                    logger.info(f"{pkg_name}: каталог {path} удалён.")
+                    logger.info(f"{pkg_name}: удалён {path}.")
                     return True
             except Exception as ex:
                 logger.warning(
-                    f"{pkg_name}: не удалось удалить (попытка {attempt+1}/{retries}): {ex}"
+                    f"{pkg_name}: не удалось удалить {path} (попытка {attempt+1}/{retries}): {ex}"
                 )
                 self._unload_module_from_sys(pkg_name)
                 gc.collect()
                 time.sleep(wait[attempt])
         try:
-            shutil.rmtree(path, ignore_errors=True)
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                os.remove(path)
         except Exception:
             pass
         if os.path.exists(path):
-            logger.error(f"{pkg_name}: не удалось удалить каталог {path} после всех попыток.")
+            logger.error(f"{pkg_name}: не удалось удалить {path} после всех попыток.")
             return False
-        logger.info(f"{pkg_name}: каталог {path} удалён после нескольких попыток.")
+        logger.info(f"{pkg_name}: {path} удалён после нескольких попыток.")
         return True
+
+    def _manual_remove(self, path: str, pkg_name: str) -> bool:
+        if not os.path.exists(path):
+            return True
+
+        targets = self._collect_removal_targets(path, pkg_name)
+        if not targets:
+            return True
+
+        all_ok = True
+        for target in targets:
+            if not self._rmtree_with_retries(target, pkg_name):
+                all_ok = False
+        return all_ok
 
     def _find_dist_info_path(self, package_name_canon: NormalizedName) -> str | None:
         if not os.path.exists(self.libs_path_abs):

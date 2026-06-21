@@ -670,6 +670,12 @@ class Events:
         TASK_FAILED = "install_task_failed"
         RUN_BLOCKING = "run_install_blocking"
 
+        # Очередь установок (выполняются строго по одной за раз).
+        # QUEUE_CHANGED: снимок очереди {"running": {...}|None, "pending": [{...}]}.
+        # CANCEL_QUEUED: запрос отмены ещё не начатой задачи {"task_id": ...}.
+        QUEUE_CHANGED = "install_queue_changed"
+        CANCEL_QUEUED = "install_cancel_queued"
+
     class Installable:
         LIST = "installable_list"
         GET = "installable_get"
