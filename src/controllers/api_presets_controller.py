@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict, field
+from urllib.parse import urlparse
 
 from core.events import get_event_bus, Events, Event
 from main_logger import logger
@@ -18,6 +19,7 @@ class PresetMeta:
     id: int
     name: str
     pricing: str
+    badge_kind: str = ""
     protocol_id: str = ""
     dialect_id: str = ""
     provider_name: str = ""
@@ -28,6 +30,7 @@ class ApiTemplate:
     id: int
     name: str
     pricing: str = "mixed"
+    badge_kind: str = ""
     url: str = ""
     url_tpl: str = ""
     default_model: str = ""
@@ -48,6 +51,7 @@ class UserPreset:
     name: str
     base: Optional[int] = None
     pricing: str = "mixed"
+    badge_kind: str = ""
     default_model: str = ""
     url: str = ""
     key: str = ""
@@ -55,6 +59,7 @@ class UserPreset:
     protocol_id: str = ""
     protocol_overrides: Dict[str, Any] = field(default_factory=dict)
     generation_overrides: Dict[str, Any] = field(default_factory=dict)
+    openrouter_routing: Dict[str, Any] = field(default_factory=dict)
     # Ordered fallback chain. Each entry: {"preset_id": int, "model": str}.
     # "model" is optional (empty -> use that preset's default_model).
     fallbacks: List[Dict[str, Any]] = field(default_factory=list)
@@ -407,6 +412,10 @@ class ApiPresetsController:
         if not isinstance(go, dict):
             go = {}
 
+        orr = raw.get("openrouter_routing", {}) or {}
+        if not isinstance(orr, dict):
+            orr = {}
+
         fallbacks = self._normalize_fallbacks(raw.get("fallbacks", []))
 
         return UserPreset(
@@ -414,6 +423,7 @@ class ApiPresetsController:
             name=name,
             base=base,
             pricing=str(raw.get("pricing", "mixed") or "mixed"),
+            badge_kind=str(raw.get("badge_kind", "") or "").strip(),
             default_model=str(raw.get("default_model", "") or ""),
             url=url,
             key=str(raw.get("key", "") or ""),
@@ -421,6 +431,7 @@ class ApiPresetsController:
             protocol_id=protocol_id,
             protocol_overrides=dict(po),
             generation_overrides=dict(go),
+            openrouter_routing=dict(orr),
             fallbacks=fallbacks,
         )
 
@@ -672,6 +683,7 @@ class ApiPresetsController:
             "id": p.id,
             "name": p.name,
             "pricing": (tpl.pricing if tpl else p.pricing),
+            "badge_kind": (tpl.badge_kind if tpl else p.badge_kind),
             "base": p.base,
             "protocol_id": protocol_id,
 
@@ -691,6 +703,7 @@ class ApiPresetsController:
             "reserve_keys": p.reserve_keys or [],
             "protocol_overrides": p.protocol_overrides or {},
             "generation_overrides": p.generation_overrides or {},
+            "openrouter_routing": p.openrouter_routing or {},
             "fallbacks": [dict(fb) for fb in (p.fallbacks or [])],
         }
         return result
@@ -709,6 +722,7 @@ class ApiPresetsController:
                 id=tpl.id,
                 name=tpl.name,
                 pricing=tpl.pricing,
+                badge_kind=str(tpl.badge_kind or ""),
                 protocol_id=str(tpl.protocol_id or ""),
                 dialect_id=str(getattr(proto, "dialect", "") or ""),
                 provider_name=str(getattr(proto, "provider", "") or ""),
@@ -732,6 +746,7 @@ class ApiPresetsController:
                 id=up.id,
                 name=up.name,
                 pricing=(tpl.pricing if tpl else up.pricing),
+                badge_kind=str((tpl.badge_kind if tpl else up.badge_kind) or ""),
                 protocol_id=protocol_id,
                 dialect_id=str(getattr(proto, "dialect", "") or ""),
                 provider_name=str(getattr(proto, "provider", "") or ""),
@@ -774,6 +789,7 @@ class ApiPresetsController:
         up.name = name
         up.base = base
         up.pricing = str(data.get("pricing", up.pricing) or up.pricing)
+        up.badge_kind = str(data.get("badge_kind", up.badge_kind) or up.badge_kind).strip()
         up.default_model = str(data.get("default_model", up.default_model) or up.default_model)
         up.url = str(data.get("url", up.url) or up.url) if not base else ""
         up.key = str(data.get("key", up.key) or up.key)
@@ -792,6 +808,12 @@ class ApiPresetsController:
             if not isinstance(go, dict):
                 go = {}
             up.generation_overrides = dict(go)
+
+        if "openrouter_routing" in data:
+            orr = data.get("openrouter_routing") or {}
+            if not isinstance(orr, dict):
+                orr = {}
+            up.openrouter_routing = dict(orr)
 
         if "reserve_keys" in data:
             rk = data.get("reserve_keys") or []
@@ -882,6 +904,7 @@ class ApiPresetsController:
                 name=str(data.get("name", f"Preset {new_id}")),
                 base=base,
                 pricing=str(data.get("pricing", "mixed") or "mixed"),
+                badge_kind=str(data.get("badge_kind", "") or "").strip(),
                 default_model=str(data.get("default_model", "") or ""),
                 url=str(data.get("url", "") or "") if not base else "",
                 key=str(data.get("key", "") or ""),
@@ -948,6 +971,197 @@ class ApiPresetsController:
             daemon=True
         ).start()
 
+    @staticmethod
+    def _normalize_test_model_id(raw_model_id: Any) -> str:
+        model_id = str(raw_model_id or "").strip()
+        if model_id.startswith("models/"):
+            return model_id.split("/", 1)[1].strip()
+        return model_id
+
+    @staticmethod
+    def _normalize_rate_limits(raw_value: Any) -> Dict[str, Any]:
+        if not isinstance(raw_value, dict):
+            return {}
+
+        normalized: Dict[str, Any] = {}
+        for key, value in raw_value.items():
+            key_text = str(key or "").strip()
+            if not key_text:
+                continue
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                normalized[key_text] = value
+        return normalized
+
+    @staticmethod
+    def _normalize_pricing(raw_value: Any) -> Dict[str, Any]:
+        if not isinstance(raw_value, dict):
+            return {}
+
+        normalized: Dict[str, Any] = {}
+        for key, value in raw_value.items():
+            key_text = str(key or "").strip()
+            if not key_text:
+                continue
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                normalized[key_text] = value
+        return normalized
+
+    @staticmethod
+    def _normalize_compat_pricing_units(pricing: Dict[str, Any], source_url: str) -> Dict[str, Any]:
+        if not pricing:
+            return {}
+
+        host = urlparse(str(source_url or "")).netloc.lower()
+        if "chutes.ai" not in host:
+            return pricing
+
+        normalized: Dict[str, Any] = {}
+        for key, value in pricing.items():
+            if isinstance(value, bool) or value in (None, ""):
+                normalized[key] = value
+                continue
+            try:
+                normalized[key] = float(value) / 1_000_000
+            except Exception:
+                normalized[key] = value
+        return normalized
+
+    @classmethod
+    def _extract_compat_pricing(cls, raw_entry: dict, top_provider: dict) -> Dict[str, Any]:
+        pricing = cls._normalize_pricing(raw_entry.get("pricing"))
+        if pricing:
+            return pricing
+
+        alias_map = {
+            "prompt": ("prompt", "input", "input_price", "input_cost", "prompt_price", "prompt_cost", "input_token_price"),
+            "completion": ("completion", "output", "output_price", "output_cost", "completion_price", "completion_cost", "output_token_price"),
+            "request": ("request", "request_price", "request_cost"),
+            "internal_reasoning": ("internal_reasoning", "reasoning", "reasoning_price", "reasoning_cost"),
+            "input_cache_read": ("input_cache_read", "cache_read", "cache_read_price", "cache_read_cost", "cache_read_token_price"),
+            "input_cache_write": ("input_cache_write", "cache_write", "cache_write_price", "cache_write_cost", "cache_write_token_price"),
+        }
+
+        extracted: Dict[str, Any] = {}
+        for target_key, aliases in alias_map.items():
+            for source in (raw_entry, top_provider):
+                if not isinstance(source, dict):
+                    continue
+                for alias in aliases:
+                    if alias in source and source.get(alias) not in (None, ""):
+                        extracted[target_key] = source.get(alias)
+                        break
+                if target_key in extracted:
+                    break
+        return extracted
+
+    @classmethod
+    def _extract_compat_rate_limits(cls, raw_entry: dict, top_provider: dict) -> Dict[str, Any]:
+        rate_limits = cls._normalize_rate_limits(raw_entry.get("per_request_limits"))
+        if not rate_limits:
+            rate_limits = cls._normalize_rate_limits(raw_entry.get("rate_limits"))
+        if not rate_limits and isinstance(top_provider, dict):
+            rate_limits = cls._normalize_rate_limits(top_provider.get("per_request_limits"))
+        if not rate_limits and isinstance(top_provider, dict):
+            rate_limits = cls._normalize_rate_limits(top_provider.get("rate_limits"))
+        if rate_limits:
+            return rate_limits
+
+        alias_map = {
+            "requests_per_minute": ("requests_per_minute", "rpm"),
+            "requests_per_day": ("requests_per_day", "rpd"),
+            "tokens_per_minute": ("tokens_per_minute", "tpm"),
+            "tokens_per_day": ("tokens_per_day", "tpd"),
+            "images_per_minute": ("images_per_minute", "ipm"),
+            "images_per_day": ("images_per_day", "ipd"),
+        }
+
+        extracted: Dict[str, Any] = {}
+        for target_key, aliases in alias_map.items():
+            for source in (raw_entry, top_provider):
+                if not isinstance(source, dict):
+                    continue
+                for alias in aliases:
+                    if alias in source and source.get(alias) not in (None, ""):
+                        extracted[target_key] = source.get(alias)
+                        break
+                if target_key in extracted:
+                    break
+        return extracted
+
+    def _normalize_test_model_entry(self, raw_entry: Any, *, source_url: str = "") -> Optional[Dict[str, Any]]:
+        if isinstance(raw_entry, dict):
+            model_id = self._normalize_test_model_id(raw_entry.get("id") or raw_entry.get("name"))
+            display_name = str(raw_entry.get("name") or model_id).strip()
+            top_provider = raw_entry.get("top_provider") if isinstance(raw_entry.get("top_provider"), dict) else {}
+            pricing = self._extract_compat_pricing(raw_entry, top_provider)
+            pricing = self._normalize_compat_pricing_units(pricing, source_url)
+            rate_limits = self._extract_compat_rate_limits(raw_entry, top_provider)
+
+            if not model_id:
+                return None
+
+            return {
+                "id": model_id,
+                "name": display_name or model_id,
+                "canonical_slug": raw_entry.get("canonical_slug"),
+                "currency": str(raw_entry.get("currency") or top_provider.get("currency") or ""),
+                "context_length": raw_entry.get("context_length") or raw_entry.get("context_window") or top_provider.get("context_length") or top_provider.get("context_window"),
+                "top_provider_context_length": raw_entry.get("top_provider_context_length") or top_provider.get("context_length") or top_provider.get("context_window"),
+                "max_completion_tokens": raw_entry.get("max_completion_tokens") or raw_entry.get("max_tokens") or top_provider.get("max_completion_tokens") or top_provider.get("max_tokens"),
+                "is_free": bool(raw_entry.get("is_free")),
+                "pricing": pricing,
+                "rate_limits": rate_limits,
+                "top_provider": top_provider,
+                "latency": raw_entry.get("latency"),
+                "tokens_per_second": raw_entry.get("tokens_per_second"),
+            }
+
+        model_id = self._normalize_test_model_id(raw_entry)
+        if not model_id:
+            return None
+
+        return {
+            "id": model_id,
+            "name": model_id,
+            "canonical_slug": None,
+            "currency": "",
+            "context_length": None,
+            "top_provider_context_length": None,
+            "max_completion_tokens": None,
+            "is_free": False,
+            "pricing": {},
+            "rate_limits": {},
+            "top_provider": {},
+            "latency": None,
+            "tokens_per_second": None,
+        }
+
+    def _extract_test_models(self, data: Any, *, source_url: str = "") -> List[Dict[str, Any]]:
+        if not isinstance(data, dict):
+            return []
+
+        raw_models = []
+        if isinstance(data.get("models"), list):
+            raw_models = data.get("models") or []
+        elif isinstance(data.get("data"), list):
+            raw_models = data.get("data") or []
+
+        normalized: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for entry in raw_models:
+            model_info = self._normalize_test_model_entry(entry, source_url=source_url)
+            if not model_info:
+                continue
+
+            model_id = str(model_info.get("id") or "").strip()
+            if not model_id or model_id in seen:
+                continue
+
+            seen.add(model_id)
+            normalized.append(model_info)
+
+        return normalized
+
     def _sync_test_connection(self, preset_id: int, tpl: ApiTemplate, key: str):
 
         protocol_id = str(getattr(tpl, "protocol_id", "") or "").strip()
@@ -990,6 +1204,7 @@ class ApiPresetsController:
             success = False
             message = ""
             models: List[str] = []
+            model_infos: List[Dict[str, Any]] = []
 
             if status == 200:
                 try:
@@ -998,12 +1213,13 @@ class ApiPresetsController:
                         from utils.api_filters import apply_filter
                         data = apply_filter(tpl.filter_fn, data)
 
-                    if "models" in data:
-                        models = [m.get("name", "").split("/")[-1] for m in data.get("models", []) if m.get("name")]
-                        success = True
-                        message = f"Found {len(models)} models"
-                    elif "data" in data and isinstance(data["data"], list):
-                        models = [m.get("id", "").split("/")[-1] for m in data.get("data", []) if m.get("id")]
+                    model_infos = self._extract_test_models(data, source_url=final_url)
+                    if model_infos:
+                        if "proxyapi.ru" in final_url.lower():
+                            for info in model_infos:
+                                if isinstance(info, dict) and not str(info.get("currency") or "").strip():
+                                    info["currency"] = "RUB"
+                        models = [str(m.get("id") or "").strip() for m in model_infos if str(m.get("id") or "").strip()]
                         success = True
                         message = f"Found {len(models)} models"
                     else:
@@ -1012,6 +1228,7 @@ class ApiPresetsController:
                 except Exception as e:
                     success = False
                     message = f"Parsing error: {str(e)}"
+                    logger.error(f"Test parsing error for {preset_id}: {e}", exc_info=True)
             elif status == 401:
                 message = "Invalid API key (Unauthorized)"
             elif status == 403:
@@ -1030,6 +1247,7 @@ class ApiPresetsController:
                 "success": bool(success),
                 "message": message,
                 "models": models,
+                "model_infos": model_infos,
             })
         except requests.Timeout:
             self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
@@ -1122,6 +1340,8 @@ class ApiPresetsController:
         return self.current_preset_id
 
     def _on_set_current_preset_id(self, event: Event):
-        self.current_preset_id = (event.data or {}).get("id")
+        preset_id = (event.data or {}).get("id")
+        self.current_preset_id = preset_id
+        if preset_id is not None:
+            self.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": "LAST_API_PRESET_ID", "value": int(preset_id)})
         return True
-    

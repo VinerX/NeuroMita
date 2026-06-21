@@ -266,47 +266,46 @@ def wire_character_settings_logic(self):
         self.btn_reload_character_data.clicked.connect(lambda: reload_character_data(self))
     if hasattr(self, 'btn_open_history_folder'):
         self.btn_open_history_folder.clicked.connect(lambda: open_character_history_folder(self))
-    if hasattr(self, 'btn_clear_history'):
-        self.btn_clear_history.clicked.connect(lambda: clear_history(self))
+
+    # --- Единый набор действий: маршрутизируем по выбранной области ---
+    def _scope():
+        return getattr(self, "_char_history_scope", "current")
+
+    if hasattr(self, 'btn_history_view'):
+        self.btn_history_view.clicked.connect(
+            lambda: open_db_viewer(self) if _scope() == "current" else open_db_viewer_global(self))
+    if hasattr(self, 'btn_history_export'):
+        self.btn_history_export.clicked.connect(
+            lambda: export_db_for_character(self) if _scope() == "current" else export_db_for_all(self))
+    if hasattr(self, 'btn_history_import'):
+        self.btn_history_import.clicked.connect(
+            lambda: import_db_for_character(self) if _scope() == "current" else import_db_for_all(self))
+    if hasattr(self, 'btn_history_reset'):
+        self.btn_history_reset.clicked.connect(
+            lambda: clear_history(self) if _scope() == "current" else clear_history_all(self))
+
+    if hasattr(self, 'btn_maint_files_db'):
+        self.btn_maint_files_db.clicked.connect(
+            lambda: migrate_to_db(self) if _scope() == "current" else migrate_to_db_all(self))
+    if hasattr(self, 'btn_maint_tags'):
+        self.btn_maint_tags.clicked.connect(
+            lambda: migrate_db_to_structured(self, "current" if _scope() == "current" else None))
+    if hasattr(self, 'btn_maint_index_new'):
+        self.btn_maint_index_new.clicked.connect(
+            lambda: run_reindexing(self) if _scope() == "current" else run_reindexing_all(self))
+    if hasattr(self, 'btn_maint_reindex'):
+        self.btn_maint_reindex.clicked.connect(
+            lambda: run_full_reindexing(self) if _scope() == "current" else run_full_reindexing_all(self))
+    if hasattr(self, 'btn_maint_dedupe'):
+        self.btn_maint_dedupe.clicked.connect(
+            lambda: run_history_dedup(self) if _scope() == "current" else run_history_dedup_all(self))
+
+    # «Обновить формат» — только для выбранного персонажа (кнопка блокируется
+    # для области «все» в ui.py); «Очистить удалённое» — всегда для всех.
+    if hasattr(self, 'btn_maint_update_format'):
+        self.btn_maint_update_format.clicked.connect(lambda: migrate_history(self))
     if hasattr(self, 'btn_purge_deleted'):
         self.btn_purge_deleted.clicked.connect(lambda: purge_deleted_data(self))
-    if hasattr(self, 'btn_clear_all_histories'):
-        self.btn_clear_all_histories.clicked.connect(lambda: clear_history_all(self))
-    if hasattr(self, 'btn_migrate_db'):
-        self.btn_migrate_db.clicked.connect(lambda: migrate_to_db(self))
-    if hasattr(self, 'btn_migrate_db_all'):
-        self.btn_migrate_db_all.clicked.connect(lambda: migrate_to_db_all(self))
-    if hasattr(self, 'btn_db_viewer'):
-        self.btn_db_viewer.clicked.connect(lambda: open_db_viewer(self))
-    if hasattr(self, 'btn_db_viewer_global'):
-        self.btn_db_viewer_global.clicked.connect(lambda: open_db_viewer_global(self))
-    if hasattr(self, 'btn_dedupe_history'):
-        self.btn_dedupe_history.clicked.connect(lambda: run_history_dedup(self))
-    if hasattr(self, 'btn_reindex'):
-        self.btn_reindex.clicked.connect(lambda: run_reindexing(self))
-    if hasattr(self, 'btn_reindex_all'):
-        self.btn_reindex_all.clicked.connect(lambda: run_full_reindexing(self))
-    if hasattr(self, 'btn_reindex_global'):
-        self.btn_reindex_global.clicked.connect(lambda: run_reindexing_all(self))
-    if hasattr(self, 'btn_reindex_all_global'):
-        self.btn_reindex_all_global.clicked.connect(lambda: run_full_reindexing_all(self))
-    if hasattr(self, 'btn_dedupe_all'):
-        self.btn_dedupe_all.clicked.connect(lambda: run_history_dedup_all(self))
-    if hasattr(self, 'btn_export_db'):
-        self.btn_export_db.clicked.connect(lambda: export_db_for_character(self))
-    if hasattr(self, 'btn_import_db'):
-        self.btn_import_db.clicked.connect(lambda: import_db_for_character(self))
-
-    if hasattr(self, 'btn_export_db_global'):
-        self.btn_export_db_global.clicked.connect(lambda: export_db_for_all(self))
-    if hasattr(self, 'btn_import_db_global'):
-        self.btn_import_db_global.clicked.connect(lambda: import_db_for_all(self))
-    if hasattr(self, 'btn_migrate_history'):
-        self.btn_migrate_history.clicked.connect(lambda: migrate_history(self))
-    if hasattr(self, 'btn_migrate_to_structured'):
-        self.btn_migrate_to_structured.clicked.connect(lambda: migrate_db_to_structured(self, "current"))
-    if hasattr(self, 'btn_migrate_to_structured_all'):
-        self.btn_migrate_to_structured_all.clicked.connect(lambda: migrate_db_to_structured(self, None))
 
     update_prompt_set_info(self)
 

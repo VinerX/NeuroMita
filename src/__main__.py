@@ -1,4 +1,6 @@
 ### main.py
+import faulthandler
+faulthandler.enable()
 
 import pydantic.fields
 import uvicorn
@@ -129,8 +131,40 @@ logger.info(libs_dir)
 
 # Check for updates (before heavy imports)
 try:
-    from updater import check_for_updates as _check_for_updates
-    _check_for_updates(base_dir=base_dir, logger=logger)
+    from updater import check_for_updates as _check_for_updates, check_for_unity_updates as _check_for_unity_updates
+    import json as _json
+    _upd_settings: dict = {}
+    try:
+        _settings_path = os.path.join(base_dir, "Settings", "settings.json")
+        with open(_settings_path, encoding="utf-8") as _f:
+            _upd_settings = _json.load(_f)
+    except Exception:
+        pass
+    _py_startup_update = bool(
+        _upd_settings.get("AUTO_UPDATE", _upd_settings.get("AUTO_UPDATE_CHECK", False))
+    )
+    _unity_startup_update = bool(_upd_settings.get("AUTO_UPDATE_UNITY", False))
+
+    if _py_startup_update:
+        _check_for_updates(
+            base_dir=base_dir,
+            logger=logger,
+            channel=_upd_settings.get("UPDATE_CHANNEL", "stable"),
+            tester_code=_upd_settings.get("TESTER_CODE") or None,
+            auto_update=True,
+            update_mode=_upd_settings.get("UPDATE_MODE", "diff"),
+            preserve_prompts=bool(_upd_settings.get("UPDATE_PRESERVE_PROMPTS", True)),
+        )
+
+    if _unity_startup_update:
+        _check_for_unity_updates(
+            base_dir=base_dir,
+            logger=logger,
+            unity_dir=_upd_settings.get("UNITY_INSTALL_DIR") or None,
+            channel=_upd_settings.get("UPDATE_CHANNEL", "stable"),
+            tester_code=_upd_settings.get("TESTER_CODE") or None,
+            auto_update=True,
+        )
 except Exception as _upd_err:
     logger.warning(f"Update check failed: {_upd_err}")
 
@@ -146,31 +180,37 @@ import importlib.util, ctypes, pathlib, os
 # Должен выполняться ДО любого import torch в процессе.
 # Если стоит CPU-вариант, а GPU — NVIDIA, переустанавливаем на CUDA.
 try:
-    from utils.torch_install_utils import decide_torch_install, TORCH_PACKAGES
+    from core.backends import get_backend_service
     from utils.gpu_utils import check_gpu_provider
+    from utils.pip_installer import PipInstaller
+    _backend_service = get_backend_service()
     _gpu = check_gpu_provider() or "CPU"
+    _backend_ctx = {"gpu_vendor": _gpu, "libs_dir": libs_dir}
+    _backend_kind = _backend_service.preferred_torch_kind(_backend_ctx)
     # Передаём libs_dir как target_dir — проверяем dist-info прямо в папке
     # установки, а не через importlib.metadata (который может найти torch из
     # другого Python-окружения).
-    _plan = decide_torch_install(_gpu, target_dir=libs_dir)
+    _status = _backend_service.get_status(_backend_kind, ctx=_backend_ctx)
+    _plan = {"action": _status.action, "reason": _status.reason}
     # Только реактивный апгрейд: если torch уже установлен в неправильном варианте.
     # Первичную установку делает lazy bootstrap (embedding_handler / cross_encoder).
-    from utils.torch_install_utils import get_installed_torch_variant as _get_torch_variant
-    if _plan["action"] == "reinstall" and _get_torch_variant(target_dir=libs_dir) is not None:
+    _installed_variant = _backend_service.get_installed_torch_variant(target_dir=libs_dir)
+    if _status.action == "reinstall" and _installed_variant is not None:
         logger.info(f"Torch bootstrap (early): gpu={_gpu}, action=reinstall (CPU→CUDA)")
-        from utils.pip_installer import PipInstaller
         _pip = PipInstaller(update_log=logger.info)
         logger.info("Удаление CPU-варианта PyTorch перед установкой CUDA...")
         _pip.uninstall_packages(
             ["torch", "torchaudio"],
             description="Удаление CPU-варианта PyTorch",
         )
-        _pip.install_package(
-            list(TORCH_PACKAGES),
-            description=_plan["description"],
-            extra_args=_plan.get("extra_args"),
+        _status = _backend_service.install_backend(
+            _backend_kind,
+            pip_installer=_pip,
+            ctx=_backend_ctx,
         )
-    elif _plan["action"] != "skip":
+        if not _status.ok:
+            raise RuntimeError(_status.reason)
+    elif _status.action != "skip":
         logger.info(f"Torch bootstrap (early): gpu={_gpu}, action={_plan['action']} — отложено до первого использования")
     else:
         logger.info(f"Torch bootstrap (early): gpu={_gpu}, action=skip — {_plan.get('reason', '')}")
@@ -182,7 +222,10 @@ except Exception as _torch_boot_err:
 # capi_dir = pathlib.Path(ort_spec.origin).parent / "capi"
 # ctypes.WinDLL(str(capi_dir / "libiomp5md.dll"))
 
-import onnxruntime
+try:
+    import onnxruntime  # noqa: F401
+except Exception:
+    onnxruntime = None
 
 from PyQt6.QtWidgets import QApplication
 
@@ -259,9 +302,17 @@ else:
 
 build_py_path = os.path.join(libs_dir, "triton", "runtime", "build.py")
 
-os.environ["CC"] = os.path.join(os.path.abspath(libs_dir), "triton", "runtime", "tcc", "tcc.exe")
+_triton_tcc_path = os.path.join(os.path.abspath(libs_dir), "triton", "runtime", "tcc", "tcc.exe")
+if os.path.exists(_triton_tcc_path):
+    os.environ["CC"] = _triton_tcc_path
+else:
+    # Не засоряем глобальный CC несуществующим Triton-компилятором:
+    # это ломает последующие pip/uv-установки (например numpy backend bootstrap).
+    current_cc = str(os.environ.get("CC", "") or "")
+    if current_cc.replace("/", "\\").lower() == _triton_tcc_path.replace("/", "\\").lower():
+        os.environ.pop("CC", None)
 
-if os.path.exists(compiler_path):
+if os.path.exists(build_py_path):
     with open(build_py_path, "r", encoding="utf-8") as f:
         source = f.read()
                         
@@ -338,7 +389,7 @@ ensure_project_root()
 
 import threading
 
-from ui.windows.main_view import ChatGUI
+from ui.windows.main_window import MainWindow
 from controllers.main_controller import MainController
 from core.events import get_event_bus
 from main_logger import logger
@@ -350,6 +401,10 @@ if __name__ == "__main__":
     try:
         app = QApplication(sys.argv)
         logger.info("QApplication создан")
+
+        # Колёсико мыши не должно переключать значение свёрнутых комбобоксов
+        from ui.wheel_guard import install_combobox_wheel_guard
+        install_combobox_wheel_guard(app)
 
         if sys.platform == 'win32':
             import ctypes
@@ -364,14 +419,16 @@ if __name__ == "__main__":
         # Инициализация сборщика данных для дообучения
         try:
             from managers.finetune_collector import FineTuneCollector
+            from managers.generation_input_collector import GenerationInputCollector
             FineTuneCollector.instance = FineTuneCollector()
+            GenerationInputCollector.instance = GenerationInputCollector()
             logger.info("FineTuneCollector инициализирован")
         except Exception as _ft_init_err:
             logger.warning(f"FineTuneCollector не инициализирован: {_ft_init_err}")
     
-        logger.info("Создаю ChatGUI...")
-        main_win = ChatGUI(controller.settings)  # Передаем controller  settings
-        logger.info("ChatGUI создан")
+        logger.info("Создаю MainWindow...")
+        main_win = MainWindow(controller.settings)
+        logger.info("MainWindow создан")
         
         # Обновляем ссылку на реальный view в контроллере
         controller.update_view(main_win)
@@ -380,6 +437,13 @@ if __name__ == "__main__":
         
         
         logger.info("Показываю главное окно...")
+        # Make the native Windows title bar dark to match the app theme.
+        # Fully optional: no-op on non-Windows / unsupported builds, never raises.
+        try:
+            from utils.win_titlebar import apply_dark_titlebar
+            apply_dark_titlebar(main_win, True)
+        except Exception:
+            pass
         main_win.show()
         logger.info("Запускаю app.exec()...")
 

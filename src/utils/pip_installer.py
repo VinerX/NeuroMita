@@ -3,15 +3,31 @@ PipInstaller 3.1 — упрощённый PTY/Pipes-раннер без снап
 """
 
 from __future__ import annotations
-import subprocess, sys, os, queue, threading, time, json, shutil, gc, importlib.util, re
+import subprocess, sys, os, queue, threading, time, json, shutil, gc, importlib.util, re, tempfile
 from pathlib import Path
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name, NormalizedName
 from packaging.version import parse as parse_version
 from main_logger import logger
-from PyQt6.QtWidgets import QApplication
 from typing import Set, List, Tuple, Optional, Deque
-from PyQt6.QtCore import QThread, QCoreApplication
+try:
+    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtCore import QThread, QCoreApplication
+except Exception:
+    class QApplication:
+        @staticmethod
+        def processEvents():
+            return None
+
+    class QThread:
+        @staticmethod
+        def currentThread():
+            return None
+
+    class QCoreApplication:
+        @staticmethod
+        def instance():
+            return None
 from collections import deque
 
 
@@ -163,6 +179,17 @@ class DependencyResolver:
 
 
 class PipInstaller:
+    DIST_MODULE_ALIASES = {
+        "beat-this": ("beat_this",),
+        "rotary-embedding-torch": ("rotary_embedding_torch",),
+        "scikit-learn": ("sklearn",),
+        "charset-normalizer": ("charset_normalizer",),
+        "typing-extensions": ("typing_extensions",),
+        "pillow": ("PIL",),
+        "pyyaml": ("yaml",),
+        "opencv-python": ("cv2",),
+    }
+
     def __init__(
         self,
         update_status=None,
@@ -181,21 +208,362 @@ class PipInstaller:
         self.progress_window = progress_window
         # Защищенные пакеты по умолчанию
         self.protected_packages = protected_packages or ["g4f", "gigaam", "pillow", "silero-vad"]
+        self._preferred_installer_cmd: Optional[List[str]] = None
         self._ensure_libs_path()
 
     def install_package(self, package_spec, description="Установка пакета...", extra_args=None) -> bool:
-        cmd = [
-            self.script_path, "-m", "uv", "pip", "install",
-            "--target", str(self.libs_path_abs),
-            "--no-cache-dir"
-        ]
-        if extra_args:
-            cmd.extend(extra_args)
-        if isinstance(package_spec, list):
-            cmd.extend(package_spec)
+        cmd = self._build_install_command()
+        is_uv = self._is_uv_command(cmd)
+        override_path: str | None = None
+        try:
+            if extra_args:
+                cmd.extend(self._adapt_extra_args(extra_args, is_uv))
+
+            effective_overrides = self._build_dependency_overrides(package_spec) if is_uv else []
+            if effective_overrides and len(effective_overrides) > 0:
+                override_path = self._write_uv_overrides(effective_overrides)
+                cmd.extend(["--overrides", override_path])
+
+            if isinstance(package_spec, list):
+                cmd.extend(package_spec)
+            else:
+                cmd.append(package_spec)
+            return self._run_pip_process(cmd, description)
+        finally:
+            if override_path:
+                try:
+                    os.unlink(override_path)
+                except OSError:
+                    pass
+
+    def _build_dependency_overrides(self, package_spec) -> List[str]:
+        return []
+
+    def _adapt_extra_args(self, extra_args, is_uv: bool) -> List[str]:
+        """Translate installer-specific flags so a uv-targeted extra_args list
+        still works when we fall back to the built-in pip (and vice versa).
+
+        The backend passes uv's `--reinstall`; pip only understands
+        `--force-reinstall`. Without this translation the CPU->CUDA reinstall
+        crashed with `no such option: --reinstall` whenever uv was missing."""
+        if not extra_args:
+            return []
+        result: List[str] = []
+        for arg in extra_args:
+            a = str(arg)
+            if not is_uv and a == "--reinstall":
+                result.append("--force-reinstall")
+            elif is_uv and a == "--force-reinstall":
+                result.append("--reinstall")
+            else:
+                result.append(a)
+        return result
+
+    def install_package_with_overrides(
+        self,
+        package_spec,
+        description="Installing package...",
+        extra_args=None,
+        uv_overrides: Optional[List[str]] = None,
+    ) -> bool:
+        cmd = self._build_install_command()
+        is_uv = self._is_uv_command(cmd)
+        override_path: str | None = None
+        try:
+            if extra_args:
+                cmd.extend(self._adapt_extra_args(extra_args, is_uv))
+
+            effective_overrides = self._dedupe_overrides(list(uv_overrides or [])) if is_uv else []
+            if effective_overrides and len(effective_overrides) > 0:
+                override_path = self._write_uv_overrides(effective_overrides)
+                cmd.extend(["--overrides", override_path])
+
+            if isinstance(package_spec, list):
+                cmd.extend(package_spec)
+            else:
+                cmd.append(package_spec)
+            return self._run_pip_process(cmd, description)
+        finally:
+            if override_path:
+                try:
+                    os.unlink(override_path)
+                except OSError:
+                    pass
+
+    def _requested_dist_names(self, package_spec) -> Set[NormalizedName]:
+        specs = package_spec if isinstance(package_spec, list) else [package_spec]
+        names: Set[NormalizedName] = set()
+        for spec in specs:
+            value = str(spec or "").strip()
+            if not value:
+                continue
+            try:
+                req = Requirement(value)
+                names.add(canonicalize_name(req.name))
+            except Exception:
+                names.add(canonicalize_name(value.split(";", 1)[0].strip()))
+        return names
+
+    def _dedupe_overrides(self, overrides: List[str]) -> List[str]:
+        seen: set[str] = set()
+        result: List[str] = []
+        for item in overrides:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(item)
+        return result
+
+    def _is_uv_command(self, cmd: List[str]) -> bool:
+        parts = [str(p).lower() for p in cmd]
+        if not parts:
+            return False
+        # Module form: python -m uv ...
+        for i, p in enumerate(parts):
+            if p == "-m" and i + 1 < len(parts) and parts[i + 1] == "uv":
+                return True
+        # Executable form: .../uv.exe pip ... or uv pip ...
+        exe = os.path.basename(parts[0])
+        return exe in ("uv", "uv.exe")
+
+    def _write_uv_overrides(self, overrides: List[str]) -> str:
+        fd, path = tempfile.mkstemp(prefix="neuromita_uv_overrides_", suffix=".txt", text=True)
+        lines = [str(item).strip() for item in overrides or [] if str(item).strip()]
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("\n".join(lines))
+            fh.write("\n")
+        self.update_log(f"Using uv dependency overrides: {path}")
+        return path
+
+    def missing_specs(self, specs: List[str]) -> List[str]:
+        missing: List[str] = []
+        for spec in specs or []:
+            value = str(spec or "").strip()
+            if not value:
+                continue
+            if not self.is_spec_satisfied_in_target(value):
+                missing.append(value)
+        return missing
+
+    def is_spec_satisfied_in_target(self, spec: str) -> bool:
+        try:
+            req = Requirement(spec)
+        except Exception:
+            req = None
+
+        try:
+            if req is not None and req.marker is not None and not req.marker.evaluate():
+                return True
+        except Exception:
+            pass
+
+        dist_name = req.name if req is not None else spec.split(";", 1)[0].strip()
+        version = self._target_dist_version(dist_name)
+        if version is None:
+            return False
+        if req is not None and req.specifier:
+            try:
+                if not bool(req.specifier.contains(version, prereleases=True)):
+                    return False
+            except Exception:
+                return False
+        return self._target_module_exists_for_dist(dist_name)
+
+    def _target_module_exists_for_dist(self, dist_name: str) -> bool:
+        base = canonicalize_name(dist_name)
+        if base == "sentencepiece":
+            package_dir = os.path.join(self.libs_path_abs, "sentencepiece")
+            if not os.path.isfile(os.path.join(package_dir, "__init__.py")):
+                return False
+            try:
+                return any(
+                    name.startswith("_sentencepiece") and name.endswith((".pyd", ".so", ".dll"))
+                    for name in os.listdir(package_dir)
+                )
+            except OSError:
+                return False
+
+        candidates = list(self.DIST_MODULE_ALIASES.get(base, (base.replace("-", "_"),)))
+        if not os.path.isdir(self.libs_path_abs):
+            return False
+        for module_name in candidates:
+            value = str(module_name or "").strip()
+            if not value:
+                continue
+            parts = value.split(".")
+            first = parts[0]
+            if os.path.isdir(os.path.join(self.libs_path_abs, first)):
+                return True
+            if os.path.isfile(os.path.join(self.libs_path_abs, first + ".py")):
+                return True
+        return False
+
+    def _target_dist_version(self, dist_name: str) -> Optional[str]:
+        if not dist_name or not os.path.isdir(self.libs_path_abs):
+            return None
+
+        wanted = canonicalize_name(dist_name)
+        for item in os.listdir(self.libs_path_abs):
+            if not item.endswith(".dist-info"):
+                continue
+            metadata_path = os.path.join(self.libs_path_abs, item, "METADATA")
+            name: Optional[str] = None
+            version: Optional[str] = None
+
+            if os.path.isfile(metadata_path):
+                try:
+                    with open(metadata_path, "r", encoding="utf-8", errors="ignore") as fh:
+                        for line in fh:
+                            lower = line.lower()
+                            if lower.startswith("name:"):
+                                name = line.split(":", 1)[1].strip()
+                            elif lower.startswith("version:"):
+                                version = line.split(":", 1)[1].strip()
+                            if name and version:
+                                break
+                except Exception:
+                    name = None
+                    version = None
+
+            if name is None:
+                name = item.rsplit(".dist-info", 1)[0].split("-", 1)[0]
+            if canonicalize_name(name) != wanted:
+                continue
+            if version:
+                return version
+
+            parts = item.rsplit(".dist-info", 1)[0].split("-")
+            if len(parts) >= 2:
+                return parts[-1]
+            return ""
+        return None
+
+    def _build_install_command(self) -> List[str]:
+        base = list(self._resolve_installer_base_cmd())
+        base.extend(["install", "--target", str(self.libs_path_abs)])
+        # Кэш включён по умолчанию: после обрыва (диск/VPN) повторная попытка
+        # переиспользует уже скачанное и докачивает, а не качает всё заново.
+        # Отключается настройкой INSTALL_USE_CACHE (кэш чистится кнопкой в AI Hub).
+        if not self._use_cache():
+            base.append("--no-cache-dir")
+        return base
+
+    def _use_cache(self) -> bool:
+        try:
+            from managers.settings_manager import SettingsManager
+            return bool(SettingsManager.get("INSTALL_USE_CACHE", True))
+        except Exception:
+            return True
+
+    def _uv_base_cmd(self) -> List[str]:
+        return [self.script_path, "-m", "uv", "--verbose", "pip"]
+
+    def _pip_base_cmd(self) -> List[str]:
+        return [self.script_path, "-m", "pip"]
+
+    def _uv_executable_path(self) -> Path:
+        return self.python_root / "Scripts" / ("uv.exe" if os.name == "nt" else "uv")
+
+    def _ensure_pip_available(self) -> bool:
+        pip_cmd = self._pip_base_cmd()
+        if self._check_installer_command(pip_cmd + ["--version"]):
+            return True
+
+        self.update_log("pip не найден во встроенном Python, запускаем ensurepip...")
+        bootstrap_cmd = [self.script_path, "-m", "ensurepip", "--upgrade"]
+        if not self._run_pip_process(bootstrap_cmd, "Восстановление pip..."):
+            self.update_log("ОШИБКА: Не удалось восстановить pip через ensurepip.")
+            return False
+        return self._check_installer_command(pip_cmd + ["--version"])
+
+    def _ensure_uv_available(self) -> bool:
+        if self._check_installer_command([self.script_path, "-m", "uv", "--version"]):
+            return True
+
+        if not self._ensure_pip_available():
+            self.update_log("uv недоступен: встроенный pip тоже не удалось подготовить.")
+            return False
+
+        uv_exe = self._uv_executable_path()
+        if uv_exe.exists():
+            self.update_log(
+                f"Найден {uv_exe.name}, но модуль uv недоступен. "
+                "На Windows обновление поверх занятого uv.exe часто падает с Access Denied, "
+                "поэтому используем встроенный pip без авто-переустановки uv."
+            )
+            return False
+
+        self.update_log("uv не найден во встроенном Python, устанавливаем его через python -m pip...")
+        install_cmd = self._pip_base_cmd() + ["install", "uv"]
+        if not self._run_pip_process(install_cmd, "Установка uv..."):
+            self.update_log("Не удалось установить uv во встроенный Python, используем обычный pip.")
+            return False
+        if not self._check_installer_command([self.script_path, "-m", "uv", "--version"]):
+            self.update_log("uv установился некорректно: модуль по-прежнему недоступен.")
+            return False
+
+        self.update_log("uv установлен во встроенный Python и готов к работе.")
+        return True
+
+    def purge_cache(self, description: str = "Очистка кэша установщика...") -> bool:
+        """Clear the pip/uv download cache (frees disk; resets resumable state)."""
+        self.update_status(description)
+        base = self._resolve_installer_base_cmd()
+        if self._is_uv_command(base):
+            root = [p for p in base if str(p).lower() not in ("pip", "--verbose")]
+            cmd = root + ["cache", "clean"]
         else:
-            cmd.append(package_spec)
-        return self._run_pip_process(cmd, description)
+            cmd = list(base) + ["cache", "purge"]
+        try:
+            return bool(self._run_pip_process(cmd, description))
+        except Exception as exc:
+            self.update_log(f"Не удалось очистить кэш: {exc}")
+            return False
+
+        
+    def _resolve_installer_base_cmd(self) -> List[str]:
+        if self._preferred_installer_cmd is not None:
+            return list(self._preferred_installer_cmd)
+
+        uv_cmd = self._uv_base_cmd()
+        if self._ensure_uv_available():
+            self._preferred_installer_cmd = uv_cmd
+            self.update_log("Для установки зависимостей выбран uv pip.")
+            return list(self._preferred_installer_cmd)
+
+        pip_cmd = self._pip_base_cmd()
+        if self._ensure_pip_available():
+            self._preferred_installer_cmd = pip_cmd
+            self.update_log("uv недоступен, используем встроенный pip.")
+            return list(self._preferred_installer_cmd)
+
+        self._preferred_installer_cmd = pip_cmd
+        self.update_log("Не удалось заранее подготовить uv или pip, последняя попытка будет через встроенный pip.")
+        return list(self._preferred_installer_cmd)
+
+    def _check_installer_command(self, cmd: List[str]) -> bool:
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=15,
+            )
+            if proc.returncode == 0:
+                return True
+
+            details = (proc.stderr or proc.stdout or "").strip()
+            if details:
+                logger.warning(f"Команда проверки установщика завершилась с кодом {proc.returncode}: {details}")
+            return False
+        except Exception as ex:
+            logger.warning(f"Не удалось проверить команду установщика {cmd}: {ex}")
+            return False
 
     def _unload_module_from_sys(self, module_name: str):
         """Выгружает модуль и все его подмодули из sys.modules"""
@@ -270,13 +638,14 @@ class PipInstaller:
             is_main_package = str(pkg) in main_packages_to_remove or canon in requested
             dist_path = self._find_dist_info_path(canon)
             if dist_path:
-                cmd = [
-                    self.script_path, "-m", "uv", "pip", "uninstall",
-                    "--target", str(self.libs_path_abs), str(pkg)
-                ]
-                success = self._run_pip_process(cmd, f"Удаление {pkg}")
+                base_cmd = self._resolve_installer_base_cmd()
+                if self._is_uv_command(base_cmd):
+                    cmd = list(base_cmd) + ["uninstall", "--target", str(self.libs_path_abs), str(pkg)]
+                    success = self._run_pip_process(cmd, f"Удаление {pkg}")
+                else:
+                    success = False
                 if not success:
-                    self.update_log(f"uv pip не смог удалить {pkg}, пробуем ручное удаление...")
+                    self.update_log(f"Автоматическое удаление не смогло удалить {pkg}, пробуем ручное удаление...")
                     success = self._manual_remove(dist_path, str(pkg))
                 if success and is_main_package:
                     main_packages_removed.append(str(pkg))
@@ -447,7 +816,7 @@ class PipInstaller:
             return
 
         low = clean.lower()
-        if any(k in low for k in ("error", "ошибка", "failed", "traceback", "exception", "critical")):
+        if any(k in low for k in ("error:", "ошибка:", "failed:", "traceback", "exception", "critical")) or (("error" in low or "failed" in low) and "build\\" not in low and "bdist." not in low):
             logger.error(clean)
             self.update_log(clean)
             state.error_seen = True
@@ -567,7 +936,7 @@ class PipInstaller:
         threading.Thread(target=_reader, args=(proc.stdout, q_out), daemon=True).start()
         threading.Thread(target=_reader, args=(proc.stderr, q_err), daemon=True).start()
 
-        while proc.poll() is None:
+        while proc.poll() is None or t_out.is_alive() or t_err.is_alive():
             processed_any = False
             while not q_out.empty():
                 line = q_out.get_nowait()

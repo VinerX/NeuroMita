@@ -1,10 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Optional, Any
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QMessageBox, QInputDialog
 
+from ui.settings.api_settings.dialogs.new_preset_dialog import NewPresetDialog
 from ui.settings.api_settings.widgets import CustomPresetListItem
 import qtawesome as qta
 
@@ -51,6 +52,61 @@ class EditorMixin:
                 raw = spec.get("value")
                 val_widget.setText(str(raw) if raw is not None else "")
 
+    def _read_openrouter_routing(self) -> dict:
+        v = self.view
+        return {
+            "enabled": bool(getattr(v, "or_enable_cb", None).isChecked()) if getattr(v, "or_enable_cb", None) is not None else False,
+            "order": str(getattr(v, "or_order_row", None).text() or "") if getattr(v, "or_order_row", None) is not None else "",
+            "only": str(getattr(v, "or_only_row", None).text() or "") if getattr(v, "or_only_row", None) is not None else "",
+            "ignore": str(getattr(v, "or_ignore_row", None).text() or "") if getattr(v, "or_ignore_row", None) is not None else "",
+            "quantizations": str(getattr(v, "or_quantizations_row", None).text() or "") if getattr(v, "or_quantizations_row", None) is not None else "",
+            "sort": str(getattr(v, "or_sort_row", None).current_data() or "") if getattr(v, "or_sort_row", None) is not None else "",
+            "data_collection": str(getattr(v, "or_data_collection_row", None).current_data() or "") if getattr(v, "or_data_collection_row", None) is not None else "",
+            "allow_fallbacks": bool(getattr(v, "or_allow_fallbacks_cb", None).isChecked()) if getattr(v, "or_allow_fallbacks_cb", None) is not None else False,
+            "require_parameters": bool(getattr(v, "or_require_parameters_cb", None).isChecked()) if getattr(v, "or_require_parameters_cb", None) is not None else False,
+            "zdr": bool(getattr(v, "or_zdr_cb", None).isChecked()) if getattr(v, "or_zdr_cb", None) is not None else False,
+            "max_price": {
+                "prompt": str(getattr(v, "or_max_price_prompt", None).text() or "") if getattr(v, "or_max_price_prompt", None) is not None else "",
+                "completion": str(getattr(v, "or_max_price_completion", None).text() or "") if getattr(v, "or_max_price_completion", None) is not None else "",
+                "request": str(getattr(v, "or_max_price_request", None).text() or "") if getattr(v, "or_max_price_request", None) is not None else "",
+                "image": str(getattr(v, "or_max_price_image", None).text() or "") if getattr(v, "or_max_price_image", None) is not None else "",
+            },
+        }
+
+    def _write_openrouter_routing(self, routing: dict) -> None:
+        v = self.view
+        routing = routing or {}
+        max_price = routing.get("max_price") if isinstance(routing.get("max_price"), dict) else {}
+
+        if getattr(v, "or_enable_cb", None) is not None:
+            v.or_enable_cb.setChecked(bool(routing.get("enabled", False)))
+        if getattr(v, "or_order_row", None) is not None:
+            v.or_order_row.set_text(", ".join(routing.get("order", [])) if isinstance(routing.get("order"), list) else str(routing.get("order") or ""))
+        if getattr(v, "or_only_row", None) is not None:
+            v.or_only_row.set_text(", ".join(routing.get("only", [])) if isinstance(routing.get("only"), list) else str(routing.get("only") or ""))
+        if getattr(v, "or_ignore_row", None) is not None:
+            v.or_ignore_row.set_text(", ".join(routing.get("ignore", [])) if isinstance(routing.get("ignore"), list) else str(routing.get("ignore") or ""))
+        if getattr(v, "or_quantizations_row", None) is not None:
+            v.or_quantizations_row.set_text(", ".join(routing.get("quantizations", [])) if isinstance(routing.get("quantizations"), list) else str(routing.get("quantizations") or ""))
+        if getattr(v, "or_sort_row", None) is not None:
+            v.or_sort_row.set_current_by_data(str(routing.get("sort") or ""))
+        if getattr(v, "or_data_collection_row", None) is not None:
+            v.or_data_collection_row.set_current_by_data(str(routing.get("data_collection") or ""))
+        if getattr(v, "or_allow_fallbacks_cb", None) is not None:
+            v.or_allow_fallbacks_cb.setChecked(bool(routing.get("allow_fallbacks", False)))
+        if getattr(v, "or_require_parameters_cb", None) is not None:
+            v.or_require_parameters_cb.setChecked(bool(routing.get("require_parameters", False)))
+        if getattr(v, "or_zdr_cb", None) is not None:
+            v.or_zdr_cb.setChecked(bool(routing.get("zdr", False)))
+        if getattr(v, "or_max_price_prompt", None) is not None:
+            v.or_max_price_prompt.setText(str(max_price.get("prompt") or ""))
+        if getattr(v, "or_max_price_completion", None) is not None:
+            v.or_max_price_completion.setText(str(max_price.get("completion") or ""))
+        if getattr(v, "or_max_price_request", None) is not None:
+            v.or_max_price_request.setText(str(max_price.get("request") or ""))
+        if getattr(v, "or_max_price_image", None) is not None:
+            v.or_max_price_image.setText(str(max_price.get("image") or ""))
+
     def _get_snapshot(self) -> PresetSnapshot:
         v = self.view
         base = self._parse_base(v.template_combo.currentData())
@@ -66,6 +122,7 @@ class EditorMixin:
             reserve_keys_text=str(v.reserve_keys_row.text() or "").strip(),
             protocol_id=self._current_protocol_id_ui(),
             generation_overrides=self._read_generation_overrides(),
+            openrouter_routing=self._read_openrouter_routing(),
             fallbacks=fb_tuple,
         )
 
@@ -101,9 +158,9 @@ class EditorMixin:
 
         if dirty:
             v.save_preset_button.setStyleSheet("""
-                QPushButton { background-color: #27ae60; color: white; font-weight: bold; border: none; padding: 8px; border-radius: 4px; }
-                QPushButton:hover { background-color: #229954; }
-                QPushButton:pressed { background-color: #1e8449; }
+                QPushButton { background-color: #db6596; color: white; font-weight: bold; border: none; padding: 8px; border-radius: 4px; }
+                QPushButton:hover { background-color: #e26e9e; }
+                QPushButton:pressed { background-color: #cb5b89; }
             """)
         else:
             v.save_preset_button.setStyleSheet("""
@@ -232,6 +289,11 @@ class EditorMixin:
         if not self.current_preset_id:
             return
 
+        state = self._build_preset_state()
+
+        self.event_bus.emit(Events.ApiPresets.SAVE_PRESET_STATE, {"id": int(self.current_preset_id), "state": state})
+
+    def _build_preset_state(self) -> dict:
         v = self.view
         state = {
             "url": v.api_url_row.text(),
@@ -243,10 +305,36 @@ class EditorMixin:
 
         base = self._parse_base(v.template_combo.currentData())
         if base is None:
-            pid = self._current_protocol_id_ui() or self._protocol_default_id
-            state["protocol_id"] = pid
+            state["protocol_id"] = self._current_protocol_id_ui() or self._protocol_default_id
 
-        self.event_bus.emit(Events.ApiPresets.SAVE_PRESET_STATE, {"id": int(self.current_preset_id), "state": state})
+        return state
+
+    def _build_current_preset_payload(self, *, preset_id: int | None, name: str | None = None) -> dict:
+        v = self.view
+        data = dict(self.current_preset_data or {})
+        data["id"] = preset_id
+        if name is not None:
+            data["name"] = str(name).strip()
+        data["url"] = v.api_url_row.text()
+        data["default_model"] = v.api_model_row.text()
+        data["key"] = v.api_key_row.text()
+        data["reserve_keys"] = [k.strip() for k in v.reserve_keys_row.text().splitlines() if k.strip()]
+
+        base = self._parse_base(v.template_combo.currentData())
+        data["base"] = base
+
+        if base is None:
+            data["protocol_id"] = self._current_protocol_id_ui() or self._protocol_default_id
+            data["protocol_overrides"] = dict(self._protocol_overrides or {})
+        else:
+            data.pop("protocol_id", None)
+            data.pop("protocol_overrides", None)
+            data["url"] = ""
+
+        data["generation_overrides"] = self._read_generation_overrides()
+        data["openrouter_routing"] = self._read_openrouter_routing()
+        data["fallbacks"] = v.fallback_editor.get_value() if hasattr(v, "fallback_editor") else []
+        return data
 
     def _toggle_key_visibility(self) -> None:
         v = self.view
@@ -304,6 +392,7 @@ class EditorMixin:
         self._apply_protocol_details(self._current_protocol_id_ui())
 
         self._write_generation_overrides(self._snapshot.generation_overrides)
+        self._write_openrouter_routing(self._snapshot.openrouter_routing)
 
         if hasattr(v, "fallback_editor"):
             v.fallback_editor.blockSignals(True)
@@ -319,31 +408,8 @@ class EditorMixin:
         if not self.current_preset_id or self.current_preset_id not in self.custom_presets_list_items:
             return
 
-        v = self.view
         pid = int(self.current_preset_id)
-
-        data = dict(self.current_preset_data or {})
-        data["id"] = pid
-        data["url"] = v.api_url_row.text()
-        data["default_model"] = v.api_model_row.text()
-        data["key"] = v.api_key_row.text()
-        data["reserve_keys"] = [k.strip() for k in v.reserve_keys_row.text().splitlines() if k.strip()]
-        data["fallbacks"] = v.fallback_editor.get_value() if hasattr(v, "fallback_editor") else []
-
-        base = self._parse_base(v.template_combo.currentData())
-        data["base"] = base
-
-        if base is None:
-            data["protocol_id"] = self._current_protocol_id_ui() or self._protocol_default_id
-            data["protocol_overrides"] = dict(self._protocol_overrides or {})
-        else:
-            if "protocol_id" in data:
-                del data["protocol_id"]
-            if "protocol_overrides" in data:
-                del data["protocol_overrides"]
-            data["url"] = ""
-
-        data["generation_overrides"] = self._read_generation_overrides()
+        data = self._build_current_preset_payload(preset_id=pid)
 
         def _call():
             res = self.event_bus.emit_and_wait(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": data}, timeout=2.0)
@@ -362,27 +428,141 @@ class EditorMixin:
 
         self._bus_call_async(_call, _apply, name="save_preset")
 
+    def _copy_custom_preset_async(self) -> None:
+        v = self.view
+        cur_item = v.custom_presets_list.currentItem()
+        if not isinstance(cur_item, CustomPresetListItem):
+            return
+
+        old_name = str(cur_item.base_name or "").strip()
+        suggested_name = f"{old_name} Copy" if old_name else "Preset Copy"
+        new_name, ok = QInputDialog.getText(
+            v,
+            _("Скопировать пресет", "Copy preset"),
+            _("Название копии:", "Copy name:"),
+            text=suggested_name,
+        )
+        if not ok or not str(new_name or "").strip():
+            return
+
+        payload = self._build_current_preset_payload(
+            preset_id=None,
+            name=str(new_name).strip(),
+        )
+        state = self._build_preset_state()
+
+        def _call():
+            res = self.event_bus.emit_and_wait(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": payload}, timeout=2.0)
+            new_id = res[0] if res else None
+            if isinstance(new_id, int):
+                self.event_bus.emit(Events.ApiPresets.SAVE_PRESET_STATE, {"id": int(new_id), "state": state})
+            return new_id
+
+        def _apply(new_id):
+            if not isinstance(new_id, int):
+                QMessageBox.warning(
+                    v,
+                    _("Ошибка", "Error"),
+                    _("Не удалось скопировать пресет.", "Failed to copy preset."),
+                )
+                return
+            self.reload_presets_async()
+            QTimer.singleShot(200, lambda: self._select_custom_preset(int(new_id)))
+
+        self._bus_call_async(_call, _apply, name="copy_preset")
+
     def _add_custom_preset_async(self) -> None:
         logger.info("[API UI] add preset clicked")
         v = self.view
-        name, ok = QInputDialog.getText(v, _("Новый пресет", "New preset"), _("Название пресета:", "Preset name:"))
-        if not ok or not str(name or "").strip():
-            logger.info("[API UI] add preset cancelled/empty")
+        template_options: list[tuple[str, object]] = []
+        for i in range(v.template_combo.count()):
+            template_options.append((v.template_combo.itemText(i), v.template_combo.itemData(i)))
+
+        initial_template = v.template_combo.currentData() if getattr(v, "template_combo", None) is not None else None
+        dlg = NewPresetDialog(v, template_options=template_options, initial_template_data=initial_template)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            logger.info("[API UI] add preset cancelled")
             return
+
+        name = dlg.preset_name()
+        selected_base = self._parse_base(dlg.selected_template_data())
 
         payload = {
             "name": str(name).strip(),
             "id": None,
             "pricing": "mixed",
-            "base": None,
+            "base": selected_base,
             "url": "",
             "default_model": "",
             "key": "",
             "reserve_keys": [],
-            "protocol_id": getattr(self, "_protocol_default_id", "") or "",
+            "protocol_id": "" if selected_base is not None else (getattr(self, "_protocol_default_id", "") or ""),
         }
 
-        logger.info(f"[API UI] Creating preset name='{payload['name']}'")
+        logger.info(f"[API UI] Creating preset name='{payload['name']}', base={payload['base']}")
+
+        def _call():
+            logger.info("[API UI] calling SAVE_CUSTOM_PRESET via emit_and_wait...")
+            res = self.event_bus.emit_and_wait(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": payload}, timeout=2.0)
+            logger.info(f"[API UI] SAVE_CUSTOM_PRESET result={res}")
+            return res[0] if res else None
+
+        def _apply(new_id):
+            logger.info(f"[API UI] Created preset new_id={new_id} type={type(new_id)}")
+            if not isinstance(new_id, int):
+                QMessageBox.warning(
+                    v,
+                    _("РћС€РёР±РєР°", "Error"),
+                    _("РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕР·РґР°С‚СЊ РїСЂРµСЃРµС‚. РџСЂРѕРІРµСЂСЊ Р»РѕРіРё (SAVE_CUSTOM_PRESET).",
+                    "Failed to create preset. Check logs (SAVE_CUSTOM_PRESET).")
+                )
+                return
+            self.reload_presets_async()
+            QTimer.singleShot(200, lambda: self._select_custom_preset(int(new_id)))
+
+        self._bus_call_async(_call, _apply, name="add_preset")
+        return
+        name, ok = QInputDialog.getText(v, _("Новый пресет", "New preset"), _("Название пресета:", "Preset name:"))
+        if not ok or not str(name or "").strip():
+            logger.info("[API UI] add preset cancelled/empty")
+            return
+
+        template_options: list[tuple[str, object]] = []
+        for i in range(v.template_combo.count()):
+            template_options.append((v.template_combo.itemText(i), v.template_combo.itemData(i)))
+
+        selected_base = None
+        if template_options:
+            labels = [label for label, _data in template_options]
+            selected_label, tpl_ok = QInputDialog.getItem(
+                v,
+                _("Шаблон для пресета", "Preset template"),
+                _("Шаблон (опционально):", "Template (optional):"),
+                labels,
+                0,
+                False,
+            )
+            if not tpl_ok:
+                logger.info("[API UI] add preset cancelled at template selection")
+                return
+            for label, data in template_options:
+                if label == selected_label:
+                    selected_base = self._parse_base(data)
+                    break
+
+        payload = {
+            "name": str(name).strip(),
+            "id": None,
+            "pricing": "mixed",
+            "base": selected_base,
+            "url": "",
+            "default_model": "",
+            "key": "",
+            "reserve_keys": [],
+            "protocol_id": "" if selected_base is not None else (getattr(self, "_protocol_default_id", "") or ""),
+        }
+
+        logger.info(f"[API UI] Creating preset name='{payload['name']}', base={payload['base']}")
 
         def _call():
             logger.info("[API UI] calling SAVE_CUSTOM_PRESET via emit_and_wait...")

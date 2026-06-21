@@ -1,17 +1,19 @@
 """
-MitaStatusWidget — typing/status indicator bridge.
+MitaStatusWidget - typing/status indicator bridge.
 
 Delegates to ChatWidget's built-in typing bar for visual display.
-Keeps the same public API so main_view.py doesn't need changes.
+Keeps the same public API so window host refactors don't need widget changes.
 """
 
-from PyQt6.QtCore import Qt, QTimer
+import qtawesome as qta
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QWidget
+
 from utils import _
 
 
 class MitaStatusWidget(QWidget):
-    """Bridge: translates show_thinking/show_error/hide_animated to ChatWidget typing bar."""
+    """Bridge: translates show_thinking/show_error/hide_animated to ChatWidget status bar."""
 
     def __init__(self, chat_widget=None, parent=None):
         super().__init__(parent)
@@ -35,14 +37,13 @@ class MitaStatusWidget(QWidget):
 
         chat = self._get_chat()
         if chat:
-            # Get avatar for the character
             from ui.chat.message_widget import _get_avatar_pixmap
+
             avatar = _get_avatar_pixmap(character_name, "assistant")
             chat.show_typing(
                 _(f"{character_name} думает", f"{character_name} is thinking"),
-                avatar
+                avatar,
             )
-            # Start dot animation
             self._start_dots()
 
     def show_error(self, error_message=None):
@@ -52,8 +53,8 @@ class MitaStatusWidget(QWidget):
         self._stop_dots()
         chat = self._get_chat()
         if chat:
-            chat.show_typing(f"⚠ {error_message}")
-            QTimer.singleShot(5000, self.hide_animated)
+            icon = qta.icon("fa6s.triangle-exclamation", color="#db6596").pixmap(24, 24)
+            chat.show_status(str(error_message), icon)
 
     def show_success(self, message=None):
         if message is None:
@@ -62,7 +63,8 @@ class MitaStatusWidget(QWidget):
         self._stop_dots()
         chat = self._get_chat()
         if chat:
-            chat.show_typing(f"✓ {message}")
+            icon = qta.icon("fa6s.circle-check", color="#77d188").pixmap(24, 24)
+            chat.show_status(str(message), icon)
             QTimer.singleShot(2000, self.hide_animated)
 
     def pulse_error_animation(self):
@@ -77,8 +79,6 @@ class MitaStatusWidget(QWidget):
         chat = self._get_chat()
         if chat:
             chat.hide_typing()
-
-    # ── Dot animation ────────────────────────────────────────────────────────
 
     def _start_dots(self):
         self._stop_dots()
@@ -102,8 +102,6 @@ class MitaStatusWidget(QWidget):
                 _(f"{name} думает{dots}", f"{name} is thinking{dots}")
             )
 
-    # ── Compat stubs ─────────────────────────────────────────────────────────
-
     def set_pulse_intensity(self, factor):
         pass
 
@@ -116,5 +114,5 @@ class MitaStatusWidget(QWidget):
         pass
 
     def setGeometry(self, *args, **kwargs):
-        """Ignore geometry calls — we're not a visible widget."""
+        """Ignore geometry calls - we're not a visible widget."""
         pass

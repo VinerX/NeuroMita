@@ -8,9 +8,12 @@ from PyQt6.QtWidgets import (
 )
 import qtawesome as qta
 
+from utils import _
+
 
 class ProviderDelegate(QStyledItemDelegate):
     _free_pm = None
+    _local_pm = None
 
     @classmethod
     def _free_pixmap(cls):
@@ -36,6 +39,30 @@ class ProviderDelegate(QStyledItemDelegate):
             cls._free_pm = pm
         return cls._free_pm
 
+    @classmethod
+    def _local_pixmap(cls):
+        if cls._local_pm is None:
+            font = QFont("Segoe UI", 7, QFont.Weight.Bold)
+            metrics = QFontMetrics(font)
+            text_w = metrics.horizontalAdvance("LOCAL")
+            w, h = text_w + 10, 14
+            pm = QPixmap(w, h)
+            pm.fill(Qt.GlobalColor.transparent)
+
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setBrush(QColor("#4FC3F7"))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(0, 0, w, h, 3, 3)
+
+            p.setPen(QColor("#0b1220"))
+            p.setFont(font)
+            p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, "LOCAL")
+            p.end()
+
+            cls._local_pm = pm
+        return cls._local_pm
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.presets_meta = {}
@@ -55,8 +82,10 @@ class ProviderDelegate(QStyledItemDelegate):
         if preset_id and preset_id in self.presets_meta:
             preset = self.presets_meta[preset_id]
             pricing = preset.pricing
+            badge_kind = getattr(preset, "badge_kind", "") or ""
         else:
             pricing = ""
+            badge_kind = ""
 
         dollar_font = QFont("Segoe UI", 9, QFont.Weight.Bold)
         ascent = QFontMetrics(dollar_font).ascent()
@@ -64,7 +93,11 @@ class ProviderDelegate(QStyledItemDelegate):
         x = option.rect.x() + 4
         y = option.rect.y() + (option.rect.height() - 16) // 2
 
-        if pricing == "free":
+        if badge_kind == "local":
+            painter.drawPixmap(x, y, self._local_pixmap())
+            x += self._local_pixmap().width() + 6
+
+        elif pricing == "free":
             painter.drawPixmap(x, y, self._free_pixmap())
             x += self._free_pixmap().width() + 6
 
@@ -234,7 +267,7 @@ class FallbackRow(QWidget):
             pass
 
         self.model_edit = QLineEdit()
-        self.model_edit.setPlaceholderText("model (optional)")
+        self.model_edit.setPlaceholderText(_("модель (необязательно)", "model (optional)"))
         self.model_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         self.up_btn = QToolButton()
@@ -254,7 +287,7 @@ class FallbackRow(QWidget):
         self.remove_btn.setFixedSize(22, 22)
         self.remove_btn.setIconSize(QSize(11, 11))
         self.remove_btn.setAutoRaise(True)
-        self.remove_btn.setToolTip("Remove fallback")
+        self.remove_btn.setToolTip(_("Удалить фолбэк", "Remove fallback"))
 
         lay.addWidget(self.preset_combo, 2)
         lay.addWidget(self.model_edit, 2)
@@ -319,10 +352,12 @@ class FallbackChainEditor(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(4)
 
-        hint = QLabel(
+        hint = QLabel(_(
             "Если основной провайдер недоступен, запросы пойдут по этой цепочке сверху вниз. "
-            "Поле model опционально — если пусто, используется модель пресета."
-        )
+            "Поле model опционально — если пусто, используется модель пресета.",
+            "If the main provider is unavailable, requests will go down this chain top to bottom. "
+            "The model field is optional — if empty, the preset's own model is used."
+        ))
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #bfbfbf; font-size: 11px;")
         outer.addWidget(hint)
@@ -335,7 +370,7 @@ class FallbackChainEditor(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
-        self.add_btn = QPushButton("+ Добавить фолбэк")
+        self.add_btn = QPushButton(_("+ Добавить фолбэк", "+ Add fallback"))
         self.add_btn.setIcon(qta.icon("fa5s.plus", color="#3498db"))
         self.add_btn.clicked.connect(lambda *_: self._on_add_clicked())
         btn_row.addWidget(self.add_btn)

@@ -1,16 +1,23 @@
 
-import qtawesome as qta
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
+try:
+    import qtawesome as qta
+except Exception:
+    qta = None
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QApplication, QStyle
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap
 
 from main_logger import logger
 
-import json, os, threading, queue, time, atexit
+import json, os, sys, threading, queue, time, atexit
 
 class SettingsManager:
     instance = None
     SAVE_DEBOUNCE_SEC = 0.5          # сколько «выжидать», собирая изменения
     _SENTINEL = object()             # сигнал завершения потока
+    _fallback_settings: dict = {}
+    _fallback_path: str | None = None
+    _fallback_mtime: float | None = None
 
     def __init__(self, config_path: str):
         self.config_path = config_path
@@ -29,7 +36,10 @@ class SettingsManager:
     @staticmethod
     def get(key, default=None):
         inst = SettingsManager.instance
-        return inst.settings.get(key, default) if inst else default
+        if inst:
+            return inst.settings.get(key, default)
+        fallback = SettingsManager._load_fallback_settings()
+        return fallback.get(key, default)
 
     @staticmethod
     def set(key, value):
@@ -39,6 +49,39 @@ class SettingsManager:
             return
         inst.settings[key] = value
         inst._schedule_save()
+
+    @staticmethod
+    def _fallback_config_path() -> str:
+        base_dir = os.environ.get("NEUROMITA_BASE_DIR")
+        if not base_dir:
+            base_dir = os.path.dirname(os.path.abspath(sys.executable))
+        return os.path.join(base_dir, "Settings", "settings.json")
+
+    @staticmethod
+    def _load_fallback_settings() -> dict:
+        path = SettingsManager._fallback_config_path()
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            SettingsManager._fallback_settings = {}
+            SettingsManager._fallback_path = path
+            SettingsManager._fallback_mtime = None
+            return SettingsManager._fallback_settings
+
+        if (
+            SettingsManager._fallback_path == path
+            and SettingsManager._fallback_mtime == mtime
+        ):
+            return SettingsManager._fallback_settings
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                SettingsManager._fallback_settings = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            SettingsManager._fallback_settings = {}
+        SettingsManager._fallback_path = path
+        SettingsManager._fallback_mtime = mtime
+        return SettingsManager._fallback_settings
 
     # ---------- загрузка / сохранение ----------
 
@@ -129,8 +172,29 @@ class SettingsManager:
 # универсальный маленький помощник-иконки
 def _angle_icon(kind: str, size: int = 10):
     """kind: 'right' | 'down'"""
-    name = 'fa6s.angle-right' if kind == 'right' else 'fa6s.angle-down'
-    return qta.icon(name, color='#f0f0f0').pixmap(size, size)
+    if qta is not None:
+        # Chevrons read more clearly as "expandable / expanded" than thin angles.
+        name = 'fa6s.chevron-right' if kind == 'right' else 'fa6s.chevron-down'
+        try:
+            return qta.icon(name, color='#ff9ed3').pixmap(size, size)
+        except Exception:
+            pass
+
+    app = QApplication.instance()
+    if app is not None:
+        style = app.style()
+        if style is not None:
+            standard_pix = (
+                QStyle.StandardPixmap.SP_ArrowRight
+                if kind == 'right'
+                else QStyle.StandardPixmap.SP_ArrowDown
+            )
+            try:
+                return style.standardIcon(standard_pix).pixmap(size, size)
+            except Exception:
+                pass
+
+    return QPixmap(size, size)
 # ────────────────────────────────────────────────────
 
 
@@ -138,7 +202,9 @@ class CollapsibleSection(QWidget):
     """Внешняя секция"""
     def __init__(self, title, parent=None, *, icon_name=None):
         super().__init__(parent)
-        self.is_collapsed = False
+        self.setObjectName('CollapsibleSection')
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.is_collapsed = True
 
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
@@ -152,22 +218,26 @@ class CollapsibleSection(QWidget):
         h.setSpacing(3)
 
         self.arrow_label = QLabel(self.header)
-        self.arrow_pix_right = _angle_icon('right', 10)
-        self.arrow_pix_down  = _angle_icon('down',  10)
+        self.arrow_label.setObjectName('CollapsibleArrow')
+        self.arrow_pix_right = _angle_icon('right', 13)
+        self.arrow_pix_down  = _angle_icon('down',  13)
         self.arrow_label.setPixmap(self.arrow_pix_right)
-        self.arrow_label.setFixedWidth(11)
+        self.arrow_label.setFixedWidth(18)
+        self.arrow_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Category icon goes *before* the title (left of it), not pinned to the
+        # far right where it used to render as a cropped sliver.
+        self.icon_label = self._make_icon(icon_name) if icon_name else None
 
         self.title_label = QLabel(title, self.header, objectName='CollapsibleTitle')
-        h.addWidget(self.arrow_label)
-        h.addWidget(self.title_label)
 
-        
+        h.addWidget(self.arrow_label)
+        if self.icon_label is not None:
+            h.addWidget(self.icon_label)
+        h.addWidget(self.title_label)
         h.addStretch()
 
-        if icon_name:
-            h.addWidget(self._make_icon(icon_name))
-            h.addSpacing(8)
-
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
         self.header.mousePressEvent = self.toggle
 
         # Content
@@ -181,10 +251,10 @@ class CollapsibleSection(QWidget):
         self.content_frame.hide()
 
     def _make_icon(self, name):
-        # немного юзлесс функция, обрезается и тому подобное.
         lbl = QLabel(self.header)
-        lbl.setPixmap(qta.icon(name, color='#f0f0f0').pixmap(15, 15))
-        lbl.setFixedSize(18, 18)
+        lbl.setObjectName('CollapsibleIcon')
+        lbl.setPixmap(qta.icon(name, color='#ffd2ec').pixmap(15, 15) if qta is not None else QPixmap(15, 15))
+        lbl.setFixedSize(20, 20)
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         return lbl
 
@@ -219,8 +289,7 @@ class InnerCollapsibleSection(CollapsibleSection):
         self.arrow_pix_right = _angle_icon('right', 8)
         self.arrow_pix_down  = _angle_icon('down',  8)
         self.arrow_label.setPixmap(self.arrow_pix_right)
-        self.header.layout().setSpacing(3)
-        self.arrow_label.setFixedWidth(9) 
+        self.header.layout().setSpacing(4)
+        self.arrow_label.setFixedWidth(12) 
         self.title_label.setStyleSheet('font-size:9pt;')
-        # больший отступ строк внутри подп-секции
-        self.content_layout.setContentsMargins(24, 5, 12, 5)
+        self.content_layout.setContentsMargins(28, 5, 12, 5)

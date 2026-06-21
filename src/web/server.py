@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 import uvicorn
@@ -19,6 +20,14 @@ app = FastAPI(root_path="/api",
               )
 
 app.include_router(vtt_router)
+
+# Mock OpenAI API — тестовая поверхность для проверки обработки ошибок.
+# Из GUI пока не используется, поэтому по умолчанию выключена.
+# Включить: переменная окружения NEUROMITA_ENABLE_MOCK_API=1
+if os.environ.get("NEUROMITA_ENABLE_MOCK_API", "0") == "1":
+    from web.mock_api.router import router as mock_api_router
+    app.include_router(mock_api_router)
+    logger.info("Mock OpenAI API включён (NEUROMITA_ENABLE_MOCK_API=1)")
 
 @app.get("/")
 async def root():

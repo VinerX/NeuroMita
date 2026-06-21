@@ -2,39 +2,129 @@
 from utils import getTranslationVariant as _
 
 
-def _apply_interface_mode_cb(gui, value):
+def _on_section_toggled(gui, category=None, value=None):
+    """Re-apply sidebar/tab visibility whenever a section checkbox flips."""
     try:
-        from ui.widgets.settings_panel import apply_interface_mode
-        apply_interface_mode(gui, value)
+        from ui.widgets.settings_panel import apply_section_visibility, set_section_enabled
+        if category is not None:
+            set_section_enabled(str(category), bool(value))
+        apply_section_visibility(gui)
     except Exception:
         pass
+
+
+def _on_language_changed(gui, value=None):
+    """Смена языка требует перезапуска — предлагаем его сразу.
+
+    Значение уже сохранено комбобоксом до вызова command, поэтому здесь только
+    спрашиваем и при согласии перезапускаем приложение.
+    """
+    try:
+        from ui.language_restart import prompt_language_restart
+
+        parent = gui if hasattr(gui, "window") else gui
+        prompt_language_restart(parent)
+    except Exception:
+        pass
+
+
+def _on_sandbox_panel_toggled(gui, key=None, value=None):
+    """Re-apply the Sandbox inspector panel visibility when a checkbox flips."""
+    try:
+        from ui.widgets.sandbox_panels import apply_sandbox_panel_visibility, set_panel_enabled
+        if key is not None:
+            set_panel_enabled(str(key), bool(value))
+        apply_sandbox_panel_visibility(gui)
+    except Exception:
+        pass
+
+
+def _build_sandbox_panels_config(gui):
+    """Build the Sandbox-panel toggle list dynamically from the central
+    sandbox_panels registry — same pattern as the section-visibility block,
+    but governs the right-hand inspector panels in the Sandbox. All ON by
+    default."""
+    from ui.widgets.sandbox_panels import (
+        SANDBOX_PANEL_DEFAULTS,
+        SANDBOX_PANEL_LABELS,
+        TOGGLEABLE_SANDBOX_PANELS,
+        _panel_key,
+    )
+
+    items = [
+        {
+            'label': _('Показывайте только нужные панели в правой части Песочницы.',
+                       'Show only the panels you need in the Sandbox inspector.'),
+            'type': 'text',
+        },
+    ]
+    for key in TOGGLEABLE_SANDBOX_PANELS:
+        label_pair = SANDBOX_PANEL_LABELS.get(key, (key.capitalize(), key.capitalize()))
+        items.append({
+            'label': _(label_pair[0], label_pair[1]),
+            'key': _panel_key(key),
+            'type': 'checkbutton',
+            'default_checkbutton': SANDBOX_PANEL_DEFAULTS[key],
+            'command': lambda value, _gui=gui, _key=key: _on_sandbox_panel_toggled(_gui, _key, value),
+        })
+    return items
+
+
+def _build_section_visibility_config(gui):
+    """Build the section-toggle checkbox list dynamically from the central
+    SECTION_DEFAULTS map so the checkboxes can never go out of sync with the
+    settings tabs / sidebar. Replaces the old Basic/Advanced/Full dropdown."""
+    from ui.widgets.settings_panel import (
+        SECTION_DEFAULTS,
+        SECTION_LABELS,
+        TOGGLEABLE_SECTIONS,
+        _section_key,
+    )
+
+    items = [
+        {
+            'label': _('Включите только те разделы, которыми пользуетесь — '
+                       'остальные спрячутся из настроек и боковой панели.',
+                       'Enable only the sections you use — the rest are hidden '
+                       'from the settings and the sidebar.'),
+            'type': 'text',
+        },
+    ]
+    for cat in TOGGLEABLE_SECTIONS:
+        label_pair = SECTION_LABELS.get(cat, (cat.capitalize(), cat.capitalize()))
+        items.append({
+            'label': _(label_pair[0], label_pair[1]),
+            'key': _section_key(cat),
+            'type': 'checkbutton',
+            'default_checkbutton': SECTION_DEFAULTS[cat],
+            'command': lambda value, _gui=gui, _cat=cat: _on_section_toggled(_gui, _cat, value),
+        })
+    return items
 
 
 def setup_general_settings_controls(self, parent):
     create_section_header(parent, _("Основные настройки", "General Settings"))
 
-    # ── Режим отображения настроек ──────────────────────────────────────────
-    interface_mode_config = [
-        {
-            'label': _('Режим интерфейса', 'Interface mode'),
-            'key': 'INTERFACE_MODE', 'type': 'combobox',
-            'options': [_('Базовый', 'Basic'), _('Продвинутый', 'Advanced'), _('Полный', 'Full')],
-            'default': _('Базовый', 'Basic'),
-            'command': lambda v: _apply_interface_mode_cb(self, v),
-            'tooltip': _(
-                'Базовый — только самое нужное.\n'
-                'Продвинутый — добавляет озвучку, микрофон и связь с игрой.\n'
-                'Полный — все разделы настроек.',
-                'Basic — essentials only.\n'
-                'Advanced — adds voice, mic and game connection.\n'
-                'Full — all settings sections.'),
-        },
-    ]
+    # ── Видимость разделов настроек ─────────────────────────────────────────
+    # Replaces the old "Interface mode" Basic/Advanced/Full dropdown. Each
+    # non-general category gets its own checkbox; toggling rebuilds the
+    # settings tabs / sidebar visibility on the spot.
     create_settings_section(
         self, parent,
-        _('Режим отображения настроек', 'Settings UI mode'),
-        interface_mode_config,
+        _('Видимые разделы', 'Visible sections'),
+        _build_section_visibility_config(self),
         icon_name='fa5s.sliders-h',
+    )
+
+    # ── Видимость панелей Песочницы ─────────────────────────────────────────
+    # Same per-toggle pattern, but governs the right-hand inspector panels in
+    # the Sandbox (e.g. context budget, last-request diagnostics). All on by
+    # default; toggling updates the live Sandbox page on the spot.
+    create_settings_section(
+        self, parent,
+        _('Панели песочницы', 'Sandbox panels'),
+        _build_sandbox_panels_config(self),
+        icon_name='fa5s.flask',
     )
 
     privacy_config = [
@@ -69,7 +159,18 @@ def setup_general_settings_controls(self, parent):
                       'Hide tags (<e>, <c>, <a>, [b], [i], [color]) in the displayed chat text.')},
 
         {'label': _('Выводить мышление', 'Show thinking'), 'key': 'SHOW_THINK_IN_GUI',
-         'type': 'checkbutton', 'default_checkbutton': True},
+         'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _('Отображать блок «мышления» модели как отдельное сообщение. '
+                      'Дублируется в Песочнице → Отладка.',
+                      "Display the model's thinking block as a separate message. "
+                      'Also available in Sandbox → Debug.')},
+
+        {'label': _('Показывать системные сообщения', 'Show system messages'), 'key': 'SHOW_SYSTEM_MESSAGES',
+         'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _('Показывать системные/контекстные заметки (например «[Easel drawing]…») в чате. '
+                      'По умолчанию скрыты. Дублируется в Песочнице → Отладка.',
+                      'Show system/context notes (e.g. "[Easel drawing]…") in chat. '
+                      'Hidden by default. Also available in Sandbox → Debug.')},
     ]
 
     create_settings_section(
@@ -128,9 +229,8 @@ def setup_general_settings_controls(self, parent):
 
     language_config = [
         {'label': 'Язык / Language', 'key': 'LANGUAGE', 'type': 'combobox',
-         'options': ["RU", "EN"], 'default': "RU"},
-        {'label': 'Перезапусти программу после смены!', 'type': 'text'},
-        {'label': 'Restart program after change!', 'type': 'text'},
+         'options': ["RU", "EN"], 'default': "RU",
+         'command': lambda v: _on_language_changed(self, v)},
     ]
 
     create_settings_section(

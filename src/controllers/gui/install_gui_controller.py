@@ -26,17 +26,27 @@ class InstallGuiController(BaseController):
         except Exception:
             return None
 
-    def _close_window_threadsafe(self, win: object) -> None:
+    def _finish_install_window(self, win: object, close_now: bool) -> None:
+        """Mark the install window as finished (so it can be really closed) and
+        optionally close it now. Routed through a GUI-thread signal because this
+        runs on the install worker thread."""
         if not win:
             return
-        try:
-            from PyQt6.QtCore import QMetaObject, Qt
-            QMetaObject.invokeMethod(win, "close", Qt.ConnectionType.QueuedConnection)
-        except Exception:
+        view = getattr(self, "view", None)
+        sig = getattr(view, "finalize_installation_window_signal", None) if view else None
+        if sig is not None:
             try:
-                win.close()
+                sig.emit(win, bool(close_now))
+                return
             except Exception:
                 pass
+        try:
+            if hasattr(win, "finalize"):
+                win.finalize()
+            if close_now:
+                win.close()
+        except Exception:
+            pass
 
     def _create_install_window(self, title: str, initial_status: str):
         if not self.view or not hasattr(self.view, "create_installation_window_signal"):
@@ -107,7 +117,21 @@ class InstallGuiController(BaseController):
             logger.error("InstallController backend not available")
             return
 
-        win, progress_cb, status_cb, log_cb = self._create_install_window(title, initial_status)
+        custom_window = data.get("install_window")
+        custom_callbacks = data.get("install_callbacks")
+        if custom_window is not None:
+            if custom_callbacks is None and hasattr(custom_window, "get_threadsafe_callbacks"):
+                custom_callbacks = custom_window.get_threadsafe_callbacks()
+            if isinstance(custom_callbacks, (tuple, list)) and len(custom_callbacks) == 3:
+                win = custom_window
+                progress_cb, status_cb, log_cb = custom_callbacks
+            else:
+                logger.warning(
+                    "InstallGuiController: invalid install_callbacks for custom install window, falling back to default UI"
+                )
+                win, progress_cb, status_cb, log_cb = self._create_install_window(title, initial_status)
+        else:
+            win, progress_cb, status_cb, log_cb = self._create_install_window(title, initial_status)
 
         def worker():
             try:
@@ -121,10 +145,14 @@ class InstallGuiController(BaseController):
 
                 if ok:
                     status_cb("Done")
-                    self._close_window_threadsafe(win)
+                    self._finish_install_window(win, True)
                 else:
                     status_cb("Failed")
                     log_cb("Installation failed (see logs above).")
+                    # Keep the window open so the user can read the logs, but
+                    # finalize it so closing it actually closes (and clears the
+                    # sidebar "Install logs" button).
+                    self._finish_install_window(win, False)
                     self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
                         "title": "Installation failed",
                         "message": f"Task '{task_id}' failed. See install window logs."
@@ -137,6 +165,7 @@ class InstallGuiController(BaseController):
                     log_cb(f"Critical error: {str(e)}")
                 except Exception:
                     pass
+                self._finish_install_window(win, False)
                 self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
                     "title": "Installation error",
                     "message": f"Task '{task_id}' failed with exception:\n{e}"

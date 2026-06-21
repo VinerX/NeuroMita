@@ -14,10 +14,11 @@ from main_logger import logger
 from core.events import Events
 from utils import getTranslationVariant as _, get_character_voice_paths
 
+from core.backends import BackendKind, get_backend_service
 from core.install_types import InstallPlan, InstallAction
 from core.install_requirements import InstallRequirement, check_requirements
 
-from handlers.voice_models.install_plan_helpers import torch_install_action, pip_uninstall_action
+from handlers.voice_models.install_plan_helpers import pip_uninstall_action
 
 
 class FishSpeechInstallSpec:
@@ -32,7 +33,10 @@ class FishSpeechInstallSpec:
     @classmethod
     def requirements(cls, model_id: str, ctx: dict) -> list[InstallRequirement]:
         mid = str(model_id)
+        backend_kind = cls.required_backend(mid, ctx)
+        backend_kind = cls.required_backend(model_id, ctx)
         req: list[InstallRequirement] = [
+            InstallRequirement(id=f"backend_{backend_kind.value}", kind="backend", backend_kind=backend_kind, required=True),
             InstallRequirement(id="fish_speech_lib", kind="python_dist", spec="fish-speech-lib", required=True),
         ]
         if mid in ("medium+", "medium+low"):
@@ -45,6 +49,10 @@ class FishSpeechInstallSpec:
     def is_installed(cls, model_id: str, ctx: dict) -> bool:
         st = check_requirements(cls.requirements(model_id, ctx), ctx=ctx)
         return bool(st.get("ok"))
+
+    @classmethod
+    def required_backend(cls, model_id: str, ctx: dict) -> BackendKind:
+        return get_backend_service().preferred_torch_kind(ctx)
 
     @classmethod
     def _libs_path_abs(cls, pip_installer) -> str:
@@ -313,10 +321,13 @@ class FishSpeechInstallSpec:
     @classmethod
     def build_install_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
         mid = str(model_id)
+        backend_kind = cls.required_backend(mid, ctx)
         if cls.is_installed(mid, ctx):
             return InstallPlan(
                 actions=[],
                 already_installed=True,
+                required_backend=backend_kind,
+                backend_context=dict(ctx),
                 already_installed_status=_("Уже установлено", "Already installed")
             )
 
@@ -338,11 +349,8 @@ class FishSpeechInstallSpec:
 
         actions: list[InstallAction] = []
 
-        actions.append(torch_install_action(ctx, progress=10))
-
         pkgs = [
             "fish-speech-lib",
-            "numpy==1.26.0",
             "librosa==0.9.1",
             "numba==0.60.0",
         ]
@@ -387,7 +395,12 @@ class FishSpeechInstallSpec:
             )
         )
 
-        return InstallPlan(actions=actions, ok_status=_("Готово", "Done"))
+        return InstallPlan(
+            actions=actions,
+            ok_status=_("Готово", "Done"),
+            required_backend=backend_kind,
+            backend_context=dict(ctx),
+        )
 
     @classmethod
     def build_uninstall_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
@@ -567,6 +580,22 @@ class FishSpeechModel(IVoiceModel):
     def get_model_configs(self) -> List[Dict[str, Any]]:
         return self.MODEL_CONFIGS
 
+    @classmethod
+    def required_backend_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> BackendKind:
+        return FishSpeechInstallSpec.required_backend(model_id, ctx)
+
+    @classmethod
+    def is_model_installed(cls, model_id: str, ctx: Dict[str, Any]) -> bool:
+        return FishSpeechInstallSpec.is_installed(model_id, ctx)
+
+    @classmethod
+    def build_install_plan_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> InstallPlan:
+        return FishSpeechInstallSpec.build_install_plan(model_id, ctx)
+
+    @classmethod
+    def build_uninstall_plan_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> InstallPlan:
+        return FishSpeechInstallSpec.build_uninstall_plan(model_id, ctx)
+
     def _load_module(self):
         if self.fish_speech_module is not None:
             return
@@ -575,11 +604,33 @@ class FishSpeechModel(IVoiceModel):
 
         self._import_attempted = True
         try:
+            import fish_speech_lib
+            # fish_speech_lib импортирует свои подмодули через
+            # pyrootutils.setup_root(..., indicator=".project-root"), который ищет
+            # маркер ВВЕРХ от файла пакета. Когда библиотека лежит в отдельном
+            # Venv (а не в Lib игры), маркер из NEUROMITA_BASE_DIR не находится и
+            # инициализация падает с FileNotFoundError. Чекпоинты резолвятся
+            # относительно cwd (cwd setup_root не меняет), поэтому достаточно
+            # положить маркер рядом с самим пакетом — он попадёт в путь поиска.
+            self._ensure_fish_speech_project_root(fish_speech_lib)
+
             from fish_speech_lib.inference import FishSpeech
             self.fish_speech_module = FishSpeech
         except ImportError as ex:
             logger.info(ex)
             self.fish_speech_module = None
+
+    def _ensure_fish_speech_project_root(self, fish_speech_lib) -> None:
+        try:
+            pkg_file = getattr(fish_speech_lib, "__file__", None)
+            if not pkg_file:
+                return
+            marker = os.path.join(os.path.dirname(os.path.abspath(pkg_file)), ".project-root")
+            if not os.path.exists(marker):
+                open(marker, "w").close()
+                logger.info(f"Создан маркер .project-root для fish_speech_lib: {marker}")
+        except Exception as ex:
+            logger.warning(f"Не удалось создать .project-root для fish_speech_lib: {ex}")
 
     def get_display_name(self) -> str:
         mode = self._mode()

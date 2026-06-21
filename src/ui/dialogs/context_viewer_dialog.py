@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSplitter,
+    QTabWidget,
     QTextBrowser,
     QTreeWidget,
     QTreeWidgetItem,
@@ -122,13 +123,14 @@ class ContextViewerDialog(QDialog):
       - response: str  (если есть — из finetune JSONL)
     """
 
-    def __init__(self, data: Dict[str, Any], parent=None):
+    def __init__(self, data: Dict[str, Any], parent=None, initial_tab: str = "request"):
         super().__init__(parent)
         self._data = data
         self._messages: List[Dict] = data.get("messages") or []
+        self._initial_tab = str(initial_tab or "request").lower()
         self._highlight_enabled = True
 
-        self.setWindowTitle(_("Просмотр контекста запроса", "Request Context Viewer"))
+        self.setWindowTitle(_("Просмотр контекста запроса и ответа", "Request / Response Context Viewer"))
         self.setMinimumSize(900, 600)
         self.resize(1150, 720)
         self.setModal(True)
@@ -145,6 +147,7 @@ class ContextViewerDialog(QDialog):
         first = self._tree.topLevelItem(0)
         if first:
             self._tree.setCurrentItem(first)
+        self._tabs.setCurrentIndex(1 if self._initial_tab == "response" else 0)
 
     # ─────────────────────────────────── UI build ────────────────────────────────
 
@@ -155,31 +158,10 @@ class ContextViewerDialog(QDialog):
 
         root.addWidget(self._build_header())
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setChildrenCollapsible(False)
-
-        self._tree = QTreeWidget()
-        self._tree.setHeaderHidden(True)
-        self._tree.setMinimumWidth(200)
-        self._tree.setMaximumWidth(320)
-        self._tree.currentItemChanged.connect(self._on_item_changed)
-        splitter.addWidget(self._tree)
-
-        # Правая панель: поиск + viewer
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(4)
-
-        right_layout.addWidget(self._build_search_bar())
-
-        self._viewer = QTextBrowser()
-        self._viewer.setOpenLinks(False)
-        right_layout.addWidget(self._viewer)
-
-        splitter.addWidget(right_panel)
-        splitter.setSizes([230, 900])
-        root.addWidget(splitter, stretch=1)
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._build_request_tab(), _("Запрос", "Request"))
+        self._tabs.addTab(self._build_response_tab(), _("Ответ", "Response"))
+        root.addWidget(self._tabs, stretch=1)
 
         # Кнопки внизу
         btn_row = QHBoxLayout()
@@ -197,11 +179,59 @@ class ContextViewerDialog(QDialog):
         copy_msgs_btn.clicked.connect(self._copy_messages)
         btn_row.addWidget(copy_msgs_btn)
 
+        copy_resp_btn = QPushButton(_("Копировать ответ", "Copy response"))
+        copy_resp_btn.setObjectName("SecondaryBtn")
+        copy_resp_btn.setToolTip(_("Скопировать ответ модели и usage", "Copy model response and usage"))
+        copy_resp_btn.clicked.connect(self._copy_response)
+        btn_row.addWidget(copy_resp_btn)
+
         close_btn = QPushButton(_("Закрыть", "Close"))
         close_btn.clicked.connect(self.accept)
         btn_row.addWidget(close_btn)
 
         root.addLayout(btn_row)
+
+    def _build_request_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+
+        self._tree = QTreeWidget()
+        self._tree.setHeaderHidden(True)
+        self._tree.setMinimumWidth(200)
+        self._tree.setMaximumWidth(320)
+        self._tree.currentItemChanged.connect(self._on_item_changed)
+        splitter.addWidget(self._tree)
+
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(4)
+        right_layout.addWidget(self._build_search_bar())
+
+        self._viewer = QTextBrowser()
+        self._viewer.setOpenLinks(False)
+        right_layout.addWidget(self._viewer)
+
+        splitter.addWidget(right_panel)
+        splitter.setSizes([230, 900])
+        layout.addWidget(splitter)
+        return tab
+
+    def _build_response_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self._response_viewer = QTextBrowser()
+        self._response_viewer.setOpenLinks(False)
+        layout.addWidget(self._response_viewer)
+        return tab
 
     def _build_header(self) -> QFrame:
         frame = QFrame()
@@ -340,10 +370,6 @@ class ContextViewerDialog(QDialog):
         params_item.setExpanded(False)
         self._items.append((params_item, "params", self._data.get("extra") or {}))
 
-        if self._data.get("response"):
-            resp_item = QTreeWidgetItem(self._tree, [_("💬 Ответ модели", "💬 Model response")])
-            self._items.append((resp_item, "response", self._data["response"]))
-
         msgs_item = QTreeWidgetItem(
             self._tree,
             [_("Сообщения", "Messages") + f" ({len(self._messages)})"]
@@ -359,6 +385,8 @@ class ContextViewerDialog(QDialog):
             label = f"{icon} {role} #{role_counters[role]}"
             child = QTreeWidgetItem(msgs_item, [label])
             self._items.append((child, "message", msg))
+
+        self._render_response_tab()
 
     # ─────────────────────────────────── Rendering ───────────────────────────────
 
@@ -386,15 +414,6 @@ class ContextViewerDialog(QDialog):
                     for k, v in d.items()
                 )
                 html = f"<table style='border-spacing:4px'>{rows}</table>"
-            self._viewer.setHtml(self._wrap(html))
-
-        elif kind == "response":
-            text = str(payload or "")
-            _asst_color = _ROLE_COLORS["assistant"]
-            html = (
-                f"<p><b style='color:{_asst_color}'>{_('Ответ модели', 'Model response')}</b></p>"
-                f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{self._colorize(text)}</div>"
-            )
             self._viewer.setHtml(self._wrap(html))
 
         elif kind == "overview":
@@ -440,6 +459,136 @@ class ContextViewerDialog(QDialog):
                     f"<div style='color:{_MUTED};font-family:Consolas,monospace'>{extras_body}</div>"
                 )
             self._viewer.setHtml(self._wrap(html))
+
+    def _render_response_tab(self):
+        response_text = str(self._data.get("response") or "")
+        response_raw = str(self._data.get("response_raw") or "")
+        usage = self._data.get("usage") or {}
+        finish_reason = str(self._data.get("finish_reason") or "")
+        response_model = str(self._data.get("response_model") or self._data.get("model") or "")
+        response_provider = str(self._data.get("response_provider_name") or self._data.get("provider_name") or "")
+        response_ts = str(self._data.get("response_timestamp") or "")
+
+        sections: list[str] = []
+        meta_rows = []
+        if response_model:
+            meta_rows.append(
+                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{_('Model', 'Model')}</b></td>"
+                f"<td style='color:{_TEXT}'>{self._colorize(response_model)}</td></tr>"
+            )
+        if response_provider:
+            meta_rows.append(
+                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{_('Provider', 'Provider')}</b></td>"
+                f"<td style='color:{_TEXT}'>{self._colorize(response_provider)}</td></tr>"
+            )
+        if finish_reason:
+            meta_rows.append(
+                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{_('Finish reason', 'Finish reason')}</b></td>"
+                f"<td style='color:{_TEXT}'>{self._colorize(finish_reason)}</td></tr>"
+            )
+        if response_ts:
+            meta_rows.append(
+                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{_('Response time', 'Response time')}</b></td>"
+                f"<td style='color:{_TEXT}'>{self._colorize(response_ts[:19].replace('T', ' '))}</td></tr>"
+            )
+        if meta_rows:
+            sections.append(f"<table style='border-spacing:4px'>{''.join(meta_rows)}</table>")
+
+        if usage:
+            usage_rows = self._build_usage_rows(usage)
+            if usage_rows:
+                sections.append(
+                    f"<hr style='border-color:{_BORDER}'>"
+                    f"<p><b style='color:{_MUTED}'>{_('Usage summary', 'Usage summary')}</b></p>"
+                    f"<table style='border-spacing:4px'>{''.join(usage_rows)}</table>"
+                )
+            usage_body = self._colorize(json.dumps(usage, ensure_ascii=False, indent=2))
+            sections.append(
+                f"<p><b style='color:{_MUTED}'>{_('Raw usage', 'Raw usage')}</b></p>"
+                f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{usage_body}</div>"
+            )
+
+        if response_text:
+            sections.append(
+                f"<hr style='border-color:{_BORDER}'>"
+                f"<p><b style='color:{_ROLE_COLORS['assistant']}'>{_('Model response', 'Model response')}</b></p>"
+                f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{self._colorize(response_text)}</div>"
+            )
+        else:
+            sections.append(
+                f"<p style='color:{_MUTED}'><i>{_('No response data saved', 'No response data saved')}</i></p>"
+            )
+
+        if response_raw and response_raw != response_text:
+            sections.append(
+                f"<hr style='border-color:{_BORDER}'>"
+                f"<p><b style='color:{_MUTED}'>{_('Raw response', 'Raw response')}</b></p>"
+                f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{self._colorize(response_raw)}</div>"
+            )
+
+        self._response_viewer.setHtml(self._wrap("".join(sections)))
+
+    def _build_usage_rows(self, usage: dict) -> list[str]:
+        def _to_int(key: str) -> int | None:
+            try:
+                value = usage.get(key)
+                if value in (None, ""):
+                    return None
+                return int(value)
+            except Exception:
+                return None
+
+        def _to_float(key: str) -> float | None:
+            try:
+                value = usage.get(key)
+                if value in (None, ""):
+                    return None
+                return float(value)
+            except Exception:
+                return None
+
+        def _row(label: str, value: str) -> str:
+            return (
+                f"<tr><td style='color:{_MUTED};padding-right:16px'><b>{label}</b></td>"
+                f"<td style='color:{_TEXT}'>{value}</td></tr>"
+            )
+
+        rows: list[str] = []
+
+        prompt_tokens = _to_int("prompt_tokens")
+        completion_tokens = _to_int("completion_tokens")
+        total_tokens = _to_int("total_tokens")
+        reasoning_tokens = _to_int("reasoning_tokens")
+        cached_prompt_tokens = _to_int("cached_prompt_tokens")
+        cache_write_tokens = _to_int("cache_write_tokens")
+
+        if prompt_tokens is not None:
+            rows.append(_row(_("Prompt tokens", "Prompt tokens"), self._fmt_int(prompt_tokens)))
+        if completion_tokens is not None:
+            rows.append(_row(_("Completion tokens", "Completion tokens"), self._fmt_int(completion_tokens)))
+        if total_tokens is not None:
+            rows.append(_row(_("Total tokens", "Total tokens"), self._fmt_int(total_tokens)))
+        if reasoning_tokens:
+            rows.append(_row(_("Reasoning tokens", "Reasoning tokens"), self._fmt_int(reasoning_tokens)))
+        if cached_prompt_tokens is not None:
+            cached_text = self._fmt_int(cached_prompt_tokens)
+            if prompt_tokens and prompt_tokens > 0:
+                cached_pct = (cached_prompt_tokens / prompt_tokens) * 100.0
+                cached_text += f" <span style='color:{_MUTED}'>({cached_pct:.1f}%)</span>"
+            rows.append(_row(_("Cached prompt tokens", "Cached prompt tokens"), cached_text))
+        if cache_write_tokens is not None:
+            rows.append(_row(_("Cache write tokens", "Cache write tokens"), self._fmt_int(cache_write_tokens)))
+
+        cost = _to_float("cost")
+        if cost is not None:
+            currency = str(usage.get("cost_currency") or "USD")
+            cost_text = self._fmt_cost(cost, currency)
+            cost_source = str(usage.get("cost_source") or "")
+            if cost_source:
+                cost_text += f" <span style='color:{_MUTED}'>({self._esc(cost_source)})</span>"
+            rows.append(_row(_("Cost", "Cost"), cost_text))
+
+        return rows
 
     def _render_content_blocks(self, blocks: list) -> str:
         parts = []
@@ -500,6 +649,33 @@ class ContextViewerDialog(QDialog):
         )
 
     @staticmethod
+    def _fmt_int(value: int) -> str:
+        """Token counts: compact to thousands (e.g. 47.3k) once large, exact below."""
+        try:
+            n = int(value)
+        except Exception:
+            return str(value)
+        if abs(n) >= 10000:
+            return f"{n / 1000:.1f}k"
+        return f"{n:,}".replace(",", " ")
+
+    @staticmethod
+    def _fmt_cost(value: float, currency: str = "USD") -> str:
+        try:
+            amount = float(value)
+        except Exception:
+            return str(value)
+
+        if abs(amount) >= 1:
+            text = f"{amount:.4f}"
+        elif abs(amount) >= 0.01:
+            text = f"{amount:.5f}"
+        else:
+            text = f"{amount:.7f}"
+        text = text.rstrip("0").rstrip(".")
+        return f"{currency} {text}"
+
+    @staticmethod
     def _esc(text: str) -> str:
         return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -544,4 +720,17 @@ class ContextViewerDialog(QDialog):
     def _copy_messages(self):
         QApplication.clipboard().setText(
             json.dumps(self._messages, ensure_ascii=False, indent=2)
+        )
+
+    def _copy_response(self):
+        payload = {
+            "response": self._data.get("response"),
+            "response_raw": self._data.get("response_raw"),
+            "response_model": self._data.get("response_model") or self._data.get("model"),
+            "response_provider_name": self._data.get("response_provider_name") or self._data.get("provider_name"),
+            "finish_reason": self._data.get("finish_reason"),
+            "usage": self._data.get("usage"),
+        }
+        QApplication.clipboard().setText(
+            json.dumps(payload, ensure_ascii=False, indent=2)
         )

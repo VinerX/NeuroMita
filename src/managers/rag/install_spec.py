@@ -1,0 +1,505 @@
+from __future__ import annotations
+
+import os
+import sys
+from typing import Any
+
+from core.backends import BackendKind, get_backend_service
+from core.events import Events, get_event_bus
+from core.install_requirements import InstallRequirement, check_requirements
+from core.install_types import InstallAction, InstallPlan
+from core.installables import ComponentCategory, ComponentMetadata, coerce_backend, make_component_id
+from core.installables.helpers import build_runtime_ctx, noop_plan, status_from_installed
+from handlers.embedding_presets import resolve_full_config
+from managers.rag.pipeline.config import resolve_ce_model
+try:
+    from managers.settings_manager import SettingsManager
+except Exception:
+    class SettingsManager:
+        instance = None
+
+        @staticmethod
+        def get(_key, default=None):
+            return default
+from utils import getTranslationVariant as _
+from utils.gpu_utils import check_gpu_provider
+
+
+TARGET_EMBEDDINGS = "embeddings"
+TARGET_RERANKER = "reranker"
+TARGET_CURRENT = "current"
+
+TRANSFORMERS_SPEC = "transformers>=4.45.2"
+HF_HUB_SPEC = "huggingface-hub"
+BITSANDBYTES_SPEC = "bitsandbytes>=0.43.0"
+
+_LM_RERANKER_PATTERNS = (
+    "qwen3-reranker",
+    "qwen/qwen3-reranker",
+)
+
+
+def _target_title(target: str) -> str:
+    normalized = str(target or "").strip().lower()
+    if normalized == TARGET_EMBEDDINGS:
+        model_name = _local_embed_model_name()
+        return model_name or "RAG embeddings"
+    if normalized == TARGET_RERANKER:
+        model_name = resolve_ce_model()
+        return model_name or "RAG reranker"
+    return str(target or "rag")
+
+
+def _detect_gpu_vendor(ctx: dict[str, Any] | None = None) -> str:
+    if ctx and ctx.get("gpu_vendor"):
+        return str(ctx.get("gpu_vendor") or "CPU")
+    try:
+        return str(check_gpu_provider() or "CPU")
+    except Exception:
+        return "CPU"
+
+
+def _with_gpu_ctx(ctx: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = dict(ctx or {})
+    data["gpu_vendor"] = _detect_gpu_vendor(data)
+    return data
+
+
+def _checkpoints_dir() -> str:
+    val = os.environ.get("NEUROMITA_CHECKPOINTS_DIR")
+    if val:
+        return val
+    base = os.environ.get("NEUROMITA_BASE_DIR")
+    if base:
+        return os.path.join(base, "checkpoints")
+    return os.path.join(os.path.dirname(sys.executable), "checkpoints")
+
+
+def _cache_marker_path(repo_id: str) -> str:
+    return os.path.join(_checkpoints_dir(), "models--" + str(repo_id or "").replace("/", "--"))
+
+
+def _is_lm_reranker_model(model_name: str) -> bool:
+    lower = str(model_name or "").strip().lower()
+    return any(p in lower for p in _LM_RERANKER_PATTERNS)
+
+
+def _local_embed_model_name() -> str:
+    cfg = resolve_full_config()
+    return str(cfg.get("hf_name") or cfg.get("model") or "").strip()
+
+
+def _local_provider_enabled() -> bool:
+    cfg = resolve_full_config()
+    return str(cfg.get("provider_name") or "local").strip().lower() == "local"
+
+
+def _current_targets() -> list[str]:
+    if not SettingsManager.get("RAG_ENABLED", False):
+        return []
+
+    targets: list[str] = []
+    if _local_provider_enabled() and SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False):
+        targets.append(TARGET_EMBEDDINGS)
+
+    ce_model = resolve_ce_model()
+    if SettingsManager.get("RAG_CROSS_ENCODER_ENABLED", False) and ce_model:
+        targets.append(TARGET_RERANKER)
+
+    return targets
+
+
+def _resolve_targets(target: str) -> list[str]:
+    normalized = str(target or "").strip().lower()
+    if normalized == TARGET_CURRENT:
+        return _current_targets()
+    if normalized in (TARGET_EMBEDDINGS, TARGET_RERANKER):
+        return [normalized]
+    raise ValueError(f"Unknown RAG install target: {target}")
+
+
+def _merge_requirement_status(summary: dict[str, Any], checked: dict[str, Any]) -> None:
+    known_ids = {str(d.get("id") or "") for d in summary["details"]}
+    for detail in checked.get("details") or []:
+        req_id = str(detail.get("id") or "")
+        if req_id and req_id in known_ids:
+            continue
+        summary["details"].append(detail)
+        if req_id:
+            known_ids.add(req_id)
+
+    for req_id in checked.get("missing_required") or []:
+        if req_id not in summary["missing_required"]:
+            summary["missing_required"].append(req_id)
+
+
+def _required_backend(ctx: dict[str, Any]) -> BackendKind:
+    return get_backend_service().preferred_torch_kind(ctx)
+
+
+def _backend_requirement(ctx: dict[str, Any]) -> InstallRequirement:
+    backend_kind = _required_backend(ctx)
+    return InstallRequirement(
+        id=f"backend_{backend_kind.value}",
+        kind="backend",
+        backend_kind=backend_kind,
+        required=True,
+    )
+
+
+def _embed_requirements(ctx: dict[str, Any]) -> list[InstallRequirement]:
+    return [
+        _backend_requirement(ctx),
+        InstallRequirement(id="transformers", kind="python_dist", spec=TRANSFORMERS_SPEC, required=True),
+        InstallRequirement(id="huggingface_hub", kind="python_dist", spec=HF_HUB_SPEC, required=True),
+    ]
+
+
+def _reranker_requirements(ctx: dict[str, Any]) -> list[InstallRequirement]:
+    ce_model = resolve_ce_model()
+    reqs = [
+        _backend_requirement(ctx),
+        InstallRequirement(id="transformers", kind="python_dist", spec=TRANSFORMERS_SPEC, required=True),
+        InstallRequirement(id="huggingface_hub", kind="python_dist", spec=HF_HUB_SPEC, required=True),
+    ]
+
+    use_int8 = bool(SettingsManager.get("RAG_CE_INT8", False))
+    if use_int8 and ce_model and (not _is_lm_reranker_model(ce_model)) and str(ctx.get("gpu_vendor") or "").upper() == "NVIDIA":
+        reqs.append(
+            InstallRequirement(
+                id="bitsandbytes",
+                kind="python_dist",
+                spec=BITSANDBYTES_SPEC,
+                required=True,
+            )
+        )
+    return reqs
+
+
+def get_install_status(target: str, *, ctx: dict[str, Any] | None = None) -> dict[str, Any]:
+    ctx = _with_gpu_ctx(ctx)
+    resolved_targets = _resolve_targets(target)
+
+    summary: dict[str, Any] = {
+        "target": str(target or ""),
+        "resolved_targets": list(resolved_targets),
+        "required": False,
+        "ok": True,
+        "missing_required": [],
+        "details": [],
+        "download_models": [],
+        "needs_local_runtime": False,
+        "needs_bitsandbytes": False,
+        "required_backend": None,
+        "gpu_vendor": ctx.get("gpu_vendor"),
+    }
+
+    for item in resolved_targets:
+        if item == TARGET_EMBEDDINGS:
+            if not _local_provider_enabled():
+                continue
+
+            summary["required"] = True
+            summary["needs_local_runtime"] = True
+            summary["required_backend"] = _required_backend(ctx).value
+            embed_model = _local_embed_model_name()
+            if embed_model and not os.path.isdir(_cache_marker_path(embed_model)):
+                summary["ok"] = False
+                if "embedding_model" not in summary["missing_required"]:
+                    summary["missing_required"].append("embedding_model")
+                if embed_model not in summary["download_models"]:
+                    summary["download_models"].append(embed_model)
+
+            checked = check_requirements(_embed_requirements(ctx), ctx=ctx)
+            _merge_requirement_status(summary, checked)
+            if not checked.get("ok"):
+                summary["ok"] = False
+
+        elif item == TARGET_RERANKER:
+            ce_model = resolve_ce_model()
+            if not ce_model:
+                continue
+
+            summary["required"] = True
+            summary["needs_local_runtime"] = True
+            summary["required_backend"] = _required_backend(ctx).value
+            if not os.path.isdir(_cache_marker_path(ce_model)):
+                summary["ok"] = False
+                if "reranker_model" not in summary["missing_required"]:
+                    summary["missing_required"].append("reranker_model")
+                if ce_model not in summary["download_models"]:
+                    summary["download_models"].append(ce_model)
+
+            checked = check_requirements(_reranker_requirements(ctx), ctx=ctx)
+            _merge_requirement_status(summary, checked)
+            if not checked.get("ok"):
+                summary["ok"] = False
+
+            use_int8 = bool(SettingsManager.get("RAG_CE_INT8", False))
+            if use_int8 and (not _is_lm_reranker_model(ce_model)) and str(ctx.get("gpu_vendor") or "").upper() == "NVIDIA":
+                summary["needs_bitsandbytes"] = True
+
+    if not summary["required"]:
+        summary["ok"] = True
+
+    return summary
+
+
+def ensure_runtime_ready(target: str, *, ctx: dict[str, Any] | None = None) -> None:
+    status = get_install_status(target, ctx=ctx)
+    if not status.get("required"):
+        return
+    if status.get("ok"):
+        return
+
+    missing = list(status.get("missing_required") or [])
+    detail = ", ".join(missing) if missing else "unknown"
+    raise RuntimeError(
+        _("RAG backend is not installed: {items}", "RAG backend is not installed: {items}").format(items=detail)
+    )
+
+
+def _snapshot_download_action(repo_id: str, *, description: str, progress: int) -> InstallAction:
+    def _fn(*, callbacks=None, **_kwargs) -> bool:
+        from huggingface_hub import snapshot_download
+
+        token = str(SettingsManager.get("HF_TOKEN", "") or "").strip() or None
+        cache_dir = _checkpoints_dir()
+        if callbacks is not None:
+            try:
+                callbacks.log(f"snapshot_download: {repo_id}")
+            except Exception:
+                pass
+
+        snapshot_download(repo_id=repo_id, cache_dir=cache_dir, token=token)
+        return True
+
+    return InstallAction(
+        type="call",
+        description=description,
+        progress=int(progress),
+        fn=_fn,
+    )
+
+
+def _restart_rag_worker_action(*, progress: int = 96) -> InstallAction:
+    def _fn(*, callbacks=None, **_kwargs) -> bool:
+        try:
+            res = get_event_bus().emit_and_wait(Events.AI.GET_ENGINE, timeout=1.0)
+            engine = res[0] if res else None
+        except Exception:
+            engine = None
+
+        if engine is None:
+            return True
+
+        if callbacks is not None:
+            try:
+                callbacks.log("Restarting AI engine worker for RAG...")
+            except Exception:
+                pass
+
+        try:
+            restart_worker = getattr(engine, "restart_worker_for_service", None)
+            if callable(restart_worker):
+                return bool(restart_worker("rag", timeout=20.0))
+
+            restart_service = getattr(engine, "restart_service", None)
+            if callable(restart_service):
+                return bool(restart_service("rag", timeout=20.0))
+        except Exception as exc:
+            if callbacks is not None:
+                try:
+                    callbacks.log(f"AI engine restart skipped: {exc}")
+                except Exception:
+                    pass
+            return False
+
+        return True
+
+    return InstallAction(
+        type="call",
+        description=_("Restarting RAG runtime...", "Restarting RAG runtime..."),
+        progress=int(progress),
+        fn=_fn,
+    )
+
+
+def build_install_plan(
+    target: str,
+    *,
+    pip_installer=None,
+    callbacks=None,
+    timeout_sec: float = 3600.0,
+) -> InstallPlan:
+    ctx = _with_gpu_ctx({
+        "timeout_sec": float(timeout_sec or 3600.0),
+        "libs_dir": os.environ.get("NEUROMITA_LIB_DIR"),
+    })
+    status = get_install_status(target, ctx=ctx)
+
+    if not status.get("required"):
+        return InstallPlan(
+            actions=[],
+            already_installed=True,
+            already_installed_status=_("Not required", "Not required"),
+        )
+
+    if status.get("ok"):
+        return InstallPlan(
+            actions=[],
+            already_installed=True,
+            already_installed_status=_("Already installed", "Already installed"),
+        )
+
+    actions: list[InstallAction] = []
+
+    if status.get("needs_local_runtime"):
+        actions.append(
+            InstallAction(
+                type="pip",
+                description=_("Installing local RAG dependencies...", "Installing local RAG dependencies..."),
+                progress=35,
+                packages=[TRANSFORMERS_SPEC, HF_HUB_SPEC],
+            )
+        )
+
+    if status.get("needs_bitsandbytes"):
+        actions.append(
+            InstallAction(
+                type="pip",
+                description=_("Installing INT8 reranker support...", "Installing INT8 reranker support..."),
+                progress=50,
+                packages=[BITSANDBYTES_SPEC],
+            )
+        )
+
+    downloads = list(status.get("download_models") or [])
+    total_downloads = max(1, len(downloads))
+    for idx, repo_id in enumerate(downloads):
+        start_progress = 65 + int((idx * 25) / total_downloads)
+        actions.append(
+            _snapshot_download_action(
+                repo_id,
+                description=_("Downloading model: {name}", "Downloading model: {name}").format(name=repo_id),
+                progress=start_progress,
+            )
+        )
+
+    actions.append(_restart_rag_worker_action(progress=95))
+
+    def _final_check(**_kwargs) -> bool:
+        return bool(get_install_status(target, ctx=ctx).get("ok"))
+
+    actions.append(
+        InstallAction(
+            type="call",
+            description=_("Finalizing RAG backend...", "Finalizing RAG backend..."),
+            progress=99,
+            fn=_final_check,
+        )
+    )
+
+    required_backend = None
+    if status.get("needs_local_runtime"):
+        required_backend = _required_backend(ctx)
+
+    return InstallPlan(
+        actions=actions,
+        ok_status=_("Done", "Done"),
+        required_backend=required_backend,
+        backend_context=dict(ctx),
+    )
+
+
+class RagInstallableComponent:
+    category = ComponentCategory.RAG
+    legacy_kind = "rag"
+
+    def __init__(self, target: str) -> None:
+        self.item_id = str(target or "").strip().lower()
+        self.id = make_component_id(self.category, self.item_id)
+
+    def metadata(self) -> ComponentMetadata:
+        run_ctx = build_runtime_ctx({})
+        status = get_install_status(self.item_id, ctx=run_ctx)
+        backend = coerce_backend(status.get("required_backend"))
+        return ComponentMetadata(
+            id=self.id,
+            item_id=self.item_id,
+            category=self.category,
+            title=_target_title(self.item_id),
+            description="Local RAG model artifacts.",
+            backend=backend,
+            legacy_kind=self.legacy_kind,
+            tags=("rag",),
+        )
+
+    def status(self, ctx: dict[str, Any] | None = None):
+        run_ctx = build_runtime_ctx(ctx)
+        data = get_install_status(self.item_id, ctx=run_ctx)
+        backend = coerce_backend(data.get("required_backend"))
+        required = bool(data.get("required", True))
+        installed = bool(data.get("ok", False)) or not required
+        return status_from_installed(
+            component_id=self.id,
+            installed=installed,
+            backend=backend,
+            ctx=run_ctx,
+            details=dict(data or {}),
+        )
+
+    def build_install_plan(self, ctx: dict[str, Any] | None = None) -> InstallPlan:
+        run_ctx = build_runtime_ctx(ctx)
+        return build_install_plan(
+            self.item_id,
+            pip_installer=run_ctx.get("pip_installer"),
+            callbacks=run_ctx.get("callbacks"),
+            timeout_sec=float(run_ctx.get("timeout_sec", 3600.0) or 3600.0),
+        )
+
+    def build_uninstall_plan(self, ctx: dict[str, Any] | None = None) -> InstallPlan:
+        return noop_plan("RAG uninstall is not implemented yet.")
+
+    def build_initialize_plan(self, ctx: dict[str, Any] | None = None) -> InstallPlan | None:
+        return None
+
+
+def create_rag_installable_components() -> list[RagInstallableComponent]:
+    return [
+        RagInstallableComponent(TARGET_EMBEDDINGS),
+        RagInstallableComponent(TARGET_RERANKER),
+    ]
+
+
+def start_install(target: str, *, with_ui: bool = True, timeout_sec: float = 3600.0) -> None:
+    normalized = str(target or "").strip().lower()
+    if normalized not in (TARGET_EMBEDDINGS, TARGET_RERANKER, TARGET_CURRENT):
+        raise ValueError(f"Unknown RAG install target: {target}")
+
+    from core.installables import ComponentCategory, make_component_id
+
+    title_map = {
+        TARGET_EMBEDDINGS: _("Installing RAG embeddings backend", "Installing RAG embeddings backend"),
+        TARGET_RERANKER: _("Installing RAG reranker backend", "Installing RAG reranker backend"),
+        TARGET_CURRENT: _("Installing current RAG backend", "Installing current RAG backend"),
+    }
+
+    payload = {
+        "component_id": make_component_id(ComponentCategory.RAG, normalized),
+        "kind": "rag",
+        "item_id": normalized,
+        "task_id": f"rag:install:{normalized}",
+        "title": title_map[normalized],
+        "initial_status": _("Preparing...", "Preparing..."),
+        "timeout_sec": float(timeout_sec or 3600.0),
+        "with_ui": bool(with_ui),
+        "meta": {
+            "kind": "rag",
+            "item_id": normalized,
+            "target": normalized,
+            "op": "install",
+        },
+    }
+
+    get_event_bus().emit(Events.Installable.INSTALL, payload)

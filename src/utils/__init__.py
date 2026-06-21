@@ -13,10 +13,26 @@ try:
 except Exception:
     LANGDETECT_AVAILABLE = False
 
-from num2words import num2words
+try:
+    from num2words import num2words
+except Exception:
+    def num2words(value, *args, **kwargs):
+        return str(value)
 
 from main_logger import logger
-from managers.settings_manager import SettingsManager
+try:
+    from managers.settings_manager import SettingsManager
+except Exception:
+    class SettingsManager:
+        instance = None
+
+        @staticmethod
+        def get(_key, default=None):
+            return default
+
+        @staticmethod
+        def set(_key, _value):
+            return None
 from utils.gpu_utils import check_gpu_provider
 
 
@@ -33,6 +49,34 @@ def getTranslationVariant(ru_str, en_str=""):
 
 
 _ = getTranslationVariant  # Временно, мб
+
+
+def default_installed_voice(models_dir=None, preferred="Mila", ext=None):
+    """Short name of a voice that is actually installed — used as the default
+    when no character is resolved (e.g. a voiceover test outside a chat) or when
+    picking a base model for RVC init.
+
+    Prefers `preferred` (Mila) if its model is present, otherwise the first other
+    installed voice. Falls back to `preferred` if nothing is installed, so callers
+    still get well-formed paths instead of an empty name.
+
+    ext: restrict to a specific model extension ("pth"/"onnx"); None = either.
+    """
+    if models_dir is None:
+        models_dir = os.environ.get("NEUROMITA_MODELS_DIR", os.path.abspath("Models"))
+    exts = (ext,) if ext else ("pth", "onnx")
+
+    for e in exts:
+        if os.path.exists(os.path.join(models_dir, f"{preferred}.{e}")):
+            return preferred
+    try:
+        for fn in sorted(os.listdir(models_dir)):
+            stem, dot, e = fn.rpartition(".")
+            if dot and e in exts and stem:
+                return stem
+    except OSError:
+        pass
+    return preferred
 
 
 def get_character_voice_paths(character=None, provider=None):
@@ -60,15 +104,20 @@ def get_character_voice_paths(character=None, provider=None):
     model_ext = 'pth' if is_nvidia else 'onnx'
     clone_voice_folder = os.environ.get("NEUROMITA_MODELS_DIR", os.path.abspath("Models"))
 
-    short_name = "Mila"  # значение по умолчанию
-
+    short_name = ""
     if character:
         # Проверяем, является ли character словарем
         if isinstance(character, dict):
-            short_name = str(character.get('short_name', 'Mila'))
+            short_name = str(character.get('short_name') or "").strip()
         # Иначе пробуем как объект с атрибутом
         elif hasattr(character, 'short_name'):
-            short_name = str(character.short_name)
+            short_name = str(character.short_name or "").strip()
+
+    if not short_name:
+        # Персонаж не определён (например тест озвучки вне чата). Раньше тут жёстко
+        # подставлялась "Mila", которой при поштучной установке голосов может не
+        # быть — берём любой установленный голос (предпочитая Mila).
+        short_name = default_installed_voice(clone_voice_folder, ext=model_ext)
 
     return {
         'pth_path': os.path.join(clone_voice_folder, f"{short_name}.{model_ext}"),

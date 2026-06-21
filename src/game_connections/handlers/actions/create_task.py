@@ -1,11 +1,115 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from typing import Any, Dict
+import logging
+from typing import Any, Dict, List, Optional
 
 from core.events import Events
 from core.request_policy import resolve_policy
 from managers.task_manager import TaskStatus
 from game_connections.handlers.registry import RequestContext
+from game_connections.shared_image_transfer import collect_context_images
+
+logger = logging.getLogger(__name__)
+
+
+def _collect_context_images(context: dict) -> List:
+    """Backward-compatible shim kept for existing call sites."""
+    return list(collect_context_images(context))
+
+
+def _has_context_images(context: dict) -> bool:
+    return bool((context.get("image_base64_list") or []) or (context.get("image_paths") or []))
+
+
+def _should_label_as_mita_camera(event_type: str, context: dict) -> bool:
+    """
+    Unity6 continuous FrameRecorder currently attaches frames without an explicit
+    `mita_camera` flag in the payload. For ordinary answer/react turns, attached
+    images therefore come from Mita's POV unless a dedicated image event is used.
+    """
+    if not _has_context_images(context):
+        return False
+    if str(context.get("image_source") or "").strip().lower() == "mita_camera":
+        return True
+    if context.get("mita_camera", False):
+        return True
+    if event_type in ("camera_snapshot_result", "easel_drawing", "tv_reaction"):
+        return False
+    return event_type in ("answer", "react")
+
+
+async def _dispatch_task(
+    *,
+    server,
+    event_bus,
+    ctx: RequestContext,
+    task_type: str,
+    model_event_type: str,
+    policy_dict: dict,
+    user_input: str,
+    system_input: str,
+    images: List,
+    character_id: str,
+    character_stats: dict,
+    sender: str,
+    participants: list,
+    req_id,
+    origin_message_id,
+    event_type: str,
+    image_source: str = "",
+    extra_task_data: Optional[dict] = None,
+    abort_reason: str = "Failed to create task",
+) -> Any:
+    """
+    Emit CREATE_TASK then SEND_MESSAGE — the shared boilerplate for most event types.
+    Returns the created task, or None if creation failed (abort update already sent).
+    """
+    task_data: dict = {
+        "character": character_id,
+        "character_stats": character_stats,
+        "user_input": user_input,
+        "system_input": system_input,
+        "client_id": ctx.client_id,
+        "event_type": event_type,
+        "req_id": req_id,
+        "sender": sender,
+        "participants": participants,
+        "origin_message_id": origin_message_id,
+        "policy": policy_dict,
+    }
+    if extra_task_data:
+        task_data.update(extra_task_data)
+
+    task_result = event_bus.emit_and_wait(
+        Events.Task.CREATE_TASK,
+        {"type": task_type, "data": task_data},
+        timeout=5.0,
+    )
+    task = task_result[0] if task_result else None
+
+    if task:
+        server.client_tasks[ctx.client_id].add(task.uid)
+        await server.send_task_update(ctx.client_id, task)
+        event_bus.emit(Events.Chat.SEND_MESSAGE, {
+            "user_input": user_input,
+            "system_input": system_input,
+            "image_data": images,
+            "image_source": image_source,
+            "task_uid": task.uid,
+            "event_type": model_event_type,
+            "character_id": character_id,
+            "sender": sender,
+            "participants": participants,
+            "req_id": req_id,
+            "origin_message_id": origin_message_id,
+            "policy": policy_dict,
+        })
+    else:
+        await server._send_aborted_update(
+            ctx.client_id, event_type, character_id,
+            reason=abort_reason, req_id=req_id,
+        )
+    return task
 
 
 class CreateTaskAction:
@@ -80,11 +184,24 @@ class CreateTaskAction:
             await server._send_aborted_update(ctx.client_id, event_type, character_id, req_id=req_id)
             return
 
+        # Shared kwargs forwarded to every _dispatch_task call
+        _shared = dict(
+            server=server,
+            event_bus=event_bus,
+            ctx=ctx,
+            character_id=character_id,
+            character_stats=character_stats,
+            sender=sender,
+            participants=participants,
+            req_id=req_id,
+            origin_message_id=origin_message_id,
+            event_type=event_type,
+        )
+
+        # ── answer ────────────────────────────────────────────────────────────
         if event_type == "answer":
             model_event_type = "chat"
             policy = resolve_policy(model_event_type=model_event_type)
-            policy_dict = policy.to_dict()
-
             user_input = data.get("message", "")
 
             if user_input:
@@ -100,46 +217,30 @@ class CreateTaskAction:
             if policy.use_pending_sysinfo:
                 collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
 
-            task_result = event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
-                "type": "chat",
-                "data": {
-                    "character": character_id,
-                    "character_stats": character_stats,
-                    "user_input": str(user_input or ""),
-                    "system_input": collected_sys,
-                    "system_info": context.get("currentInfo", ""),
-                    "client_id": ctx.client_id,
-                    "event_type": event_type,
-                    "req_id": req_id,
-                    "sender": sender,
-                    "participants": participants,
-                    "origin_message_id": origin_message_id,
-                    "policy": policy_dict,
-                }
-            }, timeout=5.0)
+            # Label continuous in-game camera frames when Unity flags them
+            effective_image_source = str(context.get("image_source") or "")
+            if _should_label_as_mita_camera(event_type, context):
+                camera_label = "[Your eyes (in-game camera)] The attached image shows what you currently see through your own eyes in-game. It is not a player photo, selfie, or drawing."
+                collected_sys = (camera_label + "\n" + collected_sys).strip() if collected_sys else camera_label
+                effective_image_source = "mita_camera"
 
-            task = task_result[0] if task_result else None
-            if task:
-                server.client_tasks[ctx.client_id].add(task.uid)
-                await server.send_task_update(ctx.client_id, task)
-
-                event_bus.emit(Events.Chat.SEND_MESSAGE, {
-                    "user_input": str(user_input or ""),
-                    "system_input": collected_sys,
-                    "image_data": context.get("image_base64_list", []),
-                    "task_uid": task.uid,
-                    "event_type": model_event_type,
-                    "character_id": character_id,
-                    "sender": sender,
-                    "participants": participants,
-                    "req_id": req_id,
-                    "origin_message_id": origin_message_id,
-                    "policy": policy_dict,
-                })
-            else:
-                await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to create task", req_id=req_id)
+            await _dispatch_task(
+                **_shared,
+                task_type="chat",
+                model_event_type=model_event_type,
+                policy_dict=policy.to_dict(),
+                user_input=str(user_input or ""),
+                system_input=collected_sys,
+                images=collect_context_images(context, client_id=ctx.client_id),
+                image_source=effective_image_source,
+                extra_task_data={"system_info": context.get("currentInfo", "")},
+                abort_reason="Failed to create task",
+            )
             return
 
+        # ── idle_timeout ──────────────────────────────────────────────────────
+        # Kept separate: uses task type "idle", different SEND_MESSAGE system_input,
+        # and must track server.last_idle_tasks.
         if event_type == "idle_timeout":
             model_event_type = "idle_timeout"
             policy = resolve_policy(model_event_type=model_event_type)
@@ -149,7 +250,6 @@ class CreateTaskAction:
             if last_idle_uid:
                 last_task_result = event_bus.emit_and_wait(Events.Task.GET_TASK, {"uid": last_idle_uid}, timeout=1.0)
                 last_task = last_task_result[0] if last_task_result else None
-
                 if last_task and last_task.status == TaskStatus.PENDING:
                     await server.send_task_update(ctx.client_id, last_task)
                     return
@@ -202,6 +302,7 @@ class CreateTaskAction:
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to create idle task", req_id=req_id)
             return
 
+        # ── system_info ───────────────────────────────────────────────────────
         if event_type == "system_info":
             msg = data.get("message", "")
             if msg:
@@ -209,175 +310,151 @@ class CreateTaskAction:
             await server.send_json(ctx.writer, {"type": "info", "stored": len(server.pending_sysinfo.get(character_id, []))})
             return
 
+        # ── system_info_flush ─────────────────────────────────────────────────
         if event_type == "system_info_flush":
-            model_event_type = "chat"
-            policy = resolve_policy(model_event_type=model_event_type)
-            policy_dict = policy.to_dict()
-
+            policy = resolve_policy(model_event_type="chat")
             collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
             if not collected_sys:
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="No pending system_info to flush", req_id=req_id)
                 return
-
-            task_result = event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
-                "type": "chat",
-                "data": {
-                    "character": character_id,
-                    "character_stats": character_stats,
-                    "user_input": "",
-                    "system_input": collected_sys,
-                    "system_info": context.get("currentInfo", ""),
-                    "client_id": ctx.client_id,
-                    "event_type": event_type,
-                    "req_id": req_id,
-                    "sender": sender,
-                    "participants": participants,
-                    "origin_message_id": origin_message_id,
-                    "policy": policy_dict,
-                }
-            }, timeout=5.0)
-
-            task = task_result[0] if task_result else None
-            if task:
-                server.client_tasks[ctx.client_id].add(task.uid)
-                await server.send_task_update(ctx.client_id, task)
-
-                event_bus.emit(Events.Chat.SEND_MESSAGE, {
-                    "user_input": "",
-                    "system_input": collected_sys,
-                    "image_data": [],
-                    "task_uid": task.uid,
-                    "event_type": model_event_type,
-                    "character_id": character_id,
-                    "sender": sender,
-                    "participants": participants,
-                    "req_id": req_id,
-                    "origin_message_id": origin_message_id,
-                    "policy": policy_dict,
-                })
-            else:
-                await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to flush system info", req_id=req_id)
+            await _dispatch_task(
+                **_shared,
+                task_type="chat",
+                model_event_type="chat",
+                policy_dict=policy.to_dict(),
+                user_input="",
+                system_input=collected_sys,
+                images=[],
+                image_source="",
+                extra_task_data={"system_info": context.get("currentInfo", "")},
+                abort_reason="Failed to flush system info",
+            )
             return
 
+        # ── react ─────────────────────────────────────────────────────────────
         if event_type == "react":
             model_event_type = "react"
 
             react_enabled_res = event_bus.emit_and_wait(
                 Events.Settings.GET_SETTING,
                 {"key": "REACT_ENABLED", "default": False},
-                timeout=0.8
+                timeout=0.8,
             )
-            react_enabled_master = bool(react_enabled_res and react_enabled_res[0])
-            if not react_enabled_master:
-                await server._send_aborted_update(
-                    ctx.client_id,
-                    event_type,
-                    character_id,
-                    reason="React disabled by settings",
-                    req_id=req_id
-                )
+            if not bool(react_enabled_res and react_enabled_res[0]):
+                await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="React disabled by settings", req_id=req_id)
                 return
 
             incoming_level = data.get("react_level", None)
             policy = resolve_policy(model_event_type=model_event_type, react_level=incoming_level)
-            policy_dict = policy.to_dict()
-
-            if policy.react_level == 2:
-                l2_enabled_res = event_bus.emit_and_wait(
-                    Events.Settings.GET_SETTING,
-                    {"key": "REACT_L2_ENABLED", "default": False},
-                    timeout=0.8
-                )
-                react_level_enabled = bool(l2_enabled_res and l2_enabled_res[0])
-            else:
-                l1_enabled_res = event_bus.emit_and_wait(
-                    Events.Settings.GET_SETTING,
-                    {"key": "REACT_L1_ENABLED", "default": True},
-                    timeout=0.8
-                )
-                react_level_enabled = bool(l1_enabled_res and l1_enabled_res[0])
-
-            if not react_level_enabled:
-                await server._send_aborted_update(
-                    ctx.client_id,
-                    event_type,
-                    character_id,
-                    reason=f"React level {policy.react_level or 1} disabled by settings",
-                    req_id=req_id
-                )
+            level_key = "REACT_L2_ENABLED" if policy.react_level == 2 else "REACT_L1_ENABLED"
+            level_default = False if policy.react_level == 2 else True
+            level_res = event_bus.emit_and_wait(Events.Settings.GET_SETTING, {"key": level_key, "default": level_default}, timeout=0.8)
+            if not bool(level_res and level_res[0]):
+                await server._send_aborted_update(ctx.client_id, event_type, character_id, reason=f"React level {policy.react_level or 1} disabled by settings", req_id=req_id)
                 return
 
             reason_type = str(data.get("reason_type") or "").strip()
             reason_content = str(data.get("reason_content") or "").strip()
-            legacy_reason = str(data.get("reason") or "").strip()
-
-            reason_text = reason_content or legacy_reason or "player_react"
-
+            reason_text = reason_content or str(data.get("reason") or "").strip() or "player_react"
             duration = data.get("duration", 0.0)
-            current_info = context.get("currentInfo", "")
 
-            react_system_input_lines = [
-                "This is a react event from the game.",
+            react_lines = [
+                "This is a react event from the game. React to it!",
                 f"React level: {policy.react_level or 1}",
             ]
             if reason_type:
-                react_system_input_lines.append(f"Reason type: {reason_type}")
-            react_system_input_lines.append(f"Reason: {reason_text}")
-            react_system_input_lines.append(f"Duration (seconds): {float(duration or 0.0):.1f}")
+                react_lines.append(f"Reason type: {reason_type}")
+            react_lines.append(f"Reason: {reason_text}")
+            react_lines.append(f"Duration (seconds): {float(duration or 0.0):.1f}")
 
-            if current_info:
-                react_system_input_lines.append("")
-                react_system_input_lines.append("Current game info:")
-                react_system_input_lines.append(str(current_info))
+            current_info = context.get("currentInfo", "")
+            if current_info and not policy.use_pending_sysinfo:
+                react_lines += ["", "Current game info:", str(current_info)]
 
             if policy.use_pending_sysinfo:
                 collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
                 if collected_sys.strip():
-                    react_system_input_lines.append("")
-                    react_system_input_lines.append("Pending system info:")
-                    react_system_input_lines.append(collected_sys)
+                    react_lines += ["", "Pending system info:", collected_sys]
 
-            react_system_input = "\n".join(react_system_input_lines)
+            # Label continuous in-game camera frames when Unity flags them
+            effective_image_source = str(context.get("image_source") or "")
+            if _should_label_as_mita_camera(event_type, context):
+                react_lines.insert(0, "[Your eyes (in-game camera)] The attached image shows what you currently see through your own eyes in-game. It is not a player photo, selfie, or drawing.")
+                effective_image_source = "mita_camera"
 
-            task_result = event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
-                "type": "react",
-                "data": {
-                    "character": character_id,
-                    "character_stats": character_stats,
-                    "user_input": "",
-                    "system_input": react_system_input,
-                    "client_id": ctx.client_id,
-                    "event_type": event_type,
-                    "req_id": req_id,
-                    "reason": reason_text,
-                    "duration": duration,
-                    "sender": sender,
-                    "participants": participants,
-                    "origin_message_id": origin_message_id,
-                    "policy": policy_dict,
-                }
-            }, timeout=5.0)
+            await _dispatch_task(
+                **_shared,
+                task_type="react",
+                model_event_type=model_event_type,
+                policy_dict=policy.to_dict(),
+                user_input="",
+                system_input="\n".join(react_lines),
+                images=collect_context_images(context, client_id=ctx.client_id),
+                image_source=effective_image_source,
+                extra_task_data={"reason": reason_text, "duration": duration},
+                abort_reason="Failed to create react task",
+            )
+            return
 
-            task = task_result[0] if task_result else None
-            if task:
-                server.client_tasks[ctx.client_id].add(task.uid)
-                await server.send_task_update(ctx.client_id, task)
+        # ── camera_snapshot_result ────────────────────────────────────────────
+        if event_type == "camera_snapshot_result":
+            policy = resolve_policy(model_event_type="chat")
+            snapshot_msg = str(data.get("message", "Camera snapshot taken"))
+            system_input = f"[Your eyes (in-game camera)] {snapshot_msg}"
+            await _dispatch_task(
+                **_shared,
+                task_type="chat",
+                model_event_type="chat",
+                policy_dict=policy.to_dict(),
+                user_input="",
+                system_input=system_input,
+                images=collect_context_images(context, client_id=ctx.client_id),
+                image_source="mita_camera",
+                extra_task_data={"system_info": context.get("currentInfo", "")},
+                abort_reason="Failed to create snapshot task",
+            )
+            return
 
-                event_bus.emit(Events.Chat.SEND_MESSAGE, {
-                    "user_input": "",
-                    "system_input": react_system_input,
-                    "image_data": context.get("image_base64_list", []),
-                    "task_uid": task.uid,
-                    "event_type": model_event_type,
-                    "character_id": character_id,
-                    "sender": sender,
-                    "participants": participants,
-                    "req_id": req_id,
-                    "origin_message_id": origin_message_id,
-                    "policy": policy_dict,
-                })
-            else:
-                await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to create react task", req_id=req_id)
+        # ── tv_reaction ───────────────────────────────────────────────────────
+        if event_type == "tv_reaction":
+            policy = resolve_policy(model_event_type="react")
+            raw_msg = str(data.get("message", "")).strip()
+            tv_content = raw_msg or "The player is watching TV. React to what is shown."
+            system_input = f"[TV] {tv_content}"
+            await _dispatch_task(
+                **_shared,
+                task_type="react",
+                model_event_type="react",
+                policy_dict=policy.to_dict(),
+                user_input="",
+                system_input=system_input,
+                images=collect_context_images(context, client_id=ctx.client_id),
+                image_source=str(context.get("image_source") or ""),
+                extra_task_data={"system_info": context.get("currentInfo", "")},
+                abort_reason="Failed to create TV reaction task",
+            )
+            return
+
+        # ── easel_drawing ─────────────────────────────────────────────────────
+        if event_type == "easel_drawing":
+            policy = resolve_policy(model_event_type="chat")
+            raw_msg = str(data.get("message", "")).strip()
+            easel_label = "[Easel drawing] The attached image is the player's drawing shown on the in-game easel/canvas."
+            system_input = raw_msg or easel_label
+            if system_input != easel_label:
+                system_input = f"{easel_label}\n{system_input}"
+            await _dispatch_task(
+                **_shared,
+                task_type="chat",
+                model_event_type="chat",
+                policy_dict=policy.to_dict(),
+                user_input="",
+                system_input=system_input,
+                images=collect_context_images(context, client_id=ctx.client_id),
+                image_source="easel",
+                extra_task_data={"system_info": context.get("currentInfo", "")},
+                abort_reason="Failed to create easel drawing task",
+            )
             return
 
         await server._send_aborted_update(ctx.client_id, event_type, character_id, reason=f"Unknown event type: {event_type}", req_id=req_id)

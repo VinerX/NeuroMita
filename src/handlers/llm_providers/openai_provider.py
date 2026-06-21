@@ -5,6 +5,7 @@ from openai import OpenAI
 from main_logger import logger
 
 from .base import LLMRequest
+from .errors import build_provider_error
 from .openai_compatible import OpenAICompatibleProvider
 
 
@@ -18,11 +19,20 @@ class OpenAIProvider(OpenAICompatibleProvider):
     def _get_client(self, req: LLMRequest):
         if not req.api_key:
             logger.error("OpenAI API key is not available.")
-            return None
+            raise build_provider_error(
+                self.name,
+                status_code=401,
+                provider_message="OpenAI API key is not available.",
+                url=req.api_url,
+            )
         try:
             if req.api_url:
                 return OpenAI(api_key=req.api_key, base_url=req.api_url)
             return OpenAI(api_key=req.api_key)
         except Exception as e:
             logger.error(f"Failed to initialize OpenAI client: {e}", exc_info=True)
-            return None
+            raise build_provider_error(
+                self.name,
+                provider_message=f"Failed to initialize OpenAI client: {e}",
+                url=req.api_url,
+            ) from e

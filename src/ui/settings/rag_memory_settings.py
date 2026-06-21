@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import threading
 
@@ -11,12 +11,23 @@ from PyQt6.QtCore import Qt
 from ui.gui_templates import create_settings_section
 from utils import getTranslationVariant as _
 from core.events import get_event_bus, Events
+from managers.rag.install_spec import (
+    TARGET_EMBEDDINGS,
+    TARGET_RERANKER,
+    get_install_status,
+    start_install,
+)
 from managers.rag.pipeline.config import RAG_DEFAULTS
 from managers.rag.pipeline.config import list_ce_preset_names, CE_PRESETS
 from managers.rag.pipeline.config import (
     RAG_PIPELINE_PRESETS, list_pipeline_preset_names, get_pipeline_preset_settings,
 )
-from handlers.embedding_presets import list_preset_names, resolve_model_settings, resolve_full_config
+from handlers.embedding_presets import (
+    list_preset_names,
+    resolve_model_settings,
+    resolve_full_config,
+    sync_legacy_settings_to_preset,
+)
 
 # Module-level state for the running extraction (survives dialog close).
 _extr_state: dict = {'worker': None, 'stop': None, 'total': 0, 'last_status': ''}
@@ -126,6 +137,14 @@ def _get_ce_loaded_status() -> str:
         from managers.rag.pipeline.cross_encoder import CrossEncoderReranker
         from managers.rag.pipeline.config import resolve_ce_model
         hf_name = resolve_ce_model()
+        try:
+            from handlers.ai_engine.rag_client import get_reranker_status
+
+            status = get_reranker_status(hf_name, timeout_sec=2.0)
+            if bool(status.get("loaded", False)):
+                return _("Загружена в память", "Loaded in memory")
+        except Exception:
+            pass
         inst = CrossEncoderReranker._instances.get(hf_name)
         if inst and inst._model is not None:
             return _("Загружена в память", "Loaded in memory")
@@ -191,81 +210,6 @@ def _is_ce_model_downloaded() -> bool:
         return os.path.isdir(os.path.join(checkpoints_dir, cache_dir_name))
     except Exception:
         return True
-
-
-def _download_model_bg(gui, hf_name: str, on_done) -> None:
-    """Download *hf_name* in a background thread via HuggingFace Hub."""
-    from ui.task_worker import TaskWorker
-
-    def _do_download(*, progress_callback=None):
-        from huggingface_hub import snapshot_download
-        from managers.settings_manager import SettingsManager
-        token = str(SettingsManager.get("HF_TOKEN", "") or "").strip() or None
-        checkpoints_dir = _get_checkpoints_dir()
-        snapshot_download(repo_id=hf_name, cache_dir=checkpoints_dir, token=token)
-        return hf_name
-
-    worker = TaskWorker(_do_download)
-
-    def _on_finished(r):
-        on_done(success=True)
-
-    def _on_error(msg):
-        QMessageBox.critical(gui, _("Ошибка", "Error"),
-                             _("Не удалось скачать модель:\n{e}", "Failed to download model:\n{e}").format(e=msg))
-        on_done(success=False)
-
-    worker.finished_signal.connect(_on_finished)
-    worker.error_signal.connect(_on_error)
-    if not hasattr(gui, '_download_workers'):
-        gui._download_workers = []
-    gui._download_workers.append(worker)
-    worker.start()
-
-
-def _download_embed_model(gui) -> None:
-    cfg = resolve_full_config()
-    hf_name = str(cfg.get("hf_name") or resolve_model_settings()["hf_name"])
-    provider = str(cfg.get("provider_name") or "local").strip().lower()
-    if provider != "local" or not hf_name:
-        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Локальная HuggingFace модель не выбрана.", "No local HuggingFace model selected."))
-        return
-    if hasattr(gui, '_embed_dl_btn'):
-        gui._embed_dl_btn.setEnabled(False)
-        gui._embed_dl_btn.setText(_("Скачивание...", "Downloading..."))
-
-    def _done(*, success):
-        _refresh_embed_status(gui)
-        if hasattr(gui, '_embed_dl_btn'):
-            gui._embed_dl_btn.setEnabled(True)
-            if _is_embed_model_downloaded():
-                gui._embed_dl_btn.setVisible(False)
-            else:
-                gui._embed_dl_btn.setText(_("Скачать модель", "Download model"))
-
-    _download_model_bg(gui, hf_name, _done)
-
-
-def _download_ce_model(gui) -> None:
-    from managers.rag.pipeline.config import resolve_ce_model
-    hf_name = resolve_ce_model()
-    if not hf_name:
-        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Модель не выбрана.", "No model selected."))
-        return
-    if hasattr(gui, '_ce_dl_btn'):
-        gui._ce_dl_btn.setEnabled(False)
-        gui._ce_dl_btn.setText(_("Скачивание...", "Downloading..."))
-
-    def _done(*, success):
-        _refresh_ce_status(gui)
-        if hasattr(gui, '_ce_dl_btn'):
-            gui._ce_dl_btn.setEnabled(True)
-            if _is_ce_model_downloaded():
-                gui._ce_dl_btn.setVisible(False)
-            else:
-                gui._ce_dl_btn.setText(_("Скачать модель", "Download model"))
-
-    _download_model_bg(gui, hf_name, _done)
 
 
 # ---------------------------------------------------------------------------
@@ -928,6 +872,8 @@ def _on_apply_preset(gui) -> None:
             widget.setCurrentText(str(v))
         elif isinstance(widget, QLineEdit):
             widget.setText(str(v))
+    if any(k in settings for k in ("RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM", "RAG_EMBED_QUERY_PREFIX")):
+        sync_legacy_settings_to_preset(log_migration=False, force=True)
 
 
 def _on_save_preset(gui) -> bool:
@@ -1000,7 +946,7 @@ def _build_pipeline_preset_config(gui) -> list:
         {'label': _('Пресет', 'Preset'),
          'key': 'RAG_PIPELINE_PRESET', 'type': 'combobox',
          'options': list_pipeline_preset_names(user_presets),
-         'default': 'Keyword+FTS+Inline Graph',
+         'default': 'Keyword+FTS only',
          'command': lambda text: _update_preset_delete_btn(gui, text),
          'tooltip': _(
              'Выберите пресет и нажмите «Применить». Custom — ручная настройка.',
@@ -1180,6 +1126,11 @@ def _build_history_compression_config(self, hc_provider_names) -> list:
          'default': "Prompts/System/compression_prompt.txt",
          'tooltip': _('Путь к файлу шаблона промпта, используемого для сжатия истории.',
                       'Path to the prompt template file used for history compression.')},
+        {'label': _('Лимит прошлого summary (символы)', 'Previous summary limit (chars)'),
+         'key': 'HISTORY_COMPRESSION_PREVIOUS_SUMMARY_MAX_CHARS', 'type': 'entry',
+         'default': 6000, 'validation': self.validate_positive_integer_or_zero,
+         'tooltip': _('Сколько символов из предыдущего summary передавать в следующий запрос на сжатие. 0 = не передавать.',
+                      'How many characters from the previous summary to include in the next compression request. 0 = do not include it.')},
         {'label': _('Процент для сжатия', 'Percent to compress'),
          'key': 'HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS', 'type': 'entry',
          'default': 0.85, 'validation': self.validate_float_0_1,
@@ -1864,6 +1815,288 @@ def _attach_ce_downloader(gui, section) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Install helpers (InstallController-based RAG backend setup)
+# ---------------------------------------------------------------------------
+
+def _is_rag_install_event(event) -> bool:
+    data = getattr(event, "data", None) or {}
+    task_id = str(data.get("task_id") or "")
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    return task_id.startswith("rag:") or meta.get("kind") == "rag"
+
+
+def _refresh_rag_install_widgets(gui) -> None:
+    try:
+        _refresh_embed_status(gui)
+    except Exception:
+        pass
+    try:
+        _refresh_ce_status(gui)
+    except Exception:
+        pass
+
+
+def _ensure_rag_install_event_handlers(gui) -> None:
+    if getattr(gui, "_rag_install_events_bound", False):
+        return
+
+    def _on_install_changed(event):
+        if not _is_rag_install_event(event):
+            return
+        # Event bus dispatches on its own processor thread; widget mutations
+        # in _refresh_rag_install_widgets must hop to the GUI thread.
+        if threading.current_thread() is threading.main_thread():
+            _refresh_rag_install_widgets(gui)
+        else:
+            gui.run_ui_task_signal.emit(lambda: _refresh_rag_install_widgets(gui))
+
+    gui.event_bus.subscribe(Events.Install.TASK_FINISHED, _on_install_changed, weak=False)
+    gui.event_bus.subscribe(Events.Install.TASK_FAILED, _on_install_changed, weak=False)
+    gui._rag_install_events_bound = True
+
+
+def _get_embed_backend_status() -> str:
+    try:
+        status = get_install_status(TARGET_EMBEDDINGS)
+        if not status.get("required"):
+            return _("Не требуется", "Not required")
+        if status.get("ok"):
+            return _("Установлен", "Installed")
+        missing = ", ".join(status.get("missing_required") or [])
+        if missing:
+            return _("Нужна установка ({items})", "Needs install ({items})").format(items=missing)
+        return _("Нужна установка", "Needs install")
+    except Exception:
+        return "?"
+
+
+def _get_ce_backend_status() -> str:
+    try:
+        status = get_install_status(TARGET_RERANKER)
+        if not status.get("required"):
+            return _("Не требуется", "Not required")
+        if status.get("ok"):
+            return _("Установлен", "Installed")
+        missing = ", ".join(status.get("missing_required") or [])
+        if missing:
+            return _("Нужна установка ({items})", "Needs install ({items})").format(items=missing)
+        return _("Нужна установка", "Needs install")
+    except Exception:
+        return "?"
+
+
+def _needs_embed_backend_install() -> bool:
+    try:
+        status = get_install_status(TARGET_EMBEDDINGS)
+        return bool(status.get("required")) and not bool(status.get("ok"))
+    except Exception:
+        return False
+
+
+def _needs_ce_backend_install() -> bool:
+    try:
+        status = get_install_status(TARGET_RERANKER)
+        return bool(status.get("required")) and not bool(status.get("ok"))
+    except Exception:
+        return False
+
+
+def _refresh_ce_status(gui) -> None:
+    try:
+        if hasattr(gui, "_ce_dl_label"):
+            gui._ce_dl_label.setText(_("Backend:", "Backend:") + " " + _get_ce_backend_status())
+        if hasattr(gui, "_ce_model_label"):
+            gui._ce_model_label.setText(_("Модель:", "Model:") + " " + _get_ce_download_status())
+        if hasattr(gui, "_ce_loaded_label"):
+            gui._ce_loaded_label.setText(_("Статус:", "Status:") + " " + _get_ce_loaded_status())
+        if hasattr(gui, "_ce_dl_btn"):
+            if gui._ce_dl_btn.parentWidget() is None:
+                return
+            gui._ce_dl_btn.setEnabled(True)
+            gui._ce_dl_btn.setText(_("Открыть AI Hub", "Open AI Hub"))
+            gui._ce_dl_btn.setVisible(_needs_ce_backend_install())
+        if hasattr(gui, "_ce_model_btn"):
+            if gui._ce_model_btn.parentWidget() is None:
+                return
+            gui._ce_model_btn.setEnabled(True)
+            gui._ce_model_btn.setText(_("Открыть AI Hub", "Open AI Hub"))
+            gui._ce_model_btn.setVisible(not _is_ce_model_downloaded())
+    except Exception:
+        pass
+
+
+def _refresh_embed_status(gui) -> None:
+    try:
+        if hasattr(gui, "_embed_dl_label"):
+            gui._embed_dl_label.setText(_("Backend:", "Backend:") + " " + _get_embed_backend_status())
+        if hasattr(gui, "_embed_status_label"):
+            gui._embed_status_label.setText(_("Индекс:", "Index:") + " " + _get_embed_status_text())
+        if hasattr(gui, "_embed_dl_btn"):
+            if gui._embed_dl_btn.parentWidget() is None:
+                return
+            gui._embed_dl_btn.setEnabled(True)
+            gui._embed_dl_btn.setText(_("Открыть AI Hub", "Open AI Hub"))
+            gui._embed_dl_btn.setVisible(_needs_embed_backend_install())
+    except Exception:
+        pass
+
+
+def _open_rag_ai_hub(gui, target: str) -> None:
+    try:
+        gui.event_bus.emit(
+            Events.GUI.SHOW_WINDOW,
+            {
+                "window_id": "ai_hub",
+                "payload": {
+                    "category": "rag",
+                    "component_id": f"rag:{target}",
+                },
+            },
+        )
+    except Exception as exc:
+        QMessageBox.critical(
+            gui,
+            _("Ошибка", "Error"),
+            _("Не удалось открыть AI Hub:\n{e}", "Failed to open AI Hub:\n{e}").format(e=exc),
+        )
+
+
+def _start_rag_backend_install(gui, target: str) -> None:
+    try:
+        if target == TARGET_EMBEDDINGS and hasattr(gui, "_embed_dl_btn"):
+            gui._embed_dl_btn.setEnabled(False)
+            gui._embed_dl_btn.setText(_("Открытие AI Hub...", "Opening AI Hub..."))
+        if target == TARGET_RERANKER and hasattr(gui, "_ce_dl_btn"):
+            gui._ce_dl_btn.setEnabled(False)
+            gui._ce_dl_btn.setText(_("Открытие AI Hub...", "Opening AI Hub..."))
+        _open_rag_ai_hub(gui, target)
+    except Exception as exc:
+        QMessageBox.critical(
+            gui,
+            _("Ошибка", "Error"),
+            _("Не удалось открыть AI Hub:\n{e}", "Failed to open AI Hub:\n{e}").format(e=exc),
+        )
+        _refresh_rag_install_widgets(gui)
+
+
+def _download_embed_model(gui) -> None:
+    try:
+        _open_rag_ai_hub(gui, TARGET_EMBEDDINGS)
+    except Exception as exc:
+        QMessageBox.critical(
+            gui,
+            _("Ошибка", "Error"),
+            _("Не удалось открыть AI Hub:\n{e}", "Failed to open AI Hub:\n{e}").format(e=exc),
+        )
+        _refresh_embed_status(gui)
+
+
+def _download_ce_model(gui) -> None:
+    try:
+        _open_rag_ai_hub(gui, TARGET_RERANKER)
+    except Exception as exc:
+        QMessageBox.critical(
+            gui,
+            _("Ошибка", "Error"),
+            _("Не удалось открыть AI Hub:\n{e}", "Failed to open AI Hub:\n{e}").format(e=exc),
+        )
+        _refresh_ce_status(gui)
+
+
+def _attach_embed_downloader(gui, section) -> None:
+    try:
+        _ensure_rag_install_event_handlers(gui)
+        from managers.settings_manager import InnerCollapsibleSection
+        _content = getattr(section, "content", None)
+        _parent = _content or section
+
+        _dl_label = QLabel(_("Backend:", "Backend:") + " " + _get_embed_backend_status(), _parent)
+        _dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        _idx_label = QLabel(_("Индекс:", "Index:") + " " + _get_embed_status_text(), _parent)
+        _idx_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        _embed_dl_btn = QPushButton(_("Открыть AI Hub", "Open AI Hub"), _parent)
+        _embed_dl_btn.setVisible(_needs_embed_backend_install())
+        _embed_dl_btn.clicked.connect(lambda: _start_rag_backend_install(gui, TARGET_EMBEDDINGS))
+        _target_section = None
+        if _content:
+            _content_layout = _content.layout()
+            if _content_layout:
+                for i in range(_content_layout.count()):
+                    _item = _content_layout.itemAt(i)
+                    if _item and _item.widget():
+                        _w = _item.widget()
+                        if isinstance(_w, InnerCollapsibleSection):
+                            _tl = getattr(_w, "title_label", None)
+                            _title = _tl.text() if _tl else ""
+                            if "эмбеддинг" in _title.lower() or "mbedding" in _title.lower():
+                                _target_section = _w
+                                break
+        if _target_section is None:
+            _target_section = section
+
+        _target_section.add_widget(_dl_label)
+        _target_section.add_widget(_idx_label)
+        _target_section.add_widget(_embed_dl_btn)
+
+        gui._embed_status_label = _idx_label
+        gui._embed_dl_label = _dl_label
+        gui._embed_dl_btn = _embed_dl_btn
+    except Exception:
+        pass
+
+
+def _attach_ce_downloader(gui, section) -> None:
+    try:
+        _ensure_rag_install_event_handlers(gui)
+        from managers.settings_manager import InnerCollapsibleSection
+        _content = getattr(section, "content", None)
+        _parent = _content or section
+
+        _ce_dl_label = QLabel(_("Backend:", "Backend:") + " " + _get_ce_backend_status(), _parent)
+        _ce_dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        _ce_model_label = QLabel(_("Модель:", "Model:") + " " + _get_ce_download_status(), _parent)
+        _ce_model_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        _ce_ld_label = QLabel(_("Статус:", "Status:") + " " + _get_ce_loaded_status(), _parent)
+        _ce_ld_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        _ce_dl_btn = QPushButton(_("Открыть AI Hub", "Open AI Hub"), _parent)
+        _ce_dl_btn.setVisible(_needs_ce_backend_install())
+        _ce_dl_btn.clicked.connect(lambda: _start_rag_backend_install(gui, TARGET_RERANKER))
+        _ce_model_btn = QPushButton(_("Открыть AI Hub", "Open AI Hub"), _parent)
+        _ce_model_btn.setVisible(not _is_ce_model_downloaded())
+        _ce_model_btn.clicked.connect(lambda: _download_ce_model(gui))
+        _target_section = None
+        if _content:
+            _content_layout = _content.layout()
+            if _content_layout:
+                for i in range(_content_layout.count()):
+                    _item = _content_layout.itemAt(i)
+                    if _item and _item.widget():
+                        _w = _item.widget()
+                        if isinstance(_w, InnerCollapsibleSection):
+                            _tl = getattr(_w, "title_label", None)
+                            _title = _tl.text() if _tl else ""
+                            if "ross-encoder" in _title or "реранкер" in _title.lower():
+                                _target_section = _w
+                                break
+        if _target_section is None:
+            _target_section = section
+
+        _target_section.add_widget(_ce_dl_label)
+        _target_section.add_widget(_ce_model_label)
+        _target_section.add_widget(_ce_ld_label)
+        _target_section.add_widget(_ce_dl_btn)
+        _target_section.add_widget(_ce_model_btn)
+
+        gui._ce_dl_label = _ce_dl_label
+        gui._ce_model_label = _ce_model_label
+        gui._ce_loaded_label = _ce_ld_label
+        gui._ce_dl_btn = _ce_dl_btn
+        gui._ce_model_btn = _ce_model_btn
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Section builders
 # ---------------------------------------------------------------------------
 
@@ -1901,13 +2134,14 @@ def build_rag_section(self, parent, hc_provider_names) -> None:
                                           config,
                                           icon_name='fa5s.search')
 
+    _attach_embed_downloader(self, rag_section)
     _attach_ce_downloader(self, rag_section)
 
     # Init delete button state (disabled for built-in presets / Custom)
     try:
         _update_preset_delete_btn(
             self,
-            self.settings.get("RAG_PIPELINE_PRESET", "Custom") or "Custom",
+            self.settings.get("RAG_PIPELINE_PRESET", "Keyword+FTS only") or "Keyword+FTS only",
         )
     except Exception:
         pass

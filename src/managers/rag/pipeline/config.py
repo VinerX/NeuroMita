@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from managers.settings_manager import SettingsManager
+try:
+    from managers.settings_manager import SettingsManager
+except Exception:
+    class SettingsManager:
+        instance = None
+
+        @staticmethod
+        def get(_key, default=None):
+            return default
 
 
 # ── Cross-encoder presets ─────────────────────────────────────────────────
@@ -89,6 +97,39 @@ def get_pipeline_preset_settings(name: str, user_presets: dict | None = None) ->
         return RAG_PIPELINE_PRESETS[name].copy()
     if user_presets and name in user_presets:
         return user_presets[name].copy()
+    return None
+
+
+def _setting_equals(key: str, expected: object) -> bool:
+    """True if the current SettingsManager value for *key* equals *expected*,
+    with bool/number-aware coercion."""
+    current = SettingsManager.get(key, None)
+    if current is None:
+        return False
+    if isinstance(expected, bool):
+        return _b(current, expected) == expected
+    if isinstance(expected, (int, float)):
+        try:
+            return float(current) == float(expected)
+        except Exception:
+            return False
+    return str(current).strip() == str(expected).strip()
+
+
+def match_pipeline_preset(user_presets: dict | None = None) -> str | None:
+    """Return the name of the built-in (or user) pipeline preset whose every key
+    matches the current SettingsManager values, or None if nothing matches.
+
+    Lets a stored 'Custom' selection be resolved back to a recognizable preset
+    name for display (e.g. the sandbox RAG status row)."""
+    candidates: dict[str, dict] = dict(RAG_PIPELINE_PRESETS)
+    if user_presets:
+        candidates.update(user_presets)
+    for name, preset in candidates.items():
+        if isinstance(preset, dict) and preset and all(
+            _setting_equals(k, v) for k, v in preset.items()
+        ):
+            return name
     return None
 
 
@@ -301,7 +342,7 @@ class RAGConfig:
 
         # --- NEW settings (safe defaults) ---
         cfg.combine_mode = str(SettingsManager.get("RAG_COMBINE_MODE", "union") or "union").strip().lower()
-        cfg.vector_search_enabled = _b(SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", True), True)
+        cfg.vector_search_enabled = _b(SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False), False)
         cfg.vector_top_k = _i(SettingsManager.get("RAG_VECTOR_TOP_K", 0), 0)
 
         cfg.intersect_min_methods = _i(SettingsManager.get("RAG_INTERSECT_MIN_METHODS", 2), 2)
@@ -368,6 +409,7 @@ class RAGConfig:
 # Used by the "Reset RAG defaults" button in the UI.
 RAG_DEFAULTS: dict[str, object] = {
     "RAG_ENABLED": True,
+    "RAG_PIPELINE_PRESET": "Keyword+FTS only",
     "RAG_EMBED_MODEL": "Qwen3-Embedding-0.6B (600M, 2025)",
     "RAG_EMBED_MODEL_CUSTOM": "",
     "RAG_EMBED_QUERY_PREFIX": "query: ",

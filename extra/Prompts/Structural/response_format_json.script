@@ -41,6 +41,14 @@ Schema:
 """
 ENDIF
 
+IF ENABLE_GAMES == True THEN
+    SET LOCAL p_schema_game_fields = """
+      "start_game": "game_id",
+      "end_game": "game_id","""
+ELSE
+    SET LOCAL p_schema_game_fields = ""
+ENDIF
+
 SET LOCAL p_schema_fields = """  "segments": [
     {
       "text": "Your text here (REQUIRED)",
@@ -53,9 +61,7 @@ SET LOCAL p_schema_fields = """  "segments": [
       "clothes": ["outfit_id"],
       "music": ["music_name"],
       "interactions": ["interaction_target"],
-      "face_params": ["param"],
-      "start_game": "game_id",
-      "end_game": "game_id",
+      "face_params": ["param"],""" + p_schema_game_fields + """
       "target": "character_name",
       "hint": "hint text",
       "allow_sleep": true/false
@@ -85,9 +91,7 @@ SET LOCAL p_graph_schema_fields = """  "segments": [
       "clothes": ["outfit_id"],
       "music": ["music_name"],
       "interactions": ["interaction_target"],
-      "face_params": ["param"],
-      "start_game": "game_id",
-      "end_game": "game_id",
+      "face_params": ["param"],""" + p_schema_game_fields + """
       "target": "character_name",
       "hint": "hint text",
       "allow_sleep": true/false
@@ -227,6 +231,12 @@ IF GRAPH_EXTRACTION_ENABLED == True THEN
     SET LOCAL result = p_header + p_toc + p_schema_open + p_graph_schema_fields + p_graph_rules + p_graph_example + p_footer
 ELSE
     SET LOCAL result = p_header + p_toc + p_schema_open + p_schema_fields + p_rules + p_example + p_footer
+ENDIF
+
+IF MITA_CAMERA_ENABLED == True AND MITA_CAMERA_ON_DEMAND == True THEN
+    SET LOCAL result = result + """
+
+[Camera] You have a head-mounted camera. To take a snapshot of what is around you, add "camera_snapshot" to the "commands" field of any segment. The captured image will be delivered as a follow-up message (event_type: camera_snapshot_result). Use this when you want to see the environment or inspect something visually."""
 ENDIF
 
 RETURN result

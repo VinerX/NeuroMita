@@ -51,13 +51,14 @@ class CaptureController:
 
     def _on_capture_settings_loaded(self, event: Event):
         if self.settings:
-            if self.settings.get("ENABLE_SCREEN_ANALYSIS", False):
-                logger.info("Настройка 'ENABLE_SCREEN_ANALYSIS' включена. Автоматический запуск захвата экрана.")
-                self.start_screen_capture_thread()
+            if self.settings.get("ENABLE_IMAGE_ANALYSIS", False):
+                if self.settings.get("ENABLE_SCREEN_ANALYSIS", False):
+                    logger.info("Настройка 'ENABLE_SCREEN_ANALYSIS' включена. Автоматический запуск захвата экрана.")
+                    self.start_screen_capture_thread()
 
-            if self.settings.get("ENABLE_CAMERA_CAPTURE", False):
-                logger.info("Настройка 'ENABLE_CAMERA_CAPTURE' включена. Автоматический запуск захвата с камеры.")
-                self.start_camera_capture_thread()
+                if self.settings.get("ENABLE_CAMERA_CAPTURE", False):
+                    logger.info("Настройка 'ENABLE_CAMERA_CAPTURE' включена. Автоматический запуск захвата с камеры.")
+                    self.start_camera_capture_thread()
                 
     def _on_start_screen_capture(self, event: Event):
         logger.info("Получено событие start_screen_capture")
@@ -112,8 +113,17 @@ class CaptureController:
         
         if self.screen_capture_instance:
             frames = self.screen_capture_instance.get_recent_frames(history_limit)
-            return frames
-        return []
+            if frames:
+                return frames
+
+        if not self.settings.get("ENABLE_IMAGE_ANALYSIS", False):
+            return []
+
+        quality = int(self.settings.get("SCREEN_CAPTURE_QUALITY", 25))
+        width = int(self.settings.get("SCREEN_CAPTURE_WIDTH", 1024))
+        height = int(self.settings.get("SCREEN_CAPTURE_HEIGHT", 768))
+        frame = self.screen_capture_instance.capture_one_shot(quality, width, height)
+        return [frame] if frame else []
     
     def _on_get_camera_frames(self, event: Event):
         history_limit = event.data.get('limit', 1) if event.data else 1
@@ -128,7 +138,14 @@ class CaptureController:
         key = event.data.get('key')
         value = event.data.get('value')
         
-        if key == "ENABLE_SCREEN_ANALYSIS":
+        if key == "ENABLE_IMAGE_ANALYSIS":
+            if bool(value):
+                pass
+            else:
+                self.stop_screen_capture_thread()
+                self.stop_camera_capture_thread()
+                self.stop_image_request_timer()
+        elif key == "ENABLE_SCREEN_ANALYSIS":
             if bool(value):
                 self.start_screen_capture_thread()
             else:
@@ -178,14 +195,19 @@ class CaptureController:
             self.stop_image_request_timer()
             self.start_image_request_timer()
 
-        if key in ["MIC_ACTIVE", "ENABLE_SCREEN_ANALYSIS", "ENABLE_CAMERA_CAPTURE"]:
+        if key in ["MIC_ACTIVE", "ENABLE_IMAGE_ANALYSIS", "ENABLE_SCREEN_ANALYSIS", "AUTO_ATTACH_IMAGES", "ENABLE_CAMERA_CAPTURE"]:
             self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
     
     def start_screen_capture_thread(self):
+        if not self.settings:
+            logger.error("Settings не доступны в CaptureController")
+            return
+
+        if not self.settings.get("ENABLE_IMAGE_ANALYSIS", False):
+            logger.info("ENABLE_IMAGE_ANALYSIS отключен — захват экрана не запускается.")
+            return
+
         if not self.screen_capture_running:
-            if not self.settings:
-                logger.error("Settings не доступны в CaptureController")
-                return
                 
             interval = float(self.settings.get("SCREEN_CAPTURE_INTERVAL", 5.0))
             quality = int(self.settings.get("SCREEN_CAPTURE_QUALITY", 25))
@@ -219,6 +241,10 @@ class CaptureController:
     def start_camera_capture_thread(self):
         if not self.settings:
             logger.error("Settings не доступны в CaptureController")
+            return
+
+        if not self.settings.get("ENABLE_IMAGE_ANALYSIS", False):
+            logger.info("ENABLE_IMAGE_ANALYSIS отключен — захват с камеры не запускается.")
             return
             
         if not hasattr(self, 'camera_capture') or self.camera_capture is None:
@@ -283,6 +309,10 @@ class CaptureController:
         delta = current_time - self.last_image_request_time
         
         if delta >= interval:
+            if not self.settings.get("ENABLE_IMAGE_ANALYSIS", True):
+                self.last_image_request_time = current_time
+                return
+
             image_data = []
             if self.settings.get("ENABLE_SCREEN_ANALYSIS", False):
                 logger.info(f"Отправка периодического запроса с изображением ({current_time - self.last_image_request_time:.2f}/{interval:.2f} сек).")

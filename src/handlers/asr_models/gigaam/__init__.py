@@ -47,7 +47,8 @@ def _download_file(file_url: str, file_path: str):
         return file_path
 
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    with urllib.request.urlopen(file_url) as source, open(file_path, "wb") as output:
+    logging.warning(f"GigaAM: missing runtime artifact, downloading {file_url} -> {file_path}")
+    with urllib.request.urlopen(file_url, timeout=60) as source, open(file_path, "wb") as output:
         with tqdm(
             total=int(source.info().get("Content-Length", 0)),
             ncols=80,
@@ -136,16 +137,39 @@ def load_model(
     if download_root is None:
         download_root = _CACHE_DIR
 
+    import time as _time
+
+    # Route progress through the project logger so it is actually visible in the
+    # game log (stdlib logging.info from a vendored module may go nowhere).
+    try:
+        from main_logger import logger as _pl
+        _log_info = _pl.info
+    except Exception:
+        _log_info = logging.warning
+
     model_name, model_path = _download_model(model_name, download_root)
     tokenizer_path = _download_tokenizer(model_name, download_root)
 
+    try:
+        _size_mb = os.path.getsize(model_path) / (1024 * 1024)
+    except OSError:
+        _size_mb = 0.0
+
+    # Checksum reads and MD5-hashes the WHOLE checkpoint on every load — on a
+    # big ckpt / slow disk this alone is several seconds with no output, so it
+    # looks frozen. Time it explicitly so the slow step is visible in the log.
+    _log_info(f"GigaAM: проверка контрольной суммы {model_name} ({_size_mb:.0f} MB)...")
+    _t = _time.time()
     assert (
         hash_path(model_path) == _MODEL_HASHES[model_name]
     ), f"Model checksum failed. Please run `rm {model_path}` and reload the model"
+    _log_info(f"GigaAM: контрольная сумма ок за {_time.time() - _t:.1f} c. Загрузка весов...")
 
+    _t = _time.time()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=(FutureWarning))
         checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+    _log_info(f"GigaAM: веса загружены за {_time.time() - _t:.1f} c.")
 
     if use_flash is not None:
         checkpoint["cfg"].encoder.flash_attn = use_flash
@@ -170,4 +194,10 @@ def load_model(
         model.encoder = model.encoder.half()
 
     checkpoint["cfg"].model_name = model_name
-    return model.to(device_obj)
+    # First CUDA transfer also initializes the CUDA context (cold-start can take
+    # many seconds in a fresh process) — time it so it isn't a silent stall.
+    _log_info(f"GigaAM: перенос модели на {device_obj}...")
+    _t = _time.time()
+    model = model.to(device_obj)
+    _log_info(f"GigaAM: модель на устройстве за {_time.time() - _t:.1f} c.")
+    return model

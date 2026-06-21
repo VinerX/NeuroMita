@@ -127,7 +127,7 @@ class TelegramController:
             try:
                 return {
                     "USE_VOICEOVER": bool(s.get("USE_VOICEOVER", False)),
-                    "VOICEOVER_METHOD": str(s.get("VOICEOVER_METHOD", "TG") or "TG"),
+                    "VOICEOVER_METHOD": str(s.get("VOICEOVER_METHOD", "Local") or "Local"),
                     "TG_AUTOCONNECT": bool(s.get("TG_AUTOCONNECT", True)),
                 }
             except Exception:
@@ -140,13 +140,13 @@ class TelegramController:
             if isinstance(raw, dict):
                 return {
                     "USE_VOICEOVER": bool(raw.get("USE_VOICEOVER", False)),
-                    "VOICEOVER_METHOD": str(raw.get("VOICEOVER_METHOD", "TG") or "TG"),
+                    "VOICEOVER_METHOD": str(raw.get("VOICEOVER_METHOD", "Local") or "Local"),
                     "TG_AUTOCONNECT": bool(raw.get("TG_AUTOCONNECT", True)),
                 }
         except Exception:
             pass
 
-        return {"USE_VOICEOVER": False, "VOICEOVER_METHOD": "TG", "TG_AUTOCONNECT": True}
+        return {"USE_VOICEOVER": False, "VOICEOVER_METHOD": "Local", "TG_AUTOCONNECT": True}
 
     def _maybe_autoconnect(self, *, reason: str):
         snap = self._tg_settings_snapshot()

@@ -44,9 +44,9 @@ ENDIF
 IF attitude >= 90 THEN
     SET behavior_context = behavior_context + "\n[Intimacy Module Active]\n"
     IF Love >= 5 THEN
-         SET behavior_context = behavior_context + "Love Level: High (" + str(Love) + "). Proactive affection allowed.\n"
+         SET behavior_context = behavior_context + "Love Level: High. Proactive affection allowed.\n"
     ELSE
-         SET behavior_context = behavior_context + "Love Level: Forming (" + str(Love) + "). Reciprocal affection only.\n"
+         SET behavior_context = behavior_context + "Love Level: Forming. Reciprocal affection only.\n"
     ENDIF
 ENDIF
 

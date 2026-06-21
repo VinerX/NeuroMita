@@ -1,6 +1,5 @@
 LOG "ContextInfo: Script started."
-SET formatted_time = SYSTEM_DATETIME 
-SET result_string = "Время: " + formatted_time + "."
+SET result_string = ""
 SET current_lm_count = LongMemoryRememberCount + 1
 SET LongMemoryRememberCount = current_lm_count 
 LOG "ContextInfo: LongMemoryRememberCount updated to " + LongMemoryRememberCount

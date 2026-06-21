@@ -15,20 +15,22 @@ from managers.settings_manager import CollapsibleSection
 from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
 import types
 import json
+import qtawesome as qta
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QPropertyAnimation, QBuffer, QIODevice, QEvent, QEasingCurve
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QPropertyAnimation, QBuffer, QIODevice, QEvent, QEasingCurve, QUrl, QRectF
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPlainTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
     QMessageBox, QDialog, QProgressBar, QStackedWidget,
-    QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy, QCheckBox
+    QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy, QCheckBox,
+    QMenu
 )
-from PyQt6.QtGui import QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap
+from PyQt6.QtGui import QDesktopServices, QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap, QPainter, QLinearGradient, QColor
 
 from ui.settings import (
     api_settings, character_settings, game_settings,
     microphone_settings, screen_analysis_settings, voiceover_settings,
-    model_interaction_settings, general_settings, data_settings
+    model_interaction_settings, general_settings, updates_settings
 )
 
 from ui.widgets import (status_indicators_widget)
@@ -49,14 +51,27 @@ from ui.dialogs.ffmpeg_dialogs import create_ffmpeg_install_popup, show_ffmpeg_e
 from ui.dialogs.telegram_auth_dialogs import show_tg_code_dialog, show_tg_password_dialog
 from ui.dialogs.voice_model_dialog_manager import handle_voice_model_dialog
 
-from ui.widgets.settings_panel import setup_settings_panel
+from ui.widgets.launcher_dashboard_helpers import (
+    DashboardAction,
+    DashboardCard,
+    DashboardMetric,
+    LogItem,
+    NewsItem,
+    create_shell_page_container,
+    create_home_page,
+    create_logs_page,
+    create_news_page,
+)
+from ui.widgets.launcher_shell_sidebar import LauncherSidebarWidget
+from ui.widgets.settings_panel import create_settings_page
 from ui.widgets.chat_panel import setup_chat_panel, hide_image_preview_bar, update_send_button_state
 from ui.chat import message_renderer
 from ui.chat.chat_delegate import ChatMessageDelegate
 
 from ui.windows.voice_action_windows import VoiceInstallationWindow
 
-class ChatGUI(QMainWindow):
+
+class AppWindowBase(QMainWindow):
     update_chat_signal = pyqtSignal(str, object, bool, str)
     update_status_signal = pyqtSignal()
     update_debug_signal = pyqtSignal()
@@ -98,6 +113,7 @@ class ChatGUI(QMainWindow):
     create_dialog_signal = pyqtSignal(dict)
     create_installation_window_signal = pyqtSignal(str, str, object)  # title, initial_status, holder(dict)
     close_installation_window_signal = pyqtSignal(object)
+    finalize_installation_window_signal = pyqtSignal(object, bool)  # win, close_now
     
     asr_install_progress_signal = pyqtSignal(dict)
     asr_install_finished_signal = pyqtSignal(dict)
@@ -197,6 +213,13 @@ class ChatGUI(QMainWindow):
 
     def _window_specs(self) -> dict:
         return {
+            "ai_hub": {
+                "factory": self._factory_ai_hub_dialog,
+                "singleton": True,
+                "hide_on_close": True,
+                "modal": False,
+                "on_ready": self._on_ai_hub_dialog_ready,
+            },
             "voice_models": {
                 "factory": self._factory_voice_models_dialog,
                 "singleton": True,
@@ -261,6 +284,15 @@ class ChatGUI(QMainWindow):
             type=Qt.ConnectionType.QueuedConnection
         )
 
+        self.finalize_installation_window_signal.connect(
+            self._on_finalize_installation_window,
+            type=Qt.ConnectionType.QueuedConnection
+        )
+
+        # Текущее окно установки (живёт, пока задача не завершена; может быть
+        # свёрнуто пользователем и открыто снова через сайдбар).
+        self._active_install_window = None
+
         self.asr_install_progress_signal.connect(
             self._on_asr_install_progress,
             type=Qt.ConnectionType.QueuedConnection
@@ -305,7 +337,16 @@ class ChatGUI(QMainWindow):
         dialog_layout.setSpacing(0)
 
         return dialog
-    
+
+    def _factory_ai_hub_dialog(self, parent, payload: dict):
+        from ui.windows.ai_hub_window import AIHubDialog
+
+        return AIHubDialog(parent)
+
+    def _on_ai_hub_dialog_ready(self, dialog, payload: dict):
+        if hasattr(dialog, "apply_payload"):
+            dialog.apply_payload(payload if isinstance(payload, dict) else {})
+
     def _factory_asr_glossary_dialog(self, parent, payload: dict):
         dialog = QDialog(parent)
         dialog.setWindowTitle(_("ASR модели", "ASR Models"))
@@ -328,10 +369,25 @@ class ChatGUI(QMainWindow):
     def _create_dialog_for_voice_model(self, data):
         if not hasattr(self, "window_manager") or self.window_manager is None:
             return
-        self.window_manager.show_dialog("voice_models", data if isinstance(data, dict) else {})
+        payload = data if isinstance(data, dict) else {}
+        payload = dict(payload)
+        payload.setdefault("category", "tts")
+        self.window_manager.show_dialog("ai_hub", payload)
 
     def _on_create_installation_window(self, title: str, initial_status: str, holder: dict):
         win = VoiceInstallationWindow(self, title, initial_status)
+        self._active_install_window = win
+
+        try:
+            win.minimized.connect(lambda: self._set_install_logs_button_visible(True))
+            win.window_closed.connect(lambda w=win: self._on_install_window_closed(w))
+        except Exception:
+            pass
+
+        # Кнопка «Логи установки» в сайдбаре — чтобы вернуться к окну,
+        # если пользователь его закрыл (свернул).
+        self._set_install_logs_button_visible(True)
+
         win.show()
 
         holder["window"] = win
@@ -347,143 +403,96 @@ class ChatGUI(QMainWindow):
             except Exception:
                 pass
 
-
     def _on_close_installation_window(self, win_obj: object):
         try:
             if win_obj is None:
                 return
+            if hasattr(win_obj, "finalize"):
+                win_obj.finalize()
             win_obj.close()
         except Exception:
             pass
 
-    def setup_ui(self):
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        self.setStyleSheet(get_stylesheet())
-        main_layout = QHBoxLayout(central_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-        setup_chat_panel(self, main_layout)
-        setup_settings_panel(self, main_layout)
-        self._init_settings_containers()
-        # применить режим интерфейса (скрыть кнопки панели по уровню)
+    def _on_finalize_installation_window(self, win_obj: object, close_now: bool):
         try:
-            from ui.widgets.settings_panel import apply_interface_mode
-            apply_interface_mode(self, self.settings.get("INTERFACE_MODE") or _('Базовый', 'Basic'))
+            if win_obj is None:
+                return
+            if hasattr(win_obj, "finalize"):
+                win_obj.finalize()
+            if close_now:
+                win_obj.close()
         except Exception:
             pass
-        self.resize(1200, 800)
-        
-    def _on_hide_animation_finished(self):
-        self.settings_overlay.hide()
-        if hasattr(self, "settings_resize_handle"):
-            self.settings_resize_handle.hide()
+
+    def _on_install_window_closed(self, win_obj: object):
+        # Окно действительно закрыто (задача завершена) — убираем ссылку и
+        # прячем кнопку повторного открытия.
+        if win_obj is self._active_install_window:
+            self._active_install_window = None
+            self._set_install_logs_button_visible(False)
+
+    def _on_reopen_install_logs(self):
+        win = getattr(self, "_active_install_window", None)
+        if win is None:
+            self._set_install_logs_button_visible(False)
+            return
         try:
-            self.settings_animation.finished.disconnect(self._on_hide_animation_finished)
-        except TypeError:
+            win.show()
+            win.raise_()
+            win.activateWindow()
+        except Exception:
             pass
 
-    def _init_settings_containers(self):
-        callbacks = {
-            "general":     general_settings.setup_general_settings_controls,
-            "api":         api_settings.setup_api_controls,
-            "models":      model_interaction_settings.setup_model_interaction_controls,
-            "voice":       voiceover_settings.setup_voiceover_controls,
-            "microphone":  microphone_settings.setup_microphone_controls,
-            "characters":  character_settings.setup_mita_controls,
-            "screen":      screen_analysis_settings.setup_screen_analysis_controls,
-            "game":        game_settings.setup_game_controls,
-            "debug":       self._debug_wrapper,
-            "news":        self._news_wrapper,
-            "data":        data_settings.setup_data_settings_controls,
-        }
-
-        for key, fn in callbacks.items():
-            scroll_area = QScrollArea()
-            scroll_area.setWidgetResizable(True)
-            scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-            scroll_area.setObjectName(f"ScrollArea_{key}")
-            scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-            
-            content_widget = QWidget()
-            content_widget.setObjectName(f"ContentWidget_{key}")
-            content_layout = QVBoxLayout(content_widget)
-            content_layout.setContentsMargins(10, 10, 10, 10)
-            content_layout.setSpacing(5)
-
-            if isinstance(fn, types.MethodType) and fn.__self__ is self:
-                fn(content_layout)
-            else:
-                fn(self, content_layout)
-            
-            content_layout.addStretch()
-            scroll_area.setWidget(content_widget)
-            self.settings_containers[key] = scroll_area
-            self.settings_overlay.add_container(scroll_area)
-
-    def show_settings_category(self, category):
-        self.settings_animation.stop()
-        is_hiding = (self.current_settings_category == category and self.settings_overlay.width() > 0)
-        for cat, btn in self.settings_buttons.items():
-            btn.set_active(cat == category and not is_hiding)
-        if is_hiding:
-            self.current_settings_category = None
-            self.settings_animation.setEndValue(0)
+    def _set_install_logs_button_visible(self, visible: bool):
+        sidebar = getattr(self, "shell_sidebar", None)
+        if sidebar is not None and hasattr(sidebar, "set_install_logs_visible"):
             try:
-                self.settings_animation.finished.disconnect(self._on_hide_animation_finished)
-            except TypeError:
+                sidebar.set_install_logs_visible(bool(visible))
+            except Exception:
                 pass
-            self.settings_animation.finished.connect(self._on_hide_animation_finished)
-        else:
-            self.current_settings_category = category
-            cont = self.settings_containers.get(category)
-            if not cont:
-                return
-            if hasattr(self, "settings_resize_handle"):
-                self.settings_resize_handle.show()
-            self.settings_overlay.show_category(cont)
-            max_width = self.settings_overlay._effective_max_width() if hasattr(self.settings_overlay, "_effective_max_width") else self.SETTINGS_PANEL_WIDTH
-            target_width = max(280, min(int(max_width), int(self.SETTINGS_PANEL_WIDTH)))
-            self.SETTINGS_PANEL_WIDTH = target_width
-            self.settings_animation.setEndValue(target_width)
 
-        self.settings_animation.setStartValue(self.settings_overlay.width())
-        self.settings_animation.start()
+    def setup_ui(self):
+        raise NotImplementedError("AppWindowBase.setup_ui() must be implemented by a concrete window class.")
 
-    def _create_debug_section(self, parent, layout):
-        debug_label = QLabel(_('Отладочная информация', 'Debug Information'))
-        debug_label.setObjectName('SeparatorLabel')
-        layout.addWidget(debug_label)
-        
-        self.debug_window = QTextEdit()
-        self.debug_window.setReadOnly(True)
-        self.debug_window.setObjectName("DebugWindow")
-        self.debug_window.setMinimumHeight(200)
-        layout.addWidget(self.debug_window)
-        
-        status_indicators_widget.create_status_indicators(self, layout)
-        self.update_debug_info()
+    def _on_shell_utility_requested(self, action):
+        if isinstance(action, str) and action.startswith("language:"):
+            code = action.split(":", 1)[1].upper()
+            try:
+                self.settings.set("LANGUAGE", code)
+            except Exception:
+                try:
+                    self.settings["LANGUAGE"] = code
+                except Exception:
+                    pass
+            self.shell_sidebar.set_active_language(code.lower())
+            try:
+                from ui.language_restart import prompt_language_restart
 
-    def _create_news_section(self, parent, layout):
-        news_label = QLabel(self.get_news_content())
-        news_label.setWordWrap(True)
-        news_label.setObjectName('SeparatorLabel')
-        layout.addWidget(news_label)
+                prompt_language_restart(self)
+            except Exception:
+                QMessageBox.information(
+                    self,
+                    _("Язык", "Language"),
+                    _("Перезапусти программу, чтобы применить язык.",
+                      "Restart the program to apply the language."),
+                )
+            return
+        if action == "language":
+            self.show_settings_category("general")
+            return
 
-    def setup_news_control(self, parent):
-        news_label = QLabel(self.get_news_content())
-        news_label.setWordWrap(True)
-        parent.addWidget(news_label)
+        self.switch_main_page("home")
 
-
-    def setup_debug_controls(self, parent):
-        self.debug_window = QTextEdit()
-        self.debug_window.setReadOnly(True)
-        self.debug_window.setObjectName("DebugWindow")
-        self.debug_window.setMinimumHeight(200)
-        parent.addWidget(self.debug_window)
-        status_indicators_widget.create_status_indicators(self, parent)
-        self.update_debug_info()
+    def _on_shell_social_requested(self, platform):
+        urls = {
+            "discord": "https://discord.gg/Tu5MPFxM4P",
+            "github": "https://github.com/VinerX/NeuroMita",
+            "youtube": "https://www.youtube.com/@NeuroMita",
+            "boosty": "https://boosty.to/vinerx",
+        }
+        url = urls.get(platform)
+        if url:
+            QDesktopServices.openUrl(QUrl(url))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -564,7 +573,8 @@ class ChatGUI(QMainWindow):
                     )
                 message_renderer.insert_message(self, role, content, message_time=message_time,
                                                 structured_data=structured_data,
-                                                message_id=message_id, character_id=character_id)
+                                                message_id=message_id, character_id=character_id,
+                                                ui_images=entry.get("_ui_images") or [])
             except Exception as ex:
                 logger.error(f"_on_history_loaded: НУ Я ПОНЯЛ: {str(ex)}")
         self.update_debug_info()
@@ -648,26 +658,79 @@ class ChatGUI(QMainWindow):
             return False
 
     def update_debug_info(self):
+        debug_info_result = self.event_bus.emit_and_wait(Events.Model.GET_DEBUG_INFO, timeout=0.5)
+        debug_info = debug_info_result[0] if debug_info_result else "Debug info not available"
+
         if hasattr(self, 'debug_window') and self.debug_window:
             self.debug_window.clear()
-            debug_info_result = self.event_bus.emit_and_wait(Events.Model.GET_DEBUG_INFO, timeout=0.5)
-            debug_info = debug_info_result[0] if debug_info_result else "Debug info not available"
             self.debug_window.insertPlainText(debug_info)
+
+        # logs_window больше не дублирует debug_info — в нём показывается tail файла логов,
+        # а не "Debug info not available". См. _refresh_logs_view().
+
+    @staticmethod
+    def _fmt_tokens(n) -> str:
+        """Compact token counts: show in thousands (e.g. 12.3k) once above 10000."""
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            return str(n)
+        if n > 10000:
+            return f"{n / 1000:.1f}k"
+        return str(n)
 
     def update_token_count(self, event=None):
         show_token_info = self._get_setting("SHOW_TOKEN_INFO", True)
         if show_token_info:
-            current_context_tokens = self.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CONTEXT_TOKENS, timeout=0.5)
-            current_context_tokens = current_context_tokens[0] if current_context_tokens else 0
-            max_model_tokens = int(self._get_setting("MAX_MODEL_TOKENS", 32000))
-            cost = self.event_bus.emit_and_wait(Events.Model.CALCULATE_COST, timeout=0.5)
-            cost = cost[0] if cost else 0.0
+            stats_res = self.event_bus.emit_and_wait(Events.Model.GET_TOKEN_STATS, timeout=0.5)
+            stats = stats_res[0] if stats_res and isinstance(stats_res[0], dict) else {}
+            current_context_tokens = int(stats.get("estimated_context_tokens") or 0)
+            max_model_tokens = int(stats.get("max_context_tokens") or self._get_setting("MAX_MODEL_TOKENS", 32000))
+            est_cost = stats.get("estimated_input_cost")
+            est_currency = str(stats.get("estimated_input_cost_currency") or "")
+            est_cost_text = "n/a" if est_cost is None else f"{float(est_cost):.6f} {est_currency}".strip()
+            actual_prompt = stats.get("actual_prompt_tokens")
+            actual_completion = stats.get("actual_completion_tokens")
+            actual_cached = stats.get("actual_cached_prompt_tokens")
+            actual_cost = stats.get("actual_cost")
+            actual_currency = str(stats.get("actual_cost_currency") or "")
+            fmt = self._fmt_tokens
+            cost = float(est_cost or 0.0) if est_cost is not None else 0.0
             self.token_count_label.setText(
                 _("Токены: {}/{} (Макс. токены: {}) | Ориент. стоимость: {:.4f} ₽",
                   "Tokens: {}/{} (Max tokens: {}) | Approx. cost: {:.4f} ₽").format(
-                    current_context_tokens, max_model_tokens, max_model_tokens, cost
+                    fmt(current_context_tokens), fmt(max_model_tokens), fmt(max_model_tokens), cost
                 )
             )
+            if actual_prompt is not None or actual_completion is not None or actual_cost is not None:
+                actual_prompt = int(actual_prompt or 0)
+                actual_completion = int(actual_completion or 0)
+                actual_cached = int(actual_cached or 0)
+                actual_total = int(stats.get("actual_total_tokens") or (actual_prompt + actual_completion))
+                actual_cost_text = "n/a" if actual_cost is None else f"{float(actual_cost):.6f} {actual_currency}".strip()
+                if actual_cached > 0:
+                    self.token_count_label.setText(
+                        _("Контекст: ~{}/{} | Оценка входа: {} | Последний запрос: {}/{} (всего {}, кеш {}) | Факт: {}",
+                          "Context: ~{}/{} | Est. input: {} | Last request: {}/{} (total {}, cached {}) | Actual: {}").format(
+                            current_context_tokens, max_model_tokens, est_cost_text,
+                            actual_prompt, actual_completion, actual_total, actual_cached, actual_cost_text
+                        )
+                    )
+                else:
+                    self.token_count_label.setText(
+                        _("Контекст: ~{}/{} | Оценка входа: {} | Последний запрос: {}/{} (всего {}) | Факт: {}",
+                          "Context: ~{}/{} | Est. input: {} | Last request: {}/{} (total {}) | Actual: {}").format(
+                            current_context_tokens, max_model_tokens, est_cost_text,
+                            actual_prompt, actual_completion, actual_total, actual_cost_text
+                        )
+                    )
+            else:
+                self.token_count_label.setText(
+                    _("Контекст: ~{}/{} | Оценка входа: {}",
+                      "Context: ~{}/{} | Est. input: {}").format(
+                        current_context_tokens, max_model_tokens, est_cost_text
+                    )
+                )
             self.token_count_label.setVisible(True)
         else:
             self.token_count_label.setVisible(False)
@@ -699,13 +762,13 @@ class ChatGUI(QMainWindow):
         except Exception:
             character_id = ""
 
-        if self._get_setting("ENABLE_SCREEN_ANALYSIS", False):
+        if self._get_setting("AUTO_ATTACH_IMAGES", False):
             history_limit = int(self._get_setting("SCREEN_CAPTURE_HISTORY_LIMIT", 1))
             frames = self.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {'limit': history_limit}, timeout=0.5)
             if frames and frames[0]:
                 current_image_data.extend(frames[0])
             else:
-                logger.info("Анализ экрана включен, но кадры не готовы или история пуста.")
+                logger.info("Авто-прикрепление кадров включено, но кадры не готовы или история пуста.")
 
         all_image_data = (image_data or []) + current_image_data + staged_image_data
 
@@ -717,6 +780,10 @@ class ChatGUI(QMainWindow):
                 logger.info(f"Добавлено {len(camera_frames[0])} кадров с камеры для отправки.")
             else:
                 logger.info("Захват с камеры включен, но кадры не готовы или история пуста.")
+
+        if not self._get_setting("ENABLE_IMAGE_ANALYSIS", True):
+            all_image_data = []
+            logger.info("ENABLE_IMAGE_ANALYSIS отключен — изображения не отправляются.")
 
         if not user_input and not system_input and not all_image_data:
             return
@@ -780,7 +847,8 @@ class ChatGUI(QMainWindow):
             message_id = entry.get("message_id")
             message_renderer.insert_message(self, role, content, insert_at_start=True,
                                             message_time=message_time, structured_data=structured_data,
-                                            message_id=message_id, character_id=character_id)
+                                            message_id=message_id, character_id=character_id,
+                                            ui_images=entry.get("_ui_images") or [])
         QTimer.singleShot(0, lambda: scrollbar.setValue(scrollbar.maximum() - old_max + old_value))
         logger.info(f"Загружено еще {len(messages_to_prepend)} сообщений.")
 
@@ -793,17 +861,6 @@ class ChatGUI(QMainWindow):
     def _get_character_name(self):
         result = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_NAME, timeout=0.5)
         return result[0] if result else "Assistant"
-
-    def get_news_content(self):
-        try:
-            import requests
-            response = requests.get('https://raw.githubusercontent.com/VinerX/NeuroMita/main/NEWS.md', timeout=500)
-            if response.status_code == 200:
-                return response.text
-            return _('Не удалось загрузить новости', 'Failed to load news')
-        except Exception as e:
-            logger.info(f"Ошибка при получении новостей: {e}")
-            return _('Ошибка при загрузке новостей', 'Error loading news')
 
     def closeEvent(self, event):
         self.event_bus.emit(Events.Capture.STOP_SCREEN_CAPTURE)
@@ -823,6 +880,14 @@ class ChatGUI(QMainWindow):
     def close_app(self):
         logger.info("Завершение программы...")
         self.close()
+
+    def _open_logs_folder(self):
+        log_path = Path("NeuroMitaLogs.log")
+        target = log_path.resolve().parent if log_path.exists() else Path.cwd()
+        try:
+            os.startfile(str(target))  # noqa: S606 - Windows-only launcher
+        except Exception as exc:
+            logger.info(f"Не удалось открыть папку логов: {exc}")
 
  
     def _show_ffmpeg_installing_popup(self):
@@ -961,16 +1026,7 @@ class ChatGUI(QMainWindow):
             self.loading_status_label.setText(status)
 
     def _debug_wrapper(self, parent_layout):
-        debug_label = QLabel(_('Отладочная информация', 'Debug Information'))
-        debug_label.setObjectName('SeparatorLabel')
-        parent_layout.addWidget(debug_label)
-        self.debug_window = QTextEdit()
-        self.debug_window.setReadOnly(True)
-        self.debug_window.setObjectName("DebugWindow")
-        self.debug_window.setMinimumHeight(200)
-        parent_layout.addWidget(self.debug_window)
-        self.update_debug_info()
-
+        self.setup_debug_controls(parent_layout)
         from ui.settings.debug_settings import setup_debug_panel_controls
         setup_debug_panel_controls(self, parent_layout)
 
@@ -1027,10 +1083,10 @@ class ChatGUI(QMainWindow):
             "character_id": character_id,
         })
 
-    def _on_debug_view_last_context(self):
+    def _on_debug_view_last_context(self, initial_tab: str = "request"):
         import json
         import os
-        from PyQt6.QtWidgets import QMessageBox
+        from ui.dialogs.styled_message import show_styled_message
         base = os.environ.get("NEUROMITA_BASE_DIR", "")
         path = (
             os.path.join(base, "SavedMessages", "last_request_context.json")
@@ -1038,28 +1094,33 @@ class ChatGUI(QMainWindow):
             else os.path.join("SavedMessages", "last_request_context.json")
         )
         if not os.path.isfile(path):
-            QMessageBox.warning(
+            show_styled_message(
                 self,
                 _("Нет данных", "No data"),
                 _("Файл контекста не найден. Сначала отправьте сообщение.",
-                  "Context file not found. Send a message first.")
+                  "Context file not found. Send a message first."),
+                level="warning",
             )
             return
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as e:
-            QMessageBox.critical(self, _("Ошибка", "Error"), str(e))
+            show_styled_message(self, _("Ошибка", "Error"), str(e), level="error")
             return
         try:
             from ui.dialogs.context_viewer_dialog import ContextViewerDialog
-            ContextViewerDialog(data, parent=self).exec()
+            ContextViewerDialog(data, parent=self, initial_tab=initial_tab).exec()
         except Exception as e:
             import traceback
-            QMessageBox.critical(
+            show_styled_message(
                 self, _("Ошибка открытия диалога", "Dialog error"),
-                f"{e}\n\n{traceback.format_exc()}"
+                f"{e}\n\n{traceback.format_exc()}",
+                level="error",
             )
+
+    def _on_debug_view_last_response_context(self):
+        self._on_debug_view_last_context(initial_tab="response")
 
     def _get_current_character_id_for_debug(self) -> str:
         try:
@@ -1073,6 +1134,24 @@ class ChatGUI(QMainWindow):
 
     def _news_wrapper(self, parent_layout):
         self.setup_news_control(parent_layout)
+
+    def setup_news_control(self, parent_layout):
+        news_label = QLabel(self.get_news_content())
+        news_label.setWordWrap(True)
+        news_label.setObjectName("SeparatorLabel")
+        parent_layout.addWidget(news_label)
+
+    def setup_debug_controls(self, parent_layout):
+        debug_label = QLabel(_("Отладочная информация", "Debug Information"))
+        debug_label.setObjectName("SeparatorLabel")
+        parent_layout.addWidget(debug_label)
+
+        self.debug_window = QTextEdit()
+        self.debug_window.setReadOnly(True)
+        self.debug_window.setObjectName("DebugWindow")
+        self.debug_window.setMinimumHeight(200)
+        parent_layout.addWidget(self.debug_window)
+        self.update_debug_info()
 
     def create_settings_section(self, parent_layout, title, settings_config, icon_name=None):
         header_widget = QWidget()
@@ -1185,13 +1264,27 @@ class ChatGUI(QMainWindow):
         rag_enabled = SettingsManager.get("RAG_ENABLED", False)
 
         use_voice = bool(SettingsManager.get("USE_VOICEOVER", False))
-        method = str(SettingsManager.get("VOICEOVER_METHOD", "TG") or "TG")
+        method = str(SettingsManager.get("VOICEOVER_METHOD", "Local") or "Local")
 
-        if hasattr(self, 'game_status_checkbox'):
-            self.game_status_checkbox.setChecked(bool(game_connected and game_connected[0]))
-        if hasattr(self, 'silero_status_checkbox'):
+        registry = getattr(self, "_status_indicator_registry", {})
+
+        def apply_to(attr_name, checked=None, text=None):
+            widgets = list(registry.get(attr_name, []))
+            fallback = getattr(self, attr_name, None)
+            if fallback is not None and fallback not in widgets:
+                widgets.append(fallback)
+
+            for widget in widgets:
+                if text is not None and hasattr(widget, "setText"):
+                    widget.setText(text)
+                if checked is not None and hasattr(widget, "setChecked"):
+                    widget.setChecked(bool(checked))
+
+        apply_to("game_status_checkbox", checked=bool(game_connected and game_connected[0]))
+
+        if registry.get("silero_status_checkbox") or hasattr(self, "silero_status_checkbox"):
             if method == "Local":
-                self.silero_status_checkbox.setText(_('Озвучка (Лок.)', 'Voice (Local)'))
+                voice_label = _('Озвучка (Лок.)', 'Voice (Local)')
                 if use_voice:
                     model_id = str(SettingsManager.get("NM_CURRENT_VOICEOVER", "") or "")
                     is_init = self.event_bus.emit_and_wait(
@@ -1201,17 +1294,14 @@ class ChatGUI(QMainWindow):
                 else:
                     voice_active = False
             else:
-                self.silero_status_checkbox.setText(_('Озвучка (ТГ)', 'Voice (TG)'))
+                voice_label = _('Озвучка (ТГ)', 'Voice (TG)')
                 voice_active = bool(use_voice and silero_connected and silero_connected[0])
-            self.silero_status_checkbox.setChecked(voice_active)
-        if hasattr(self, 'rag_status_checkbox'):
-            self.rag_status_checkbox.setChecked(bool(rag_enabled))
-        if hasattr(self, 'mic_status_checkbox'):
-            self.mic_status_checkbox.setChecked(bool(mic_active and mic_active[0]))
-        if hasattr(self, 'screen_capture_status_checkbox'):
-            self.screen_capture_status_checkbox.setChecked(bool(screen_capture_active and screen_capture_active[0]))
-        if hasattr(self, 'camera_capture_status_checkbox'):
-            self.camera_capture_status_checkbox.setChecked(bool(camera_capture_active and camera_capture_active[0]))
+            apply_to("silero_status_checkbox", checked=voice_active, text=voice_label)
+
+        apply_to("rag_status_checkbox", checked=bool(rag_enabled))
+        apply_to("mic_status_checkbox", checked=bool(mic_active and mic_active[0]))
+        apply_to("screen_capture_status_checkbox", checked=bool(screen_capture_active and screen_capture_active[0]))
+        apply_to("camera_capture_status_checkbox", checked=bool(camera_capture_active and camera_capture_active[0]))
 
     # ===== Совместимость: диалоги g4f =====
     def trigger_g4f_reinstall_schedule(self):
@@ -1401,7 +1491,7 @@ class ChatGUI(QMainWindow):
 
     def _update_voice_settings_icon_indicator(self) -> None:
         use_voice = bool(self._get_setting("USE_VOICEOVER", False))
-        method = self._get_setting("VOICEOVER_METHOD", "TG")
+        method = self._get_setting("VOICEOVER_METHOD", "Local")
 
         if not use_voice or method != "Local":
             self.set_settings_icon_indicator("voice", None, None)
@@ -1457,3 +1547,5 @@ class ChatGUI(QMainWindow):
             "green",
             f"Local voice model ready: {model_id}"
         )
+
+

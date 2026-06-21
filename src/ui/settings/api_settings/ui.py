@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QSize, QStringListModel
 from PyQt6.QtWidgets import (
-    QWidget, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton,
+    QWidget, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QGridLayout, QListWidget, QPushButton,
     QToolButton, QComboBox, QSizePolicy, QCompleter, QTextEdit, QCheckBox, QLineEdit
 )
 import qtawesome as qta
@@ -15,12 +15,12 @@ from .widgets import (
     LabeledComboRow,
     FallbackChainEditor,
 )
-from ui.gui_templates import create_section_header
+from ui.gui_templates import create_section_header, SettingsBodyWidget
 from managers.settings_manager import CollapsibleSection
 
 
 def build_api_settings_ui(self, parent_layout):
-    main_container = QWidget()
+    main_container = SettingsBodyWidget()
     main_layout = QVBoxLayout(main_container)
     main_layout.setContentsMargins(0, 0, 0, 0)
     main_layout.setSpacing(8)
@@ -47,9 +47,10 @@ def build_api_settings_ui(self, parent_layout):
     self.custom_presets_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
     presets_layout.addWidget(self.custom_presets_list, 1)
 
-    buttons_layout = QVBoxLayout()
-    buttons_layout.setContentsMargins(0, 0, 0, 0)
-    buttons_layout.setSpacing(6)
+    buttons_grid = QGridLayout()
+    buttons_grid.setContentsMargins(0, 0, 0, 0)
+    buttons_grid.setHorizontalSpacing(6)
+    buttons_grid.setVerticalSpacing(6)
 
     self.add_preset_btn = QPushButton()
     self.add_preset_btn.setObjectName("AddPresetButton")
@@ -74,6 +75,14 @@ def build_api_settings_ui(self, parent_layout):
     self.rename_preset_btn.setFixedSize(28, 28)
     self.rename_preset_btn.setIconSize(QSize(14, 14))
 
+    self.copy_preset_btn = QPushButton()
+    self.copy_preset_btn.setObjectName("CopyPresetButton")
+    self.copy_preset_btn.setIcon(qta.icon('fa5s.copy', color='#e6e6e6'))
+    self.copy_preset_btn.setToolTip(_("Скопировать пресет", "Copy preset"))
+    self.copy_preset_btn.setEnabled(False)
+    self.copy_preset_btn.setFixedSize(28, 28)
+    self.copy_preset_btn.setIconSize(QSize(14, 14))
+
     self.move_up_btn = QPushButton()
     self.move_up_btn.setObjectName("MoveUpButton")
     self.move_up_btn.setIcon(qta.icon('fa5s.arrow-up', color='#e6e6e6'))
@@ -90,19 +99,24 @@ def build_api_settings_ui(self, parent_layout):
     self.move_down_btn.setFixedSize(28, 28)
     self.move_down_btn.setIconSize(QSize(14, 14))
 
-    buttons_layout.addWidget(self.add_preset_btn)
-    buttons_layout.addWidget(self.remove_preset_btn)
-    buttons_layout.addWidget(self.rename_preset_btn)
-    buttons_layout.addSpacing(6)
-    buttons_layout.addWidget(self.move_up_btn)
-    buttons_layout.addWidget(self.move_down_btn)
-    buttons_layout.addStretch()
-    presets_layout.addLayout(buttons_layout)
+    # 2x3 grid keeps all six buttons inside the fixed-height panel without overlap
+    buttons_grid.addWidget(self.add_preset_btn, 0, 0)
+    buttons_grid.addWidget(self.remove_preset_btn, 0, 1)
+    buttons_grid.addWidget(self.rename_preset_btn, 1, 0)
+    buttons_grid.addWidget(self.copy_preset_btn, 1, 1)
+    buttons_grid.addWidget(self.move_up_btn, 2, 0)
+    buttons_grid.addWidget(self.move_down_btn, 2, 1)
+
+    buttons_col = QVBoxLayout()
+    buttons_col.setContentsMargins(0, 0, 0, 0)
+    buttons_col.addLayout(buttons_grid)
+    buttons_col.addStretch()
+    presets_layout.addLayout(buttons_col)
 
     main_layout.addWidget(custom_presets_frame)
 
     # --- editor container ---
-    self.api_settings_container = QWidget()
+    self.api_settings_container = SettingsBodyWidget()
     api_container_layout = QVBoxLayout(self.api_settings_container)
     api_container_layout.setContentsMargins(0, 10, 0, 0)
     api_container_layout.setSpacing(8)
@@ -224,7 +238,7 @@ def build_api_settings_ui(self, parent_layout):
     ]
     self.gen_override_widgets = {}
     for param_key, param_label, default_val in _gen_params:
-        row = QWidget()
+        row = SettingsBodyWidget()
         row_lay = QHBoxLayout(row)
         row_lay.setContentsMargins(0, 1, 0, 1)
         row_lay.setSpacing(6)
@@ -246,7 +260,7 @@ def build_api_settings_ui(self, parent_layout):
         self.gen_override_widgets[param_key] = (chk, val_edit)
 
     # enable_thinking override (boolean value)
-    et_row = QWidget()
+    et_row = SettingsBodyWidget()
     et_lay = QHBoxLayout(et_row)
     et_lay.setContentsMargins(0, 1, 0, 1)
     et_lay.setSpacing(6)
@@ -266,8 +280,122 @@ def build_api_settings_ui(self, parent_layout):
     self.gen_overrides_section.add_widget(et_row)
     self.gen_override_widgets["enable_thinking"] = (et_enable_chk, et_val_chk)
 
+    self.openrouter_routing_section = CollapsibleSection(
+        _("OpenRouter routing", "OpenRouter routing"), self, icon_name="fa5s.sliders-h"
+    )
+    api_container_layout.addWidget(self.openrouter_routing_section)
+
+    or_note = QLabel(
+        _("Управляет выбором upstream-провайдеров только для OpenRouter.",
+          "Controls upstream provider selection for OpenRouter only.")
+    )
+    or_note.setWordWrap(True)
+    or_note.setStyleSheet("color: #bfbfbf; font-size: 11px;")
+    self.openrouter_routing_section.add_widget(or_note)
+
+    self.or_enable_cb = QCheckBox(_("Включить provider routing", "Enable provider routing"))
+    self.openrouter_routing_section.add_widget(self.or_enable_cb)
+
+    self.or_order_row = LabeledLineEditRow(_("Приоритет провайдеров", "Provider order"))
+    self.or_order_row.edit.setPlaceholderText("together, fireworks, groq")
+    self.openrouter_routing_section.add_widget(self.or_order_row)
+
+    self.or_only_row = LabeledLineEditRow(_("Только эти провайдеры", "Only providers"))
+    self.or_only_row.edit.setPlaceholderText("together, groq")
+    self.openrouter_routing_section.add_widget(self.or_only_row)
+
+    self.or_ignore_row = LabeledLineEditRow(_("Игнорировать провайдеров", "Ignore providers"))
+    self.or_ignore_row.edit.setPlaceholderText("azure")
+    self.openrouter_routing_section.add_widget(self.or_ignore_row)
+
+    self.or_quantizations_row = LabeledLineEditRow(_("Квантизации", "Quantizations"))
+    self.or_quantizations_row.edit.setPlaceholderText("fp8, int8")
+    self.openrouter_routing_section.add_widget(self.or_quantizations_row)
+
+    self.or_sort_row = LabeledComboRow(_("Сортировка", "Sort by"))
+    self.or_sort_row.set_items(
+        [
+            (_("По умолчанию", "Default"), ""),
+            (_("Цена", "Price"), "price"),
+            (_("Латентность", "Latency"), "latency"),
+            (_("Пропускная способность", "Throughput"), "throughput"),
+        ]
+    )
+    self.openrouter_routing_section.add_widget(self.or_sort_row)
+
+    self.or_data_collection_row = LabeledComboRow(_("Сбор данных", "Data collection"))
+    self.or_data_collection_row.set_items(
+        [
+            (_("По умолчанию", "Default"), ""),
+            (_("Разрешить", "Allow"), "allow"),
+            (_("Запретить", "Deny"), "deny"),
+        ]
+    )
+    self.openrouter_routing_section.add_widget(self.or_data_collection_row)
+
+    or_flags_row = SettingsBodyWidget()
+    or_flags_layout = QHBoxLayout(or_flags_row)
+    or_flags_layout.setContentsMargins(0, 2, 0, 2)
+    or_flags_layout.setSpacing(12)
+    self.or_allow_fallbacks_cb = QCheckBox(_("Разрешить fallback", "Allow fallbacks"))
+    self.or_require_parameters_cb = QCheckBox(_("Требовать параметры", "Require parameters"))
+    self.or_zdr_cb = QCheckBox(_("Только ZDR", "ZDR only"))
+    or_flags_layout.addWidget(self.or_allow_fallbacks_cb)
+    or_flags_layout.addWidget(self.or_require_parameters_cb)
+    or_flags_layout.addWidget(self.or_zdr_cb)
+    or_flags_layout.addStretch(1)
+    self.openrouter_routing_section.add_widget(or_flags_row)
+
+    or_max_price_label = QLabel(_("Max price ($)", "Max price ($)"))
+    or_max_price_label.setStyleSheet("color: #bfbfbf; font-size: 11px;")
+    self.openrouter_routing_section.add_widget(or_max_price_label)
+
+    or_max_price_row = SettingsBodyWidget()
+    or_max_price_layout = QHBoxLayout(or_max_price_row)
+    or_max_price_layout.setContentsMargins(0, 2, 0, 2)
+    or_max_price_layout.setSpacing(8)
+    self.or_max_price_prompt = QLineEdit()
+    self.or_max_price_prompt.setPlaceholderText("prompt")
+    self.or_max_price_prompt.setMaximumWidth(90)
+    self.or_max_price_completion = QLineEdit()
+    self.or_max_price_completion.setPlaceholderText("completion")
+    self.or_max_price_completion.setMaximumWidth(90)
+    self.or_max_price_request = QLineEdit()
+    self.or_max_price_request.setPlaceholderText("request")
+    self.or_max_price_request.setMaximumWidth(90)
+    self.or_max_price_image = QLineEdit()
+    self.or_max_price_image.setPlaceholderText("image")
+    self.or_max_price_image.setMaximumWidth(90)
+    for _w in (
+        self.or_max_price_prompt,
+        self.or_max_price_completion,
+        self.or_max_price_request,
+        self.or_max_price_image,
+    ):
+        or_max_price_layout.addWidget(_w)
+    or_max_price_layout.addStretch(1)
+    self.openrouter_routing_section.add_widget(or_max_price_row)
+
+    self.openrouter_routing_widgets = {
+        "enabled": self.or_enable_cb,
+        "order": self.or_order_row.edit,
+        "only": self.or_only_row.edit,
+        "ignore": self.or_ignore_row.edit,
+        "quantizations": self.or_quantizations_row.edit,
+        "sort": self.or_sort_row.combo,
+        "data_collection": self.or_data_collection_row.combo,
+        "allow_fallbacks": self.or_allow_fallbacks_cb,
+        "require_parameters": self.or_require_parameters_cb,
+        "zdr": self.or_zdr_cb,
+        "max_price_prompt": self.or_max_price_prompt,
+        "max_price_completion": self.or_max_price_completion,
+        "max_price_request": self.or_max_price_request,
+        "max_price_image": self.or_max_price_image,
+    }
+    self.openrouter_routing_section.setVisible(False)
+
     # buttons
-    self.test_button = QPushButton(_("Тест подключения", "Test connection"))
+    self.test_button = QPushButton(_("Тест подключения (Получить список моделей)", "Test connection (Fetch model list)"))
     self.test_button.setIcon(qta.icon('fa5s.satellite', color='#3498db'))
     api_container_layout.addWidget(self.test_button)
 

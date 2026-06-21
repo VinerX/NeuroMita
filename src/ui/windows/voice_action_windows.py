@@ -28,42 +28,89 @@ class VoiceInstallationWindow(QDialog):
     status_updated = pyqtSignal(str)
     log_updated = pyqtSignal(str)
     window_closed = pyqtSignal()
+    minimized = pyqtSignal()
 
-    def __init__(self, parent, title, initial_status=None):
+    def __init__(self, parent, title, initial_status=None, *, style_variant: str = "default", reopen_hint_text: str | None = None):
         super().__init__(parent)
+        # Пока установка идёт, закрытие окна не отменяет её — окно просто
+        # прячется (логи сохраняются), и его можно открыть снова. Реальное
+        # закрытие происходит только после finalize() (задача завершена).
+        self._finished = False
         self.setWindowTitle(title)
         self.setMinimumSize(720, 420)
         self.resize(820, 520)
         self.setModal(True)
         self.setSizeGripEnabled(True)
 
-        self.setStyleSheet("""
-            QDialog { background-color: #1e1e1e; }
-            QLabel { color: #ffffff; }
-            QTextEdit {
-                background-color: #101010;
-                color: #cccccc;
-                border: 1px solid #333;
-            }
-            QProgressBar {
-                border: 1px solid #555;
-                border-radius: 5px;
-                background-color: #555555;
-                text-align: center;
-            }
-            QProgressBar::chunk {
-                background-color: #4CAF50;
-                border-radius: 5px;
-            }
-            QPushButton {
-                background-color: #333333;
-                color: #ffffff;
-                border: none;
-                padding: 5px 10px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #555555; }
-        """)
+        self._style_variant = str(style_variant or "default").strip().lower()
+        if self._style_variant == "ai_hub":
+            self.setObjectName("AIHubInstallDialog")
+            self.setStyleSheet("""
+                QDialog#AIHubInstallDialog {
+                    background-color: #14101b;
+                    border: 1px solid #3b2748;
+                }
+                QLabel {
+                    color: #f5edf7;
+                }
+                QTextEdit {
+                    background-color: #0f0b16;
+                    color: #f0ddea;
+                    border: 1px solid #4d335c;
+                    border-radius: 10px;
+                    padding: 6px;
+                }
+                QProgressBar {
+                    border: 1px solid #5c3b6d;
+                    border-radius: 7px;
+                    background-color: #251a31;
+                    text-align: center;
+                }
+                QProgressBar::chunk {
+                    background-color: #db6596;
+                    border-radius: 7px;
+                }
+                QPushButton {
+                    background-color: #2a1d36;
+                    color: #fff6fb;
+                    border: 1px solid #5a3a6a;
+                    border-radius: 10px;
+                    padding: 7px 12px;
+                    font-weight: 600;
+                }
+                QPushButton:hover {
+                    background-color: #362347;
+                    border-color: #db6596;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QDialog { background-color: #1e1e1e; }
+                QLabel { color: #ffffff; }
+                QTextEdit {
+                    background-color: #101010;
+                    color: #cccccc;
+                    border: 1px solid #333;
+                }
+                QProgressBar {
+                    border: 1px solid #555;
+                    border-radius: 5px;
+                    background-color: #555555;
+                    text-align: center;
+                }
+                QProgressBar::chunk {
+                    background-color: #db6596;
+                    border-radius: 5px;
+                }
+                QPushButton {
+                    background-color: #333333;
+                    color: #ffffff;
+                    border: none;
+                    padding: 5px 10px;
+                    font-weight: bold;
+                }
+                QPushButton:hover { background-color: #555555; }
+            """)
 
         self._full_log_lines: list[str] = []
         self._display_lines: deque[str] = deque()
@@ -114,6 +161,17 @@ class VoiceInstallationWindow(QDialog):
         self.log_text.setFont(QFont("Consolas", 9))
         layout.addWidget(self.log_text, 1)
 
+        hint_text = reopen_hint_text or _(
+            "Это окно можно закрыть — установка продолжится в фоне. "
+            "Открыть снова и посмотреть логи: «Логи установки» в боковой панели.",
+            "You can close this window — the installation keeps running in the "
+            "background. Reopen it and view logs via “Install logs” in the sidebar.",
+        )
+        hint_label = QLabel(hint_text)
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        layout.addWidget(hint_label)
+
         actions_layout = QHBoxLayout()
         copy_btn = QPushButton(_("Копировать лог", "Copy Log"))
         copy_btn.clicked.connect(self._copy_log)
@@ -147,7 +205,10 @@ class VoiceInstallationWindow(QDialog):
                 parent_rect.center().y() - self.height() // 2
             )
 
+        self._style_polished = False
+        self._polish_styles()
         QTimer.singleShot(0, self._recalc_max_blocks_and_refresh)
+        QTimer.singleShot(0, self._polish_styles)
 
     def get_threadsafe_callbacks(self):
         return (
@@ -155,7 +216,26 @@ class VoiceInstallationWindow(QDialog):
             self.status_updated.emit,
             self.log_updated.emit,
         )
-    
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._style_polished:
+            self._polish_styles()
+
+    def _polish_styles(self):
+        widgets = [self, *self.findChildren(QWidget)]
+        for widget in widgets:
+            try:
+                widget.ensurePolished()
+                style = widget.style()
+                if style is not None:
+                    style.unpolish(widget)
+                    style.polish(widget)
+                widget.update()
+            except Exception:
+                continue
+        self._style_polished = True
+     
     def _update_elapsed(self):
         secs = self._start_time.secsTo(QTime.currentTime())
         if secs < 0:
@@ -206,6 +286,9 @@ class VoiceInstallationWindow(QDialog):
             return html_escape(plain)
 
     def _render_display_lines(self):
+        scrollbar = self.log_text.verticalScrollBar()
+        old_value = scrollbar.value()
+        stick_to_bottom = old_value >= max(0, scrollbar.maximum() - 12)
         # Формируем HTML из текущего окна строк
         html = (
             "<div style='white-space: pre-wrap; font-family:Consolas,monospace; font-size:9pt; margin:0;'>"
@@ -213,8 +296,11 @@ class VoiceInstallationWindow(QDialog):
             "</div>"
         )
         self.log_text.setHtml(html)
-        self.log_text.moveCursor(QTextCursor.MoveOperation.End)
-        self.log_text.ensureCursorVisible()
+        if stick_to_bottom:
+            self.log_text.moveCursor(QTextCursor.MoveOperation.End)
+            self.log_text.ensureCursorVisible()
+        else:
+            scrollbar.setValue(min(old_value, scrollbar.maximum()))
 
     def _append_log_chunk(self, text: str):
         if not text:
@@ -249,7 +335,7 @@ class VoiceInstallationWindow(QDialog):
         QGuiApplication.clipboard().setText("\n".join(self._full_log_lines) or "")
 
     def _save_log(self):
-        fname, _ = QFileDialog.getSaveFileName(self, _("Сохранить лог", "Save Log"), "install_log.txt", "Text Files (*.txt)")
+        fname, _selected_filter = QFileDialog.getSaveFileName(self, _("Сохранить лог", "Save Log"), "install_log.txt", "Text Files (*.txt)")
         if fname:
             try:
                 with open(fname, "w", encoding="utf-8") as f:
@@ -262,7 +348,19 @@ class VoiceInstallationWindow(QDialog):
         self._display_lines.clear()
         self._render_display_lines()
 
+    def finalize(self):
+        """Mark the task as finished so the window may actually close."""
+        self._finished = True
+
     def closeEvent(self, event):
+        # While the task is still running, closing only hides the window (the
+        # install keeps going and the accumulated logs are preserved so the
+        # user can reopen it). A real close happens once finalize() was called.
+        if not self._finished:
+            event.ignore()
+            self.hide()
+            self.minimized.emit()
+            return
         self.window_closed.emit()
         super().closeEvent(event)
 
@@ -428,14 +526,20 @@ class VoiceActionWindow(QDialog):
             return html_escape(plain)
 
     def _render_display_lines(self):
+        scrollbar = self.log_text.verticalScrollBar()
+        old_value = scrollbar.value()
+        stick_to_bottom = old_value >= max(0, scrollbar.maximum() - 12)
         html = (
             "<div style='white-space: pre-wrap; font-family:Consolas,monospace; font-size:9pt; margin:0;'>"
             + "<br/>".join(self._display_lines) +
             "</div>"
         )
         self.log_text.setHtml(html)
-        self.log_text.moveCursor(QTextCursor.MoveOperation.End)
-        self.log_text.ensureCursorVisible()
+        if stick_to_bottom:
+            self.log_text.moveCursor(QTextCursor.MoveOperation.End)
+            self.log_text.ensureCursorVisible()
+        else:
+            scrollbar.setValue(min(old_value, scrollbar.maximum()))
 
     def _append_log_chunk(self, text: str):
         if not text:
@@ -467,7 +571,7 @@ class VoiceActionWindow(QDialog):
         QGuiApplication.clipboard().setText("\n".join(self._full_log_lines) or "")
 
     def _save_log(self):
-        fname, _ = QFileDialog.getSaveFileName(self, _("Сохранить лог", "Save Log"), "action_log.txt", "Text Files (*.txt)")
+        fname, _selected_filter = QFileDialog.getSaveFileName(self, _("Сохранить лог", "Save Log"), "action_log.txt", "Text Files (*.txt)")
         if fname:
             try:
                 with open(fname, "w", encoding="utf-8") as f:
@@ -509,8 +613,8 @@ class VCRedistWarningDialog(QDialog):
                 font-weight: bold;
             }
             QPushButton:hover { background-color: #555555; }
-            #RetryButton { background-color: #4CAF50; }
-            #RetryButton:hover { background-color: #45a049; }
+            #RetryButton { background-color: #db6596; }
+            #RetryButton:hover { background-color: #e26e9e; }
         """)
         
         self.choice = 'close'
@@ -585,8 +689,8 @@ class TritonDependenciesDialog(QDialog):
                 font-weight: bold;
             }
             QPushButton:hover { background-color: #555555; }
-            #ContinueButton { background-color: #4CAF50; }
-            #ContinueButton:hover { background-color: #45a049; }
+            #ContinueButton { background-color: #db6596; }
+            #ContinueButton:hover { background-color: #e26e9e; }
         """)
         
         self.choice = 'skip'

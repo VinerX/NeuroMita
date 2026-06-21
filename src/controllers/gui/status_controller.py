@@ -1,9 +1,17 @@
+import time
+
+from core.events import Event, Events
 from main_logger import logger
-from core.events import Events, Event
+
 from .base_controller import BaseController
 
 
 class StatusController(BaseController):
+    def __init__(self, main_controller, view):
+        super().__init__(main_controller, view)
+        self._last_detailed_error_text = ""
+        self._last_detailed_error_ts = 0.0
+
     def subscribe_to_events(self):
         self.event_bus.subscribe(Events.GUI.UPDATE_STATUS_COLORS, self._on_update_status_colors, weak=False)
         self.event_bus.subscribe(Events.GUI.UPDATE_STATUS, self._on_update_status, weak=False)
@@ -18,61 +26,56 @@ class StatusController(BaseController):
         if self.view:
             self.view.update_status_signal.emit()
         else:
-            logger.error("StatusController: view не найден!")
+            logger.error("StatusController: view not found")
 
     def show_mita_thinking(self, character_name):
-        logger.debug(f"[DEBUG] StatusController: показ статуса 'думает' для {character_name}")
-        logger.info(f"StatusController: show_mita_thinking для {character_name}")
+        logger.debug(f"[DEBUG] StatusController: show thinking for {character_name}")
+        logger.info(f"StatusController: show_mita_thinking for {character_name}")
         if self.view:
-            logger.debug(f"[DEBUG] Эмитим show_thinking_signal с {character_name}")
             self.view.show_thinking_signal.emit(character_name)
         else:
-            logger.debug("[DEBUG] view не найден!")
-            logger.error("StatusController: view не найден!")
+            logger.error("StatusController: view not found")
 
     def show_mita_error(self, error_message):
-        logger.debug(f"[DEBUG] StatusController: показ ошибки: {error_message}")
+        logger.debug(f"[DEBUG] StatusController: show error: {error_message}")
         logger.info(f"StatusController: show_mita_error: {error_message}")
         if self.view:
             self.view.show_error_signal.emit(error_message)
         else:
-            logger.error("StatusController: view не найден!")
+            logger.error("StatusController: view not found")
 
     def hide_mita_status(self):
-        logger.debug("[DEBUG] StatusController: скрытие статуса")
+        logger.debug("[DEBUG] StatusController: hide status")
         logger.info("StatusController: hide_mita_status")
         if self.view:
-            logger.debug("[DEBUG] Эмитим hide_status_signal")
             self.view.hide_status_signal.emit()
         else:
-            logger.debug("[DEBUG] view не найден при попытке скрыть!")
-            logger.error("StatusController: view не найден при попытке скрыть!")
+            logger.error("StatusController: view not found while hiding status")
 
     def show_mita_error_pulse(self):
         logger.info("StatusController: show_mita_error_pulse")
         if self.view:
             self.view.pulse_error_signal.emit()
         else:
-            logger.error("StatusController: view не найден!")
+            logger.error("StatusController: view not found")
 
     def update_status(self):
         logger.debug("StatusController: update_status")
         if self.view:
             self.view.update_status_signal.emit()
         else:
-            logger.error("StatusController: view не найден!")
+            logger.error("StatusController: view not found")
 
     def _on_update_status_colors(self, event: Event):
-        logger.debug("StatusController: получено событие UPDATE_STATUS_COLORS")
+        logger.debug("StatusController: UPDATE_STATUS_COLORS")
         self.update_status_colors()
 
     def _on_update_status(self, event: Event):
-        logger.debug("StatusController: получено событие UPDATE_STATUS")
+        logger.debug("StatusController: UPDATE_STATUS")
         self.update_status()
 
     def _on_started_response(self, event: Event):
-        logger.info("StatusController: получено событие ON_STARTED_RESPONSE_GENERATION")
-
+        logger.info("StatusController: ON_STARTED_RESPONSE_GENERATION")
         character_name = None
         if event and isinstance(getattr(event, "data", None), dict):
             character_name = event.data.get("character_name")
@@ -83,22 +86,42 @@ class StatusController(BaseController):
         self.show_mita_thinking(character_name)
 
     def _on_successful_response(self, event: Event):
-        logger.info("StatusController: получено событие ON_SUCCESSFUL_RESPONSE")
+        logger.info("StatusController: ON_SUCCESSFUL_RESPONSE")
         self.hide_mita_status()
 
     def _on_failed_response_attempt(self, event: Event):
-        logger.info("StatusController: получено событие ON_FAILED_RESPONSE_ATTEMPT")
+        logger.info("StatusController: ON_FAILED_RESPONSE_ATTEMPT")
         self.show_mita_error_pulse()
 
     def _on_tool_executing(self, event: Event):
-        logger.info("StatusController: получено событие ON_TOOL_EXECUTING")
+        logger.info("StatusController: ON_TOOL_EXECUTING")
         tool_name = ""
         if event and isinstance(getattr(event, "data", None), dict):
             tool_name = event.data.get("tool_name", "")
-        display = f"🔍 {tool_name}" if tool_name else "🔍"
+        display = f"Tool: {tool_name}" if tool_name else "Tool"
         self.show_mita_thinking(display)
 
     def _on_failed_response(self, event: Event):
-        logger.warning(f"StatusController: получено событие ON_FAILED_RESPONSE с данными: {event.data}")
-        error_message = event.data.get('error', 'Неизвестная ошибка') if event.data else 'Неизвестная ошибка'
+        logger.warning(f"StatusController: ON_FAILED_RESPONSE data={event.data}")
+        error_message = event.data.get("error", "Неизвестная ошибка") if event.data else "Неизвестная ошибка"
+
+        if error_message and self._is_generic_generation_error(error_message):
+            if self._last_detailed_error_text and (time.time() - self._last_detailed_error_ts) < 2.0:
+                logger.info("StatusController: suppress generic generation error after detailed provider error")
+                return
+        elif error_message:
+            self._last_detailed_error_text = error_message
+            self._last_detailed_error_ts = time.time()
+
         self.show_mita_error(error_message)
+
+    @staticmethod
+    def _is_generic_generation_error(error_message: str) -> bool:
+        low = str(error_message or "").strip().lower()
+        generic_markers = (
+            "text generation failed",
+            "failed to get a response",
+            "не удалось получить ответ",
+            "неизвестная ошибка",
+        )
+        return any(marker in low for marker in generic_markers)

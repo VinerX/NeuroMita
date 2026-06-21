@@ -1,0 +1,3 @@
+# Windows-скрипты должны иметь CRLF, иначе cmd.exe ломается при парсинге .bat
+*.bat text eol=crlf
+*.cmd text eol=crlf

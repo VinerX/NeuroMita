@@ -9,7 +9,19 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from managers.settings_manager import SettingsManager
+try:
+    from managers.settings_manager import SettingsManager
+except Exception:
+    class SettingsManager:
+        instance = None
+
+        @staticmethod
+        def get(_key, default=None):
+            return default
+
+        @staticmethod
+        def set(_key, _value):
+            return None
 from main_logger import logger
 
 
@@ -31,11 +43,6 @@ EMBED_MODEL_PRESETS: Dict[str, dict] = {
         "dimensions": 384,
     },
     # ── Medium (~300-700MB, recommended) ─────────────────────────────────
-    "GTE multilingual base (620M, 2024)": {
-        "hf_name": "Alibaba-NLP/gte-multilingual-base",
-        "query_prefix": "",
-        "dimensions": 768,
-    },
     "BAAI/bge-m3 (570M, 2024)": {
         "hf_name": "BAAI/bge-m3",
         "query_prefix": "",
@@ -91,6 +98,8 @@ EMBED_MODEL_PRESETS: Dict[str, dict] = {
 }
 
 _CUSTOM = "Custom"
+_DEFAULT_LEGACY_MODEL = "Qwen3-Embedding-0.6B (600M, 2025)"
+_LEGACY_WARNING_SHOWN: set[str] = set()
 
 
 def get_preset(name: str) -> Optional[dict]:
@@ -109,7 +118,7 @@ def resolve_model_settings() -> dict:
     """
     cfg = resolve_full_config()
     return {
-        "hf_name": cfg.get("model") or cfg.get("hf_name") or "",
+        "hf_name": cfg.get("hf_name") or cfg.get("model") or "",
         "query_prefix": cfg.get("query_prefix") or "",
         "dimensions": int(cfg.get("dimensions") or 0),
     }
@@ -152,11 +161,18 @@ def resolve_full_config() -> Dict[str, Any]:
         except Exception:
             pass
 
+    migrated_id = sync_legacy_settings_to_preset(log_migration=False)
+    if migrated_id is not None:
+        try:
+            cfg = _resolve_from_preset_storage(migrated_id)
+            if cfg:
+                return cfg
+        except Exception:
+            pass
+
     # --- Legacy path: RAG_EMBED_MODEL string ---
-    chosen = str(SettingsManager.get("RAG_EMBED_MODEL", "GTE multilingual base (620M, 2024)") or "").strip()
-    logger.warning(
-        f"[EmbedPreset] Falling back to legacy embedding model settings (RAG_EMBED_MODEL='{chosen}')"
-    )
+    chosen = _legacy_model_name()
+    _warn_legacy_fallback_once(chosen)
     preset = get_preset(chosen)
     if preset:
         hf = preset["hf_name"]
@@ -177,7 +193,7 @@ def resolve_full_config() -> Dict[str, Any]:
     # Custom legacy model
     hf_name = str(SettingsManager.get("RAG_EMBED_MODEL_CUSTOM", "") or "").strip()
     if not hf_name:
-        default = EMBED_MODEL_PRESETS["GTE multilingual base (620M, 2024)"]
+        default = EMBED_MODEL_PRESETS[_DEFAULT_LEGACY_MODEL]
         hf = default["hf_name"]
         return {
             "provider_name": "local",
@@ -206,6 +222,120 @@ def resolve_full_config() -> Dict[str, Any]:
         "extra": {},
         "db_model_key": hf_name,
     }
+
+
+def _legacy_model_name() -> str:
+    chosen = str(SettingsManager.get("RAG_EMBED_MODEL", _DEFAULT_LEGACY_MODEL) or "").strip()
+    return chosen or _DEFAULT_LEGACY_MODEL
+
+
+def _warn_legacy_fallback_once(chosen: str) -> None:
+    if chosen in _LEGACY_WARNING_SHOWN:
+        return
+    _LEGACY_WARNING_SHOWN.add(chosen)
+    logger.warning(
+        f"[EmbedPreset] Falling back to legacy embedding model settings (RAG_EMBED_MODEL='{chosen}')"
+    )
+
+
+def _load_preset_storage() -> Dict[str, Any]:
+    path = Path("Settings/embedding_presets.json")
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_preset_storage(data: Dict[str, Any]) -> bool:
+    path = Path("Settings/embedding_presets.json")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+        return True
+    except Exception:
+        return False
+
+
+def _build_legacy_override() -> tuple[str, Dict[str, Any]] | None:
+    chosen = _legacy_model_name()
+    custom_model = str(SettingsManager.get("RAG_EMBED_MODEL_CUSTOM", "") or "").strip()
+    custom_prefix = str(SettingsManager.get("RAG_EMBED_QUERY_PREFIX", "") or "")
+
+    if chosen == _CUSTOM:
+        if custom_model:
+            return "custom_local", {
+                "model": custom_model,
+                "query_prefix": custom_prefix,
+                "dimensions": 0,
+                "extra": {"manual_path": True},
+            }
+        chosen = _DEFAULT_LEGACY_MODEL
+
+    preset = get_preset(chosen)
+    if preset:
+        return "local_hf", {
+            "model": chosen,
+            "query_prefix": str(preset.get("query_prefix") or ""),
+            "dimensions": int(preset.get("dimensions") or 0),
+            "extra": {"manual_path": False},
+        }
+
+    raw_model = custom_model or chosen
+    if not raw_model:
+        return None
+    return "custom_local", {
+        "model": raw_model,
+        "query_prefix": custom_prefix,
+        "dimensions": 0,
+        "extra": {"manual_path": True},
+    }
+
+
+def sync_legacy_settings_to_preset(*, log_migration: bool = True, force: bool = False) -> Optional[str]:
+    """Persist legacy local embedding settings into the new preset storage.
+
+    Returns the resolved preset id when migration succeeded or already exists.
+    """
+    if SettingsManager.instance is None:
+        return None
+
+    preset_id = SettingsManager.get("RAG_EMBED_PRESET_ID", None)
+    if preset_id is not None and not force:
+        return str(preset_id)
+
+    migration = _build_legacy_override()
+    if migration is None:
+        return None
+
+    migrated_id, override = migration
+    storage = _load_preset_storage()
+    builtin_overrides = storage.get("builtin_overrides")
+    if not isinstance(builtin_overrides, dict):
+        builtin_overrides = {}
+        storage["builtin_overrides"] = builtin_overrides
+    if not isinstance(storage.get("presets"), dict):
+        storage["presets"] = {}
+    if not isinstance(storage.get("order"), list):
+        storage["order"] = []
+
+    current_override = builtin_overrides.get(migrated_id)
+    if current_override != override:
+        builtin_overrides[migrated_id] = override
+        if not _save_preset_storage(storage):
+            return None
+
+    SettingsManager.set("RAG_EMBED_PRESET_ID", migrated_id)
+    if log_migration:
+        chosen = _legacy_model_name()
+        logger.info(
+            f"[EmbedPreset] Migrated legacy embedding settings to preset_id={migrated_id} "
+            f"(RAG_EMBED_MODEL='{chosen}')"
+        )
+    return migrated_id
 
 
 def _resolve_local_model_name(model: str) -> str:

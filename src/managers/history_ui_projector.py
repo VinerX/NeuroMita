@@ -59,7 +59,7 @@ class HistoryUiProjector:
                 continue
 
             role = str(m.get("role") or "")
-            if role not in ("user", "assistant", "system"):
+            if role not in ("user", "assistant", "system", "event"):
                 continue
 
             speaker = str(m.get("speaker") or m.get("sender") or "")
@@ -71,6 +71,8 @@ class HistoryUiProjector:
                 continue
 
             ui_role = role
+            if role == "event":
+                ui_role = "system"
             speaker_label = ""
 
             # Detect system-as-user messages (stored as role='user' with [Системное]: prefix)

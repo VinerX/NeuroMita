@@ -865,8 +865,7 @@ class VoiceModelSettingsView(QWidget):
         self.refresh_dependencies_panel()
 
         # Pass GPU info and RTX checker to detail
-        vendor = self._cached_dependencies_status.get('detected_gpu_vendor')
-        self.detail.set_gpu_info(vendor=vendor, name=None, cuda_devices=[])
+        self._apply_gpu_status()
         self.detail.set_rtx_check_func(lambda: bool(self._check_gpu_rtx30_40()))
 
     # ---------- EventBus helpers ----------
@@ -881,6 +880,14 @@ class VoiceModelSettingsView(QWidget):
     def _get_dependencies_status(self):
         results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_DEPENDENCIES_STATUS)
         return results[0] if results else {}
+
+    def _apply_gpu_status(self):
+        st = self._cached_dependencies_status or {}
+        self.detail.set_gpu_info(
+            vendor=st.get('detected_gpu_vendor'),
+            name=st.get('gpu_name'),
+            cuda_devices=st.get('cuda_devices') or [],
+        )
 
     def _get_default_description(self):
         results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_DEFAULT_DESCRIPTION)
@@ -911,7 +918,7 @@ class VoiceModelSettingsView(QWidget):
                 sub.setSpacing(6)
                 lab = QLabel(text)
                 val = QLabel(_("Найден", "Found") if ok else _("Не найден", "Not Found"))
-                val.setStyleSheet(f"color: {'lightgreen' if ok else '#FF6A6A'};")
+                val.setStyleSheet(f"color: {'#7fe38c' if ok else '#FF6A6A'};")
                 sub.addWidget(lab)
                 sub.addWidget(val)
                 row.addLayout(sub)
@@ -941,6 +948,44 @@ class VoiceModelSettingsView(QWidget):
                             "Triton dependency check is only available on Windows."))
             info.setObjectName("Subtle")
             layout.addWidget(info)
+
+        backend_statuses = st.get("backend_statuses") if isinstance(st.get("backend_statuses"), dict) else {}
+        if backend_statuses:
+            title = QLabel(_("AI backend:", "AI backend:"))
+            title.setObjectName("Subtle")
+            layout.addWidget(title)
+
+            for backend_id in ("cpu", "cuda", "onnx"):
+                item = backend_statuses.get(backend_id)
+                if not isinstance(item, dict):
+                    continue
+
+                requested = str(item.get("kind") or backend_id).upper()
+                resolved = str(item.get("resolved_kind") or requested).upper()
+                provider = str(item.get("provider") or "").strip()
+                variant = str(item.get("variant") or "").strip()
+                action = str(item.get("action") or "").strip()
+                reason = str(item.get("reason") or "").strip()
+                ok = bool(item.get("ok"))
+
+                parts = [requested]
+                if resolved and resolved != requested:
+                    parts.append(f"→ {resolved}")
+                if provider and provider not in ("none", "missing"):
+                    parts.append(f"({provider.upper()})")
+                if variant and variant != "missing":
+                    parts.append(f"[{variant}]")
+
+                text = " ".join(parts)
+                if not ok and action and action != "skip":
+                    text += _(" — требуется {}", " — needs {}").format(action)
+                if reason and not ok:
+                    text += f": {reason}"
+
+                row = QLabel(text)
+                row.setWordWrap(True)
+                row.setStyleSheet(f"color: {'#7fe38c' if ok else '#FFB347'};")
+                layout.addWidget(row)
 
     # ---------- Description helpers ----------
     def _on_update_description(self, text: str):
@@ -1089,7 +1134,7 @@ class VoiceModelSettingsView(QWidget):
 
     def _on_refresh_settings(self):
         self._cached_dependencies_status = self._get_dependencies_status()
-        self.detail.set_gpu_info(vendor=self._cached_dependencies_status.get('detected_gpu_vendor'))
+        self._apply_gpu_status()
         # Пересобрать вкладку "Зависимости" с актуальными данными
         self.refresh_dependencies_panel()
         self._on_selection_changed()

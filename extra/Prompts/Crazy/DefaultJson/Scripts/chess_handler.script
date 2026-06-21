@@ -33,7 +33,12 @@ IF playingGame == True AND game_id == "chess" THEN
     LOG "ChessHandler: Returning chess prompt for active game."
     RETURN prompt
 ELSE
-    LOG "ChessHandler: No active chess game, returning instructions to start."
+    LOG "ChessHandler: No active chess game."
+    IF ENABLE_GAMES != True OR ENABLE_GAME_CHESS != True THEN
+        LOG "ChessHandler: Games or Chess disabled in settings, returning empty."
+        RETURN ""
+    ENDIF
+    LOG "ChessHandler: Returning instructions to start."
     RETURN """
 Ты можешь предложить Игроку сыграть в шахматы.
 Для начала новой шахматной партии используй поле start_game в одном из сегментов:

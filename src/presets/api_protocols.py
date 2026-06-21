@@ -18,7 +18,6 @@ API_PROTOCOLS_DATA = [
         "headers": {},
         "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False, "structured_output": True},
         "transforms": [
-            {"id": "merge_system_messages"},
             {"id": "ensure_alternating_roles"},
             {"id": "ensure_last_message_user", "params": {"fallback_user_text": "."}},
         ],
@@ -32,8 +31,12 @@ API_PROTOCOLS_DATA = [
         "headers": {"HTTP-Referer": "https://github.com/Atm4x/NeuroMita", "X-Title": "NeuroMita"},
         # OpenRouter aggregates many providers — not all support json_schema,
         # so use json_object (softer mode, relies on prompt) to avoid 400 errors.
-        "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False, "structured_output": True, "structured_output_mode": "json_object"},
-        "transforms": [{"id": "merge_system_messages"}],
+        "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False, "structured_output": True, "structured_output_mode": "json_object", "reasoning_control": "openrouter"},
+        # OpenRouter accepts multiple system messages, so keep the stable prompt
+        # blocks separate instead of merging them into one early system block.
+        # Merging shifted every block behind a single message and made the
+        # context viewer show one giant "System #1".
+        "transforms": [],
     },
     {
         "id": "openai_compatible_default",
@@ -43,7 +46,7 @@ API_PROTOCOLS_DATA = [
         "auth": {"mode": "bearer"},
         "headers": {},
         "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False, "structured_output": True},
-        "transforms": [{"id": "merge_system_messages"}],
+        "transforms": [],
     },
     {
         "id": "aiio_default",
