@@ -394,21 +394,6 @@ def build_api_settings_ui(self, parent_layout):
     }
     self.openrouter_routing_section.setVisible(False)
 
-    # --- Divider: everything above belongs to THIS preset; below is the
-    #     provider-agnostic failover/priority block. ---
-    create_section_header(api_container_layout, _("Резервирование и приоритеты", "Failover & priority"))
-
-    # --- Collapsible backup providers/models section ---
-    # Приоритизация резервных провайдеров идёт без привязки к конкретному
-    # провайдеру, поэтому раздел размещён ниже всех настроек пресета.
-    self.fallback_section = CollapsibleSection(
-        _("Резервные провайдеры/модели", "Backup providers/models"), self, icon_name="fa5s.life-ring"
-    )
-    api_container_layout.addWidget(self.fallback_section)
-
-    self.fallback_editor = FallbackChainEditor()
-    self.fallback_section.add_widget(self.fallback_editor)
-
     # buttons
     self.test_button = QPushButton(_("Тест подключения (Получить список моделей)", "Test connection (Fetch model list)"))
     api_container_layout.addWidget(self.test_button)
@@ -430,6 +415,20 @@ def build_api_settings_ui(self, parent_layout):
     btns.addWidget(self.cancel_button, 1)
     btns.addWidget(self.save_preset_button, 1)
     api_container_layout.addLayout(btns)
+
+    # --- Provider-agnostic failover/priority block ---
+    # Everything above (fields + Test/Save/Cancel) acts on THIS preset.
+    # The backup chain is the cross-provider priority mechanic, so it lives
+    # below the preset's own action buttons, behind its own divider.
+    create_section_header(api_container_layout, _("Резервирование и приоритеты", "Failover & priority"))
+
+    self.fallback_section = CollapsibleSection(
+        _("Резервные провайдеры/модели", "Backup providers/models"), self, icon_name="fa5s.life-ring"
+    )
+    api_container_layout.addWidget(self.fallback_section)
+
+    self.fallback_editor = FallbackChainEditor()
+    self.fallback_section.add_widget(self.fallback_editor)
 
     api_container_layout.addStretch(1)
 
