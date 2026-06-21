@@ -14,6 +14,7 @@ from .widgets import (
     LabeledTextEditRow,
     LabeledComboRow,
     FallbackChainEditor,
+    ReserveKeysEditor,
 )
 from ui.gui_templates import create_section_header, SettingsBodyWidget
 from managers.settings_manager import CollapsibleSection
@@ -178,17 +179,16 @@ def build_api_settings_ui(self, parent_layout):
     self.key_visibility_button.setFixedSize(28, 28)
     self.api_key_row.layout().addWidget(self.key_visibility_button, 0, Qt.AlignmentFlag.AlignRight)
 
-    self.reserve_keys_row = LabeledTextEditRow(_('Резервные ключи', 'Reserve keys'))
-    api_container_layout.addWidget(self.reserve_keys_row)
-
-    # --- Collapsible fallback chain section ---
-    self.fallback_section = CollapsibleSection(
-        _("Резервные провайдеры/модели", "Fallback providers/models"), self, icon_name="fa5s.life-ring"
+    # --- Collapsible reserve keys section (collapsed by default, list UI) ---
+    _reserve_keys_title = _('Резервные ключи', 'Reserve keys')
+    self.reserve_keys_section = CollapsibleSection(
+        _reserve_keys_title, self, icon_name="fa5s.key"
     )
-    api_container_layout.addWidget(self.fallback_section)
+    api_container_layout.addWidget(self.reserve_keys_section)
 
-    self.fallback_editor = FallbackChainEditor()
-    self.fallback_section.add_widget(self.fallback_editor)
+    self.reserve_keys_row = ReserveKeysEditor()
+    self.reserve_keys_row.attach_section(self.reserve_keys_section, _reserve_keys_title)
+    self.reserve_keys_section.add_widget(self.reserve_keys_row)
 
     # --- Collapsible protocol configuration section (UNDER inputs) ---
     self.protocol_section = CollapsibleSection(_("Конфигурация протокола", "Protocol configuration"), self, icon_name="fa5s.sliders-h")
@@ -393,6 +393,17 @@ def build_api_settings_ui(self, parent_layout):
         "max_price_image": self.or_max_price_image,
     }
     self.openrouter_routing_section.setVisible(False)
+
+    # --- Collapsible backup providers/models section ---
+    # Приоритизация резервных провайдеров идёт без привязки к конкретному
+    # провайдеру, поэтому раздел размещён ниже всех настроек пресета.
+    self.fallback_section = CollapsibleSection(
+        _("Резервные провайдеры/модели", "Backup providers/models"), self, icon_name="fa5s.life-ring"
+    )
+    api_container_layout.addWidget(self.fallback_section)
+
+    self.fallback_editor = FallbackChainEditor()
+    self.fallback_section.add_widget(self.fallback_editor)
 
     # buttons
     self.test_button = QPushButton(_("Тест подключения (Получить список моделей)", "Test connection (Fetch model list)"))

@@ -242,6 +242,160 @@ class LabeledTextEditRow(QWidget):
             self.label.setStyleSheet("")
 
 
+class ReserveKeyRow(QWidget):
+    """
+    Одна строка списка резервных ключей: поле ввода + кнопка удаления.
+    Ключ хранится в открытом виде (как и раньше), но в отдельном поле.
+    """
+    changed = pyqtSignal()
+    remove_requested = pyqtSignal(object)
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(6)
+
+        self.key_edit = QLineEdit()
+        self.key_edit.setPlaceholderText(_("API ключ", "API key"))
+        self.key_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        self.remove_btn = QToolButton()
+        self.remove_btn.setIcon(qta.icon("fa5s.times", color="#e26e9e"))
+        self.remove_btn.setFixedSize(22, 22)
+        self.remove_btn.setIconSize(QSize(11, 11))
+        self.remove_btn.setAutoRaise(True)
+        self.remove_btn.setToolTip(_("Удалить ключ", "Remove key"))
+
+        lay.addWidget(self.key_edit, 1)
+        lay.addWidget(self.remove_btn)
+
+        self.key_edit.textChanged.connect(lambda *_: self.changed.emit())
+        self.remove_btn.clicked.connect(lambda *_: self.remove_requested.emit(self))
+
+    def set_value(self, key: str) -> None:
+        self.key_edit.blockSignals(True)
+        self.key_edit.setText(str(key or ""))
+        self.key_edit.blockSignals(False)
+
+    def get_value(self) -> str:
+        return str(self.key_edit.text() or "").strip()
+
+
+class ReserveKeysEditor(QWidget):
+    """
+    Список резервных ключей: вертикальный список ReserveKeyRow + кнопка добавления.
+    Совместим по интерфейсу с прежним текстовым полем: text()/set_text() работают
+    со строкой "ключ на строку", поэтому хранение настройки не меняется.
+    """
+    changed = pyqtSignal()
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._section = None
+        self._section_base_title = ""
+        self._dirty = False
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(4)
+
+        hint = QLabel(_(
+            "Используются по очереди, если основной ключ упёрся в лимит или ошибку. "
+            "По одному ключу в строке.",
+            "Used in turn when the main key hits a limit or error. One key per row."
+        ))
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #bfbfbf; font-size: 11px;")
+        outer.addWidget(hint)
+
+        self._rows_container = QFrame()
+        self._rows_layout = QVBoxLayout(self._rows_container)
+        self._rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._rows_layout.setSpacing(2)
+        outer.addWidget(self._rows_container)
+
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        self.add_btn = QPushButton(_("+ Добавить ключ", "+ Add key"))
+        self.add_btn.setIcon(qta.icon("fa5s.plus", color="#3498db"))
+        self.add_btn.clicked.connect(lambda *_: self._on_add_clicked())
+        btn_row.addWidget(self.add_btn)
+        btn_row.addStretch()
+        outer.addLayout(btn_row)
+
+    def attach_section(self, section, base_title: str) -> None:
+        """Секция-обёртка, заголовок которой получает '*' при наличии изменений."""
+        self._section = section
+        self._section_base_title = str(base_title or "")
+
+    def _iter_rows(self):
+        for i in range(self._rows_layout.count()):
+            w = self._rows_layout.itemAt(i).widget()
+            if isinstance(w, ReserveKeyRow):
+                yield w
+
+    def _add_row(self, value: str = "") -> ReserveKeyRow:
+        row = ReserveKeyRow(self._rows_container)
+        row.set_value(value)
+        row.changed.connect(self._on_row_changed)
+        row.remove_requested.connect(self._on_row_remove)
+        self._rows_layout.addWidget(row)
+        return row
+
+    def _on_add_clicked(self):
+        self._add_row("")
+        self.changed.emit()
+
+    def _on_row_changed(self):
+        self.changed.emit()
+
+    def _on_row_remove(self, row):
+        if isinstance(row, ReserveKeyRow):
+            self._rows_layout.removeWidget(row)
+            row.setParent(None)
+            row.deleteLater()
+            self.changed.emit()
+
+    def clear(self) -> None:
+        for r in list(self._iter_rows()):
+            self._rows_layout.removeWidget(r)
+            r.setParent(None)
+            r.deleteLater()
+
+    def get_keys(self):
+        return [v for v in (r.get_value() for r in self._iter_rows()) if v]
+
+    def set_keys(self, keys) -> None:
+        self.clear()
+        if not isinstance(keys, (list, tuple)):
+            keys = []
+        for k in keys:
+            ks = str(k or "").strip()
+            if ks:
+                self._add_row(ks)
+
+    # --- интерфейс, совместимый с прежним LabeledTextEditRow ---
+    def text(self) -> str:
+        return "\n".join(self.get_keys())
+
+    def set_text(self, s: str) -> None:
+        lines = [ln.strip() for ln in str(s or "").splitlines() if ln.strip()]
+        self.set_keys(lines)
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.setEnabled(bool(enabled))
+
+    def set_dirty(self, dirty: bool) -> None:
+        dirty = bool(dirty)
+        if dirty == self._dirty:
+            return
+        self._dirty = dirty
+        if self._section is not None and hasattr(self._section, "title_label"):
+            title = f"{self._section_base_title}*" if dirty else self._section_base_title
+            self._section.title_label.setText(title)
+
+
 class FallbackRow(QWidget):
     """
     One fallback chain entry: preset combo + optional model override + reorder/remove buttons.
@@ -287,7 +441,7 @@ class FallbackRow(QWidget):
         self.remove_btn.setFixedSize(22, 22)
         self.remove_btn.setIconSize(QSize(11, 11))
         self.remove_btn.setAutoRaise(True)
-        self.remove_btn.setToolTip(_("Удалить фолбэк", "Remove fallback"))
+        self.remove_btn.setToolTip(_("Удалить резерв", "Remove backup"))
 
         lay.addWidget(self.preset_combo, 2)
         lay.addWidget(self.model_edit, 2)
@@ -370,7 +524,7 @@ class FallbackChainEditor(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
-        self.add_btn = QPushButton(_("+ Добавить фолбэк", "+ Add fallback"))
+        self.add_btn = QPushButton(_("+ Добавить резерв", "+ Add backup"))
         self.add_btn.setIcon(qta.icon("fa5s.plus", color="#3498db"))
         self.add_btn.clicked.connect(lambda *_: self._on_add_clicked())
         btn_row.addWidget(self.add_btn)

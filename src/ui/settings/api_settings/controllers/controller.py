@@ -152,7 +152,7 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
         v.api_url_row.edit.textChanged.connect(self._safe(self._on_field_changed, "url_changed"))
         v.api_model_row.edit.textChanged.connect(self._safe(self._on_field_changed, "model_changed"))
         v.api_key_row.edit.textChanged.connect(self._safe(self._on_field_changed, "key_changed"))
-        v.reserve_keys_row.edit.textChanged.connect(self._safe(self._on_field_changed, "reserve_keys_changed"))
+        v.reserve_keys_row.changed.connect(self._safe(self._on_field_changed, "reserve_keys_changed"))
 
         if hasattr(v, "fallback_editor"):
             v.fallback_editor.changed.connect(self._safe(self._on_field_changed, "fallbacks_changed"))
