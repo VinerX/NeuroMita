@@ -227,9 +227,17 @@ def setup_general_settings_controls(self, parent):
     except Exception:
         pass
 
+    # Список языков — динамически из доступных JSON-локалей (RU + найденные).
+    try:
+        from localization import available_languages
+        _lang_options = available_languages()
+    except Exception:
+        _lang_options = ["RU", "EN"]
+    _lang_options = ["RU"] + sorted(c for c in _lang_options if c != "RU")
+
     language_config = [
         {'label': 'Язык / Language', 'key': 'LANGUAGE', 'type': 'combobox',
-         'options': ["RU", "EN"], 'default': "RU",
+         'options': _lang_options, 'default': "RU",
          'command': lambda v: _on_language_changed(self, v)},
     ]
 

@@ -253,6 +253,16 @@ class LauncherSidebarWidget(QFrame):
             self._lang_buttons[code] = button
             layout.addWidget(button)
 
+        # Иконка-планета справа от языков — ведёт в настройки языка.
+        lang_settings_btn = QPushButton()
+        lang_settings_btn.setObjectName("LauncherShellLangGlobe")
+        lang_settings_btn.setIcon(qta.icon("fa6s.globe", color="#ffd2ec"))
+        lang_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        lang_settings_btn.setFixedSize(28, 28)
+        lang_settings_btn.setToolTip(_("Настройки языка", "Language settings"))
+        lang_settings_btn.clicked.connect(lambda: self.utility_requested.emit("language"))
+        layout.addWidget(lang_settings_btn)
+
         layout.addStretch(1)
 
         version_label = QLabel(self._read_version_string())
