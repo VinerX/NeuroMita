@@ -152,6 +152,8 @@ cython_debug/
 
 # Project specific
 *.json
+# но JSON-каталоги локализации UI должны быть в git (и попадать в билд)
+!localization/locales/*.json
 *.session
 *.session-journal
 *.wav

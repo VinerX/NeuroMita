@@ -233,7 +233,17 @@ class LauncherSidebarWidget(QFrame):
         layout.setContentsMargins(2, 0, 2, 0)
         layout.setSpacing(6)
 
-        for code, label_text in (("ru", "RU"), ("en", "EN")):
+        # Языки строим динамически из доступных JSON-локалей (RU + всё, что найдено
+        # в localization/locales и внешней папке NEUROMITA_BASE_DIR/Localization).
+        try:
+            from localization import available_languages
+            langs = [c.lower() for c in available_languages()]
+        except Exception:
+            langs = ["ru", "en"]
+        # RU всегда первым, остальные по алфавиту
+        langs = ["ru"] + sorted(c for c in langs if c != "ru")
+        for code in langs:
+            label_text = code.upper()
             button = QPushButton(label_text)
             button.setObjectName("LauncherShellLangPill")
             button.setCheckable(True)
