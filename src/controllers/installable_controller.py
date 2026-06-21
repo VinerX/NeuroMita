@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.backends import BackendKind
 from main_logger import logger
 
 from core.events import Event, Events, get_event_bus
 from core.install_types import InstallPlan
-from core.installables import ComponentCategory, make_component_id
+from core.installables import (
+    ComponentCategory,
+    ComponentMetadata,
+    ComponentStatus,
+    ComponentStatusCode,
+    make_component_id,
+)
 from installables import get_installable_registry, refresh_installable_registry
 
 
@@ -62,6 +69,53 @@ class InstallableController:
         registry = refresh_installable_registry() if data.get("refresh") else get_installable_registry()
         return registry.require(self._component_id(data))
 
+    def _fallback_category(self, component) -> ComponentCategory:
+        raw = getattr(component, "category", ComponentCategory.DEPENDENCY)
+        if isinstance(raw, ComponentCategory):
+            return raw
+        try:
+            return ComponentCategory(str(raw or "").strip().lower())
+        except Exception:
+            return ComponentCategory.DEPENDENCY
+
+    def _fallback_metadata(self, component, exc: Exception) -> ComponentMetadata:
+        category = self._fallback_category(component)
+        item_id = str(getattr(component, "item_id", "") or getattr(component, "id", "") or "unknown").strip() or "unknown"
+        component_id = str(getattr(component, "id", "") or make_component_id(category, item_id)).strip()
+        legacy_kind = str(getattr(component, "legacy_kind", "") or category.value).strip()
+        logger.error(f"Installable LIST metadata failed for '{component_id}': {exc}", exc_info=True)
+        return ComponentMetadata(
+            id=component_id,
+            item_id=item_id,
+            category=category,
+            title=item_id,
+            description="Component metadata is unavailable.",
+            backend=BackendKind.NONE,
+            legacy_kind=legacy_kind,
+        )
+
+    def _safe_metadata(self, component) -> ComponentMetadata:
+        try:
+            return component.metadata()
+        except Exception as exc:
+            return self._fallback_metadata(component, exc)
+
+    def _safe_status(self, component, ctx: dict[str, Any], metadata: ComponentMetadata) -> ComponentStatus:
+        try:
+            return component.status(ctx)
+        except Exception as exc:
+            logger.error(f"Installable LIST status failed for '{metadata.id}': {exc}", exc_info=True)
+            return ComponentStatus(
+                id=metadata.id,
+                code=ComponentStatusCode.FAILED,
+                installed=False,
+                ready=False,
+                message=f"Failed to inspect component: {exc}",
+                backend=metadata.backend,
+                backend_ok=False,
+                details={"error": str(exc)},
+            )
+
     def _on_list(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
         include_status = bool(data.get("include_status", False))
@@ -95,9 +149,10 @@ class InstallableController:
 
         result = []
         for item in items:
-            row = {"metadata": item.metadata().as_dict()}
+            metadata = self._safe_metadata(item)
+            row = {"metadata": metadata.as_dict()}
             if include_status:
-                row["status"] = item.status(ctx).as_dict()
+                row["status"] = self._safe_status(item, ctx, metadata).as_dict()
             result.append(row)
 
         if not ctx and not category:

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import os
 import platform
-import subprocess
 from typing import Any
 
 from core.backends import BACKEND_NUMPY_SPEC, BackendKind, get_backend_service
 from core.install_requirements import InstallRequirement, check_requirements
+from utils.gpu_utils import check_gpu_provider
 
 
 def _(ru_text: str, en_text: str = "") -> str:
@@ -17,51 +17,12 @@ def _(ru_text: str, en_text: str = "") -> str:
 
 
 def _detect_gpu_vendor() -> str:
-    forced_amd = str(os.environ.get("TEST_AS_AMD") or "").strip().upper() == "TRUE"
-    if forced_amd:
-        return "AMD"
-
-    forced_nvidia = str(os.environ.get("TEST_AS_NVIDIA") or "").strip().upper() == "TRUE"
-    if forced_nvidia:
-        return "NVIDIA"
-
     if platform.system() != "Windows":
         return "CPU"
-
-    def _parse_vendor(output: str) -> str | None:
-        upper = str(output or "").upper()
-        if "NVIDIA" in upper:
-            return "NVIDIA"
-        if "AMD" in upper or "RADEON" in upper:
-            return "AMD"
-        return None
-
-    commands = (
-        "wmic path win32_VideoController get name",
-        [
-            "powershell",
-            "-Command",
-            "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name",
-        ],
-    )
-    for command in commands:
-        try:
-            output = subprocess.check_output(
-                command,
-                shell=isinstance(command, str),
-                stdin=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=2.5,
-            ).strip()
-        except Exception:
-            continue
-
-        vendor = _parse_vendor(output)
-        if vendor:
-            return vendor
-
-    return "CPU"
+    try:
+        return str(check_gpu_provider() or "CPU").strip().upper()
+    except Exception:
+        return "CPU"
 
 
 BACKEND_AUTO = "auto"
