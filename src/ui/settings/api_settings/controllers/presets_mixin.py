@@ -51,18 +51,14 @@ class PresetsMixin:
                 pass
 
             try:
-                # all presets (custom first, then builtin templates) available as fallback targets
+                # Only configured (custom) presets are valid backup targets;
+                # builtin templates are not real, ready-to-use presets.
                 all_items = []
                 for p in custom:
                     pid = getattr(p, "id", None)
                     name = getattr(p, "name", "")
                     if isinstance(pid, int):
                         all_items.append((str(name), pid))
-                for p in builtin:
-                    pid = getattr(p, "id", None)
-                    name = getattr(p, "name", "")
-                    if isinstance(pid, int):
-                        all_items.append((f"[builtin] {name}", pid))
                 if hasattr(v, "fallback_editor"):
                     v.fallback_editor.set_available_presets(all_items)
             except Exception:

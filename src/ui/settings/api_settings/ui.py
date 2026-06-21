@@ -394,6 +394,10 @@ def build_api_settings_ui(self, parent_layout):
     }
     self.openrouter_routing_section.setVisible(False)
 
+    # --- Divider: everything above belongs to THIS preset; below is the
+    #     provider-agnostic failover/priority block. ---
+    create_section_header(api_container_layout, _("Резервирование и приоритеты", "Failover & priority"))
+
     # --- Collapsible backup providers/models section ---
     # Приоритизация резервных провайдеров идёт без привязки к конкретному
     # провайдеру, поэтому раздел размещён ниже всех настроек пресета.
@@ -407,7 +411,6 @@ def build_api_settings_ui(self, parent_layout):
 
     # buttons
     self.test_button = QPushButton(_("Тест подключения (Получить список моделей)", "Test connection (Fetch model list)"))
-    self.test_button.setIcon(qta.icon('fa5s.satellite', color='#3498db'))
     api_container_layout.addWidget(self.test_button)
 
     btns = QHBoxLayout()
