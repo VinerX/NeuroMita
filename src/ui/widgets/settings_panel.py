@@ -15,7 +15,7 @@ from ui.pages.settings.settings_page_widget import SettingsPage, normalize_mode
 # enabled, the rest start disabled. "general" is always on (it hosts the
 # section toggles themselves, so it must stay reachable).
 
-ALWAYS_ON_SECTIONS = frozenset({"general"})
+ALWAYS_ON_SECTIONS = frozenset({"general", "language"})
 
 # The launcher's main-nav "developer" page is gated the same way as a
 # settings section even though it is not part of the settings registry.

@@ -26,8 +26,10 @@ import os
 import sys
 from pathlib import Path
 
-# Имена функций локализации (включая алиасы из `import ... as _`)
+# Имена функций локализации с сигнатурой (ru, en) — включая алиасы `import ... as _`.
 TR_FUNCS = {"_", "getTranslationVariant", "t", "_g"}
+# Функции с сигнатурой (lang, ru, en) — ключ/инлайн сдвинуты на один аргумент.
+TR_FUNCS_LANG_FIRST = {"translate_for_language"}
 
 
 def _const_str(node: ast.expr | None) -> str | None:
@@ -55,19 +57,28 @@ def scan_file(path: Path) -> tuple[list[tuple[str, str]], int, int]:
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        name = func.id if isinstance(func, ast.Name) else None
-        if name not in TR_FUNCS:
+        # имя функции: и f(...), и obj.method(...)
+        if isinstance(func, ast.Name):
+            name = func.id
+        elif isinstance(func, ast.Attribute):
+            name = func.attr
+        else:
+            name = None
+        lang_first = name in TR_FUNCS_LANG_FIRST
+        if name not in TR_FUNCS and not lang_first:
             continue
-        if not node.args:
+        # Сдвиг аргументов для (lang, ru, en) против (ru, en).
+        ru_idx, en_idx = (1, 2) if lang_first else (0, 1)
+        if len(node.args) <= ru_idx:
             continue
-        ru = _const_str(node.args[0])
+        ru = _const_str(node.args[ru_idx])
         if ru is None:
-            # Первый аргумент не строковый литерал (f-строка/переменная) — пропускаем.
+            # Ключевой аргумент не строковый литерал (f-строка/переменная) — пропускаем.
             dynamic += 1
             total += 1
             continue
         total += 1
-        en = _const_str(node.args[1]) if len(node.args) > 1 else None
+        en = _const_str(node.args[en_idx]) if len(node.args) > en_idx else None
         pairs.append((ru, en or ""))
 
     return pairs, total, dynamic
@@ -80,6 +91,11 @@ def main() -> int:
                     help="папка для сканирования (default: src/ui)")
     ap.add_argument("--out", default=str(project_dir / "src" / "localization" / "locales"),
                     help="папка для JSON-каталогов")
+    ap.add_argument("--sync", action="store_true",
+                    help="отчёт по каждому <lang>.json: осиротевшие ключи "
+                         "(исходник изменился/удалён) и недостающие/пустые переводы")
+    ap.add_argument("--prune", action="store_true",
+                    help="вместе с --sync: реально удалить осиротевшие ключи из <lang>.json")
     args = ap.parse_args()
 
     src_dir = Path(args.src)
@@ -142,7 +158,43 @@ def main() -> int:
     print(f"Покрытие статикой:     {cov:.1f}%")
     print(f"Записано: {en_path}")
     print(f"Записано: {out_dir / '_template.json'}")
+
+    if args.sync:
+        _sync_languages(out_dir, all_keys, prune=args.prune)
     return 0
+
+
+def _sync_languages(out_dir: Path, all_keys: set[str], *, prune: bool) -> None:
+    """Отчёт по существующим <lang>.json относительно актуального набора ключей.
+
+    Осиротевшие = ключи в файле, которых больше нет в коде (исходная русская
+    строка изменилась/удалена) → перевод протух. Недостающие = ключи из кода,
+    которых нет в файле или их значение пустое. С --prune осиротевшие удаляются.
+    """
+    print("\n=== i18n sync ===")
+    for path in sorted(out_dir.glob("*.json")):
+        name = path.name
+        if name.startswith("_") or name == "en.json":
+            continue  # _template/_*.json и en.json генерируются автоматически
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            print(f"  {name}: не удалось прочитать — пропуск")
+            continue
+        # «_name» и прочие служебные ключи (с префиксом _) не считаем сиротами.
+        content_keys = {k for k in data if not k.startswith("_")}
+        orphaned = sorted(content_keys - all_keys)
+        missing = sorted(k for k in all_keys if not data.get(k))
+        print(f"  {name}: переведено {len(content_keys)}/{len(all_keys)}, "
+              f"осиротевших {len(orphaned)}, недостающих {len(missing)}")
+        if orphaned and prune:
+            for k in orphaned:
+                data.pop(k, None)
+            path.write_text(
+                json.dumps(dict(sorted(data.items())), ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            print(f"    └─ удалено осиротевших: {len(orphaned)}")
 
 
 if __name__ == "__main__":

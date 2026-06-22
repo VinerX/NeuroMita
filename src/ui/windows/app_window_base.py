@@ -478,7 +478,7 @@ class AppWindowBase(QMainWindow):
                 )
             return
         if action == "language":
-            self.show_settings_category("general")
+            self.show_settings_category("language")
             return
 
         self.switch_main_page("home")
@@ -1194,6 +1194,15 @@ class AppWindowBase(QMainWindow):
         
     def _on_eula_accepted(self, eula_widget):
         self.overlay.hide_animated()
+        # Если на стартовом экране выбрали другой язык — интерфейс уже построен
+        # на старом, поэтому предлагаем перезапуск. При отказе продолжаем как есть.
+        try:
+            if eula_widget.language_changed_on_start():
+                from ui.language_restart import prompt_language_restart
+                if prompt_language_restart(self):
+                    return
+        except Exception:
+            pass
         QTimer.singleShot(500, self._show_guide)
         
     def _on_eula_rejected(self, eula_widget):

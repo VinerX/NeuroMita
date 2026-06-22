@@ -38,6 +38,10 @@ LANGUAGE_DISPLAY_NAMES: dict[str, str] = {
     "RU": "Русский",
     "EN": "English",
     "FR": "Français",
+    "DE": "Deutsch",
+    "ZH": "中文",
+    "UK": "Українська",
+    "EL": "Ελληνικά",
 }
 
 
@@ -55,6 +59,56 @@ def _external_dir() -> str | None:
     if not base:
         return None
     return os.path.join(base, "Localization")
+
+
+def external_localization_dir() -> str | None:
+    """Публичный путь к внешней папке кастомных локалей (может не существовать)."""
+    return _external_dir()
+
+
+def ensure_external_localization_dir() -> str | None:
+    """Создаёт внешнюю папку локалей и кладёт в неё шаблон + README, если их нет.
+
+    Возвращает путь к папке (или None, если NEUROMITA_BASE_DIR не задан).
+    Нужна для кнопки «Открыть папку с языками»: пользователь кидает туда
+    ``<код>.json`` (например ``pl.json``) — и язык появляется в списке выбора.
+    """
+    ext = _external_dir()
+    if not ext:
+        return None
+    try:
+        os.makedirs(ext, exist_ok=True)
+        # Шаблон со всеми ключами (для удобного старта нового перевода).
+        tpl_dst = os.path.join(ext, "_template.json")
+        if not os.path.isfile(tpl_dst):
+            tpl = {}
+            try:
+                if _res_files is not None:
+                    res = _res_files(__package__).joinpath("locales", "_template.json")
+                    if res.is_file():
+                        tpl = json.loads(res.read_text(encoding="utf-8")) or {}
+            except Exception:
+                tpl = {}
+            with open(tpl_dst, "w", encoding="utf-8") as f:
+                json.dump(tpl, f, ensure_ascii=False, indent=2)
+        readme = os.path.join(ext, "README.txt")
+        if not os.path.isfile(readme):
+            with open(readme, "w", encoding="utf-8") as f:
+                f.write(
+                    "Кастомные переводы интерфейса NeuroMita.\n\n"
+                    "Как добавить язык:\n"
+                    "1. Скопируйте _template.json в <код>.json (например pl.json для польского,\n"
+                    "   ISO 639-1 код языка).\n"
+                    "2. Переведите значения (ключи — русские строки, НЕ трогайте их).\n"
+                    "3. По желанию добавьте ключ \"_name\": \"Polski\" — это имя языка в списке выбора.\n"
+                    "4. Перезапустите приложение — язык появится в выборе.\n\n"
+                    "Custom UI translations for NeuroMita.\n"
+                    "Copy _template.json to <code>.json, translate the values (keys are the\n"
+                    "Russian source strings — keep them as-is), optionally add \"_name\", restart.\n"
+                )
+    except Exception:
+        return ext
+    return ext
 
 
 def _read_bundled(lang: str) -> dict:
@@ -155,7 +209,16 @@ def available_languages(mode: str = "full") -> list[str]:
 
 def language_display_name(code: str) -> str:
     code = str(code or "").upper()
-    return LANGUAGE_DISPLAY_NAMES.get(code, code)
+    if code in LANGUAGE_DISPLAY_NAMES:
+        return LANGUAGE_DISPLAY_NAMES[code]
+    # Кастомные/новые языки: имя можно задать ключом "_name" в JSON-каталоге.
+    try:
+        self_name = _catalog(code).get("_name")
+        if self_name:
+            return str(self_name)
+    except Exception:
+        pass
+    return code
 
 
 def translate_for_language(lang: str, ru_str: str, en_str: str = "") -> str:

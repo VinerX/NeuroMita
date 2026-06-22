@@ -233,15 +233,24 @@ class LauncherSidebarWidget(QFrame):
         layout.setContentsMargins(2, 0, 2, 0)
         layout.setSpacing(6)
 
-        # Языки строим динамически из доступных JSON-локалей (RU + всё, что найдено
-        # в localization/locales и внешней папке NEUROMITA_BASE_DIR/Localization).
+        # Компактный переключатель: всегда RU и ещё одна «быстрая» пилюля.
+        # Если выбран язык вне RU/EN — вторая пилюля показывает именно его
+        # (вместо EN), чтобы текущий язык был под рукой одним кликом.
         try:
             from localization import available_languages
-            langs = [c.lower() for c in available_languages("compact")]
+            available = {c.lower() for c in available_languages("full")}
         except Exception:
-            langs = ["ru", "en"]
-        # RU всегда первым, остальные по алфавиту
-        langs = ["ru"] + sorted(c for c in langs if c != "ru")
+            available = {"ru", "en"}
+        try:
+            from managers.settings_manager import SettingsManager
+            current = str(SettingsManager.get("LANGUAGE", "RU") or "RU").lower()
+        except Exception:
+            current = "ru"
+        if current in ("ru", "en") or current not in available:
+            second = "en"
+        else:
+            second = current
+        langs = ["ru", second]
         for code in langs:
             label_text = code.upper()
             button = QPushButton(label_text)

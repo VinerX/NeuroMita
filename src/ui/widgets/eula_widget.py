@@ -22,6 +22,9 @@ class EULAWidget(QWidget):
             self.current_language = str(SettingsManager.get("LANGUAGE", "RU") or "RU").strip().lower()
         except Exception:
             pass
+        # Язык, с которым уже построен интерфейс под оверлеем: если на старте
+        # пользователь выберет другой — после принятия предложим перезапуск.
+        self._initial_language = self.current_language
         self.setup_ui()
         
     def setup_ui(self):
@@ -302,11 +305,21 @@ BY CLICKING "ACCEPT", YOU CONFIRM THAT:
 • You will not use the software for illegal purposes"""
         
     def _on_accept(self):
+        # Сохраняем выбранный на стартовом экране язык интерфейса.
+        self.event_bus.emit(Events.Settings.SAVE_SETTING, {
+            'key': 'LANGUAGE',
+            'value': str(self.current_language or "ru").upper(),
+        })
         self.event_bus.emit(Events.Settings.SAVE_SETTING, {
             'key': 'EULA_ACCEPTED',
             'value': True
         })
         self.accepted.emit()
+
+    def language_changed_on_start(self) -> bool:
+        """True, если язык, выбранный на стартовом экране, отличается от того,
+        с которым уже построен интерфейс (значит нужен перезапуск)."""
+        return str(self.current_language or "ru") != str(self._initial_language or "ru")
         
     def _on_reject(self):
         self.rejected.emit()
