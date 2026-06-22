@@ -361,6 +361,11 @@ class FishSpeechInstallSpec:
             "fish-speech-lib",
             "librosa==0.9.1",
             "numba==0.60.0",
+            # Держим scipy на numpy-1.x-совместимой ветке: fish-speech-lib тянет
+            # pytorch_lightning -> torchmetrics -> scipy, и без верхней границы
+            # ставится scipy>=1.13 (использует np.long, удалён в numpy 1.26) →
+            # "module 'numpy' has no attribute 'long'". Зеркалит пин F5.
+            "scipy<1.13",
         ]
         if mid == "medium+low":
             pkgs.append("tts-with-rvc")

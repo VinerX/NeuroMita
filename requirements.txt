@@ -76,6 +76,11 @@ bs4
 pyworld==0.3.5
 onnx
 numpy==1.26.0
+# Держим scipy на numpy-1.x-совместимой ветке. Без верхней границы транзитивно
+# (fish-speech-lib -> pytorch_lightning -> torchmetrics) подтягивается scipy>=1.13,
+# который использует np.long (удалён в numpy 1.26) и падает с
+# "module 'numpy' has no attribute 'long'". Зеркалит пин F5 в f5_tts_model.py.
+scipy<1.13
 httpx==0.27.0
 pywin32
 py7zr
