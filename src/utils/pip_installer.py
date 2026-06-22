@@ -209,32 +209,15 @@ class PipInstaller:
         # Защищенные пакеты по умолчанию
         self.protected_packages = protected_packages or ["g4f", "gigaam", "pillow", "silero-vad"]
         self._preferred_installer_cmd: Optional[List[str]] = None
+        self._last_run_uv_cache_access_denied: bool = False
         self._ensure_libs_path()
 
     def install_package(self, package_spec, description="Установка пакета...", extra_args=None) -> bool:
-        cmd = self._build_install_command()
-        is_uv = self._is_uv_command(cmd)
-        override_path: str | None = None
-        try:
-            if extra_args:
-                cmd.extend(self._adapt_extra_args(extra_args, is_uv))
-
-            effective_overrides = self._build_dependency_overrides(package_spec) if is_uv else []
-            if effective_overrides and len(effective_overrides) > 0:
-                override_path = self._write_uv_overrides(effective_overrides)
-                cmd.extend(["--overrides", override_path])
-
-            if isinstance(package_spec, list):
-                cmd.extend(package_spec)
-            else:
-                cmd.append(package_spec)
-            return self._run_pip_process(cmd, description)
-        finally:
-            if override_path:
-                try:
-                    os.unlink(override_path)
-                except OSError:
-                    pass
+        return self._install_package_attempt(
+            package_spec,
+            description=description,
+            extra_args=extra_args,
+        )
 
     def _build_dependency_overrides(self, package_spec) -> List[str]:
         return []
@@ -266,14 +249,33 @@ class PipInstaller:
         extra_args=None,
         uv_overrides: Optional[List[str]] = None,
     ) -> bool:
-        cmd = self._build_install_command()
+        return self._install_package_attempt(
+            package_spec,
+            description=description,
+            extra_args=extra_args,
+            uv_overrides=uv_overrides,
+        )
+
+    def _install_package_attempt(
+        self,
+        package_spec,
+        *,
+        description: str,
+        extra_args=None,
+        uv_overrides: Optional[List[str]] = None,
+        force_pip: bool = False,
+    ) -> bool:
+        cmd = self._build_install_command(force_pip=force_pip)
         is_uv = self._is_uv_command(cmd)
         override_path: str | None = None
         try:
             if extra_args:
                 cmd.extend(self._adapt_extra_args(extra_args, is_uv))
 
-            effective_overrides = self._dedupe_overrides(list(uv_overrides or [])) if is_uv else []
+            if uv_overrides is None:
+                effective_overrides = self._build_dependency_overrides(package_spec) if is_uv else []
+            else:
+                effective_overrides = self._dedupe_overrides(list(uv_overrides or [])) if is_uv else []
             if effective_overrides and len(effective_overrides) > 0:
                 override_path = self._write_uv_overrides(effective_overrides)
                 cmd.extend(["--overrides", override_path])
@@ -282,7 +284,21 @@ class PipInstaller:
                 cmd.extend(package_spec)
             else:
                 cmd.append(package_spec)
-            return self._run_pip_process(cmd, description)
+            ok = self._run_pip_process(cmd, description)
+            if ok or force_pip or not is_uv or not self._last_run_uv_cache_access_denied:
+                return ok
+
+            self.update_log(
+                "uv не смог записать в свой cache (rename/access denied). "
+                "Повторяем установку через встроенный pip."
+            )
+            return self._install_package_attempt(
+                package_spec,
+                description=description,
+                extra_args=extra_args,
+                uv_overrides=uv_overrides,
+                force_pip=True,
+            )
         finally:
             if override_path:
                 try:
@@ -439,8 +455,8 @@ class PipInstaller:
             return ""
         return None
 
-    def _build_install_command(self) -> List[str]:
-        base = list(self._resolve_installer_base_cmd())
+    def _build_install_command(self, force_pip: bool = False) -> List[str]:
+        base = list(self._pip_base_cmd() if force_pip else self._resolve_installer_base_cmd())
         base.extend(["install", "--target", str(self.libs_path_abs)])
         # Кэш включён по умолчанию: после обрыва (диск/VPN) повторная попытка
         # переиспользует уже скачанное и докачивает, а не качает всё заново.
@@ -831,6 +847,7 @@ class PipInstaller:
             self.history: Deque[tuple[float, int]] = deque(maxlen=180)
             self.history.append((self.start, 0))
             self.error_seen: bool = False
+            self.recent_lines: Deque[str] = deque(maxlen=40)
             self.is_pytorch_install: bool = (
                 ("download.pytorch.org" in self.cmd_str_low)
                 or ("torch" in self.cmd_str_low and "install" in self.cmd_str_low)
@@ -914,6 +931,7 @@ class PipInstaller:
         clean = self._clean_line(line.rstrip())
         if not clean:
             return
+        state.recent_lines.append(clean)
 
         low = clean.lower()
         if any(k in low for k in ("error:", "ошибка:", "failed:", "traceback", "exception", "critical")) or (("error" in low or "failed" in low) and "build\\" not in low and "bdist." not in low):
@@ -999,6 +1017,17 @@ class PipInstaller:
         except Exception:
             pass
 
+    def _is_uv_cache_access_denied_failure(self, cmd: List[str], state: _RunState, ret: int) -> bool:
+        if ret == 0 or not self._is_uv_command(cmd):
+            return False
+        for line in state.recent_lines:
+            low = line.lower()
+            if ("uv\\cache" in low or "uv/cache" in low) and "rename" in low and (
+                "access is denied" in low or "os error 5" in low
+            ):
+                return True
+        return False
+
     def _run_with_pipes(self, cmd: List[str], env: dict, state: _RunState) -> Tuple[bool, int]:
         try:
             proc = subprocess.Popen(
@@ -1033,8 +1062,10 @@ class PipInstaller:
                 except Exception:
                     pass
 
-        threading.Thread(target=_reader, args=(proc.stdout, q_out), daemon=True).start()
-        threading.Thread(target=_reader, args=(proc.stderr, q_err), daemon=True).start()
+        t_out = threading.Thread(target=_reader, args=(proc.stdout, q_out), daemon=True)
+        t_err = threading.Thread(target=_reader, args=(proc.stderr, q_err), daemon=True)
+        t_out.start()
+        t_err.start()
 
         while proc.poll() is None or t_out.is_alive() or t_err.is_alive():
             processed_any = False
@@ -1174,6 +1205,7 @@ class PipInstaller:
                 ok, ret = self._run_with_pipes(cmd, env, state)
         else:
             ok, ret = self._run_with_pipes(cmd, env, state)
+        self._last_run_uv_cache_access_denied = self._is_uv_cache_access_denied_failure(cmd, state, ret)
 
         # Завершение
         elapsed = time.time() - state.start
