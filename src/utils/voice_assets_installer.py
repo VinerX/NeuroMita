@@ -64,16 +64,22 @@ def _expected_model_path(short_name: str) -> Path:
 
 
 def is_installed(short_name: str) -> bool:
-    """A voice is "installed" once its provider-correct model file is present.
+    """A voice is "installed" once a model file is present.
 
-    The .index / reference .wav only refine quality and are treated as optional
+    Provider-agnostic on purpose: a bundle may ship only ``.pth`` (the ``.onnx``
+    is optional), so an AMD/CPU machine — whose provider-correct extension is
+    ``.onnx`` — would otherwise report a perfectly good ``.pth`` voice as "not
+    installed" forever and re-download it on every run. Either model extension
+    counts; the .index / reference .wav only refine quality and stay optional
     (the handlers already guard their existence)."""
+    root = models_dir()
+    if (root / f"{short_name}.pth").exists() or (root / f"{short_name}.onnx").exists():
+        return True
+    # Нестандартное расположение — спросим у общего резолвера путей.
     try:
         return _expected_model_path(short_name).exists()
     except Exception:
-        # Fall back to a provider-agnostic check: either model extension counts.
-        root = models_dir()
-        return (root / f"{short_name}.pth").exists() or (root / f"{short_name}.onnx").exists()
+        return False
 
 
 def extract_bundle(zip_path: str | Path, short_name: str, log: _Log = _noop, *, base: Path | None = None) -> bool:
@@ -86,6 +92,13 @@ def extract_bundle(zip_path: str | Path, short_name: str, log: _Log = _noop, *, 
     root = base if base is not None else models_dir()
     root.mkdir(parents=True, exist_ok=True)
 
+    # Распаковываем во временный staging-каталог и лишь затем переносим файлы на
+    # место. Так провал в середине (битый zip, нет места на диске) не оставляет
+    # наполовину распакованный голос, который is_installed примет за рабочий.
+    stage = root / f".stage_{short_name}"
+    if stage.exists():
+        shutil.rmtree(stage, ignore_errors=True)
+
     try:
         with zipfile.ZipFile(zip_path) as z:
             members = [m for m in z.infolist() if not m.is_dir()]
@@ -96,7 +109,7 @@ def extract_bundle(zip_path: str | Path, short_name: str, log: _Log = _noop, *, 
             names = [m.filename.replace("\\", "/") for m in members]
             strip = _common_wrapper(names, short_name)
 
-            written = 0
+            staged: list[tuple[Path, Path]] = []  # (staged_path, final_path)
             for info in members:
                 rel = info.filename.replace("\\", "/")
                 if strip and rel.startswith(strip):
@@ -104,10 +117,21 @@ def extract_bundle(zip_path: str | Path, short_name: str, log: _Log = _noop, *, 
                 rel = rel.lstrip("/")
                 if not rel or ".." in Path(rel).parts:
                     continue
-                target = root / rel
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with z.open(info) as src, open(target, "wb") as dst:
+                staged_path = stage / rel
+                staged_path.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(info) as src, open(staged_path, "wb") as dst:
                     shutil.copyfileobj(src, dst)
+                staged.append((staged_path, root / rel))
+
+            if not staged:
+                log(f"Voice bundle {zip_path.name} produced no usable files.")
+                return False
+
+            # Перенос на место: каждый файл — атомарный replace (та же ФС).
+            written = 0
+            for staged_path, final_path in staged:
+                final_path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(staged_path, final_path)
                 written += 1
             log(f"Extracted {written} file(s) for {short_name} into {root}")
             return written > 0
@@ -117,6 +141,9 @@ def extract_bundle(zip_path: str | Path, short_name: str, log: _Log = _noop, *, 
     except Exception as exc:  # noqa: BLE001 — surface to install log, don't crash the task
         log(f"Failed to extract {zip_path.name}: {exc}")
         return False
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage, ignore_errors=True)
 
 
 def _common_wrapper(names: Iterable[str], short_name: str) -> str:
@@ -160,4 +187,12 @@ def remove_assets(short_name: str, log: _Log = _noop, *, base: Path | None = Non
         pass
 
     log(f"Removed {removed} file(s) for {short_name}")
-    return removed > 0
+
+    # Успех меряем по факту: модельных файлов (.pth/.onnx) не осталось. Иначе при
+    # залоченном файле (голос загружен в TTS) мы бы отрапортовали «удалено», хотя
+    # голос на месте и is_installed по-прежнему True.
+    model_left = (root / f"{short_name}.pth").exists() or (root / f"{short_name}.onnx").exists()
+    if model_left:
+        log(f"Voice {short_name} still has model files (possibly in use).")
+        return False
+    return True

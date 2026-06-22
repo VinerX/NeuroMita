@@ -209,32 +209,17 @@ class PipInstaller:
         # Защищенные пакеты по умолчанию
         self.protected_packages = protected_packages or ["g4f", "gigaam", "pillow", "silero-vad"]
         self._preferred_installer_cmd: Optional[List[str]] = None
+        self._last_run_uv_cache_access_denied: bool = False
         self._ensure_libs_path()
 
     def install_package(self, package_spec, description="Установка пакета...", extra_args=None) -> bool:
-        cmd = self._build_install_command()
-        is_uv = self._is_uv_command(cmd)
-        override_path: str | None = None
-        try:
-            if extra_args:
-                cmd.extend(self._adapt_extra_args(extra_args, is_uv))
-
-            effective_overrides = self._build_dependency_overrides(package_spec) if is_uv else []
-            if effective_overrides and len(effective_overrides) > 0:
-                override_path = self._write_uv_overrides(effective_overrides)
-                cmd.extend(["--overrides", override_path])
-
-            if isinstance(package_spec, list):
-                cmd.extend(package_spec)
-            else:
-                cmd.append(package_spec)
-            return self._run_pip_process(cmd, description)
-        finally:
-            if override_path:
-                try:
-                    os.unlink(override_path)
-                except OSError:
-                    pass
+        self._maybe_warn_fragile_location()
+        self.repair_broken_target_metadata()
+        return self._install_package_attempt(
+            package_spec,
+            description=description,
+            extra_args=extra_args,
+        )
 
     def _build_dependency_overrides(self, package_spec) -> List[str]:
         return []
@@ -266,14 +251,35 @@ class PipInstaller:
         extra_args=None,
         uv_overrides: Optional[List[str]] = None,
     ) -> bool:
-        cmd = self._build_install_command()
+        self._maybe_warn_fragile_location()
+        self.repair_broken_target_metadata()
+        return self._install_package_attempt(
+            package_spec,
+            description=description,
+            extra_args=extra_args,
+            uv_overrides=uv_overrides,
+        )
+
+    def _install_package_attempt(
+        self,
+        package_spec,
+        *,
+        description: str,
+        extra_args=None,
+        uv_overrides: Optional[List[str]] = None,
+        force_pip: bool = False,
+    ) -> bool:
+        cmd = self._build_install_command(force_pip=force_pip)
         is_uv = self._is_uv_command(cmd)
         override_path: str | None = None
         try:
             if extra_args:
                 cmd.extend(self._adapt_extra_args(extra_args, is_uv))
 
-            effective_overrides = self._dedupe_overrides(list(uv_overrides or [])) if is_uv else []
+            if uv_overrides is None:
+                effective_overrides = self._build_dependency_overrides(package_spec) if is_uv else []
+            else:
+                effective_overrides = self._dedupe_overrides(list(uv_overrides or [])) if is_uv else []
             if effective_overrides and len(effective_overrides) > 0:
                 override_path = self._write_uv_overrides(effective_overrides)
                 cmd.extend(["--overrides", override_path])
@@ -282,7 +288,21 @@ class PipInstaller:
                 cmd.extend(package_spec)
             else:
                 cmd.append(package_spec)
-            return self._run_pip_process(cmd, description)
+            ok = self._run_pip_process(cmd, description)
+            if ok or force_pip or not is_uv or not self._last_run_uv_cache_access_denied:
+                return ok
+
+            self.update_log(
+                "uv не смог записать в свой cache (rename/access denied). "
+                "Повторяем установку через встроенный pip."
+            )
+            return self._install_package_attempt(
+                package_spec,
+                description=description,
+                extra_args=extra_args,
+                uv_overrides=uv_overrides,
+                force_pip=True,
+            )
         finally:
             if override_path:
                 try:
@@ -439,8 +459,8 @@ class PipInstaller:
             return ""
         return None
 
-    def _build_install_command(self) -> List[str]:
-        base = list(self._resolve_installer_base_cmd())
+    def _build_install_command(self, force_pip: bool = False) -> List[str]:
+        base = list(self._pip_base_cmd() if force_pip else self._resolve_installer_base_cmd())
         base.extend(["install", "--target", str(self.libs_path_abs)])
         # Кэш включён по умолчанию: после обрыва (диск/VPN) повторная попытка
         # переиспользует уже скачанное и докачивает, а не качает всё заново.
@@ -680,11 +700,14 @@ class PipInstaller:
             return False
 
     def _collect_removal_targets(self, dist_info_path: str, pkg_name: str) -> List[str]:
-        """Список путей для ручного удаления пакета: каталоги/файлы кода + сам dist-info.
+        """Список путей для ручного удаления пакета: файлы/каталоги кода + сам dist-info.
 
         Источники имён кода (по приоритету):
-          1) RECORD — точный список установленных файлов (штатный случай);
+          1) RECORD — точный список установленных файлов. Удаляем ИМЕННО эти файлы,
+             а не их top-level каталоги: иначе при общем namespace-каталоге
+             (google/, mpl_toolkits/, ruamel/ …) сносим файлы соседних пакетов.
           2) top_level.txt — import-имена верхнего уровня (когда RECORD отсутствует/битый);
+             тут точного списка файлов нет, поэтому удаляем каталог целиком.
           3) фоллбэк по канон-имени пакета (torch -> torch/) — только если 1-2 ничего не дали.
         Всё ограничено целевой папкой Lib, чтобы случайно не выйти за её пределы.
         dist-info всегда возвращается последним — чтобы при сбое на коде по нему можно
@@ -705,8 +728,12 @@ class PipInstaller:
                 return None
             return p
 
+        def _under_dist_info(p: str) -> bool:
+            return p == dist_info_abs or p.startswith(dist_info_abs + os.sep)
+
         code_targets: set[str] = set()
 
+        # --- 1) RECORD: точные файлы (исключая содержимое самого dist-info) ---
         record = os.path.join(dist_info_path, "RECORD")
         if os.path.isfile(record):
             try:
@@ -715,13 +742,22 @@ class PipInstaller:
                         rel = line.split(",", 1)[0].strip().strip('"')
                         if not rel or rel.startswith(("/", "\\", "..")):
                             continue
-                        top = rel.replace("\\", "/").split("/", 1)[0]
-                        p = _norm(top)
-                        if p and p != dist_info_abs:
+                        if ".." in rel.replace("\\", "/").split("/"):
+                            continue
+                        p = _norm(rel)
+                        if p and not _under_dist_info(p):
                             code_targets.add(p)
             except Exception as ex:
                 logger.warning(f"{pkg_name}: не удалось прочитать RECORD: {ex}")
 
+            if code_targets:
+                # RECORD дал точный список — этого достаточно, каталоги не трогаем.
+                targets = sorted(t for t in code_targets if os.path.exists(t))
+                if os.path.exists(dist_info_abs):
+                    targets.append(dist_info_abs)
+                return targets
+
+        # --- 2/3) Нет валидного RECORD: удаляем по каталогам (точного списка нет) ---
         top_level = os.path.join(dist_info_path, "top_level.txt")
         if os.path.isfile(top_level):
             try:
@@ -732,7 +768,7 @@ class PipInstaller:
                             continue
                         for cand in (name, name + ".py"):
                             p = _norm(cand)
-                            if p and p != dist_info_abs:
+                            if p and not _under_dist_info(p):
                                 code_targets.add(p)
             except Exception as ex:
                 logger.warning(f"{pkg_name}: не удалось прочитать top_level.txt: {ex}")
@@ -741,13 +777,41 @@ class PipInstaller:
             base = canonicalize_name(pkg_name).replace("-", "_")
             for cand in (base, base + ".py"):
                 p = _norm(cand)
-                if p and p != dist_info_abs:
+                if p and not _under_dist_info(p):
                     code_targets.add(p)
 
         targets = sorted(t for t in code_targets if os.path.exists(t))
         if os.path.exists(dist_info_abs):
             targets.append(dist_info_abs)
         return targets
+
+    def _prune_empty_dirs(self, file_paths: List[str]) -> None:
+        """После удаления файлов из RECORD подчищаем опустевшие каталоги пакета.
+
+        Идём от каждого файла вверх к Lib, собираем родительские каталоги и
+        удаляем те из них, что стали пустыми (глубже — раньше). Сам Lib и всё
+        вне него не трогаем."""
+        libs = os.path.abspath(self.libs_path_abs)
+        dirs: set[str] = set()
+        for f in file_paths:
+            d = os.path.dirname(os.path.abspath(f))
+            while d and d != libs:
+                try:
+                    if os.path.commonpath([libs, d]) != libs:
+                        break
+                except Exception:
+                    break
+                dirs.add(d)
+                parent = os.path.dirname(d)
+                if parent == d:
+                    break
+                d = parent
+        for d in sorted(dirs, key=len, reverse=True):
+            try:
+                if os.path.isdir(d) and not os.listdir(d):
+                    os.rmdir(d)
+            except OSError:
+                pass
 
     def _rmtree_with_retries(self, path: str, pkg_name: str) -> bool:
         if not os.path.exists(path):
@@ -793,9 +857,16 @@ class PipInstaller:
             return True
 
         all_ok = True
+        removed_files: List[str] = []
         for target in targets:
+            was_file = os.path.isfile(target)
             if not self._rmtree_with_retries(target, pkg_name):
                 all_ok = False
+            elif was_file:
+                removed_files.append(target)
+        # Удаляли точечно по RECORD — подчистим опустевшие каталоги пакета.
+        if removed_files:
+            self._prune_empty_dirs(removed_files)
         return all_ok
 
     def _find_dist_info_path(self, package_name_canon: NormalizedName) -> str | None:
@@ -810,6 +881,83 @@ class PipInstaller:
                 except Exception:
                     continue
         return None
+
+    def repair_broken_target_metadata(self) -> int:
+        """Сносит каталоги *.dist-info без читаемого METADATA перед установкой.
+
+        uv/pip при разрешении читают METADATA уже «установленных» пакетов и
+        жёстко падают, если каталог dist-info есть, а METADATA нет/битый
+        (прерванная установка, OneDrive-placeholder, ручная чистка). Один такой
+        пакет (напр. torch) роняет установку всего, что от него зависит
+        (torchaudio). Удаляем битый dist-info, чтобы пакет считался не
+        установленным и переустановился начисто. Возвращает число вычищенных.
+        """
+        libs = self.libs_path_abs
+        if not os.path.isdir(libs):
+            return 0
+        try:
+            entries = os.listdir(libs)
+        except OSError:
+            return 0
+
+        repaired = 0
+        for item in entries:
+            if not item.endswith(".dist-info"):
+                continue
+            di = os.path.join(libs, item)
+            meta = os.path.join(di, "METADATA")
+            try:
+                healthy = os.path.isfile(meta) and os.path.getsize(meta) > 0
+            except OSError:
+                healthy = False
+            if healthy:
+                continue
+            pkg = item.rsplit("-", 1)[0]
+            self.update_log(
+                f"Битый пакет (нет METADATA): {item} — удаляю dist-info, чтобы переустановить."
+            )
+            if self._rmtree_with_retries(di, pkg):
+                repaired += 1
+            else:
+                self.update_log(
+                    f"Не удалось удалить битый {item} (возможно, файл занят антивирусом/OneDrive)."
+                )
+        if repaired:
+            self.update_log(f"Очищено битых пакетов перед установкой: {repaired}.")
+        return repaired
+
+    def _maybe_warn_fragile_location(self) -> None:
+        """Один раз предупреждаем о «хрупком» расположении Lib: OneDrive и/или
+        не-ASCII символы в пути — частые причины пропавших METADATA, незавершённых
+        удалений, 'python.exe not found' и прочих трудновоспроизводимых ошибок."""
+        if getattr(self, "_fragile_location_warned", False):
+            return
+        self._fragile_location_warned = True
+
+        path = self.libs_path_abs or ""
+        low = path.lower()
+
+        if "onedrive" in low:
+            self.update_log(
+                "⚠️ Папка установки находится внутри OneDrive: "
+                f"{path}\n"
+                "OneDrive выгружает/блокирует файлы (ошибки 'METADATA не найден', "
+                "пакеты не удаляются, python.exe не запускается). Настоятельно "
+                "рекомендуется перенести приложение в обычную локальную папку вне "
+                "OneDrive."
+            )
+
+        non_ascii = [ch for ch in path if ord(ch) > 127]
+        if non_ascii:
+            sample = "".join(dict.fromkeys(non_ascii))[:20]
+            self.update_log(
+                "⚠️ В пути установки есть не-ASCII символы "
+                f"({sample}): {path}\n"
+                "Это может непредсказуемо ломать установку/запуск пакетов "
+                "(uv/pip, subprocess, кодировки). Рекомендуется перенести "
+                "приложение в путь только из латинских букв, цифр и '_' — "
+                "например C:\\Games\\NeuroMita."
+            )
 
     def _ensure_libs_path(self):
         os.makedirs(self.libs_path_abs, exist_ok=True)
@@ -831,6 +979,7 @@ class PipInstaller:
             self.history: Deque[tuple[float, int]] = deque(maxlen=180)
             self.history.append((self.start, 0))
             self.error_seen: bool = False
+            self.recent_lines: Deque[str] = deque(maxlen=40)
             self.is_pytorch_install: bool = (
                 ("download.pytorch.org" in self.cmd_str_low)
                 or ("torch" in self.cmd_str_low and "install" in self.cmd_str_low)
@@ -914,6 +1063,7 @@ class PipInstaller:
         clean = self._clean_line(line.rstrip())
         if not clean:
             return
+        state.recent_lines.append(clean)
 
         low = clean.lower()
         if any(k in low for k in ("error:", "ошибка:", "failed:", "traceback", "exception", "critical")) or (("error" in low or "failed" in low) and "build\\" not in low and "bdist." not in low):
@@ -999,6 +1149,17 @@ class PipInstaller:
         except Exception:
             pass
 
+    def _is_uv_cache_access_denied_failure(self, cmd: List[str], state: _RunState, ret: int) -> bool:
+        if ret == 0 or not self._is_uv_command(cmd):
+            return False
+        for line in state.recent_lines:
+            low = line.lower()
+            if ("uv\\cache" in low or "uv/cache" in low) and "rename" in low and (
+                "access is denied" in low or "os error 5" in low
+            ):
+                return True
+        return False
+
     def _run_with_pipes(self, cmd: List[str], env: dict, state: _RunState) -> Tuple[bool, int]:
         try:
             proc = subprocess.Popen(
@@ -1033,8 +1194,10 @@ class PipInstaller:
                 except Exception:
                     pass
 
-        threading.Thread(target=_reader, args=(proc.stdout, q_out), daemon=True).start()
-        threading.Thread(target=_reader, args=(proc.stderr, q_err), daemon=True).start()
+        t_out = threading.Thread(target=_reader, args=(proc.stdout, q_out), daemon=True)
+        t_err = threading.Thread(target=_reader, args=(proc.stderr, q_err), daemon=True)
+        t_out.start()
+        t_err.start()
 
         while proc.poll() is None or t_out.is_alive() or t_err.is_alive():
             processed_any = False
@@ -1174,6 +1337,7 @@ class PipInstaller:
                 ok, ret = self._run_with_pipes(cmd, env, state)
         else:
             ok, ret = self._run_with_pipes(cmd, env, state)
+        self._last_run_uv_cache_access_denied = self._is_uv_cache_access_denied_failure(cmd, state, ret)
 
         # Завершение
         elapsed = time.time() - state.start

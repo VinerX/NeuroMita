@@ -262,9 +262,11 @@ class AllVoicesComponent:
 
         def _remove(**kwargs) -> bool:
             log = _log_from_ctx(kwargs)
+            ok = True
             for name in names:
-                remove_assets(name, log)
-            return True
+                if not remove_assets(name, log):
+                    ok = False
+            return ok
 
         return InstallPlan(
             actions=[

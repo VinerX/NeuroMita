@@ -19,10 +19,22 @@ Usage::
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
 SUPPORTED_EXT = (".zip", ".7z")
+
+
+def _version_key(tag: str) -> tuple:
+    """Числовой ключ версии из тега для сравнения/сортировки.
+
+    'v2026.06.12_Full' → (2026, 6, 12). Берём только ведущие числовые
+    компоненты, игнорируя суффиксы вроде _Full. Нужен, потому что GitHub
+    /releases отдаёт список в порядке created_at (даты коммита тега), а не по
+    версии или публикации — нельзя доверять порядку списка.
+    """
+    return tuple(int(n) for n in re.findall(r"\d+", tag or ""))
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
@@ -115,8 +127,13 @@ def find_latest_python_full(
     releases: list[Release],
     channel: str,
 ) -> tuple[Optional[Release], Optional[ReleaseAsset]]:
-    """Walk releases newest-first; return the first one with a Python-full asset."""
-    for r in releases:
+    """Return the highest-version release that has a Python-full asset.
+
+    Сортируем по версии тега, а не доверяем порядку списка GitHub (он по
+    created_at коммита тега, из-за чего более старая версия может оказаться
+    первой — см. _version_key).
+    """
+    for r in sorted(releases, key=lambda x: _version_key(x.tag), reverse=True):
         if channel == "stable" and r.prerelease:
             continue
         if r.is_patch:
@@ -131,8 +148,13 @@ def find_latest_unity_asset(
     releases: list[Release],
     channel: str,
 ) -> tuple[Optional[Release], Optional[ReleaseAsset]]:
-    """Walk releases newest-first; return the first one with a Unity asset."""
-    for r in releases:
+    """Return the highest-version release that has a Unity asset.
+
+    Сортируем по версии тега, а не доверяем порядку списка GitHub (он по
+    created_at коммита тега, из-за чего более старая версия может оказаться
+    первой — см. _version_key).
+    """
+    for r in sorted(releases, key=lambda x: _version_key(x.tag), reverse=True):
         if channel == "stable" and r.prerelease:
             continue
         picked = pick_from_release(r)

@@ -13,7 +13,12 @@ from utils import getTranslationVariant as _, get_character_voice_paths
 from core.backends import BackendKind, get_backend_service
 from core.install_types import InstallPlan, InstallAction
 from core.install_requirements import InstallRequirement, check_requirements
-from handlers.voice_models.install_plan_helpers import pip_uninstall_action, remove_paths_action
+from handlers.voice_models.install_plan_helpers import (
+    pip_uninstall_action,
+    remove_paths_action,
+    rvc_python_compat_error,
+    warning_action,
+)
 
 class F5TTSInstallSpec:
     @classmethod
@@ -57,6 +62,7 @@ class F5TTSInstallSpec:
     def build_install_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
         mid = str(model_id)
         backend_kind = cls.required_backend(mid, ctx)
+        compat_warning = rvc_python_compat_error("tts-with-rvc") if mid == "high+low" else None
         if cls.is_installed(mid, ctx):
             return InstallPlan(
                 required_backend=backend_kind,
@@ -137,6 +143,9 @@ class F5TTSInstallSpec:
                 fn=lambda **_k: cls.is_installed(mid, ctx),
             )
         )
+
+        if compat_warning:
+            actions.insert(0, warning_action(compat_warning))
 
         return InstallPlan(
             actions=actions,

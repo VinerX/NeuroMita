@@ -63,8 +63,17 @@ ALWAYS_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
     (PROJECT_DIR / "assets" / "launcher_ui", OUTPUT_DIR / "assets" / "launcher_ui"),
 ]
 
-# Файлы: поддержка абсолютных путей
-_copy_files_raw = env.get("BUILD_COPY_FILES", "extra/init.py,extra/Icon.png")
+# Файлы, нужные в рантайме в ЛЮБОМ режиме сборки. init.py запускается шагом
+# инициализации Triton/Fish Speech (subprocess из корня билда) — без него
+# fast/промптерский билд падал с "can't open file init.py".
+_always_files_raw = env.get("BUILD_ALWAYS_COPY_FILES", "extra/init.py")
+ALWAYS_FILES_TO_COPY: List[Tuple[Path, Path]] = [
+    (resolve_path(f.strip(), PROJECT_DIR), OUTPUT_DIR / Path(f.strip()).name)
+    for f in _always_files_raw.split(",") if f.strip()
+]
+
+# Файлы только для full-режима: поддержка абсолютных путей
+_copy_files_raw = env.get("BUILD_COPY_FILES", "extra/Icon.png")
 FILES_TO_COPY: List[Tuple[Path, Path]] = [
     (resolve_path(f.strip(), PROJECT_DIR), OUTPUT_DIR / Path(f.strip()).name)
     for f in _copy_files_raw.split(",") if f.strip()
@@ -359,6 +368,7 @@ if __name__ == "__main__":
 
     print("\nКопирую обязательные launcher assets...")
     copy_entries(ALWAYS_DIRS_TO_COPY)
+    copy_entries(ALWAYS_FILES_TO_COPY)
 
     if ROOT_SCRIPTS:
         print("\nКопирую скрипты запуска...")

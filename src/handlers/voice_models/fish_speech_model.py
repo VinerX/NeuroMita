@@ -18,7 +18,11 @@ from core.backends import BackendKind, get_backend_service
 from core.install_types import InstallPlan, InstallAction
 from core.install_requirements import InstallRequirement, check_requirements
 
-from handlers.voice_models.install_plan_helpers import pip_uninstall_action
+from handlers.voice_models.install_plan_helpers import (
+    pip_uninstall_action,
+    rvc_python_compat_error,
+    warning_action,
+)
 
 
 class FishSpeechInstallSpec:
@@ -285,6 +289,13 @@ class FishSpeechInstallSpec:
 
                 init_cmd = [script_path, "init.py"]
                 creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                # init.py печатает кириллицу (.project-root, reference-текст). На
+                # не-UTF-8 локали (напр. греческой cp1253) дочерний print() падает
+                # с UnicodeEncodeError и роняет шаг. Форсим UTF-8 в дочернем
+                # процессе — как это уже делает pip_installer для своих сабпроцессов.
+                child_env = os.environ.copy()
+                child_env["PYTHONIOENCODING"] = "utf-8"
+                child_env["PYTHONUTF8"] = "1"
                 result = subprocess.run(
                     init_cmd,
                     capture_output=True,
@@ -293,6 +304,7 @@ class FishSpeechInstallSpec:
                     errors="ignore",
                     check=False,
                     creationflags=creationflags,
+                    env=child_env,
                 )
 
                 if result.stdout:
@@ -322,6 +334,7 @@ class FishSpeechInstallSpec:
     def build_install_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
         mid = str(model_id)
         backend_kind = cls.required_backend(mid, ctx)
+        compat_warning = rvc_python_compat_error("tts-with-rvc") if mid == "medium+low" else None
         if cls.is_installed(mid, ctx):
             return InstallPlan(
                 actions=[],
@@ -353,6 +366,11 @@ class FishSpeechInstallSpec:
             "fish-speech-lib",
             "librosa==0.9.1",
             "numba==0.60.0",
+            # Держим scipy на numpy-1.x-совместимой ветке: fish-speech-lib тянет
+            # pytorch_lightning -> torchmetrics -> scipy, и без верхней границы
+            # ставится scipy>=1.13 (использует np.long, удалён в numpy 1.26) →
+            # "module 'numpy' has no attribute 'long'". Зеркалит пин F5.
+            "scipy<1.13",
         ]
         if mid == "medium+low":
             pkgs.append("tts-with-rvc")
@@ -394,6 +412,9 @@ class FishSpeechInstallSpec:
                 fn=lambda **_k: cls.is_installed(mid, ctx),
             )
         )
+
+        if compat_warning:
+            actions.insert(0, warning_action(compat_warning))
 
         return InstallPlan(
             actions=actions,
