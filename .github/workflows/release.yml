@@ -61,23 +61,38 @@ jobs:
               || true
           }
 
+          # Тег предыдущего релиза для changelog. Берём только теги, которые:
+          #   (а) достижимы из текущего коммита (--merged HEAD) — иначе
+          #       git log PREV..HEAD откатывается к merge-base и заново
+          #       перечисляет уже выпущенные коммиты;
+          #   (б) строго НИЖЕ текущего по версии — иначе предыдущим мог стать
+          #       самый высокий тег вообще, в т.ч. «будущий»/тестовый
+          #       (например v2026.12.01.1), и диапазон раздувался до сотен
+          #       уже выпущенных коммитов.
+          # Среди подходящих берём самый высокий (head после version-сортировки).
+          previous_release_tag() {
+            git tag --list 'v*' --merged HEAD --sort=-version:refname \
+              | grep -E "$RELEASE_TAG_PATTERN" \
+              | grep -vxF "$CURRENT_TAG" \
+              | while read -r t; do
+                  [ -z "$t" ] && continue
+                  top=$(printf '%s\n%s\n' "$t" "$CURRENT_TAG" | sort -V | tail -n1)
+                  [ "$top" = "$CURRENT_TAG" ] && echo "$t"
+                done \
+              | head -n1
+          }
+
           LATEST_TAG=$(
             list_release_tags | head -n1
           )
 
           SHOULD_RELEASE="true"
           SKIP_REASON=""
-          PREV_TAG="${LATEST_TAG}"
+          PREV_TAG=$(previous_release_tag)
 
           if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" = "$CURRENT_TAG" ]; then
             SHOULD_RELEASE="false"
             SKIP_REASON="version-already-released"
-            PREV_TAG=$(
-              list_release_tags \
-                | grep -vxF "$CURRENT_TAG" \
-                | head -n1 \
-                || true
-            )
           elif [ -n "$LATEST_TAG" ]; then
             TOP_TAG=$(
               printf '%s\n%s\n' "$LATEST_TAG" "$CURRENT_TAG" \
