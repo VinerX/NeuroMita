@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Тег релиза (например v2026.06.22.1)'
-        required: true
+        description: 'Тег релиза (оставь пустым — возьмёт последний)'
+        required: false
         type: string
       release_name:
         description: 'Название (например NeuroMita v2026.06.22.1)'
