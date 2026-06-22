@@ -197,15 +197,13 @@ def _get_current_version() -> str:
 
 
 def _parse_version(tag: str) -> tuple:
-    """Parses 'v2026.04.12.1' → (2026, 4, 12, 1)."""
-    clean = tag.lstrip("v")
-    parts = []
-    for p in clean.split("."):
-        try:
-            parts.append(int(p))
-        except ValueError:
-            pass
-    return tuple(parts)
+    """Parses 'v2026.04.12.1' → (2026, 4, 12, 1), 'v2026.05.10_Full' → (2026, 5, 10).
+
+    Берём все числовые группы из тега. Раньше split('.') ломался на суффиксах
+    вроде '_Full' ('12_Full' не парсился в int и компонент терялся).
+    """
+    import re
+    return tuple(int(n) for n in re.findall(r"\d+", tag or ""))
 
 
 def _is_newer(remote_tag: str, local_version: str) -> bool:
