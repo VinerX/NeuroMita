@@ -426,7 +426,7 @@
   "Модель сама описывает изображение в начале ответа.\nОписание сохраняется в историю вместо тяжёлого base64 — история не раздувается.": "The model describes the image at the start of its reply.\nThe description is stored in history instead of raw base64 — keeps history light.",
   "Модель:": "Model:",
   "Может не работать на AMD!": "May not work on AMD!",
-  "Можно добавить свой язык: киньте файл «<код>.json» (например pl.json) в папку с языками и перезапустите приложение — он появится в списке выше. Ключи — русские строки, переводите только значения. Имя языка в списке задаётся ключом «_name».": "You can add your own language: drop a \"<code>.json\" file (e.g. pl.json) into the language folder and restart — it will appear in the list above. Keys are the Russian source strings, translate only the values. The display name is set via the \"_name\" key.",
+  "Можно добавить свой язык: киньте файл «<код>.json» (например pl.json)\nв папку с языками и перезапустите приложение — он появится в списке выше.\nКлючи — русские строки, переводите только значения.\nИмя языка в списке задаётся ключом «_name».": "You can add your own language: drop a \"<code>.json\" file (e.g. pl.json)\ninto the language folder and restart — it will appear in the list above.\nKeys are the Russian source strings, translate only the values.\nThe display name is set via the \"_name\" key.",
   "Можно скачать оптимизированную CUDA-версию (~3 GB), чтобы значительно ускорить работу.": "You can download the optimized CUDA version (~3 GB) to significantly speed things up.",
   "Мышление {}: ": "Thinking {}: ",
   "НОВОЕ": "NEW",

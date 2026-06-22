@@ -46,11 +46,12 @@ def setup_language_settings_controls(self, parent):
 
     # Список языков — динамически из доступных JSON-локалей (RU + найденные).
     try:
-        from localization import available_languages
-        _lang_options = available_languages()
+        from localization import available_languages, language_display_name
+        _lang_codes = available_languages()
     except Exception:
-        _lang_options = ["RU", "EN"]
-    _lang_options = ["RU"] + sorted(c for c in _lang_options if c != "RU")
+        _lang_codes = ["RU", "EN"]
+    _lang_codes = ["RU"] + sorted(c for c in _lang_codes if c != "RU")
+    _lang_options = [(language_display_name(c), c) for c in _lang_codes]
 
     language_config = [
         {'label': 'Язык / Language', 'key': 'LANGUAGE', 'type': 'combobox',
@@ -69,14 +70,14 @@ def setup_language_settings_controls(self, parent):
     # ── Кастомные переводы ──────────────────────────────────────────────────
     custom_config = [
         {'label': _(
-            'Можно добавить свой язык: киньте файл «<код>.json» (например pl.json) '
-            'в папку с языками и перезапустите приложение — он появится в списке выше. '
-            'Ключи — русские строки, переводите только значения. Имя языка в списке '
-            'задаётся ключом «_name».',
-            'You can add your own language: drop a "<code>.json" file (e.g. pl.json) '
-            'into the language folder and restart — it will appear in the list above. '
-            'Keys are the Russian source strings, translate only the values. The display '
-            'name is set via the "_name" key.'),
+            'Можно добавить свой язык: киньте файл «<код>.json» (например pl.json)\n'
+            'в папку с языками и перезапустите приложение — он появится в списке выше.\n'
+            'Ключи — русские строки, переводите только значения.\n'
+            'Имя языка в списке задаётся ключом «_name».',
+            'You can add your own language: drop a "<code>.json" file (e.g. pl.json)\n'
+            'into the language folder and restart — it will appear in the list above.\n'
+            'Keys are the Russian source strings, translate only the values.\n'
+            'The display name is set via the "_name" key.'),
          'type': 'text'},
         {'label': _('Открыть папку с языками', 'Open language folder'),
          'type': 'button',

@@ -39,7 +39,7 @@ LANGUAGE_DISPLAY_NAMES: dict[str, str] = {
     "EN": "English",
     "FR": "Français",
     "DE": "Deutsch",
-    "ZH": "中文",
+    "ZH": "简体中文",
     "UK": "Українська",
     "EL": "Ελληνικά",
 }
