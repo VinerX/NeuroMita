@@ -17,7 +17,7 @@ from handlers.voice_models.install_plan_helpers import (
     pip_uninstall_action,
     remove_paths_action,
     rvc_python_compat_error,
-    unsupported_runtime_plan,
+    warning_action,
 )
 
 class F5TTSInstallSpec:
@@ -62,10 +62,7 @@ class F5TTSInstallSpec:
     def build_install_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
         mid = str(model_id)
         backend_kind = cls.required_backend(mid, ctx)
-        if mid == "high+low":
-            compat_error = rvc_python_compat_error("tts-with-rvc")
-            if compat_error:
-                return unsupported_runtime_plan(compat_error)
+        compat_warning = rvc_python_compat_error("tts-with-rvc") if mid == "high+low" else None
         if cls.is_installed(mid, ctx):
             return InstallPlan(
                 required_backend=backend_kind,
@@ -146,6 +143,9 @@ class F5TTSInstallSpec:
                 fn=lambda **_k: cls.is_installed(mid, ctx),
             )
         )
+
+        if compat_warning:
+            actions.insert(0, warning_action(compat_warning))
 
         return InstallPlan(
             actions=actions,

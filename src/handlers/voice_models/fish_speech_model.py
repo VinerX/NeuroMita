@@ -21,7 +21,7 @@ from core.install_requirements import InstallRequirement, check_requirements
 from handlers.voice_models.install_plan_helpers import (
     pip_uninstall_action,
     rvc_python_compat_error,
-    unsupported_runtime_plan,
+    warning_action,
 )
 
 
@@ -334,10 +334,7 @@ class FishSpeechInstallSpec:
     def build_install_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
         mid = str(model_id)
         backend_kind = cls.required_backend(mid, ctx)
-        if mid == "medium+low":
-            compat_error = rvc_python_compat_error("tts-with-rvc")
-            if compat_error:
-                return unsupported_runtime_plan(compat_error)
+        compat_warning = rvc_python_compat_error("tts-with-rvc") if mid == "medium+low" else None
         if cls.is_installed(mid, ctx):
             return InstallPlan(
                 actions=[],
@@ -415,6 +412,9 @@ class FishSpeechInstallSpec:
                 fn=lambda **_k: cls.is_installed(mid, ctx),
             )
         )
+
+        if compat_warning:
+            actions.insert(0, warning_action(compat_warning))
 
         return InstallPlan(
             actions=actions,

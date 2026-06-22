@@ -105,14 +105,12 @@ def rvc_python_compat_error(package: str, *, python_path: str | None = None) -> 
     if pkg == "tts-with-rvc" and version >= (3, 12, 0):
         ver = ".".join(str(v) for v in version)
         return _(
-            "Пакет tts-with-rvc сейчас не поддерживается встроенным Python {ver}. "
-            "AI Hub устанавливает зависимости через libs/python/python.exe, а у вас там Python {ver}. "
-            "Для RVC-веток нужен совместимый рантайм Python 3.11.x или отдельная адаптация стека зависимостей "
-            "(fairseq-built/torchcrepe/tts-with-rvc) под 3.12.",
-            "The tts-with-rvc package is currently unsupported on the embedded Python {ver}. "
-            "AI Hub installs dependencies through libs/python/python.exe, and that runtime is Python {ver}. "
-            "RVC-based modes need a compatible Python 3.11.x runtime or an explicit dependency-stack adaptation "
-            "(fairseq-built/torchcrepe/tts-with-rvc) for 3.12.",
+            "Внимание: пакет tts-with-rvc может работать нестабильно на встроенном Python {ver} "
+            "(стек fairseq-built/torchcrepe/tts-with-rvc заточен под Python 3.11.x). "
+            "Установка продолжится; если RVC-ветка не заработает — нужен рантайм 3.11.x.",
+            "Warning: the tts-with-rvc package may be unstable on the embedded Python {ver} "
+            "(the fairseq-built/torchcrepe/tts-with-rvc stack targets Python 3.11.x). "
+            "Installation will proceed; if the RVC mode fails, a 3.11.x runtime is needed.",
         ).format(ver=ver)
 
     return None
@@ -130,3 +128,19 @@ def unsupported_runtime_plan(message: str) -> InstallPlan:
         ],
         ok_status=message,
     )
+
+
+def warning_action(message: str, *, progress: int = 1) -> InstallAction:
+    """Non-fatal heads-up: surface a caveat in the install log/status but let the
+    install proceed (returns True). Used for «может не работать», в отличие от
+    unsupported_runtime_plan, который установку рубит."""
+    def _warn(*, callbacks=None, ctx=None, **_kwargs) -> bool:
+        try:
+            if callbacks:
+                callbacks.log(message)
+                callbacks.status(message)
+        except Exception:
+            pass
+        return True
+
+    return InstallAction(type="call", description=message, progress=int(progress), fn=_warn)
