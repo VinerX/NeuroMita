@@ -66,6 +66,28 @@ class UserPreset:
 
 
 class ApiPresetsController:
+    _MISTRAL_EASTER_EGG_MODEL_ID = "la-chaton-fat"
+    _MISTRAL_EASTER_EGG_MODEL_INFO = {
+        "id": _MISTRAL_EASTER_EGG_MODEL_ID,
+        "name": "La Chaton Fat 😺",
+        "canonical_slug": "mistral/la-chaton-fat",
+        "currency": "USD",
+        "context_length": 2_000_000,
+        "top_provider_context_length": 2_000_000,
+        "max_completion_tokens": 4096,
+        "is_free": False,
+        "pricing": {
+            "prompt": 123.456789,
+            "completion": 987.654321,
+            "input_cache_read": 55.555555,
+            "input_cache_write": 222.222222,
+        },
+        "rate_limits": {},
+        "top_provider": {},
+        "latency": 42,
+        "tokens_per_second": 0.5,
+    }
+
     def __init__(self):
         self.event_bus = get_event_bus()
 
@@ -670,7 +692,9 @@ class ApiPresetsController:
 
     def _build_effective_preset_dict(self, preset_id: int) -> Optional[Dict[str, Any]]:
         if preset_id in self.templates:
-            return asdict(self.templates[preset_id])
+            result = asdict(self.templates[preset_id])
+            result["known_models"] = self._known_models_for_template(self.templates[preset_id])
+            return result
 
         p = self.presets.get(preset_id)
         if not p:
@@ -691,7 +715,7 @@ class ApiPresetsController:
             "url_tpl": tpl.url_tpl if tpl else "",
 
             "default_model": p.default_model or (tpl.default_model if tpl else ""),
-            "known_models": (tpl.known_models if tpl else []),
+            "known_models": self._known_models_for_template(tpl),
 
             "test_url": tpl.test_url if tpl else "",
             "filter_fn": tpl.filter_fn if tpl else "",
@@ -707,6 +731,48 @@ class ApiPresetsController:
             "fallbacks": [dict(fb) for fb in (p.fallbacks or [])],
         }
         return result
+
+    @classmethod
+    def _is_mistral_template(cls, tpl: Optional[ApiTemplate]) -> bool:
+        if not tpl:
+            return False
+        template_name = str(getattr(tpl, "name", "") or "").strip().lower()
+        return template_name == "mistral ai"
+
+    @classmethod
+    def _known_models_for_template(cls, tpl: Optional[ApiTemplate]) -> List[str]:
+        known_models = [str(model).strip() for model in (tpl.known_models or [])] if tpl else []
+        known_models = [model for model in known_models if model]
+
+        if cls._is_mistral_template(tpl) and cls._MISTRAL_EASTER_EGG_MODEL_ID not in known_models:
+            known_models.append(cls._MISTRAL_EASTER_EGG_MODEL_ID)
+
+        return known_models
+
+    @classmethod
+    def _decorate_model_infos_for_template(
+        cls,
+        tpl: Optional[ApiTemplate],
+        model_infos: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for info in model_infos or []:
+            if not isinstance(info, dict):
+                continue
+            model_id = str(info.get("id") or "").strip()
+            if not model_id or model_id in seen:
+                continue
+            seen.add(model_id)
+            normalized.append(info)
+
+        if cls._is_mistral_template(tpl):
+            easter_egg_id = cls._MISTRAL_EASTER_EGG_MODEL_ID
+            if easter_egg_id not in seen:
+                normalized.append(dict(cls._MISTRAL_EASTER_EGG_MODEL_INFO))
+
+        return normalized
 
     # ---------- Обработчики событий ----------
 
@@ -1214,6 +1280,7 @@ class ApiPresetsController:
                         data = apply_filter(tpl.filter_fn, data)
 
                     model_infos = self._extract_test_models(data, source_url=final_url)
+                    model_infos = self._decorate_model_infos_for_template(tpl, model_infos)
                     if model_infos:
                         if "proxyapi.ru" in final_url.lower():
                             for info in model_infos:

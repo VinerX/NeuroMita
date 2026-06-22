@@ -227,16 +227,4 @@ def setup_general_settings_controls(self, parent):
     except Exception:
         pass
 
-    language_config = [
-        {'label': 'Язык / Language', 'key': 'LANGUAGE', 'type': 'combobox',
-         'options': ["RU", "EN"], 'default': "RU",
-         'command': lambda v: _on_language_changed(self, v)},
-    ]
-
-    create_settings_section(
-        self, 
-        parent,
-        "Язык / Language",
-        language_config,
-        icon_name='fa5s.globe'
-    )
+    # Выбор языка вынесен в отдельную вкладку настроек («Язык» / language_settings).

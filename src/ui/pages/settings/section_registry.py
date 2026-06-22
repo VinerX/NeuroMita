@@ -10,6 +10,7 @@ from ui.settings import (
     character_settings,
     game_settings,
     general_settings,
+    language_settings,
     microphone_settings,
     model_interaction_settings,
     screen_analysis_settings,
@@ -45,6 +46,18 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
         ),
         min_mode="basic",
         builder_ref=general_settings.setup_general_settings_controls,
+    ),
+    SettingsSectionSpec(
+        key="language",
+        icon_name="fa6s.globe",
+        nav_label=("Язык", "Language"),
+        title=("Язык интерфейса", "Interface language"),
+        subtitle=(
+            "Выбор языка интерфейса и подключение кастомных переводов.",
+            "Choose the interface language and add custom translations.",
+        ),
+        min_mode="basic",
+        builder_ref=language_settings.setup_language_settings_controls,
     ),
     SettingsSectionSpec(
         key="api",

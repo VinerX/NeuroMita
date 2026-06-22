@@ -87,6 +87,8 @@ def create_settings_direct(gui, parent_layout, cfg_list, title=None):
         if t == 'text':
             lbl = QLabel(cfg['label'], parent_widget)
             lbl.setObjectName('SeparatorLabel')
+            lbl.setWordWrap(True)
+            lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             if current_sub:
                 current_sub.add_widget(lbl)
             else:
@@ -309,14 +311,34 @@ def create_setting_widget(
         widget = QComboBox()
         widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         widget.setMinimumWidth(60)
+        _uses_display_value = False
         if options:
-            widget.addItems([str(o) for o in options])
-        widget.setCurrentText(str(gui.settings.get(setting_key, default)))
+            if all(isinstance(o, (tuple, list)) and len(o) == 2 for o in options):
+                _uses_display_value = True
+                for display_text, val in options:
+                    widget.addItem(str(display_text), val)
+            else:
+                widget.addItems([str(o) for o in options])
+        if _uses_display_value:
+            # find matching value in options
+            saved = gui.settings.get(setting_key, default)
+            for i in range(widget.count()):
+                if widget.itemData(i) == saved:
+                    widget.setCurrentIndex(i)
+                    break
+        else:
+            widget.setCurrentText(str(gui.settings.get(setting_key, default)))
 
         def _save_combo(text):
-            gui._save_setting(setting_key, text)
-            if command:
-                command(text)
+            if _uses_display_value:
+                val = widget.currentData()
+                gui._save_setting(setting_key, val)
+                if command:
+                    command(val)
+            else:
+                gui._save_setting(setting_key, text)
+                if command:
+                    command(text)
 
         widget.currentTextChanged.connect(_save_combo)
 

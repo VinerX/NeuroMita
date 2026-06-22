@@ -2,6 +2,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTextEdit, QFrame, QButtonGroup, QRadioButton
 from PyQt6.QtGui import QFont
 from core.events import get_event_bus, Events
+from localization import available_languages, language_display_name, translate_for_language
 import sys
 from styles.theme import get_theme
 from utils import render_qss
@@ -15,6 +16,15 @@ class EULAWidget(QWidget):
         self.event_bus = get_event_bus()
         self.setObjectName("EULAWidget")
         self.current_language = "ru"
+        self._lang_buttons: dict[str, QRadioButton] = {}
+        try:
+            from managers.settings_manager import SettingsManager
+            self.current_language = str(SettingsManager.get("LANGUAGE", "RU") or "RU").strip().lower()
+        except Exception:
+            pass
+        # Язык, с которым уже построен интерфейс под оверлеем: если на старте
+        # пользователь выберет другой — после принятия предложим перезапуск.
+        self._initial_language = self.current_language
         self.setup_ui()
         
     def setup_ui(self):
@@ -138,16 +148,20 @@ class EULAWidget(QWidget):
         lang_layout.setSpacing(15)
         
         self.lang_group = QButtonGroup()
-        self.ru_radio = QRadioButton("Русский")
-        self.ru_radio.setChecked(True)
-        self.en_radio = QRadioButton("English")
-        
-        self.lang_group.addButton(self.ru_radio, 0)
-        self.lang_group.addButton(self.en_radio, 1)
+        for idx, code in enumerate(available_languages()):
+            button = QRadioButton(language_display_name(code))
+            button.setProperty("lang_code", code.lower())
+            if code.lower() == self.current_language:
+                button.setChecked(True)
+            self.lang_group.addButton(button, idx)
+            self._lang_buttons[code.lower()] = button
+            lang_layout.addWidget(button)
         self.lang_group.buttonClicked.connect(self._on_language_changed)
-        
-        lang_layout.addWidget(self.ru_radio)
-        lang_layout.addWidget(self.en_radio)
+
+        if self.current_language not in self._lang_buttons:
+            self.current_language = "ru"
+            if "ru" in self._lang_buttons:
+                self._lang_buttons["ru"].setChecked(True)
         container_layout.addLayout(lang_layout)
         
         self.text_edit = QTextEdit()
@@ -177,20 +191,28 @@ class EULAWidget(QWidget):
         self._update_texts()
         
     def _on_language_changed(self):
-        self.current_language = "ru" if self.ru_radio.isChecked() else "en"
+        button = self.lang_group.checkedButton()
+        code = button.property("lang_code") if button is not None else None
+        self.current_language = str(code or "ru")
         self._update_texts()
         
     def _update_texts(self):
-        if self.current_language == "ru":
-            self.title_label.setText("Лицензионное соглашение пользователя")
-            self.reject_button.setText("Отклонить")
-            self.accept_button.setText("Принять")
-            self.text_edit.setPlainText(self._get_russian_text())
-        else:
-            self.title_label.setText("End User License Agreement")
-            self.reject_button.setText("Reject")
-            self.accept_button.setText("Accept")
-            self.text_edit.setPlainText(self._get_english_text())
+        self.title_label.setText(
+            translate_for_language(
+                self.current_language,
+                "Лицензионное соглашение пользователя",
+                "End User License Agreement",
+            )
+        )
+        self.reject_button.setText(
+            translate_for_language(self.current_language, "Отклонить", "Reject")
+        )
+        self.accept_button.setText(
+            translate_for_language(self.current_language, "Принять", "Accept")
+        )
+        self.text_edit.setPlainText(
+            translate_for_language(self.current_language, self._get_russian_text(), self._get_english_text())
+        )
             
     def _get_russian_text(self):
         return """ЛИЦЕНЗИОННОЕ СОГЛАШЕНИЕ КОНЕЧНОГО ПОЛЬЗОВАТЕЛЯ
@@ -283,11 +305,21 @@ BY CLICKING "ACCEPT", YOU CONFIRM THAT:
 • You will not use the software for illegal purposes"""
         
     def _on_accept(self):
+        # Сохраняем выбранный на стартовом экране язык интерфейса.
+        self.event_bus.emit(Events.Settings.SAVE_SETTING, {
+            'key': 'LANGUAGE',
+            'value': str(self.current_language or "ru").upper(),
+        })
         self.event_bus.emit(Events.Settings.SAVE_SETTING, {
             'key': 'EULA_ACCEPTED',
             'value': True
         })
         self.accepted.emit()
+
+    def language_changed_on_start(self) -> bool:
+        """True, если язык, выбранный на стартовом экране, отличается от того,
+        с которым уже построен интерфейс (значит нужен перезапуск)."""
+        return str(self.current_language or "ru") != str(self._initial_language or "ru")
         
     def _on_reject(self):
         self.rejected.emit()

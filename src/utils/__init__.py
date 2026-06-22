@@ -43,12 +43,22 @@ def clamp(value, min_value, max_value):
 
 
 def getTranslationVariant(ru_str, en_str=""):
-    if en_str and SettingsManager.get("LANGUAGE") == "EN":
-        return en_str
-    return ru_str
+    # Маршрутизация через JSON-каталоги локализации (см. src/localization).
+    # Ключ перевода — русская строка; для RU возвращается исходная строка,
+    # для прочих языков: catalog[lang] -> инлайн en -> ru. Делегируем, сохраняя
+    # старую сигнатуру _(ru, en), чтобы не править ~1600 UI call-site.
+    try:
+        from localization import translate as _translate
+        return _translate(ru_str, en_str)
+    except Exception:
+        # Фолбэк на старое поведение, если модуль локализации недоступен
+        # (например, на очень раннем bootstrap).
+        if en_str and SettingsManager.get("LANGUAGE") == "EN":
+            return en_str
+        return ru_str
 
 
-_ = getTranslationVariant  # Временно, мб
+_ = getTranslationVariant
 
 
 def default_installed_voice(models_dir=None, preferred="Mila", ext=None):

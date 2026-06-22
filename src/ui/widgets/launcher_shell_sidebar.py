@@ -233,7 +233,26 @@ class LauncherSidebarWidget(QFrame):
         layout.setContentsMargins(2, 0, 2, 0)
         layout.setSpacing(6)
 
-        for code, label_text in (("ru", "RU"), ("en", "EN")):
+        # Компактный переключатель: всегда RU и ещё одна «быстрая» пилюля.
+        # Если выбран язык вне RU/EN — вторая пилюля показывает именно его
+        # (вместо EN), чтобы текущий язык был под рукой одним кликом.
+        try:
+            from localization import available_languages
+            available = {c.lower() for c in available_languages("full")}
+        except Exception:
+            available = {"ru", "en"}
+        try:
+            from managers.settings_manager import SettingsManager
+            current = str(SettingsManager.get("LANGUAGE", "RU") or "RU").lower()
+        except Exception:
+            current = "ru"
+        if current in ("ru", "en") or current not in available:
+            second = "en"
+        else:
+            second = current
+        langs = ["ru", second]
+        for code in langs:
+            label_text = code.upper()
             button = QPushButton(label_text)
             button.setObjectName("LauncherShellLangPill")
             button.setCheckable(True)
@@ -242,6 +261,16 @@ class LauncherSidebarWidget(QFrame):
             button.clicked.connect(lambda checked=False, value=code: self.utility_requested.emit(f"language:{value}"))
             self._lang_buttons[code] = button
             layout.addWidget(button)
+
+        # Иконка-планета справа от языков — ведёт в настройки языка.
+        lang_settings_btn = QPushButton()
+        lang_settings_btn.setObjectName("LauncherShellLangGlobe")
+        lang_settings_btn.setIcon(qta.icon("fa6s.globe", color="#ffd2ec"))
+        lang_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        lang_settings_btn.setFixedSize(28, 28)
+        lang_settings_btn.setToolTip(_("Настройки языка", "Language settings"))
+        lang_settings_btn.clicked.connect(lambda: self.utility_requested.emit("language"))
+        layout.addWidget(lang_settings_btn)
 
         layout.addStretch(1)
 
