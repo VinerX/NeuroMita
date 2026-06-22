@@ -13,7 +13,11 @@ from .base_model import IVoiceModel
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
 from core.install_types import InstallAction, InstallPlan
-from handlers.voice_models.install_plan_helpers import pip_uninstall_action
+from handlers.voice_models.install_plan_helpers import (
+    pip_uninstall_action,
+    rvc_python_compat_error,
+    unsupported_runtime_plan,
+)
 from main_logger import logger
 from utils import getTranslationVariant as _, get_character_voice_paths
 
@@ -299,6 +303,9 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
     @classmethod
     def build_install_plan_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> InstallPlan:
         mid = str(model_id)
+        compat_error = rvc_python_compat_error(cls.RVC_PACKAGE)
+        if compat_error:
+            return unsupported_runtime_plan(compat_error)
         if cls.is_model_installed(mid, ctx):
             return InstallPlan(
                 actions=[],
