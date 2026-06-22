@@ -71,15 +71,19 @@ jobs:
           #       уже выпущенных коммитов.
           # Среди подходящих берём самый высокий (head после version-сортировки).
           previous_release_tag() {
-            git tag --list 'v*' --merged HEAD --sort=-version:refname \
-              | grep -E "$RELEASE_TAG_PATTERN" \
-              | grep -vxF "$CURRENT_TAG" \
-              | while read -r t; do
-                  [ -z "$t" ] && continue
-                  top=$(printf '%s\n%s\n' "$t" "$CURRENT_TAG" | sort -V | tail -n1)
-                  [ "$top" = "$CURRENT_TAG" ] && echo "$t"
-                done \
-              | head -n1
+            local prev=""
+            local t
+            for t in $(git tag --list 'v*' --merged HEAD --sort=-version:refname \
+                         | grep -E "$RELEASE_TAG_PATTERN" \
+                         | grep -vxF "$CURRENT_TAG" || true); do
+              [ -z "$t" ] && continue
+              top=$(printf '%s\n%s\n' "$t" "$CURRENT_TAG" | sort -V | tail -n1)
+              if [ "$top" = "$CURRENT_TAG" ]; then
+                prev="$t"
+                break
+              fi
+            done
+            echo "$prev"
           }
 
           LATEST_TAG=$(
