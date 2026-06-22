@@ -86,6 +86,61 @@ class VoiceBundleExtractionTests(unittest.TestCase):
         self.assertFalse((out / "Crazy_Cuts").exists())  # emptied dir is removed
 
 
+class VoiceIsInstalledTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._prev = os.environ.get("NEUROMITA_MODELS_DIR")
+        os.environ["NEUROMITA_MODELS_DIR"] = self._tmp.name
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        if self._prev is None:
+            os.environ.pop("NEUROMITA_MODELS_DIR", None)
+        else:
+            os.environ["NEUROMITA_MODELS_DIR"] = self._prev
+        self._tmp.cleanup()
+
+    def test_pth_only_counts_as_installed(self):
+        # Бандл может содержать только .pth (.onnx опционален). На AMD/CPU,
+        # где «правильное» расширение .onnx, такой голос всё равно установлен.
+        (self.root / "CrazyMita.pth").write_bytes(b"x")
+        self.assertTrue(vi.is_installed("CrazyMita"))
+
+    def test_onnx_only_counts_as_installed(self):
+        (self.root / "CrazyMita.onnx").write_bytes(b"x")
+        self.assertTrue(vi.is_installed("CrazyMita"))
+
+    def test_missing_voice_is_not_installed(self):
+        self.assertFalse(vi.is_installed("CrazyMita"))
+
+
+class VoiceExtractionAtomicityTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_corrupt_zip_leaves_no_partial_files(self):
+        out = self.root / "Models"
+        out.mkdir()
+        bad = self.root / "Bad.zip"
+        bad.write_bytes(b"not a zip at all")
+        self.assertFalse(vi.extract_bundle(bad, "Bad", base=out))
+        # Ни целевых файлов, ни staging-каталога не осталось.
+        self.assertFalse((out / "Bad.pth").exists())
+        self.assertFalse((out / ".stage_Bad").exists())
+
+    def test_successful_extract_removes_stage(self):
+        zip_path = self.root / "Crazy.zip"
+        _make_bundle(zip_path, {"Crazy.pth": b"pth", "Crazy.wav": b"wav"})
+        out = self.root / "Models"
+        self.assertTrue(vi.extract_bundle(zip_path, "Crazy", base=out))
+        self.assertTrue((out / "Crazy.pth").exists())
+        self.assertFalse((out / ".stage_Crazy").exists())
+
+
 class DefaultInstalledVoiceTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
