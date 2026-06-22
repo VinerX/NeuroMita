@@ -289,6 +289,13 @@ class FishSpeechInstallSpec:
 
                 init_cmd = [script_path, "init.py"]
                 creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                # init.py печатает кириллицу (.project-root, reference-текст). На
+                # не-UTF-8 локали (напр. греческой cp1253) дочерний print() падает
+                # с UnicodeEncodeError и роняет шаг. Форсим UTF-8 в дочернем
+                # процессе — как это уже делает pip_installer для своих сабпроцессов.
+                child_env = os.environ.copy()
+                child_env["PYTHONIOENCODING"] = "utf-8"
+                child_env["PYTHONUTF8"] = "1"
                 result = subprocess.run(
                     init_cmd,
                     capture_output=True,
@@ -297,6 +304,7 @@ class FishSpeechInstallSpec:
                     errors="ignore",
                     check=False,
                     creationflags=creationflags,
+                    env=child_env,
                 )
 
                 if result.stdout:
