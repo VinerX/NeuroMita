@@ -6,11 +6,12 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class LauncherShellPalette:
-    root_bg: str = "#0c0915"
-    panel_bg: str = "rgba(13, 13, 26, 0.995)"
-    panel_soft: str = "rgba(15, 16, 31, 0.98)"
-    card_bg: str = "rgba(15, 16, 31, 0.92)"
-    card_alt_bg: str = "rgba(16, 13, 25, 0.94)"
+    # Фоновые ступени эталона (#0A0A18 → #0D0E1C → #101221), сине-серые, без фиолета.
+    root_bg: str = "#0a0a18"
+    panel_bg: str = "rgba(13, 14, 28, 0.995)"
+    panel_soft: str = "rgba(15, 17, 32, 0.98)"
+    card_bg: str = "rgba(16, 18, 33, 0.92)"
+    card_alt_bg: str = "rgba(20, 22, 40, 0.94)"
     # Нейтрально-серые обводки эталона (#1B1928 / #252236) вместо розовых.
     border: str = "rgba(27, 25, 40, 0.92)"
     border_strong: str = "rgba(37, 34, 54, 0.95)"
@@ -39,9 +40,9 @@ def get_launcher_shell_stylesheet() -> str:
     bg_rule = """
         background: qlineargradient(
             x1: 0, y1: 0, x2: 1, y2: 1,
-            stop: 0 #110d1b,
-            stop: 0.42 #0c0915,
-            stop: 1 #080812
+            stop: 0 #0d0e1c,
+            stop: 0.42 #0a0a18,
+            stop: 1 #080814
         );
     """
     return f"""
@@ -155,8 +156,8 @@ def get_launcher_shell_stylesheet() -> str:
     QFrame#LauncherShellSidebar {{
         background: qlineargradient(
             x1: 0, y1: 0, x2: 0, y2: 1,
-            stop: 0 rgba(13, 13, 26, 0.995),
-            stop: 1 rgba(12, 9, 21, 0.995)
+            stop: 0 rgba(13, 14, 28, 0.995),
+            stop: 1 rgba(10, 10, 24, 0.995)
         );
         border: none;
         border-right: 1px solid rgba(255, 255, 255, 0.06);

@@ -1,23 +1,25 @@
 from __future__ import annotations
 
 THEME = {
-    "bg_root": "#0c0915",
-    "bg_window": "#0c0915",
-    "app_bg": "#0b0813",
-    "app_bg_rgb": "12, 9, 21",
-    "sidebar_bg": "#0d0d1a",
-    "sidebar_bg_rgb": "13, 13, 26",
-    "sidebar_panel": "#0f101f",
-    "sidebar_panel_rgb": "15, 16, 31",
-    "sandbox_bg": "#080812",
-    "sandbox_bg_rgb": "8, 8, 18",
-    "settings_panel_bg": "#100d19",
-    "settings_panel_rgb": "16, 13, 25",
+    # Фоновые ступени по эталонной палитре (#0A0A18 → #0D0E1C → #0F1120 → #101221):
+    # уводим прежний фиолетовый оттенок в спокойный сине-серый (#18).
+    "bg_root": "#0a0a18",
+    "bg_window": "#0a0a18",
+    "app_bg": "#0a0a18",
+    "app_bg_rgb": "10, 10, 24",
+    "sidebar_bg": "#0d0e1c",
+    "sidebar_bg_rgb": "13, 14, 28",
+    "sidebar_panel": "#0f1120",
+    "sidebar_panel_rgb": "15, 17, 32",
+    "sandbox_bg": "#0a0a18",
+    "sandbox_bg_rgb": "10, 10, 24",
+    "settings_panel_bg": "#101221",
+    "settings_panel_rgb": "16, 18, 33",
     "text": "#f3edf6",
     "muted": "#bca9bb",
-    "panel_bg": "rgba(16, 13, 25, 0.96)",
-    "card_bg": "rgba(15, 16, 31, 0.96)",
-    "card_alt_bg": "rgba(16, 13, 25, 0.92)",
+    "panel_bg": "rgba(16, 18, 33, 0.96)",
+    "card_bg": "rgba(16, 18, 33, 0.96)",
+    "card_alt_bg": "rgba(20, 22, 40, 0.92)",
     # Обводки уведены в нейтрально-серую гамму эталона (#1B1928 / #1C1C2C / #252236):
     # розовый бордюр оставлен только на акцентных action-кнопках (accent_border, ~#823858).
     "card_border": "rgba(40, 38, 54, 0.85)",
