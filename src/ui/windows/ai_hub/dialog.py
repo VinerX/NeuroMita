@@ -675,6 +675,7 @@ class AIHubDialog(QDialog):
             return
 
         gpu_vendor = self._detect_gpu_vendor()
+        self._component_cards = []
         for row in rows:
             card = ModelCard(
                 row,
@@ -687,7 +688,23 @@ class AIHubDialog(QDialog):
                     cid, Events.Installable.INSTALL, extra={"clean": True}
                 ),
             )
+            self._component_cards.append(card)
             self._scroll_layout.insertWidget(self._scroll_layout.count() - 1, card)
+        # Если в этот момент уже идёт установка — сразу заблокировать кнопки (#26).
+        self._apply_busy_state()
+
+    def _apply_busy_state(self) -> None:
+        """Пока выполняется любая установка — все кнопки «Установить» заблокированы,
+        а карточка, которая ставится прямо сейчас, показывает «Установка…» (#26)."""
+        running = self._queue_state.get("running") if isinstance(self._queue_state, dict) else None
+        busy = bool(running)
+        running_cid = str((running or {}).get("component_id") or "").strip()
+        for card in getattr(self, "_component_cards", []) or []:
+            try:
+                installing = busy and bool(running_cid) and card._component_id() == running_cid
+                card.set_busy(busy, installing=installing)
+            except Exception:
+                pass
 
     # ----------------------------------------------------------- summary / banner
     def _update_summary(self) -> None:
@@ -969,6 +986,8 @@ class AIHubDialog(QDialog):
             "pending": [j for j in (pending or []) if isinstance(j, dict)],
         }
         self._rebuild_queue_panel()
+        # Обновить блокировку кнопок установки под новое состояние очереди (#26).
+        self._apply_busy_state()
 
     def _clear_queue_panel(self) -> None:
         while self._queue_layout.count():
@@ -1047,7 +1066,10 @@ class AIHubDialog(QDialog):
             return
         data = event.data if isinstance(event.data, dict) else {}
         text = str(data.get("status") or _("Подготовка...", "Preparing..."))
-        self._on_gui_thread(lambda: self._set_task_status(text))
+        # Кнопка «Логи установки» должна быть видна на всё время установки,
+        # а не только когда окно свёрнуто — иначе её «не найти» (фидбэк #23).
+        self._on_gui_thread(lambda: (self._set_task_status(text),
+                                     self._set_install_logs_visible(True)))
 
     def _on_install_progress(self, event) -> None:
         if not self._is_installable_task(event):
@@ -1057,7 +1079,12 @@ class AIHubDialog(QDialog):
         progress = data.get("progress")
         if not status:
             return
-        text = f"{status} ({progress}%)" if progress is not None else status
+        # Не дублируем процент: статус инсталлятора уже может содержать «… 1% …»,
+        # тогда повторное « (1%)» выглядело как «… 1% … (1%)» (фидбэк #24).
+        if progress is not None and "%" not in status:
+            text = f"{status} ({progress}%)"
+        else:
+            text = status
         self._on_gui_thread(lambda: self._set_task_status(text))
 
     def _on_install_finished(self, event) -> None:
@@ -1067,6 +1094,7 @@ class AIHubDialog(QDialog):
 
         def _apply() -> None:
             self._set_task_status(done_text)
+            self._set_install_logs_visible(False)
             QTimer.singleShot(250, lambda: (self.refresh(force=True), self._set_task_status("")))
 
         self._on_gui_thread(_apply)
@@ -1079,6 +1107,7 @@ class AIHubDialog(QDialog):
 
         def _apply() -> None:
             self._set_task_status(text)
+            self._set_install_logs_visible(False)
             QTimer.singleShot(250, lambda: self.refresh(force=True))
 
         self._on_gui_thread(_apply)

@@ -13,6 +13,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from utils import getTranslationVariant as _t
+
 from .helpers import qpixmap
 
 
@@ -95,6 +97,11 @@ class CategoryButton(QFrame):
 
     def setCount(self, count: int) -> None:
         self._count_lbl.setText(str(count))
+        # Поясняем, что цифра — это число компонентов в категории, а не «индикатор»
+        # чего-то срочного (фидбэк #22: путались, почему «светится» только у TTS).
+        tip = _t("Доступно компонентов: {n}", "Components available: {n}").format(n=count)
+        self._count_lbl.setToolTip(tip)
+        self.setToolTip(tip)
 
     def setSelected(self, selected: bool) -> None:
         if self._selected == selected:
@@ -194,6 +201,9 @@ class ModelCard(QFrame):
         self._on_open_settings = on_open_settings
         self._on_reinstall = on_reinstall
         self._gpu_vendor = (gpu_vendor or "CPU").upper()
+        # Кнопка установки этой карточки (None для уже установленных — там ⋮-меню).
+        self._install_btn = None
+        self._install_btn_text = ""
         self.setObjectName("AIHubModelCard")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._build()
@@ -341,7 +351,22 @@ class ModelCard(QFrame):
                 btn.setIcon(icon)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(self._handle_install_click)
+            self._install_btn = btn
+            self._install_btn_text = btn.text()
         root.addWidget(btn, 0)
+
+    # ------------------------------------------------------------------
+    def set_busy(self, busy: bool, *, installing: bool = False) -> None:
+        """Блокировка кнопки установки, пока в AI Hub идёт другая установка.
+        Карточка, которая ставится прямо сейчас, показывает «Установка…» (#26)."""
+        btn = self._install_btn
+        if btn is None:
+            return
+        btn.setEnabled(not busy)
+        if installing:
+            btn.setText(_t("Установка…", "Installing…"))
+        else:
+            btn.setText(self._install_btn_text or _t("Установить", "Install"))
 
     # ------------------------------------------------------------------
     def _component_id(self) -> str:

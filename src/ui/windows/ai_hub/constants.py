@@ -24,13 +24,15 @@ CATEGORY_ICONS = {
 }
 
 # Map registry row categories into the sidebar buckets.
+# Beat-синхронизация — это backend-движок («Neural beat synchronization backend»),
+# а не зависимость, поэтому кладём её в «Системное ядро», а не в «Зависимости».
 ROW_CATEGORY_MAP = {
     "tts": "tts",
     "voices": "voices",
     "asr": "asr",
     "rag": "rag",
     "backend": "backend",
-    "beats": "deps",
+    "beats": "backend",
     "deps": "deps",
     "dependency": "deps",
 }
