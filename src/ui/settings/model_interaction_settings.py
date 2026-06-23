@@ -306,29 +306,6 @@ def setup_model_interaction_controls(self, parent):
     build_memory_section(self, parent, hc_provider_names)
     build_rag_section(self, parent, hc_provider_names)
 
-    token_settings_config = [
-        {'label': _('Показывать информацию о токенах', 'Show Token Info'), 'key': 'SHOW_TOKEN_INFO',
-         'type': 'checkbutton', 'default_checkbutton': True,
-         'tooltip': _('Отображать количество токенов и ориентировочную стоимость в интерфейсе чата.',
-                      'Display token count and approximate cost in the chat interface.')},
-        {'label': _('Стоимость токена (вход, ₽)', 'Token Cost (input, ₽)'), 'key': 'TOKEN_COST_INPUT',
-         'depends_on': 'SHOW_TOKEN_INFO', 'type': 'entry', 'default': 0.000001,
-         'validation': self.validate_float_positive_or_zero,
-         'tooltip': _('Стоимость одного токена для входных данных (например, 0.000001 ₽ за токен).',
-                      'Cost of one token for input data (e.g., 0.000001 ₽ per token).')},
-        {'label': _('Стоимость токена (выход, ₽)', 'Token Cost (output, ₽)'), 'key': 'TOKEN_COST_OUTPUT',
-         'depends_on': 'SHOW_TOKEN_INFO', 'type': 'entry', 'default': 0.000002,
-         'validation': self.validate_float_positive_or_zero,
-         'tooltip': _('Стоимость одного токена для выходных данных (например, 0.000002 ₽ за токен).',
-                      'Cost of one token for output data (e.g., 0.000002 ₽ per token).')},
-        {'label': _('Максимальное количество токенов модели', 'Max Model Tokens'), 'key': 'MAX_MODEL_TOKENS',
-         'depends_on': 'SHOW_TOKEN_INFO', 'type': 'entry', 'default': 32000,
-         'validation': self.validate_positive_integer,
-         'tooltip': _('Максимальное количество токенов, которое может обработать модель.',
-                      'Maximum number of tokens the model can process.')},
-    ]
-
-    create_settings_section(self, parent,
-                            _("Настройки токенов", "Token Settings"),
-                            token_settings_config)
+    # Token pricing/context limits now come from the selected provider/preset,
+    # so the old manual "Token Settings" subsection is intentionally removed.
 

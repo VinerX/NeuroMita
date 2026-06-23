@@ -243,20 +243,32 @@ QFrame#SettingsSubsectionLine {
 }
 
 QWidget#SettingsPageRoot QWidget#CollapsibleSection {
+    background: transparent;
+    border: none;
+}
+
+QWidget#SettingsPageRoot QWidget#CollapsibleHeader {
     background-color: rgba({settings_panel_rgb}, 0.70);
     border: 1px solid rgba(255,255,255,0.08);
     border-radius: 14px;
 }
 
-QWidget#SettingsPageRoot QWidget#CollapsibleHeader {
-    background: transparent;
-    border: none;
-    border-radius: 0px;
+QWidget#SettingsPageRoot QWidget#CollapsibleHeader[expanded="true"] {
+    border-bottom-left-radius: 0px;
+    border-bottom-right-radius: 0px;
 }
 
 QWidget#SettingsPageRoot QWidget#CollapsibleHeader:hover {
-    background: transparent;
-    border: none;
+    background-color: rgba({settings_panel_rgb}, 0.78);
+}
+
+QWidget#SettingsPageRoot QWidget#CollapsibleContent[expanded="true"] {
+    background-color: rgba({settings_panel_rgb}, 0.62);
+    border-left: 1px solid rgba(255,255,255,0.08);
+    border-right: 1px solid rgba(255,255,255,0.08);
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    border-bottom-left-radius: 14px;
+    border-bottom-right-radius: 14px;
 }
 
 QWidget#SettingsPageRoot QWidget#InnerCollapsibleHeader {

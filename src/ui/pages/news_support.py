@@ -7,6 +7,7 @@ from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices
 
 from main_logger import logger
+from utils.release_assets import raw_release_has_launcher_assets
 from ui.widgets.launcher_dashboard_helpers import DashboardAction, NewsItem
 from utils import _
 
@@ -45,7 +46,8 @@ def get_news_releases(gui) -> list[dict[str, Any]]:
             gui._news_releases_cache = []
             return []
 
-        data = response.json() or []
+        raw_data = response.json() or []
+        data = [item for item in raw_data if raw_release_has_launcher_assets(item)]
         gui._news_releases_cache = data
         return data
     except Exception as exc:
@@ -220,6 +222,7 @@ def build_release_news_items(gui, *, limit: int | None = 8) -> list[NewsItem]:
                 name,
                 summary,
                 tag=tag,
+                item_id=tag_name or name,
                 timestamp=published,
                 full_text=full_text,
                 action=DashboardAction(

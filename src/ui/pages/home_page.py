@@ -485,12 +485,12 @@ class HomePage(LauncherHomeBackground):
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(8)
-        title = QLabel(_("Последние новости", "Latest news").upper())
+        title = QLabel(_("Последние релизы", "Latest releases").upper())
         title.setObjectName("LauncherHomeNewsTitle")
         header.addWidget(title)
         header.addStretch(1)
 
-        all_news = QPushButton(_("Все новости", "All news"))
+        all_news = QPushButton(_("Все релизы", "All releases"))
         all_news.setObjectName("LauncherHomeLinkButton")
         all_news.clicked.connect(lambda: self.gui.switch_main_page("news"))
         header.addWidget(all_news)
@@ -512,6 +512,8 @@ class HomePage(LauncherHomeBackground):
     def _build_home_news_item(self, item: NewsItem, *, is_fresh: bool = False) -> QFrame:
         row = QFrame()
         row.setObjectName("LauncherHomeNewsItem")
+        if item.item_id:
+            row.setCursor(Qt.CursorShape.PointingHandCursor)
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 2, 0, 2)
         layout.setSpacing(8)
@@ -523,11 +525,6 @@ class HomePage(LauncherHomeBackground):
         title = QLabel(item.title)
         title.setObjectName("LauncherHomeNewsItemTitle")
         top.addWidget(title)
-
-        if is_fresh:
-            badge = QLabel(_("НОВОЕ", "NEW"))
-            badge.setObjectName("LauncherHomeNewsBadge")
-            top.addWidget(badge)
 
         top.addStretch(1)
         text_column.addLayout(top)
@@ -542,6 +539,14 @@ class HomePage(LauncherHomeBackground):
             stamp = QLabel(self._format_news_date(item.timestamp))
             stamp.setObjectName("LauncherHomeNewsDate")
             layout.addWidget(stamp, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+
+        if item.item_id:
+            def _open_release(_event, release_id=item.item_id):
+                if hasattr(self.gui, "open_release_page"):
+                    self.gui.open_release_page(release_id)
+                else:
+                    self.gui.switch_main_page("news")
+            row.mousePressEvent = _open_release
 
         return row
 
@@ -683,7 +688,7 @@ class HomePage(LauncherHomeBackground):
             pass
 
         model_name = str(self.gui._get_setting("MODEL", "") or "").strip()
-        latest = news_items[0].title if news_items else _("Лента новостей офлайн", "News feed offline")
+        latest = news_items[0].title if news_items else _("Лента релизов офлайн", "Release feed offline")
         parts = [_("Активно: {character}", "Active: {character}").format(character=active_character)]
         if model_name:
             parts.append(model_name)
@@ -692,7 +697,7 @@ class HomePage(LauncherHomeBackground):
 
     def refresh_news_content(self):
         news_items = self._get_current_news_items()
-        headline = news_items[0].title if news_items else _("Новости недоступны", "News unavailable")
+        headline = news_items[0].title if news_items else _("Релизы недоступны", "Releases unavailable")
         # if self._update_chip_label is not None:
         #     self._update_chip_label.setText(
         #         _("Доступно обновление: {headline}", "Fresh update: {headline}").format(headline=headline[:48])
@@ -709,8 +714,8 @@ class HomePage(LauncherHomeBackground):
             if not release_items:
                 release_items = news_items[:3] if news_items else [
                     NewsItem(
-                        _("Новости недоступны", "News unavailable"),
-                        _("Удалённая лента пока недоступна.", "Remote feed is currently unavailable."),
+                        _("Релизы недоступны", "Releases unavailable"),
+                        _("Удалённая лента релизов пока недоступна.", "Remote release feed is currently unavailable."),
                     )
                 ]
 

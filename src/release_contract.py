@@ -9,6 +9,8 @@ import urllib.request
 import zipfile
 from typing import Iterable, Optional
 
+from utils.release_assets import raw_release_has_launcher_assets
+
 
 SUPPORTED_ARCHIVE_EXTS = (".zip", ".7z")
 PYTHON_FULL_KIND = "python_full"
@@ -284,6 +286,8 @@ def _iter_release_candidates(
     candidates = []
     for release in releases:
         if bool(release.get("draft")):
+            continue
+        if not raw_release_has_launcher_assets(release):
             continue
         if channel == "stable" and bool(release.get("prerelease")):
             continue

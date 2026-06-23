@@ -249,6 +249,7 @@ class CollapsibleSection(QWidget):
         v.addWidget(self.header)
         v.addWidget(self.content_frame)
         self.content_frame.hide()
+        self._apply_state_properties()
 
     def _make_icon(self, name):
         lbl = QLabel(self.header)
@@ -262,6 +263,20 @@ class CollapsibleSection(QWidget):
         self.is_collapsed = not self.is_collapsed
         self.content_frame.setVisible(not self.is_collapsed)
         self.arrow_label.setPixmap(self.arrow_pix_right if self.is_collapsed else self.arrow_pix_down)
+        self._apply_state_properties()
+
+    def _apply_state_properties(self):
+        expanded = not self.is_collapsed
+        for widget in (self, self.header, self.content_frame):
+            try:
+                widget.setProperty("expanded", expanded)
+                style = widget.style()
+                if style is not None:
+                    style.unpolish(widget)
+                    style.polish(widget)
+                widget.update()
+            except Exception:
+                pass
 
     # --- API ---
     def collapse(self):

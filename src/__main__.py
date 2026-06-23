@@ -438,10 +438,11 @@ if __name__ == "__main__":
         
         
         logger.info("Показываю главное окно...")
-        # Make the native Windows title bar dark to match the app theme.
-        # Fully optional: no-op on non-Windows / unsupported builds, never raises.
+        # Keep native Windows title bars in sync with the app's dark theme for
+        # the main window and every top-level dialog created later.
         try:
-            from utils.win_titlebar import apply_dark_titlebar
+            from utils.win_titlebar import apply_dark_titlebar, install_dark_titlebar_sync
+            install_dark_titlebar_sync(app, True)
             apply_dark_titlebar(main_win, True)
         except Exception:
             pass

@@ -98,6 +98,12 @@ class MainWindow(AppWindowBase):
         if hasattr(page, "on_activated"):
             page.on_activated()
 
+    def open_release_page(self, release_id: str = ""):
+        self.switch_main_page("news")
+        page = getattr(self, "news_page", None)
+        if page is not None and hasattr(page, "focus_release"):
+            page.focus_release(release_id)
+
     def _build_home_page(self):
         return build_home_page(self)
 

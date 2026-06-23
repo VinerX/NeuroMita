@@ -15,9 +15,11 @@ from utils.release_assets import (  # noqa: E402
     ReleaseAsset,
     find_latest_python_full,
     find_latest_unity_asset,
+    has_launcher_release_assets,
     parse_release,
     pick_from_release,
     pick_latest,
+    raw_release_has_launcher_assets,
 )
 
 
@@ -111,6 +113,13 @@ def test_pick_latest_beta_accepts_prerelease():
     assert r is beta
 
 
+def test_pick_latest_skips_non_launcher_release_even_if_newer():
+    voice_assets = _r("voice-assets", "Voice Assets", [_a("CrazyMita.zip")], prerelease=True)
+    beta = _r("v1.2.0", "beta", [_a("PythonBuild-v1.2.0.zip")], prerelease=True)
+    r, _ = pick_latest([voice_assets, beta], "beta")
+    assert r is beta
+
+
 def test_pick_latest_empty_list():
     r, p = pick_latest([], "stable")
     assert r is None
@@ -180,3 +189,22 @@ def test_parse_release_missing_name_falls_back_to_tag():
     raw = {"tag_name": "v1.0.0", "name": None, "prerelease": False, "body": "", "published_at": "", "assets": []}
     r = parse_release(raw)
     assert r.name == "v1.0.0"
+
+
+def test_has_launcher_release_assets_rejects_voice_bundle_release():
+    release = _r("voice-assets", "Voice Assets", [_a("CrazyMita.zip")], prerelease=True)
+    assert not has_launcher_release_assets(release)
+
+
+def test_raw_release_has_launcher_assets_accepts_python_release():
+    raw = {
+        "tag_name": "v2.0.0",
+        "name": "Release v2.0.0",
+        "prerelease": False,
+        "body": "",
+        "published_at": "2026-01-01T00:00:00Z",
+        "assets": [
+            {"name": "PythonBuild-v2.0.0.zip", "browser_download_url": "https://x/a.zip", "size": 500, "content_type": "application/zip"},
+        ],
+    }
+    assert raw_release_has_launcher_assets(raw)

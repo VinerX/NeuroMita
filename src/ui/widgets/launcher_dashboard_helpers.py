@@ -54,6 +54,7 @@ class NewsItem:
     title: str
     summary: str
     tag: str = "Update"
+    item_id: str = ""
     timestamp: str = ""
     full_text: str = ""
     action: DashboardAction | None = None
@@ -285,6 +286,8 @@ def _create_card_grid(cards: list[DashboardCard]) -> QGridLayout:
 def _create_news_card(item: NewsItem) -> QFrame:
     card = QFrame()
     card.setObjectName("LauncherShellNewsCard")
+    if item.item_id:
+        card.setProperty("itemId", item.item_id)
     layout = QVBoxLayout(card)
     layout.setContentsMargins(18, 18, 18, 18)
     layout.setSpacing(10)

@@ -32,6 +32,7 @@ from utils.release_assets import (
     find_latest_unity_asset,
     parse_release,
     pick_from_release,
+    raw_release_has_launcher_assets,
 )
 
 _USER_AGENT = "NeuroMita-Updater/2.0"
@@ -274,14 +275,16 @@ def _select_release(repo: str, channel: str) -> Optional[Release]:
             created_at (дата тега), из-за чего более старый по публикации
             релиз может оказаться первым; поэтому пересортировываем сами.
     """
-    if channel == "beta":
-        raws = [r for r in _fetch_releases(repo) if not r.get("draft")]
-        if not raws:
-            return None
-        raws.sort(key=_published_sort_key, reverse=True)
-        return parse_release(raws[0])
-    raw = _fetch_latest_release(repo)
-    return parse_release(raw) if raw else None
+    raws = [
+        r for r in _fetch_releases(repo)
+        if not r.get("draft") and raw_release_has_launcher_assets(r)
+    ]
+    if channel == "stable":
+        raws = [r for r in raws if not r.get("prerelease")]
+    if not raws:
+        return None
+    raws.sort(key=_published_sort_key, reverse=True)
+    return parse_release(raws[0])
 
 
 # ── Download ──────────────────────────────────────────────────────────────────

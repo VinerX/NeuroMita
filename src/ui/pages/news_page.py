@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFrame, QScrollArea, QVBoxLayout, QWidget
 
 from ui.pages.news_support import (
     NEWS_REPO,
@@ -22,6 +23,7 @@ class NewsPage(QWidget):
         self.setObjectName("NewsPage")
 
         self._page_widget = None
+        self._pending_focus_release_id = ""
         self._root_layout = QVBoxLayout(self)
         self._root_layout.setContentsMargins(0, 0, 0, 0)
         self._root_layout.setSpacing(0)
@@ -63,12 +65,40 @@ class NewsPage(QWidget):
         self._page_widget = new_widget
         self._root_layout.addWidget(new_widget)
 
+        if self._pending_focus_release_id:
+            release_id = self._pending_focus_release_id
+            self._pending_focus_release_id = ""
+            QTimer.singleShot(0, lambda rid=release_id: self.focus_release(rid))
+
         home_page = getattr(self.gui, "home_page", None)
         if home_page is not None and hasattr(home_page, "refresh_news_content"):
             home_page.refresh_news_content()
 
     def on_activated(self):
         pass
+
+    def focus_release(self, release_id: str) -> bool:
+        target_id = str(release_id or "").strip()
+        if not target_id:
+            return False
+
+        page_widget = self._page_widget
+        if page_widget is None:
+            self._pending_focus_release_id = target_id
+            return False
+
+        cards = page_widget.findChildren(QFrame, "LauncherShellNewsCard")
+        target_card = next((card for card in cards if str(card.property("itemId") or "") == target_id), None)
+        if target_card is None:
+            self._pending_focus_release_id = target_id
+            return False
+
+        scroll = page_widget.findChild(QScrollArea)
+        if scroll is not None:
+            scroll.ensureWidgetVisible(target_card, 0, 24)
+
+        target_card.setFocus(Qt.FocusReason.OtherFocusReason)
+        return True
 
     def get_news_releases(self):
         return get_news_releases(self.gui)
