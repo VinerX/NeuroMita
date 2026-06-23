@@ -452,11 +452,11 @@ class PipInstaller:
                 continue
             if version:
                 return version
-
-            parts = item.rsplit(".dist-info", 1)[0].split("-")
-            if len(parts) >= 2:
-                return parts[-1]
-            return ""
+            logger.warning(
+                f"Broken dist-info detected for '{dist_name}' in target Lib: "
+                f"missing/unreadable METADATA at {metadata_path}"
+            )
+            return None
         return None
 
     def _build_install_command(self, force_pip: bool = False) -> List[str]:
