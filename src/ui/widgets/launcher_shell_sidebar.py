@@ -237,7 +237,7 @@ class LauncherSidebarWidget(QFrame):
         # Если выбран язык вне RU/EN — вторая пилюля показывает именно его
         # (вместо EN), чтобы текущий язык был под рукой одним кликом.
         try:
-            from localization import available_languages, language_display_name
+            from localization import available_languages
             available = {c.lower() for c in available_languages("full")}
         except Exception:
             available = {"ru", "en"}
@@ -252,13 +252,12 @@ class LauncherSidebarWidget(QFrame):
             second = current
         langs = ["ru", second]
         for code in langs:
-            label_text = language_display_name(code.upper())
+            label_text = code.upper()
             button = QPushButton(label_text)
             button.setObjectName("LauncherShellLangPill")
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setFixedHeight(28)
-            button.adjustSize()
+            button.setFixedSize(40, 28)
             button.clicked.connect(lambda checked=False, value=code: self.utility_requested.emit(f"language:{value}"))
             self._lang_buttons[code] = button
             layout.addWidget(button)
