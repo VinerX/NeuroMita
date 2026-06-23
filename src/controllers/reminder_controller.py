@@ -15,13 +15,19 @@ class ReminderController:
 
     def _start_periodic_check(self):
         def check_loop():
-            while True:
+            # Выходим, как только шина событий остановлена (закрытие приложения):
+            # иначе демон-поток продолжает emit во время teardown → access violation.
+            while self.event_bus.is_running:
                 try:
                     if self.settings.get("REMINDERS_ENABLED", True):
                         self._check_and_fire_reminders()
                 except Exception as e:
                     logger.error(f"[ReminderController] Error in check loop: {e}", exc_info=True)
-                time.sleep(self.CHECK_INTERVAL_SEC)
+                # Сон дробим, чтобы быстро реагировать на остановку шины.
+                for _ in range(self.CHECK_INTERVAL_SEC):
+                    if not self.event_bus.is_running:
+                        return
+                    time.sleep(1)
 
         thread = threading.Thread(target=check_loop, daemon=True, name="ReminderController")
         thread.start()

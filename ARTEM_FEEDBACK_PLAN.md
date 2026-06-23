@@ -99,7 +99,7 @@
 
 ## СИСТЕМНОЕ / БЭКЕНД (в конец)
 
-### [ ] 6. Critical error: access violation (BSOD-риск на старых ОС)
+### [~] 6. Critical error: access violation (BSOD-риск на старых ОС)
 - `Windows fatal exception: access violation` в `controllers/reminder_controller.py:24` (check_loop) и `controllers/capture_controller.py:294`.
 - Разобрать причину (доступ к ресурсам из потоков при остановке сервера), защитить.
 - Файлы: `src/controllers/reminder_controller.py`, `src/controllers/capture_controller.py`.
