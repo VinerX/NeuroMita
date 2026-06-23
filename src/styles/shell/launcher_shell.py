@@ -68,13 +68,89 @@ def get_launcher_shell_stylesheet() -> str:
     QFrame#LauncherShellPromoCard,
     QFrame#LauncherShellStatusCard,
     QFrame#LauncherShellSocialCard,
-    QFrame#LauncherShellHeroCard,
     QFrame#LauncherShellMetricCard,
     QFrame#LauncherShellNewsCard,
     QFrame#LauncherShellLogCard {{
         background-color: {p.card_bg};
         border: 1px solid {p.border};
         border-radius: 22px;
+    }}
+    /* Шапка страницы выделена отдельным уровнем, чтобы не сливаться 1-в-1 с
+       карточками релизов: чуть приподнятый градиент + акцентная левая грань. */
+    QFrame#LauncherShellHeroCard {{
+        background: qlineargradient(
+            x1: 0, y1: 0, x2: 1, y2: 1,
+            stop: 0 rgba(23, 25, 40, 0.96),
+            stop: 1 rgba(16, 18, 33, 0.96)
+        );
+        border: 1px solid {p.border_strong};
+        border-left: 3px solid rgba(183, 75, 125, 0.85);
+        border-radius: 22px;
+    }}
+    /* Заголовок секции (PRE-RELEASES / RELEASES). */
+    QLabel#LauncherShellSectionHeader {{
+        color: {p.muted};
+        font-family: "Segoe UI", "Arial", sans-serif;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 1px;
+        padding: 2px 2px;
+    }}
+    /* Фильтр-табы (Все / Релизы / Пререлизы). */
+    QPushButton#LauncherShellFilterTab {{
+        background-color: rgba(255, 255, 255, 0.03);
+        color: {p.muted};
+        border: 1px solid {p.border};
+        border-radius: 12px;
+        padding: 7px 16px;
+        font-family: "Segoe UI", "Arial", sans-serif;
+        font-size: 12px;
+        font-weight: 700;
+    }}
+    QPushButton#LauncherShellFilterTab:hover {{
+        color: {p.text};
+        border: 1px solid {p.border_strong};
+    }}
+    QPushButton#LauncherShellFilterTab[active="true"] {{
+        background-color: rgba(144, 65, 106, 0.85);
+        color: {p.text};
+        border: 1px solid rgba(130, 56, 88, 0.55);
+    }}
+    /* Цветные бейджи статуса релиза (эталонные оттенки). */
+    QLabel#LauncherShellBadge {{
+        color: #f3dfe9;
+        font-family: "Segoe UI", "Arial", sans-serif;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 1px;
+        border-radius: 7px;
+        padding: 3px 9px;
+        background-color: #792e56;
+    }}
+    QLabel#LauncherShellBadge[kind="pre"] {{
+        background-color: #422258;
+        color: #ddccea;
+    }}
+    QLabel#LauncherShellBadge[kind="offline"] {{
+        background-color: rgba(255, 255, 255, 0.06);
+        color: {p.muted};
+    }}
+    /* Тонкий разделитель между шапкой карточки (бейдж+название) и описанием. */
+    QFrame#LauncherShellCardDivider {{
+        min-height: 1px;
+        max-height: 1px;
+        background-color: rgba(255, 255, 255, 0.06);
+        border: none;
+    }}
+    /* Прокручиваемый контейнер развёрнутого changelog: ограничивает высоту,
+       чтобы длинные заметки не растягивали страницу на километры. */
+    QScrollArea#LauncherShellDetailsScroll {{
+        background: rgba(0, 0, 0, 0.18);
+        border: 1px solid {p.border};
+        border-radius: 12px;
+    }}
+    QScrollArea#LauncherShellDetailsScroll > QWidget > QWidget {{
+        background: transparent;
     }}
     QFrame#LauncherShellSidebar {{
         background: qlineargradient(
