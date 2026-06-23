@@ -74,6 +74,7 @@ API_TEMPLATES_DATA = [
         "id": 5,
         "name": "ProxyAPI",
         "pricing": "paid",
+        "badge_kind": "ru",
         "url": "https://openai.api.proxyapi.ru/v1/chat/completions",
         "default_model": "gemini/gemini-2.0-flash",
         "known_models": [
@@ -137,6 +138,24 @@ API_TEMPLATES_DATA = [
         "documentation_url": "https://chutes.ai/docs/examples/llm-chat",
         "models_url": "https://chutes.ai/docs/examples/llm-chat",
         "key_url": "https://chutes.ai/docs/getting-started/authentication",
+    },
+    {
+        "id": 11,
+        "name": "KodikRouter",
+        "pricing": "paid",
+        "badge_kind": "ru",
+        "url": "https://api.kodikrouter.ru/v1/chat/completions",
+        "default_model": "openai/gpt-4o",
+        "known_models": [
+            "openai/gpt-4o",
+            "deepseek/deepseek-v3",
+            "google/gemini-1.5-pro",
+        ],
+        "protocol_id": "openai_compatible_default",
+        "test_url": "https://api.kodikrouter.ru/v1/models",
+        "documentation_url": "https://kodikrouter.ru/docs/base",
+        "models_url": "https://kodikrouter.ru/models",
+        "key_url": "https://kodikrouter.ru/",
     },
     {
         "id": 9,

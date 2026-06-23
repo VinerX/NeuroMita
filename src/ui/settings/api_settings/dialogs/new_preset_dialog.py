@@ -4,11 +4,19 @@ from typing import Any
 
 from PyQt6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLineEdit, QVBoxLayout
 
+from ui.settings.api_settings.widgets import ProviderDelegate
 from utils import _
 
 
 class NewPresetDialog(QDialog):
-    def __init__(self, parent, *, template_options: list[tuple[str, Any]], initial_template_data: Any = None):
+    def __init__(
+        self,
+        parent,
+        *,
+        template_options: list[tuple[str, Any]],
+        initial_template_data: Any = None,
+        template_presets_meta: list[Any] | None = None,
+    ):
         super().__init__(parent)
         self.setModal(True)
         self.setWindowTitle(_("Новый пресет", "New preset"))
@@ -23,6 +31,9 @@ class NewPresetDialog(QDialog):
         self.template_combo = QComboBox()
         for label, data in template_options or []:
             self.template_combo.addItem(str(label), data)
+        self.provider_delegate = ProviderDelegate(self.template_combo)
+        self.provider_delegate.set_presets_meta(template_presets_meta or [])
+        self.template_combo.view().setItemDelegate(self.provider_delegate)
         form.addRow(_("Шаблон", "Template"), self.template_combo)
 
         self.name_edit = QLineEdit()

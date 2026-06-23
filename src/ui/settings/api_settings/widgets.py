@@ -14,6 +14,7 @@ from utils import _
 class ProviderDelegate(QStyledItemDelegate):
     _free_pm = None
     _local_pm = None
+    _ru_pm = None
 
     @classmethod
     def _free_pixmap(cls):
@@ -63,6 +64,30 @@ class ProviderDelegate(QStyledItemDelegate):
             cls._local_pm = pm
         return cls._local_pm
 
+    @classmethod
+    def _ru_pixmap(cls):
+        if cls._ru_pm is None:
+            font = QFont("Segoe UI", 7, QFont.Weight.Bold)
+            metrics = QFontMetrics(font)
+            text_w = metrics.horizontalAdvance("RU")
+            w, h = text_w + 10, 14
+            pm = QPixmap(w, h)
+            pm.fill(Qt.GlobalColor.transparent)
+
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setBrush(QColor("#2D66C3"))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(0, 0, w, h, 3, 3)
+
+            p.setPen(QColor("#ffffff"))
+            p.setFont(font)
+            p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, "RU")
+            p.end()
+
+            cls._ru_pm = pm
+        return cls._ru_pm
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.presets_meta = {}
@@ -97,17 +122,21 @@ class ProviderDelegate(QStyledItemDelegate):
             painter.drawPixmap(x, y, self._local_pixmap())
             x += self._local_pixmap().width() + 6
 
-        elif pricing == "free":
+        elif badge_kind == "ru":
+            painter.drawPixmap(x, y, self._ru_pixmap())
+            x += self._ru_pixmap().width() + 6
+
+        if badge_kind != "local" and pricing == "free":
             painter.drawPixmap(x, y, self._free_pixmap())
             x += self._free_pixmap().width() + 6
 
-        elif pricing == "paid":
+        elif badge_kind != "local" and pricing == "paid":
             painter.setPen(QColor("#FFC107"))
             painter.setFont(dollar_font)
             painter.drawText(x, y + ascent, "$")
             x += 12
 
-        elif pricing == "mixed":
+        elif badge_kind != "local" and pricing == "mixed":
             painter.drawPixmap(x, y, self._free_pixmap())
             x += self._free_pixmap().width() + 4
 

@@ -478,11 +478,23 @@ class EditorMixin:
         logger.info("[API UI] add preset clicked")
         v = self.view
         template_options: list[tuple[str, object]] = []
+        template_presets_meta: list[object] = []
         for i in range(v.template_combo.count()):
             template_options.append((v.template_combo.itemText(i), v.template_combo.itemData(i)))
+            template_id = v.template_combo.itemData(i)
+            if template_id is None:
+                continue
+            preset_meta = getattr(getattr(v, "provider_delegate", None), "presets_meta", {}).get(template_id)
+            if preset_meta is not None:
+                template_presets_meta.append(preset_meta)
 
         initial_template = v.template_combo.currentData() if getattr(v, "template_combo", None) is not None else None
-        dlg = NewPresetDialog(v, template_options=template_options, initial_template_data=initial_template)
+        dlg = NewPresetDialog(
+            v,
+            template_options=template_options,
+            initial_template_data=initial_template,
+            template_presets_meta=template_presets_meta,
+        )
         if dlg.exec() != dlg.DialogCode.Accepted:
             logger.info("[API UI] add preset cancelled")
             return
