@@ -798,7 +798,7 @@ class AIHubDialog(QDialog):
     def _update_summary(self) -> None:
         # "Models" stats — count only model categories (tts/asr/rag).
         # Backend ('Системное ядро') and deps ('Зависимости') aren't models.
-        _COUNTED_CATEGORIES = {"tts", "voices", "asr", "rag", "backend", "dependencies", "beats"}
+        _COUNTED_CATEGORIES = {"tts", "voices", "asr", "rag", "extras", "backend", "dependencies"}
         counted_rows = [r for r in self._rows if row_category(r) in _COUNTED_CATEGORIES]
         installed = sum(1 for r in counted_rows if status_from_row(r).get("installed"))
         updates = sum(
