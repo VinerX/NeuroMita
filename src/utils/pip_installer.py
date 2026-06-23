@@ -210,6 +210,8 @@ class PipInstaller:
         self.protected_packages = protected_packages or ["g4f", "gigaam", "pillow", "silero-vad"]
         self._preferred_installer_cmd: Optional[List[str]] = None
         self._last_run_uv_cache_access_denied: bool = False
+        # Однократная (best-effort) установка pywinpty для живого PTY-вывода.
+        self._pty_bootstrap_attempted: bool = False
         self._ensure_libs_path()
 
     def install_package(self, package_spec, description="Установка пакета...", extra_args=None) -> bool:
@@ -980,6 +982,11 @@ class PipInstaller:
             self.history.append((self.start, 0))
             self.error_seen: bool = False
             self.recent_lines: Deque[str] = deque(maxlen=40)
+            # Скорость загрузки: считаем по приросту скачанных байт во времени
+            # (EMA для сглаживания рывков). Нужна для строки статуса «X МБ/с» (#28).
+            self.last_bytes_done: float = 0.0
+            self.last_bytes_time: float = self.start
+            self.speed_bps: float = 0.0
             self.is_pytorch_install: bool = (
                 ("download.pytorch.org" in self.cmd_str_low)
                 or ("torch" in self.cmd_str_low and "install" in self.cmd_str_low)
@@ -1014,22 +1021,65 @@ class PipInstaller:
         h, m = divmod(m, 60)
         return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
+    @staticmethod
+    def _fmt_speed(bps: float) -> str:
+        """Человекочитаемая скорость загрузки (#28)."""
+        if bps <= 0:
+            return ""
+        units = ("Б/с", "КБ/с", "МБ/с", "ГБ/с")
+        v = float(bps)
+        i = 0
+        while v >= 1024.0 and i < len(units) - 1:
+            v /= 1024.0
+            i += 1
+        return f"{v:.1f} {units[i]}" if v < 100 else f"{v:.0f} {units[i]}"
+
+    def _update_speed(self, state: "_RunState", bytes_done: float) -> None:
+        """Считаем мгновенную скорость по приросту скачанных байт и сглаживаем EMA.
+        При смене файла счётчик может обнулиться — отрицательную дельту игнорируем."""
+        now = time.time()
+        dt = now - state.last_bytes_time
+        db = bytes_done - state.last_bytes_done
+        if dt >= 0.3:
+            if db > 0:
+                inst = db / dt
+                # EMA: сглаживаем рывки сети.
+                state.speed_bps = inst if state.speed_bps <= 0 else (state.speed_bps * 0.6 + inst * 0.4)
+            elif db < 0:
+                # Новый файл — сбрасываем точку отсчёта без потери последней скорости.
+                pass
+            state.last_bytes_done = bytes_done
+            state.last_bytes_time = now
+
     @classmethod
     def _clean_line(cls, s: str) -> str:
         if not s:
             return ""
         return cls._ANSI_RE.sub('', s).replace("\x1b", "")
 
-    def _prepare_env(self) -> dict:
+    def _prepare_env(self, tty: bool = False) -> dict:
         env = os.environ.copy()
         env.setdefault("PIP_PROGRESS_BAR", "on")
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
-        env.setdefault("NO_COLOR", "1")
-        env.setdefault("CLICOLOR", "0")
-        env.setdefault("FORCE_COLOR", "0")
-        env.setdefault("PY_COLORS", "0")
-        env.setdefault("TERM", "dumb")
+        if tty:
+            # Под PTY разрешаем UV/pip рисовать живой прогресс-бар (иначе на больших
+            # бинарях torch было «нет вывода 16 с»). Цвет/прогресс включаем,
+            # «dumb»-настройки убираем (#27/#28).
+            for k in ("NO_COLOR", "TERM", "CLICOLOR", "FORCE_COLOR", "PY_COLORS"):
+                env.pop(k, None)
+            env["UV_TTY"] = "1"
+            env["FORCE_COLOR"] = "1"
+            env["CLICOLOR_FORCE"] = "1"
+            env["PIP_PROGRESS_BAR"] = "on"
+            env["TERM"] = "xterm-256color"
+            env["COLUMNS"] = env.get("COLUMNS", "120")
+        else:
+            env.setdefault("NO_COLOR", "1")
+            env.setdefault("CLICOLOR", "0")
+            env.setdefault("FORCE_COLOR", "0")
+            env.setdefault("PY_COLORS", "0")
+            env.setdefault("TERM", "dumb")
         return env
 
     def _detect_pty(self) -> Tuple[bool, Optional[object]]:
@@ -1057,16 +1107,54 @@ class PipInstaller:
         # По умолчанию — PTY только если реально доступен на Windows
         return PtyProcess is not None, PtyProcess
 
-    def _process_line(self, state: _RunState, line: str):
+    def _ensure_pty_available(self) -> bool:
+        """Best-effort: ставим pywinpty во встроенный Python, чтобы UV/pip шли через
+        настоящий псевдотерминал (живой прогресс/скорость). Пробуем один раз за сессию;
+        флаг ставим ДО вложенной установки, чтобы не уйти в рекурсию через _run_pip_process."""
+        if os.name != "nt":
+            return False
+        if os.environ.get("UV_TTY") == "0":
+            return False
+        if self._pty_bootstrap_attempted:
+            # Уже пробовали — просто сообщаем, доступен ли модуль сейчас.
+            ok, _ = self._detect_pty()
+            return ok
+        self._pty_bootstrap_attempted = True
+
+        ok, _ = self._detect_pty()
+        if ok:
+            return True
+
+        try:
+            self.update_log("Устанавливаем pywinpty для интерактивного вывода установки…")
+            if not self._ensure_pip_available():
+                return False
+            install_cmd = self._pip_base_cmd() + ["install", "pywinpty"]
+            # Эта вложенная установка пойдёт через пайпы (pywinpty ещё нет) — это нормально.
+            self._run_pip_process(install_cmd, "Установка pywinpty…")
+        except Exception as e:
+            logger.warning(f"Не удалось поставить pywinpty (не критично): {e}")
+            return False
+
+        ok, _ = self._detect_pty()
+        if ok:
+            self.update_log("pywinpty готов — установка пойдёт с живым выводом.")
+        return ok
+
+    def _process_line(self, state: _RunState, line: str, transient: bool = False):
+        # transient=True — строка пришла с возвратом каретки (\r): это «живая»
+        # перерисовка прогресс-бара. Из неё извлекаем процент/скорость и обновляем
+        # статус, но НЕ копим её в постоянный лог (иначе сотни копий прогресс-бара).
         if not line:
             return
         clean = self._clean_line(line.rstrip())
         if not clean:
             return
-        state.recent_lines.append(clean)
+        if not transient:
+            state.recent_lines.append(clean)
 
         low = clean.lower()
-        if any(k in low for k in ("error:", "ошибка:", "failed:", "traceback", "exception", "critical")) or (("error" in low or "failed" in low) and "build\\" not in low and "bdist." not in low):
+        if (not transient) and (any(k in low for k in ("error:", "ошибка:", "failed:", "traceback", "exception", "critical")) or (("error" in low or "failed" in low) and "build\\" not in low and "bdist." not in low)):
             logger.error(clean)
             self.update_log(clean)
             state.error_seen = True
@@ -1095,12 +1183,19 @@ class PipInstaller:
                             state.percent = min(99, max(0, pct2))
                             self.update_progress(state.percent)
                             state.history.append((time.time(), state.percent))
+                    # Скорость: прирост скачанных байт за время между измерениями (#28).
+                    self._update_speed(state, d)
                 except Exception:
                     pass
 
-            self.update_log(clean)
+            # Транзиентные (\r) перерисовки прогресса в постоянный лог не пишем.
+            if not transient:
+                self.update_log(clean)
 
         state.last_activity = time.time()
+        if transient:
+            # Живой прогресс-бар — сразу обновим строку статуса (со скоростью).
+            self._update_status_if_needed(state)
 
     def _update_status_if_needed(self, state: _RunState):
         now = time.time()
@@ -1116,11 +1211,20 @@ class PipInstaller:
                 eta_sec = int(max(0.0, (100.0 - state.percent)) / (dp / dt))
                 eta_txt = f" (ETA {self._fmt_hms(eta_sec)})"
 
+        # Скорость считаем «свежей» только если данные обновлялись недавно.
+        speed_txt = ""
+        if state.speed_bps > 0 and (now - state.last_bytes_time) < 5.0:
+            s = self._fmt_speed(state.speed_bps)
+            if s:
+                speed_txt = f" · {s}"
+
         stalled_sec = int(now - state.last_activity)
         msg = f"{state.description} — {state.percent}%"
+        if speed_txt:
+            msg += speed_txt
         if eta_txt:
             msg += eta_txt
-        elif stalled_sec >= self.STALL_INFO_SEC:
+        elif not speed_txt and stalled_sec >= self.STALL_INFO_SEC:
             msg += f" (нет вывода {stalled_sec} с, процесс работает)"
 
         if msg != state.last_status_message:
@@ -1250,8 +1354,12 @@ class PipInstaller:
                 import shlex
                 cmdline = " ".join(shlex.quote(c) if " " in c else c for c in cmd)
 
-            # В PtyProcess.spawn нельзя напрямую передать env, поэтому используем cmdline
-            pty = PtyProcess.spawn(cmdline)
+            # Современные pywinpty принимают env — передаём TTY-окружение, чтобы UV
+            # рисовал живой прогресс. Старые версии env не знают → фоллбэк без него.
+            try:
+                pty = PtyProcess.spawn(cmdline, env=env)
+            except TypeError:
+                pty = PtyProcess.spawn(cmdline)
         except Exception as e:
             logger.warning(f"PTY-режим недоступен или ошибка запуска PTY: {e}")
             return False, -1
@@ -1279,7 +1387,9 @@ class PipInstaller:
                     if tok in ("\r", "\n"):
                         line = acc.strip()
                         if line:
-                            self._process_line(state, line)
+                            # \r — живая перерисовка прогресс-бара (transient),
+                            # \n — завершённая строка лога.
+                            self._process_line(state, line, transient=(tok == "\r"))
                         acc = ""
                     else:
                         acc += tok
@@ -1322,21 +1432,25 @@ class PipInstaller:
         - Прогресс/ETA извлекаются из процентов или done/total; при их отсутствии — оценка по тренду.
         """
         state = self._RunState(description, cmd)
-        env = self._prepare_env()
 
         self.update_status(description)
         self.update_log("Выполняем: " + " ".join(cmd))
+
+        # Пытаемся обеспечить PTY (pywinpty) по умолчанию — тогда UV даёт живой
+        # прогресс/скорость. Best-effort, не критично если не вышло.
+        self._ensure_pty_available()
 
         use_pty, PtyProcess = self._detect_pty()
         ok, ret = False, -1
 
         if use_pty and PtyProcess is not None and os.name == "nt":
-            ok, ret = self._run_with_winpty(cmd, env, state, PtyProcess)
+            # Под PTY — окружение с включённым цветом/прогрессом; для пайпов — «dumb».
+            ok, ret = self._run_with_winpty(cmd, self._prepare_env(tty=True), state, PtyProcess)
             if not ok:
                 # Фоллбэк на пайпы
-                ok, ret = self._run_with_pipes(cmd, env, state)
+                ok, ret = self._run_with_pipes(cmd, self._prepare_env(), state)
         else:
-            ok, ret = self._run_with_pipes(cmd, env, state)
+            ok, ret = self._run_with_pipes(cmd, self._prepare_env(), state)
         self._last_run_uv_cache_access_denied = self._is_uv_cache_access_denied_failure(cmd, state, ret)
 
         # Завершение
