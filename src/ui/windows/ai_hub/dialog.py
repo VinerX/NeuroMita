@@ -78,9 +78,12 @@ class AIHubDialog(QDialog):
         self.setObjectName("AIHubDialog")
         self.setWindowTitle(_("AI Hub", "AI Hub"))
         self.setModal(False)
-        self.resize(1280, 820)
-        self.setMinimumSize(1100, 700)
+        # Размеры под экран: на узких/масштабированных дисплеях жёсткие 1280×820 и
+        # min 1100×700 уводили контент (сайдбар + панель настроек) за левую кромку
+        # окна — «интерфейс поехал» (#21). Клампим к доступной геометрии экрана и
+        # центрируем, чтобы окно гарантированно помещалось и не уезжало off-screen.
         self.setStyleSheet(get_ai_hub_stylesheet())
+        self._apply_screen_aware_geometry(preferred=(1280, 820), minimum=(1000, 640))
 
         # Use the native OS window chrome — no custom title bar, no shadow.
         # The root frame stays as a styling anchor so the QSS still matches
@@ -99,6 +102,32 @@ class AIHubDialog(QDialog):
         root.addLayout(self._build_header())
         root.addLayout(self._build_body(), 1)
         root.addLayout(self._build_footer())
+
+    def _apply_screen_aware_geometry(self, *, preferred: tuple[int, int], minimum: tuple[int, int]) -> None:
+        """Подгоняем размер окна под доступную геометрию экрана и центрируем.
+        Гарантирует, что окно помещается на экран и не уезжает за левую кромку (#21)."""
+        from PyQt6.QtWidgets import QApplication
+        try:
+            screen = self.screen() or QApplication.primaryScreen()
+            avail = screen.availableGeometry()
+        except Exception:
+            self.resize(*preferred)
+            self.setMinimumSize(*minimum)
+            return
+
+        margin = 48  # запас под рамки/таскбар
+        max_w = max(minimum[0], avail.width() - margin)
+        max_h = max(minimum[1], avail.height() - margin)
+        w = min(preferred[0], max_w)
+        h = min(preferred[1], max_h)
+        # Минимум не должен превышать доступный экран, иначе окно нельзя ужать
+        # и контент клиппится.
+        self.setMinimumSize(min(minimum[0], w), min(minimum[1], h))
+        self.resize(w, h)
+        # Центрируем в доступной области экрана.
+        x = avail.x() + max(0, (avail.width() - w) // 2)
+        y = avail.y() + max(0, (avail.height() - h) // 2)
+        self.move(x, y)
 
     def _build_header(self) -> QHBoxLayout:
         header = QHBoxLayout()
