@@ -26,6 +26,15 @@ def _detect_gpu_vendor() -> str:
         return "CPU"
 
 
+def _detect_gpu_label() -> str:
+    try:
+        from utils.gpu_utils import format_primary_gpu_label
+
+        return str(format_primary_gpu_label() or "CPU").strip()
+    except Exception:
+        return "CPU"
+
+
 class _Worker:
     def __init__(self, ctx: mp.context.BaseContext, worker_name: str, service_names: Sequence[str]):
         self.worker_name = str(worker_name or "").strip().lower()
@@ -306,10 +315,11 @@ class AIEngineController:
 
         if raw == "auto":
             gpu_vendor = _detect_gpu_vendor()
+            gpu_label = _detect_gpu_label()
             resolved = "split" if gpu_vendor == "AMD" else "shared"
             logger.info(
                 f"AIEngineController auto mode resolved to '{resolved}' "
-                f"(gpu_vendor={gpu_vendor})"
+                f"(gpu={gpu_label}, gpu_vendor={gpu_vendor})"
             )
             return resolved
 

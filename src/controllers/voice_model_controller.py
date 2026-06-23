@@ -15,13 +15,23 @@ from core.backends import get_backend_service
 from core.events import get_event_bus, Events, Event
 
 try:
-    from utils.gpu_utils import check_gpu_provider, get_cuda_devices, get_gpu_name_by_id
+    from utils.gpu_utils import (
+        check_gpu_provider,
+        format_primary_gpu_label,
+        get_cuda_devices,
+        get_gpu_name_by_id,
+        get_primary_gpu_name,
+    )
 except Exception:
     def check_gpu_provider():
         return None
+    def format_primary_gpu_label():
+        return "CPU"
     def get_cuda_devices():
         return []
     def get_gpu_name_by_id(_id):
+        return None
+    def get_primary_gpu_name():
         return None
 class VoiceModelController:
     """
@@ -118,6 +128,8 @@ class VoiceModelController:
 
     def _refresh_gpu_runtime_info(self) -> tuple[bool, bool]:
         had_cuda = bool(getattr(self, "detected_cuda_devices", None))
+        old_vendor = str(getattr(self, "detected_gpu_vendor", "") or "").upper()
+        old_name = str(getattr(self, "gpu_name", "") or "").strip()
 
         try:
             self.detected_gpu_vendor = check_gpu_provider()
@@ -135,6 +147,20 @@ class VoiceModelController:
                 self.gpu_name = get_gpu_name_by_id(self.detected_cuda_devices[0])
             except Exception:
                 self.gpu_name = None
+        if not self.gpu_name:
+            try:
+                self.gpu_name = get_primary_gpu_name()
+            except Exception:
+                self.gpu_name = None
+
+        new_vendor = str(self.detected_gpu_vendor or "CPU").upper()
+        new_name = str(self.gpu_name or "").strip()
+        if new_vendor != old_vendor or new_name != old_name:
+            logger.info(
+                "Detected GPU runtime: "
+                f"{format_primary_gpu_label()} "
+                f"(cuda_devices={list(self.detected_cuda_devices or [])})"
+            )
 
         return had_cuda, bool(self.detected_cuda_devices)
 

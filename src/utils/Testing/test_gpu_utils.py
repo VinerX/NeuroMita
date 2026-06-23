@@ -10,6 +10,8 @@ class GpuUtilsTests(unittest.TestCase):
     def setUp(self):
         gpu_utils._CUDA_INFO_CACHE = []
         gpu_utils._CUDA_INFO_TS = 0.0
+        gpu_utils._GPU_INFO_CACHE = None
+        gpu_utils._GPU_INFO_TS = 0.0
 
     def test_get_cuda_devices_uses_nvidia_smi_without_torch(self):
         with patch("utils.gpu_utils.check_gpu_provider", return_value="NVIDIA"), \
@@ -37,6 +39,20 @@ class GpuUtilsTests(unittest.TestCase):
 
         self.assertEqual(devices, [])
         check_output_mock.assert_not_called()
+
+    def test_get_primary_gpu_info_prefers_discrete_nvidia_name(self):
+        with patch(
+            "utils.gpu_utils.subprocess.check_output",
+            return_value="Name\nIntel(R) Iris(R) Xe Graphics\nNVIDIA GeForce RTX 4060 Laptop GPU\n",
+        ):
+            info = gpu_utils.get_primary_gpu_info()
+
+        self.assertEqual(info["vendor"], "NVIDIA")
+        self.assertEqual(info["name"], "NVIDIA GeForce RTX 4060 Laptop GPU")
+        self.assertEqual(
+            gpu_utils.format_primary_gpu_label(),
+            "NVIDIA GeForce RTX 4060 Laptop GPU",
+        )
 
 
 if __name__ == "__main__":

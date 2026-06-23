@@ -26,7 +26,7 @@ from main_logger import logger
 from styles.ai_hub_styles import get_stylesheet as get_ai_hub_stylesheet
 from ui.windows.voice_action_windows import VoiceInstallationWindow
 from utils import getTranslationVariant as _
-from utils.gpu_utils import check_gpu_provider
+from utils.gpu_utils import check_gpu_provider, format_primary_gpu_label, get_primary_gpu_name
 
 from .constants import CATEGORY_ICONS, CATEGORY_LABELS, CATEGORY_ORDER, ROW_CATEGORY_MAP
 from .helpers import meta_from_row, qicon, qpixmap, row_category, status_from_row
@@ -124,8 +124,8 @@ class AIHubDialog(QDialog):
         title_box.addWidget(title)
         subtitle = QLabel(
             _(
-                "Установка, удаление и обслуживание локальных AI-моделей и системных зависимостей.",
-                "Install, remove and maintain local AI models and system dependencies.",
+                "Установка, удаление и обслуживание локальных AI-компонентов и системных зависимостей.",
+                "Install, remove and maintain local AI components and system dependencies.",
             )
         )
         subtitle.setObjectName("AIHubSubtitle")
@@ -324,7 +324,7 @@ class AIHubDialog(QDialog):
     def _build_toolbar(self) -> QVBoxLayout:
         """Two-row toolbar.
 
-        Row 1: «Доступные модели» (page header) + backend filter pills
+        Row 1: «Доступные компоненты» (page header) + backend filter pills
                + search + sort.
         Row 2: install / settings tab switcher.
         """
@@ -336,7 +336,7 @@ class AIHubDialog(QDialog):
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(10)
 
-        title = QLabel(_("Доступные модели", "Available models"))
+        title = QLabel(_("Доступные компоненты", "Available components"))
         title.setObjectName("AIHubSectionTitle")
         top.addWidget(title, 0)
 
@@ -379,7 +379,7 @@ class AIHubDialog(QDialog):
 
         self.search_box = QLineEdit()
         self.search_box.setObjectName("AIHubSearch")
-        self.search_box.setPlaceholderText(_("Поиск моделей...", "Search models..."))
+        self.search_box.setPlaceholderText(_("Поиск компонентов...", "Search components..."))
         self.search_box.setFixedWidth(240)
         si = qicon("fa5s.search", "#bca9bb")
         if si is not None:
@@ -445,10 +445,11 @@ class AIHubDialog(QDialog):
 
         self.stat_installed = Stat("fa5s.download", _("Установлено", "Installed"))
         self.stat_updates = Stat("fa5s.sync", _("Доступно обновлений", "Updates available"))
+        self.stat_gpu = Stat("fa5s.microchip", "GPU")
         self.stat_disk = Stat("fa5s.hdd", _("Свободно на диске", "Free disk"))
         self.stat_check = Stat("fa5s.clock", _("Последняя проверка", "Last check"))
 
-        for s in (self.stat_installed, self.stat_updates, self.stat_disk, self.stat_check):
+        for s in (self.stat_installed, self.stat_updates, self.stat_gpu, self.stat_disk, self.stat_check):
             s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             footer.addWidget(s, 1)
 
@@ -692,18 +693,21 @@ class AIHubDialog(QDialog):
     def _update_summary(self) -> None:
         # "Models" stats — count only model categories (tts/asr/rag).
         # Backend ('Системное ядро') and deps ('Зависимости') aren't models.
-        _MODEL_CATEGORIES = {"tts", "voices", "asr", "rag"}
-        model_rows = [r for r in self._rows if row_category(r) in _MODEL_CATEGORIES]
-        installed = sum(1 for r in model_rows if status_from_row(r).get("installed"))
+        _COUNTED_CATEGORIES = {"tts", "voices", "asr", "rag", "backend", "dependencies", "beats"}
+        counted_rows = [r for r in self._rows if row_category(r) in _COUNTED_CATEGORIES]
+        installed = sum(1 for r in counted_rows if status_from_row(r).get("installed"))
         updates = sum(
             1
-            for r in model_rows
+            for r in counted_rows
             if str(status_from_row(r).get("code") or "") == "needs_update"
             or status_from_row(r).get("update_available")
         )
-        models_word = _("моделей", "models")
-        self.stat_installed.setValue(str(installed), models_word)
-        self.stat_updates.setValue(str(updates), models_word)
+        components_word = _("компонентов", "components")
+        self.stat_installed.setValue(str(installed), components_word)
+        self.stat_updates.setValue(str(updates), components_word)
+        gpu_label = format_primary_gpu_label()
+        gpu_vendor = self._detect_gpu_vendor()
+        self.stat_gpu.setValue(gpu_label, gpu_vendor)
 
         try:
             usage = shutil.disk_usage(os.path.abspath(os.sep))
@@ -740,21 +744,25 @@ class AIHubDialog(QDialog):
         cpu_ready = bool(status_from_row(row_cpu or {}).get("ready"))
         cuda_ready = bool(status_from_row(row_cuda or {}).get("ready"))
 
+        gpu_name = str(get_primary_gpu_name() or "").strip()
+        gpu_label = gpu_name or format_primary_gpu_label()
         show = gpu_vendor == "NVIDIA" and cpu_ready and not cuda_ready
         self.banner.setVisible(show)
         if show:
             self.banner_title.setText(
                 _(
-                    "Обнаружена видеокарта <span style='color:#db6596;font-weight:800;'>NVIDIA</span>,"
+                    "Обнаружена видеокарта <span style='color:#db6596;font-weight:800;'>{gpu}</span>,"
                     " но активен <span style='color:#db6596;font-weight:800;'>CPU-бэкенд</span>",
-                    "Detected <span style='color:#db6596;font-weight:800;'>NVIDIA</span> GPU,"
+                    "Detected <span style='color:#db6596;font-weight:800;'>{gpu}</span> GPU,"
                     " but the <span style='color:#db6596;font-weight:800;'>CPU backend</span> is active",
-                )
+                ).format(gpu=gpu_label)
             )
             self.banner_body.setText(
                 _(
-                    "Можно скачать оптимизированную CUDA-версию (~3 GB), чтобы значительно ускорить работу.",
-                    "You can download the optimized CUDA version (~3 GB) to significantly speed things up.",
+                    "AI Hub видит NVIDIA, но сейчас приложение работает на CPU-стеке. "
+                    "Можно установить CUDA-компонент, чтобы заметно ускорить работу.",
+                    "AI Hub can see NVIDIA, but the app is currently running on the CPU stack. "
+                    "Install the CUDA component to speed things up significantly.",
                 )
             )
 

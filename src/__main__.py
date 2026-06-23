@@ -181,10 +181,11 @@ import importlib.util, ctypes, pathlib, os
 # Если стоит CPU-вариант, а GPU — NVIDIA, переустанавливаем на CUDA.
 try:
     from core.backends import get_backend_service
-    from utils.gpu_utils import check_gpu_provider
+    from utils.gpu_utils import check_gpu_provider, format_primary_gpu_label
     from utils.pip_installer import PipInstaller
     _backend_service = get_backend_service()
     _gpu = check_gpu_provider() or "CPU"
+    _gpu_label = format_primary_gpu_label()
     _backend_ctx = {"gpu_vendor": _gpu, "libs_dir": libs_dir}
     _backend_kind = _backend_service.preferred_torch_kind(_backend_ctx)
     # Передаём libs_dir как target_dir — проверяем dist-info прямо в папке
@@ -196,7 +197,7 @@ try:
     # Первичную установку делает lazy bootstrap (embedding_handler / cross_encoder).
     _installed_variant = _backend_service.get_installed_torch_variant(target_dir=libs_dir)
     if _status.action == "reinstall" and _installed_variant is not None:
-        logger.info(f"Torch bootstrap (early): gpu={_gpu}, action=reinstall (CPU→CUDA)")
+        logger.info(f"Torch bootstrap (early): gpu={_gpu_label}, action=reinstall (CPU→CUDA)")
         _pip = PipInstaller(update_log=logger.info)
         logger.info("Удаление CPU-варианта PyTorch перед установкой CUDA...")
         _pip.uninstall_packages(
@@ -211,9 +212,9 @@ try:
         if not _status.ok:
             raise RuntimeError(_status.reason)
     elif _status.action != "skip":
-        logger.info(f"Torch bootstrap (early): gpu={_gpu}, action={_plan['action']} — отложено до первого использования")
+        logger.info(f"Torch bootstrap (early): gpu={_gpu_label}, action={_plan['action']} — отложено до первого использования")
     else:
-        logger.info(f"Torch bootstrap (early): gpu={_gpu}, action=skip — {_plan.get('reason', '')}")
+        logger.info(f"Torch bootstrap (early): gpu={_gpu_label}, action=skip — {_plan.get('reason', '')}")
 except Exception as _torch_boot_err:
     logger.warning(f"Torch early bootstrap failed: {_torch_boot_err}")
 # ──────────────────────────────────────────────────────────────────────
