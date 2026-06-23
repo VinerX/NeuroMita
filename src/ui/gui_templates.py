@@ -320,12 +320,29 @@ def create_setting_widget(
             else:
                 widget.addItems([str(o) for o in options])
         if _uses_display_value:
-            # find matching value in options
+            # Сопоставляем сохранённое значение с пунктами. Делаем это устойчиво:
+            # сначала строгое равенство, затем регистронезависимо по строке, и
+            # если совпадения нет — садимся на значение по умолчанию (а не на
+            # «последний добавленный» пункт). Без фолбэка раньше комбобокс языка
+            # мог показать чужой язык (напр. ZH), хотя в настройках был RU.
             saved = gui.settings.get(setting_key, default)
-            for i in range(widget.count()):
-                if widget.itemData(i) == saved:
-                    widget.setCurrentIndex(i)
-                    break
+
+            def _match_index(target) -> int:
+                if target is None:
+                    return -1
+                for i in range(widget.count()):
+                    if widget.itemData(i) == target:
+                        return i
+                t = str(target).strip().lower()
+                for i in range(widget.count()):
+                    if str(widget.itemData(i)).strip().lower() == t:
+                        return i
+                return -1
+
+            idx = _match_index(saved)
+            if idx < 0:
+                idx = _match_index(default)
+            widget.setCurrentIndex(idx if idx >= 0 else 0)
         else:
             widget.setCurrentText(str(gui.settings.get(setting_key, default)))
 
