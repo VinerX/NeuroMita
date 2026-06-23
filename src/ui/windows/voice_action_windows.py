@@ -67,7 +67,7 @@ class VoiceInstallationWindow(QDialog):
                     text-align: center;
                 }
                 QProgressBar::chunk {
-                    background-color: #db6596;
+                    background-color: #b74b7d;
                     border-radius: 7px;
                 }
                 QPushButton {
@@ -80,7 +80,7 @@ class VoiceInstallationWindow(QDialog):
                 }
                 QPushButton:hover {
                     background-color: #362347;
-                    border-color: #db6596;
+                    border-color: #b74b7d;
                 }
             """)
         else:
@@ -99,7 +99,7 @@ class VoiceInstallationWindow(QDialog):
                     text-align: center;
                 }
                 QProgressBar::chunk {
-                    background-color: #db6596;
+                    background-color: #b74b7d;
                     border-radius: 5px;
                 }
                 QPushButton {
@@ -613,8 +613,8 @@ class VCRedistWarningDialog(QDialog):
                 font-weight: bold;
             }
             QPushButton:hover { background-color: #555555; }
-            #RetryButton { background-color: #db6596; }
-            #RetryButton:hover { background-color: #e26e9e; }
+            #RetryButton { background-color: #b74b7d; }
+            #RetryButton:hover { background-color: #c04c80; }
         """)
         
         self.choice = 'close'
@@ -689,8 +689,8 @@ class TritonDependenciesDialog(QDialog):
                 font-weight: bold;
             }
             QPushButton:hover { background-color: #555555; }
-            #ContinueButton { background-color: #db6596; }
-            #ContinueButton:hover { background-color: #e26e9e; }
+            #ContinueButton { background-color: #b74b7d; }
+            #ContinueButton:hover { background-color: #c04c80; }
         """)
         
         self.choice = 'skip'

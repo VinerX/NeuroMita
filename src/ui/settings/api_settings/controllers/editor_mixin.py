@@ -161,9 +161,9 @@ class EditorMixin:
 
         if dirty:
             v.save_preset_button.setStyleSheet("""
-                QPushButton { background-color: #db6596; color: white; font-weight: bold; border: none; padding: 8px; border-radius: 4px; }
-                QPushButton:hover { background-color: #e26e9e; }
-                QPushButton:pressed { background-color: #cb5b89; }
+                QPushButton { background-color: #b74b7d; color: white; font-weight: bold; border: none; padding: 8px; border-radius: 4px; }
+                QPushButton:hover { background-color: #c04c80; }
+                QPushButton:pressed { background-color: #a0436c; }
             """)
         else:
             v.save_preset_button.setStyleSheet("""

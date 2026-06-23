@@ -53,7 +53,7 @@ class MitaStatusWidget(QWidget):
         self._stop_dots()
         chat = self._get_chat()
         if chat:
-            icon = qta.icon("fa6s.triangle-exclamation", color="#db6596").pixmap(24, 24)
+            icon = qta.icon("fa6s.triangle-exclamation", color="#b74b7d").pixmap(24, 24)
             chat.show_status(str(error_message), icon)
 
     def show_success(self, message=None):

@@ -169,17 +169,17 @@ class SettingsOverlay(QWidget):
 
         painter.save()
         painter.setClipPath(panel_path)
-        painter.setPen(QPen(QColor(219, 101, 150, 18), 1))
+        painter.setPen(QPen(QColor(183, 75, 125, 18), 1))
         step = 26
         rl, rt, rr, rb, rh = int(rect.left()), int(rect.top()), int(rect.right()), int(rect.bottom()), int(rect.height())
         for x in range(rl - rh, rr + rh, step):
             painter.drawLine(x, rt, x + rh, rb)
-        painter.setPen(QPen(QColor(219, 101, 150, 10), 1))
+        painter.setPen(QPen(QColor(183, 75, 125, 10), 1))
         for y in range(rt, rb, step):
             painter.drawLine(rl, y, rr, y)
         painter.restore()
 
-        painter.setPen(QPen(QColor(219, 101, 150, 88), 1.2))
+        painter.setPen(QPen(QColor(183, 75, 125, 88), 1.2))
         painter.drawPath(panel_path)
 
         inner = rect.adjusted(10, 10, -10, -10)

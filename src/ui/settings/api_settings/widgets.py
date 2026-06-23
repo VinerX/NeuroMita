@@ -290,7 +290,7 @@ class ReserveKeyRow(QWidget):
         self.key_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         self.remove_btn = QToolButton()
-        self.remove_btn.setIcon(qta.icon("fa5s.times", color="#e26e9e"))
+        self.remove_btn.setIcon(qta.icon("fa5s.times", color="#c04c80"))
         self.remove_btn.setFixedSize(22, 22)
         self.remove_btn.setIconSize(QSize(11, 11))
         self.remove_btn.setAutoRaise(True)
@@ -465,7 +465,7 @@ class FallbackRow(QWidget):
         self.down_btn.setAutoRaise(True)
 
         self.remove_btn = QToolButton()
-        self.remove_btn.setIcon(qta.icon("fa5s.times", color="#e26e9e"))
+        self.remove_btn.setIcon(qta.icon("fa5s.times", color="#c04c80"))
         self.remove_btn.setFixedSize(22, 22)
         self.remove_btn.setIconSize(QSize(11, 11))
         self.remove_btn.setAutoRaise(True)

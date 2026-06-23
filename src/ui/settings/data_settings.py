@@ -216,9 +216,9 @@ def setup_data_settings_controls(self, parent):
     browse_btn = QPushButton(_("Обзор...", "Browse..."))
     browse_btn.setFixedWidth(80)
     browse_btn.setStyleSheet(
-        "QPushButton { background: #db6596; color: #ffffff; font-weight: 600; border: 1px solid rgba(219,101,150,0.46); border-radius: 10px; "
+        "QPushButton { background: #b74b7d; color: #ffffff; font-weight: 600; border: 1px solid rgba(183, 75, 125,0.46); border-radius: 10px; "
         "font-size: 11px; padding: 7px 14px; }"
-        "QPushButton:hover { background: #e26e9e; }"
+        "QPushButton:hover { background: #c04c80; }"
     )
 
     def _on_browse():
@@ -328,9 +328,9 @@ class _LiveStatsWidget(QFrame):
         refresh_btn.setIcon(qta.icon("fa6s.rotate", color="#ffffff"))
         refresh_btn.setFixedHeight(22)
         refresh_btn.setStyleSheet(
-            "QPushButton { background: #db6596; color: #ffffff; font-weight: 600; border: 1px solid rgba(219,101,150,0.46); border-radius: 10px; "
+            "QPushButton { background: #b74b7d; color: #ffffff; font-weight: 600; border: 1px solid rgba(183, 75, 125,0.46); border-radius: 10px; "
             "font-size: 10px; padding: 4px 10px; }"
-            "QPushButton:hover { background: #e26e9e; }"
+            "QPushButton:hover { background: #c04c80; }"
         )
         refresh_btn.clicked.connect(self._refresh)
         header_row.addWidget(refresh_btn)

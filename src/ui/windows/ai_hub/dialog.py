@@ -109,7 +109,7 @@ class AIHubDialog(QDialog):
         badge.setObjectName("AIHubIconBadge")
         badge.setFixedSize(48, 48)
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pix = qpixmap("fa5s.magic", "#db6596", 22)
+        pix = qpixmap("fa5s.magic", "#b74b7d", 22)
         if pix is not None:
             badge.setPixmap(pix)
         else:
@@ -188,7 +188,7 @@ class AIHubDialog(QDialog):
         self._install_logs_btn.setObjectName("AIHubSidebarBtn")
         self._install_logs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._install_logs_btn.setVisible(False)
-        logs_icon = qicon("fa5s.terminal", "#db6596")
+        logs_icon = qicon("fa5s.terminal", "#b74b7d")
         if logs_icon is not None:
             self._install_logs_btn.setIcon(logs_icon)
             self._install_logs_btn.setIconSize(QSize(13, 13))
@@ -201,7 +201,7 @@ class AIHubDialog(QDialog):
         self.btn_refresh = QPushButton(_("Проверить обновления", "Check for updates"))
         self.btn_refresh.setObjectName("AIHubSidebarBtn")
         self.btn_refresh.setCursor(Qt.CursorShape.PointingHandCursor)
-        ic = qicon("fa5s.sync", "#db6596")
+        ic = qicon("fa5s.sync", "#b74b7d")
         if ic is not None:
             self.btn_refresh.setIcon(ic)
             self.btn_refresh.setIconSize(QSize(13, 13))
@@ -213,7 +213,7 @@ class AIHubDialog(QDialog):
         self.btn_clear_cache = QPushButton(_("Очистить кэш загрузок", "Clear download cache"))
         self.btn_clear_cache.setObjectName("AIHubSidebarBtn")
         self.btn_clear_cache.setCursor(Qt.CursorShape.PointingHandCursor)
-        ic_cache = qicon("fa5s.broom", "#db6596")
+        ic_cache = qicon("fa5s.broom", "#b74b7d")
         if ic_cache is not None:
             self.btn_clear_cache.setIcon(ic_cache)
             self.btn_clear_cache.setIconSize(QSize(13, 13))
@@ -285,7 +285,7 @@ class AIHubDialog(QDialog):
         ico.setObjectName("AIHubBannerIcon")
         ico.setFixedSize(46, 46)
         ico.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pix = qpixmap("fa5s.microchip", "#db6596", 22)
+        pix = qpixmap("fa5s.microchip", "#b74b7d", 22)
         if pix is not None:
             ico.setPixmap(pix)
         bl.addWidget(ico, 0)
@@ -346,7 +346,7 @@ class AIHubDialog(QDialog):
         self._open_models_btn = QPushButton(_("Открыть папку моделей", "Open models folder"))
         self._open_models_btn.setObjectName("AIHubSecondary")
         self._open_models_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        folder_icon = qicon("fa5s.folder-open", "#db6596")
+        folder_icon = qicon("fa5s.folder-open", "#b74b7d")
         if folder_icon is not None:
             self._open_models_btn.setIcon(folder_icon)
             self._open_models_btn.setIconSize(QSize(13, 13))
@@ -751,10 +751,10 @@ class AIHubDialog(QDialog):
         if show:
             self.banner_title.setText(
                 _(
-                    "Обнаружена видеокарта <span style='color:#db6596;font-weight:800;'>{gpu}</span>,"
-                    " но активен <span style='color:#db6596;font-weight:800;'>CPU-бэкенд</span>",
-                    "Detected <span style='color:#db6596;font-weight:800;'>{gpu}</span> GPU,"
-                    " but the <span style='color:#db6596;font-weight:800;'>CPU backend</span> is active",
+                    "Обнаружена видеокарта <span style='color:#b74b7d;font-weight:800;'>{gpu}</span>,"
+                    " но активен <span style='color:#b74b7d;font-weight:800;'>CPU-бэкенд</span>",
+                    "Detected <span style='color:#b74b7d;font-weight:800;'>{gpu}</span> GPU,"
+                    " but the <span style='color:#b74b7d;font-weight:800;'>CPU backend</span> is active",
                 ).format(gpu=gpu_label)
             )
             self.banner_body.setText(

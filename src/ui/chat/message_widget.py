@@ -502,7 +502,7 @@ class MessageWidget(QWidget):
         menu.setStyleSheet("""
             QMenu { background-color: rgba(16,13,25,0.96); color: #f3edf6; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 4px; }
             QMenu::item { padding: 6px 20px; border-radius: 4px; }
-            QMenu::item:selected { background-color: rgba(219,101,150,0.20); }
+            QMenu::item:selected { background-color: rgba(183, 75, 125,0.20); }
         """)
 
         if self._role == "user":

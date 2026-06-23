@@ -464,9 +464,9 @@ def setup_updates_settings_controls(self, parent):
     channel_combo.setStyleSheet(
         "QComboBox { background-color: rgba(16,13,25,0.76); border: 1px solid rgba(255,255,255,0.05); border-radius: 10px; "
         "color: #f3edf6; padding: 7px 10px; }"
-        "QComboBox:focus { border: 1px solid rgba(219,101,150,0.24); }"
+        "QComboBox:focus { border: 1px solid rgba(183, 75, 125,0.24); }"
         "QComboBox::drop-down { border: none; width: 26px; }"
-        "QComboBox QAbstractItemView { background-color: rgba(15,16,31,0.96); border: 1px solid rgba(219,101,150,0.24); color: #f3edf6; selection-background-color: rgba(219,101,150,0.30); }"
+        "QComboBox QAbstractItemView { background-color: rgba(15,16,31,0.96); border: 1px solid rgba(183, 75, 125,0.24); color: #f3edf6; selection-background-color: rgba(183, 75, 125,0.30); }"
     )
     channel_combo.addItems(["stable", "beta"])
     current_channel = self.settings.get("UPDATE_CHANNEL", "stable")
@@ -625,7 +625,7 @@ def setup_updates_settings_controls(self, parent):
     tester_entry.setStyleSheet(
         "QLineEdit { background-color: rgba(16,13,25,0.76); border: 1px solid rgba(255,255,255,0.05); border-radius: 10px; "
         "color: #f3edf6; padding: 7px 10px; }"
-        "QLineEdit:focus { border: 1px solid rgba(219,101,150,0.24); }"
+        "QLineEdit:focus { border: 1px solid rgba(183, 75, 125,0.24); }"
     )
     tester_entry.setEchoMode(QLineEdit.EchoMode.Password)
     tester_entry.setPlaceholderText(_("пароль для тестовых архивов", "password for test archives"))
@@ -664,7 +664,7 @@ def setup_updates_settings_controls(self, parent):
     unity_entry.setStyleSheet(
         "QLineEdit { background-color: rgba(16,13,25,0.76); border: 1px solid rgba(255,255,255,0.05); border-radius: 10px; "
         "color: #f3edf6; padding: 7px 10px; }"
-        "QLineEdit:focus { border: 1px solid rgba(219,101,150,0.24); }"
+        "QLineEdit:focus { border: 1px solid rgba(183, 75, 125,0.24); }"
     )
     unity_entry.setPlaceholderText(_("по умолчанию: NeuroMita-Unity", "default: NeuroMita-Unity"))
     unity_entry.setText(self.settings.get("UNITY_INSTALL_DIR", ""))
@@ -712,15 +712,15 @@ def setup_updates_settings_controls(self, parent):
 
     btn_check = QPushButton(_("Проверить обновления", "Check for updates"))
     btn_check.setStyleSheet(
-        "QPushButton { background: #db6596; color: #ffffff; border: none; border-radius: 10px; padding: 7px 14px; font-weight: 600; }"
-        "QPushButton:hover { background: #e26e9e; }"
+        "QPushButton { background: #b74b7d; color: #ffffff; border: none; border-radius: 10px; padding: 7px 14px; font-weight: 600; }"
+        "QPushButton:hover { background: #c04c80; }"
         "QPushButton:disabled { background: #2b2230; color: #bca9bb; }"
     )
 
     btn_install = QPushButton(_("Установить обновления", "Install updates"))
     btn_install.setStyleSheet(
-        "QPushButton { background: #db6596; color: #ffffff; border: none; border-radius: 10px; padding: 7px 14px; font-weight: 600; }"
-        "QPushButton:hover { background: #e26e9e; }"
+        "QPushButton { background: #b74b7d; color: #ffffff; border: none; border-radius: 10px; padding: 7px 14px; font-weight: 600; }"
+        "QPushButton:hover { background: #c04c80; }"
         "QPushButton:disabled { background: #2b2230; color: #bca9bb; }"
     )
 
@@ -775,7 +775,7 @@ def setup_updates_settings_controls(self, parent):
     progress_bar.setVisible(False)
     progress_bar.setStyleSheet(
         "QProgressBar { border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; background: rgba(16,13,25,0.96); height: 14px; text-align: center; color: #bca9bb; font-size: 10px; }"
-        "QProgressBar::chunk { background: #db6596; border-radius: 3px; }"
+        "QProgressBar::chunk { background: #b74b7d; border-radius: 3px; }"
     )
     parent.addWidget(progress_bar)
 

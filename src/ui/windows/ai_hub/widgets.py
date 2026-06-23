@@ -104,7 +104,7 @@ class CategoryButton(QFrame):
         # restyle on property change
         self.style().unpolish(self)
         self.style().polish(self)
-        self._set_icon("#db6596" if selected else "#bca9bb")
+        self._set_icon("#b74b7d" if selected else "#bca9bb")
 
     def _set_icon(self, color: str) -> None:
         pix = qpixmap(self._icon_name, color, 16)
@@ -133,7 +133,7 @@ class Stat(QFrame):
         icon_box.setObjectName("AIHubStatIcon")
         icon_box.setFixedSize(32, 32)
         icon_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pix = qpixmap(icon_name, "#db6596", 16)
+        pix = qpixmap(icon_name, "#b74b7d", 16)
         if pix is not None:
             icon_box.setPixmap(pix)
         lay.addWidget(icon_box, 0)
