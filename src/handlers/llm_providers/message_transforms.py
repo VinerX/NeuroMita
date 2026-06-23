@@ -178,6 +178,23 @@ def system_to_user_prefix(messages: List[Dict[str, Any]], tag: str = "[SYSTEM CO
     return out
 
 
+def trailing_system_to_user_prefix(messages: List[Dict[str, Any]], tag: str = "[SYSTEM INFO]") -> List[Dict[str, Any]]:
+    out = [dict(m) for m in (messages or []) if isinstance(m, dict)]
+    if not out:
+        return out
+
+    last = out[-1]
+    if last.get("role") != "system":
+        return out
+
+    content = _as_text(last.get("content", "")).strip()
+    if not content:
+        return out[:-1]
+
+    out[-1] = {"role": "user", "content": f"{tag} {content}"}
+    return out
+
+
 # --- Catalog (for UI) ---
 _TRANSFORM_CATALOG: List[Dict[str, Any]] = [
     {

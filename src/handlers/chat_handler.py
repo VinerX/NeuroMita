@@ -253,6 +253,9 @@ class ChatModel:
                 routing = normalize_openrouter_routing(preset_settings.openrouter_routing)
                 if routing:
                     req.extra["openrouter_routing"] = routing
+                req.extra["openrouter_tail_system_to_user"] = bool(
+                    (preset_settings.openrouter_routing or {}).get("tail_system_to_user", True)
+                )
                 session_id = build_openrouter_session_id(
                     getattr(getattr(self, "current_character", None), "char_id", "") or "",
                     getattr(getattr(self, "current_character", None), "name", "") or "",

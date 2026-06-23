@@ -56,6 +56,7 @@ class EditorMixin:
         v = self.view
         return {
             "enabled": bool(getattr(v, "or_enable_cb", None).isChecked()) if getattr(v, "or_enable_cb", None) is not None else False,
+            "tail_system_to_user": bool(getattr(v, "or_tail_system_to_user_cb", None).isChecked()) if getattr(v, "or_tail_system_to_user_cb", None) is not None else True,
             "order": str(getattr(v, "or_order_row", None).text() or "") if getattr(v, "or_order_row", None) is not None else "",
             "only": str(getattr(v, "or_only_row", None).text() or "") if getattr(v, "or_only_row", None) is not None else "",
             "ignore": str(getattr(v, "or_ignore_row", None).text() or "") if getattr(v, "or_ignore_row", None) is not None else "",
@@ -80,6 +81,8 @@ class EditorMixin:
 
         if getattr(v, "or_enable_cb", None) is not None:
             v.or_enable_cb.setChecked(bool(routing.get("enabled", False)))
+        if getattr(v, "or_tail_system_to_user_cb", None) is not None:
+            v.or_tail_system_to_user_cb.setChecked(bool(routing.get("tail_system_to_user", True)))
         if getattr(v, "or_order_row", None) is not None:
             v.or_order_row.set_text(", ".join(routing.get("order", [])) if isinstance(routing.get("order"), list) else str(routing.get("order") or ""))
         if getattr(v, "or_only_row", None) is not None:

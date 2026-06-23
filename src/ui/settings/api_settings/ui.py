@@ -296,6 +296,14 @@ def build_api_settings_ui(self, parent_layout):
     self.or_enable_cb = QCheckBox(_("Включить provider routing", "Enable provider routing"))
     self.openrouter_routing_section.add_widget(self.or_enable_cb)
 
+    self.or_tail_system_to_user_cb = QCheckBox(_("Хвостовой system → user", "Trailing system → user"))
+    self.or_tail_system_to_user_cb.setChecked(True)
+    self.or_tail_system_to_user_cb.setToolTip(_(
+        "Если последнее сообщение запроса имеет роль system, для OpenRouter оно будет отправлено как user с префиксом [SYSTEM INFO].",
+        "If the last request message has system role, OpenRouter will send it as user with a [SYSTEM INFO] prefix."
+    ))
+    self.openrouter_routing_section.add_widget(self.or_tail_system_to_user_cb)
+
     self.or_order_row = LabeledLineEditRow(_("Приоритет провайдеров", "Provider order"))
     self.or_order_row.edit.setPlaceholderText("together, fireworks, groq")
     self.openrouter_routing_section.add_widget(self.or_order_row)
@@ -378,6 +386,7 @@ def build_api_settings_ui(self, parent_layout):
 
     self.openrouter_routing_widgets = {
         "enabled": self.or_enable_cb,
+        "tail_system_to_user": self.or_tail_system_to_user_cb,
         "order": self.or_order_row.edit,
         "only": self.or_only_row.edit,
         "ignore": self.or_ignore_row.edit,
