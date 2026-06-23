@@ -132,13 +132,17 @@ QWidget#ChatComposerWrapper {
 }
 
 QFrame#ChatComposerBar {
-    background-color: rgba({settings_panel_rgb}, 0.97);
+    /* #15: поле ввода — на «приподнятой» эталонной поверхности (#141628), чтобы
+       визуально отделялось от панелей. */
+    background-color: rgba(20, 22, 40, 0.97);
     border: 1px solid rgba({accent_rgb}, 0.22);
     border-radius: 20px;
 }
 
 QFrame#SandboxInspector {
-    background-color: rgba({sandbox_bg_rgb}, 0.94);
+    /* #15: фон правой панели как у левого блока (SandboxChatHost), а не глубокий
+       канвас — панели читаются как один уровень. */
+    background-color: rgba({settings_panel_rgb}, 0.97);
     border: 1px solid rgba({accent_rgb}, 0.12);
     border-radius: 20px;
 }
