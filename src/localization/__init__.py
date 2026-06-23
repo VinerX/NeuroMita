@@ -42,6 +42,8 @@ LANGUAGE_DISPLAY_NAMES: dict[str, str] = {
     "ZH": "简体中文",
     "UK": "Українська",
     "EL": "Ελληνικά",
+    "JA": "日本語",
+    "KO": "한국어",
 }
 
 
