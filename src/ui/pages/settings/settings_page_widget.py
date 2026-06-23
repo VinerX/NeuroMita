@@ -419,10 +419,13 @@ class SettingsPage(QWidget):
             if scroll_to_top:
                 self._scroll_to_top(smooth=False)
 
-    def show_category(self, category, *, smooth_scroll: bool = True):
+    def show_category(self, category, *, smooth_scroll: bool = True, force: bool = False):
+        # force=True — пользователь явно перешёл в конкретный раздел (шестерёнка
+        # подсистемы), показываем его даже если секция скрыта в «Видимых разделах»,
+        # а не уводим в «Общие» (фидбэк #14: «пересылает вникуда»).
         if category not in self.settings_containers:
             return
-        if not self._section_enabled(category):
+        if not force and not self._section_enabled(category):
             fallback = self._first_available_category()
             if fallback is not None:
                 category = fallback
@@ -432,17 +435,17 @@ class SettingsPage(QWidget):
         was_on_settings_page = getattr(self.gui, "current_main_page", None) == "settings"
         if not was_on_settings_page:
             self.gui.switch_main_page("settings")
-            QTimer.singleShot(0, lambda cat=category, smooth=smooth_scroll: self._activate_category(cat, smooth_scroll=smooth))
+            QTimer.singleShot(0, lambda cat=category, smooth=smooth_scroll, f=force: self._activate_category(cat, smooth_scroll=smooth, force=f))
             return
 
-        self._activate_category(category, smooth_scroll=smooth_scroll)
+        self._activate_category(category, smooth_scroll=smooth_scroll, force=force)
 
-    def _activate_category(self, category: str, *, smooth_scroll: bool):
+    def _activate_category(self, category: str, *, smooth_scroll: bool, force: bool = False):
         page = self.settings_containers.get(category)
         if page is None:
             return
 
-        if not self._section_enabled(category):
+        if not force and not self._section_enabled(category):
             fallback = self._first_available_category()
             if fallback is not None and fallback != category:
                 self._activate_category(fallback, smooth_scroll=False)

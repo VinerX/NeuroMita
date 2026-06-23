@@ -264,8 +264,10 @@ class SandboxPage(QWidget):
         return str((profile or {}).get("character_id") or "")
 
     def _jump_to_settings(self, category: str):
+        # Шестерёнка у строки статуса ведёт ИМЕННО в её раздел, даже если подсистема
+        # сейчас выключена/скрыта в «Видимых разделах» (фидбэк #14).
         self.gui.switch_main_page("settings")
-        self.gui.show_settings_category(category)
+        self.gui.show_settings_category(category, force=True)
 
     # --------- Status rows (voice / mic / RAG) -----------
     def _make_status_row(self, name_text: str, registry_attr: str, settings_key: str,

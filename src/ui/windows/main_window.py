@@ -75,10 +75,10 @@ class MainWindow(AppWindowBase):
         except TypeError:
             pass
 
-    def show_settings_category(self, category):
+    def show_settings_category(self, category, *, force: bool = False):
         page = getattr(self, "settings_page", None)
         if page is not None:
-            page.show_category(category)
+            page.show_category(category, force=force)
 
     def switch_main_page(self, page_key):
         page = getattr(self, "page_map", {}).get(page_key)
