@@ -611,6 +611,31 @@ QFrame#AIHubSchemaForm QCheckBox {
     font-size: 12px;
     spacing: 6px;
 }
+
+/* ---------- Нижняя плашка установки (Steam-style, #25) ---------- */
+QFrame#AIHubInstallBar {
+    background: rgba({accent_rgb}, 0.08);
+    border: 1px solid rgba({accent_rgb}, 0.22);
+    border-radius: 12px;
+}
+QLabel#AIHubInstallBarTitle {
+    color: {text};
+    font-size: 12px;
+    font-weight: 700;
+}
+QLabel#AIHubInstallBarDetail {
+    color: {muted};
+    font-size: 11px;
+}
+QProgressBar#AIHubInstallBarProgress {
+    background: rgba(255, 255, 255, 0.06);
+    border: none;
+    border-radius: 4px;
+}
+QProgressBar#AIHubInstallBarProgress::chunk {
+    background: {accent};
+    border-radius: 4px;
+}
 """
 
 

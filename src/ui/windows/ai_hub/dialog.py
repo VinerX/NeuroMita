@@ -102,6 +102,65 @@ class AIHubDialog(QDialog):
         root.addLayout(self._build_header())
         root.addLayout(self._build_body(), 1)
         root.addLayout(self._build_footer())
+        root.addWidget(self._build_install_bar())
+
+    def _build_install_bar(self) -> QFrame:
+        """Нижняя плашка установки «как в Steam» (#25): во время установки показывает
+        текущий компонент, прогресс-бар и процент·скорость. В простое скрыта."""
+        from PyQt6.QtWidgets import QProgressBar
+
+        bar = QFrame()
+        bar.setObjectName("AIHubInstallBar")
+        bar.setVisible(False)
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(14, 8, 14, 8)
+        lay.setSpacing(12)
+
+        self._install_bar_icon = QLabel()
+        self._install_bar_icon.setFixedSize(16, 16)
+        pix = qpixmap("fa5s.download", "#dc588a", 14)
+        if pix is not None:
+            self._install_bar_icon.setPixmap(pix)
+        lay.addWidget(self._install_bar_icon, 0)
+
+        self._install_bar_title = QLabel("")
+        self._install_bar_title.setObjectName("AIHubInstallBarTitle")
+        lay.addWidget(self._install_bar_title, 0)
+
+        self._install_bar_progress = QProgressBar()
+        self._install_bar_progress.setObjectName("AIHubInstallBarProgress")
+        self._install_bar_progress.setRange(0, 100)
+        self._install_bar_progress.setValue(0)
+        self._install_bar_progress.setTextVisible(False)
+        self._install_bar_progress.setFixedHeight(8)
+        lay.addWidget(self._install_bar_progress, 1)
+
+        self._install_bar_detail = QLabel("")
+        self._install_bar_detail.setObjectName("AIHubInstallBarDetail")
+        lay.addWidget(self._install_bar_detail, 0)
+
+        self._install_bar = bar
+        return bar
+
+    def _set_install_bar(self, *, visible: bool, title: str = "", progress=None, detail: str = "") -> None:
+        bar = getattr(self, "_install_bar", None)
+        if bar is None:
+            return
+        bar.setVisible(bool(visible))
+        if not visible:
+            return
+        if title:
+            self._install_bar_title.setText(self._shorten(title, 42))
+        if progress is None:
+            # Неопределённый прогресс — «бегущая» полоса.
+            self._install_bar_progress.setRange(0, 0)
+        else:
+            self._install_bar_progress.setRange(0, 100)
+            try:
+                self._install_bar_progress.setValue(max(0, min(100, int(progress))))
+            except Exception:
+                pass
+        self._install_bar_detail.setText(detail or "")
 
     def _apply_screen_aware_geometry(self, *, preferred: tuple[int, int], minimum: tuple[int, int]) -> None:
         """Подгоняем размер окна под доступную геометрию экрана и центрируем.
@@ -1095,10 +1154,26 @@ class AIHubDialog(QDialog):
             return
         data = event.data if isinstance(event.data, dict) else {}
         text = str(data.get("status") or _("Подготовка...", "Preparing..."))
+        title = self._install_bar_component_title(data)
         # Кнопка «Логи установки» должна быть видна на всё время установки,
         # а не только когда окно свёрнуто — иначе её «не найти» (фидбэк #23).
         self._on_gui_thread(lambda: (self._set_task_status(text),
-                                     self._set_install_logs_visible(True)))
+                                     self._set_install_logs_visible(True),
+                                     self._set_install_bar(visible=True, title=title,
+                                                           progress=None, detail=text)))
+
+    def _install_bar_component_title(self, data: dict) -> str:
+        """Имя устанавливаемого компонента для плашки: из running-очереди или из meta."""
+        running = (self._queue_state or {}).get("running") or {}
+        title = str(running.get("title") or "").strip()
+        if title:
+            return title
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+        cid = str(meta.get("component_id") or data.get("component_id") or "").strip()
+        row = self._row_by_id(cid) if cid else None
+        if row:
+            return str(meta_from_row(row).get("title") or cid)
+        return cid or _("Установка", "Install")
 
     def _on_install_progress(self, event) -> None:
         if not self._is_installable_task(event):
@@ -1114,7 +1189,11 @@ class AIHubDialog(QDialog):
             text = f"{status} ({progress}%)"
         else:
             text = status
-        self._on_gui_thread(lambda: self._set_task_status(text))
+        # Деталь плашки — хвост статуса (там процент·скорость·ETA).
+        detail = status.split("—", 1)[1].strip() if "—" in status else status
+        self._on_gui_thread(lambda: (self._set_task_status(text),
+                                     self._set_install_bar(visible=True, progress=progress,
+                                                           detail=self._shorten(detail, 36))))
 
     def _on_install_finished(self, event) -> None:
         if not self._is_installable_task(event):
@@ -1124,6 +1203,8 @@ class AIHubDialog(QDialog):
         def _apply() -> None:
             self._set_task_status(done_text)
             self._set_install_logs_visible(False)
+            self._set_install_bar(visible=True, progress=100, detail=done_text)
+            QTimer.singleShot(900, lambda: self._set_install_bar(visible=False))
             QTimer.singleShot(250, lambda: (self.refresh(force=True), self._set_task_status("")))
 
         self._on_gui_thread(_apply)
@@ -1137,6 +1218,7 @@ class AIHubDialog(QDialog):
         def _apply() -> None:
             self._set_task_status(text)
             self._set_install_logs_visible(False)
+            self._set_install_bar(visible=False)
             QTimer.singleShot(250, lambda: self.refresh(force=True))
 
         self._on_gui_thread(_apply)
