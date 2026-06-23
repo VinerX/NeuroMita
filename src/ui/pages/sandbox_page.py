@@ -118,7 +118,7 @@ class _SandboxStatusRow(QWidget):
         self._value.setObjectName("SandboxInfoValue")
         self._value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self._value.setMinimumWidth(88)
+        self._value.setMinimumWidth(112)
         h.addWidget(self._value, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
         self._full_value_text = "—"
 
@@ -673,6 +673,10 @@ class SandboxPage(QWidget):
                 if model_name:
                     name = f"{name} · {model_name}"
 
+            # Компактная подпись для узкого статус-чипа: суффикс « only» в
+            # названиях пресетов («Keyword+FTS only») лишь съедает место и
+            # обрезается до невнятного «Keyword+FT…». Полный текст остаётся в тултипе.
+            name = name.replace(" only", "")
             return name or _("Включён", "Enabled")
         except Exception:
             return _("Включён", "Enabled")

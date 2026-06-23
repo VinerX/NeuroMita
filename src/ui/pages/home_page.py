@@ -643,9 +643,13 @@ class HomePage(LauncherHomeBackground):
 
     def _lock_suffix(self) -> str:
         # Подсказка про код тестера, когда действие потянет зашифрованный архив.
+        # Без эмодзи-замка (qtawesome-иконка замка вешается на саму кнопку).
         if not self._effective_tester_code():
-            return _(" (🔒 нужен код тестера)", " (🔒 tester code needed)")
+            return _(" (нужен код тестера)", " (tester code needed)")
         return ""
+
+    def _needs_tester_code(self) -> bool:
+        return not self._effective_tester_code()
 
     def _has_pending_python_restart(self) -> bool:
         return bool(self._get_pending_python_restart_version())
@@ -665,18 +669,44 @@ class HomePage(LauncherHomeBackground):
             except Exception:
                 logger.warning("[home_update] Failed to refresh sidebar version label", exc_info=True)
 
-    def _get_primary_action_label(self) -> str:
+    def _get_primary_action_state(self) -> str:
+        """Логическое состояние основной кнопки: restart | install | update | play."""
         if self._has_pending_python_restart():
-            return _("↻ Перезапустить", "↻ Restart")
+            return "restart"
         # Unity ещё нет — это «Установить», даже если по нему «доступна обнова»
         # (фоновая проверка помечает неполную установку как available).
         if self.find_unity_executable() is None:
-            suffix = self._lock_suffix() if self._has_selectable_update() else ""
-            return _("↓ Установить", "↓ Install") + suffix
+            return "install"
         # Unity установлен и есть обнова — кнопка становится «Обновить».
         if self._has_selectable_update():
-            return _("⟳ Обновить", "⟳ Update") + self._lock_suffix()
-        return _("▶ Играть", "▶ Play")
+            return "update"
+        return "play"
+
+    def _get_primary_action_label(self) -> str:
+        state = self._get_primary_action_state()
+        if state == "restart":
+            return _("Перезапустить", "Restart")
+        if state == "install":
+            suffix = self._lock_suffix() if self._has_selectable_update() else ""
+            return _("Установить", "Install") + suffix
+        if state == "update":
+            return _("Обновить", "Update") + self._lock_suffix()
+        return _("Играть", "Play")
+
+    def _get_primary_action_icon(self):
+        """qtawesome-иконка под текущее состояние кнопки (вместо текстовых глифов
+        ↓ ⟳ ▶ ↻ и эмодзи-замка)."""
+        state = self._get_primary_action_state()
+        icon_name = {
+            "restart": "fa6s.rotate-right",
+            "install": "fa6s.download",
+            "update": "fa6s.rotate",
+            "play": "fa6s.play",
+        }.get(state, "fa6s.play")
+        # Когда для действия нужен код тестера — показываем замок как намёк.
+        if state in ("install", "update") and self._has_selectable_update() and self._needs_tester_code():
+            icon_name = "fa6s.lock"
+        return qta.icon(icon_name, color="#ffffff")
 
     def _get_status_line(self, news_items: list[NewsItem]) -> str:
         active_character = _("Без персонажа", "No character")
@@ -728,6 +758,11 @@ class HomePage(LauncherHomeBackground):
     def refresh_primary_label(self):
         if self.primary_button is not None:
             self.primary_button.setText(self._get_primary_action_label())
+            try:
+                self.primary_button.setIcon(self._get_primary_action_icon())
+                self.primary_button.setIconSize(QSize(15, 15))
+            except Exception:
+                pass
 
     def refresh_status_cards(self):
         if self._backend_status_value is not None:
