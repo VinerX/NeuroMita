@@ -70,10 +70,16 @@ jobs:
           #       (например v2026.12.01.1), и диапазон раздувался до сотен
           #       уже выпущенных коммитов.
           # Среди подходящих берём самый высокий (head после version-сортировки).
-          previous_release_tag() {
-            local prev=""
-            local t
-            for t in $(git tag --list 'v*' --merged HEAD --sort=-version:refname \
+          # Самый высокий релизный тег строго НИЖЕ текущего по версии.
+          # merged_only=1 — только достижимые из HEAD (узкий, точный диапазон);
+          # merged_only=0 — из всех тегов (фолбэк, когда предыдущий релиз не предок
+          # HEAD: иначе PREV пустой и changelog раздувается во всю историю репо).
+          highest_tag_below_current() {
+            local merged_only="$1"
+            local merged_flag=""
+            [ "$merged_only" = "1" ] && merged_flag="--merged HEAD"
+            local prev="" t top
+            for t in $(git tag --list 'v*' $merged_flag --sort=-version:refname \
                          | grep -E "$RELEASE_TAG_PATTERN" \
                          | grep -vxF "$CURRENT_TAG" || true); do
               [ -z "$t" ] && continue
@@ -83,6 +89,18 @@ jobs:
                 break
               fi
             done
+            echo "$prev"
+          }
+
+          previous_release_tag() {
+            local prev
+            prev=$(highest_tag_below_current 1)
+            # Фолбэк: если среди предков HEAD релизных тегов нет — берём версионно
+            # предыдущий из всех тегов, лишь бы НЕ свалиться в `git log HEAD`
+            # (вся история репозитория → километровое тело релиза).
+            if [ -z "$prev" ]; then
+              prev=$(highest_tag_below_current 0)
+            fi
             echo "$prev"
           }
 
@@ -217,17 +235,22 @@ jobs:
         run: |
           CURRENT_TAG="${{ steps.release_meta.outputs.current_tag }}"
           PREV="${{ steps.release_meta.outputs.previous_tag }}"
-          RANGE="${PREV:+$PREV..}HEAD"
           echo "Current tag: ${CURRENT_TAG}"
-          echo "Previous release tag: ${PREV:-<none>} (range: $RANGE)"
+          echo "Previous release tag: ${PREV:-<none>}"
 
-          # Чистый список: без merge-коммитов и служебного шума (bump версии,
-          # CI-правки релиза и т.п.). Берём диапазон от последнего обычного
-          # релизного тега по версии, а не только от тега, который merged в HEAD:
-          # часть релизов создаётся вручную и может не попадать в ancestry-фильтр.
-          LOG=$(git log $RANGE --no-merges --pretty=format:'- %s (%h)' \
-            | grep -viE '(_version|\bbump\b|version bump|\[skip ci\]|tester code|release workflow|github actions?)' \
-            || true)
+          # КРИТИЧНО: changelog считаем ТОЛЬКО при известном предыдущем теге.
+          # Без него `git log HEAD` выдал бы всю историю репозитория и тело релиза
+          # становилось «километровым». Нет предыдущего (самый первый релиз) —
+          # отдаём обобщённую строку, а не дамп всей истории.
+          if [ -n "$PREV" ]; then
+            # Чистый список: без merge-коммитов и служебного шума (bump версии,
+            # CI-правки релиза и т.п.).
+            LOG=$(git log "$PREV..HEAD" --no-merges --pretty=format:'- %s (%h)' \
+              | grep -viE '(_version|\bbump\b|version bump|\[skip ci\]|tester code|release workflow|github actions?)' \
+              || true)
+          else
+            LOG=""
+          fi
 
           {
             echo "Установка: распакуйте архив поверх установленной версии."

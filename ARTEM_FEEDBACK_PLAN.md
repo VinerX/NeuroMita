@@ -99,6 +99,9 @@
 
 ## СИСТЕМНОЕ / БЭКЕНД (в конец)
 
+### [x] 29. Баг GitHub Actions: километровые описания релизов
+**Найдено и исправлено.** В `.github/workflows/release.yml` `previous_release_tag()` искал предыдущий тег с `--merged HEAD`, а `list_release_tags()` — без. Когда предыдущий релизный тег не предок HEAD (релизы с ветки `releases`, ребейзы), PREV пустой → `RANGE="${PREV:+$PREV..}HEAD"` схлопывался в `HEAD` → `git log HEAD` = **вся история репозитория** в теле релиза. Фикс: версионный фолбэк `highest_tag_below_current 0` + changelog считается только при известном PREV (иначе обобщённая строка, без дампа истории).
+
 ### [~] 6. Critical error: access violation (BSOD-риск на старых ОС)
 - `Windows fatal exception: access violation` в `controllers/reminder_controller.py:24` (check_loop) и `controllers/capture_controller.py:294`.
 - Разобрать причину (доступ к ресурсам из потоков при остановке сервера), защитить.
