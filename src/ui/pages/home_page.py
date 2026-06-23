@@ -116,6 +116,7 @@ class HomePage(LauncherHomeBackground):
         self._update_info_py = None
         self._update_info_unity = None
         self._update_check_inflight = False
+        self._menu_button = None
         self.primary_button = None
         self.progress_bar = None
         self.progress_label = None
@@ -219,6 +220,7 @@ class HomePage(LauncherHomeBackground):
         menu_button.setIconSize(QSize(14, 14))
         menu_button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         menu_button.clicked.connect(lambda: self.show_extra_menu(menu_button))
+        self._menu_button = menu_button
         button_row.addWidget(menu_button)
         left_column.addLayout(button_row)
 
@@ -469,6 +471,9 @@ class HomePage(LauncherHomeBackground):
         update_check.setChecked(True)
         update_check.setVisible(False)
         update_check.setToolTip(_("Включить в обновление", "Include in update"))
+        # Кнопка должна реагировать на выбор частей обновления (#11): без этого
+        # переключение чекбокса Unity/Python никак не меняло основную кнопку.
+        update_check.toggled.connect(lambda _checked: self.refresh_primary_label())
         layout.addWidget(update_check, 0, Qt.AlignmentFlag.AlignTop)
         return card, value, update_check
 
@@ -641,6 +646,14 @@ class HomePage(LauncherHomeBackground):
                 return True
         return False
 
+    def _has_checked_update(self) -> bool:
+        """Есть ли хоть одна реально выбранная (отмеченная) часть обновления.
+        Если все галки сняты — обновлять нечего, кнопка не должна звать «Обновить» (#11)."""
+        for control in (self._py_update_check, self._unity_update_check):
+            if control is not None and control.isVisible() and control.isChecked():
+                return True
+        return False
+
     def _lock_suffix(self) -> str:
         # Подсказка про код тестера, когда действие потянет зашифрованный архив.
         # Без эмодзи-замка (qtawesome-иконка замка вешается на саму кнопку).
@@ -677,8 +690,9 @@ class HomePage(LauncherHomeBackground):
         # (фоновая проверка помечает неполную установку как available).
         if self.find_unity_executable() is None:
             return "install"
-        # Unity установлен и есть обнова — кнопка становится «Обновить».
-        if self._has_selectable_update():
+        # Unity установлен и есть обнова — кнопка «Обновить», но только если
+        # пользователь оставил хоть одну часть отмеченной (#11). Сняли все — «Играть».
+        if self._has_selectable_update() and self._has_checked_update():
             return "update"
         return "play"
 
@@ -763,6 +777,29 @@ class HomePage(LauncherHomeBackground):
                 self.primary_button.setIconSize(QSize(15, 15))
             except Exception:
                 pass
+        self._update_menu_indicator()
+
+    def _update_menu_indicator(self):
+        """Жёлтый индикатор на кнопке-меню, когда есть доступные обновления (#12) —
+        как в Visual Studio. Без обнов — обычная розовая стрелка."""
+        btn = getattr(self, "_menu_button", None)
+        if btn is None:
+            return
+        try:
+            has_update = self._has_any_update()
+            color = "#ffcf7d" if has_update else "#ffd2ec"
+            btn.setIcon(qta.icon("fa6s.chevron-down", color=color))
+            btn.setIconSize(QSize(14, 14))
+            btn.setProperty("hasUpdate", "true" if has_update else "false")
+            btn.setToolTip(
+                _("Доступны обновления", "Updates available") if has_update
+                else _("Дополнительно", "More")
+            )
+            # перерисовать под изменившееся property (QSS [hasUpdate="true"])
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+        except Exception:
+            pass
 
     def refresh_status_cards(self):
         if self._backend_status_value is not None:
