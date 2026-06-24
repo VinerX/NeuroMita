@@ -5,6 +5,10 @@ Mod Server: https://discord.gg/Tu5MPFxM4P (Get help here!)
 
 ![logomod3](https://github.com/user-attachments/assets/aea3ec44-c203-4d4a-a405-a09191188464)  
 
+## User Wiki
+
+For the current in-app functionality reference, see the [user wiki](./wiki/en/index.md).
+
 # Installation Guide  
 
 ### 0) MelonLoader:  

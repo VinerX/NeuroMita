@@ -1079,6 +1079,11 @@ class SandboxPage(QWidget):
         guide_button.clicked.connect(self.gui._show_guide)
         actions.addWidget(guide_button)
 
+        wiki_button = QPushButton(_("Вики", "Wiki"))
+        wiki_button.setObjectName("SandboxHeaderButton")
+        wiki_button.clicked.connect(lambda: self.gui.switch_main_page("wiki"))
+        actions.addWidget(wiki_button)
+
         settings_button = QPushButton(_("Настройки", "Settings"))
         settings_button.setObjectName("SandboxHeaderButton")
         settings_button.clicked.connect(lambda: self.gui.switch_main_page("settings"))
