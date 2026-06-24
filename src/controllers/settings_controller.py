@@ -26,7 +26,7 @@ class SettingsController:
         self.event_bus.subscribe(Events.Settings.GET_APP_VARS, self._on_get_app_vars, weak=False)
 
     def load_api_settings(self, update_model):
-        logger.info("РќР°С‡РёРЅР°СЋ Р·Р°РіСЂСѓР·РєСѓ РЅР°СЃС‚СЂРѕРµРє API")
+        logger.info("Loading API settings")
 
         preset_id = self.settings.get("LAST_API_PRESET_ID", 0)
 
@@ -35,7 +35,7 @@ class SettingsController:
             resolver = ApiPresetResolver(settings=self.settings, event_bus=self.event_bus)
             ps = resolver.resolve(int(preset_id) if preset_id else None)
         except Exception as e:
-            logger.error(f"РќРµ СѓРґР°Р»РѕСЃСЊ СЂРµР·РѕР»РІРЅСѓС‚СЊ РїСЂРµСЃРµС‚ API: {e}", exc_info=True)
+            logger.error(f"Failed to resolve API preset: {e}", exc_info=True)
             ps = None
 
         if ps and update_model:
@@ -64,7 +64,7 @@ class SettingsController:
         speech_settings = {"settings": self.settings}
         self.event_bus.emit("speech_settings_loaded", speech_settings)
 
-        logger.info("РќР°СЃС‚СЂРѕР№РєРё API РїСЂРёРјРµРЅРµРЅС‹")
+        logger.info("API settings applied")
 
     def _on_get_settings(self, event: Event):
         return self.settings
@@ -87,7 +87,7 @@ class SettingsController:
         self.settings.set(key, value)
         self.settings.save_settings()
         self.event_bus.emit(Events.Core.SETTING_CHANGED, {"key": key, "value": value})
-        logger.debug(f"РќР°СЃС‚СЂРѕР№РєР° '{key}' СѓСЃРїРµС€РЅРѕ РїСЂРёРјРµРЅРµРЅР° СЃРѕ Р·РЅР°С‡РµРЅРёРµРј: {value}")
+        logger.debug(f"Setting '{key}' applied with value: {value}")
 
     def _on_get_app_vars(self, event: Event):
         bool_keys = [

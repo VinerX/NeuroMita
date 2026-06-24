@@ -30,7 +30,7 @@ _WIKI_DOC_CSS = """
     h3 { font-size: 16px; margin-top: 18px; margin-bottom: 6px; }
     h4, h5, h6 { font-size: 14px; margin-top: 14px; margin-bottom: 4px; color: #cbb9c8; }
     p { margin-top: 6px; margin-bottom: 10px; }
-    a { color: #d98bb4; text-decoration: underline; }
+    a { color: #cf7bd6; text-decoration: underline; }
     ul, ol { margin-top: 4px; margin-bottom: 10px; }
     li { margin-top: 3px; margin-bottom: 3px; }
     code { font-family: "Consolas", "Cascadia Mono", "Courier New", monospace;
