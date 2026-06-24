@@ -54,6 +54,23 @@ class LauncherHomeBackground(QWidget):
         self._bg = QPixmap(str(Path("assets/launcher_ui/bg.jpg")))
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._rescale_home_logo()
+
+    def _rescale_home_logo(self):
+        """Масштабируем wordmark-логотип по ширине страницы (адаптивно), сохраняя
+        пропорции. Левый столбец ~половина окна, поэтому берём ~42% ширины,
+        кламп 360..720, чтобы лого выглядел крупно, но не вылезал."""
+        src = getattr(self, "_home_logo_src", None)
+        label = getattr(self, "_home_logo", None)
+        if src is None or label is None or src.isNull():
+            return
+        target_w = int(max(400, min(760, self.width() * 0.48)))
+        label.setPixmap(
+            src.scaledToWidth(target_w, Qt.TransformationMode.SmoothTransformation)
+        )
+
     def paintEvent(self, event):
         super().paintEvent(event)
 
@@ -168,18 +185,17 @@ class HomePage(LauncherHomeBackground):
         logo = QLabel()
         logo.setObjectName("LauncherHomeLogo")
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._home_logo = logo
         logo_path = Path("assets/launcher_ui/logo.png")
-        if logo_path.exists():
-            logo.setPixmap(
-                QPixmap(str(logo_path)).scaled(
-                    420,
-                    270,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
-        else:
+        # Логотип — широкий wordmark (~3.8:1). Раньше его вписывали в фикс-бокс
+        # 420×270 → по ширине ужималось до ~109px высоты, выглядел мелко.
+        # Теперь храним оригинал и масштабируем по ширине страницы (адаптивно).
+        self._home_logo_src = QPixmap(str(logo_path)) if logo_path.exists() else None
+        if self._home_logo_src is None or self._home_logo_src.isNull():
+            self._home_logo_src = None
             logo.setText("NeuroMita")
+        else:
+            self._rescale_home_logo()
         logo_layout.addWidget(logo, 0, Qt.AlignmentFlag.AlignHCenter)
         logo_layout.addStretch(1)
         left_column.addWidget(logo_wrap, 1)

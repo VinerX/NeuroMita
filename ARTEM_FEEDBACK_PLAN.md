@@ -42,7 +42,7 @@
 - Файлы: `src/styles/pages/sandbox.py`, `src/ui/widgets/sandbox_panels.py`, `src/ui/pages/sandbox_page.py`.
 - Референс id: 1519022679586377888.
 
-### [ ] 1. Лого в сайдбаре устарело → новое
+### [~] 1. Лого в сайдбаре устарело → новое
 - «Древнее лого», сайдбар-аватар «NONE». Есть новое красивое лого (фотореал-апскейл Миты).
 - Файлы: `src/ui/widgets/launcher_shell_sidebar.py`, `assets/launcher_ui/` (asset лого/бренда).
 - Уточнить: где взять финальный asset нового лого (psd в гугл-диске — vinerx). Пока — поставить имеющийся апскейл-icon.
