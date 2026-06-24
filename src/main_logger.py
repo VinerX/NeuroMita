@@ -81,6 +81,15 @@ class CustomLogger(logging.Logger):
     
     def _setup_handlers(self) -> None:
         """Настройка обработчиков для логгера."""
+        for stream_name in ("stdout", "stderr"):
+            stream = getattr(sys, stream_name, None)
+            reconfigure = getattr(stream, "reconfigure", None)
+            if callable(reconfigure):
+                try:
+                    reconfigure(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
+
         # Консольный обработчик
         if colorlog is not None:
             console_handler = colorlog.StreamHandler()

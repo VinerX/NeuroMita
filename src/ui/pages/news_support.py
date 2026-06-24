@@ -42,7 +42,7 @@ def get_news_releases(gui) -> list[dict[str, Any]]:
             headers={"Accept": "application/vnd.github+json"},
         )
         if response.status_code != 200:
-            logger.info(f"Не удалось получить релизы: HTTP {response.status_code}")
+            logger.info(f"[news] Failed to fetch releases: HTTP {response.status_code}")
             gui._news_releases_cache = []
             return []
 
@@ -51,7 +51,7 @@ def get_news_releases(gui) -> list[dict[str, Any]]:
         gui._news_releases_cache = data
         return data
     except Exception as exc:
-        logger.info(f"Ошибка при получении релизов: {exc}")
+        logger.info(f"[news] Failed to fetch releases: {exc}")
         gui._news_releases_cache = []
         return []
 

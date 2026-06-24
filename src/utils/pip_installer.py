@@ -3,7 +3,7 @@ PipInstaller 3.1 — упрощённый PTY/Pipes-раннер без снап
 """
 
 from __future__ import annotations
-import subprocess, sys, os, queue, threading, time, json, shutil, gc, importlib.util, re, tempfile
+import locale, subprocess, sys, os, queue, threading, time, json, shutil, gc, importlib.util, re, tempfile
 from pathlib import Path
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name, NormalizedName
@@ -581,10 +581,10 @@ class PipInstaller:
 
             details = (proc.stderr or proc.stdout or "").strip()
             if details:
-                logger.warning(f"Команда проверки установщика завершилась с кодом {proc.returncode}: {details}")
+                logger.warning(f"[installer] Probe command exited with code {proc.returncode}: {details}")
             return False
         except Exception as ex:
-            logger.warning(f"Не удалось проверить команду установщика {cmd}: {ex}")
+            logger.warning(f"[installer] Failed to probe installer command {cmd}: {ex}")
             return False
 
     def _unload_module_from_sys(self, module_name: str):
@@ -750,7 +750,7 @@ class PipInstaller:
                         if p and not _under_dist_info(p):
                             code_targets.add(p)
             except Exception as ex:
-                logger.warning(f"{pkg_name}: не удалось прочитать RECORD: {ex}")
+                logger.warning(f"[installer] {pkg_name}: failed to read RECORD: {ex}")
 
             if code_targets:
                 # RECORD дал точный список — этого достаточно, каталоги не трогаем.
@@ -773,7 +773,7 @@ class PipInstaller:
                             if p and not _under_dist_info(p):
                                 code_targets.add(p)
             except Exception as ex:
-                logger.warning(f"{pkg_name}: не удалось прочитать top_level.txt: {ex}")
+                logger.warning(f"[installer] {pkg_name}: failed to read top_level.txt: {ex}")
 
         if not code_targets:
             base = canonicalize_name(pkg_name).replace("-", "_")
@@ -828,11 +828,11 @@ class PipInstaller:
                 else:
                     os.remove(path)
                 if not os.path.exists(path):
-                    logger.info(f"{pkg_name}: удалён {path}.")
+                    logger.info(f"[installer] {pkg_name}: removed {path}")
                     return True
             except Exception as ex:
                 logger.warning(
-                    f"{pkg_name}: не удалось удалить {path} (попытка {attempt+1}/{retries}): {ex}"
+                    f"[installer] {pkg_name}: failed to remove {path} (attempt {attempt+1}/{retries}): {ex}"
                 )
                 self._unload_module_from_sys(pkg_name)
                 gc.collect()
@@ -845,9 +845,9 @@ class PipInstaller:
         except Exception:
             pass
         if os.path.exists(path):
-            logger.error(f"{pkg_name}: не удалось удалить {path} после всех попыток.")
+            logger.error(f"[installer] {pkg_name}: failed to remove {path} after all retries")
             return False
-        logger.info(f"{pkg_name}: {path} удалён после нескольких попыток.")
+        logger.info(f"[installer] {pkg_name}: removed {path} after retry")
         return True
 
     def _manual_remove(self, path: str, pkg_name: str) -> bool:
@@ -965,6 +965,29 @@ class PipInstaller:
         os.makedirs(self.libs_path_abs, exist_ok=True)
         if self.libs_path_abs not in sys.path:
             sys.path.insert(0, self.libs_path_abs)
+
+    @staticmethod
+    def _decode_subprocess_chunk(chunk: bytes) -> str:
+        encodings = [
+            "utf-8",
+            locale.getpreferredencoding(False) or "",
+            "cp1251",
+            "cp866",
+        ]
+        seen: set[str] = set()
+        for encoding in encodings:
+            encoding = str(encoding or "").strip()
+            if not encoding:
+                continue
+            key = encoding.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                return chunk.decode(encoding, errors="replace")
+            except Exception:
+                continue
+        return chunk.decode("utf-8", errors="replace")
 
     # ------------------------ Новый, разбитый раннер UV/PIP ------------------------
 
@@ -1325,12 +1348,12 @@ class PipInstaller:
 
             now = time.time()
             if now - state.last_activity > self.NO_ACTIVITY_SEC:
-                self._terminate_process(proc, "Процесс неактивен слишком долго, прерываем.")
+                self._terminate_process(proc, "Process inactive for too long; terminating.")
                 self.update_status(state.description + " — прервано по таймауту неактивности.")
                 return False, -1
 
             if now - state.start > self.TIMEOUT_SEC:
-                self._terminate_process(proc, "Таймаут процесса истёк, прерываем.")
+                self._terminate_process(proc, "Process timeout reached; terminating.")
                 self.update_status(state.description + " — прервано по общему таймауту.")
                 return False, -1
 
@@ -1373,10 +1396,7 @@ class PipInstaller:
 
             if chunk:
                 if isinstance(chunk, bytes):
-                    try:
-                        chunk = chunk.decode("utf-8", errors="ignore")
-                    except Exception:
-                        chunk = chunk.decode("cp1251", errors="ignore")
+                    chunk = self._decode_subprocess_chunk(chunk)
                 buffer += chunk
                 parts = re.split(r'(\r|\n)', buffer)
                 buffer = ""
@@ -1405,7 +1425,7 @@ class PipInstaller:
                     pty.close(force=True)
                 except Exception:
                     pass
-                self.update_log("Процесс неактивен слишком долго, прерываем.")
+                self.update_log("Process inactive for too long; terminating.")
                 self.update_status(state.description + " — прервано по таймауту неактивности.")
                 return False, -1
 
@@ -1414,7 +1434,7 @@ class PipInstaller:
                     pty.close(force=True)
                 except Exception:
                     pass
-                self.update_log("Таймаут процесса истёк, прерываем.")
+                self.update_log("Process timeout reached; terminating.")
                 self.update_status(state.description + " — прервано по общему таймауту.")
                 return False, -1
 
@@ -1459,7 +1479,7 @@ class PipInstaller:
 
         is_uninstall = any("uninstall" == x for x in cmd) or "uninstall" in " ".join(cmd).lower()
         if is_uninstall and ret in (1, 2):
-            logger.info(f"UV вернул код {ret} при удалении - возможно пакет не был установлен")
+            logger.info(f"[installer] UV returned code {ret} during uninstall; the package may already be absent")
             self.update_progress(100)
             return True
             
@@ -1468,7 +1488,7 @@ class PipInstaller:
             if not state.error_seen:
                 self.update_log(err_msg)
             # Принудительно пишем в основной логгер
-            logger.error(f"pip завершился с ошибкой, код {ret}. Команда: {cmd}")
+            logger.error(f"[installer] pip process failed with code {ret}. Command: {cmd}")
             return False
         
         self.update_progress(100)
