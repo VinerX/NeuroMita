@@ -348,3 +348,19 @@ Finalizing...» без причины. Теперь при провале шаг
 Жёстко зафиксировали размер индикатора (`min/max-width/height: 16px`), радиус 5→4, и для
 checked-состояния добавили галочку `assets/launcher_ui/check.svg`. Правка в обоих местах:
 `styles/voice_model_styles.py` (SettingWidget) и `styles/base.py` (глобально).
+
+---
+
+## BLOCK 8 — чистая установка Edge-TTS+RVC: краш scipy/numpy (фидбэк коллеги, 2026-06-24)
+
+### [x] B8-1. scipy ставился слишком новый → «module 'numpy' has no attribute 'long'»
+`tts-with-rvc` без верхней границы тянул scipy 1.18.0; свежий scipy использует `np.long`,
+удалённый в numpy 1.26 (бэкенд закрепляет numpy==1.26.0) → краш при `_load_rvc_class`
+(`from tts_with_rvc import TTS_RVC` → scipy.sparse). Добавил `scipy<1.13` в pip-пакеты
+`edge_tts_rvc_model.build_install_plan_for_model` — зеркалит уже рабочие пины F5/Fish Speech.
+
+### [~] B8-2. Папки models нет, но инициализация продолжилась
+`initialize()` уже корректно возвращает False, если файла модели нет (строка ~448), —
+просто до этой проверки не доходило: scipy-краш в `_load_rvc_class` (строка 431) случался
+раньше. После пина scipy путь «нет моделей» отрабатывает штатно (лог + return False).
+Если нужно глушить инициализацию ещё раньше (на этапе Dialogmessage) — нужен репро потока контроллера.

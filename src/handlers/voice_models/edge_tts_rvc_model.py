@@ -316,6 +316,11 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
         pkgs = ["omegaconf", cls.RVC_PACKAGE]
         if cls._is_silero_model(mid):
             pkgs.append("silero")
+        # Держим scipy на numpy-1.x-совместимой ветке: tts-with-rvc без верхней
+        # границы тянет scipy>=1.13 (а свежий 1.18 использует np.long, удалённый в
+        # numpy 1.26) → при инициализации «module 'numpy' has no attribute 'long'».
+        # Зеркалит пины F5/Fish Speech (numpy сам по себе закреплён бэкендом ==1.26).
+        pkgs.append("scipy<1.13")
 
         actions: list[InstallAction] = [
             InstallAction(
