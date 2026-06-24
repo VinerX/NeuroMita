@@ -354,24 +354,33 @@ QWidget#SettingsPageRoot QCheckBox {
 }
 
 QWidget#SettingsPageRoot QCheckBox::indicator {
+    /* Жёсткий квадрат с рамкой: с `border: none` Qt в этой сборке растягивал
+       фон индикатора в «пилюлю/слайдер» (фидбэк Артёма «это просто галка»).
+       Рамка + min/max-size фиксируют чекбокс как квадрат. */
     width: 16px;
     height: 16px;
-    border-radius: 5px;
-    border: none;
-    background-color: rgba(255,255,255,0.08);
+    min-width: 16px;
+    max-width: 16px;
+    min-height: 16px;
+    max-height: 16px;
+    border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.22);
+    background-color: rgba(255,255,255,0.06);
 }
 
 QWidget#SettingsPageRoot QCheckBox::indicator:hover {
+    border: 1px solid rgba({accent_rgb}, 0.55);
     background-color: rgba({accent_rgb}, 0.14);
 }
 
 QWidget#SettingsPageRoot QCheckBox::indicator:checked {
-    border: none;
+    border: 1px solid {accent_alt};
     background-color: {accent_alt};
+    image: url(assets/launcher_ui/check.svg);
 }
 
 QWidget#SettingsPageRoot QCheckBox::indicator:disabled {
-    border: none;
+    border: 1px solid rgba(255,255,255,0.10);
     background-color: rgba(255,255,255,0.04);
 }
 
