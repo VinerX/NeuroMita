@@ -1443,6 +1443,7 @@ class ModelController:
                 cost_fallback_currency=getattr(active_pricing, "currency", None),
                 cost_fallback_source=getattr(active_pricing, "source", None),
             )
+            sample_id = str((getattr(llm_response, "raw", {}) or {}).get("finetune_sample_id") or "").strip() or None
 
             assistant_message_id = ""
             if policy.write_to_history:
@@ -1464,6 +1465,7 @@ class ModelController:
                     task_uid=task_uid,
                     thinking=think_text or None,
                     llm_usage=usage_snapshot,
+                    sample_id=sample_id,
                 )
 
             self._store_last_usage(
@@ -1816,6 +1818,7 @@ class ModelController:
         assistant_message_id = ""
         if policy.write_to_history:
             origin_message_id = str(data.get("origin_message_id") or "") or None
+            sample_id = str((getattr(llm_response, "raw", {}) or {}).get("finetune_sample_id") or "").strip() or None
             history_dict = {k: v for k, v in result_dict.items()
                             if not k.startswith("_") or k == "_raw_json"}
             assistant_message_id = self.event_writer.write_turn(
@@ -1835,6 +1838,7 @@ class ModelController:
                 structured_data=history_dict,
                 thinking=think_text or None,
                 llm_usage=usage_snapshot,
+                sample_id=sample_id,
             )
 
         self._store_last_usage(
@@ -1974,6 +1978,7 @@ class ModelController:
         first_assistant_message_id = ""
         if policy.write_to_history:
             origin_message_id = str(data.get("origin_message_id") or "") or None
+            sample_id = str((getattr(llm_response, "raw", {}) or {}).get("finetune_sample_id") or "").strip() or None
             first_assistant_message_id = self.event_writer.write_turn(
                 responder_character_id=char_id,
                 sender=sender,
@@ -1991,6 +1996,7 @@ class ModelController:
                 structured_data=result_dict,
                 thinking=think_text or None,
                 llm_usage=usage_snapshot,
+                sample_id=sample_id,
             )
 
         # Emit first response to UI (shows "I'll check that" message)

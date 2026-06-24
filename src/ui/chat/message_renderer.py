@@ -268,7 +268,7 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
     widget.view_context_requested.connect(on_view_context)
     widget.view_response_context_requested.connect(on_view_response_context)
 
-def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None, ui_images=None):
+def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None, ui_images=None, sample_id=None):
     font_size = _get_font_size(gui)
     max_bw = int(gui._get_setting("CHAT_MAX_BUBBLE_WIDTH", 600))
     chat_parent = gui.chat_window.get_layout_parent()
@@ -388,7 +388,10 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         gui._think_block_counter += 1
         _think_blocks[gui._think_block_counter - 1] = _pending_struct_panel
 
-    _ft_sample_id = _pop_sample_id_if_collecting() if role == "assistant" and _should_show_rating_controls(gui) else None
+    _ft_sample_id = sample_id
+    if role == "assistant" and not _ft_sample_id:
+        _ft_sample_id = _pop_sample_id_if_collecting()
+    _show_rating_controls = role == "assistant" and _should_show_rating_controls(gui)
 
     segments = (structured_data.get("segments") or []) if isinstance(structured_data, dict) else []
     target_groups = _group_segments_by_target(segments) if role == "assistant" and len(segments) > 0 else []
@@ -418,7 +421,9 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
                 show_avatar=show_av, font_size=font_size, message_time=message_time if is_last else "",
                 show_timestamp=show_ts and is_last, max_bubble_width=max_bw,
                 sample_id=_ft_sample_id if is_last else None,
-                message_id=message_id if is_last else None, parent=chat_parent
+                message_id=message_id if is_last else None,
+                show_rating_controls=_show_rating_controls if is_last else False,
+                parent=chat_parent
             )
             if message_id and is_last:
                 _connect_widget_signals(w, message_id, character_id or "")
@@ -430,7 +435,8 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             role=role, speaker_name=speaker_name, content_text=full_text,
             show_avatar=(role not in ("system", "event", "think", "structured")),
             font_size=font_size, message_time=message_time, show_timestamp=show_ts,
-            max_bubble_width=max_bw, sample_id=_ft_sample_id, message_id=message_id, parent=chat_parent
+            max_bubble_width=max_bw, sample_id=_ft_sample_id, message_id=message_id,
+            show_rating_controls=_show_rating_controls, parent=chat_parent
         )
         if message_id:
             _connect_widget_signals(msg_widget, message_id, character_id or "")
@@ -519,12 +525,14 @@ def prepare_stream_slot(gui, role="assistant"):
         elif not speaker_name and role == "user": speaker_name = _("Вы", "You")
 
         show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
-        _ft_stream_sample_id = _pop_sample_id_if_collecting() if role == "assistant" and _should_show_rating_controls(gui) else None
+        _ft_stream_sample_id = _pop_sample_id_if_collecting() if role == "assistant" else None
         msg = MessageWidget(
             role=role, speaker_name=speaker_name, content_text="",
             show_avatar=(role not in ("system", "event", "think", "structured")),
             font_size=font_size, show_timestamp=show_ts, max_bubble_width=max_bw,
-            sample_id=_ft_stream_sample_id, parent=chat_parent
+            sample_id=_ft_stream_sample_id,
+            show_rating_controls=(role == "assistant" and _should_show_rating_controls(gui)),
+            parent=chat_parent
         )
         gui._current_stream_message = msg
         gui.chat_window.add_message_widget(msg)
@@ -590,7 +598,8 @@ def attach_structured_to_stream(gui, structured_data: dict):
             w = MessageWidget(
                 role="assistant", speaker_name=display_name, content_text=group_text,
                 show_avatar=is_last, font_size=font_size, show_timestamp=show_ts and is_last,
-                max_bubble_width=max_bw, sample_id=_stream_sample_id if is_last else None, parent=chat_parent
+                max_bubble_width=max_bw, sample_id=_stream_sample_id if is_last else None,
+                show_rating_controls=(_should_show_rating_controls(gui) and is_last), parent=chat_parent
             )
             if is_last: w.set_structured_ref(panel)
             gui.chat_window.add_message_widget(w)
