@@ -621,6 +621,14 @@ class AIHubDialog(QDialog):
             return
         self._refresh_inflight = False
         self.btn_refresh.setEnabled(True)
+        # Пустой ответ при наличии прежних данных — почти всегда таймаут/сбой
+        # переопроса (а не реально пустой список: встроенные компоненты есть всегда).
+        # Не стираем уже показанные карточки, иначе «все модели исчезают» (фидбэк Артёма).
+        if not rows and self._rows:
+            logger.warning("AI Hub: пустой результат обновления — оставляю прежний список компонентов")
+            self._last_check_ts = checked_at
+            self._refresh_views()
+            return
         self._rows = rows
         self._loaded_once = True
         self._last_check_ts = checked_at
@@ -666,10 +674,15 @@ class AIHubDialog(QDialog):
 
     def _fetch_rows(self, *, force: bool = False) -> list[dict[str, Any]]:
         try:
+            # force=True переопрашивает статус КАЖДОГО компонента (pip-метаданные,
+            # файлы) — это медленно, особенно сразу после установки. Со старым
+            # таймаутом 5с переопрос не успевал → пустой ответ → список «компоненты
+            # исчезали» (фидбэк Артёма). Даём принудительному обновлению больше времени.
+            timeout = 30.0 if force else 8.0
             result = self.event_bus.emit_and_wait(
                 Events.Installable.LIST,
                 {"include_status": True, "refresh": bool(force)},
-                timeout=5.0,
+                timeout=timeout,
             )
             rows = result[0] if result and isinstance(result[0], list) else []
             return [row for row in rows if isinstance(row, dict)]

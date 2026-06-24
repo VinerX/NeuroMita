@@ -1914,13 +1914,7 @@ def _refresh_ce_status(gui) -> None:
                 return
             gui._ce_dl_btn.setEnabled(True)
             gui._ce_dl_btn.setText(_("Открыть AI Hub", "Open AI Hub"))
-            gui._ce_dl_btn.setVisible(_needs_ce_backend_install())
-        if hasattr(gui, "_ce_model_btn"):
-            if gui._ce_model_btn.parentWidget() is None:
-                return
-            gui._ce_model_btn.setEnabled(True)
-            gui._ce_model_btn.setText(_("Открыть AI Hub", "Open AI Hub"))
-            gui._ce_model_btn.setVisible(not _is_ce_model_downloaded())
+            gui._ce_dl_btn.setVisible(_needs_ce_backend_install() or not _is_ce_model_downloaded())
     except Exception:
         pass
 
@@ -2058,12 +2052,13 @@ def _attach_ce_downloader(gui, section) -> None:
         _ce_model_label.setStyleSheet("color: #aaa; font-size: 11px;")
         _ce_ld_label = QLabel(_("Статус:", "Status:") + " " + _get_ce_loaded_status(), _parent)
         _ce_ld_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        # Одна кнопка «Открыть AI Hub»: и backend (PyTorch), и сама модель
+        # реранкера ставятся через одну и ту же категорию AI Hub, поэтому две
+        # одинаковые кнопки были дублем (фидбэк vinerx). Показываем, если не
+        # хватает чего-либо из двух.
         _ce_dl_btn = QPushButton(_("Открыть AI Hub", "Open AI Hub"), _parent)
-        _ce_dl_btn.setVisible(_needs_ce_backend_install())
+        _ce_dl_btn.setVisible(_needs_ce_backend_install() or not _is_ce_model_downloaded())
         _ce_dl_btn.clicked.connect(lambda: _start_rag_backend_install(gui, TARGET_RERANKER))
-        _ce_model_btn = QPushButton(_("Открыть AI Hub", "Open AI Hub"), _parent)
-        _ce_model_btn.setVisible(not _is_ce_model_downloaded())
-        _ce_model_btn.clicked.connect(lambda: _download_ce_model(gui))
         _target_section = None
         if _content:
             _content_layout = _content.layout()
@@ -2085,13 +2080,11 @@ def _attach_ce_downloader(gui, section) -> None:
         _target_section.add_widget(_ce_model_label)
         _target_section.add_widget(_ce_ld_label)
         _target_section.add_widget(_ce_dl_btn)
-        _target_section.add_widget(_ce_model_btn)
 
         gui._ce_dl_label = _ce_dl_label
         gui._ce_model_label = _ce_model_label
         gui._ce_loaded_label = _ce_ld_label
         gui._ce_dl_btn = _ce_dl_btn
-        gui._ce_model_btn = _ce_model_btn
     except Exception:
         pass
 
