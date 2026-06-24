@@ -419,10 +419,13 @@ class SettingsPage(QWidget):
             if scroll_to_top:
                 self._scroll_to_top(smooth=False)
 
-    def show_category(self, category, *, smooth_scroll: bool = True, force: bool = False):
+    def show_category(self, category, *, smooth_scroll: bool = True, force: bool = False, subsection=None):
         # force=True — пользователь явно перешёл в конкретный раздел (шестерёнка
         # подсистемы), показываем его даже если секция скрыта в «Видимых разделах»,
         # а не уводим в «Общие» (фидбэк #14: «пересылает вникуда»).
+        # subsection — заголовок(и) вложенной CollapsibleSection (например «RAG»):
+        # после перехода она разворачивается и подскролливается к началу, чтобы
+        # сразу попасть в нужное поле, а не в начало длинной страницы (фидбэк Артёма).
         if category not in self.settings_containers:
             return
         if not force and not self._section_enabled(category):
@@ -435,12 +438,12 @@ class SettingsPage(QWidget):
         was_on_settings_page = getattr(self.gui, "current_main_page", None) == "settings"
         if not was_on_settings_page:
             self.gui.switch_main_page("settings")
-            QTimer.singleShot(0, lambda cat=category, smooth=smooth_scroll, f=force: self._activate_category(cat, smooth_scroll=smooth, force=f))
+            QTimer.singleShot(0, lambda cat=category, smooth=smooth_scroll, f=force, sub=subsection: self._activate_category(cat, smooth_scroll=smooth, force=f, subsection=sub))
             return
 
-        self._activate_category(category, smooth_scroll=smooth_scroll, force=force)
+        self._activate_category(category, smooth_scroll=smooth_scroll, force=force, subsection=subsection)
 
-    def _activate_category(self, category: str, *, smooth_scroll: bool, force: bool = False):
+    def _activate_category(self, category: str, *, smooth_scroll: bool, force: bool = False, subsection=None):
         page = self.settings_containers.get(category)
         if page is None:
             return
@@ -460,8 +463,62 @@ class SettingsPage(QWidget):
             entry = getattr(self.gui, '_tester_code_entry', None)
             if entry is not None:
                 entry.setText(self.gui.settings.get("TESTER_CODE", ""))
-        if smooth_scroll:
+        if subsection:
+            # Разворачиваем целевую подсекцию и скроллим к ней (с задержкой —
+            # дать layout пересобраться после expand).
+            QTimer.singleShot(0, lambda p=page, sub=subsection, smooth=smooth_scroll: self._scroll_to_subsection(p, sub, smooth=smooth))
+        elif smooth_scroll:
             QTimer.singleShot(0, lambda key=category: self._scroll_to_category(key, smooth=True))
+
+    def _find_subsection(self, page, candidates):
+        """Найти вложенную CollapsibleSection страницы по заголовку (без учёта
+        регистра, точное совпадение или вхождение). candidates — строка или
+        список вариантов заголовка на разных языках."""
+        if isinstance(candidates, str):
+            candidates = (candidates,)
+        wanted = [str(c).strip().lower() for c in candidates if str(c).strip()]
+        if not wanted:
+            return None
+        for section in page.findChildren(QWidget):
+            if section.objectName() != "CollapsibleSection":
+                continue
+            title_label = getattr(section, "title_label", None)
+            if title_label is None:
+                continue
+            title = title_label.text().strip().lower()
+            if not title:
+                continue
+            if any(title == w or w in title for w in wanted):
+                return section
+        return None
+
+    def _scroll_to_subsection(self, page, candidates, *, smooth: bool):
+        section = self._find_subsection(page, candidates)
+        scroll = getattr(page, "scroll", None)
+        if section is None or scroll is None:
+            # Не нашли подсекцию — хотя бы откроем начало страницы.
+            if hasattr(page, "scroll_to_top"):
+                page.scroll_to_top(smooth=smooth, animate=self._animate_scroll)
+            return
+        try:
+            if getattr(section, "is_collapsed", False) and hasattr(section, "expand"):
+                section.expand()
+        except Exception:
+            pass
+        # После expand геометрия меняется — считаем целевую позицию в следующем тике.
+        QTimer.singleShot(0, lambda s=section, sc=scroll, sm=smooth: self._do_scroll_to_widget(s, sc, smooth=sm))
+
+    def _do_scroll_to_widget(self, widget, scroll, *, smooth: bool):
+        content = scroll.widget()
+        if content is None:
+            return
+        top_left = widget.mapTo(content, widget.rect().topLeft())
+        bar = scroll.verticalScrollBar()
+        target = max(0, min(bar.maximum(), top_left.y() - 12))
+        if smooth:
+            self._animate_scroll(bar, bar.value(), target)
+        else:
+            bar.setValue(target)
 
     def _scroll_to_category(self, category: str, *, smooth: bool):
         page = self.settings_containers.get(category)

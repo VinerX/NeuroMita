@@ -263,19 +263,21 @@ class SandboxPage(QWidget):
             profile = {}
         return str((profile or {}).get("character_id") or "")
 
-    def _jump_to_settings(self, category: str):
+    def _jump_to_settings(self, category: str, subsection=None):
         # Шестерёнка у строки статуса ведёт ИМЕННО в её раздел, даже если подсистема
-        # сейчас выключена/скрыта в «Видимых разделах» (фидбэк #14).
+        # сейчас выключена/скрыта в «Видимых разделах» (фидбэк #14). subsection —
+        # вложенная секция (например RAG внутри «Модели»), чтобы попасть сразу к
+        # нужным полям, а не в начало длинной страницы (фидбэк Артёма).
         self.gui.switch_main_page("settings")
-        self.gui.show_settings_category(category, force=True)
+        self.gui.show_settings_category(category, force=True, subsection=subsection)
 
     # --------- Status rows (voice / mic / RAG) -----------
     def _make_status_row(self, name_text: str, registry_attr: str, settings_key: str,
-                         enable_key: str, tooltip: str) -> "_SandboxStatusRow":
+                         enable_key: str, tooltip: str, subsection=None) -> "_SandboxStatusRow":
         initial_on = bool(self.gui._get_setting(enable_key, False))
         row = _SandboxStatusRow(
             name_text,
-            lambda: self._jump_to_settings(settings_key),
+            lambda: self._jump_to_settings(settings_key, subsection),
             tooltip,
             on_toggle=lambda checked, _k=enable_key: self._on_status_toggle(_k, checked),
             initial_on=initial_on,
@@ -1205,6 +1207,7 @@ class SandboxPage(QWidget):
             "models",
             "RAG_ENABLED",
             _("Открыть настройки RAG / памяти", "Open RAG / memory settings"),
+            subsection=("RAG",),
         )
         status_layout.addWidget(self._rag_status_row)
         layout.addWidget(status_strip)

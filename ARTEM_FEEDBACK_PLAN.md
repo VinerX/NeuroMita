@@ -266,3 +266,26 @@
 ### [ ] B3-7. (бэкенд, не графика) Whisper requirements missing + GUI FREEZE installable_list
 Лог Артёма (id 1519397270972403763): `whisper_recognizer.py:176` ругается на отсутствие backend_cuda/silero_vad/ctranslate2/faster_whisper/transformers;
 `[GUI FREEZE] installable_list took 0.25s (MainThread)`. Вынести проверку зависимостей/`installable_list` из главного потока. Оставлено на бэкенд-заход.
+
+---
+
+## BLOCK 4 — добавки vinerx (2026-06-24)
+
+### [x] B4-1. Незакоммиченные изменения
+Закоммичены висевшие в рабочем дереве правки: глушение warning-спама Whisper (`is_installed` кэширует
+статус молча), стиль `AIHubActivityPanel`, игнор `.tmp_pycache_check`. `prompt_editor/` НЕ трогаем — это
+вложенный отдельный git-репозиторий (свой `.git`), не часть NeuroMita.
+
+### [x] B4-2. Мадзибакэ в логах → англ
+Двойная перекодировка (UTF-8→cp1251) ломала кириллицу в строках: `settings_controller`, `server_controller`
+(логи → английский), `editor_mixin` (`_()` user-facing) и docstring `base_model` восстановлены в корректный русский.
+
+### [x] B4-3. Вики-ссылки → фиолетовый
+`_WIKI_DOC_CSS` цвет ссылок `#d98bb4` → `#cf7bd6` (лавандово-фиолетовый).
+
+### [x] B4-4. Шестерёнка в Песочнице → к конкретной подсекции
+`SettingsPage.show_category(..., subsection=...)` + `_find_subsection`/`_scroll_to_subsection`/`_do_scroll_to_widget`:
+после перехода в категорию разворачивает целевую `CollapsibleSection` по заголовку и скроллит к ней.
+`show_settings_category` (main_window) и `_jump_to_settings`/`_make_status_row` (sandbox) проброшены.
+Шестерёнка RAG теперь ведёт прямо в секцию «RAG» страницы «Модели» (а не в начало длинной страницы).
+Озвучка/Микрофон — отдельные страницы, им подсекция не нужна.
