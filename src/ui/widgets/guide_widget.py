@@ -1,6 +1,6 @@
 # src/ui/widgets/guide_widget.py
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, QRadioButton, QButtonGroup
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, QRadioButton, QButtonGroup, QComboBox
 from PyQt6.QtGui import QPixmap
 import qtawesome as qta
 from abc import ABC, abstractmethod
@@ -160,6 +160,30 @@ class GuideWidget(QWidget):
                 background-color: {accent};
                 border: 1px solid {accent_alt};
             }
+            QComboBox {
+                min-width: 180px;
+                padding: 6px 10px;
+                border-radius: 10px;
+                border: 1px solid {outline};
+                background-color: {chip_bg};
+                color: {text};
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 26px;
+            }
+            QComboBox QAbstractItemView {
+                border: 1px solid {outline};
+                background-color: {sidebar_panel};
+                color: {text};
+                selection-background-color: {accent};
+                selection-color: #ffffff;
+            }
+            #GuideMetaLabel {
+                color: {muted};
+                font-size: 12px;
+                font-weight: 600;
+            }
         """, get_theme()))
         
         main_layout = QVBoxLayout(self)
@@ -171,8 +195,8 @@ class GuideWidget(QWidget):
         container_layout.setContentsMargins(20, 20, 20, 20)
         container_layout.setSpacing(15)
         
-        self.setMinimumSize(600, 500)
-        self.setMaximumSize(800, 700)
+        self.setMinimumSize(720, 520)
+        self.setMaximumSize(920, 760)
         
         # --- Level selector ---
         level_row = QWidget()
@@ -209,38 +233,48 @@ class GuideWidget(QWidget):
         container_layout.addWidget(self._level_hint)
         self._update_level_texts()
 
-        header_layout = QHBoxLayout()
+        header_layout = QVBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(10)
         self.title_label = QLabel("")
         self.title_label.setObjectName("GuideTitle")
-        header_layout.addWidget(self.title_label)
-        
-        header_layout.addStretch()
+        title_row.addWidget(self.title_label, 1)
+        title_row.addStretch()
+
+        self.skip_button = QPushButton("РџСЂРѕРїСѓСЃС‚РёС‚СЊ")
+        self.skip_button.setObjectName("SkipButton")
+        self.skip_button.clicked.connect(self._on_skip)
+        title_row.addWidget(self.skip_button, 0, Qt.AlignmentFlag.AlignTop)
+        header_layout.addLayout(title_row)
         
         lang_layout = QHBoxLayout()
+        lang_layout.setContentsMargins(0, 0, 0, 0)
         lang_layout.setSpacing(10)
-        
-        self.lang_group = QButtonGroup()
-        for idx, code in enumerate(available_languages()):
-            button = QRadioButton(language_display_name(code))
-            button.setProperty("lang_code", code.lower())
-            if code.lower() == self.current_language:
-                button.setChecked(True)
-            self.lang_group.addButton(button, idx)
-            self._lang_buttons[code.lower()] = button
-            lang_layout.addWidget(button)
-        self.lang_group.buttonClicked.connect(self._on_language_changed)
+
+        self.lang_label = QLabel("")
+        self.lang_label.setObjectName("GuideMetaLabel")
+        lang_layout.addWidget(self.lang_label)
+
+        self.lang_selector = QComboBox()
+        for code in available_languages():
+            lowered = code.lower()
+            self.lang_selector.addItem(language_display_name(code), lowered)
+            self._lang_buttons[lowered] = None
+        self.lang_selector.currentIndexChanged.connect(self._on_language_changed)
 
         if self.current_language not in self._lang_buttons:
             self.current_language = "ru"
-            if "ru" in self._lang_buttons:
-                self._lang_buttons["ru"].setChecked(True)
+        current_index = self.lang_selector.findData(self.current_language)
+        if current_index >= 0:
+            self.lang_selector.setCurrentIndex(current_index)
+        lang_layout.addWidget(self.lang_selector, 0)
+        lang_layout.addStretch(1)
         header_layout.addLayout(lang_layout)
-        
-        self.skip_button = QPushButton("Пропустить")
-        self.skip_button.setObjectName("SkipButton")
-        self.skip_button.clicked.connect(self._on_skip)
-        header_layout.addWidget(self.skip_button)
-        
+
         container_layout.addLayout(header_layout)
         
         self.image_frame = QFrame()
@@ -294,13 +328,16 @@ class GuideWidget(QWidget):
         nav_layout.addWidget(self.close_button)
         
         container_layout.addLayout(nav_layout)
+        self._update_language_label_text()
+        self._update_skip_button_text()
+        self._update_close_button_text()
         
         main_layout.addWidget(container)  
 
     def _on_language_changed(self):
-        button = self.lang_group.checkedButton()
-        code = button.property("lang_code") if button is not None else None
+        code = self.lang_selector.currentData() if hasattr(self, "lang_selector") else None
         self.current_language = str(code or "ru")
+        self._update_language_label_text()
         self._update_skip_button_text()
         self._update_close_button_text()
         self._update_level_texts()
@@ -335,6 +372,11 @@ class GuideWidget(QWidget):
     def _update_skip_button_text(self):
         self.skip_button.setText(
             translate_for_language(self.current_language, "Пропустить", "Skip")
+        )
+
+    def _update_language_label_text(self):
+        self.lang_label.setText(
+            translate_for_language(self.current_language, "Язык", "Language")
         )
             
     def _update_close_button_text(self):
