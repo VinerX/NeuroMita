@@ -52,6 +52,11 @@ QLabel#AIHubSidebarStatus {
     font-size: 10px;
     padding: 4px 6px;
 }
+QFrame#AIHubActivityPanel {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid {outline};
+    border-radius: 12px;
+}
 
 QFrame#AIHubQueuePanel {
     background: rgba({accent_rgb}, 0.05);

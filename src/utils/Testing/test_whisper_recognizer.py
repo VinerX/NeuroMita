@@ -18,7 +18,7 @@ class WhisperRecognizerTests(unittest.TestCase):
         self.assertIn("ctranslate2", packages)
         self.assertIn("faster-whisper", packages)
 
-    def test_is_installed_reports_broken_pyyaml_metadata(self):
+    def test_is_installed_caches_broken_pyyaml_metadata_without_warning(self):
         logger = Mock()
         recognizer = WhisperRecognizer(pip_installer=None, logger=logger)
 
@@ -39,9 +39,10 @@ class WhisperRecognizerTests(unittest.TestCase):
             installed = recognizer.is_installed()
 
         self.assertFalse(installed)
-        logger.warning.assert_called_once()
-        self.assertIn("pyyaml", logger.warning.call_args[0][0].lower())
-        self.assertIn("version=none", logger.warning.call_args[0][0].lower())
+        logger.warning.assert_not_called()
+        self.assertIs(recognizer._last_requirements_probe_status, broken_status)
+        self.assertIn("pyyaml", (recognizer._last_requirements_probe_message or "").lower())
+        self.assertIn("version=none", (recognizer._last_requirements_probe_message or "").lower())
 
     def test_install_raises_readable_error_for_broken_pyyaml(self):
         logger = Mock()

@@ -226,7 +226,8 @@ class WhisperRecognizer(SpeechRecognizerInterface):
         st = check_requirements(self.requirements(), ctx=ctx)
         ok = bool(st.get("ok"))
         if not ok:
-            self._log_requirements_failure_once(st)
+            self._last_requirements_probe_message = self._describe_requirements_failure(st)
+            self._last_requirements_probe_status = st
         else:
             self._last_requirements_probe_message = None
             self._last_requirements_probe_status = None
