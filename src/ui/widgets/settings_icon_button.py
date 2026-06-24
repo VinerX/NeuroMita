@@ -158,6 +158,7 @@ class SettingsIconButton(QPushButton):
         accent_rgb = self._theme["accent_rgb"]
         accent_rgb_alt = self._theme["accent_rgb_alt"]
         slider_progress_rgb = self._theme["slider_progress_rgb"]
+        panel_border = self._theme["panel_border"]
         icon_color = "#ffffff" if self.is_active else self._theme["muted"]
         self.setIcon(qta.icon(self._icon_name, color=icon_color))
 
@@ -170,7 +171,7 @@ class SettingsIconButton(QPushButton):
                         stop: 1 rgba({slider_progress_rgb}, 0.48)
                     );
                     color: #ffffff;
-                    border: 1px solid rgba({accent_rgb}, 0.46);
+                    border: 1px solid {panel_border};
                     padding: 6px 14px;
                     border-radius: 12px;
                     text-align: center;
@@ -183,6 +184,7 @@ class SettingsIconButton(QPushButton):
                         stop: 0 rgba({accent_rgb_alt}, 0.28),
                         stop: 1 rgba({slider_progress_rgb}, 0.56)
                     );
+                    border: 1px solid {panel_border};
                 }}
                 QPushButton:pressed {{
                     background-color: rgba({slider_progress_rgb}, 0.64);
@@ -202,7 +204,7 @@ class SettingsIconButton(QPushButton):
                 }}
                 QPushButton:hover {{
                     background-color: rgba({accent_rgb}, 0.12);
-                    border: 1px solid rgba({accent_rgb}, 0.24);
+                    border: 1px solid {panel_border};
                     color: {self._theme["text"]};
                 }}
                 QPushButton:pressed {{

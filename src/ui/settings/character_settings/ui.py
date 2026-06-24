@@ -14,8 +14,9 @@ from utils import getTranslationVariant as _
 
 def _make_row(label_text: str, field_widget: QWidget, label_w: int) -> QWidget:
     row = SettingsBodyWidget()
+    row.setObjectName("SettingRow")
     hl = QHBoxLayout(row)
-    hl.setContentsMargins(0, 0, 0, 0)
+    hl.setContentsMargins(8, 4, 8, 4)
     hl.setSpacing(6)
 
     lbl = QLabel(label_text)
@@ -185,8 +186,9 @@ def build_character_settings_ui(self, parent_layout):
 
     def _btn_row(*widgets) -> QWidget:
         r = SettingsBodyWidget()
+        r.setObjectName("SettingRow")
         rl = QHBoxLayout(r)
-        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setContentsMargins(8, 4, 8, 4)
         rl.setSpacing(6)
         for w in widgets:
             rl.addWidget(w, 1)
@@ -194,8 +196,9 @@ def build_character_settings_ui(self, parent_layout):
 
     # -------- Переключатель области: выбранный персонаж / все --------
     scope_row = SettingsBodyWidget()
+    scope_row.setObjectName("SettingRow")
     scope_l = QHBoxLayout(scope_row)
-    scope_l.setContentsMargins(0, 0, 0, 0)
+    scope_l.setContentsMargins(8, 4, 8, 4)
     scope_l.setSpacing(8)
 
     scope_caption = QLabel(_("Область:", "Scope:"))

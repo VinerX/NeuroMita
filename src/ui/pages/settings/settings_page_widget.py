@@ -212,43 +212,8 @@ class SettingsSectionPage(QFrame):
         self.content.setObjectName("SettingsSectionPageContent")
         self.content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         content_layout = QVBoxLayout(self.content)
-        content_layout.setContentsMargins(2, 2, 6, 2)
-        content_layout.setSpacing(14)
-
-        self.header = QFrame()
-        self.header.setObjectName("SettingsSectionPageHeader")
-        header_layout = QHBoxLayout(self.header)
-        header_layout.setContentsMargins(18, 18, 18, 18)
-        header_layout.setSpacing(16)
-
-        self.icon_box = QLabel()
-        self.icon_box.setObjectName("SettingsSectionIcon")
-        self.icon_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.icon_box.setFixedSize(38, 38)
-        self.icon_box.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.icon_box.setPixmap(qta.icon(spec.icon_name, color="#ffd7eb").pixmap(18, 18))
-        header_layout.addWidget(self.icon_box, 0, Qt.AlignmentFlag.AlignTop)
-
-        text_col = QVBoxLayout()
-        text_col.setSpacing(3)
-
-        self.title_label = QLabel(_(spec.title[0], spec.title[1]))
-        self.title_label.setObjectName("SettingsSectionPageTitle")
-        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        text_col.addWidget(self.title_label)
-
-        self.subtitle_label = QLabel(_(spec.subtitle[0], spec.subtitle[1]))
-        self.subtitle_label.setObjectName("SettingsSectionSubtitle")
-        self.subtitle_label.setWordWrap(True)
-        self.subtitle_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        text_col.addWidget(self.subtitle_label)
-
-        header_layout.addLayout(text_col, 1)
-
-        self.mode_badge = QLabel(get_mode_label(spec.min_mode))
-        self.mode_badge.setObjectName("SettingsSectionBadge")
-        self.mode_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.mode_badge.setVisible(False)
+        content_layout.setContentsMargins(2, 0, 6, 2)
+        content_layout.setSpacing(8)
 
         self.body = QFrame()
         self.body.setObjectName("SettingsSectionPageBody")
@@ -263,7 +228,6 @@ class SettingsSectionPage(QFrame):
         self.body_layout.setSpacing(12)
         body_layout.addWidget(self.body_host)
 
-        content_layout.addWidget(self.header)
         content_layout.addWidget(self.body)
         content_layout.addStretch(1)
         self.scroll.setWidget(self.content)
@@ -708,6 +672,7 @@ class SettingsPage(QWidget):
             else:
                 builder(self.gui, page.body_layout)
 
+            self._promote_first_subsection_header(page)
             self._prepare_settings_subsections(page)
 
             self.settings_containers[spec.key] = page
@@ -715,6 +680,38 @@ class SettingsPage(QWidget):
             self._page_indexes[spec.key] = index
 
     _COLLAPSE_STATE_KEY = "SETTINGS_COLLAPSED_SECTIONS"
+
+    def _promote_first_subsection_header(self, page: SettingsSectionPage):
+        headers = page.findChildren(QWidget, "SettingsSubsectionHeader")
+        if not headers:
+            return
+
+        header = headers[0]
+        header.setProperty("hero", "true")
+
+        layout = header.layout()
+        if layout is not None:
+            layout.setContentsMargins(0, 0, 0, 12)
+            layout.setSpacing(5)
+
+        title_label = header.findChild(QLabel, "SettingsSubsectionTitle")
+        if title_label is not None:
+            title_label.setWordWrap(True)
+
+        if layout is None:
+            return
+
+        subtitle_text = _(page.spec.subtitle[0], page.spec.subtitle[1])
+        subtitle = QLabel(subtitle_text)
+        subtitle.setObjectName("SettingsSubsectionSubtitle")
+        subtitle.setWordWrap(True)
+        subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+        insert_at = 1
+        layout.insertWidget(insert_at, subtitle)
+
+        header.style().unpolish(header)
+        header.style().polish(header)
 
     def _collapsed_state_map(self) -> dict:
         try:

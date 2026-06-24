@@ -3,8 +3,8 @@ from __future__ import annotations
 SETTINGS_PAGE_QSS = r"""
 /* ========= API Presets ========= */
 QFrame#PresetsPanel {
-    background-color: rgba({settings_panel_rgb}, 0.82);
-    border: 1px solid rgba({accent_rgb}, 0.14);
+    background-color: rgba({settings_panel_rgb}, 0.96);
+    border: 1px solid {panel_border};
     border-radius: 16px;
 }
 QListWidget#PresetsList {
@@ -43,7 +43,7 @@ QPushButton#RemovePresetButton:hover,
 QPushButton#MoveUpButton:hover,
 QPushButton#MoveDownButton:hover {
     background-color: rgba({accent_rgb}, 0.16);
-    border: 1px solid rgba({accent_rgb}, 0.24);
+    border: 1px solid {panel_border};
 }
 QPushButton#AddPresetButton:pressed,
 QPushButton#RemovePresetButton:pressed,
@@ -65,8 +65,8 @@ QWidget#SettingsWorkspaceContent {
 
 QFrame#SettingsWorkspacePanel,
 QFrame#SettingsTabsCard {
-    background-color: rgba({settings_panel_rgb}, 0.94);
-    border: 1px solid rgba({accent_rgb}, 0.14);
+    background-color: rgba({settings_panel_rgb}, 0.98);
+    border: 1px solid {panel_border};
     border-radius: 16px;
 }
 
@@ -81,7 +81,7 @@ QFrame#SettingsWorkspaceHeader {
 }
 
 QFrame#SettingsWorkspacePanel {
-    background-color: rgba({sandbox_bg_rgb}, 0.92);
+    background-color: rgba({settings_panel_rgb}, 0.98);
 }
 
 QLabel#SettingsHeroIcon {
@@ -155,31 +155,19 @@ QWidget#SettingsSectionPageContent {
     border: none;
 }
 
-QFrame#SettingsSectionPageHeader {
-    background-color: rgba({settings_panel_rgb}, 0.94);
-    border: 1px solid rgba({accent_rgb}, 0.18);
-    border-radius: 16px;
-}
-
-QLabel#SettingsSectionPageTitle {
-    color: {text};
-    font-size: 15pt;
-    font-weight: 800;
-}
-
 QFrame#SettingsSectionPageBody {
     background: transparent;
     border: none;
 }
 
 QFrame#SettingsSectionCard {
-    background-color: rgba({settings_panel_rgb}, 0.94);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    background-color: rgba(9, 10, 22, 0.74);
+    border: 1px solid {panel_border};
     border-radius: 22px;
 }
 QFrame#SettingsSectionCard[expanded="true"] {
-    background-color: rgba({settings_panel_rgb}, 0.98);
-    border: 1px solid rgba({accent_rgb}, 0.24);
+    background-color: rgba(9, 10, 22, 0.86);
+    border: 1px solid {panel_border};
 }
 
 QFrame#SettingsSectionHeader {
@@ -190,30 +178,9 @@ QFrame#SettingsSectionHeader[expanded="true"] {
     background-color: rgba(255,255,255,0.015);
 }
 
-QLabel#SettingsSectionIcon {
-    background-color: rgba({accent_rgb}, 0.10);
-    border: 1px solid rgba({accent_rgb}, 0.22);
-    border-radius: 12px;
-}
-
 QLabel#SettingsSectionTitle {
     color: {text};
     font-size: 12pt;
-    font-weight: 800;
-}
-
-QLabel#SettingsSectionSubtitle {
-    color: {muted};
-    font-size: 9pt;
-}
-
-QLabel#SettingsSectionBadge {
-    color: #f7dceb;
-    background-color: rgba({accent_rgb}, 0.10);
-    border: 1px solid rgba({accent_rgb}, 0.22);
-    border-radius: 10px;
-    padding: 4px 10px;
-    font-size: 8.5pt;
     font-weight: 800;
 }
 
@@ -237,9 +204,25 @@ QLabel#SettingsSubsectionTitle {
     font-weight: 800;
 }
 
+QWidget#SettingsSubsectionHeader[hero="true"] QLabel#SettingsSubsectionTitle {
+    color: {text};
+    font-size: 17pt;
+    font-weight: 800;
+}
+
+QWidget#SettingsSubsectionHeader[hero="true"] QLabel#SettingsSubsectionSubtitle {
+    color: {muted};
+    font-size: 9.5pt;
+    font-weight: 500;
+}
+
 QFrame#SettingsSubsectionLine {
     background-color: rgba(255,255,255,0.08);
     border-radius: 1px;
+}
+
+QWidget#SettingsSubsectionHeader[hero="true"] QFrame#SettingsSubsectionLine {
+    background-color: rgba(255,255,255,0.11);
 }
 
 QWidget#SettingsPageRoot QWidget#CollapsibleSection {
@@ -248,8 +231,8 @@ QWidget#SettingsPageRoot QWidget#CollapsibleSection {
 }
 
 QWidget#SettingsPageRoot QWidget#CollapsibleHeader {
-    background-color: rgba({settings_panel_rgb}, 0.70);
-    border: 1px solid rgba(255,255,255,0.08);
+    background-color: rgba(9, 10, 22, 0.78);
+    border: 1px solid rgba(255,255,255,0.09);
     border-radius: 14px;
 }
 
@@ -259,11 +242,11 @@ QWidget#SettingsPageRoot QWidget#CollapsibleHeader[expanded="true"] {
 }
 
 QWidget#SettingsPageRoot QWidget#CollapsibleHeader:hover {
-    background-color: rgba({settings_panel_rgb}, 0.78);
+    background-color: rgba(11, 12, 25, 0.86);
 }
 
 QWidget#SettingsPageRoot QWidget#CollapsibleContent[expanded="true"] {
-    background-color: rgba({settings_panel_rgb}, 0.62);
+    background-color: rgba(8, 9, 19, 0.64);
     border-left: 1px solid rgba(255,255,255,0.08);
     border-right: 1px solid rgba(255,255,255,0.08);
     border-bottom: 1px solid rgba(255,255,255,0.08);
@@ -299,10 +282,10 @@ QWidget#SettingsPageRoot QWidget#CollapsibleContent {
 }
 
 QWidget#SettingsPageRoot QWidget#SettingRow {
-    background: transparent;
+    background-color: transparent;
     border: none;
-    border-radius: 0px;
-    padding: 2px 0px;
+    border-radius: 8px;
+    padding: 3px 0px;
 }
 
 QWidget#SettingsPageRoot QLabel#SeparatorLabel {
@@ -321,7 +304,7 @@ QWidget#SettingsPageRoot QSpinBox,
 QWidget#SettingsPageRoot QDoubleSpinBox,
 QWidget#SettingsPageRoot QListWidget,
 QWidget#SettingsPageRoot QTreeWidget {
-    background-color: rgba({settings_panel_rgb}, 0.85);
+    background-color: rgba(9, 10, 22, 0.88);
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 10px;
     color: {text};
@@ -384,7 +367,17 @@ QWidget#SettingsPageRoot QCheckBox::indicator:disabled {
     background-color: rgba(255,255,255,0.04);
 }
 
-QWidget#SettingsPageRoot QPushButton#SecondaryButton,
+QWidget#SettingsPageRoot QPushButton#SecondaryButton {
+    background-color: rgba(255,255,255,0.045);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px;
+}
+
+QWidget#SettingsPageRoot QPushButton#SecondaryButton:hover {
+    background-color: rgba(255,255,255,0.075);
+    border: 1px solid {panel_border};
+}
+
 QWidget#SettingsPageRoot QPushButton#CancelButton {
     border-radius: 10px;
 }

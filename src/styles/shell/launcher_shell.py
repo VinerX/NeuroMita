@@ -8,10 +8,10 @@ from pathlib import Path
 class LauncherShellPalette:
     # Фоновые ступени эталона (#0A0A18 → #0D0E1C → #101221), сине-серые, без фиолета.
     root_bg: str = "#0a0a18"
-    panel_bg: str = "rgba(13, 14, 28, 0.995)"
-    panel_soft: str = "rgba(15, 17, 32, 0.98)"
-    card_bg: str = "rgba(16, 18, 33, 0.92)"
-    card_alt_bg: str = "rgba(20, 22, 40, 0.94)"
+    panel_bg: str = "rgba(14, 16, 31, 0.995)"
+    panel_soft: str = "rgba(14, 16, 31, 0.98)"
+    card_bg: str = "rgba(14, 16, 31, 0.92)"
+    card_alt_bg: str = "rgba(14, 16, 31, 0.94)"
     # Нейтрально-серые обводки эталона (#1B1928 / #252236) вместо розовых.
     border: str = "rgba(27, 25, 40, 0.92)"
     border_strong: str = "rgba(37, 34, 54, 0.95)"
@@ -82,7 +82,7 @@ def get_launcher_shell_stylesheet() -> str:
         background: qlineargradient(
             x1: 0, y1: 0, x2: 1, y2: 1,
             stop: 0 rgba(23, 25, 40, 0.96),
-            stop: 1 rgba(16, 18, 33, 0.96)
+            stop: 1 rgba(14, 16, 31, 0.96)
         );
         border: 1px solid {p.border_strong};
         border-left: 3px solid rgba(183, 75, 125, 0.85);
@@ -156,7 +156,7 @@ def get_launcher_shell_stylesheet() -> str:
     QFrame#LauncherShellSidebar {{
         /* Плоская заливка вместо вертикального градиента: на высокой узкой
            панели qlineargradient давал видимые «полосы-тайлы» (фидбэк Артёма). */
-        background-color: #0c0d1a;
+        background-color: #0e101f;
         border: none;
         border-right: 1px solid rgba(255, 255, 255, 0.06);
         border-radius: 0px;
