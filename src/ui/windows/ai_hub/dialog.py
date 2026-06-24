@@ -141,6 +141,25 @@ class AIHubDialog(QDialog):
         self._install_bar_detail.setObjectName("AIHubInstallBarDetail")
         lay.addWidget(self._install_bar_detail, 0)
 
+        # Чип очереди: «+N в очереди» (полный список — в всплывающей подсказке).
+        self._install_bar_queue = QLabel("")
+        self._install_bar_queue.setObjectName("AIHubInstallBarQueue")
+        self._install_bar_queue.setVisible(False)
+        lay.addWidget(self._install_bar_queue, 0)
+
+        # Кнопка возврата к окну логов установки — переехала с левого края в
+        # нижнюю плашку, чтобы разгрузить сайдбар и быть всегда на виду (фидбэк Артёма).
+        self._install_logs_btn = QPushButton(_("Логи установки", "Install logs"))
+        self._install_logs_btn.setObjectName("AIHubInstallBarLogsBtn")
+        self._install_logs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._install_logs_btn.setVisible(False)
+        logs_icon = qicon("fa5s.terminal", "#f0d9e6")
+        if logs_icon is not None:
+            self._install_logs_btn.setIcon(logs_icon)
+            self._install_logs_btn.setIconSize(QSize(13, 13))
+        self._install_logs_btn.clicked.connect(self._on_reopen_install_logs)
+        lay.addWidget(self._install_logs_btn, 0)
+
         self._install_bar = bar
         return bar
 
@@ -285,16 +304,8 @@ class AIHubDialog(QDialog):
         self._queue_panel.setVisible(False)
         self._activity_layout.addWidget(self._queue_panel)
 
-        self._install_logs_btn = QPushButton(_("Логи установки", "Install logs"))
-        self._install_logs_btn.setObjectName("AIHubSidebarBtn")
-        self._install_logs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._install_logs_btn.setVisible(False)
-        logs_icon = qicon("fa5s.terminal", "#b74b7d")
-        if logs_icon is not None:
-            self._install_logs_btn.setIcon(logs_icon)
-            self._install_logs_btn.setIconSize(QSize(13, 13))
-        self._install_logs_btn.clicked.connect(self._on_reopen_install_logs)
-        self._activity_layout.addWidget(self._install_logs_btn)
+        # Кнопка «Логи установки» переехала в нижнюю плашку (_build_install_bar),
+        # чтобы разгрузить левый край (фидбэк Артёма). Здесь её больше нет.
 
         l.addWidget(self._activity_panel)
 
@@ -1096,10 +1107,11 @@ class AIHubDialog(QDialog):
         self._update_activity_panel_visibility()
 
     def _update_activity_panel_visibility(self) -> None:
+        # Кнопка логов теперь в нижней плашке, поэтому левая панель «АКТИВНОСТЬ»
+        # показывается только под статус и список очереди.
         has_activity = any((
             self.task_status_label.isVisible(),
             self._queue_panel.isVisible(),
-            self._install_logs_btn.isVisible(),
         ))
         self._activity_panel.setVisible(has_activity)
 
@@ -1132,8 +1144,26 @@ class AIHubDialog(QDialog):
         text = str(text or "")
         return text if len(text) <= limit else text[: limit - 1] + "…"
 
+    def _update_install_bar_queue_chip(self) -> None:
+        """Чип «+N в очереди» в нижней плашке (полный список ждёт в подсказке)."""
+        chip = getattr(self, "_install_bar_queue", None)
+        if chip is None:
+            return
+        pending = self._queue_state.get("pending") or []
+        n = len(pending)
+        if n <= 0:
+            chip.setVisible(False)
+            chip.setText("")
+            chip.setToolTip("")
+            return
+        chip.setText(_("+{n} в очереди", "+{n} queued").format(n=n))
+        titles = [str((j or {}).get("title") or (j or {}).get("task_id") or "") for j in pending]
+        chip.setToolTip("\n".join(t for t in titles if t))
+        chip.setVisible(True)
+
     def _rebuild_queue_panel(self) -> None:
         self._clear_queue_panel()
+        self._update_install_bar_queue_chip()
         running = self._queue_state.get("running")
         pending = self._queue_state.get("pending") or []
 

@@ -619,8 +619,8 @@ QFrame#AIHubSchemaForm QCheckBox {
 
 /* ---------- Нижняя плашка установки (Steam-style, #25) ---------- */
 QFrame#AIHubInstallBar {
-    background: rgba({accent_rgb}, 0.08);
-    border: 1px solid rgba({accent_rgb}, 0.22);
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid {panel_border};
     border-radius: 12px;
 }
 QLabel#AIHubInstallBarTitle {
@@ -640,6 +640,29 @@ QProgressBar#AIHubInstallBarProgress {
 QProgressBar#AIHubInstallBarProgress::chunk {
     background: {accent};
     border-radius: 4px;
+}
+/* Чип «+N в очереди» и кнопка возврата к логам — в нижней плашке. */
+QLabel#AIHubInstallBarQueue {
+    color: {muted};
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid {panel_border};
+    border-radius: 9px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
+}
+QPushButton#AIHubInstallBarLogsBtn {
+    color: {text};
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid {panel_border};
+    border-radius: 9px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+}
+QPushButton#AIHubInstallBarLogsBtn:hover {
+    background: rgba({accent_rgb}, 0.14);
+    border: 1px solid {accent_border};
 }
 """
 

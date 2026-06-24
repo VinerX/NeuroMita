@@ -680,19 +680,32 @@ class TritonDependenciesDialog(QDialog):
         self.setWindowTitle(_("⚠️ Зависимости Triton", "⚠️ Triton Dependencies"))
         self.setModal(True)
         self.setMinimumSize(700, 350)
-        
+
+        # Эталонная сине-серая гамма (как остальной UI), а не старый плоский #1e1e1e
+        # (фидбэк Артёма: «окошко не в том оформлении как все»).
+        self.setObjectName("TritonDependenciesDialog")
         self.setStyleSheet("""
-            QDialog { background-color: #1e1e1e; }
-            QLabel { color: #ffffff; }
-            QPushButton {
-                background-color: #333333;
-                color: #ffffff;
-                border: none;
-                padding: 5px 10px;
-                font-weight: bold;
+            QDialog#TritonDependenciesDialog {
+                background-color: #0d0e1c;
+                border: 1px solid #252236;
             }
-            QPushButton:hover { background-color: #555555; }
-            #ContinueButton { background-color: #b74b7d; }
+            QLabel { color: #f3edf6; }
+            QPushButton {
+                background-color: #181826;
+                color: #f3edf6;
+                border: 1px solid #252236;
+                border-radius: 10px;
+                padding: 7px 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #20202f;
+                border-color: #3a3750;
+            }
+            #ContinueButton {
+                background-color: #b74b7d;
+                border: 1px solid #823858;
+            }
             #ContinueButton:hover { background-color: #c04c80; }
         """)
         
