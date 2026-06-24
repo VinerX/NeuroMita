@@ -14,11 +14,16 @@ class SettingsBodyWidget(QWidget):
 
 
 def create_settings_section(gui, parent_layout, title, cfg_list, *, icon_name=None):
-    root = CollapsibleSection(title, gui, icon_name=icon_name)
+    items = list(cfg_list or [])
+    subtitle = None
+    if items and items[0].get('type') == 'text':
+        subtitle = items.pop(0).get('label', '')
+
+    root = CollapsibleSection(title, gui, icon_name=icon_name, subtitle=subtitle)
     parent_layout.addWidget(root)
     current_sub = None
 
-    for cfg in cfg_list:
+    for cfg in items:
         t = cfg.get('type')
 
         if t == 'subsection':
@@ -269,8 +274,13 @@ def create_setting_widget(
         toggle_chk.stateChanged.connect(_toggle_slot)
 
     if widget_type == 'checkbutton':
-        widget = QCheckBox()
+        from ui.widgets.toggle_switch import ToggleSwitch
+
+        widget = ToggleSwitch()
         widget.setChecked(bool(gui.settings.get(setting_key, default_checkbutton)))
+        lbl.setMinimumWidth(0)
+        lbl.setMaximumWidth(16777215)
+        lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         def _save_check(state):
             val = state == Qt.CheckState.Checked.value
@@ -280,9 +290,19 @@ def create_setting_widget(
 
         widget.stateChanged.connect(_save_check)
 
-        layout.addWidget(lbl)
-        layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addStretch(1)
+        title_col = QVBoxLayout()
+        title_col.setContentsMargins(0, 0, 0, 0)
+        title_col.setSpacing(2)
+        title_col.addWidget(lbl)
+        if tooltip:
+            desc = QLabel(str(tooltip))
+            desc.setObjectName("SettingRowDescription")
+            desc.setTextFormat(Qt.TextFormat.PlainText)
+            desc.setWordWrap(True)
+            title_col.addWidget(desc)
+
+        layout.addLayout(title_col, 1)
+        layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
     elif widget_type == 'entry':
         widget = QLineEdit(str(gui.settings.get(setting_key, default)))

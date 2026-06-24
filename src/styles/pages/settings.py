@@ -63,11 +63,17 @@ QWidget#SettingsWorkspaceContent {
     border: none;
 }
 
-QFrame#SettingsWorkspacePanel,
-QFrame#SettingsTabsCard {
+QFrame#SettingsWorkspacePanel {
     background-color: rgba({settings_panel_rgb}, 0.98);
     border: 1px solid {panel_border};
     border-radius: 16px;
+}
+
+QFrame#SettingsTabsCard {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    border-radius: 0px;
 }
 
 QFrame#SettingsWorkspaceRootShell {
@@ -226,13 +232,14 @@ QWidget#SettingsSubsectionHeader[hero="true"] QFrame#SettingsSubsectionLine {
 }
 
 QWidget#SettingsPageRoot QWidget#CollapsibleSection {
-    background: transparent;
-    border: none;
+    background-color: rgba(9, 10, 22, 0.72);
+    border: 1px solid {panel_border};
+    border-radius: 14px;
 }
 
 QWidget#SettingsPageRoot QWidget#CollapsibleHeader {
-    background-color: rgba(9, 10, 22, 0.78);
-    border: 1px solid rgba(255,255,255,0.09);
+    background: transparent;
+    border: none;
     border-radius: 14px;
 }
 
@@ -242,14 +249,14 @@ QWidget#SettingsPageRoot QWidget#CollapsibleHeader[expanded="true"] {
 }
 
 QWidget#SettingsPageRoot QWidget#CollapsibleHeader:hover {
-    background-color: rgba(11, 12, 25, 0.86);
+    background-color: rgba(255,255,255,0.025);
 }
 
 QWidget#SettingsPageRoot QWidget#CollapsibleContent[expanded="true"] {
-    background-color: rgba(8, 9, 19, 0.64);
-    border-left: 1px solid rgba(255,255,255,0.08);
-    border-right: 1px solid rgba(255,255,255,0.08);
-    border-bottom: 1px solid rgba(255,255,255,0.08);
+    background-color: rgba(8, 9, 19, 0.42);
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
     border-bottom-left-radius: 14px;
     border-bottom-right-radius: 14px;
 }
@@ -263,7 +270,13 @@ QWidget#SettingsPageRoot QWidget#InnerCollapsibleHeader {
 QWidget#SettingsPageRoot QLabel#CollapsibleTitle {
     color: {text};
     font-weight: 800;
-    padding: 8px 2px 4px 2px;
+    padding: 0px;
+}
+
+QWidget#SettingsPageRoot QLabel#CollapsibleSubtitle {
+    color: {muted};
+    font-size: 8.8pt;
+    font-weight: 500;
 }
 
 QWidget#SettingsPageRoot QLabel#CollapsibleArrow {
@@ -273,7 +286,9 @@ QWidget#SettingsPageRoot QLabel#CollapsibleArrow {
 
 QWidget#SettingsPageRoot QLabel#CollapsibleIcon {
     padding: 0px;
-    background: transparent;
+    background-color: rgba({accent_rgb}, 0.10);
+    border: 1px solid rgba({accent_rgb}, 0.20);
+    border-radius: 9px;
 }
 
 QWidget#SettingsPageRoot QWidget#CollapsibleContent {
@@ -294,6 +309,12 @@ QWidget#SettingsPageRoot QLabel#SeparatorLabel {
     border-bottom: 1px solid rgba(255,255,255,0.08);
     font-weight: 800;
     color: {text};
+}
+
+QWidget#SettingsPageRoot QLabel#SettingRowDescription {
+    color: {muted};
+    font-size: 8.5pt;
+    font-weight: 500;
 }
 
 QWidget#SettingsPageRoot QLineEdit,

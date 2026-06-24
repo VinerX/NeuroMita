@@ -549,7 +549,7 @@ class SettingsPage(QWidget):
     def _build_tabs_row(self) -> QFrame:
         card = _make_card("SettingsTabsCard")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         self._tabs_host = QWidget()
@@ -559,7 +559,7 @@ class SettingsPage(QWidget):
         host_policy.setVerticalPolicy(QSizePolicy.Policy.Minimum)
         self._tabs_host.setSizePolicy(host_policy)
 
-        flow = _FlowLayout(self._tabs_host, margin=0, hspacing=6, vspacing=6, justify=False, center=True)
+        flow = _FlowLayout(self._tabs_host, margin=0, hspacing=18, vspacing=6, justify=False, center=True)
 
         tab_buttons = []
         for spec in get_settings_section_specs():
