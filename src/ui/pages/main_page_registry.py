@@ -25,10 +25,10 @@ class MainPageSpec:
 MAIN_PAGE_SPECS: tuple[MainPageSpec, ...] = (
     MainPageSpec("home", build_home_page),
     MainPageSpec("news", build_news_page),
-    MainPageSpec("wiki", build_wiki_page),
     MainPageSpec("sandbox", build_sandbox_page),
     MainPageSpec("settings", build_settings_page),
     MainPageSpec("developer", build_developer_page),
+    MainPageSpec("wiki", build_wiki_page),
     MainPageSpec("logs", build_logs_page),
 )
 

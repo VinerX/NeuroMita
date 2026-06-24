@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import html
+import os
 from pathlib import Path
 import re
+import sys
 
 from PyQt6.QtCore import QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices, QTextDocument
@@ -13,7 +15,6 @@ from ui.widgets.launcher_dashboard_helpers import create_shell_page_container
 from ui.widgets.launcher_dashboard_helpers import _create_hero_card
 from utils import _
 
-_WIKI_ROOT = Path("docs/wiki")
 _DEFAULT_DOC_LANGUAGE = "en"
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _HTML_HEADING_RE = re.compile(r"<h([1-6])([^>]*)>", re.IGNORECASE)
@@ -23,6 +24,16 @@ _HTML_HEADING_RE = re.compile(r"<h([1-6])([^>]*)>", re.IGNORECASE)
 class _WikiLocation:
     path: Path
     anchor: str = ""
+
+
+def _runtime_base_dir() -> Path:
+    base_dir = str(os.environ.get("NEUROMITA_BASE_DIR", "") or "").strip()
+    if base_dir:
+        return Path(base_dir)
+    return Path(__file__).resolve().parents[3]
+
+
+_WIKI_ROOT = _runtime_base_dir() / "docs" / "wiki"
 
 
 def _is_within(root: Path, target: Path) -> bool:

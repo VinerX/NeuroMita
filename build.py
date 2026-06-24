@@ -61,6 +61,7 @@ FAST_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
 
 ALWAYS_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
     (PROJECT_DIR / "assets" / "launcher_ui", OUTPUT_DIR / "assets" / "launcher_ui"),
+    (PROJECT_DIR / "docs" / "wiki", OUTPUT_DIR / "docs" / "wiki"),
 ]
 
 # Файлы, нужные в рантайме в ЛЮБОМ режиме сборки. init.py запускается шагом
