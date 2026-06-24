@@ -176,7 +176,9 @@ QFrame#SeparatorH {
 /* ========= CheckBox ========= */
 QCheckBox { spacing: 8px; color: {text}; padding: 2px 0; }
 QCheckBox::indicator {
-    width: 16px; height: 16px; border-radius: 5px;
+    width: 16px; height: 16px;
+    min-width: 16px; max-width: 16px; min-height: 16px; max-height: 16px;
+    border-radius: 4px;
     border: 1px solid rgba(255,255,255,0.18);
     background-color: rgba({sidebar_panel_rgb}, 0.96);
 }
