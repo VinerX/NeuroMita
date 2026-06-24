@@ -184,17 +184,30 @@ class GuideWidget(QWidget):
         self._level_group = QButtonGroup(level_row)
         self._level_group.setExclusive(True)
 
-        for label, key in [("Базовый", "basic"), ("Продвинутый", "advanced"), ("Полный", "full")]:
-            rb = QRadioButton(label)
+        # Кнопки уровней были захардкожены по-русски — теперь локализуются под
+        # выбранный язык и переподписываются при его смене.
+        self._level_buttons: dict[str, QRadioButton] = {}
+        for key in ("basic", "advanced", "full"):
+            rb = QRadioButton("")
             rb.setObjectName("GuideLevelButton")
             rb.setProperty("level_key", key)
             if key == self._guide_level:
                 rb.setChecked(True)
             level_row_layout.addWidget(rb)
             self._level_group.addButton(rb)
+            self._level_buttons[key] = rb
 
         self._level_group.buttonClicked.connect(self._on_level_changed)
         container_layout.addWidget(level_row)
+
+        # Пояснение, что показывает выбранный уровень (раньше уровни никак не
+        # раскрывались — было непонятно, чем они отличаются).
+        self._level_hint = QLabel("")
+        self._level_hint.setObjectName("GuideLevelHint")
+        self._level_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._level_hint.setWordWrap(True)
+        container_layout.addWidget(self._level_hint)
+        self._update_level_texts()
 
         header_layout = QHBoxLayout()
         self.title_label = QLabel("")
@@ -290,7 +303,34 @@ class GuideWidget(QWidget):
         self.current_language = str(code or "ru")
         self._update_skip_button_text()
         self._update_close_button_text()
+        self._update_level_texts()
         self.show_page(self.current_page_index)
+
+    # Подписи и пояснения уровней (локализуются под выбранный язык).
+    _LEVEL_LABELS = {
+        "basic": ("Базовый", "Basic"),
+        "advanced": ("Продвинутый", "Advanced"),
+        "full": ("Полный", "Full"),
+    }
+    _LEVEL_HINTS = {
+        "basic": ("Только самое необходимое для старта: подключение, персонаж, чат.",
+                  "Just the essentials to get started: connection, character, chat."),
+        "advanced": ("Базовый + озвучка и микрофон.",
+                     "Basic + voiceover and microphone."),
+        "full": ("Все разделы: + анализ экрана, модели и тонкости чата.",
+                 "All sections: + screen analysis, models and chat details."),
+    }
+
+    def _update_level_texts(self):
+        for key, rb in getattr(self, "_level_buttons", {}).items():
+            ru, en = self._LEVEL_LABELS.get(key, (key, key))
+            rb.setText(translate_for_language(self.current_language, ru, en))
+            hru, hen = self._LEVEL_HINTS.get(key, ("", ""))
+            rb.setToolTip(translate_for_language(self.current_language, hru, hen))
+        hint = getattr(self, "_level_hint", None)
+        if hint is not None:
+            hru, hen = self._LEVEL_HINTS.get(self._guide_level, ("", ""))
+            hint.setText(translate_for_language(self.current_language, hru, hen))
         
     def _update_skip_button_text(self):
         self.skip_button.setText(
@@ -308,6 +348,7 @@ class GuideWidget(QWidget):
             return
         self._guide_level = level
         self._update_filtered_pages()
+        self._update_level_texts()
         self.current_page_index = 0
         self.show_page(0)
         try:
