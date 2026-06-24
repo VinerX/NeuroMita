@@ -436,9 +436,16 @@ class FishSpeechInstallSpec:
             )
 
         if mid in ("medium+", "medium+low"):
+            packages = ["fish-speech-lib", "triton-windows"]
+            if mid == "medium+low":
+                packages.append("tts-with-rvc")
             return InstallPlan(
                 actions=[
-                    pip_uninstall_action(["triton-windows"], description=_("Удаление Triton...", "Uninstalling Triton..."), progress=20)
+                    pip_uninstall_action(
+                        packages,
+                        description=_("Удаление компонентов Fish Speech...", "Uninstalling Fish Speech components..."),
+                        progress=20,
+                    )
                 ],
                 ok_status=_("Удалено", "Uninstalled"),
             )

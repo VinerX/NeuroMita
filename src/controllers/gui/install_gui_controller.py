@@ -284,7 +284,7 @@ class InstallGuiController(BaseController):
         level = str(data.get("level") or "").strip().lower()
         low = msg.lower()
 
-        if level in ("error", "exception", "critical") or any(k in low for k in ("error", "ошибка", "failed", "exception", "traceback")):
+        if level in ("error", "exception", "critical") or any(k in low for k in ("error", "ошибка", "failed", "traceback")):
             logger.error(f"[INSTALL] {msg}")
         elif level in ("warn", "warning") or any(k in low for k in ("warning", "предупреж")):
             logger.warning(f"[INSTALL] {msg}")
