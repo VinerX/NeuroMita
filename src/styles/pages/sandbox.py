@@ -122,7 +122,7 @@ QFrame#SandboxWorkspaceHeader {
 QFrame#SandboxSelectorDeck,
 QFrame#SandboxChatHost {
     background-color: rgba({settings_panel_rgb}, 0.97);
-    border: 1px solid rgba({accent_rgb}, 0.16);
+    border: 1px solid {panel_border};
     border-radius: 20px;
 }
 
@@ -132,10 +132,10 @@ QWidget#ChatComposerWrapper {
 }
 
 QFrame#ChatComposerBar {
-    /* #15: поле ввода — на «приподнятой» эталонной поверхности (#141628), чтобы
-       визуально отделялось от панелей. */
-    background-color: rgba(20, 22, 40, 0.97);
-    border: 1px solid rgba({accent_rgb}, 0.22);
+    /* Поле ввода — на «утопленной» поверхности темнее панелей (фидбэк Артёма:
+       «почему *ввод* светлее фона» → делаем темнее, чем SandboxChatHost). */
+    background-color: rgba(7, 7, 16, 0.92);
+    border: 1px solid {panel_border};
     border-radius: 20px;
 }
 
@@ -143,20 +143,20 @@ QFrame#SandboxInspector {
     /* #15: фон правой панели как у левого блока (SandboxChatHost), а не глубокий
        канвас — панели читаются как один уровень. */
     background-color: rgba({settings_panel_rgb}, 0.97);
-    border: 1px solid rgba({accent_rgb}, 0.12);
+    border: 1px solid {panel_border};
     border-radius: 20px;
 }
 
 QFrame#ChatToolbarCard,
 QFrame#SandboxSelectorCard {
     background-color: rgba({settings_panel_rgb}, 0.985);
-    border: 1px solid rgba({accent_rgb}, 0.18);
+    border: 1px solid {panel_border};
     border-radius: 18px;
 }
 
 QFrame#SandboxInspectorCard {
     background-color: rgba({settings_panel_rgb}, 0.95);
-    border: 1px solid rgba({accent_rgb}, 0.14);
+    border: 1px solid {panel_border};
     border-radius: 16px;
 }
 
@@ -241,7 +241,7 @@ QLabel#TokenCountLabel {
 
 QWidget#ChatCharacterHistoryGroup {
     background-color: rgba({settings_panel_rgb}, 0.97);
-    border: 1px solid rgba({accent_rgb}, 0.14);
+    border: 1px solid {panel_border};
     border-radius: 14px;
 }
 
@@ -267,7 +267,7 @@ QCheckBox#StatusIndicator::indicator:checked {
 QWidget#StatusIndicatorStrip,
 QWidget#InlineStatusIndicators {
     background-color: rgba({settings_panel_rgb}, 0.95);
-    border: 1px solid rgba({accent_rgb}, 0.14);
+    border: 1px solid {panel_border};
     border-radius: 18px;
 }
 
@@ -466,7 +466,7 @@ QToolButton#SandboxInspectorToggle:hover {
 QPlainTextEdit#SandboxInspectorMonoText {
     background-color: rgba(8, 8, 18, 0.82);
     color: {text};
-    border: 1px solid rgba({accent_rgb}, 0.14);
+    border: 1px solid {panel_border};
     border-radius: 10px;
     padding: 8px 10px;
     font-family: "Consolas", "Cascadia Mono", "Courier New", monospace;
@@ -481,7 +481,7 @@ QScrollArea#SandboxInspectorScroll {
 
 QFrame#ChatConversationStrip {
     background-color: rgba({settings_panel_rgb}, 0.95);
-    border: 1px solid rgba({accent_rgb}, 0.14);
+    border: 1px solid {panel_border};
     border-radius: 14px;
 }
 

@@ -45,25 +45,28 @@ class VoiceInstallationWindow(QDialog):
         self._style_variant = str(style_variant or "default").strip().lower()
         if self._style_variant == "ai_hub":
             self.setObjectName("AIHubInstallDialog")
+            # Эталонная сине-серая гамма (#0A0A18 / #252236), розовый — только на
+            # заполнении прогресс-бара. Раньше тут был фиолетовый набор бордюров
+            # (#3b2748/#4d335c/#5c3b6d), выбивавшийся из остального UI (фидбэк Артёма).
             self.setStyleSheet("""
                 QDialog#AIHubInstallDialog {
-                    background-color: #14101b;
-                    border: 1px solid #3b2748;
+                    background-color: #0d0e1c;
+                    border: 1px solid #252236;
                 }
                 QLabel {
-                    color: #f5edf7;
+                    color: #f3edf6;
                 }
                 QTextEdit {
-                    background-color: #0f0b16;
-                    color: #f0ddea;
-                    border: 1px solid #4d335c;
+                    background-color: #07070f;
+                    color: #d8d2e4;
+                    border: 1px solid #252236;
                     border-radius: 10px;
-                    padding: 6px;
+                    padding: 8px;
                 }
                 QProgressBar {
-                    border: 1px solid #5c3b6d;
+                    border: 1px solid #252236;
                     border-radius: 7px;
-                    background-color: #251a31;
+                    background-color: #14121f;
                     text-align: center;
                 }
                 QProgressBar::chunk {
@@ -71,16 +74,16 @@ class VoiceInstallationWindow(QDialog):
                     border-radius: 7px;
                 }
                 QPushButton {
-                    background-color: #2a1d36;
-                    color: #fff6fb;
-                    border: 1px solid #5a3a6a;
+                    background-color: #181826;
+                    color: #f3edf6;
+                    border: 1px solid #252236;
                     border-radius: 10px;
                     padding: 7px 12px;
                     font-weight: 600;
                 }
                 QPushButton:hover {
-                    background-color: #362347;
-                    border-color: #b74b7d;
+                    background-color: #20202f;
+                    border-color: #3a3750;
                 }
             """)
         else:

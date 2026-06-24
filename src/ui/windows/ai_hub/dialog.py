@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import shutil
+import threading
 from typing import Any
 
 from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
@@ -51,12 +52,13 @@ class AIHubDialog(QDialog):
         self._category_buttons: dict[str, CategoryButton] = {}
         self._active_install_window: VoiceInstallationWindow | None = None
         self._queue_state: dict[str, Any] = {"running": None, "pending": []}
+        self._refresh_generation = 0
+        self._refresh_inflight = False
 
         self._ui_call_requested.connect(self._execute_ui_call)
 
         self._build()
         self._bind_events()
-        QTimer.singleShot(0, lambda: self.refresh(force=True))
 
     # ------------------------------------------------------------ thread hop
     def _execute_ui_call(self, fn) -> None:
@@ -255,13 +257,24 @@ class AIHubDialog(QDialog):
             self._category_buttons[key] = btn
             l.addWidget(btn, 0)
 
+        self._activity_panel = QFrame()
+        self._activity_panel.setObjectName("AIHubActivityPanel")
+        self._activity_layout = QVBoxLayout(self._activity_panel)
+        self._activity_layout.setContentsMargins(10, 10, 10, 10)
+        self._activity_layout.setSpacing(8)
+        self._activity_panel.setVisible(False)
+
+        self._activity_header = QLabel(_("АКТИВНОСТЬ", "ACTIVITY"))
+        self._activity_header.setObjectName("AIHubSidebarHeader")
+        self._activity_layout.addWidget(self._activity_header)
+
         # task status (install / progress)
         self.task_status_label = QLabel("")
         self.task_status_label.setObjectName("AIHubSidebarStatus")
         self.task_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.task_status_label.setWordWrap(True)
         self.task_status_label.setVisible(False)
-        l.addWidget(self.task_status_label)
+        self._activity_layout.addWidget(self.task_status_label)
 
         # Панель очереди установок: текущая задача + ожидающие (с кнопкой отмены).
         self._queue_panel = QFrame()
@@ -270,7 +283,7 @@ class AIHubDialog(QDialog):
         self._queue_layout.setContentsMargins(8, 8, 8, 8)
         self._queue_layout.setSpacing(4)
         self._queue_panel.setVisible(False)
-        l.addWidget(self._queue_panel)
+        self._activity_layout.addWidget(self._queue_panel)
 
         self._install_logs_btn = QPushButton(_("Логи установки", "Install logs"))
         self._install_logs_btn.setObjectName("AIHubSidebarBtn")
@@ -281,7 +294,9 @@ class AIHubDialog(QDialog):
             self._install_logs_btn.setIcon(logs_icon)
             self._install_logs_btn.setIconSize(QSize(13, 13))
         self._install_logs_btn.clicked.connect(self._on_reopen_install_logs)
-        l.addWidget(self._install_logs_btn)
+        self._activity_layout.addWidget(self._install_logs_btn)
+
+        l.addWidget(self._activity_panel)
 
         l.addStretch(1)
 
@@ -289,6 +304,7 @@ class AIHubDialog(QDialog):
         self.btn_refresh = QPushButton(_("Проверить обновления", "Check for updates"))
         self.btn_refresh.setObjectName("AIHubSidebarBtn")
         self.btn_refresh.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_refresh.setText(_("Обновить список", "Refresh list"))
         ic = qicon("fa5s.sync", "#b74b7d")
         if ic is not None:
             self.btn_refresh.setIcon(ic)
@@ -532,12 +548,13 @@ class AIHubDialog(QDialog):
         footer.setSpacing(12)
 
         self.stat_installed = Stat("fa5s.download", _("Установлено", "Installed"))
-        self.stat_updates = Stat("fa5s.sync", _("Доступно обновлений", "Updates available"))
+        # «Доступно обновлений» убрано: компоненты AI Hub не обновляются инкрементально,
+        # счётчик всегда был 0 и только путал (фидбэк Артёма).
         self.stat_gpu = Stat("fa5s.microchip", "GPU")
         self.stat_disk = Stat("fa5s.hdd", _("Свободно на диске", "Free disk"))
         self.stat_check = Stat("fa5s.clock", _("Последняя проверка", "Last check"))
 
-        for s in (self.stat_installed, self.stat_updates, self.stat_gpu, self.stat_disk, self.stat_check):
+        for s in (self.stat_installed, self.stat_gpu, self.stat_disk, self.stat_check):
             s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             footer.addWidget(s, 1)
 
@@ -567,13 +584,35 @@ class AIHubDialog(QDialog):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        if not self._loaded_once:
+        if not self._loaded_once and not self._refresh_inflight:
             QTimer.singleShot(0, lambda: self.refresh(force=True))
 
     def refresh(self, *, force: bool = False) -> None:
-        self._rows = self._fetch_rows(force=force)
+        self._refresh_generation += 1
+        generation = self._refresh_generation
+        self._refresh_inflight = True
+        self.btn_refresh.setEnabled(False)
+
+        def _worker() -> None:
+            rows = self._fetch_rows(force=force)
+            checked_at = _dt.datetime.now()
+            self._on_gui_thread(lambda: self._apply_refresh_result(generation, rows, checked_at))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_refresh_result(
+        self,
+        generation: int,
+        rows: list[dict[str, Any]],
+        checked_at: _dt.datetime,
+    ) -> None:
+        if generation != self._refresh_generation:
+            return
+        self._refresh_inflight = False
+        self.btn_refresh.setEnabled(True)
+        self._rows = rows
         self._loaded_once = True
-        self._last_check_ts = _dt.datetime.now()
+        self._last_check_ts = checked_at
         self._refresh_views()
 
     def _refresh_views(self) -> None:
@@ -801,15 +840,8 @@ class AIHubDialog(QDialog):
         _COUNTED_CATEGORIES = {"tts", "voices", "asr", "rag", "extras", "backend", "dependencies"}
         counted_rows = [r for r in self._rows if row_category(r) in _COUNTED_CATEGORIES]
         installed = sum(1 for r in counted_rows if status_from_row(r).get("installed"))
-        updates = sum(
-            1
-            for r in counted_rows
-            if str(status_from_row(r).get("code") or "") == "needs_update"
-            or status_from_row(r).get("update_available")
-        )
         components_word = _("компонентов", "components")
         self.stat_installed.setValue(str(installed), components_word)
-        self.stat_updates.setValue(str(updates), components_word)
         gpu_label = format_primary_gpu_label()
         gpu_vendor = self._detect_gpu_vendor()
         self.stat_gpu.setValue(gpu_label, gpu_vendor)
@@ -990,6 +1022,7 @@ class AIHubDialog(QDialog):
     # ----------------------------------------------------------- task events
     def _set_install_logs_visible(self, visible: bool) -> None:
         self._install_logs_btn.setVisible(bool(visible))
+        self._update_activity_panel_visibility()
 
     def _on_install_window_closed(self) -> None:
         self._active_install_window = None
@@ -1060,6 +1093,15 @@ class AIHubDialog(QDialog):
             self.task_status_label.setVisible(True)
         else:
             self.task_status_label.setVisible(False)
+        self._update_activity_panel_visibility()
+
+    def _update_activity_panel_visibility(self) -> None:
+        has_activity = any((
+            self.task_status_label.isVisible(),
+            self._queue_panel.isVisible(),
+            self._install_logs_btn.isVisible(),
+        ))
+        self._activity_panel.setVisible(has_activity)
 
     # ----------------------------------------------------------- queue
     def _on_queue_changed(self, event) -> None:
@@ -1097,6 +1139,7 @@ class AIHubDialog(QDialog):
 
         if not running and not pending:
             self._queue_panel.setVisible(False)
+            self._update_activity_panel_visibility()
             return
 
         header = QLabel(_("ОЧЕРЕДЬ УСТАНОВКИ", "INSTALL QUEUE"))
@@ -1109,6 +1152,7 @@ class AIHubDialog(QDialog):
             self._queue_layout.addWidget(self._make_queue_row(job, is_running=False))
 
         self._queue_panel.setVisible(True)
+        self._update_activity_panel_visibility()
 
     def _make_queue_row(self, job: dict[str, Any], *, is_running: bool) -> QWidget:
         row = QFrame()

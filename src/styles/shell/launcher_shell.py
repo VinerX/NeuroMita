@@ -154,11 +154,9 @@ def get_launcher_shell_stylesheet() -> str:
         background: transparent;
     }}
     QFrame#LauncherShellSidebar {{
-        background: qlineargradient(
-            x1: 0, y1: 0, x2: 0, y2: 1,
-            stop: 0 rgba(13, 14, 28, 0.995),
-            stop: 1 rgba(10, 10, 24, 0.995)
-        );
+        /* Плоская заливка вместо вертикального градиента: на высокой узкой
+           панели qlineargradient давал видимые «полосы-тайлы» (фидбэк Артёма). */
+        background-color: #0c0d1a;
         border: none;
         border-right: 1px solid rgba(255, 255, 255, 0.06);
         border-radius: 0px;

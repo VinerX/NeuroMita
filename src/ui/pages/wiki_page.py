@@ -19,6 +19,33 @@ _DEFAULT_DOC_LANGUAGE = "en"
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _HTML_HEADING_RE = re.compile(r"<h([1-6])([^>]*)>", re.IGNORECASE)
 
+# Документ-стиль для QTextBrowser (QTextDocument поддерживает подмножество CSS2.1).
+# Тёплый акцент только на заголовках и ссылках; тело — спокойный светло-серый,
+# код и цитаты — в нейтральной гамме эталона, без розовых обводок.
+_WIKI_DOC_CSS = """
+    body { color: #e8e2f2; font-family: "Segoe UI", "Arial", sans-serif; }
+    h1, h2, h3, h4, h5, h6 { color: #f3eef8; font-weight: 700; }
+    h1 { font-size: 23px; margin-top: 4px; margin-bottom: 12px; }
+    h2 { font-size: 19px; margin-top: 22px; margin-bottom: 8px; color: #e9c7da; }
+    h3 { font-size: 16px; margin-top: 18px; margin-bottom: 6px; }
+    h4, h5, h6 { font-size: 14px; margin-top: 14px; margin-bottom: 4px; color: #cbb9c8; }
+    p { margin-top: 6px; margin-bottom: 10px; }
+    a { color: #d98bb4; text-decoration: underline; }
+    ul, ol { margin-top: 4px; margin-bottom: 10px; }
+    li { margin-top: 3px; margin-bottom: 3px; }
+    code { font-family: "Consolas", "Cascadia Mono", "Courier New", monospace;
+           background-color: rgba(255, 255, 255, 0.06); color: #f0d9e6; }
+    pre { background-color: rgba(8, 8, 18, 0.85); color: #e6e0f0;
+          font-family: "Consolas", "Cascadia Mono", "Courier New", monospace;
+          padding: 10px; border-left: 2px solid rgba(183, 75, 125, 0.55); }
+    blockquote { color: #bca9bb; border-left: 3px solid rgba(120, 116, 140, 0.55);
+                 margin-left: 4px; padding-left: 12px; }
+    table { border-color: rgba(60, 58, 78, 0.9); }
+    th { background-color: rgba(255, 255, 255, 0.05); color: #f3eef8; padding: 4px 8px; }
+    td { padding: 4px 8px; }
+    hr { color: rgba(60, 58, 78, 0.9); }
+"""
+
 
 @dataclass(slots=True)
 class _WikiLocation:
@@ -203,19 +230,37 @@ class WikiPage(QWidget):
         self._viewer.setReadOnly(True)
         self._viewer.setMinimumHeight(560)
         self._viewer.anchorClicked.connect(self._on_anchor_clicked)
+        self._viewer.document().setDefaultStyleSheet(_WIKI_DOC_CSS)
         self._viewer.setStyleSheet(
             """
             QTextBrowser {
                 background: transparent;
                 border: none;
-                color: #f6f0ff;
+                color: #e8e2f2;
+                font-family: "Segoe UI", "Arial", sans-serif;
                 font-size: 14px;
-                line-height: 1.6;
-                selection-background-color: rgba(255, 109, 183, 0.35);
+                padding: 4px 10px;
+                selection-background-color: rgba(183, 75, 125, 0.32);
             }
-            QTextBrowser a {
-                color: #ff9dd0;
-                text-decoration: underline;
+            QScrollBar:vertical {
+                width: 10px;
+                background: transparent;
+                margin: 4px 0;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(120, 116, 140, 0.30);
+                border-radius: 5px;
+                min-height: 28px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(150, 146, 170, 0.42);
+            }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical,
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {
+                background: transparent;
+                height: 0px;
             }
             """
         )

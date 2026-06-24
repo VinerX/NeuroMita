@@ -228,3 +228,41 @@
 | Отключённый | `#5E5B6D` |
 
 > Hero-баннер — отдельный artwork-слой, его пурпур/малину не тащить в UI-токены.
+
+---
+
+## BLOCK 3 — второй заход скринов Артёма (2026-06-24, id 1519393430244163615 …)
+
+Скрины с самой ветки `artem-feedback-ui` (Артём уже на ней). «А так почище стало», но осталось:
+
+### [x] B3-1. Розовая обводка ещё много где (Песочница) → серый
+Жалоба: «розовый ещё много где остался, розовая обводка … я просил на серый заменить» (id 1519393430244163615).
+**Готово:** добавлен токен `panel_border`/`panel_border_rgb` (rgba(37,34,54,0.9), эталон #252236) в `theme.py`.
+Статичные бордюры панелей Песочницы переведены с `rgba(accent_rgb,…)` (розовые) на `{panel_border}`:
+`SandboxSelectorDeck/ChatHost`, `ChatComposerBar`, `SandboxInspector`, `ChatToolbarCard/SelectorCard`,
+`SandboxInspectorCard`, `ChatCharacterHistoryGroup`, `StatusIndicatorStrip`, `MonoText`, `ChatConversationStrip`
+(`src/styles/pages/sandbox.py`). Hover/selected-состояния и активные индикаторы табов оставлены акцентными (осмысленная подсветка).
+
+### [x] B3-2. Поле ввода светлее фона → затемнить
+Жалоба: «также вот это затемнить. а то почему *ввод* светлее фона» (id 1519395647231627306).
+**Готово:** `ChatComposerBar` bg `rgba(20,22,40,0.97)` → `rgba(7,7,16,0.92)` (темнее панелей). Внутренний QTextEdit прозрачный, так что читается утопленным.
+
+### [x] B3-3. Сайдбар: «тайлы с градиентами квадратами»
+Жалоба: вертикальный qlineargradient на высокой узкой панели давал видимые полосы (id 1519396939777577122).
+**Готово:** `LauncherShellSidebar` → плоская заливка `#0c0d1a` (`src/styles/shell/launcher_shell.py`).
+
+### [x] B3-4. «Доступно обновлений» убрать
+Жалоба: «у нас не обновляемо ничего» (id 1519397515307258090).
+**Готово:** удалён мёртвый `stat_updates` в `src/ui/windows/ai_hub/dialog.py` (в футер он уже не добавлялся).
+
+### [x] B3-5. Окно установки — фиолетовые бордюры выбиваются («засраннее»/«ничего нет»)
+Жалоба: id 1519397148737798328, 1519397196263329953.
+**Готово:** `ai_hub`-вариант `VoiceInstallationWindow` переведён с фиолета (#3b2748/#4d335c/#5c3b6d) на эталонный серый (#0d0e1c/#252236), розовый — только на chunk прогресс-бара (`src/ui/windows/voice_action_windows.py`).
+
+### [x] B3-6. Вики — «сделай красиво» (просьба vinerx)
+**Готово:** `WikiPage` QTextBrowser получил document-CSS (`_WIKI_DOC_CSS`): типографика заголовков/списков/кода/цитат/таблиц,
+ссылки в мягком акценте `#d98bb4` вместо кричащего `#ff9dd0`, серый скроллбар, серые рамки кода/цитат (`src/ui/pages/wiki_page.py`).
+
+### [ ] B3-7. (бэкенд, не графика) Whisper requirements missing + GUI FREEZE installable_list
+Лог Артёма (id 1519397270972403763): `whisper_recognizer.py:176` ругается на отсутствие backend_cuda/silero_vad/ctranslate2/faster_whisper/transformers;
+`[GUI FREEZE] installable_list took 0.25s (MainThread)`. Вынести проверку зависимостей/`installable_list` из главного потока. Оставлено на бэкенд-заход.
