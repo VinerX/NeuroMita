@@ -169,7 +169,7 @@ class SettingsIconButton(QPushButton):
                     color: #ffffff;
                     border: none;
                     border-bottom: 2px solid rgba({accent_rgb_alt}, 0.98);
-                    padding: 8px 14px 10px 14px;
+                    padding: 8px 10px 10px 10px;
                     border-radius: 0px;
                     text-align: center;
                     font-size: 9pt;
@@ -189,7 +189,7 @@ class SettingsIconButton(QPushButton):
                     color: {self._theme["muted"]};
                     border: none;
                     border-bottom: 2px solid transparent;
-                    padding: 8px 14px 10px 14px;
+                    padding: 8px 10px 10px 10px;
                     border-radius: 0px;
                     text-align: center;
                     font-size: 9pt;

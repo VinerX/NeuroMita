@@ -169,6 +169,15 @@ def create_button_group(gui, parent, buttons_config):
     return frame
 
 
+def _apply_setting_row_disabled(frame: QWidget, disabled: bool) -> None:
+    frame.setProperty("disabled", "true" if disabled else "false")
+    style = frame.style()
+    if style is not None:
+        style.unpolish(frame)
+        style.polish(frame)
+    frame.update()
+
+
 def _fmt_tooltip(text: str) -> str:
     if not text:
         return text
@@ -270,6 +279,7 @@ def create_setting_widget(
             if widget:
                 widget.setEnabled(enabled)
             lbl.setEnabled(enabled)
+            _apply_setting_row_disabled(frame, not enabled)
 
         toggle_chk.stateChanged.connect(_toggle_slot)
 
@@ -437,6 +447,7 @@ def create_setting_widget(
                 else:
                     widget.setEnabled(active)
                     lbl.setEnabled(active)
+                    _apply_setting_row_disabled(frame, not active)
 
             _dep_sync()
 
@@ -449,6 +460,7 @@ def create_setting_widget(
         enabled = toggle_chk.isChecked()
         widget.setEnabled(enabled)
         lbl.setEnabled(enabled)
+        _apply_setting_row_disabled(frame, not enabled)
 
     return frame
 

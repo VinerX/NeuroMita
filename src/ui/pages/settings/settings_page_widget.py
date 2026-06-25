@@ -559,7 +559,7 @@ class SettingsPage(QWidget):
         host_policy.setVerticalPolicy(QSizePolicy.Policy.Minimum)
         self._tabs_host.setSizePolicy(host_policy)
 
-        flow = _FlowLayout(self._tabs_host, margin=0, hspacing=18, vspacing=6, justify=False, center=True)
+        flow = _FlowLayout(self._tabs_host, margin=0, hspacing=10, vspacing=6, justify=False, center=True)
 
         tab_buttons = []
         for spec in get_settings_section_specs():
@@ -574,14 +574,6 @@ class SettingsPage(QWidget):
             self.settings_buttons[spec.key] = button
             self._category_modes[spec.key] = spec.min_mode
             tab_buttons.append(button)
-
-        # Give every tab the same fixed width (the widest label's natural width,
-        # with a sane floor) so the strip reads as a uniform tab bar instead of
-        # ragged content-sized chips.
-        if tab_buttons:
-            uniform = max([b.sizeHint().width() for b in tab_buttons] + [96])
-            for b in tab_buttons:
-                b.setFixedWidth(uniform)
 
         layout.addWidget(self._tabs_host)
         return card

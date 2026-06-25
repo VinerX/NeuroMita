@@ -70,6 +70,10 @@ def setup_language_settings_controls(self, parent):
     # ── Кастомные переводы ──────────────────────────────────────────────────
     custom_config = [
         {'label': _(
+            'Внешние JSON-локали подключаются из папки языков после перезапуска.',
+            'External JSON locales are loaded from the language folder after restart.'),
+         'type': 'text'},
+        {'label': _(
             'Можно добавить свой язык: киньте файл «<код>.json» (например pl.json)\n'
             'в папку с языками и перезапустите приложение — он появится в списке выше.\n'
             'Ключи — русские строки, переводите только значения.\n'

@@ -237,6 +237,12 @@ QWidget#SettingsPageRoot QWidget#CollapsibleSection {
     border-radius: 14px;
 }
 
+QWidget#SettingsPageRoot QWidget#CollapsibleSection[inner="true"] {
+    background: transparent;
+    border: none;
+    border-radius: 0px;
+}
+
 QWidget#SettingsPageRoot QWidget#CollapsibleHeader {
     background: transparent;
     border: none;
@@ -264,7 +270,12 @@ QWidget#SettingsPageRoot QWidget#CollapsibleContent[expanded="true"] {
 QWidget#SettingsPageRoot QWidget#InnerCollapsibleHeader {
     background: transparent;
     border-bottom: 1px solid rgba(255,255,255,0.08);
+    border-radius: 0px;
     padding-bottom: 6px;
+}
+
+QWidget#SettingsPageRoot QWidget#InnerCollapsibleHeader:hover {
+    background: transparent;
 }
 
 QWidget#SettingsPageRoot QLabel#CollapsibleTitle {
@@ -296,11 +307,31 @@ QWidget#SettingsPageRoot QWidget#CollapsibleContent {
     padding-top: 4px;
 }
 
+QWidget#SettingsPageRoot QWidget#CollapsibleContent[inner="true"] {
+    background: transparent;
+    border: none;
+    padding-top: 4px;
+}
+
 QWidget#SettingsPageRoot QWidget#SettingRow {
     background-color: transparent;
     border: none;
     border-radius: 8px;
     padding: 3px 0px;
+}
+
+QWidget#SettingsPageRoot QWidget#SettingRow[disabled="true"] {
+    background: transparent;
+    border: none;
+    padding: 3px 0px;
+}
+
+QWidget#SettingsPageRoot QWidget#SettingRow[disabled="true"] QLabel {
+    color: rgba(188,169,187,0.34);
+}
+
+QWidget#SettingsPageRoot QWidget#SettingRow[disabled="true"] QLabel#SettingRowDescription {
+    color: rgba(188,169,187,0.26);
 }
 
 QWidget#SettingsPageRoot QLabel#SeparatorLabel {
