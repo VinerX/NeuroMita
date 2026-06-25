@@ -612,9 +612,12 @@ QFrame#AIHubSchemaForm QSpinBox[hasError="true"] {
     background: rgba(255,123,123,0.06);
 }
 QFrame#AIHubSchemaForm QCheckBox {
+    background: transparent;
+    border: none;
     color: {text};
     font-size: 12px;
     spacing: 6px;
+    padding: 2px 0;
 }
 
 /* ---------- Нижняя плашка установки (Steam-style, #25) ---------- */
