@@ -11,7 +11,7 @@ The app supports several ways to generate text responses:
 - provider presets
 - local or semi-local workflows where supported
 
-Users typically configure this in `Settings`, then chat from the main interface.
+Users typically configure this in [API settings](app:settings/api), then chat from the main interface. If the preset list is empty, click the **"Click to create a preset"** prompt (or the **+** button next to it) to add your first one.
 
 ## What a Character Controls
 
@@ -25,11 +25,10 @@ A character is more than a name. It usually defines:
 
 ## Prompt and Character-Related Areas in Settings
 
-- `API settings`: provider, endpoint, key, model, preset selection
-- `Character settings`: active profile, character-specific logic, prompt assets
-- `Prompt catalogue`: browsing and switching prompt bundles
-- `Model interaction settings`: response behavior, waiting, and related controls
-- `Language settings`: interface language
+- [API settings](app:settings/api): provider, endpoint, key, model, preset selection
+- [Character settings](app:settings/characters): active profile, character-specific logic, prompt assets
+- [Model interaction settings](app:settings/models): response behavior, waiting, and related controls
+- [Language settings](app:settings/language): interface language
 
 ## Chat Features
 

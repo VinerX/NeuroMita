@@ -18,6 +18,21 @@ from utils import _
 _DEFAULT_DOC_LANGUAGE = "en"
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _HTML_HEADING_RE = re.compile(r"<h([1-6])([^>]*)>", re.IGNORECASE)
+# Ссылки на интерфейс приложения (схема app:) красим отдельным цветом и
+# помечаем стрелкой ↗ — чтобы новичок видел: это не текстовая статья, а
+# кнопка, открывающая нужный экран/настройку прямо в приложении.
+_APP_LINK_RE = re.compile(r'(<a\b[^>]*\bhref="app:[^"]*"[^>]*)>', re.IGNORECASE)
+_APP_LINK_STYLE = "color: #e0a85a; text-decoration: none; font-weight: 600;"
+
+
+def _style_app_links(html_text: str) -> str:
+    def _inject(match: re.Match[str]) -> str:
+        head = match.group(1)
+        if "style=" in head.lower():
+            return f"{head}>"
+        return f'{head} style="{_APP_LINK_STYLE}">'
+
+    return _APP_LINK_RE.sub(_inject, html_text)
 
 # Документ-стиль для QTextBrowser (QTextDocument поддерживает подмножество CSS2.1).
 # Тёплый акцент только на заголовках и ссылках; тело — спокойный светло-серый,
@@ -131,7 +146,8 @@ def _markdown_to_html(markdown_text: str) -> str:
         safe_anchor = html.escape(anchor, quote=True)
         return f'<a name="{safe_anchor}"></a><h{level}{attrs}>'
 
-    return _HTML_HEADING_RE.sub(_inject_anchor, rendered_html)
+    rendered_html = _HTML_HEADING_RE.sub(_inject_anchor, rendered_html)
+    return _style_app_links(rendered_html)
 
 
 class WikiPage(QWidget):
@@ -419,7 +435,56 @@ class WikiPage(QWidget):
         self._history_index += 1
         self._open_location(self._history[self._history_index], push_history=False)
 
+    def _handle_app_link(self, url: QUrl) -> bool:
+        """Ссылки вида app:<page>[/<settings-category>][?section=<heading>].
+
+        Открывают нужный экран приложения прямо из вики:
+          app:home, app:sandbox, app:logs, app:news, app:developer, app:wiki
+          app:settings/api                      — раздел настроек «API»
+          app:settings/models?section=RAG       — + разворачивает подсекцию «RAG»
+        Возвращает True, если ссылка обработана (была app:-ссылкой).
+        """
+        text = url.toString()
+        if not text.lower().startswith("app:"):
+            return False
+
+        body = text[4:].lstrip("/")
+        query = ""
+        if "?" in body:
+            body, query = body.split("?", 1)
+        if "#" in body:
+            body = body.split("#", 1)[0]
+
+        parts = [p for p in body.split("/") if p]
+        if not parts:
+            return True
+
+        section = None
+        if query:
+            from urllib.parse import unquote
+            for kv in query.split("&"):
+                if kv.lower().startswith("section="):
+                    section = unquote(kv.split("=", 1)[1]).strip() or None
+
+        page_key = parts[0].lower()
+        gui = self.gui
+
+        if page_key == "settings":
+            category = parts[1].lower() if len(parts) > 1 else None
+            if category and hasattr(gui, "show_settings_category"):
+                gui.show_settings_category(category, force=True, subsection=section)
+            elif hasattr(gui, "switch_main_page"):
+                gui.switch_main_page("settings")
+            return True
+
+        if hasattr(gui, "switch_main_page"):
+            gui.switch_main_page(page_key)
+        return True
+
     def _on_anchor_clicked(self, url: QUrl) -> None:
+        if self._handle_app_link(url):
+            return
+
         if url.scheme() in {"http", "https"}:
             QDesktopServices.openUrl(url)
             return

@@ -28,6 +28,29 @@ def _make_row(label_text: str, field_widget: QWidget, label_w: int) -> QWidget:
     return row
 
 
+def _make_info_row(label_text: str, field_widget: QWidget) -> QWidget:
+    """Строка «ключ: значение» для блока «Информация о наборе».
+
+    В отличие от _make_row, не фиксирует ширину подписи в 120px (короткие
+    «Автор:»/«Версия:» иначе отгоняют значение далеко вправо) и не добавляет
+    левый отступ — чтобы подписи вставали по тому же краю, что и «Описание:».
+    """
+    row = SettingsBodyWidget()
+    row.setObjectName("SettingRow")
+    hl = QHBoxLayout(row)
+    hl.setContentsMargins(0, 2, 0, 2)
+    hl.setSpacing(8)
+
+    lbl = QLabel(label_text)
+    lbl.setStyleSheet("font-weight: 600;")
+    lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+    lbl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+    hl.addWidget(lbl, 0)
+
+    hl.addWidget(field_widget, 1)
+    return row
+
+
 def _make_info_value_label(self, key: str) -> QLabel:
     lab = QLabel("")
     lab.setWordWrap(True)
@@ -149,10 +172,10 @@ def build_character_settings_ui(self, parent_layout):
     self.prompt_info_labels = {}
 
     self.prompt_info_section.add_widget(
-        _make_row(_("Автор:", "Author:"), _make_info_value_label(self, "author"), label_w)
+        _make_info_row(_("Автор:", "Author:"), _make_info_value_label(self, "author"))
     )
     self.prompt_info_section.add_widget(
-        _make_row(_("Версия:", "Version:"), _make_info_value_label(self, "version"), label_w)
+        _make_info_row(_("Версия:", "Version:"), _make_info_value_label(self, "version"))
     )
 
     desc_title = QLabel(_("Описание:", "Description:"))

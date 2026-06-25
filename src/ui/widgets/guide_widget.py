@@ -185,7 +185,7 @@ class GuideWidget(QWidget):
                 font-weight: 600;
             }
         """, get_theme()))
-        
+
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -260,17 +260,24 @@ class GuideWidget(QWidget):
         lang_layout.addWidget(self.lang_label)
 
         self.lang_selector = QComboBox()
+        # Заполняем и выставляем стартовый индекс при ЗАГЛУШЁННЫХ сигналах, а
+        # обработчик подключаем уже ПОСЛЕ. Иначе setCurrentIndex(...) во время
+        # построения дёргал _on_language_changed, который обращается к ещё не
+        # созданным виджетам (close_button) и зовёт show_page() до инициализации
+        # страниц → жёсткий вылет процесса при первом запуске (краш на «Принять»).
+        self.lang_selector.blockSignals(True)
         for code in available_languages():
             lowered = code.lower()
             self.lang_selector.addItem(language_display_name(code), lowered)
             self._lang_buttons[lowered] = None
-        self.lang_selector.currentIndexChanged.connect(self._on_language_changed)
 
         if self.current_language not in self._lang_buttons:
             self.current_language = "ru"
         current_index = self.lang_selector.findData(self.current_language)
         if current_index >= 0:
             self.lang_selector.setCurrentIndex(current_index)
+        self.lang_selector.blockSignals(False)
+        self.lang_selector.currentIndexChanged.connect(self._on_language_changed)
         lang_layout.addWidget(self.lang_selector, 0)
         lang_layout.addStretch(1)
         header_layout.addLayout(lang_layout)

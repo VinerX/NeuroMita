@@ -4,7 +4,7 @@ from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QPainter, QPixmap, QColor, QFont, QFontMetrics, QPalette
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QStyledItemDelegate, QStyle, QListWidgetItem, QComboBox, QSizePolicy, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QTextEdit, QToolButton, QPushButton, QFrame
+    QStyledItemDelegate, QStyle, QListWidget, QListWidgetItem, QComboBox, QSizePolicy, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QTextEdit, QToolButton, QPushButton, QFrame
 )
 import qtawesome as qta
 
@@ -162,6 +162,56 @@ class ProviderDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         sz = super().sizeHint(option, index)
         return sz.expandedTo(QSize(140, 24))
+
+
+class PresetsListWidget(QListWidget):
+    """Список пресетов с подсказкой-приглашением, когда пресетов ещё нет.
+
+    Пустой QListWidget выглядел как пустое поле без намёка на то, что делать.
+    Теперь по центру рисуется «Нажмите, чтобы создать пресет», а клик по
+    пустому списку эмитит create_requested (то же, что кнопка «+» рядом).
+    """
+
+    create_requested = pyqtSignal()
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._placeholder = _("Нажмите, чтобы создать пресет", "Click to create a preset")
+        self._placeholder_hint = _("или нажмите «+» рядом", "or use the “+” button on the right")
+
+    def _is_empty(self) -> bool:
+        return self.count() == 0
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._is_empty():
+            return
+
+        painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.viewport().rect().adjusted(12, 12, -12, -12)
+
+        title_font = QFont(self.font())
+        title_font.setPointSizeF(max(9.5, self.font().pointSizeF()))
+        title_font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(title_font)
+        painter.setPen(QColor(214, 156, 188))  # мягкий акцент
+        title_rect = rect.adjusted(0, 0, 0, -22)
+        painter.drawText(title_rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self._placeholder)
+
+        hint_font = QFont(self.font())
+        hint_font.setPointSizeF(max(8.0, self.font().pointSizeF() - 1.0))
+        painter.setFont(hint_font)
+        painter.setPen(QColor(150, 142, 162))
+        hint_rect = rect.adjusted(0, 24, 0, 0)
+        painter.drawText(hint_rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self._placeholder_hint)
+        painter.end()
+
+    def mousePressEvent(self, event):
+        if self._is_empty():
+            self.create_requested.emit()
+            return
+        super().mousePressEvent(event)
 
 
 class CustomPresetListItem(QListWidgetItem):

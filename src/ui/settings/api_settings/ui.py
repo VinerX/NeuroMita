@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QSize, QStringListModel
 from PyQt6.QtWidgets import (
-    QWidget, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QGridLayout, QListWidget, QPushButton,
+    QWidget, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton,
     QToolButton, QComboBox, QSizePolicy, QCompleter, QTextEdit, QCheckBox, QLineEdit
 )
 import qtawesome as qta
@@ -10,6 +10,7 @@ import qtawesome as qta
 from utils import _
 from .widgets import (
     ProviderDelegate,
+    PresetsListWidget,
     LabeledLineEditRow,
     LabeledTextEditRow,
     LabeledComboRow,
@@ -43,7 +44,7 @@ def build_api_settings_ui(self, parent_layout):
     presets_layout.setContentsMargins(8, 8, 8, 8)
     presets_layout.setSpacing(10)
 
-    self.custom_presets_list = QListWidget()
+    self.custom_presets_list = PresetsListWidget()
     self.custom_presets_list.setObjectName("PresetsList")
     self.custom_presets_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
     presets_layout.addWidget(self.custom_presets_list, 1)

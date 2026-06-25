@@ -6,6 +6,7 @@ from localization import available_languages, language_display_name, translate_f
 import sys
 from styles.theme import get_theme
 from utils import render_qss
+from ui.widgets.flow_layout import FlowLayout
 
 class EULAWidget(QWidget):
     accepted = pyqtSignal()
@@ -94,22 +95,37 @@ class EULAWidget(QWidget):
             #RejectButton:pressed {
                 background-color: {danger_pressed};
             }
+            #EULALangBar {
+                background: transparent;
+            }
             QRadioButton {
+                color: {muted};
+                font-size: 13px;
+                background: transparent;
+                border: none;
+                padding: 4px 6px;
+                spacing: 7px;
+            }
+            QRadioButton:hover {
                 color: {text};
-                font-size: 12px;
-                padding: 5px 8px;
+            }
+            QRadioButton:checked {
+                color: {text};
+                font-weight: 600;
             }
             QRadioButton::indicator {
-                width: 16px;
-                height: 16px;
+                width: 15px;
+                height: 15px;
                 border-radius: 8px;
-                border: 1px solid rgba(255,255,255,0.18);
-                background-color: rgba({sidebar_panel_rgb}, 1.0);
-                margin-right: 6px;
+                border: 1.5px solid rgba(255,255,255,0.28);
+                background: transparent;
+            }
+            QRadioButton::indicator:hover {
+                border: 1.5px solid {accent};
             }
             QRadioButton::indicator:checked {
                 background-color: {accent};
-                border: 1px solid {accent_alt};
+                border: 1.5px solid {accent_alt};
             }
             QFrame#Separator {
                 background-color: {border_soft};
@@ -143,26 +159,30 @@ class EULAWidget(QWidget):
         separator.setFrameShape(QFrame.Shape.HLine)
         container_layout.addWidget(separator)
         
-        lang_layout = QHBoxLayout()
-        lang_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lang_layout.setSpacing(15)
-        
+        # Языки выкладываем во flow-раскладку: при росте числа языков строка
+        # сама переносится на следующую (раньше один QHBoxLayout сжимал и
+        # обрезал названия — «Deutsch» → «Deutsc»).
+        lang_container = QWidget()
+        lang_container.setObjectName("EULALangBar")
+        lang_flow = FlowLayout(lang_container, margin=2, hspacing=10, vspacing=8, center=True)
+
         self.lang_group = QButtonGroup()
         for idx, code in enumerate(available_languages()):
             button = QRadioButton(language_display_name(code))
             button.setProperty("lang_code", code.lower())
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
             if code.lower() == self.current_language:
                 button.setChecked(True)
             self.lang_group.addButton(button, idx)
             self._lang_buttons[code.lower()] = button
-            lang_layout.addWidget(button)
+            lang_flow.addWidget(button)
         self.lang_group.buttonClicked.connect(self._on_language_changed)
 
         if self.current_language not in self._lang_buttons:
             self.current_language = "ru"
             if "ru" in self._lang_buttons:
                 self._lang_buttons["ru"].setChecked(True)
-        container_layout.addLayout(lang_layout)
+        container_layout.addWidget(lang_container)
         
         self.text_edit = QTextEdit()
         self.text_edit.setObjectName("EULAText")

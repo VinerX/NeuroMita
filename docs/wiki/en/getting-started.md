@@ -8,20 +8,21 @@ NeuroMita is a desktop companion app that powers AI-driven characters, connects 
 
 ## First Launch Checklist
 
+You don't need any prior experience with AI providers or APIs — follow these in order. Gold links open the exact screen in the app.
+
 1. Open the app and review the in-app guide if you want a short onboarding flow.
-2. Go to `Settings`.
-3. Configure a text-generation provider and model.
-4. Select the character or prompt set you want to talk to.
-5. Optionally enable voice output, microphone input, RAG memory, screen capture, or camera capture.
-6. Return to the main chat and send a first message.
+2. Open [API settings](app:settings/api) and add a provider preset (the empty list shows a **"Click to create a preset"** prompt, or use the **+** button). Paste your API key and pick a model. See [provider setup](./chat-and-characters.md#text-generation-and-provider-setup) if you're unsure which provider to choose.
+3. Open [Characters](app:settings/characters) and choose the character / prompt set you want to talk to.
+4. Optional: enable [voice output](app:settings/voice), [microphone input](app:settings/microphone), [RAG memory](app:settings/models?section=RAG), or [screen/camera capture](app:settings/screen).
+5. Return to the main chat ([Sandbox](app:sandbox)) and send a first message.
 
 ## Main Areas of the App
 
-- `Home`: install, update, launch, and release feed.
-- `Settings`: full configuration.
-- `Sandbox`: live status, quick toggles, diagnostics.
-- `Logs`: real-time log tail.
-- `Developer`: advanced tools and contributor workflows.
+- [Home](app:home): install, update, launch, and release feed.
+- [Settings](app:settings): full configuration.
+- [Sandbox](app:sandbox): live status, quick toggles, diagnostics.
+- [Logs](app:logs): real-time log tail.
+- [Developer](app:developer): advanced tools and contributor workflows.
 
 ## Core Usage Loop
 
