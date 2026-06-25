@@ -599,10 +599,36 @@ QCheckBox#SandboxCaptureToggle::indicator {
     height: 14px;
     border-radius: 4px;
     border: 1px solid rgba(255,255,255,0.12);
-    background-color: rgba(255, 255, 255, 0.06);
+    background-color: transparent;
 }
 
 QCheckBox#SandboxCaptureToggle::indicator:checked {
+    background-color: {accent_alt};
+    border: 1px solid rgba({accent_rgb}, 0.82);
+}
+
+QWidget#SandboxInspectorTabPage QCheckBox {
+    color: {text};
+    spacing: 8px;
+    font-size: 10pt;
+    background: transparent;
+    border: none;
+    padding: 2px 0;
+}
+
+QWidget#SandboxInspectorTabPage QCheckBox::indicator {
+    width: 14px;
+    height: 14px;
+    min-width: 14px;
+    max-width: 14px;
+    min-height: 14px;
+    max-height: 14px;
+    border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background-color: transparent;
+}
+
+QWidget#SandboxInspectorTabPage QCheckBox::indicator:checked {
     background-color: {accent_alt};
     border: 1px solid rgba({accent_rgb}, 0.82);
 }

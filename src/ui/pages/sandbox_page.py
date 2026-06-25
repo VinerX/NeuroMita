@@ -1012,6 +1012,9 @@ class SandboxPage(QWidget):
 
         value_label = QLabel("—")
         value_label.setObjectName("SandboxInfoValue")
+        value_label.setMinimumWidth(0)
+        value_label.setWordWrap(True)
+        value_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         h.addWidget(value_label, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
 
@@ -1373,11 +1376,14 @@ class SandboxPage(QWidget):
             label = QLabel(label_text)
             label.setObjectName("SandboxInfoLabel")
             row.addWidget(label)
-            row.addStretch()
             value = QLabel("—")
             value.setObjectName("SandboxInfoValue")
+            value.setMinimumWidth(0)
+            value.setWordWrap(True)
+            value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            row.addWidget(value)
+            row.addWidget(value, 1)
             slayout.addLayout(row)
             self._lr_values[key] = value
         return strip
@@ -1613,12 +1619,11 @@ class SandboxPage(QWidget):
             if hint:
                 label.setToolTip(hint)
             row.addWidget(label)
-            row.addStretch()
             value = QLabel("—")
             value.setObjectName("SandboxInspectorValue")
             if hint:
                 value.setToolTip(hint)
-            row.addWidget(value)
+            row.addWidget(value, 1)
             memory_layout.addLayout(row)
             self._memory_limit_values[stat_key] = value
 
@@ -1633,6 +1638,7 @@ class SandboxPage(QWidget):
 
     def _build_inspector_debug_tab(self) -> QWidget:
         page, layout = self._make_tab_page()
+        layout.setContentsMargins(2, 12, 10, 4)
 
         # ── Отображение сообщений ───────────────────────────────────────────
         # Show-thinking moved here from General settings: the toggle controls
@@ -1701,10 +1707,13 @@ class SandboxPage(QWidget):
             label = QLabel(label_text)
             label.setObjectName("SandboxInfoLabel")
             row.addWidget(label)
-            row.addStretch()
             value = QLabel("—")
             value.setObjectName("SandboxInfoValue")
-            row.addWidget(value)
+            value.setMinimumWidth(0)
+            value.setWordWrap(True)
+            value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            row.addWidget(value, 1)
             summary_layout.addLayout(row)
             self._debug_summary_values[key] = value
 
