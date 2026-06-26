@@ -22,6 +22,7 @@ from ui.widgets.image_preview_widget import ImagePreviewBar
 from ui.widgets.image_viewer_widget import ImageViewerWidget
 from ui.widgets.mita_status_widget import MitaStatusWidget
 from utils import _
+from localization.live import tr_set
 
 
 class ChatPanel(QWidget):
@@ -77,23 +78,26 @@ class ChatPanel(QWidget):
 
         layout.addStretch(1)
 
-        history_button = QPushButton(_("История", "History"))
+        history_button = QPushButton()
+        tr_set(history_button, "История", "History", "setText")
         history_button.setObjectName("ChatStripGhostButton")
         history_button.setIcon(qta.icon("fa6s.database", color="#ffd2ec"))
         history_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        history_button.setToolTip(_("Открыть базу истории персонажа", "Open character history database"))
+        tr_set(history_button, "Открыть базу истории персонажа", "Open character history database", "setToolTip")
         history_button.clicked.connect(self._open_character_history)
         layout.addWidget(history_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        refresh_button = QPushButton(_("Обновить", "Refresh"))
+        refresh_button = QPushButton()
+        tr_set(refresh_button, "Обновить", "Refresh", "setText")
         refresh_button.setObjectName("ChatStripGhostButton")
         refresh_button.setIcon(qta.icon("fa6s.rotate", color="#ffd2ec"))
         refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        refresh_button.setToolTip(_("Загрузить историю чата", "Load chat history"))
+        tr_set(refresh_button, "Загрузить историю чата", "Load chat history", "setToolTip")
         refresh_button.clicked.connect(self.gui.load_chat_history)
         layout.addWidget(refresh_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        clear_button = QPushButton(_("Очистить чат", "Clear chat"))
+        clear_button = QPushButton()
+        tr_set(clear_button, "Очистить чат", "Clear chat", "setText")
         clear_button.setObjectName("ChatStripGhostButton")
         clear_button.setIcon(qta.icon("fa6s.trash", color="#ffd2ec"))
         clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -131,14 +135,14 @@ class ChatPanel(QWidget):
         self.gui.attach_button.clicked.connect(lambda: attach_images(self.gui))
         self.gui.attach_button.setFixedSize(32, 32)
         self.gui.attach_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.gui.attach_button.setToolTip(_("Прикрепить изображения", "Attach images"))
+        tr_set(self.gui.attach_button, "Прикрепить изображения", "Attach images", "setToolTip")
         bar_layout.addWidget(self.gui.attach_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.gui.user_entry = QTextEdit()
         self.gui.user_entry.setMinimumHeight(24)
         self.gui.user_entry.setMaximumHeight(80)
         self.gui.user_entry.setFixedHeight(36)
-        self.gui.user_entry.setPlaceholderText(_("Напиши что-нибудь Crazy Mita…", "Write something to Mita…"))
+        tr_set(self.gui.user_entry, "Напиши что-нибудь Crazy Mita…", "Write something to Mita…", "setPlaceholderText")
         self.gui.user_entry.setStyleSheet(
             "QTextEdit { background-color: transparent; border: none; color: #f7edf5; padding: 4px 2px; }"
             "QTextEdit:focus { background-color: transparent; border: none; }"
@@ -153,7 +157,7 @@ class ChatPanel(QWidget):
         self.gui.send_screen_button.clicked.connect(lambda: send_screen_capture(self.gui))
         self.gui.send_screen_button.setFixedSize(32, 32)
         self.gui.send_screen_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.gui.send_screen_button.setToolTip(_("Сделать скриншот экрана", "Take screenshot"))
+        tr_set(self.gui.send_screen_button, "Сделать скриншот экрана", "Take screenshot", "setToolTip")
         bar_layout.addWidget(self.gui.send_screen_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.gui.send_button = QPushButton(qta.icon("fa6s.paper-plane", color="white", scale_factor=0.85), "")
@@ -161,7 +165,7 @@ class ChatPanel(QWidget):
         self.gui.send_button.clicked.connect(self.gui.send_message)
         self.gui.send_button.setFixedSize(38, 38)
         self.gui.send_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.gui.send_button.setToolTip(_("Отправить сообщение", "Send message"))
+        tr_set(self.gui.send_button, "Отправить сообщение", "Send message", "setToolTip")
         bar_layout.addWidget(self.gui.send_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
         wrapper_layout.addWidget(bar)

@@ -457,25 +457,20 @@ class AppWindowBase(QMainWindow):
     def _on_shell_utility_requested(self, action):
         if isinstance(action, str) and action.startswith("language:"):
             code = action.split(":", 1)[1].upper()
+            # Живая смена языка: запись настройки + обновление зарегистрированных
+            # виджетов + сигнал language_changed (без перезапуска приложения).
             try:
-                self.settings.set("LANGUAGE", code)
+                from localization.live import set_language
+                set_language(code)
             except Exception:
                 try:
-                    self.settings["LANGUAGE"] = code
+                    self.settings.set("LANGUAGE", code)
                 except Exception:
-                    pass
+                    try:
+                        self.settings["LANGUAGE"] = code
+                    except Exception:
+                        pass
             self.shell_sidebar.set_active_language(code.lower())
-            try:
-                from ui.language_restart import prompt_language_restart
-
-                prompt_language_restart(self)
-            except Exception:
-                QMessageBox.information(
-                    self,
-                    _("Язык", "Language"),
-                    _("Перезапусти программу, чтобы применить язык.",
-                      "Restart the program to apply the language."),
-                )
             return
         if action == "language":
             self.show_settings_category("language")

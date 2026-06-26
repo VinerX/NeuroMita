@@ -19,25 +19,40 @@ from PyQt6.QtWidgets import (
 
 from utils import _
 
+from localization import translate as _tr
+from localization.live import language_changed_signal, tr_set
 from ui.widgets.launcher_shell_theme import apply_launcher_shell_theme, resolve_launcher_asset
 
 
 @dataclass(frozen=True)
 class SidebarSection:
+    """Раздел сайдбара. Подписи храним парой ru/en, чтобы их можно было
+    перевести вживую при смене языка (а не замораживать на старте)."""
+
     key: str
-    title: str
+    title_ru: str
+    title_en: str
     icon_name: str
-    subtitle: str = ""
+    subtitle_ru: str = ""
+    subtitle_en: str = ""
     min_mode: str = "basic"
+
+    @property
+    def title(self) -> str:
+        return _tr(self.title_ru, self.title_en)
+
+    @property
+    def subtitle(self) -> str:
+        return _tr(self.subtitle_ru, self.subtitle_en)
 
 
 DEFAULT_SIDEBAR_SECTIONS: tuple[SidebarSection, ...] = (
-    SidebarSection("home", _("Главная", "Home"), "fa6s.house", _("Обзор лаунчера", "Launcher overview")),
-    SidebarSection("settings", _("Настройки", "Settings"), "fa6s.gear", _("Системные параметры", "System controls")),
-    SidebarSection("sandbox", _("Песочница", "Sandbox"), "fa6s.flask", _("Быстрый вход в чат", "Quick chat access")),
-    SidebarSection("news", _("Релизы", "Releases"), "fa6s.rectangle-list", _("Лента релизов проекта", "Project release feed")),
-    SidebarSection("developer", _("Дев", "Dev"), "fa6s.bug", _("Отладка и дообучение", "Debug & fine-tuning"), min_mode="full"),
-    SidebarSection("logs", _("Логи", "Logs"), "fa6s.list", _("События и диагностика", "Events and diagnostics")),
+    SidebarSection("home", "Главная", "Home", "fa6s.house", "Обзор лаунчера", "Launcher overview"),
+    SidebarSection("settings", "Настройки", "Settings", "fa6s.gear", "Системные параметры", "System controls"),
+    SidebarSection("sandbox", "Песочница", "Sandbox", "fa6s.flask", "Быстрый вход в чат", "Quick chat access"),
+    SidebarSection("news", "Релизы", "Releases", "fa6s.rectangle-list", "Лента релизов проекта", "Project release feed"),
+    SidebarSection("developer", "Дев", "Dev", "fa6s.bug", "Отладка и дообучение", "Debug & fine-tuning", min_mode="full"),
+    SidebarSection("logs", "Логи", "Logs", "fa6s.list", "События и диагностика", "Events and diagnostics"),
 )
 
 
@@ -71,10 +86,27 @@ class LauncherSidebarWidget(QFrame):
         self._button_group.setExclusive(True)
 
         self._lang_buttons: dict[str, QPushButton] = {}
+        self._lang_pills_layout: QHBoxLayout | None = None
         self._version_label: QLabel | None = None
 
         self._build_ui()
         self.set_active_page(initial_page)
+
+        # Live-смена языка: подписи раздела обновляются реестром (tr_set), а
+        # набор «быстрых» пилюль внизу зависит от текущего языка — пересобираем.
+        try:
+            language_changed_signal().connect(self._on_language_changed)
+        except Exception:
+            pass
+
+    def _on_language_changed(self, code: str = "") -> None:
+        self._rebuild_lang_pills()
+        try:
+            from managers.settings_manager import SettingsManager
+            current = str(SettingsManager.get("LANGUAGE", "RU") or "RU").lower()
+        except Exception:
+            current = "ru"
+        self.set_active_language(current)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -91,14 +123,17 @@ class LauncherSidebarWidget(QFrame):
         layout.addWidget(self._build_footer_block())
 
     def _build_install_logs_button(self) -> QPushButton:
-        button = QPushButton(_("Логи установки", "Install logs"))
+        button = QPushButton()
+        tr_set(button, "Логи установки", "Install logs", "setText")
         button.setObjectName("LauncherShellNavButton")
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setIcon(qta.icon("fa6s.terminal", color="#ffd2ec"))
-        button.setToolTip(_(
+        tr_set(
+            button,
             "Открыть окно установки и посмотреть логи",
             "Open the installation window and view logs",
-        ))
+            "setToolTip",
+        )
         button.clicked.connect(self.install_logs_requested.emit)
         button.setVisible(False)
         return button
@@ -165,8 +200,13 @@ class LauncherSidebarWidget(QFrame):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setProperty("active", False)
             button.setIcon(qta.icon(section.icon_name, color="#ffd2ec"))
-            button.setText(section.title)
-            button.setToolTip(section.subtitle or section.title)
+            tr_set(button, section.title_ru, section.title_en, "setText")
+            tr_set(
+                button,
+                section.subtitle_ru or section.title_ru,
+                section.subtitle_en or section.title_en,
+                "setToolTip",
+            )
             button.clicked.connect(lambda checked=False, key=section.key: self.request_page(key))
             self._button_group.addButton(button)
             self._nav_buttons[section.key] = button
@@ -182,7 +222,8 @@ class LauncherSidebarWidget(QFrame):
         layout.setContentsMargins(2, 0, 2, 0)
         layout.setSpacing(6)
 
-        label = QLabel(_("СОЦ. СЕТИ", "SOCIAL"))
+        label = QLabel()
+        tr_set(label, "СОЦ. СЕТИ", "SOCIAL", "setText")
         label.setObjectName("LauncherShellEyebrow")
         layout.addWidget(label)
 
@@ -233,34 +274,15 @@ class LauncherSidebarWidget(QFrame):
         layout.setContentsMargins(2, 0, 2, 0)
         layout.setSpacing(6)
 
-        # Компактный переключатель: всегда RU и ещё одна «быстрая» пилюля.
-        # Если выбран язык вне RU/EN — вторая пилюля показывает именно его
-        # (вместо EN), чтобы текущий язык был под рукой одним кликом.
-        try:
-            from localization import available_languages
-            available = {c.lower() for c in available_languages("full")}
-        except Exception:
-            available = {"ru", "en"}
-        try:
-            from managers.settings_manager import SettingsManager
-            current = str(SettingsManager.get("LANGUAGE", "RU") or "RU").lower()
-        except Exception:
-            current = "ru"
-        if current in ("ru", "en") or current not in available:
-            second = "en"
-        else:
-            second = current
-        langs = ["ru", second]
-        for code in langs:
-            label_text = code.upper()
-            button = QPushButton(label_text)
-            button.setObjectName("LauncherShellLangPill")
-            button.setCheckable(True)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setFixedSize(40, 28)
-            button.clicked.connect(lambda checked=False, value=code: self.utility_requested.emit(f"language:{value}"))
-            self._lang_buttons[code] = button
-            layout.addWidget(button)
+        # Контейнер для «быстрых» пилюль языков — его содержимое пересобирается
+        # при смене языка (вторая пилюля зависит от текущего языка).
+        pills_host = QWidget()
+        pills_layout = QHBoxLayout(pills_host)
+        pills_layout.setContentsMargins(0, 0, 0, 0)
+        pills_layout.setSpacing(6)
+        self._lang_pills_layout = pills_layout
+        self._rebuild_lang_pills()
+        layout.addWidget(pills_host)
 
         # Иконка-планета справа от языков — ведёт в настройки языка.
         lang_settings_btn = QPushButton()
@@ -268,7 +290,7 @@ class LauncherSidebarWidget(QFrame):
         lang_settings_btn.setIcon(qta.icon("fa6s.globe", color="#ffd2ec"))
         lang_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         lang_settings_btn.setFixedSize(28, 28)
-        lang_settings_btn.setToolTip(_("Настройки языка", "Language settings"))
+        tr_set(lang_settings_btn, "Настройки языка", "Language settings", "setToolTip")
         lang_settings_btn.clicked.connect(lambda: self.utility_requested.emit("language"))
         layout.addWidget(lang_settings_btn)
 
@@ -294,6 +316,44 @@ class LauncherSidebarWidget(QFrame):
     def refresh_version_label(self) -> None:
         if self._version_label is not None:
             self._version_label.setText(self._read_version_string())
+
+    def _rebuild_lang_pills(self) -> None:
+        """Пересобирает «быстрые» пилюли языков: всегда RU + одна вторая.
+
+        Если выбран язык вне RU/EN — вторая пилюля показывает именно его
+        (вместо EN), чтобы текущий язык был под рукой одним кликом."""
+        layout = self._lang_pills_layout
+        if layout is None:
+            return
+        # Очистка прежних пилюль.
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._lang_buttons = {}
+
+        try:
+            from localization import available_languages
+            available = {c.lower() for c in available_languages("full")}
+        except Exception:
+            available = {"ru", "en"}
+        try:
+            from managers.settings_manager import SettingsManager
+            current = str(SettingsManager.get("LANGUAGE", "RU") or "RU").lower()
+        except Exception:
+            current = "ru"
+        second = "en" if (current in ("ru", "en") or current not in available) else current
+
+        for code in ("ru", second):
+            button = QPushButton(code.upper())
+            button.setObjectName("LauncherShellLangPill")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFixedSize(40, 28)
+            button.clicked.connect(lambda checked=False, value=code: self.utility_requested.emit(f"language:{value}"))
+            self._lang_buttons[code] = button
+            layout.addWidget(button)
 
     def request_page(self, page_key: str) -> None:
         self.set_active_page(page_key)
