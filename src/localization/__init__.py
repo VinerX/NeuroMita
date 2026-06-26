@@ -234,12 +234,33 @@ def translate_for_language(lang: str, ru_str: str, en_str: str = "") -> str:
     return en_str or ru_str
 
 
+class TrStr(str):
+    """Строка перевода, несущая исходную пару ``(ru, en)``.
+
+    Ведёт себя как обычный ``str`` (isinstance/сравнение/конкатенация/json),
+    но дополнительно хранит исходники — чтобы фабрика виджетов могла
+    зарегистрировать виджет для живой перетрансляции при смене языка.
+    Конкатенация/format/`.upper()` и т.п. дают обычный ``str`` (исходники
+    теряются) — это нормально: такие строки динамические и в реестр не идут.
+    """
+
+    __slots__ = ("tr_ru", "tr_en")
+
+    def __new__(cls, value: str, ru: str, en: str = ""):
+        obj = super().__new__(cls, value)
+        obj.tr_ru = ru
+        obj.tr_en = en
+        return obj
+
+
 def translate(ru_str: str, en_str: str = "") -> str:
     """Возвращает перевод ``ru_str`` на текущий язык.
 
-    RU → исходная строка; иначе catalog[lang] → инлайн en → ru.
+    RU → исходная строка; иначе catalog[lang] → инлайн en → ru. Результат —
+    ``TrStr``, несущий исходную пару ``(ru, en)`` для живой перетрансляции.
     """
-    return translate_for_language(_current_language(), ru_str, en_str)
+    value = translate_for_language(_current_language(), ru_str, en_str)
+    return TrStr(value, ru_str, en_str)
 
 
 # Совместимые алиасы со старым API

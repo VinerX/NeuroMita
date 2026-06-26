@@ -93,6 +93,29 @@ def tr_set(widget, ru: str, en: str = "", setter: str = "setText"):
     return widget
 
 
+def register_if_tr(widget, text, setter: str = "setText", transform=None):
+    """Зарегистрировать виджет для live-перевода, ЕСЛИ ``text`` — это ``TrStr``.
+
+    Текст уже выставлен (фабрикой виджета), поэтому повторно не ставим — только
+    запоминаем способ переустановки. ``transform`` — необязательная обёртка над
+    переведённым значением (например, форматтер тултипа). Если ``text`` —
+    обычная строка (динамика/без исходников), молча ничего не делаем.
+    """
+    ru = getattr(text, "tr_ru", None)
+    if ru is None:
+        return widget
+    en = getattr(text, "tr_en", "")
+
+    def _apply(w, ru=ru, en=en, s=setter, tf=transform):
+        value = translate(ru, en)
+        if tf is not None:
+            value = tf(value)
+        getattr(w, s)(value)
+
+    register(widget, _apply)
+    return widget
+
+
 def tr_tab_text(tab_widget, index: int, ru: str, en: str = ""):
     """Перевести и зарегистрировать текст вкладки ``index`` у ``QTabWidget``."""
     tab_widget.setTabText(index, translate(ru, en))
@@ -145,6 +168,7 @@ def set_language(code: str) -> None:
 
 __all__ = [
     "register",
+    "register_if_tr",
     "tr_set",
     "tr_tab_text",
     "refresh_all",

@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 from ui.pages.settings.section_registry import SettingsSectionSpec, get_settings_section_specs
 from ui.widgets.settings_icon_button import SettingsIconButton
 from utils import _
+from localization.live import register_if_tr
 
 _MODE_RANK = {"basic": 0, "advanced": 1, "full": 2}
 _MODE_ALIASES = {
@@ -233,11 +234,13 @@ class SettingsSectionPage(QFrame):
         text_col.setSpacing(3)
 
         self.title_label = QLabel(_(spec.title[0], spec.title[1]))
+        register_if_tr(self.title_label, _(spec.title[0], spec.title[1]))
         self.title_label.setObjectName("SettingsSectionPageTitle")
         self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         text_col.addWidget(self.title_label)
 
         self.subtitle_label = QLabel(_(spec.subtitle[0], spec.subtitle[1]))
+        register_if_tr(self.subtitle_label, _(spec.subtitle[0], spec.subtitle[1]))
         self.subtitle_label.setObjectName("SettingsSectionSubtitle")
         self.subtitle_label.setWordWrap(True)
         self.subtitle_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -541,6 +544,7 @@ class SettingsPage(QWidget):
         for spec in get_settings_section_specs():
             label = _(spec.nav_label[0], spec.nav_label[1])
             button = SettingsIconButton(spec.icon_name, label, category_key=spec.key)
+            register_if_tr(button, label, "setText")
             # Fixed horizontal policy so each tab keeps a uniform width (set
             # below) — no stretching, no empty gaps. The flow centers the row
             # as a group and wraps to a new line instead of scrolling.
@@ -591,17 +595,18 @@ class SettingsPage(QWidget):
         headline_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         title = QLabel(_("Настройки", "Settings"))
+        register_if_tr(title, _("Настройки", "Settings"))
         title.setObjectName("SettingsHeroTitle")
         headline_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
         headline_row.addStretch(1)
         title_col.addLayout(headline_row)
 
-        subtitle = QLabel(
-            _(
-                "Центр конфигурации NeuroMita. Сохраняем логику, переводим интерфейс в компактный рабочий формат.",
-                "NeuroMita configuration hub. Same logic, now presented as a compact workspace.",
-            )
+        _subtitle_text = _(
+            "Центр конфигурации NeuroMita. Сохраняем логику, переводим интерфейс в компактный рабочий формат.",
+            "NeuroMita configuration hub. Same logic, now presented as a compact workspace.",
         )
+        subtitle = QLabel(_subtitle_text)
+        register_if_tr(subtitle, _subtitle_text)
         subtitle.setObjectName("SettingsHeroSubtitle")
         subtitle.setWordWrap(True)
         title_col.addWidget(subtitle)
@@ -611,16 +616,19 @@ class SettingsPage(QWidget):
         actions.setSpacing(10)
 
         guide_button = QPushButton(_("Руководство", "Guide"))
+        register_if_tr(guide_button, _("Руководство", "Guide"))
         guide_button.setObjectName("SettingsHeaderButton")
         guide_button.clicked.connect(self.gui._show_guide)
         actions.addWidget(guide_button)
 
         home_button = QPushButton(_("На главную", "Home"))
+        register_if_tr(home_button, _("На главную", "Home"))
         home_button.setObjectName("SettingsHeaderButton")
         home_button.clicked.connect(lambda: self.gui.switch_main_page("home"))
         actions.addWidget(home_button)
 
         updates_button = QPushButton(_("Открыть обновления", "Open updates"))
+        register_if_tr(updates_button, _("Открыть обновления", "Open updates"))
         updates_button.setObjectName("SettingsHeaderPrimaryButton")
         updates_button.clicked.connect(lambda: self.show_category("updates"))
         actions.addWidget(updates_button)

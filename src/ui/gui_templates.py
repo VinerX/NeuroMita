@@ -5,6 +5,7 @@ from PyQt6.QtCore import Qt
 from main_logger import logger
 from managers.settings_manager import CollapsibleSection, InnerCollapsibleSection
 from utils import getTranslationVariant as _
+from localization.live import register_if_tr
 
 
 class SettingsBodyWidget(QWidget):
@@ -15,6 +16,7 @@ class SettingsBodyWidget(QWidget):
 
 def create_settings_section(gui, parent_layout, title, cfg_list, *, icon_name=None):
     root = CollapsibleSection(title, gui, icon_name=icon_name)
+    register_if_tr(root.title_label, title)
     parent_layout.addWidget(root)
     current_sub = None
 
@@ -23,6 +25,7 @@ def create_settings_section(gui, parent_layout, title, cfg_list, *, icon_name=No
 
         if t == 'subsection':
             current_sub = InnerCollapsibleSection(cfg.get('label', ''), gui)
+            register_if_tr(current_sub.title_label, cfg.get('label', ''))
             root.add_widget(current_sub)
             continue
 
@@ -33,6 +36,7 @@ def create_settings_section(gui, parent_layout, title, cfg_list, *, icon_name=No
         if t == 'text':
             lbl = QLabel(cfg['label'])
             lbl.setObjectName('SeparatorLabel')
+            register_if_tr(lbl, cfg['label'])
             (current_sub or root).add_widget(lbl)
             continue
 
@@ -77,6 +81,7 @@ def create_settings_direct(gui, parent_layout, cfg_list, title=None):
 
         if t == 'subsection':
             current_sub = InnerCollapsibleSection(cfg.get('label', ''), parent_widget)
+            register_if_tr(current_sub.title_label, cfg.get('label', ''))
             parent_layout.addWidget(current_sub)
             continue
 
@@ -87,6 +92,7 @@ def create_settings_direct(gui, parent_layout, cfg_list, title=None):
         if t == 'text':
             lbl = QLabel(cfg['label'], parent_widget)
             lbl.setObjectName('SeparatorLabel')
+            register_if_tr(lbl, cfg['label'])
             lbl.setWordWrap(True)
             lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             if current_sub:
@@ -134,6 +140,7 @@ def create_section_header(parent_layout, title):
     header_layout.setSpacing(6)
 
     title_label = QLabel(title)
+    register_if_tr(title_label, title)
     title_label.setObjectName("SettingsSubsectionTitle")
     title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     header_layout.addWidget(title_label)
@@ -155,6 +162,7 @@ def create_button_group(gui, parent, buttons_config):
     
     for btn_config in buttons_config:
         button = QPushButton(btn_config['label'])
+        register_if_tr(button, btn_config['label'])
         if 'command' in btn_config:
             button.clicked.connect(btn_config['command'])
         if 'widget_name' in btn_config:
@@ -213,6 +221,7 @@ def create_setting_widget(
         vlay.setSpacing(4)
 
         lbl = QLabel(label)
+        register_if_tr(lbl, label)
         lbl.setWordWrap(True)
         vlay.addWidget(lbl)
 
@@ -231,6 +240,8 @@ def create_setting_widget(
             _tt = _fmt_tooltip(tooltip)
             lbl.setToolTip(_tt)
             widget.setToolTip(_tt)
+            register_if_tr(lbl, tooltip, "setToolTip", _fmt_tooltip)
+            register_if_tr(widget, tooltip, "setToolTip", _fmt_tooltip)
 
         if widget_name:
             setattr(gui, widget_name, widget)
@@ -247,6 +258,7 @@ def create_setting_widget(
     frame.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
     lbl = QLabel(label)
+    register_if_tr(lbl, label)
     lbl.setMinimumWidth(140)
     lbl.setMaximumWidth(140)
     lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
@@ -349,6 +361,7 @@ def create_setting_widget(
 
     elif widget_type == 'button':
         widget = QPushButton(label)
+        register_if_tr(widget, label)
         if command:
             widget.clicked.connect(command)
         button_layout = QHBoxLayout()
@@ -360,6 +373,7 @@ def create_setting_widget(
 
     elif widget_type == 'text':
         widget = QLabel(label)
+        register_if_tr(widget, label)
         widget.setObjectName("SeparatorLabel")
         widget.setWordWrap(True)
         layout.addWidget(widget)
@@ -368,7 +382,9 @@ def create_setting_widget(
         _tt = _fmt_tooltip(tooltip)
         if widget:
             widget.setToolTip(_tt)
+            register_if_tr(widget, tooltip, "setToolTip", _fmt_tooltip)
         lbl.setToolTip(_tt)
+        register_if_tr(lbl, tooltip, "setToolTip", _fmt_tooltip)
 
     if widget_name and widget is not None:
         setattr(gui, widget_name, widget)
