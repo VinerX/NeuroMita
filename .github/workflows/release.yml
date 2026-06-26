@@ -233,19 +233,57 @@ jobs:
         if: steps.release_meta.outputs.should_release == 'true'
         shell: bash
         run: |
+          RELEASE_TAG_PATTERN='^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$'
           CURRENT_TAG="${{ steps.release_meta.outputs.current_tag }}"
-          PREV="${{ steps.release_meta.outputs.previous_tag }}"
           echo "Current tag: ${CURRENT_TAG}"
-          echo "Previous release tag: ${PREV:-<none>}"
 
-          # КРИТИЧНО: changelog считаем ТОЛЬКО при известном предыдущем теге.
-          # Без него `git log HEAD` выдал бы всю историю репозитория и тело релиза
-          # становилось «километровым». Нет предыдущего (самый первый релиз) —
-          # отдаём обобщённую строку, а не дамп всей истории.
-          if [ -n "$PREV" ]; then
+          # Список коммитов считаем как «всё, что в HEAD, но НЕ входит ни в один
+          # уже выпущенный (более РАННИЙ по версии) релизный тег»:
+          #     git log HEAD --no-merges --not <все релизные теги ниже текущего>
+          # Раньше брали диапазон PREV..HEAD с одним выбранным PREV. Если PREV
+          # выбирался неверно (предыдущий тег не предок HEAD → фолбэк на более
+          # старый), в тело попадали уже выпущенные коммиты, и список рос с каждым
+          # релизом. Исключение по достижимости от ВСЕХ прошлых тегов сразу убирает
+          # это независимо от того, какой тег попал в заголовок: любой коммит,
+          # ушедший хоть в один прошлый релиз, отсекается по SHA.
+          # Берём только теги НИЖЕ текущего по версии: «будущий»/более высокий тег
+          # (например при ручном перезапуске старого релиза) иначе вычел бы вообще
+          # все коммиты и список оказался бы пустым.
+          EXCLUDES=""
+          for t in $(git tag --list 'v*' --sort=-version:refname \
+                       | grep -E "$RELEASE_TAG_PATTERN" \
+                       | grep -vxF "$CURRENT_TAG" || true); do
+            [ -z "$t" ] && continue
+            top=$(printf '%s\n%s\n' "$t" "$CURRENT_TAG" | sort -V | tail -n1)
+            [ "$top" = "$CURRENT_TAG" ] && EXCLUDES="$EXCLUDES $t"
+          done
+          echo "Excluding commits reachable from prior release tags:"
+          echo "${EXCLUDES:-<none>}"
+
+          # PREV для заголовка «Изменения с …» — ближайший релиз: самый высокий по
+          # версии тег НИЖЕ текущего, достижимый из HEAD. Считаем здесь же из тех
+          # же EXCLUDES (они уже отсортированы по убыванию версии), чтобы заголовок
+          # совпадал с телом, а не зависел от отдельного previous_tag, который как
+          # раз и промахивался.
+          PREV=""
+          for t in $EXCLUDES; do
+            if git merge-base --is-ancestor "$t" HEAD 2>/dev/null; then
+              PREV="$t"
+              break
+            fi
+          done
+          echo "Previous release tag (header): ${PREV:-<none>}"
+
+          # КРИТИЧНО: без единого прошлого тега `git log HEAD` выдал бы всю историю
+          # репозитория («километровое» тело). Первый релиз → обобщённая строка.
+          if [ -n "$EXCLUDES" ]; then
+            NOT_ARGS=""
+            for t in $EXCLUDES; do
+              NOT_ARGS="$NOT_ARGS $t"
+            done
             # Чистый список: без merge-коммитов и служебного шума (bump версии,
             # CI-правки релиза и т.п.).
-            LOG=$(git log "$PREV..HEAD" --no-merges --pretty=format:'- %s (%h)' \
+            LOG=$(git log HEAD --no-merges --not $NOT_ARGS --pretty=format:'- %s (%h)' \
               | grep -viE '(_version|\bbump\b|version bump|\[skip ci\]|tester code|release workflow|github actions?)' \
               || true)
           else
