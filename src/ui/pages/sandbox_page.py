@@ -28,6 +28,7 @@ from ui.chat.message_widget import AVATAR_MAP, _get_avatar_dir
 from ui.widgets.chat_panel import ChatPanel
 from ui.widgets.character_state_panel import CharacterStatePanel
 from utils import _
+from localization.live import register_if_tr, tr_set
 
 _MODEL_CONFIGURE_SENTINEL = "__configure_models__"
 _TTS_CONFIGURE_SENTINEL = "__configure_tts__"
@@ -125,7 +126,7 @@ class _SandboxStatusRow(QWidget):
         from ui.widgets.toggle_switch import ToggleSwitch
         self._switch = ToggleSwitch()
         self._switch.setChecked(bool(initial_on))
-        self._switch.setToolTip(_("Включить / выключить", "Enable / disable"))
+        tr_set(self._switch, "Включить / выключить", "Enable / disable", "setToolTip")
         if on_toggle is not None:
             self._switch.toggled.connect(on_toggle)
         h.addWidget(self._switch, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -964,6 +965,7 @@ class SandboxPage(QWidget):
             icon_label.setPixmap(qta.icon(icon_name, color="#ffd2ec").pixmap(14, 14))
             title_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
         title = QLabel(title_text)
+        register_if_tr(title, title_text)
         title.setObjectName("SandboxStripTitle")
         title_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addStretch(1)
@@ -1053,7 +1055,7 @@ class SandboxPage(QWidget):
         icon_label.setPixmap(qta.icon("fa6s.flask", color="#ff6db7").pixmap(22, 22))
         headline_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        title_label = QLabel(_("Песочница / Sandbox", "Sandbox"))
+        title_label = tr_set(QLabel(), "Песочница / Sandbox", "Sandbox")
         title_label.setObjectName("ChatHeroTitle")
         headline_row.addWidget(title_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
@@ -1068,17 +1070,17 @@ class SandboxPage(QWidget):
         actions = QHBoxLayout()
         actions.setSpacing(10)
 
-        guide_button = QPushButton(_("Руководство", "Guide"))
+        guide_button = tr_set(QPushButton(), "Руководство", "Guide")
         guide_button.setObjectName("SandboxHeaderButton")
         guide_button.clicked.connect(self.gui._show_guide)
         actions.addWidget(guide_button)
 
-        settings_button = QPushButton(_("Настройки", "Settings"))
+        settings_button = tr_set(QPushButton(), "Настройки", "Settings")
         settings_button.setObjectName("SandboxHeaderButton")
         settings_button.clicked.connect(lambda: self.gui.switch_main_page("settings"))
         actions.addWidget(settings_button)
 
-        home_button = QPushButton(_("На главную", "Home"))
+        home_button = tr_set(QPushButton(), "На главную", "Home")
         home_button.setObjectName("SandboxHeaderPrimaryButton")
         home_button.clicked.connect(lambda: self.gui.switch_main_page("home"))
         actions.addWidget(home_button)
@@ -1248,26 +1250,26 @@ class SandboxPage(QWidget):
         # просмотр последнего запроса (удобно для отладки, см. задачу 5).
         actions_strip, actions_layout = self._make_strip(_("Быстрые действия", "Quick actions"), "fa6s.bolt")
 
-        view_last_btn = QPushButton(_("Посмотреть последний запрос", "View last request"))
+        view_last_btn = tr_set(QPushButton(), "Посмотреть последний запрос", "View last request")
         view_last_btn.setObjectName("SandboxQuickAction")
-        view_last_btn.setToolTip(
-            _("Открыть просмотр контекста последнего запроса к нейросети.",
-              "Open the context viewer for the last request sent to the model.")
-        )
+        tr_set(view_last_btn,
+               "Открыть просмотр контекста последнего запроса к нейросети.",
+               "Open the context viewer for the last request sent to the model.",
+               "setToolTip")
         view_last_btn.clicked.connect(self._on_view_last_request)
         actions_layout.addWidget(view_last_btn)
 
-        char_settings_btn = QPushButton(_("Настройки персонажа", "Character settings"))
+        char_settings_btn = tr_set(QPushButton(), "Настройки персонажа", "Character settings")
         char_settings_btn.setObjectName("SandboxQuickAction")
         char_settings_btn.clicked.connect(lambda: self._jump_to_settings("characters"))
         actions_layout.addWidget(char_settings_btn)
 
-        full_settings_btn = QPushButton(_("Полные настройки", "Full settings"))
+        full_settings_btn = tr_set(QPushButton(), "Полные настройки", "Full settings")
         full_settings_btn.setObjectName("SandboxQuickAction")
         full_settings_btn.clicked.connect(lambda: self.gui.switch_main_page("settings"))
         actions_layout.addWidget(full_settings_btn)
 
-        reset_btn = QPushButton(_("Сбросить персонажа", "Reset character"))
+        reset_btn = tr_set(QPushButton(), "Сбросить персонажа", "Reset character")
         reset_btn.setObjectName("SandboxQuickAction")
         reset_btn.setProperty("danger", True)
         reset_btn.clicked.connect(self._on_reset_character)
@@ -1608,7 +1610,7 @@ class SandboxPage(QWidget):
             memory_layout.addLayout(row)
             self._memory_limit_values[stat_key] = value
 
-        memory_btn = QPushButton(_("Открыть RAG / память", "Open RAG / memory"))
+        memory_btn = tr_set(QPushButton(), "Открыть RAG / память", "Open RAG / memory")
         memory_btn.setObjectName("SandboxQuickAction")
         memory_btn.clicked.connect(lambda: self._jump_to_settings("models"))
         memory_layout.addWidget(memory_btn)
@@ -1626,34 +1628,32 @@ class SandboxPage(QWidget):
         # stays uncluttered out of the box.
         display_strip, display_layout = self._make_strip(_("Отображение сообщений", "Message display"), "fa6s.eye")
 
-        think_cb = QCheckBox(_("Показывать мышление", "Show thinking"))
+        think_cb = tr_set(QCheckBox(), "Показывать мышление", "Show thinking")
         think_cb.setObjectName("SandboxCaptureToggle")
         think_cb.setChecked(bool(self.gui._get_setting("SHOW_THINK_IN_GUI", False)))
-        think_cb.setToolTip(
-            _(
-                "Показывать содержимое блока мышления модели как отдельное сообщение в чате.",
-                "Show the model's thinking block as a separate chat message.",
-            )
-        )
+        tr_set(think_cb,
+               "Показывать содержимое блока мышления модели как отдельное сообщение в чате.",
+               "Show the model's thinking block as a separate chat message.",
+               "setToolTip")
         think_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_THINK_IN_GUI", v))
         display_layout.addWidget(think_cb)
         self._show_thinking_cb = think_cb
 
-        tags_cb = QCheckBox(_("Скрывать теги в чате", "Hide tags in chat"))
+        tags_cb = tr_set(QCheckBox(), "Скрывать теги в чате", "Hide tags in chat")
         tags_cb.setObjectName("SandboxCaptureToggle")
         tags_cb.setChecked(bool(self.gui._get_setting("HIDE_CHAT_TAGS", True)))
         tags_cb.toggled.connect(lambda v: self._on_capture_toggle("HIDE_CHAT_TAGS", v))
         display_layout.addWidget(tags_cb)
         self._hide_tags_cb = tags_cb
 
-        ts_cb = QCheckBox(_("Показывать время сообщений", "Show timestamps"))
+        ts_cb = tr_set(QCheckBox(), "Показывать время сообщений", "Show timestamps")
         ts_cb.setObjectName("SandboxCaptureToggle")
         ts_cb.setChecked(bool(self.gui._get_setting("SHOW_CHAT_TIMESTAMPS", True)))
         ts_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_CHAT_TIMESTAMPS", v))
         display_layout.addWidget(ts_cb)
         self._show_ts_cb = ts_cb
 
-        sys_cb = QCheckBox(_("Показывать системные сообщения", "Show system messages"))
+        sys_cb = tr_set(QCheckBox(), "Показывать системные сообщения", "Show system messages")
         sys_cb.setObjectName("SandboxCaptureToggle")
         sys_cb.setChecked(bool(self.gui._get_setting("SHOW_SYSTEM_MESSAGES", False)))
         sys_cb.setToolTip(
@@ -1694,7 +1694,7 @@ class SandboxPage(QWidget):
             summary_layout.addLayout(row)
             self._debug_summary_values[key] = value
 
-        refresh_btn = QPushButton(_("Обновить сводку", "Refresh summary"))
+        refresh_btn = tr_set(QPushButton(), "Обновить сводку", "Refresh summary")
         refresh_btn.setObjectName("SandboxQuickAction")
         refresh_btn.clicked.connect(self._refresh_debug_summary)
         summary_layout.addWidget(refresh_btn)
@@ -1702,17 +1702,17 @@ class SandboxPage(QWidget):
 
         # ── Диагностика ─────────────────────────────────────────────────────
         diagnostics_strip, diagnostics_layout = self._make_strip(_("Диагностика", "Diagnostics"), "fa6s.screwdriver-wrench")
-        db_btn = QPushButton(_("Открыть DB персонажа", "Open character DB"))
+        db_btn = tr_set(QPushButton(), "Открыть DB персонажа", "Open character DB")
         db_btn.setObjectName("SandboxQuickAction")
         db_btn.clicked.connect(self._open_selected_character_history)
         diagnostics_layout.addWidget(db_btn)
 
-        logs_btn = QPushButton(_("Открыть страницу логов", "Open logs page"))
+        logs_btn = tr_set(QPushButton(), "Открыть страницу логов", "Open logs page")
         logs_btn.setObjectName("SandboxQuickAction")
         logs_btn.clicked.connect(lambda: self.gui.switch_main_page("logs"))
         diagnostics_layout.addWidget(logs_btn)
 
-        api_btn = QPushButton(_("Открыть API-настройки", "Open API settings"))
+        api_btn = tr_set(QPushButton(), "Открыть API-настройки", "Open API settings")
         api_btn.setObjectName("SandboxQuickAction")
         api_btn.clicked.connect(lambda: self._jump_to_settings("api"))
         diagnostics_layout.addWidget(api_btn)
@@ -1774,7 +1774,7 @@ class SandboxPage(QWidget):
         collapse_btn.setObjectName("SandboxInspectorCollapseBtn")
         collapse_btn.setFixedSize(34, 34)
         collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        collapse_btn.setToolTip(_("Свернуть панель", "Collapse panel"))
+        tr_set(collapse_btn, "Свернуть панель", "Collapse panel", "setToolTip")
         collapse_btn.clicked.connect(self._toggle_inspector_collapsed)
         header_layout.addWidget(collapse_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         self._inspector_collapse_btn = collapse_btn

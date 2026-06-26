@@ -81,15 +81,23 @@ def register(owner, apply_fn: Callable) -> None:
     _registry.append((ref, apply_fn))
 
 
-def tr_set(widget, ru: str, en: str = "", setter: str = "setText"):
+def tr_set(widget, ru: str, en: str = "", setter: str = "setText", transform=None):
     """Поставить перевод ``ru/en`` через ``widget.<setter>(...)`` и зарегистрировать.
 
-    Возвращает ``widget`` — удобно оборачивать прямо в месте создания::
+    ``transform`` — необязательная обёртка над переведённым значением (например
+    ``str.upper`` для капс-заголовков или форматтер тултипа). Возвращает
+    ``widget`` — удобно оборачивать прямо в месте создания::
 
         title = tr_set(QLabel(), "Настройки", "Settings")
     """
-    getattr(widget, setter)(translate(ru, en))
-    register(widget, lambda w, ru=ru, en=en, s=setter: getattr(w, s)(translate(ru, en)))
+    def _apply(w, ru=ru, en=en, s=setter, tf=transform):
+        value = translate(ru, en)
+        if tf is not None:
+            value = tf(value)
+        getattr(w, s)(value)
+
+    _apply(widget)
+    register(widget, _apply)
     return widget
 
 

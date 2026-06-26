@@ -33,6 +33,7 @@ from main_logger import logger
 from ui.pages.news_support import build_release_news_items, get_news_content, parse_news_items
 from ui.widgets.launcher_dashboard_helpers import NewsItem
 from utils import _
+from localization.live import tr_set
 
 
 def _strip_v(version: str) -> str:
@@ -143,15 +144,14 @@ class HomePage(LauncherHomeBackground):
         left_column = QVBoxLayout()
         left_column.setSpacing(14)
 
-        title = QLabel(_("Добро пожаловать!", "Welcome!"))
+        title = tr_set(QLabel(), "Добро пожаловать!", "Welcome!")
         title.setObjectName("LauncherHomeTitle")
         left_column.addWidget(title)
 
-        subtitle = QLabel(
-            _(
-                'Погрузись Miside по-новому с NeuroMita.',
-                "Experience Miside in a new way with NeuroMita.",
-            )
+        subtitle = tr_set(
+            QLabel(),
+            'Погрузись Miside по-новому с NeuroMita.',
+            "Experience Miside in a new way with NeuroMita.",
         )
         subtitle.setObjectName("LauncherHomeSubtitle")
         left_column.addWidget(subtitle)
@@ -240,7 +240,7 @@ class HomePage(LauncherHomeBackground):
         self.progress_label.setVisible(False)
         _progress_row.addWidget(self.progress_label, 1)
 
-        self._cancel_button = QPushButton(_("✕ Отменить", "✕ Cancel"))
+        self._cancel_button = tr_set(QPushButton(), "✕ Отменить", "✕ Cancel")
         self._cancel_button.setObjectName("LauncherHomeCancelButton")
         self._cancel_button.setVisible(False)
         self._cancel_button.clicked.connect(self._cancel_installation)
@@ -301,7 +301,7 @@ class HomePage(LauncherHomeBackground):
         layout.addWidget(self._update_chip_label)
         layout.addStretch(1)
 
-        link = QPushButton(_("Что нового?", "What's new?"))
+        link = tr_set(QPushButton(), "Что нового?", "What's new?")
         link.setObjectName("LauncherHomeLinkButton")
         link.clicked.connect(lambda: self.gui.switch_main_page("news"))
         layout.addWidget(link)
@@ -468,7 +468,7 @@ class HomePage(LauncherHomeBackground):
         update_check.setObjectName("LauncherHomeStatusCheck")
         update_check.setChecked(True)
         update_check.setVisible(False)
-        update_check.setToolTip(_("Включить в обновление", "Include in update"))
+        tr_set(update_check, "Включить в обновление", "Include in update", "setToolTip")
         layout.addWidget(update_check, 0, Qt.AlignmentFlag.AlignTop)
         return card, value, update_check
 
@@ -485,12 +485,12 @@ class HomePage(LauncherHomeBackground):
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(8)
-        title = QLabel(_("Последние новости", "Latest news").upper())
+        title = tr_set(QLabel(), "Последние новости", "Latest news", transform=str.upper)
         title.setObjectName("LauncherHomeNewsTitle")
         header.addWidget(title)
         header.addStretch(1)
 
-        all_news = QPushButton(_("Все новости", "All news"))
+        all_news = tr_set(QPushButton(), "Все новости", "All news")
         all_news.setObjectName("LauncherHomeLinkButton")
         all_news.clicked.connect(lambda: self.gui.switch_main_page("news"))
         header.addWidget(all_news)
@@ -525,7 +525,7 @@ class HomePage(LauncherHomeBackground):
         top.addWidget(title)
 
         if is_fresh:
-            badge = QLabel(_("НОВОЕ", "NEW"))
+            badge = tr_set(QLabel(), "НОВОЕ", "NEW")
             badge.setObjectName("LauncherHomeNewsBadge")
             top.addWidget(badge)
 
