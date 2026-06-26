@@ -30,7 +30,7 @@ _UPDATE_CHECK_THROTTLE_SEC = 600
 
 from core.events import Events
 from main_logger import logger
-from ui.pages.news_support import build_release_news_items, get_news_content, parse_news_items
+from ui.pages.news_support import build_release_news_items, load_news_releases_async
 from ui.widgets.launcher_dashboard_helpers import NewsItem
 from utils import _
 
@@ -121,7 +121,6 @@ class HomePage(LauncherHomeBackground):
         self._update_chip_label = None
         self._backend_status_value = None
         self._unity_status_value = None
-        self._status_line_label = None
         self._news_items_layout = None
         self._news_panel_placeholder = None
 
@@ -266,11 +265,6 @@ class HomePage(LauncherHomeBackground):
 
         left_column.addLayout(_progress_row)
 
-        self._status_line_label = QLabel("")
-        self._status_line_label.setObjectName("LauncherHomeFootnote")
-        self._status_line_label.setWordWrap(True)
-        left_column.addWidget(self._status_line_label)
-
         right_column = QVBoxLayout()
         right_column.setContentsMargins(0, 0, 0, 8)
         right_column.addStretch(1)
@@ -295,9 +289,6 @@ class HomePage(LauncherHomeBackground):
             self.gui._home_install_signals_connected = True
         except Exception as exc:
             logger.info(f"Install signals subscribe skipped: {exc}")
-
-    def _get_current_news_items(self) -> list[NewsItem]:
-        return parse_news_items(get_news_content(self.gui))
 
     def _get_release_news_items(self, limit: int = 3) -> list[NewsItem]:
         return build_release_news_items(self.gui, limit=limit)
@@ -738,52 +729,34 @@ class HomePage(LauncherHomeBackground):
             icon_name = "fa6s.lock"
         return qta.icon(icon_name, color="#ffffff")
 
-    def _get_status_line(self, news_items: list[NewsItem]) -> str:
-        active_character = _("Без персонажа", "No character")
-        try:
-            profile_result = self.gui.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
-            profile = profile_result[0] if profile_result else {}
-            active_character = str(profile.get("character_id") or active_character)
-        except Exception:
-            pass
-
-        model_name = str(self.gui._get_setting("MODEL", "") or "").strip()
-        latest = news_items[0].title if news_items else _("Лента релизов офлайн", "Release feed offline")
-        parts = [_("Активно: {character}", "Active: {character}").format(character=active_character)]
-        if model_name:
-            parts.append(model_name)
-        parts.append(latest[:48])
-        return " • ".join(parts)
-
     def refresh_news_content(self):
-        news_items = self._get_current_news_items()
-        headline = news_items[0].title if news_items else _("Релизы недоступны", "Releases unavailable")
-        # if self._update_chip_label is not None:
-        #     self._update_chip_label.setText(
-        #         _("Доступно обновление: {headline}", "Fresh update: {headline}").format(headline=headline[:48])
-        #     )
+        # Лента релизов грузится в фоне (load_news_releases_async), чтобы старт
+        # главной страницы и кнопка обновления не морозили GUI при недоступном
+        # GitHub. Перерисовка панели — в GUI-потоке через _queue_ui_call.
+        if self._news_items_layout is None:
+            return
+        load_news_releases_async(self.gui, lambda _releases: self._queue_ui_call(self._render_news_items))
 
-        if self._news_items_layout is not None:
-            while self._news_items_layout.count():
-                item = self._news_items_layout.takeAt(0)
-                widget = item.widget()
-                if widget is not None:
-                    widget.deleteLater()
+    def _render_news_items(self):
+        if self._news_items_layout is None:
+            return
+        while self._news_items_layout.count():
+            item = self._news_items_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
-            release_items = self._get_release_news_items(limit=3)
-            if not release_items:
-                release_items = news_items[:3] if news_items else [
-                    NewsItem(
-                        _("Релизы недоступны", "Releases unavailable"),
-                        _("Удалённая лента релизов пока недоступна.", "Remote release feed is currently unavailable."),
-                    )
-                ]
+        release_items = self._get_release_news_items(limit=3)
+        if not release_items:
+            release_items = [
+                NewsItem(
+                    _("Релизы недоступны", "Releases unavailable"),
+                    _("Удалённая лента релизов пока недоступна.", "Remote release feed is currently unavailable."),
+                )
+            ]
 
-            for index, item in enumerate(release_items):
-                self._news_items_layout.addWidget(self._build_home_news_item(item, is_fresh=index == 0))
-
-        if self._status_line_label is not None:
-            self._status_line_label.setText(self._get_status_line(news_items))
+        for index, item in enumerate(release_items):
+            self._news_items_layout.addWidget(self._build_home_news_item(item, is_fresh=index == 0))
 
     def refresh_primary_label(self):
         if self.primary_button is not None:
