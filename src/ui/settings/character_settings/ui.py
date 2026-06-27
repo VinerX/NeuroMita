@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
 import qtawesome as qta
 
 from ui.gui_templates import create_section_header, SettingsBodyWidget
+from ui.widgets.tr_combobox import TRQComboBox
 from managers.settings_manager import InnerCollapsibleSection
 from utils import getTranslationVariant as _
 from localization.live import register_if_tr, tr_set
@@ -103,7 +104,7 @@ def build_character_settings_ui(self, parent_layout):
     ch_h.setContentsMargins(0, 0, 0, 0)
     ch_h.setSpacing(6)
 
-    self.character_combobox = QComboBox()
+    self.character_combobox = TRQComboBox()
     self.character_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     ch_h.addWidget(self.character_combobox, 1)
     lay.addWidget(_make_row(_("Персонажи", "Characters"), character_field, label_w))
@@ -113,7 +114,7 @@ def build_character_settings_ui(self, parent_layout):
     pr_h.setContentsMargins(0, 0, 0, 0)
     pr_h.setSpacing(6)
 
-    self.prompt_pack_combobox = QComboBox()
+    self.prompt_pack_combobox = TRQComboBox()
     self.prompt_pack_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     pr_h.addWidget(self.prompt_pack_combobox, 1)
     lay.addWidget(_make_row(_("Набор промптов", "Prompt set"), prompt_field, label_w))
@@ -123,7 +124,7 @@ def build_character_settings_ui(self, parent_layout):
     pv_h.setContentsMargins(0, 0, 0, 0)
     pv_h.setSpacing(6)
 
-    self.char_provider_combobox = QComboBox()
+    self.char_provider_combobox = TRQComboBox()
     self.char_provider_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     pv_h.addWidget(self.char_provider_combobox, 1)
     lay.addWidget(_make_row(_("Провайдер для персонажа", "Provider for character"), provider_field, label_w))

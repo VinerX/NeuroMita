@@ -217,10 +217,7 @@ def wire_character_settings_logic(self):
     all_characters = event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
     character_list = all_characters[0] if all_characters else ["Crazy"]
 
-    self.character_combobox.blockSignals(True)
-    self.character_combobox.clear()
-    self.character_combobox.addItems(character_list if character_list else ["Crazy"])
-    self.character_combobox.blockSignals(False)
+    self.character_combobox.set_data_items(character_list if character_list else ["Crazy"])
 
     if hasattr(self, 'chat_character_combobox'):
         self.chat_character_combobox.blockSignals(True)
@@ -231,13 +228,16 @@ def wire_character_settings_logic(self):
             self.chat_character_combobox.blockSignals(False)
 
     presets_meta = event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-    provider_names = [_("Текущий", "Current")]
+    # «Текущий» — переводимый сентинел со СТАБИЛЬНЫМ значением "Текущий" (не
+    # зависит от языка); имена пресетов — data-пункты. Так live-перевод подписи
+    # не ломает сохранённый CHAR_PROVIDER_* (потребители трактуют и "Текущий",
+    # и "Current" как «использовать текущий пресет»).
+    provider_items = [("Текущий", "Current", "Текущий")]
     if presets_meta and presets_meta[0]:
         all_presets = presets_meta[0].get('custom', [])
         for preset in all_presets:
-            provider_names.append(preset.name)
-    self.char_provider_combobox.clear()
-    self.char_provider_combobox.addItems(provider_names)
+            provider_items.append(preset.name)
+    self.char_provider_combobox.set_items(provider_items)
 
     current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
     current_profile = current_profile_res[0] if current_profile_res else {}
@@ -259,7 +259,8 @@ def wire_character_settings_logic(self):
     if hasattr(self, 'character_combobox'):
         self.character_combobox.currentTextChanged.connect(lambda _text: change_character_actions(self))
     if hasattr(self, 'char_provider_combobox'):
-        self.char_provider_combobox.currentTextChanged.connect(lambda text: save_character_provider(self, text))
+        self.char_provider_combobox.currentIndexChanged.connect(
+            lambda _i: save_character_provider(self, self.char_provider_combobox.current_value()))
     if hasattr(self, 'btn_open_character_folder'):
         self.btn_open_character_folder.clicked.connect(lambda: open_character_folder(self))
     if hasattr(self, 'btn_reload_character_data'):
@@ -339,14 +340,7 @@ def reload_character_data(gui):
     else:
         chosen = _default_prompt_set_for_character(character_id, options)
 
-    gui.prompt_pack_combobox.blockSignals(True)
-    try:
-        gui.prompt_pack_combobox.clear()
-        gui.prompt_pack_combobox.addItems(options)
-        if chosen:
-            gui.prompt_pack_combobox.setCurrentText(chosen)
-    finally:
-        gui.prompt_pack_combobox.blockSignals(False)
+    gui.prompt_pack_combobox.set_data_items(options, current=chosen)
 
     if chosen:
         try:
@@ -411,10 +405,8 @@ def change_character_actions(gui, character_id=None):
 
     if hasattr(gui, 'char_provider_combobox'):
         provider_key = f"CHAR_PROVIDER_{selected_character}"
-        current_provider = gui.settings.get(provider_key, _("Текущий", "Current"))
-        gui.char_provider_combobox.blockSignals(True)
-        gui.char_provider_combobox.setCurrentText(current_provider)
-        gui.char_provider_combobox.blockSignals(False)
+        current_provider = gui.settings.get(provider_key, "Текущий")
+        gui.char_provider_combobox.set_current_value(current_provider)
 
     if not selected_character:
         QMessageBox.warning(gui, _("Внимание", "Warning"), _("Персонаж не выбран.", "No character selected."))
