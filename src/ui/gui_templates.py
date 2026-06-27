@@ -4,6 +4,7 @@ from PyQt6.QtCore import Qt
 
 from main_logger import logger
 from managers.settings_manager import CollapsibleSection, InnerCollapsibleSection
+from ui.widgets.tr_combobox import TRQComboBox
 from utils import getTranslationVariant as _
 from localization.live import register_if_tr
 
@@ -357,56 +358,48 @@ def create_setting_widget(
         layout.addWidget(widget, 1)
 
     elif widget_type == 'combobox':
-        widget = QComboBox()
+        # TRQComboBox: значение пункта (itemData) стабильно, переводимые подписи
+        # обновляются вживую. Переводимая опция (TrStr из _()) → канонический ключ
+        # ru как значение; обычная строка/кортеж (display, value) → данные с
+        # сохранённым значением. Работа с выбором — по значению, не по тексту.
+        widget = TRQComboBox()
         widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         widget.setMinimumWidth(60)
-        _uses_display_value = False
-        if options:
-            if all(isinstance(o, (tuple, list)) and len(o) == 2 for o in options):
-                _uses_display_value = True
-                for display_text, val in options:
-                    widget.addItem(str(display_text), val)
-            else:
-                widget.addItems([str(o) for o in options])
-        if _uses_display_value:
-            # Сопоставляем сохранённое значение с пунктами. Делаем это устойчиво:
-            # сначала строгое равенство, затем регистронезависимо по строке, и
-            # если совпадения нет — садимся на значение по умолчанию (а не на
-            # «последний добавленный» пункт). Без фолбэка раньше комбобокс языка
-            # мог показать чужой язык (напр. ZH), хотя в настройках был RU.
-            saved = gui.settings.get(setting_key, default)
 
-            def _match_index(target) -> int:
-                if target is None:
-                    return -1
-                for i in range(widget.count()):
-                    if widget.itemData(i) == target:
-                        return i
-                t = str(target).strip().lower()
-                for i in range(widget.count()):
-                    if str(widget.itemData(i)).strip().lower() == t:
-                        return i
-                return -1
+        def _canon(x):
+            ru = getattr(x, 'tr_ru', None)
+            return ru if ru is not None else x
 
-            idx = _match_index(saved)
-            if idx < 0:
-                idx = _match_index(default)
-            widget.setCurrentIndex(idx if idx >= 0 else 0)
-        else:
-            widget.setCurrentText(str(gui.settings.get(setting_key, default)))
+        widget.blockSignals(True)
+        try:
+            for o in (options or []):
+                if isinstance(o, (tuple, list)) and len(o) == 2:
+                    disp, val = o
+                    ru = getattr(disp, 'tr_ru', None)
+                    if ru is not None:
+                        widget.add_tr_item(ru, getattr(disp, 'tr_en', ''), value=val)
+                    else:
+                        widget.add_data_item(str(disp), value=val)
+                else:
+                    ru = getattr(o, 'tr_ru', None)
+                    if ru is not None:
+                        widget.add_tr_item(ru, getattr(o, 'tr_en', ''))
+                    else:
+                        widget.add_data_item(str(o))
+            # выбор: сохранённое значение → default → первый пункт (без ложного save).
+            if not widget.set_current_value(_canon(gui.settings.get(setting_key, default))):
+                if not widget.set_current_value(_canon(default)) and widget.count():
+                    widget.setCurrentIndex(0)
+        finally:
+            widget.blockSignals(False)
 
-        def _save_combo(text):
-            if _uses_display_value:
-                val = widget.currentData()
-                gui._save_setting(setting_key, val)
-                if command:
-                    command(val)
-            else:
-                gui._save_setting(setting_key, text)
-                if command:
-                    command(text)
+        def _save_combo(*_a):
+            val = widget.current_value()
+            gui._save_setting(setting_key, val)
+            if command:
+                command(val)
 
-        widget.currentTextChanged.connect(_save_combo)
+        widget.currentIndexChanged.connect(_save_combo)
 
         layout.addWidget(lbl)
         if toggle_chk:

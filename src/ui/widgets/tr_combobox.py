@@ -6,39 +6,43 @@
    → blockSignals(False)`` при пере-наполнении — заменяется одним
    ``set_items(...)`` / ``set_data_items(...)``.
 
-2. **Живая смена языка** пунктов. Главное правило: ЗНАЧЕНИЕ пункта (``itemData``)
-   стабильно и НЕ зависит от языка. Смена языка меняет только отображаемый ТЕКСТ
-   переводимых пунктов, поэтому текущий выбор и сохранённая настройка не ломаются
-   (в отличие от обычного ``addItems([_(...)])``, где значение = переведённый
-   текст). Работать с выбором надо через ``current_value()`` / ``set_current_value()``.
+2. **Живая смена языка** пунктов. Главное правило: ЗНАЧЕНИЕ пункта (``itemData``
+   в ``UserRole``) стабильно и НЕ зависит от языка. Смена языка меняет только
+   отображаемый ТЕКСТ переводимых пунктов, поэтому текущий выбор и сохранённая
+   настройка не ломаются (в отличие от ``addItems([_(...)])``, где значение =
+   переведённый текст). Работать с выбором надо через ``current_value()`` /
+   ``set_current_value()``.
 
 Виды пунктов:
-  * переводимый — ``add_tr_item(ru, en, value=...)``: текст = ``translate(ru, en)``,
-    ``value`` по умолчанию = ``ru`` (канонический стабильный ключ);
-  * данные      — ``add_data_item(text, value=...)``: текст = value, НЕ переводится
-    (имена персонажей/моделей/пресетов и т.п.).
+  * переводимый — ``add_tr_item(ru, en, value=...)``: текст = ``translate(ru,en)``,
+    ``value`` по умолчанию = ``ru`` (канонический стабильный ключ). Пара ``(ru,en)``
+    хранится в роли ``_TR_ROLE`` у самого пункта;
+  * данные      — ``add_data_item(text, value=...)``: текст = value, НЕ переводится.
 
-Каждый экземпляр сам подписывается на ``language_changed`` и переустанавливает
-тексты переводимых пунктов вживую (Qt снимает подписку при удалении виджета).
+Пара перевода держится в data-роли КАЖДОГО пункта (а не в параллельном списке),
+поэтому ``insertSeparator``/вставки/удаления не ломают соответствие. Каждый
+экземпляр сам подписывается на ``language_changed`` и переустанавливает тексты
+переводимых пунктов вживую (Qt снимает подписку при удалении виджета).
 """
 
 from __future__ import annotations
 
 from typing import Iterable
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QComboBox
 
 from localization import translate as _tr
 from localization.live import language_changed_signal
 
 _UNSET = object()
+# Роль для хранения исходной пары (ru, en) у переводимого пункта.
+_TR_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 class TRQComboBox(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Параллельно пунктам: (ru, en) для переводимых, None — для данных.
-        self._tr_pairs: list[tuple[str, str] | None] = []
         try:
             language_changed_signal().connect(self._retranslate)
         except Exception:
@@ -48,13 +52,12 @@ class TRQComboBox(QComboBox):
     def add_tr_item(self, ru: str, en: str = "", *, value=_UNSET) -> None:
         """Переводимый пункт. ``value`` по умолчанию = ``ru`` (стабильный ключ)."""
         val = ru if value is _UNSET else value
-        self._tr_pairs.append((ru, en))
         self.addItem(_tr(ru, en), val)
+        self.setItemData(self.count() - 1, (ru, en), _TR_ROLE)
 
     def add_data_item(self, text, *, value=_UNSET) -> None:
         """Непереводимый пункт-данные. ``value`` по умолчанию = сам текст."""
         val = text if value is _UNSET else value
-        self._tr_pairs.append(None)
         self.addItem(str(text), val)
 
     def set_items(self, items: Iterable, *, current=_UNSET, emit: bool = False) -> None:
@@ -71,7 +74,6 @@ class TRQComboBox(QComboBox):
         blocked = self.blockSignals(True)
         try:
             self.clear()
-            self._tr_pairs.clear()
             for it in items:
                 if isinstance(it, (tuple, list)):
                     if len(it) >= 3:
@@ -120,8 +122,9 @@ class TRQComboBox(QComboBox):
     def _retranslate(self, *_):
         blocked = self.blockSignals(True)
         try:
-            for i, pair in enumerate(self._tr_pairs):
-                if pair is not None and i < self.count():
+            for i in range(self.count()):
+                pair = self.itemData(i, _TR_ROLE)
+                if pair:
                     self.setItemText(i, _tr(pair[0], pair[1]))
         finally:
             self.blockSignals(blocked)

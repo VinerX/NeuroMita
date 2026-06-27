@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
 )
 from utils import getTranslationVariant as _
 from localization.live import register_if_tr, tr_set
+from ui.widgets.tr_combobox import TRQComboBox
 
 
 def setup_debug_panel_controls(view, parent_layout):
@@ -36,17 +37,17 @@ def setup_debug_panel_controls(view, parent_layout):
     struct_label.setObjectName('SeparatorLabel')
     parent_layout.addWidget(struct_label)
 
-    _struct_options = [_('Выкл', 'Off'), _('Кратко', 'Brief'), 'JSON']
-    struct_combo = QComboBox()
-    struct_combo.addItems(_struct_options)
-    _cur = view._get_setting("SHOW_STRUCTURED_IN_GUI", _('Выкл', 'Off'))
-    _idx = struct_combo.findText(str(_cur))
-    if _idx >= 0:
-        struct_combo.setCurrentIndex(_idx)
+    # Значения канонические ru ("Выкл"/"Кратко"/"JSON") — потребитель
+    # (message_renderer) понимает и ru, и en варианты, подписи переводятся вживую.
+    struct_combo = TRQComboBox()
+    struct_combo.add_tr_item('Выкл', 'Off', value='Выкл')
+    struct_combo.add_tr_item('Кратко', 'Brief', value='Кратко')
+    struct_combo.add_data_item('JSON', value='JSON')
+    struct_combo.set_current_value(view._get_setting("SHOW_STRUCTURED_IN_GUI", 'Выкл'))
     tr_set(struct_combo, 'Выкл — не показывать; Кратко — сегменты с командами; JSON — сырой ответ.',
           'Off — hidden; Brief — segments with commands; JSON — raw response.', "setToolTip")
-    struct_combo.currentTextChanged.connect(
-        lambda text: view._save_setting("SHOW_STRUCTURED_IN_GUI", text)
+    struct_combo.currentIndexChanged.connect(
+        lambda _i: view._save_setting("SHOW_STRUCTURED_IN_GUI", struct_combo.current_value())
     )
     combo_row = QHBoxLayout()
     combo_row.addWidget(struct_combo)

@@ -27,6 +27,7 @@ from main_logger import logger
 from ui.chat.message_widget import AVATAR_MAP, _get_avatar_dir
 from ui.widgets.chat_panel import ChatPanel
 from ui.widgets.character_state_panel import CharacterStatePanel
+from ui.widgets.tr_combobox import TRQComboBox
 from utils import _
 from localization.live import register_if_tr, tr_set
 
@@ -36,8 +37,9 @@ _ASR_CONFIGURE_SENTINEL = "__configure_asr__"
 _PROMPT_CONFIGURE_SENTINEL = "__configure_prompts__"
 
 
-class _NoWheelComboBox(QComboBox):
-    """QComboBox that blocks wheel-scroll from reaching separator/sentinel items."""
+class _NoWheelComboBox(TRQComboBox):
+    """TRQComboBox (живой перевод пунктов) + блокировка wheel-скролла по
+    разделителям/сентинелам."""
 
     _SENTINELS = frozenset({
         _MODEL_CONFIGURE_SENTINEL,
@@ -459,13 +461,13 @@ class SandboxPage(QWidget):
                     name = getattr(preset, "name", "")
                     if preset_id is None:
                         continue
-                    combo.addItem(str(name), int(preset_id))
+                    combo.add_data_item(str(name), value=int(preset_id))
                 combo.insertSeparator(combo.count())
             else:
-                combo.addItem(_("Нет настроенных моделей", "No configured models"), None)
+                combo.add_tr_item("Нет настроенных моделей", "No configured models", value=None)
                 combo.insertSeparator(combo.count())
 
-            combo.addItem(_("Настроить…", "Configure…"), _MODEL_CONFIGURE_SENTINEL)
+            combo.add_tr_item("Настроить…", "Configure…", value=_MODEL_CONFIGURE_SENTINEL)
 
             try:
                 current_res = self.gui.event_bus.emit_and_wait(Events.ApiPresets.GET_CURRENT_PRESET_ID, timeout=0.5)
@@ -541,11 +543,11 @@ class SandboxPage(QWidget):
             combo.clear()
             if options:
                 for name in options:
-                    combo.addItem(str(name), str(name))
+                    combo.add_data_item(str(name), value=str(name))
             else:
-                combo.addItem(_("Нет наборов", "No sets"), None)
+                combo.add_tr_item("Нет наборов", "No sets", value=None)
             combo.insertSeparator(combo.count())
-            combo.addItem(_("Настроить…", "Configure…"), _PROMPT_CONFIGURE_SENTINEL)
+            combo.add_tr_item("Настроить…", "Configure…", value=_PROMPT_CONFIGURE_SENTINEL)
 
             if current:
                 idx = combo.findText(current, Qt.MatchFlag.MatchFixedString)

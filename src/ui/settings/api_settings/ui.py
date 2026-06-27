@@ -19,6 +19,7 @@ from .widgets import (
     ReserveKeysEditor,
 )
 from ui.gui_templates import create_section_header, SettingsBodyWidget
+from ui.widgets.tr_combobox import TRQComboBox
 from managers.settings_manager import CollapsibleSection
 
 
@@ -134,7 +135,7 @@ def build_api_settings_ui(self, parent_layout):
     # Template row
     template_layout = QHBoxLayout()
     template_label = tr_set(QLabel(), "Шаблон:", "Template:")
-    self.template_combo = QComboBox()
+    self.template_combo = TRQComboBox()
     self.template_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     self.template_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
     self.template_combo.setMinimumContentsLength(10)

@@ -67,9 +67,9 @@ class PresetsMixin:
             # templates combo
             v.template_combo.blockSignals(True)
             v.template_combo.clear()
-            v.template_combo.addItem(_("Без шаблона", "No template"), None)
+            v.template_combo.add_tr_item("Без шаблона", "No template", value=None)
             for p in builtin:
-                v.template_combo.addItem(getattr(p, "name", ""), getattr(p, "id", None))
+                v.template_combo.add_data_item(getattr(p, "name", ""), value=getattr(p, "id", None))
             v.template_combo.blockSignals(False)
 
             # keep dirty markers

@@ -62,6 +62,20 @@ def main() -> int:
     set_language("EN")
     assert cb.currentText() == "Kind"  # data не трогается
 
+    # Робастность к insertSeparator: переводимый пункт ПОСЛЕ сепаратора
+    # (паттерн model/prompt-комбо в песочнице) переводится корректно, т.к. пара
+    # перевода хранится в роли пункта, а не в индекс-параллельном списке.
+    set_language("RU")
+    cb2 = TRQComboBox()
+    cb2.add_data_item("PresetA", value=1)
+    cb2.insertSeparator(cb2.count())
+    cb2.add_tr_item("Настроить…", "Configure…", value="__cfg__")
+    set_language("EN")
+    assert cb2.itemText(0) == "PresetA"        # data не трогается
+    assert cb2.itemText(2) == "Configure…"     # tr после сепаратора — переведён
+    assert cb2.itemData(2) == "__cfg__"        # значение стабильно
+    set_language("RU")
+
     print("TRQComboBox: ALL OK")
     return 0
 

@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 
 from main_logger import logger
 from ui.gui_templates import create_section_header
+from ui.widgets.tr_combobox import TRQComboBox
 from utils import getTranslationVariant as _
 from localization.live import tr_set
 
@@ -502,15 +503,13 @@ def setup_updates_settings_controls(self, parent):
     mode_lbl.setStyleSheet("QLabel { color: #bca9bb; font-size: 12px; }")
     mode_layout.addWidget(mode_lbl)
 
-    mode_combo = QComboBox()
+    mode_combo = TRQComboBox()
     mode_combo.setStyleSheet(channel_combo.styleSheet())
-    # data: "diff"/"full"; отображаемые подписи — человекочитаемые.
-    mode_combo.addItem(_("Дифф (только изменённые файлы)", "Diff (changed files only)"), "diff")
-    mode_combo.addItem(_("Полная перезапись", "Full replace"), "full")
+    # data: "diff"/"full"; подписи переводятся вживую.
+    mode_combo.add_tr_item("Дифф (только изменённые файлы)", "Diff (changed files only)", value="diff")
+    mode_combo.add_tr_item("Полная перезапись", "Full replace", value="full")
     current_mode = (self.settings.get("UPDATE_MODE", "diff") or "diff").lower()
-    mode_idx = mode_combo.findData(current_mode)
-    if mode_idx >= 0:
-        mode_combo.setCurrentIndex(mode_idx)
+    mode_combo.set_current_value(current_mode)
     tr_set(mode_combo, "Дифф - переписываются только изменённые файлы, встроенный питон с\n"
             "зависимостями и локальные файлы не трогаются (быстро, без переустановки).\n"
             "Полная - папка очищается и релиз раскладывается заново.",
