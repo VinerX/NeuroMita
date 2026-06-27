@@ -322,9 +322,9 @@ def build_character_settings_ui(self, parent_layout):
     except Exception:
         pass
 
-    maint_hint = QLabel(
-        _("Действия применяются к выбранной области (переключатель выше).",
-          "Actions apply to the selected scope (toggle above)."))
+    maint_hint = tr_set(QLabel(),
+        "Действия применяются к выбранной области (переключатель выше).",
+        "Actions apply to the selected scope (toggle above).")
     maint_hint.setObjectName("SeparatorLabel")
     maint_hint.setWordWrap(True)
     self.maintenance_section.add_widget(maint_hint)

@@ -393,11 +393,10 @@ class ReserveKeysEditor(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(4)
 
-        hint = QLabel(_(
+        hint = tr_set(QLabel(),
             "Используются по очереди, если основной ключ упёрся в лимит или ошибку. "
             "По одному ключу в строке.",
-            "Used in turn when the main key hits a limit or error. One key per row."
-        ))
+            "Used in turn when the main key hits a limit or error. One key per row.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #bfbfbf; font-size: 11px;")
         outer.addWidget(hint)
@@ -598,12 +597,11 @@ class FallbackChainEditor(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(4)
 
-        hint = QLabel(_(
+        hint = tr_set(QLabel(),
             "Если основной провайдер недоступен, запросы пойдут по этой цепочке сверху вниз. "
             "Поле model опционально — если пусто, используется модель пресета.",
             "If the main provider is unavailable, requests will go down this chain top to bottom. "
-            "The model field is optional — if empty, the preset's own model is used."
-        ))
+            "The model field is optional — if empty, the preset's own model is used.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #bfbfbf; font-size: 11px;")
         outer.addWidget(hint)

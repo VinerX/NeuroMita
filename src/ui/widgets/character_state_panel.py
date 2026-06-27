@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 from core.events import Events
 from main_logger import logger
 from utils import _
+from localization.live import tr_set
 
 
 
@@ -175,7 +176,7 @@ class CharacterStatePanel(QWidget):
         icon = QLabel()
         icon.setPixmap(qta.icon("fa6s.heart-pulse", color="#ffd2ec").pixmap(14, 14))
         title_row.addWidget(icon, 0, Qt.AlignmentFlag.AlignVCenter)
-        title = QLabel(_("Состояние персонажа", "Character state"))
+        title = tr_set(QLabel(), "Состояние персонажа", "Character state")
         title.setObjectName("SandboxInspectorTitle")
         title_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addStretch(1)
@@ -189,7 +190,7 @@ class CharacterStatePanel(QWidget):
         core_layout.addWidget(self._stress_bar)
 
         # Secret badge (conditional)
-        self._secret_badge = QLabel(_("Секрет раскрыт", "Secret exposed"))
+        self._secret_badge = tr_set(QLabel(), "Секрет раскрыт", "Secret exposed")
         self._secret_badge.setObjectName("CharacterStateBadge")
         self._secret_badge.setProperty("kind", "secret")
         self._secret_badge.setVisible(False)
@@ -204,7 +205,7 @@ class CharacterStatePanel(QWidget):
         self._custom_layout = QVBoxLayout(self._custom_card)
         self._custom_layout.setContentsMargins(14, 14, 14, 14)
         self._custom_layout.setSpacing(8)
-        self._custom_title = QLabel(_("Дополнительно", "Custom params"))
+        self._custom_title = tr_set(QLabel(), "Дополнительно", "Custom params")
         self._custom_title.setObjectName("SandboxInspectorTitle")
         self._custom_layout.addWidget(self._custom_title)
         self._custom_card.setVisible(False)
@@ -222,7 +223,7 @@ class CharacterStatePanel(QWidget):
         toggle_row.setSpacing(6)
         self._all_toggle = QToolButton()
         self._all_toggle.setObjectName("SandboxInspectorToggle")
-        self._all_toggle.setText(_("Все переменные", "All variables"))
+        tr_set(self._all_toggle, "Все переменные", "All variables")
         self._all_toggle.setCheckable(True)
         self._all_toggle.setChecked(False)
         self._all_toggle.setArrowType(Qt.ArrowType.RightArrow)

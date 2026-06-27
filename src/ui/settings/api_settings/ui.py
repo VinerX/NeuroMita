@@ -221,8 +221,9 @@ def build_api_settings_ui(self, parent_layout):
     )
     api_container_layout.addWidget(self.gen_overrides_section)
 
-    gen_note = QLabel(_("Переопределяют глобальные настройки только для этого пресета.",
-                        "Override global generation settings for this preset only."))
+    gen_note = tr_set(QLabel(),
+                      "Переопределяют глобальные настройки только для этого пресета.",
+                      "Override global generation settings for this preset only.")
     gen_note.setWordWrap(True)
     gen_note.setStyleSheet("color: #bfbfbf; font-size: 11px;")
     self.gen_overrides_section.add_widget(gen_note)
@@ -287,9 +288,10 @@ def build_api_settings_ui(self, parent_layout):
     )
     api_container_layout.addWidget(self.openrouter_routing_section)
 
-    or_note = QLabel(
-        _("Управляет выбором upstream-провайдеров только для OpenRouter.",
-          "Controls upstream provider selection for OpenRouter only.")
+    or_note = tr_set(
+        QLabel(),
+        "Управляет выбором upstream-провайдеров только для OpenRouter.",
+        "Controls upstream provider selection for OpenRouter only.",
     )
     or_note.setWordWrap(True)
     or_note.setStyleSheet("color: #bfbfbf; font-size: 11px;")
@@ -298,12 +300,12 @@ def build_api_settings_ui(self, parent_layout):
     self.or_enable_cb = tr_set(QCheckBox(), "Включить provider routing", "Enable provider routing")
     self.openrouter_routing_section.add_widget(self.or_enable_cb)
 
-    self.or_tail_system_to_user_cb = QCheckBox(_("Хвостовой system → user", "Trailing system → user"))
+    self.or_tail_system_to_user_cb = tr_set(QCheckBox(), "Хвостовой system → user", "Trailing system → user")
     self.or_tail_system_to_user_cb.setChecked(True)
-    self.or_tail_system_to_user_cb.setToolTip(_(
-        "Если последнее сообщение запроса имеет роль system, для OpenRouter оно будет отправлено как user с префиксом [SYSTEM INFO].",
-        "If the last request message has system role, OpenRouter will send it as user with a [SYSTEM INFO] prefix."
-    ))
+    tr_set(self.or_tail_system_to_user_cb,
+           "Если последнее сообщение запроса имеет роль system, для OpenRouter оно будет отправлено как user с префиксом [SYSTEM INFO].",
+           "If the last request message has system role, OpenRouter will send it as user with a [SYSTEM INFO] prefix.",
+           "setToolTip")
     self.openrouter_routing_section.add_widget(self.or_tail_system_to_user_cb)
 
     self.or_order_row = LabeledLineEditRow(_("Приоритет провайдеров", "Provider order"))

@@ -9,6 +9,7 @@ from PyQt6.QtCore import QSize
 from styles.main_styles import get_stylesheet
 from utils import process_text_to_voice
 from utils import getTranslationVariant as _
+from localization.live import tr_set
 from main_logger import logger
 import ui.gui_templates as gui_templates
 from managers.settings_manager import CollapsibleSection
@@ -153,7 +154,7 @@ class AppWindowBase(QMainWindow):
         self.attach_button = None
         self.send_screen_button = None
 
-        self.setWindowTitle(_("Чат с NeuroMita", "NeuroMita Chat"))
+        tr_set(self, "Чат с NeuroMita", "NeuroMita Chat", "setWindowTitle")
         self.setWindowIcon(QIcon('Icon.png'))
 
         self.staged_image_data = []

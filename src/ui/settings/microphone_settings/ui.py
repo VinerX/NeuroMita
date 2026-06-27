@@ -9,6 +9,7 @@ import qtawesome as qta
 
 from ui.gui_templates import create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
+from localization.live import tr_set
 
 
 def make_row(label_text: str, field_widget: QWidget, label_w: int) -> QWidget:
@@ -44,11 +45,11 @@ def build_microphone_settings_ui(self, parent_layout):
     # 0) Включение ASR — сразу под заголовком, чтобы было на виду
     self.mic_active_checkbox = QCheckBox("")
     self.mic_active_checkbox.setChecked(bool(self.settings.get("MIC_ACTIVE")))
-    self.mic_active_checkbox.setToolTip(_("Включить/выключить распознавание", "Enable/disable recognition"))
+    tr_set(self.mic_active_checkbox, "Включить/выключить распознавание", "Enable/disable recognition", "setToolTip")
     root_lay.addWidget(make_row(_("Микрофон активен", "Microphone active"), self.mic_active_checkbox, label_w))
 
     # 1) Кнопка в глоссарий
-    self.asr_manage_button = QPushButton(_("Открыть AI Hub", "Open AI Hub"))
+    self.asr_manage_button = tr_set(QPushButton(), "Открыть AI Hub", "Open AI Hub")
     self.asr_manage_button.setObjectName("SecondaryButton")
     self.asr_manage_button.setIcon(qta.icon("fa5s.list", color="#ffffff"))
     self.asr_manage_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -62,13 +63,13 @@ def build_microphone_settings_ui(self, parent_layout):
 
     self.recognizer_combobox = QComboBox()
     self.recognizer_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    self.recognizer_combobox.setToolTip(_("Установленные модели распознавания", "Installed speech recognition models"))
+    tr_set(self.recognizer_combobox, "Установленные модели распознавания", "Installed speech recognition models", "setToolTip")
     eng_h.addWidget(self.recognizer_combobox, 1)
 
     self.asr_refresh_button = QPushButton()
     self.asr_refresh_button.setObjectName("SecondaryButton")
     self.asr_refresh_button.setIcon(qta.icon("fa5s.sync", color="#ffffff"))
-    self.asr_refresh_button.setToolTip(_("Обновить список моделей", "Refresh model list"))
+    tr_set(self.asr_refresh_button, "Обновить список моделей", "Refresh model list", "setToolTip")
     self.asr_refresh_button.setFixedSize(28, 26)
     eng_h.addWidget(self.asr_refresh_button, 0)
 
@@ -87,7 +88,7 @@ def build_microphone_settings_ui(self, parent_layout):
     self.mic_refresh_button = QPushButton()
     self.mic_refresh_button.setObjectName("SecondaryButton")
     self.mic_refresh_button.setIcon(qta.icon("fa5s.sync", color="#ffffff"))
-    self.mic_refresh_button.setToolTip(_("Обновить список микрофонов", "Refresh microphone list"))
+    tr_set(self.mic_refresh_button, "Обновить список микрофонов", "Refresh microphone list", "setToolTip")
     self.mic_refresh_button.setFixedSize(28, 26)
     mic_h.addWidget(self.mic_refresh_button, 0)
 
@@ -96,7 +97,7 @@ def build_microphone_settings_ui(self, parent_layout):
     # 4) Управление
     self.mic_instant_checkbox = QCheckBox("")
     self.mic_instant_checkbox.setChecked(bool(self.settings.get("MIC_INSTANT_SENT")))
-    self.mic_instant_checkbox.setToolTip(_("Мгновенная отправка распознанного текста", "Send recognized text immediately"))
+    tr_set(self.mic_instant_checkbox, "Мгновенная отправка распознанного текста", "Send recognized text immediately", "setToolTip")
     root_lay.addWidget(make_row(_("Мгновенная отправка", "Instant send"), self.mic_instant_checkbox, label_w))
 
     # 5) Статус (как раньше) — под кнопками
@@ -126,30 +127,30 @@ def build_microphone_settings_ui(self, parent_layout):
         return sb
 
     self.vad_sample_rate_spinbox = _spinbox(8000, 48000, 16000, 1000)
-    self.vad_sample_rate_spinbox.setToolTip(_("Частота дискретизации (Гц)", "Sample rate (Hz)"))
+    tr_set(self.vad_sample_rate_spinbox, "Частота дискретизации (Гц)", "Sample rate (Hz)", "setToolTip")
     root_lay.addWidget(make_row(_("Sample rate", "Sample rate"), self.vad_sample_rate_spinbox, label_w))
 
     self.vad_chunk_size_spinbox = _spinbox(128, 4096, 512, 128)
-    self.vad_chunk_size_spinbox.setToolTip(_("Размер чанка аудио", "Audio chunk size"))
+    tr_set(self.vad_chunk_size_spinbox, "Размер чанка аудио", "Audio chunk size", "setToolTip")
     root_lay.addWidget(make_row(_("Chunk size", "Chunk size"), self.vad_chunk_size_spinbox, label_w))
 
     self.vad_threshold_spinbox = _dspinbox(0.0, 1.0, 0.5, 0.05)
-    self.vad_threshold_spinbox.setToolTip(_("Порог VAD (0.0–1.0)", "VAD threshold (0.0–1.0)"))
+    tr_set(self.vad_threshold_spinbox, "Порог VAD (0.0–1.0)", "VAD threshold (0.0–1.0)", "setToolTip")
     root_lay.addWidget(make_row(_("VAD threshold", "VAD threshold"), self.vad_threshold_spinbox, label_w))
 
     self.vad_silence_timeout_spinbox = _dspinbox(0.05, 10.0, 0.15, 0.05)
-    self.vad_silence_timeout_spinbox.setToolTip(_("Таймаут тишины (сек)", "Silence timeout (sec)"))
+    tr_set(self.vad_silence_timeout_spinbox, "Таймаут тишины (сек)", "Silence timeout (sec)", "setToolTip")
     root_lay.addWidget(make_row(_("Тишина (сек)", "Silence (sec)"), self.vad_silence_timeout_spinbox, label_w))
 
     self.vad_pre_buffer_spinbox = _dspinbox(0.0, 5.0, 0.3, 0.05)
-    self.vad_pre_buffer_spinbox.setToolTip(_("Предбуфер (сек)", "Pre-buffer (sec)"))
+    tr_set(self.vad_pre_buffer_spinbox, "Предбуфер (сек)", "Pre-buffer (sec)", "setToolTip")
     root_lay.addWidget(make_row(_("Pre-buffer (сек)", "Pre-buffer (sec)"), self.vad_pre_buffer_spinbox, label_w))
 
     self.vad_max_speech_duration_spinbox = _dspinbox(1.0, 120.0, 30.0, 1.0, decimals=1)
-    self.vad_max_speech_duration_spinbox.setToolTip(_("Макс. длительность речи (сек)", "Max speech duration (sec)"))
+    tr_set(self.vad_max_speech_duration_spinbox, "Макс. длительность речи (сек)", "Max speech duration (sec)", "setToolTip")
     root_lay.addWidget(make_row(_("Макс. речь (сек)", "Max speech (sec)"), self.vad_max_speech_duration_spinbox, label_w))
 
-    self.vad_apply_button = QPushButton(_("Применить", "Apply"))
+    self.vad_apply_button = tr_set(QPushButton(), "Применить", "Apply")
     self.vad_apply_button.setObjectName("SecondaryButton")
     self.vad_apply_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     root_lay.addWidget(self.vad_apply_button)

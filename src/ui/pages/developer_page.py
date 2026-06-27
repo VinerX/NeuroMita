@@ -11,6 +11,7 @@ from ui.widgets.launcher_dashboard_helpers import (
     _create_hero_card,
 )
 from utils import _
+from localization.live import tr_set
 
 
 class DeveloperPage(QWidget):
@@ -62,14 +63,15 @@ class DeveloperPage(QWidget):
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(10)
 
-        title = QLabel(_("Отладка", "Debug"))
+        title = tr_set(QLabel(), "Отладка", "Debug")
         title.setObjectName("LauncherShellSectionTitle")
         layout.addWidget(title)
 
-        subtitle = QLabel(_(
+        subtitle = tr_set(
+            QLabel(),
             "Параметры вывода structured output, системные сообщения, снапшоты и просмотр контекста.",
             "Structured output display, system messages, history snapshots and context viewer.",
-        ))
+        )
         subtitle.setObjectName("LauncherShellMeta")
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)

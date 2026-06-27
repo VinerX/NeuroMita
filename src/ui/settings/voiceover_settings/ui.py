@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from ui.gui_templates import create_setting_widget, create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
+from localization.live import tr_set
 from core.events import get_event_bus, Events
 
 
@@ -120,7 +121,7 @@ def build_voiceover_settings_ui(self, parent_layout):
     label_part.setContentsMargins(0, 0, 0, 0)
     label_part.setSpacing(2)
 
-    local_model_label = QLabel(_("Локальная модель", "Local Model"))
+    local_model_label = tr_set(QLabel(), "Локальная модель", "Local Model")
 
     self.local_model_status_label = QLabel("⚠️")
     self.local_model_status_label.setObjectName("WarningIcon")

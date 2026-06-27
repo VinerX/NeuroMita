@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 from ui.pages.settings.section_registry import SettingsSectionSpec, get_settings_section_specs
 from ui.widgets.settings_icon_button import SettingsIconButton
 from utils import _
+from localization.live import tr_set
 from localization.live import register_if_tr
 
 _MODE_RANK = {"basic": 0, "advanced": 1, "full": 2}
@@ -475,7 +476,7 @@ class SettingsPage(QWidget):
         icon_label.setPixmap(qta.icon("fa6s.gear", color="#ff6db7").pixmap(22, 22))
         headline_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        title = QLabel(_("Настройки", "Settings"))
+        title = tr_set(QLabel(), "Настройки", "Settings")
         register_if_tr(title, _("Настройки", "Settings"))
         title.setObjectName("SettingsHeroTitle")
         headline_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -496,24 +497,24 @@ class SettingsPage(QWidget):
         actions = QHBoxLayout()
         actions.setSpacing(10)
 
-        guide_button = QPushButton(_("Руководство", "Guide"))
+        guide_button = tr_set(QPushButton(), "Руководство", "Guide")
         register_if_tr(guide_button, _("Руководство", "Guide"))
         guide_button.setObjectName("SettingsHeaderButton")
         guide_button.clicked.connect(self.gui._show_guide)
         actions.addWidget(guide_button)
 
-        wiki_button = QPushButton(_("Вики", "Wiki"))
+        wiki_button = tr_set(QPushButton(), "Вики", "Wiki")
         wiki_button.setObjectName("SettingsHeaderButton")
         wiki_button.clicked.connect(lambda: self.gui.switch_main_page("wiki"))
         actions.addWidget(wiki_button)
 
-        home_button = QPushButton(_("На главную", "Home"))
+        home_button = tr_set(QPushButton(), "На главную", "Home")
         register_if_tr(home_button, _("На главную", "Home"))
         home_button.setObjectName("SettingsHeaderButton")
         home_button.clicked.connect(lambda: self.gui.switch_main_page("home"))
         actions.addWidget(home_button)
 
-        updates_button = QPushButton(_("Открыть обновления", "Open updates"))
+        updates_button = tr_set(QPushButton(), "Открыть обновления", "Open updates")
         register_if_tr(updates_button, _("Открыть обновления", "Open updates"))
         updates_button.setObjectName("SettingsHeaderPrimaryButton")
         updates_button.clicked.connect(lambda: self.show_category("updates"))

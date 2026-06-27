@@ -19,6 +19,7 @@ from game_connections.services.beat_service import get_beat_service
 from main_logger import logger
 from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
+from localization.live import tr_set
 
 
 _BEAT_BACKEND_OPTIONS = (
@@ -196,7 +197,7 @@ def _create_beat_backend_selector(gui) -> QWidget:
     layout.setContentsMargins(0, 2, 0, 2)
     layout.setSpacing(10)
 
-    label = QLabel(_("Backend Beat Sync", "Beat Sync backend"))
+    label = tr_set(QLabel(), "Backend Beat Sync", "Beat Sync backend")
     label.setMinimumWidth(140)
     label.setMaximumWidth(140)
     label.setWordWrap(True)
@@ -226,7 +227,7 @@ def _create_beat_status_label_widget(gui) -> QWidget:
     layout.setContentsMargins(0, 2, 0, 2)
     layout.setSpacing(10)
 
-    label = QLabel(_("Статус Beat Sync", "Beat Sync status"))
+    label = tr_set(QLabel(), "Статус Beat Sync", "Beat Sync status")
     label.setMinimumWidth(140)
     label.setMaximumWidth(140)
     label.setWordWrap(True)
