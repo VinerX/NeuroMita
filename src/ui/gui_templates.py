@@ -43,6 +43,10 @@ def create_settings_section(gui, parent_layout, title, cfg_list, *, icon_name=No
         if t == 'text':
             lbl = QLabel(cfg['label'])
             lbl.setObjectName('SeparatorLabel')
+            # Авто-перенос: вёрстка не должна зависеть от ручных \n в переводах
+            # (в не-русских локалях их нет — иначе текст уезжает за край).
+            lbl.setWordWrap(True)
+            lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             register_if_tr(lbl, cfg['label'])
             (current_sub or root).add_widget(lbl)
             continue
