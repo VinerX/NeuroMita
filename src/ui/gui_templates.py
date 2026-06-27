@@ -320,6 +320,7 @@ def create_setting_widget(
         title_col.addWidget(lbl)
         if tooltip:
             desc = QLabel(str(tooltip))
+            register_if_tr(desc, tooltip)
             desc.setObjectName("SettingRowDescription")
             desc.setTextFormat(Qt.TextFormat.PlainText)
             desc.setWordWrap(True)

@@ -950,6 +950,7 @@ class SandboxPage(QWidget):
                 icon_label.setPixmap(qta.icon(icon_name, color="#ffd2ec").pixmap(14, 14))
                 title_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
             title = QLabel(title_text)
+            register_if_tr(title, title_text)
             title.setObjectName("SandboxInspectorTitle")
             title_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
             title_row.addStretch(1)
@@ -1620,14 +1621,15 @@ class SandboxPage(QWidget):
             row = QHBoxLayout()
             row.setSpacing(8)
             label = QLabel(label_text)
+            register_if_tr(label, label_text)
             label.setObjectName("SandboxInspectorLabel")
             if hint:
-                label.setToolTip(hint)
+                register_if_tr(label, hint, "setToolTip")
             row.addWidget(label)
             value = QLabel("—")
             value.setObjectName("SandboxInspectorValue")
             if hint:
-                value.setToolTip(hint)
+                register_if_tr(value, hint, "setToolTip")
             row.addWidget(value, 1)
             memory_layout.addLayout(row)
             self._memory_limit_values[stat_key] = value
@@ -1708,6 +1710,7 @@ class SandboxPage(QWidget):
             row = QHBoxLayout()
             row.setSpacing(8)
             label = QLabel(label_text)
+            register_if_tr(label, label_text)
             label.setObjectName("SandboxInfoLabel")
             row.addWidget(label)
             value = QLabel("—")

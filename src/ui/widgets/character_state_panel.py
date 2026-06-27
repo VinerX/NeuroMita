@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
 from core.events import Events
 from main_logger import logger
 from utils import _
-from localization.live import tr_set
+from localization.live import register_if_tr, tr_set
 
 
 
@@ -43,6 +43,7 @@ class _StatBar(QWidget):
         head.setSpacing(6)
 
         self._label = QLabel(label)
+        register_if_tr(self._label, label)
         self._label.setObjectName("CharacterStatLabel")
         head.addWidget(self._label, 1, Qt.AlignmentFlag.AlignLeft)
 

@@ -10,7 +10,7 @@ import qtawesome as qta
 from ui.gui_templates import create_section_header, SettingsBodyWidget
 from managers.settings_manager import InnerCollapsibleSection
 from utils import getTranslationVariant as _
-from localization.live import tr_set
+from localization.live import register_if_tr, tr_set
 
 
 def _make_row(label_text: str, field_widget: QWidget, label_w: int) -> QWidget:
@@ -21,6 +21,7 @@ def _make_row(label_text: str, field_widget: QWidget, label_w: int) -> QWidget:
     hl.setSpacing(6)
 
     lbl = QLabel(label_text)
+    register_if_tr(lbl, label_text)
     lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
     lbl.setFixedWidth(label_w)
     hl.addWidget(lbl, 0)
@@ -43,6 +44,7 @@ def _make_info_row(label_text: str, field_widget: QWidget) -> QWidget:
     hl.setSpacing(8)
 
     lbl = QLabel(label_text)
+    register_if_tr(lbl, label_text)
     lbl.setStyleSheet("font-weight: 600;")
     lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
     lbl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)

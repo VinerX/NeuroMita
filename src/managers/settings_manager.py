@@ -235,6 +235,12 @@ class CollapsibleSection(QWidget):
 
         self.title_label = QLabel(title, self.header, objectName='CollapsibleTitle')
         title_col.addWidget(self.title_label)
+        # Живой перевод заголовка/подзаголовка секции (если это TrStr из _()).
+        try:
+            from localization.live import register_if_tr
+            register_if_tr(self.title_label, title)
+        except Exception:
+            pass
 
         self.subtitle_label = None
         subtitle_text = str(subtitle or "").strip()
@@ -242,6 +248,11 @@ class CollapsibleSection(QWidget):
             self.subtitle_label = QLabel(subtitle_text, self.header, objectName='CollapsibleSubtitle')
             self.subtitle_label.setWordWrap(True)
             title_col.addWidget(self.subtitle_label)
+            try:
+                from localization.live import register_if_tr
+                register_if_tr(self.subtitle_label, subtitle)
+            except Exception:
+                pass
 
         if self.icon_label is not None:
             h.addWidget(self.icon_label)
