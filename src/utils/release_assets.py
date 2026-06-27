@@ -76,6 +76,24 @@ def _ext_ok(name: str) -> bool:
     return any(low.endswith(ext) for ext in SUPPORTED_EXT)
 
 
+def has_launcher_release_assets(release: "Release") -> bool:
+    """True when a release contains launcher-consumable Python/Unity assets.
+
+    This intentionally ignores auxiliary releases such as voice bundles:
+    they may be valid GitHub releases, but they are not part of the launcher
+    update/news contract and should not appear in the main release feed.
+    """
+    picked = pick_from_release(release)
+    return bool(picked.unity or picked.python_full or picked.python_patch)
+
+
+def raw_release_has_launcher_assets(item: dict) -> bool:
+    try:
+        return has_launcher_release_assets(parse_release(item))
+    except Exception:
+        return False
+
+
 # ── Core selection logic ──────────────────────────────────────────────────────
 
 def pick_from_release(release: Release) -> PickedAssets:
@@ -117,6 +135,8 @@ def pick_latest(
     for r in releases:
         if channel == "stable" and r.prerelease:
             continue
+        if not has_launcher_release_assets(r):
+            continue
         picked = pick_from_release(r)
         if picked.unity or picked.python_full or picked.python_patch:
             return r, picked
@@ -135,6 +155,8 @@ def find_latest_python_full(
     """
     for r in sorted(releases, key=lambda x: _version_key(x.tag), reverse=True):
         if channel == "stable" and r.prerelease:
+            continue
+        if not has_launcher_release_assets(r):
             continue
         if r.is_patch:
             continue
@@ -156,6 +178,8 @@ def find_latest_unity_asset(
     """
     for r in sorted(releases, key=lambda x: _version_key(x.tag), reverse=True):
         if channel == "stable" and r.prerelease:
+            continue
+        if not has_launcher_release_assets(r):
             continue
         picked = pick_from_release(r)
         if picked.unity is not None:

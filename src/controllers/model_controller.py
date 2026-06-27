@@ -1382,6 +1382,7 @@ class ModelController:
                     )
 
             if is_structured_output:
+                sample_id = str((getattr(llm_response, "raw", {}) or {}).get("finetune_sample_id") or "").strip() or None
                 return self._process_structured_output(
                     visible_raw=visible_raw,
                     think_text=think_text,
@@ -1409,6 +1410,7 @@ class ModelController:
                     tool_depth=0,
                     image_descriptions=image_descriptions,
                     structured_model_cls=structured_model_cls,
+                    sample_id=sample_id,
                 )
 
             inline_graph_json: Optional[str] = None
@@ -1443,6 +1445,7 @@ class ModelController:
                 cost_fallback_currency=getattr(active_pricing, "currency", None),
                 cost_fallback_source=getattr(active_pricing, "source", None),
             )
+            sample_id = str((getattr(llm_response, "raw", {}) or {}).get("finetune_sample_id") or "").strip() or None
 
             assistant_message_id = ""
             if policy.write_to_history:
@@ -1464,6 +1467,7 @@ class ModelController:
                     task_uid=task_uid,
                     thinking=think_text or None,
                     llm_usage=usage_snapshot,
+                    sample_id=sample_id,
                 )
 
             self._store_last_usage(
@@ -1667,6 +1671,7 @@ class ModelController:
         tool_depth: int = 0,
         image_descriptions: dict[str, str] | None = None,
         structured_model_cls=None,
+        sample_id: str | None = None,
     ) -> dict | None:
         try:
             structured = parse_structured_response(visible_raw, model_cls=structured_model_cls)
@@ -1752,6 +1757,7 @@ class ModelController:
                 participants=participants,
                 user_input=user_input,
                 image_data=image_data,
+                image_source=image_source,
                 req_id=req_id,
                 task_uid=task_uid,
                 event_type=event_type,
@@ -1760,6 +1766,8 @@ class ModelController:
                 enabled_tools=_active_tools,
                 tool_depth=tool_depth,
                 structured_model_cls=structured_model_cls,
+                sample_id=sample_id,
+                image_descriptions=image_descriptions,
             )
 
         # Extract reasoning from structured response (if model used the reasoning field)
@@ -1835,6 +1843,7 @@ class ModelController:
                 structured_data=history_dict,
                 thinking=think_text or None,
                 llm_usage=usage_snapshot,
+                sample_id=sample_id,
             )
 
         self._store_last_usage(
@@ -1918,6 +1927,7 @@ class ModelController:
         participants: list,
         user_input: str,
         image_data: list,
+        image_source: str,
         req_id: str | None,
         task_uid: str | None,
         event_type: str,
@@ -1926,6 +1936,8 @@ class ModelController:
         enabled_tools: list,
         tool_depth: int,
         structured_model_cls=None,
+        sample_id: str | None = None,
+        image_descriptions: dict[str, str] | None = None,
     ) -> dict | None:
         """
         Handle a tool_call from a structured response:
@@ -1991,6 +2003,7 @@ class ModelController:
                 structured_data=result_dict,
                 thinking=think_text or None,
                 llm_usage=usage_snapshot,
+                sample_id=sample_id,
             )
 
         # Emit first response to UI (shows "I'll check that" message)
@@ -2107,6 +2120,10 @@ class ModelController:
 
         # Process second response (depth+1 prevents infinite tool loops)
         # user_input is empty so the user message is not written to history again
+        sample_id_2 = str((getattr(llm_response_2, "raw", {}) or {}).get("finetune_sample_id") or "").strip() or None
+
+        # Process second response (depth+1 prevents infinite tool loops)
+        # user_input is empty so the user message is not written to history again
         return self._process_structured_output(
             visible_raw=visible_raw_2,
             think_text=combined_think or "",
@@ -2120,13 +2137,13 @@ class ModelController:
             data=data,
             policy=policy,
             sender=sender,
-                participants=participants,
-                user_input="",
-                image_data=[],
-                image_source=image_source,
-                req_id=req_id,
-                task_uid=task_uid,
-                event_type=event_type,
+            participants=participants,
+            user_input="",
+            image_data=[],
+            image_source=image_source,
+            req_id=req_id,
+            task_uid=task_uid,
+            event_type=event_type,
             combined_messages=combined_messages_v2,
             preset_id=preset_id,
             tools_on=True,
@@ -2134,6 +2151,7 @@ class ModelController:
             tool_depth=tool_depth + 1,
             image_descriptions=image_descriptions,
             structured_model_cls=structured_model_cls,
+            sample_id=sample_id_2,
         )
 
     # ---------------------------------------------------------------------

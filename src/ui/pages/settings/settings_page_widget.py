@@ -55,141 +55,8 @@ def _make_card(name: str) -> QFrame:
     return card
 
 
-class _FlowLayout(QLayout):
-    """Left-to-right layout that wraps items onto new rows when they run out
-    of horizontal space. Used for the settings tab strip so the tabs reflow
-    to a second row instead of producing a horizontal scrollbar.
-
-    When `justify` is set, the items on every row are stretched to fill the
-    full available width (extra space is shared equally between them) instead
-    of hugging the left edge — so the tab strip spans the whole settings page
-    rather than sitting compressed on the left.
-
-    When `center` is set (and `justify` is off), items keep their natural
-    (fixed) width and each row is centered as a group within the available
-    width instead of hugging the left edge."""
-
-    def __init__(self, parent=None, margin=0, hspacing=6, vspacing=6, justify=False, center=False):
-        super().__init__(parent)
-        self._items: list[QWidgetItem] = []
-        self._hspace = hspacing
-        self._vspace = vspacing
-        self._justify = justify
-        self._center = center
-        self.setContentsMargins(margin, margin, margin, margin)
-
-    def addItem(self, item):
-        self._items.append(item)
-
-    def addWidget(self, widget):  # type: ignore[override]
-        self.addChildWidget(widget)
-        self.addItem(QWidgetItem(widget))
-
-    def count(self):
-        return len(self._items)
-
-    def itemAt(self, index):
-        if 0 <= index < len(self._items):
-            return self._items[index]
-        return None
-
-    def takeAt(self, index):
-        if 0 <= index < len(self._items):
-            return self._items.pop(index)
-        return None
-
-    def expandingDirections(self):
-        return Qt.Orientation(0)
-
-    def hasHeightForWidth(self):
-        return True
-
-    def heightForWidth(self, width):
-        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
-
-    def setGeometry(self, rect):
-        super().setGeometry(rect)
-        self._do_layout(rect, test_only=False)
-
-    def sizeHint(self):
-        return self.minimumSize()
-
-    def minimumSize(self):
-        size = QSize()
-        for item in self._items:
-            size = size.expandedTo(item.minimumSize())
-        margins = self.contentsMargins()
-        size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
-        return size
-
-    def _item_hint(self, item: QWidgetItem) -> QSize:
-        widget = item.widget()
-        hint = item.sizeHint()
-        if widget is not None:
-            hint = QSize(
-                max(hint.width(), widget.minimumWidth()),
-                max(hint.height(), widget.minimumHeight()),
-            )
-        return hint
-
-    def _do_layout(self, rect: QRect, test_only: bool) -> int:
-        margins = self.contentsMargins()
-        x0 = rect.x() + margins.left()
-        right = rect.right() - margins.right()
-        avail = max(0, right - x0)
-        y = rect.y() + margins.top()
-
-        # Skip only tabs that were explicitly toggled off. Using isHidden()
-        # (not isVisible()) keeps sizing correct before the window is shown,
-        # when descendants are not "visible" yet.
-        visible = [
-            item
-            for item in self._items
-            if not (item.widget() is not None and item.widget().isHidden())
-        ]
-
-        # Group visible items into rows the same way in both passes so the
-        # measured height (test_only) matches the placed geometry.
-        rows: list[list[QWidgetItem]] = []
-        current: list[QWidgetItem] = []
-        current_w = 0
-        for item in visible:
-            w = self._item_hint(item).width()
-            add = w if not current else w + self._hspace
-            if current and current_w + add > avail:
-                rows.append(current)
-                current = []
-                current_w = 0
-                add = w
-            current.append(item)
-            current_w += add
-        if current:
-            rows.append(current)
-
-        bottom = y
-        for row in rows:
-            natural = sum(self._item_hint(it).width() for it in row)
-            natural += self._hspace * (len(row) - 1)
-            extra = max(0, avail - natural) if self._justify else 0
-            per = extra // len(row) if row else 0
-            remainder = extra - per * len(row)
-
-            # Center the (natural-width) row as a group when requested.
-            x = x0
-            if self._center and not self._justify:
-                x = x0 + max(0, avail - natural) // 2
-            line_height = 0
-            for i, item in enumerate(row):
-                hint = self._item_hint(item)
-                w = hint.width() + per + (1 if i < remainder else 0)
-                if not test_only:
-                    item.setGeometry(QRect(QPoint(x, y), QSize(w, hint.height())))
-                x += w + self._hspace
-                line_height = max(line_height, hint.height())
-            y += line_height + self._vspace
-            bottom = y - self._vspace
-
-        return bottom - rect.y() + margins.bottom()
+# _FlowLayout вынесен в общий модуль (используется и стартовым EULA-экраном).
+from ui.widgets.flow_layout import FlowLayout as _FlowLayout
 
 
 class SettingsSectionPage(QFrame):
@@ -213,45 +80,8 @@ class SettingsSectionPage(QFrame):
         self.content.setObjectName("SettingsSectionPageContent")
         self.content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         content_layout = QVBoxLayout(self.content)
-        content_layout.setContentsMargins(2, 2, 6, 2)
-        content_layout.setSpacing(14)
-
-        self.header = QFrame()
-        self.header.setObjectName("SettingsSectionPageHeader")
-        header_layout = QHBoxLayout(self.header)
-        header_layout.setContentsMargins(18, 18, 18, 18)
-        header_layout.setSpacing(16)
-
-        self.icon_box = QLabel()
-        self.icon_box.setObjectName("SettingsSectionIcon")
-        self.icon_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.icon_box.setFixedSize(38, 38)
-        self.icon_box.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.icon_box.setPixmap(qta.icon(spec.icon_name, color="#ffd7eb").pixmap(18, 18))
-        header_layout.addWidget(self.icon_box, 0, Qt.AlignmentFlag.AlignTop)
-
-        text_col = QVBoxLayout()
-        text_col.setSpacing(3)
-
-        self.title_label = QLabel(_(spec.title[0], spec.title[1]))
-        register_if_tr(self.title_label, _(spec.title[0], spec.title[1]))
-        self.title_label.setObjectName("SettingsSectionPageTitle")
-        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        text_col.addWidget(self.title_label)
-
-        self.subtitle_label = QLabel(_(spec.subtitle[0], spec.subtitle[1]))
-        register_if_tr(self.subtitle_label, _(spec.subtitle[0], spec.subtitle[1]))
-        self.subtitle_label.setObjectName("SettingsSectionSubtitle")
-        self.subtitle_label.setWordWrap(True)
-        self.subtitle_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        text_col.addWidget(self.subtitle_label)
-
-        header_layout.addLayout(text_col, 1)
-
-        self.mode_badge = QLabel(get_mode_label(spec.min_mode))
-        self.mode_badge.setObjectName("SettingsSectionBadge")
-        self.mode_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.mode_badge.setVisible(False)
+        content_layout.setContentsMargins(2, 0, 6, 2)
+        content_layout.setSpacing(8)
 
         self.body = QFrame()
         self.body.setObjectName("SettingsSectionPageBody")
@@ -266,7 +96,6 @@ class SettingsSectionPage(QFrame):
         self.body_layout.setSpacing(12)
         body_layout.addWidget(self.body_host)
 
-        content_layout.addWidget(self.header)
         content_layout.addWidget(self.body)
         content_layout.addStretch(1)
         self.scroll.setWidget(self.content)
@@ -422,10 +251,16 @@ class SettingsPage(QWidget):
             if scroll_to_top:
                 self._scroll_to_top(smooth=False)
 
-    def show_category(self, category, *, smooth_scroll: bool = True):
+    def show_category(self, category, *, smooth_scroll: bool = True, force: bool = False, subsection=None):
+        # force=True — пользователь явно перешёл в конкретный раздел (шестерёнка
+        # подсистемы), показываем его даже если секция скрыта в «Видимых разделах»,
+        # а не уводим в «Общие» (фидбэк #14: «пересылает вникуда»).
+        # subsection — заголовок(и) вложенной CollapsibleSection (например «RAG»):
+        # после перехода она разворачивается и подскролливается к началу, чтобы
+        # сразу попасть в нужное поле, а не в начало длинной страницы (фидбэк Артёма).
         if category not in self.settings_containers:
             return
-        if not self._section_enabled(category):
+        if not force and not self._section_enabled(category):
             fallback = self._first_available_category()
             if fallback is not None:
                 category = fallback
@@ -435,17 +270,17 @@ class SettingsPage(QWidget):
         was_on_settings_page = getattr(self.gui, "current_main_page", None) == "settings"
         if not was_on_settings_page:
             self.gui.switch_main_page("settings")
-            QTimer.singleShot(0, lambda cat=category, smooth=smooth_scroll: self._activate_category(cat, smooth_scroll=smooth))
+            QTimer.singleShot(0, lambda cat=category, smooth=smooth_scroll, f=force, sub=subsection: self._activate_category(cat, smooth_scroll=smooth, force=f, subsection=sub))
             return
 
-        self._activate_category(category, smooth_scroll=smooth_scroll)
+        self._activate_category(category, smooth_scroll=smooth_scroll, force=force, subsection=subsection)
 
-    def _activate_category(self, category: str, *, smooth_scroll: bool):
+    def _activate_category(self, category: str, *, smooth_scroll: bool, force: bool = False, subsection=None):
         page = self.settings_containers.get(category)
         if page is None:
             return
 
-        if not self._section_enabled(category):
+        if not force and not self._section_enabled(category):
             fallback = self._first_available_category()
             if fallback is not None and fallback != category:
                 self._activate_category(fallback, smooth_scroll=False)
@@ -460,8 +295,62 @@ class SettingsPage(QWidget):
             entry = getattr(self.gui, '_tester_code_entry', None)
             if entry is not None:
                 entry.setText(self.gui.settings.get("TESTER_CODE", ""))
-        if smooth_scroll:
+        if subsection:
+            # Разворачиваем целевую подсекцию и скроллим к ней (с задержкой —
+            # дать layout пересобраться после expand).
+            QTimer.singleShot(0, lambda p=page, sub=subsection, smooth=smooth_scroll: self._scroll_to_subsection(p, sub, smooth=smooth))
+        elif smooth_scroll:
             QTimer.singleShot(0, lambda key=category: self._scroll_to_category(key, smooth=True))
+
+    def _find_subsection(self, page, candidates):
+        """Найти вложенную CollapsibleSection страницы по заголовку (без учёта
+        регистра, точное совпадение или вхождение). candidates — строка или
+        список вариантов заголовка на разных языках."""
+        if isinstance(candidates, str):
+            candidates = (candidates,)
+        wanted = [str(c).strip().lower() for c in candidates if str(c).strip()]
+        if not wanted:
+            return None
+        for section in page.findChildren(QWidget):
+            if section.objectName() != "CollapsibleSection":
+                continue
+            title_label = getattr(section, "title_label", None)
+            if title_label is None:
+                continue
+            title = title_label.text().strip().lower()
+            if not title:
+                continue
+            if any(title == w or w in title for w in wanted):
+                return section
+        return None
+
+    def _scroll_to_subsection(self, page, candidates, *, smooth: bool):
+        section = self._find_subsection(page, candidates)
+        scroll = getattr(page, "scroll", None)
+        if section is None or scroll is None:
+            # Не нашли подсекцию — хотя бы откроем начало страницы.
+            if hasattr(page, "scroll_to_top"):
+                page.scroll_to_top(smooth=smooth, animate=self._animate_scroll)
+            return
+        try:
+            if getattr(section, "is_collapsed", False) and hasattr(section, "expand"):
+                section.expand()
+        except Exception:
+            pass
+        # После expand геометрия меняется — считаем целевую позицию в следующем тике.
+        QTimer.singleShot(0, lambda s=section, sc=scroll, sm=smooth: self._do_scroll_to_widget(s, sc, smooth=sm))
+
+    def _do_scroll_to_widget(self, widget, scroll, *, smooth: bool):
+        content = scroll.widget()
+        if content is None:
+            return
+        top_left = widget.mapTo(content, widget.rect().topLeft())
+        bar = scroll.verticalScrollBar()
+        target = max(0, min(bar.maximum(), top_left.y() - 12))
+        if smooth:
+            self._animate_scroll(bar, bar.value(), target)
+        else:
+            bar.setValue(target)
 
     def _scroll_to_category(self, category: str, *, smooth: bool):
         page = self.settings_containers.get(category)
@@ -528,7 +417,7 @@ class SettingsPage(QWidget):
     def _build_tabs_row(self) -> QFrame:
         card = _make_card("SettingsTabsCard")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         self._tabs_host = QWidget()
@@ -538,7 +427,7 @@ class SettingsPage(QWidget):
         host_policy.setVerticalPolicy(QSizePolicy.Policy.Minimum)
         self._tabs_host.setSizePolicy(host_policy)
 
-        flow = _FlowLayout(self._tabs_host, margin=0, hspacing=6, vspacing=6, justify=False, center=True)
+        flow = _FlowLayout(self._tabs_host, margin=0, hspacing=10, vspacing=6, justify=False, center=True)
 
         tab_buttons = []
         for spec in get_settings_section_specs():
@@ -554,14 +443,6 @@ class SettingsPage(QWidget):
             self.settings_buttons[spec.key] = button
             self._category_modes[spec.key] = spec.min_mode
             tab_buttons.append(button)
-
-        # Give every tab the same fixed width (the widest label's natural width,
-        # with a sane floor) so the strip reads as a uniform tab bar instead of
-        # ragged content-sized chips.
-        if tab_buttons:
-            uniform = max([b.sizeHint().width() for b in tab_buttons] + [96])
-            for b in tab_buttons:
-                b.setFixedWidth(uniform)
 
         layout.addWidget(self._tabs_host)
         return card
@@ -621,6 +502,11 @@ class SettingsPage(QWidget):
         guide_button.clicked.connect(self.gui._show_guide)
         actions.addWidget(guide_button)
 
+        wiki_button = QPushButton(_("Вики", "Wiki"))
+        wiki_button.setObjectName("SettingsHeaderButton")
+        wiki_button.clicked.connect(lambda: self.gui.switch_main_page("wiki"))
+        actions.addWidget(wiki_button)
+
         home_button = QPushButton(_("На главную", "Home"))
         register_if_tr(home_button, _("На главную", "Home"))
         home_button.setObjectName("SettingsHeaderButton")
@@ -651,6 +537,7 @@ class SettingsPage(QWidget):
             else:
                 builder(self.gui, page.body_layout)
 
+            self._promote_first_subsection_header(page)
             self._prepare_settings_subsections(page)
 
             self.settings_containers[spec.key] = page
@@ -658,6 +545,38 @@ class SettingsPage(QWidget):
             self._page_indexes[spec.key] = index
 
     _COLLAPSE_STATE_KEY = "SETTINGS_COLLAPSED_SECTIONS"
+
+    def _promote_first_subsection_header(self, page: SettingsSectionPage):
+        headers = page.findChildren(QWidget, "SettingsSubsectionHeader")
+        if not headers:
+            return
+
+        header = headers[0]
+        header.setProperty("hero", "true")
+
+        layout = header.layout()
+        if layout is not None:
+            layout.setContentsMargins(0, 0, 0, 12)
+            layout.setSpacing(5)
+
+        title_label = header.findChild(QLabel, "SettingsSubsectionTitle")
+        if title_label is not None:
+            title_label.setWordWrap(True)
+
+        if layout is None:
+            return
+
+        subtitle_text = _(page.spec.subtitle[0], page.spec.subtitle[1])
+        subtitle = QLabel(subtitle_text)
+        subtitle.setObjectName("SettingsSubsectionSubtitle")
+        subtitle.setWordWrap(True)
+        subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+        insert_at = 1
+        layout.insertWidget(insert_at, subtitle)
+
+        header.style().unpolish(header)
+        header.style().polish(header)
 
     def _collapsed_state_map(self) -> dict:
         try:

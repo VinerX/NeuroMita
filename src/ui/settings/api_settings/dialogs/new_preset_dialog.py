@@ -2,13 +2,21 @@ from __future__ import annotations
 
 from typing import Any
 
-from PyQt6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLineEdit, QVBoxLayout
+from PyQt6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLineEdit, QSizePolicy, QVBoxLayout
 
+from ui.settings.api_settings.widgets import ProviderDelegate
 from utils import _
 
 
 class NewPresetDialog(QDialog):
-    def __init__(self, parent, *, template_options: list[tuple[str, Any]], initial_template_data: Any = None):
+    def __init__(
+        self,
+        parent,
+        *,
+        template_options: list[tuple[str, Any]],
+        initial_template_data: Any = None,
+        template_presets_meta: list[Any] | None = None,
+    ):
         super().__init__(parent)
         self.setModal(True)
         self.setWindowTitle(_("Новый пресет", "New preset"))
@@ -21,8 +29,14 @@ class NewPresetDialog(QDialog):
         form.setContentsMargins(0, 0, 0, 0)
 
         self.template_combo = QComboBox()
+        self.template_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.template_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.template_combo.setMinimumContentsLength(18)
         for label, data in template_options or []:
             self.template_combo.addItem(str(label), data)
+        self.provider_delegate = ProviderDelegate(self.template_combo)
+        self.provider_delegate.set_presets_meta(template_presets_meta or [])
+        self.template_combo.view().setItemDelegate(self.provider_delegate)
         form.addRow(_("Шаблон", "Template"), self.template_combo)
 
         self.name_edit = QLineEdit()
@@ -45,6 +59,7 @@ class NewPresetDialog(QDialog):
                 break
         self.template_combo.setCurrentIndex(initial_index)
         self._on_template_changed(initial_index)
+        self.resize(620, self.sizeHint().height())
 
     def _template_name(self) -> str:
         text = str(self.template_combo.currentText() or "").strip()

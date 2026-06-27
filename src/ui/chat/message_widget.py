@@ -332,7 +332,8 @@ class MessageWidget(QWidget):
     view_response_context_requested = pyqtSignal(str)  # emits sample_id
 
     def __init__(self, role="assistant", speaker_name="", content_text="", show_avatar=True, font_size=12,
-                 message_time="", show_timestamp=True, max_bubble_width=600, sample_id=None, message_id=None, parent=None):
+                 message_time="", show_timestamp=True, max_bubble_width=600, sample_id=None, message_id=None,
+                 show_rating_controls=False, parent=None):
         super().__init__(parent)
         self._role = role
         self._speaker_name = speaker_name
@@ -342,6 +343,7 @@ class MessageWidget(QWidget):
         self._structured_panel = None
         self._sample_id = sample_id
         self._message_id = message_id
+        self._show_rating_controls = bool(show_rating_controls)
 
         self.setStyleSheet("background: transparent; border: none;")
 
@@ -401,7 +403,7 @@ class MessageWidget(QWidget):
         name_row.addWidget(self._name_label)
         name_row.addStretch()
 
-        if role == "assistant" and sample_id:
+        if role == "assistant" and sample_id and self._show_rating_controls:
             self._add_rating_buttons(name_row, sample_id, self._font_sm)
 
         ts = message_time or _time.strftime("%H:%M")
@@ -502,7 +504,7 @@ class MessageWidget(QWidget):
         menu.setStyleSheet("""
             QMenu { background-color: rgba(16,13,25,0.96); color: #f3edf6; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 4px; }
             QMenu::item { padding: 6px 20px; border-radius: 4px; }
-            QMenu::item:selected { background-color: rgba(219,101,150,0.20); }
+            QMenu::item:selected { background-color: rgba(183, 75, 125,0.20); }
         """)
 
         if self._role == "user":

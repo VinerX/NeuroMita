@@ -200,7 +200,7 @@ def _angle_icon(kind: str, size: int = 10):
 
 class CollapsibleSection(QWidget):
     """Внешняя секция"""
-    def __init__(self, title, parent=None, *, icon_name=None):
+    def __init__(self, title, parent=None, *, icon_name=None, subtitle=None):
         super().__init__(parent)
         self.setObjectName('CollapsibleSection')
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -214,8 +214,8 @@ class CollapsibleSection(QWidget):
         self.header = QWidget(self, objectName='CollapsibleHeader')
 
         h = QHBoxLayout(self.header)
-        h.setContentsMargins(4, 2, 4, 2)
-        h.setSpacing(3)
+        h.setContentsMargins(16, 12, 16, 12)
+        h.setSpacing(10)
 
         self.arrow_label = QLabel(self.header)
         self.arrow_label.setObjectName('CollapsibleArrow')
@@ -229,13 +229,25 @@ class CollapsibleSection(QWidget):
         # far right where it used to render as a cropped sliver.
         self.icon_label = self._make_icon(icon_name) if icon_name else None
 
-        self.title_label = QLabel(title, self.header, objectName='CollapsibleTitle')
+        title_col = QVBoxLayout()
+        title_col.setContentsMargins(0, 0, 0, 0)
+        title_col.setSpacing(2)
 
-        h.addWidget(self.arrow_label)
+        self.title_label = QLabel(title, self.header, objectName='CollapsibleTitle')
+        title_col.addWidget(self.title_label)
+
+        self.subtitle_label = None
+        subtitle_text = str(subtitle or "").strip()
+        if subtitle_text:
+            self.subtitle_label = QLabel(subtitle_text, self.header, objectName='CollapsibleSubtitle')
+            self.subtitle_label.setWordWrap(True)
+            title_col.addWidget(self.subtitle_label)
+
         if self.icon_label is not None:
             h.addWidget(self.icon_label)
-        h.addWidget(self.title_label)
+        h.addLayout(title_col, 1)
         h.addStretch()
+        h.addWidget(self.arrow_label)
 
         self.header.setCursor(Qt.CursorShape.PointingHandCursor)
         self.header.mousePressEvent = self.toggle
@@ -243,18 +255,19 @@ class CollapsibleSection(QWidget):
         # Content
         self.content_frame = QWidget(self, objectName='CollapsibleContent')
         self.content_layout = QVBoxLayout(self.content_frame)
-        self.content_layout.setContentsMargins(12, 5, 12, 5)
+        self.content_layout.setContentsMargins(20, 8, 20, 16)
         self.content = self.content_frame
 
         v.addWidget(self.header)
         v.addWidget(self.content_frame)
         self.content_frame.hide()
+        self._apply_state_properties()
 
     def _make_icon(self, name):
         lbl = QLabel(self.header)
         lbl.setObjectName('CollapsibleIcon')
-        lbl.setPixmap(qta.icon(name, color='#ffd2ec').pixmap(15, 15) if qta is not None else QPixmap(15, 15))
-        lbl.setFixedSize(20, 20)
+        lbl.setPixmap(qta.icon(name, color='#ffd2ec').pixmap(14, 14) if qta is not None else QPixmap(14, 14))
+        lbl.setFixedSize(26, 26)
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         return lbl
 
@@ -262,6 +275,20 @@ class CollapsibleSection(QWidget):
         self.is_collapsed = not self.is_collapsed
         self.content_frame.setVisible(not self.is_collapsed)
         self.arrow_label.setPixmap(self.arrow_pix_right if self.is_collapsed else self.arrow_pix_down)
+        self._apply_state_properties()
+
+    def _apply_state_properties(self):
+        expanded = not self.is_collapsed
+        for widget in (self, self.header, self.content_frame):
+            try:
+                widget.setProperty("expanded", expanded)
+                style = widget.style()
+                if style is not None:
+                    style.unpolish(widget)
+                    style.polish(widget)
+                widget.update()
+            except Exception:
+                pass
 
     # --- API ---
     def collapse(self):
@@ -283,12 +310,16 @@ class InnerCollapsibleSection(CollapsibleSection):
     """Под-секция: кликабельный текст без фона"""
     def __init__(self, title, parent=None):
         super().__init__(title, parent)
+        self.setProperty("inner", "true")
         self.is_collapsed = True
         self.header.setObjectName('InnerCollapsibleHeader')
+        self.header.setProperty("inner", "true")
+        self.content_frame.setProperty("inner", "true")
         self.header.setStyleSheet('background: transparent;')
         self.arrow_pix_right = _angle_icon('right', 8)
         self.arrow_pix_down  = _angle_icon('down',  8)
         self.arrow_label.setPixmap(self.arrow_pix_right)
+        self.header.layout().setContentsMargins(4, 6, 4, 6)
         self.header.layout().setSpacing(4)
         self.arrow_label.setFixedWidth(12) 
         self.title_label.setStyleSheet('font-size:9pt;')

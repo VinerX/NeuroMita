@@ -6,6 +6,7 @@ from localization import available_languages, language_display_name, translate_f
 import sys
 from styles.theme import get_theme
 from utils import render_qss
+from ui.widgets.flow_layout import FlowLayout
 
 class EULAWidget(QWidget):
     accepted = pyqtSignal()
@@ -94,22 +95,37 @@ class EULAWidget(QWidget):
             #RejectButton:pressed {
                 background-color: {danger_pressed};
             }
+            #EULALangBar {
+                background: transparent;
+            }
             QRadioButton {
+                color: {muted};
+                font-size: 13px;
+                background: transparent;
+                border: none;
+                padding: 4px 6px;
+                spacing: 7px;
+            }
+            QRadioButton:hover {
                 color: {text};
-                font-size: 12px;
-                padding: 5px 8px;
+            }
+            QRadioButton:checked {
+                color: {text};
+                font-weight: 600;
             }
             QRadioButton::indicator {
-                width: 16px;
-                height: 16px;
+                width: 15px;
+                height: 15px;
                 border-radius: 8px;
-                border: 1px solid rgba(255,255,255,0.18);
-                background-color: rgba({sidebar_panel_rgb}, 1.0);
-                margin-right: 6px;
+                border: 1.5px solid rgba(255,255,255,0.28);
+                background: transparent;
+            }
+            QRadioButton::indicator:hover {
+                border: 1.5px solid {accent};
             }
             QRadioButton::indicator:checked {
                 background-color: {accent};
-                border: 1px solid {accent_alt};
+                border: 1.5px solid {accent_alt};
             }
             QFrame#Separator {
                 background-color: {border_soft};
@@ -143,26 +159,30 @@ class EULAWidget(QWidget):
         separator.setFrameShape(QFrame.Shape.HLine)
         container_layout.addWidget(separator)
         
-        lang_layout = QHBoxLayout()
-        lang_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lang_layout.setSpacing(15)
-        
+        # Языки выкладываем во flow-раскладку: при росте числа языков строка
+        # сама переносится на следующую (раньше один QHBoxLayout сжимал и
+        # обрезал названия — «Deutsch» → «Deutsc»).
+        lang_container = QWidget()
+        lang_container.setObjectName("EULALangBar")
+        lang_flow = FlowLayout(lang_container, margin=2, hspacing=10, vspacing=8, center=True)
+
         self.lang_group = QButtonGroup()
         for idx, code in enumerate(available_languages()):
             button = QRadioButton(language_display_name(code))
             button.setProperty("lang_code", code.lower())
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
             if code.lower() == self.current_language:
                 button.setChecked(True)
             self.lang_group.addButton(button, idx)
             self._lang_buttons[code.lower()] = button
-            lang_layout.addWidget(button)
+            lang_flow.addWidget(button)
         self.lang_group.buttonClicked.connect(self._on_language_changed)
 
         if self.current_language not in self._lang_buttons:
             self.current_language = "ru"
             if "ru" in self._lang_buttons:
                 self._lang_buttons["ru"].setChecked(True)
-        container_layout.addLayout(lang_layout)
+        container_layout.addWidget(lang_container)
         
         self.text_edit = QTextEdit()
         self.text_edit.setObjectName("EULAText")
@@ -210,99 +230,11 @@ class EULAWidget(QWidget):
         self.accept_button.setText(
             translate_for_language(self.current_language, "Принять", "Accept")
         )
-        self.text_edit.setPlainText(
-            translate_for_language(self.current_language, self._get_russian_text(), self._get_english_text())
-        )
-            
-    def _get_russian_text(self):
-        return """ЛИЦЕНЗИОННОЕ СОГЛАШЕНИЕ КОНЕЧНОГО ПОЛЬЗОВАТЕЛЯ
-
-Пожалуйста, внимательно прочитайте это соглашение перед использованием программы NeuroMita.
-
-1. ОТКАЗ ОТ ОТВЕТСТВЕННОСТИ
-Разработчики NeuroMita НЕ НЕСУТ ОТВЕТСТВЕННОСТИ за контент, генерируемый искусственным интеллектом. Весь контент создается алгоритмами машинного обучения и может содержать неточности, ошибки или неприемлемый материал.
-
-2. ОГРАНИЧЕНИЯ ИСПОЛЬЗОВАНИЯ
-Вам ЗАПРЕЩАЕТСЯ использовать NeuroMita для:
-• Создания незаконного, вредоносного или оскорбительного контента
-• Нарушения авторских прав или интеллектуальной собственности
-• Распространения дезинформации или вредоносной информации
-• Любых действий, нарушающих законодательство вашей страны
-• Создания контента, который может причинить вред людям
-
-3. КОНФИДЕНЦИАЛЬНОСТЬ И ДАННЫЕ
-• NeuroMita может сохранять историю чатов локально на вашем устройстве
-• При использовании внешних API ваши данные могут передаваться третьим сторонам (OpenAI, Anthropic и др.)
-• Мы не собираем персональные данные без вашего явного согласия
-• Вы несете ответственность за безопасность своих API ключей
-
-4. ОТКАЗ ОТ ГАРАНТИЙ
-Программа предоставляется "КАК ЕСТЬ" без каких-либо гарантий, явных или подразумеваемых. Разработчики не гарантируют:
-• Бесперебойную или безошибочную работу программы
-• Точность или достоверность генерируемого контента
-• Совместимость со всеми системами и конфигурациями
-
-5. ОГРАНИЧЕНИЕ ОТВЕТСТВЕННОСТИ
-Ни при каких обстоятельствах разработчики не несут ответственности за:
-• Любые прямые, косвенные или случайные убытки
-• Потерю данных или прибыли
-• Ущерб, возникший в результате использования или невозможности использования программы
-
-6. ИЗМЕНЕНИЯ И ОБНОВЛЕНИЯ
-Разработчики оставляют за собой право изменять условия данного соглашения в будущих версиях программы.
-
-7. ПРИМЕНИМОЕ ПРАВО
-Данное соглашение регулируется международным правом в области программного обеспечения.
-
-НАЖИМАЯ "ПРИНЯТЬ", ВЫ ПОДТВЕРЖДАЕТЕ, ЧТО:
-• Прочитали и поняли все условия соглашения
-• Принимаете на себя всю ответственность за использование программы
-• Не будете использовать программу в незаконных целях"""
-        
-    def _get_english_text(self):
-        return """END USER LICENSE AGREEMENT
-
-Please read this agreement carefully before using NeuroMita.
-
-1. DISCLAIMER
-The developers of NeuroMita ARE NOT RESPONSIBLE for content generated by artificial intelligence. All content is created by machine learning algorithms and may contain inaccuracies, errors, or inappropriate material.
-
-2. USAGE RESTRICTIONS
-You are PROHIBITED from using NeuroMita to:
-• Create illegal, harmful, or offensive content
-• Violate copyrights or intellectual property
-• Spread misinformation or harmful information
-• Engage in any activities that violate the laws of your country
-• Create content that may harm individuals
-
-3. PRIVACY AND DATA
-• NeuroMita may save chat history locally on your device
-• When using external APIs, your data may be transmitted to third parties (OpenAI, Anthropic, etc.)
-• We do not collect personal data without your explicit consent
-• You are responsible for the security of your API keys
-
-4. DISCLAIMER OF WARRANTIES
-The software is provided "AS IS" without any warranties, express or implied. The developers do not guarantee:
-• Uninterrupted or error-free operation of the software
-• Accuracy or reliability of generated content
-• Compatibility with all systems and configurations
-
-5. LIMITATION OF LIABILITY
-Under no circumstances shall the developers be liable for:
-• Any direct, indirect, or incidental damages
-• Loss of data or profits
-• Damage arising from the use or inability to use the software
-
-6. CHANGES AND UPDATES
-The developers reserve the right to modify the terms of this agreement in future versions of the software.
-
-7. GOVERNING LAW
-This agreement is governed by international software law.
-
-BY CLICKING "ACCEPT", YOU CONFIRM THAT:
-• You have read and understood all terms of the agreement
-• You accept full responsibility for using the software
-• You will not use the software for illegal purposes"""
+        # Текст соглашения берём из языкового модуля EULA (#3): раньше для всех
+        # языков, кроме RU/EN, показывался английский (translate_for_language падал
+        # в en-фолбэк, т.к. полный текст не лежит в построчном каталоге).
+        from localization.eula_texts import get_eula_text
+        self.text_edit.setPlainText(get_eula_text(self.current_language))
         
     def _on_accept(self):
         # Сохраняем выбранный на стартовом экране язык интерфейса.

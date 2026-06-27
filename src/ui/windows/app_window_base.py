@@ -554,6 +554,7 @@ class AppWindowBase(QMainWindow):
             message_time = entry.get("time", "???")
             structured_data = entry.get("structured_data")
             message_id = entry.get("message_id")
+            sample_id = entry.get("sample_id")
             thinking_text = entry.get("thinking")
             try:
                 show_think_in_gui = bool(self._get_setting("SHOW_THINK_IN_GUI", False))
@@ -569,7 +570,8 @@ class AppWindowBase(QMainWindow):
                 message_renderer.insert_message(self, role, content, message_time=message_time,
                                                 structured_data=structured_data,
                                                 message_id=message_id, character_id=character_id,
-                                                ui_images=entry.get("_ui_images") or [])
+                                                ui_images=entry.get("_ui_images") or [],
+                                                sample_id=sample_id)
             except Exception as ex:
                 logger.error(f"_on_history_loaded: НУ Я ПОНЯЛ: {str(ex)}")
         self.update_debug_info()
@@ -840,10 +842,12 @@ class AppWindowBase(QMainWindow):
             message_time = entry.get("time", "???")
             structured_data = entry.get("structured_data")
             message_id = entry.get("message_id")
+            sample_id = entry.get("sample_id")
             message_renderer.insert_message(self, role, content, insert_at_start=True,
                                             message_time=message_time, structured_data=structured_data,
                                             message_id=message_id, character_id=character_id,
-                                            ui_images=entry.get("_ui_images") or [])
+                                            ui_images=entry.get("_ui_images") or [],
+                                            sample_id=sample_id)
         QTimer.singleShot(0, lambda: scrollbar.setValue(scrollbar.maximum() - old_max + old_value))
         logger.info(f"Загружено еще {len(messages_to_prepend)} сообщений.")
 

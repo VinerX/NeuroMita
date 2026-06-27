@@ -38,3 +38,4 @@ CLAUDE.md
 /api_artifacts
 /temp
 _voice_bundles/
+/.tmp_pycache_check

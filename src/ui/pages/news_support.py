@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+import threading
+from typing import Any, Callable
 
 from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices
 
 from main_logger import logger
+from utils.release_assets import raw_release_has_launcher_assets
 from ui.widgets.launcher_dashboard_helpers import DashboardAction, NewsItem
 from utils import _
 
@@ -23,8 +25,66 @@ _ORDERED_RE = re.compile(r"^\s*(\d+)\.\s+")
 _MD_DECORATION_RE = re.compile(r"[*_~`>#]")
 
 
+_fetch_lock = threading.Lock()
+
+
 def invalidate_news_releases(gui) -> None:
     gui._news_releases_cache = None
+
+
+def load_news_releases_async(gui, on_ready: Callable[[list[dict[str, Any]]], None]) -> None:
+    """Неблокирующая загрузка ленты релизов с GitHub.
+
+    `on_ready(releases)` вызывается ВСЕГДА:
+      - сразу и синхронно, если данные уже в кэше;
+      - иначе из фонового потока, когда сеть ответит (или таймаут/ошибка → []).
+    Вызывающий сам обязан перепрыгнуть в GUI-поток внутри `on_ready` (через
+    сигнал / QTimer / собственный диспетч), т.к. колбэк может прийти из воркера.
+
+    Параллельные запросы коалесцируются: пока один поток грузит, остальные
+    подписчики просто ждут его результат — повторного обращения к сети нет.
+    Это и есть фикс зависания GUI: раньше `get_news_releases` дёргал
+    `requests.get(timeout=10)` прямо в GUI-потоке (кнопка «Обновить», старт
+    главной страницы) и при недоступном GitHub морозил окно на ~10 секунд.
+    """
+    cached = getattr(gui, "_news_releases_cache", None)
+    if cached is not None:
+        on_ready(cached)
+        return
+
+    waiters = getattr(gui, "_news_releases_waiters", None)
+    if waiters is None:
+        waiters = []
+        gui._news_releases_waiters = waiters
+
+    start_worker = False
+    with _fetch_lock:
+        # Кэш мог наполниться, пока ждали лок — проверяем ещё раз под локом.
+        cached = getattr(gui, "_news_releases_cache", None)
+        if cached is not None:
+            on_ready(cached)
+            return
+        waiters.append(on_ready)
+        if not getattr(gui, "_news_releases_inflight", False):
+            gui._news_releases_inflight = True
+            start_worker = True
+
+    if not start_worker:
+        return
+
+    def worker():
+        releases = get_news_releases(gui)
+        with _fetch_lock:
+            pending = list(waiters)
+            waiters.clear()
+            gui._news_releases_inflight = False
+        for callback in pending:
+            try:
+                callback(releases)
+            except Exception:
+                logger.exception("[news] on_ready callback failed")
+
+    threading.Thread(target=worker, daemon=True, name="news-fetch").start()
 
 
 def get_news_releases(gui) -> list[dict[str, Any]]:
@@ -41,15 +101,16 @@ def get_news_releases(gui) -> list[dict[str, Any]]:
             headers={"Accept": "application/vnd.github+json"},
         )
         if response.status_code != 200:
-            logger.info(f"Не удалось получить релизы: HTTP {response.status_code}")
+            logger.info(f"[news] Failed to fetch releases: HTTP {response.status_code}")
             gui._news_releases_cache = []
             return []
 
-        data = response.json() or []
+        raw_data = response.json() or []
+        data = [item for item in raw_data if raw_release_has_launcher_assets(item)]
         gui._news_releases_cache = data
         return data
     except Exception as exc:
-        logger.info(f"Ошибка при получении релизов: {exc}")
+        logger.info(f"[news] Failed to fetch releases: {exc}")
         gui._news_releases_cache = []
         return []
 
@@ -220,6 +281,7 @@ def build_release_news_items(gui, *, limit: int | None = 8) -> list[NewsItem]:
                 name,
                 summary,
                 tag=tag,
+                item_id=tag_name or name,
                 timestamp=published,
                 full_text=full_text,
                 action=DashboardAction(

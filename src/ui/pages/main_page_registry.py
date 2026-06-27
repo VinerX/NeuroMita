@@ -11,6 +11,7 @@ from .logs_page import build_logs_page
 from .news_page import build_news_page
 from .sandbox_page import build_sandbox_page
 from .settings_page import build_settings_page
+from .wiki_page import build_wiki_page
 
 PageFactory = Callable[[object], QWidget]
 
@@ -27,6 +28,7 @@ MAIN_PAGE_SPECS: tuple[MainPageSpec, ...] = (
     MainPageSpec("sandbox", build_sandbox_page),
     MainPageSpec("settings", build_settings_page),
     MainPageSpec("developer", build_developer_page),
+    MainPageSpec("wiki", build_wiki_page),
     MainPageSpec("logs", build_logs_page),
 )
 

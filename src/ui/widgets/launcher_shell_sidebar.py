@@ -52,6 +52,7 @@ DEFAULT_SIDEBAR_SECTIONS: tuple[SidebarSection, ...] = (
     SidebarSection("sandbox", "Песочница", "Sandbox", "fa6s.flask", "Быстрый вход в чат", "Quick chat access"),
     SidebarSection("news", "Релизы", "Releases", "fa6s.rectangle-list", "Лента релизов проекта", "Project release feed"),
     SidebarSection("developer", "Дев", "Dev", "fa6s.bug", "Отладка и дообучение", "Debug & fine-tuning", min_mode="full"),
+    SidebarSection("wiki", "Вики", "Wiki", "fa6s.book-open", "Полная база знаний по приложению", "Full in-app knowledge base"),
     SidebarSection("logs", "Логи", "Logs", "fa6s.list", "События и диагностика", "Events and diagnostics"),
 )
 
@@ -110,7 +111,9 @@ class LauncherSidebarWidget(QFrame):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 20, 18, 18)
+        # Чуть уже горизонтальные поля (18→13): освобождаем место в футере, чтобы
+        # строка версии не обрезалась (фидбэк vinerx «не влезает версия»).
+        layout.setContentsMargins(13, 20, 13, 18)
         layout.setSpacing(12)
 
         layout.addWidget(self._build_brand_card())
@@ -271,8 +274,8 @@ class LauncherSidebarWidget(QFrame):
         wrapper.setObjectName("LauncherShellFooterBlock")
         wrapper.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QHBoxLayout(wrapper)
-        layout.setContentsMargins(2, 0, 2, 0)
-        layout.setSpacing(6)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
 
         # Контейнер для «быстрых» пилюль языков — его содержимое пересобирается
         # при смене языка (вторая пилюля зависит от текущего языка).
@@ -289,7 +292,7 @@ class LauncherSidebarWidget(QFrame):
         lang_settings_btn.setObjectName("LauncherShellLangGlobe")
         lang_settings_btn.setIcon(qta.icon("fa6s.globe", color="#ffd2ec"))
         lang_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        lang_settings_btn.setFixedSize(28, 28)
+        lang_settings_btn.setFixedSize(26, 26)
         tr_set(lang_settings_btn, "Настройки языка", "Language settings", "setToolTip")
         lang_settings_btn.clicked.connect(lambda: self.utility_requested.emit("language"))
         layout.addWidget(lang_settings_btn)
@@ -350,7 +353,7 @@ class LauncherSidebarWidget(QFrame):
             button.setObjectName("LauncherShellLangPill")
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setFixedSize(40, 28)
+            button.setFixedSize(34, 26)
             button.clicked.connect(lambda checked=False, value=code: self.utility_requested.emit(f"language:{value}"))
             self._lang_buttons[code] = button
             layout.addWidget(button)

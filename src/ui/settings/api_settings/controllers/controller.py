@@ -131,6 +131,8 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
         v = self.view
 
         v.custom_presets_list.itemSelectionChanged.connect(self._safe(self._on_selection_changed, "selection_changed"))
+        if hasattr(v.custom_presets_list, "create_requested"):
+            v.custom_presets_list.create_requested.connect(self._safe(self._add_custom_preset_async, "add_preset_from_placeholder"))
 
         v.add_preset_btn.clicked.connect(self._safe(self._add_custom_preset_async, "add_preset"))
         v.remove_preset_btn.clicked.connect(self._safe(self._remove_custom_preset_async, "remove_preset"))

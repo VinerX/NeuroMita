@@ -287,7 +287,9 @@ class CaptureController:
             
     def _start_periodic_check(self):
         def check_loop():
-            while True:
+            # Останавливаемся при закрытии приложения (шина остановлена): иначе
+            # send_interval_image() дёргает захват/GUI во время teardown → access violation.
+            while self.event_bus.is_running:
                 try:
                     if self.image_request_timer_running:
                         self.send_interval_image()

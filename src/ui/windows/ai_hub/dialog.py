@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import shutil
+import threading
 from typing import Any
 
 from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
@@ -26,7 +27,7 @@ from main_logger import logger
 from styles.ai_hub_styles import get_stylesheet as get_ai_hub_stylesheet
 from ui.windows.voice_action_windows import VoiceInstallationWindow
 from utils import getTranslationVariant as _
-from utils.gpu_utils import check_gpu_provider
+from utils.gpu_utils import check_gpu_provider, format_primary_gpu_label, get_primary_gpu_name
 
 from .constants import CATEGORY_ICONS, CATEGORY_LABELS, CATEGORY_ORDER, ROW_CATEGORY_MAP
 from .helpers import meta_from_row, qicon, qpixmap, row_category, status_from_row
@@ -51,12 +52,13 @@ class AIHubDialog(QDialog):
         self._category_buttons: dict[str, CategoryButton] = {}
         self._active_install_window: VoiceInstallationWindow | None = None
         self._queue_state: dict[str, Any] = {"running": None, "pending": []}
+        self._refresh_generation = 0
+        self._refresh_inflight = False
 
         self._ui_call_requested.connect(self._execute_ui_call)
 
         self._build()
         self._bind_events()
-        QTimer.singleShot(0, lambda: self.refresh(force=True))
 
     # ------------------------------------------------------------ thread hop
     def _execute_ui_call(self, fn) -> None:
@@ -78,9 +80,12 @@ class AIHubDialog(QDialog):
         self.setObjectName("AIHubDialog")
         self.setWindowTitle(_("AI Hub", "AI Hub"))
         self.setModal(False)
-        self.resize(1280, 820)
-        self.setMinimumSize(1100, 700)
+        # Размеры под экран: на узких/масштабированных дисплеях жёсткие 1280×820 и
+        # min 1100×700 уводили контент (сайдбар + панель настроек) за левую кромку
+        # окна — «интерфейс поехал» (#21). Клампим к доступной геометрии экрана и
+        # центрируем, чтобы окно гарантированно помещалось и не уезжало off-screen.
         self.setStyleSheet(get_ai_hub_stylesheet())
+        self._apply_screen_aware_geometry(preferred=(1280, 820), minimum=(1000, 640))
 
         # Use the native OS window chrome — no custom title bar, no shadow.
         # The root frame stays as a styling anchor so the QSS still matches
@@ -99,6 +104,110 @@ class AIHubDialog(QDialog):
         root.addLayout(self._build_header())
         root.addLayout(self._build_body(), 1)
         root.addLayout(self._build_footer())
+        root.addWidget(self._build_install_bar())
+
+    def _build_install_bar(self) -> QFrame:
+        """Нижняя плашка установки «как в Steam» (#25): во время установки показывает
+        текущий компонент, прогресс-бар и процент·скорость. В простое скрыта."""
+        from PyQt6.QtWidgets import QProgressBar
+
+        bar = QFrame()
+        bar.setObjectName("AIHubInstallBar")
+        bar.setVisible(False)
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(14, 8, 14, 8)
+        lay.setSpacing(12)
+
+        self._install_bar_icon = QLabel()
+        self._install_bar_icon.setFixedSize(16, 16)
+        pix = qpixmap("fa5s.download", "#dc588a", 14)
+        if pix is not None:
+            self._install_bar_icon.setPixmap(pix)
+        lay.addWidget(self._install_bar_icon, 0)
+
+        self._install_bar_title = QLabel("")
+        self._install_bar_title.setObjectName("AIHubInstallBarTitle")
+        lay.addWidget(self._install_bar_title, 0)
+
+        self._install_bar_progress = QProgressBar()
+        self._install_bar_progress.setObjectName("AIHubInstallBarProgress")
+        self._install_bar_progress.setRange(0, 100)
+        self._install_bar_progress.setValue(0)
+        self._install_bar_progress.setTextVisible(False)
+        self._install_bar_progress.setFixedHeight(8)
+        lay.addWidget(self._install_bar_progress, 1)
+
+        self._install_bar_detail = QLabel("")
+        self._install_bar_detail.setObjectName("AIHubInstallBarDetail")
+        lay.addWidget(self._install_bar_detail, 0)
+
+        # Чип очереди: «+N в очереди» (полный список — в всплывающей подсказке).
+        self._install_bar_queue = QLabel("")
+        self._install_bar_queue.setObjectName("AIHubInstallBarQueue")
+        self._install_bar_queue.setVisible(False)
+        lay.addWidget(self._install_bar_queue, 0)
+
+        # Кнопка возврата к окну логов установки — переехала с левого края в
+        # нижнюю плашку, чтобы разгрузить сайдбар и быть всегда на виду (фидбэк Артёма).
+        self._install_logs_btn = QPushButton(_("Логи установки", "Install logs"))
+        self._install_logs_btn.setObjectName("AIHubInstallBarLogsBtn")
+        self._install_logs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._install_logs_btn.setVisible(False)
+        logs_icon = qicon("fa5s.terminal", "#f0d9e6")
+        if logs_icon is not None:
+            self._install_logs_btn.setIcon(logs_icon)
+            self._install_logs_btn.setIconSize(QSize(13, 13))
+        self._install_logs_btn.clicked.connect(self._on_reopen_install_logs)
+        lay.addWidget(self._install_logs_btn, 0)
+
+        self._install_bar = bar
+        return bar
+
+    def _set_install_bar(self, *, visible: bool, title: str = "", progress=None, detail: str = "") -> None:
+        bar = getattr(self, "_install_bar", None)
+        if bar is None:
+            return
+        bar.setVisible(bool(visible))
+        if not visible:
+            return
+        if title:
+            self._install_bar_title.setText(self._shorten(title, 42))
+        if progress is None:
+            # Неопределённый прогресс — «бегущая» полоса.
+            self._install_bar_progress.setRange(0, 0)
+        else:
+            self._install_bar_progress.setRange(0, 100)
+            try:
+                self._install_bar_progress.setValue(max(0, min(100, int(progress))))
+            except Exception:
+                pass
+        self._install_bar_detail.setText(detail or "")
+
+    def _apply_screen_aware_geometry(self, *, preferred: tuple[int, int], minimum: tuple[int, int]) -> None:
+        """Подгоняем размер окна под доступную геометрию экрана и центрируем.
+        Гарантирует, что окно помещается на экран и не уезжает за левую кромку (#21)."""
+        from PyQt6.QtWidgets import QApplication
+        try:
+            screen = self.screen() or QApplication.primaryScreen()
+            avail = screen.availableGeometry()
+        except Exception:
+            self.resize(*preferred)
+            self.setMinimumSize(*minimum)
+            return
+
+        margin = 48  # запас под рамки/таскбар
+        max_w = max(minimum[0], avail.width() - margin)
+        max_h = max(minimum[1], avail.height() - margin)
+        w = min(preferred[0], max_w)
+        h = min(preferred[1], max_h)
+        # Минимум не должен превышать доступный экран, иначе окно нельзя ужать
+        # и контент клиппится.
+        self.setMinimumSize(min(minimum[0], w), min(minimum[1], h))
+        self.resize(w, h)
+        # Центрируем в доступной области экрана.
+        x = avail.x() + max(0, (avail.width() - w) // 2)
+        y = avail.y() + max(0, (avail.height() - h) // 2)
+        self.move(x, y)
 
     def _build_header(self) -> QHBoxLayout:
         header = QHBoxLayout()
@@ -109,7 +218,7 @@ class AIHubDialog(QDialog):
         badge.setObjectName("AIHubIconBadge")
         badge.setFixedSize(48, 48)
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pix = qpixmap("fa5s.magic", "#db6596", 22)
+        pix = qpixmap("fa5s.magic", "#b74b7d", 22)
         if pix is not None:
             badge.setPixmap(pix)
         else:
@@ -124,8 +233,8 @@ class AIHubDialog(QDialog):
         title_box.addWidget(title)
         subtitle = QLabel(
             _(
-                "Установка, удаление и обслуживание локальных AI-моделей и системных зависимостей.",
-                "Install, remove and maintain local AI models and system dependencies.",
+                "Установка, удаление и обслуживание локальных AI-компонентов и системных зависимостей.",
+                "Install, remove and maintain local AI components and system dependencies.",
             )
         )
         subtitle.setObjectName("AIHubSubtitle")
@@ -167,13 +276,24 @@ class AIHubDialog(QDialog):
             self._category_buttons[key] = btn
             l.addWidget(btn, 0)
 
+        self._activity_panel = QFrame()
+        self._activity_panel.setObjectName("AIHubActivityPanel")
+        self._activity_layout = QVBoxLayout(self._activity_panel)
+        self._activity_layout.setContentsMargins(10, 10, 10, 10)
+        self._activity_layout.setSpacing(8)
+        self._activity_panel.setVisible(False)
+
+        self._activity_header = QLabel(_("АКТИВНОСТЬ", "ACTIVITY"))
+        self._activity_header.setObjectName("AIHubSidebarHeader")
+        self._activity_layout.addWidget(self._activity_header)
+
         # task status (install / progress)
         self.task_status_label = QLabel("")
         self.task_status_label.setObjectName("AIHubSidebarStatus")
         self.task_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.task_status_label.setWordWrap(True)
         self.task_status_label.setVisible(False)
-        l.addWidget(self.task_status_label)
+        self._activity_layout.addWidget(self.task_status_label)
 
         # Панель очереди установок: текущая задача + ожидающие (с кнопкой отмены).
         self._queue_panel = QFrame()
@@ -182,18 +302,12 @@ class AIHubDialog(QDialog):
         self._queue_layout.setContentsMargins(8, 8, 8, 8)
         self._queue_layout.setSpacing(4)
         self._queue_panel.setVisible(False)
-        l.addWidget(self._queue_panel)
+        self._activity_layout.addWidget(self._queue_panel)
 
-        self._install_logs_btn = QPushButton(_("Логи установки", "Install logs"))
-        self._install_logs_btn.setObjectName("AIHubSidebarBtn")
-        self._install_logs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._install_logs_btn.setVisible(False)
-        logs_icon = qicon("fa5s.terminal", "#db6596")
-        if logs_icon is not None:
-            self._install_logs_btn.setIcon(logs_icon)
-            self._install_logs_btn.setIconSize(QSize(13, 13))
-        self._install_logs_btn.clicked.connect(self._on_reopen_install_logs)
-        l.addWidget(self._install_logs_btn)
+        # Кнопка «Логи установки» переехала в нижнюю плашку (_build_install_bar),
+        # чтобы разгрузить левый край (фидбэк Артёма). Здесь её больше нет.
+
+        l.addWidget(self._activity_panel)
 
         l.addStretch(1)
 
@@ -201,7 +315,8 @@ class AIHubDialog(QDialog):
         self.btn_refresh = QPushButton(_("Проверить обновления", "Check for updates"))
         self.btn_refresh.setObjectName("AIHubSidebarBtn")
         self.btn_refresh.setCursor(Qt.CursorShape.PointingHandCursor)
-        ic = qicon("fa5s.sync", "#db6596")
+        self.btn_refresh.setText(_("Обновить список", "Refresh list"))
+        ic = qicon("fa5s.sync", "#b74b7d")
         if ic is not None:
             self.btn_refresh.setIcon(ic)
             self.btn_refresh.setIconSize(QSize(13, 13))
@@ -213,7 +328,7 @@ class AIHubDialog(QDialog):
         self.btn_clear_cache = QPushButton(_("Очистить кэш загрузок", "Clear download cache"))
         self.btn_clear_cache.setObjectName("AIHubSidebarBtn")
         self.btn_clear_cache.setCursor(Qt.CursorShape.PointingHandCursor)
-        ic_cache = qicon("fa5s.broom", "#db6596")
+        ic_cache = qicon("fa5s.broom", "#b74b7d")
         if ic_cache is not None:
             self.btn_clear_cache.setIcon(ic_cache)
             self.btn_clear_cache.setIconSize(QSize(13, 13))
@@ -285,7 +400,7 @@ class AIHubDialog(QDialog):
         ico.setObjectName("AIHubBannerIcon")
         ico.setFixedSize(46, 46)
         ico.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pix = qpixmap("fa5s.microchip", "#db6596", 22)
+        pix = qpixmap("fa5s.microchip", "#b74b7d", 22)
         if pix is not None:
             ico.setPixmap(pix)
         bl.addWidget(ico, 0)
@@ -324,7 +439,7 @@ class AIHubDialog(QDialog):
     def _build_toolbar(self) -> QVBoxLayout:
         """Two-row toolbar.
 
-        Row 1: «Доступные модели» (page header) + backend filter pills
+        Row 1: «Доступные компоненты» (page header) + backend filter pills
                + search + sort.
         Row 2: install / settings tab switcher.
         """
@@ -336,7 +451,7 @@ class AIHubDialog(QDialog):
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(10)
 
-        title = QLabel(_("Доступные модели", "Available models"))
+        title = QLabel(_("Доступные компоненты", "Available components"))
         title.setObjectName("AIHubSectionTitle")
         top.addWidget(title, 0)
 
@@ -346,7 +461,7 @@ class AIHubDialog(QDialog):
         self._open_models_btn = QPushButton(_("Открыть папку моделей", "Open models folder"))
         self._open_models_btn.setObjectName("AIHubSecondary")
         self._open_models_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        folder_icon = qicon("fa5s.folder-open", "#db6596")
+        folder_icon = qicon("fa5s.folder-open", "#b74b7d")
         if folder_icon is not None:
             self._open_models_btn.setIcon(folder_icon)
             self._open_models_btn.setIconSize(QSize(13, 13))
@@ -379,7 +494,7 @@ class AIHubDialog(QDialog):
 
         self.search_box = QLineEdit()
         self.search_box.setObjectName("AIHubSearch")
-        self.search_box.setPlaceholderText(_("Поиск моделей...", "Search models..."))
+        self.search_box.setPlaceholderText(_("Поиск компонентов...", "Search components..."))
         self.search_box.setFixedWidth(240)
         si = qicon("fa5s.search", "#bca9bb")
         if si is not None:
@@ -444,11 +559,13 @@ class AIHubDialog(QDialog):
         footer.setSpacing(12)
 
         self.stat_installed = Stat("fa5s.download", _("Установлено", "Installed"))
-        self.stat_updates = Stat("fa5s.sync", _("Доступно обновлений", "Updates available"))
+        # «Доступно обновлений» убрано: компоненты AI Hub не обновляются инкрементально,
+        # счётчик всегда был 0 и только путал (фидбэк Артёма).
+        self.stat_gpu = Stat("fa5s.microchip", "GPU")
         self.stat_disk = Stat("fa5s.hdd", _("Свободно на диске", "Free disk"))
         self.stat_check = Stat("fa5s.clock", _("Последняя проверка", "Last check"))
 
-        for s in (self.stat_installed, self.stat_updates, self.stat_disk, self.stat_check):
+        for s in (self.stat_installed, self.stat_gpu, self.stat_disk, self.stat_check):
             s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             footer.addWidget(s, 1)
 
@@ -478,13 +595,43 @@ class AIHubDialog(QDialog):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        if not self._loaded_once:
+        if not self._loaded_once and not self._refresh_inflight:
             QTimer.singleShot(0, lambda: self.refresh(force=True))
 
     def refresh(self, *, force: bool = False) -> None:
-        self._rows = self._fetch_rows(force=force)
+        self._refresh_generation += 1
+        generation = self._refresh_generation
+        self._refresh_inflight = True
+        self.btn_refresh.setEnabled(False)
+
+        def _worker() -> None:
+            rows = self._fetch_rows(force=force)
+            checked_at = _dt.datetime.now()
+            self._on_gui_thread(lambda: self._apply_refresh_result(generation, rows, checked_at))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_refresh_result(
+        self,
+        generation: int,
+        rows: list[dict[str, Any]],
+        checked_at: _dt.datetime,
+    ) -> None:
+        if generation != self._refresh_generation:
+            return
+        self._refresh_inflight = False
+        self.btn_refresh.setEnabled(True)
+        # Пустой ответ при наличии прежних данных — почти всегда таймаут/сбой
+        # переопроса (а не реально пустой список: встроенные компоненты есть всегда).
+        # Не стираем уже показанные карточки, иначе «все модели исчезают» (фидбэк Артёма).
+        if not rows and self._rows:
+            logger.warning("AI Hub: пустой результат обновления — оставляю прежний список компонентов")
+            self._last_check_ts = checked_at
+            self._refresh_views()
+            return
+        self._rows = rows
         self._loaded_once = True
-        self._last_check_ts = _dt.datetime.now()
+        self._last_check_ts = checked_at
         self._refresh_views()
 
     def _refresh_views(self) -> None:
@@ -527,10 +674,15 @@ class AIHubDialog(QDialog):
 
     def _fetch_rows(self, *, force: bool = False) -> list[dict[str, Any]]:
         try:
+            # force=True переопрашивает статус КАЖДОГО компонента (pip-метаданные,
+            # файлы) — это медленно, особенно сразу после установки. Со старым
+            # таймаутом 5с переопрос не успевал → пустой ответ → список «компоненты
+            # исчезали» (фидбэк Артёма). Даём принудительному обновлению больше времени.
+            timeout = 30.0 if force else 8.0
             result = self.event_bus.emit_and_wait(
                 Events.Installable.LIST,
                 {"include_status": True, "refresh": bool(force)},
-                timeout=5.0,
+                timeout=timeout,
             )
             rows = result[0] if result and isinstance(result[0], list) else []
             return [row for row in rows if isinstance(row, dict)]
@@ -674,6 +826,7 @@ class AIHubDialog(QDialog):
             return
 
         gpu_vendor = self._detect_gpu_vendor()
+        self._component_cards = []
         for row in rows:
             card = ModelCard(
                 row,
@@ -686,24 +839,36 @@ class AIHubDialog(QDialog):
                     cid, Events.Installable.INSTALL, extra={"clean": True}
                 ),
             )
+            self._component_cards.append(card)
             self._scroll_layout.insertWidget(self._scroll_layout.count() - 1, card)
+        # Если в этот момент уже идёт установка — сразу заблокировать кнопки (#26).
+        self._apply_busy_state()
+
+    def _apply_busy_state(self) -> None:
+        """Пока выполняется любая установка — все кнопки «Установить» заблокированы,
+        а карточка, которая ставится прямо сейчас, показывает «Установка…» (#26)."""
+        running = self._queue_state.get("running") if isinstance(self._queue_state, dict) else None
+        busy = bool(running)
+        running_cid = str((running or {}).get("component_id") or "").strip()
+        for card in getattr(self, "_component_cards", []) or []:
+            try:
+                installing = busy and bool(running_cid) and card._component_id() == running_cid
+                card.set_busy(busy, installing=installing)
+            except Exception:
+                pass
 
     # ----------------------------------------------------------- summary / banner
     def _update_summary(self) -> None:
         # "Models" stats — count only model categories (tts/asr/rag).
         # Backend ('Системное ядро') and deps ('Зависимости') aren't models.
-        _MODEL_CATEGORIES = {"tts", "voices", "asr", "rag"}
-        model_rows = [r for r in self._rows if row_category(r) in _MODEL_CATEGORIES]
-        installed = sum(1 for r in model_rows if status_from_row(r).get("installed"))
-        updates = sum(
-            1
-            for r in model_rows
-            if str(status_from_row(r).get("code") or "") == "needs_update"
-            or status_from_row(r).get("update_available")
-        )
-        models_word = _("моделей", "models")
-        self.stat_installed.setValue(str(installed), models_word)
-        self.stat_updates.setValue(str(updates), models_word)
+        _COUNTED_CATEGORIES = {"tts", "voices", "asr", "rag", "extras", "backend", "dependencies"}
+        counted_rows = [r for r in self._rows if row_category(r) in _COUNTED_CATEGORIES]
+        installed = sum(1 for r in counted_rows if status_from_row(r).get("installed"))
+        components_word = _("компонентов", "components")
+        self.stat_installed.setValue(str(installed), components_word)
+        gpu_label = format_primary_gpu_label()
+        gpu_vendor = self._detect_gpu_vendor()
+        self.stat_gpu.setValue(gpu_label, gpu_vendor)
 
         try:
             usage = shutil.disk_usage(os.path.abspath(os.sep))
@@ -740,21 +905,25 @@ class AIHubDialog(QDialog):
         cpu_ready = bool(status_from_row(row_cpu or {}).get("ready"))
         cuda_ready = bool(status_from_row(row_cuda or {}).get("ready"))
 
+        gpu_name = str(get_primary_gpu_name() or "").strip()
+        gpu_label = gpu_name or format_primary_gpu_label()
         show = gpu_vendor == "NVIDIA" and cpu_ready and not cuda_ready
         self.banner.setVisible(show)
         if show:
             self.banner_title.setText(
                 _(
-                    "Обнаружена видеокарта <span style='color:#db6596;font-weight:800;'>NVIDIA</span>,"
-                    " но активен <span style='color:#db6596;font-weight:800;'>CPU-бэкенд</span>",
-                    "Detected <span style='color:#db6596;font-weight:800;'>NVIDIA</span> GPU,"
-                    " but the <span style='color:#db6596;font-weight:800;'>CPU backend</span> is active",
-                )
+                    "Обнаружена видеокарта <span style='color:#b74b7d;font-weight:800;'>{gpu}</span>,"
+                    " но активен <span style='color:#b74b7d;font-weight:800;'>CPU-бэкенд</span>",
+                    "Detected <span style='color:#b74b7d;font-weight:800;'>{gpu}</span> GPU,"
+                    " but the <span style='color:#b74b7d;font-weight:800;'>CPU backend</span> is active",
+                ).format(gpu=gpu_label)
             )
             self.banner_body.setText(
                 _(
-                    "Можно скачать оптимизированную CUDA-версию (~3 GB), чтобы значительно ускорить работу.",
-                    "You can download the optimized CUDA version (~3 GB) to significantly speed things up.",
+                    "AI Hub видит NVIDIA, но сейчас приложение работает на CPU-стеке. "
+                    "Можно установить CUDA-компонент, чтобы заметно ускорить работу.",
+                    "AI Hub can see NVIDIA, but the app is currently running on the CPU stack. "
+                    "Install the CUDA component to speed things up significantly.",
                 )
             )
 
@@ -877,6 +1046,7 @@ class AIHubDialog(QDialog):
     # ----------------------------------------------------------- task events
     def _set_install_logs_visible(self, visible: bool) -> None:
         self._install_logs_btn.setVisible(bool(visible))
+        self._update_activity_panel_visibility()
 
     def _on_install_window_closed(self) -> None:
         self._active_install_window = None
@@ -947,6 +1117,16 @@ class AIHubDialog(QDialog):
             self.task_status_label.setVisible(True)
         else:
             self.task_status_label.setVisible(False)
+        self._update_activity_panel_visibility()
+
+    def _update_activity_panel_visibility(self) -> None:
+        # Кнопка логов теперь в нижней плашке, поэтому левая панель «АКТИВНОСТЬ»
+        # показывается только под статус и список очереди.
+        has_activity = any((
+            self.task_status_label.isVisible(),
+            self._queue_panel.isVisible(),
+        ))
+        self._activity_panel.setVisible(has_activity)
 
     # ----------------------------------------------------------- queue
     def _on_queue_changed(self, event) -> None:
@@ -961,6 +1141,8 @@ class AIHubDialog(QDialog):
             "pending": [j for j in (pending or []) if isinstance(j, dict)],
         }
         self._rebuild_queue_panel()
+        # Обновить блокировку кнопок установки под новое состояние очереди (#26).
+        self._apply_busy_state()
 
     def _clear_queue_panel(self) -> None:
         while self._queue_layout.count():
@@ -975,13 +1157,32 @@ class AIHubDialog(QDialog):
         text = str(text or "")
         return text if len(text) <= limit else text[: limit - 1] + "…"
 
+    def _update_install_bar_queue_chip(self) -> None:
+        """Чип «+N в очереди» в нижней плашке (полный список ждёт в подсказке)."""
+        chip = getattr(self, "_install_bar_queue", None)
+        if chip is None:
+            return
+        pending = self._queue_state.get("pending") or []
+        n = len(pending)
+        if n <= 0:
+            chip.setVisible(False)
+            chip.setText("")
+            chip.setToolTip("")
+            return
+        chip.setText(_("+{n} в очереди", "+{n} queued").format(n=n))
+        titles = [str((j or {}).get("title") or (j or {}).get("task_id") or "") for j in pending]
+        chip.setToolTip("\n".join(t for t in titles if t))
+        chip.setVisible(True)
+
     def _rebuild_queue_panel(self) -> None:
         self._clear_queue_panel()
+        self._update_install_bar_queue_chip()
         running = self._queue_state.get("running")
         pending = self._queue_state.get("pending") or []
 
         if not running and not pending:
             self._queue_panel.setVisible(False)
+            self._update_activity_panel_visibility()
             return
 
         header = QLabel(_("ОЧЕРЕДЬ УСТАНОВКИ", "INSTALL QUEUE"))
@@ -994,6 +1195,7 @@ class AIHubDialog(QDialog):
             self._queue_layout.addWidget(self._make_queue_row(job, is_running=False))
 
         self._queue_panel.setVisible(True)
+        self._update_activity_panel_visibility()
 
     def _make_queue_row(self, job: dict[str, Any], *, is_running: bool) -> QWidget:
         row = QFrame()
@@ -1039,7 +1241,26 @@ class AIHubDialog(QDialog):
             return
         data = event.data if isinstance(event.data, dict) else {}
         text = str(data.get("status") or _("Подготовка...", "Preparing..."))
-        self._on_gui_thread(lambda: self._set_task_status(text))
+        title = self._install_bar_component_title(data)
+        # Кнопка «Логи установки» должна быть видна на всё время установки,
+        # а не только когда окно свёрнуто — иначе её «не найти» (фидбэк #23).
+        self._on_gui_thread(lambda: (self._set_task_status(text),
+                                     self._set_install_logs_visible(True),
+                                     self._set_install_bar(visible=True, title=title,
+                                                           progress=None, detail=text)))
+
+    def _install_bar_component_title(self, data: dict) -> str:
+        """Имя устанавливаемого компонента для плашки: из running-очереди или из meta."""
+        running = (self._queue_state or {}).get("running") or {}
+        title = str(running.get("title") or "").strip()
+        if title:
+            return title
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+        cid = str(meta.get("component_id") or data.get("component_id") or "").strip()
+        row = self._row_by_id(cid) if cid else None
+        if row:
+            return str(meta_from_row(row).get("title") or cid)
+        return cid or _("Установка", "Install")
 
     def _on_install_progress(self, event) -> None:
         if not self._is_installable_task(event):
@@ -1049,8 +1270,17 @@ class AIHubDialog(QDialog):
         progress = data.get("progress")
         if not status:
             return
-        text = f"{status} ({progress}%)" if progress is not None else status
-        self._on_gui_thread(lambda: self._set_task_status(text))
+        # Не дублируем процент: статус инсталлятора уже может содержать «… 1% …»,
+        # тогда повторное « (1%)» выглядело как «… 1% … (1%)» (фидбэк #24).
+        if progress is not None and "%" not in status:
+            text = f"{status} ({progress}%)"
+        else:
+            text = status
+        # Деталь плашки — хвост статуса (там процент·скорость·ETA).
+        detail = status.split("—", 1)[1].strip() if "—" in status else status
+        self._on_gui_thread(lambda: (self._set_task_status(text),
+                                     self._set_install_bar(visible=True, progress=progress,
+                                                           detail=self._shorten(detail, 36))))
 
     def _on_install_finished(self, event) -> None:
         if not self._is_installable_task(event):
@@ -1059,6 +1289,9 @@ class AIHubDialog(QDialog):
 
         def _apply() -> None:
             self._set_task_status(done_text)
+            self._set_install_logs_visible(False)
+            self._set_install_bar(visible=True, progress=100, detail=done_text)
+            QTimer.singleShot(900, lambda: self._set_install_bar(visible=False))
             QTimer.singleShot(250, lambda: (self.refresh(force=True), self._set_task_status("")))
 
         self._on_gui_thread(_apply)
@@ -1071,6 +1304,8 @@ class AIHubDialog(QDialog):
 
         def _apply() -> None:
             self._set_task_status(text)
+            self._set_install_logs_visible(False)
+            self._set_install_bar(visible=False)
             QTimer.singleShot(250, lambda: self.refresh(force=True))
 
         self._on_gui_thread(_apply)

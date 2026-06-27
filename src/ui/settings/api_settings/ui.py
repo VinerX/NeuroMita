@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QSize, QStringListModel
 from PyQt6.QtWidgets import (
-    QWidget, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QGridLayout, QListWidget, QPushButton,
+    QWidget, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton,
     QToolButton, QComboBox, QSizePolicy, QCompleter, QTextEdit, QCheckBox, QLineEdit
 )
 import qtawesome as qta
@@ -11,6 +11,7 @@ from utils import _
 from localization.live import tr_set
 from .widgets import (
     ProviderDelegate,
+    PresetsListWidget,
     LabeledLineEditRow,
     LabeledTextEditRow,
     LabeledComboRow,
@@ -44,7 +45,7 @@ def build_api_settings_ui(self, parent_layout):
     presets_layout.setContentsMargins(8, 8, 8, 8)
     presets_layout.setSpacing(10)
 
-    self.custom_presets_list = QListWidget()
+    self.custom_presets_list = PresetsListWidget()
     self.custom_presets_list.setObjectName("PresetsList")
     self.custom_presets_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
     presets_layout.addWidget(self.custom_presets_list, 1)
@@ -297,6 +298,14 @@ def build_api_settings_ui(self, parent_layout):
     self.or_enable_cb = tr_set(QCheckBox(), "Включить provider routing", "Enable provider routing")
     self.openrouter_routing_section.add_widget(self.or_enable_cb)
 
+    self.or_tail_system_to_user_cb = QCheckBox(_("Хвостовой system → user", "Trailing system → user"))
+    self.or_tail_system_to_user_cb.setChecked(True)
+    self.or_tail_system_to_user_cb.setToolTip(_(
+        "Если последнее сообщение запроса имеет роль system, для OpenRouter оно будет отправлено как user с префиксом [SYSTEM INFO].",
+        "If the last request message has system role, OpenRouter will send it as user with a [SYSTEM INFO] prefix."
+    ))
+    self.openrouter_routing_section.add_widget(self.or_tail_system_to_user_cb)
+
     self.or_order_row = LabeledLineEditRow(_("Приоритет провайдеров", "Provider order"))
     self.or_order_row.edit.setPlaceholderText("together, fireworks, groq")
     self.openrouter_routing_section.add_widget(self.or_order_row)
@@ -379,6 +388,7 @@ def build_api_settings_ui(self, parent_layout):
 
     self.openrouter_routing_widgets = {
         "enabled": self.or_enable_cb,
+        "tail_system_to_user": self.or_tail_system_to_user_cb,
         "order": self.or_order_row.edit,
         "only": self.or_only_row.edit,
         "ignore": self.or_ignore_row.edit,

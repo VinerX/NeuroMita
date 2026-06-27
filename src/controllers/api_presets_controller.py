@@ -13,6 +13,8 @@ from utils import _
 import threading
 import requests
 
+from presets.provider_host_metadata import infer_provider_currency
+
 
 @dataclass
 class PresetMeta:
@@ -1162,6 +1164,10 @@ class ApiPresetsController:
             pricing = self._extract_compat_pricing(raw_entry, top_provider)
             pricing = self._normalize_compat_pricing_units(pricing, source_url)
             rate_limits = self._extract_compat_rate_limits(raw_entry, top_provider)
+            currency = infer_provider_currency(
+                source_url,
+                str(raw_entry.get("currency") or top_provider.get("currency") or ""),
+            )
 
             if not model_id:
                 return None
@@ -1170,7 +1176,7 @@ class ApiPresetsController:
                 "id": model_id,
                 "name": display_name or model_id,
                 "canonical_slug": raw_entry.get("canonical_slug"),
-                "currency": str(raw_entry.get("currency") or top_provider.get("currency") or ""),
+                "currency": currency,
                 "context_length": raw_entry.get("context_length") or raw_entry.get("context_window") or top_provider.get("context_length") or top_provider.get("context_window"),
                 "top_provider_context_length": raw_entry.get("top_provider_context_length") or top_provider.get("context_length") or top_provider.get("context_window"),
                 "max_completion_tokens": raw_entry.get("max_completion_tokens") or raw_entry.get("max_tokens") or top_provider.get("max_completion_tokens") or top_provider.get("max_tokens"),
@@ -1190,7 +1196,7 @@ class ApiPresetsController:
             "id": model_id,
             "name": model_id,
             "canonical_slug": None,
-            "currency": "",
+            "currency": infer_provider_currency(source_url),
             "context_length": None,
             "top_provider_context_length": None,
             "max_completion_tokens": None,
@@ -1282,10 +1288,6 @@ class ApiPresetsController:
                     model_infos = self._extract_test_models(data, source_url=final_url)
                     model_infos = self._decorate_model_infos_for_template(tpl, model_infos)
                     if model_infos:
-                        if "proxyapi.ru" in final_url.lower():
-                            for info in model_infos:
-                                if isinstance(info, dict) and not str(info.get("currency") or "").strip():
-                                    info["currency"] = "RUB"
                         models = [str(m.get("id") or "").strip() for m in model_infos if str(m.get("id") or "").strip()]
                         success = True
                         message = f"Found {len(models)} models"

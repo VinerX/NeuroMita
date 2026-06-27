@@ -119,7 +119,7 @@ class _SandboxStatusRow(QWidget):
         self._value.setObjectName("SandboxInfoValue")
         self._value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self._value.setMinimumWidth(88)
+        self._value.setMinimumWidth(112)
         h.addWidget(self._value, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
         self._full_value_text = "—"
 
@@ -264,17 +264,21 @@ class SandboxPage(QWidget):
             profile = {}
         return str((profile or {}).get("character_id") or "")
 
-    def _jump_to_settings(self, category: str):
+    def _jump_to_settings(self, category: str, subsection=None):
+        # Шестерёнка у строки статуса ведёт ИМЕННО в её раздел, даже если подсистема
+        # сейчас выключена/скрыта в «Видимых разделах» (фидбэк #14). subsection —
+        # вложенная секция (например RAG внутри «Модели»), чтобы попасть сразу к
+        # нужным полям, а не в начало длинной страницы (фидбэк Артёма).
         self.gui.switch_main_page("settings")
-        self.gui.show_settings_category(category)
+        self.gui.show_settings_category(category, force=True, subsection=subsection)
 
     # --------- Status rows (voice / mic / RAG) -----------
     def _make_status_row(self, name_text: str, registry_attr: str, settings_key: str,
-                         enable_key: str, tooltip: str) -> "_SandboxStatusRow":
+                         enable_key: str, tooltip: str, subsection=None) -> "_SandboxStatusRow":
         initial_on = bool(self.gui._get_setting(enable_key, False))
         row = _SandboxStatusRow(
             name_text,
-            lambda: self._jump_to_settings(settings_key),
+            lambda: self._jump_to_settings(settings_key, subsection),
             tooltip,
             on_toggle=lambda checked, _k=enable_key: self._on_status_toggle(_k, checked),
             initial_on=initial_on,
@@ -674,6 +678,10 @@ class SandboxPage(QWidget):
                 if model_name:
                     name = f"{name} · {model_name}"
 
+            # Компактная подпись для узкого статус-чипа: суффикс « only» в
+            # названиях пресетов («Keyword+FTS only») лишь съедает место и
+            # обрезается до невнятного «Keyword+FT…». Полный текст остаётся в тултипе.
+            name = name.replace(" only", "")
             return name or _("Включён", "Enabled")
         except Exception:
             return _("Включён", "Enabled")
@@ -1006,6 +1014,9 @@ class SandboxPage(QWidget):
 
         value_label = QLabel("—")
         value_label.setObjectName("SandboxInfoValue")
+        value_label.setMinimumWidth(0)
+        value_label.setWordWrap(True)
+        value_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         h.addWidget(value_label, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
 
@@ -1074,6 +1085,11 @@ class SandboxPage(QWidget):
         guide_button.setObjectName("SandboxHeaderButton")
         guide_button.clicked.connect(self.gui._show_guide)
         actions.addWidget(guide_button)
+
+        wiki_button = tr_set(QPushButton(), "Вики", "Wiki")
+        wiki_button.setObjectName("SandboxHeaderButton")
+        wiki_button.clicked.connect(lambda: self.gui.switch_main_page("wiki"))
+        actions.addWidget(wiki_button)
 
         settings_button = tr_set(QPushButton(), "Настройки", "Settings")
         settings_button.setObjectName("SandboxHeaderButton")
@@ -1196,6 +1212,7 @@ class SandboxPage(QWidget):
             "models",
             "RAG_ENABLED",
             _("Открыть настройки RAG / памяти", "Open RAG / memory settings"),
+            subsection=("RAG",),
         )
         status_layout.addWidget(self._rag_status_row)
         layout.addWidget(status_strip)
@@ -1361,11 +1378,14 @@ class SandboxPage(QWidget):
             label = QLabel(label_text)
             label.setObjectName("SandboxInfoLabel")
             row.addWidget(label)
-            row.addStretch()
             value = QLabel("—")
             value.setObjectName("SandboxInfoValue")
+            value.setMinimumWidth(0)
+            value.setWordWrap(True)
+            value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            row.addWidget(value)
+            row.addWidget(value, 1)
             slayout.addLayout(row)
             self._lr_values[key] = value
         return strip
@@ -1601,12 +1621,11 @@ class SandboxPage(QWidget):
             if hint:
                 label.setToolTip(hint)
             row.addWidget(label)
-            row.addStretch()
             value = QLabel("—")
             value.setObjectName("SandboxInspectorValue")
             if hint:
                 value.setToolTip(hint)
-            row.addWidget(value)
+            row.addWidget(value, 1)
             memory_layout.addLayout(row)
             self._memory_limit_values[stat_key] = value
 
@@ -1621,6 +1640,7 @@ class SandboxPage(QWidget):
 
     def _build_inspector_debug_tab(self) -> QWidget:
         page, layout = self._make_tab_page()
+        layout.setContentsMargins(2, 12, 10, 4)
 
         # ── Отображение сообщений ───────────────────────────────────────────
         # Show-thinking moved here from General settings: the toggle controls
@@ -1687,10 +1707,13 @@ class SandboxPage(QWidget):
             label = QLabel(label_text)
             label.setObjectName("SandboxInfoLabel")
             row.addWidget(label)
-            row.addStretch()
             value = QLabel("—")
             value.setObjectName("SandboxInfoValue")
-            row.addWidget(value)
+            value.setMinimumWidth(0)
+            value.setWordWrap(True)
+            value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            row.addWidget(value, 1)
             summary_layout.addLayout(row)
             self._debug_summary_values[key] = value
 

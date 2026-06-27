@@ -15,12 +15,19 @@ class SettingsBodyWidget(QWidget):
 
 
 def create_settings_section(gui, parent_layout, title, cfg_list, *, icon_name=None):
-    root = CollapsibleSection(title, gui, icon_name=icon_name)
+    items = list(cfg_list or [])
+    subtitle = None
+    if items and items[0].get('type') == 'text':
+        subtitle = items.pop(0).get('label', '')
+
+    root = CollapsibleSection(title, gui, icon_name=icon_name, subtitle=subtitle)
     register_if_tr(root.title_label, title)
+    if subtitle and getattr(root, "subtitle_label", None) is not None:
+        register_if_tr(root.subtitle_label, subtitle)
     parent_layout.addWidget(root)
     current_sub = None
 
-    for cfg in cfg_list:
+    for cfg in items:
         t = cfg.get('type')
 
         if t == 'subsection':
@@ -172,6 +179,15 @@ def create_button_group(gui, parent, buttons_config):
     return frame
 
 
+def _apply_setting_row_disabled(frame: QWidget, disabled: bool) -> None:
+    frame.setProperty("disabled", "true" if disabled else "false")
+    style = frame.style()
+    if style is not None:
+        style.unpolish(frame)
+        style.polish(frame)
+    frame.update()
+
+
 def _fmt_tooltip(text: str) -> str:
     if not text:
         return text
@@ -277,12 +293,18 @@ def create_setting_widget(
             if widget:
                 widget.setEnabled(enabled)
             lbl.setEnabled(enabled)
+            _apply_setting_row_disabled(frame, not enabled)
 
         toggle_chk.stateChanged.connect(_toggle_slot)
 
     if widget_type == 'checkbutton':
-        widget = QCheckBox()
+        from ui.widgets.toggle_switch import ToggleSwitch
+
+        widget = ToggleSwitch()
         widget.setChecked(bool(gui.settings.get(setting_key, default_checkbutton)))
+        lbl.setMinimumWidth(0)
+        lbl.setMaximumWidth(16777215)
+        lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         def _save_check(state):
             val = state == Qt.CheckState.Checked.value
@@ -292,9 +314,19 @@ def create_setting_widget(
 
         widget.stateChanged.connect(_save_check)
 
-        layout.addWidget(lbl)
-        layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addStretch(1)
+        title_col = QVBoxLayout()
+        title_col.setContentsMargins(0, 0, 0, 0)
+        title_col.setSpacing(2)
+        title_col.addWidget(lbl)
+        if tooltip:
+            desc = QLabel(str(tooltip))
+            desc.setObjectName("SettingRowDescription")
+            desc.setTextFormat(Qt.TextFormat.PlainText)
+            desc.setWordWrap(True)
+            title_col.addWidget(desc)
+
+        layout.addLayout(title_col, 1)
+        layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
     elif widget_type == 'entry':
         widget = QLineEdit(str(gui.settings.get(setting_key, default)))
@@ -332,12 +364,29 @@ def create_setting_widget(
             else:
                 widget.addItems([str(o) for o in options])
         if _uses_display_value:
-            # find matching value in options
+            # Сопоставляем сохранённое значение с пунктами. Делаем это устойчиво:
+            # сначала строгое равенство, затем регистронезависимо по строке, и
+            # если совпадения нет — садимся на значение по умолчанию (а не на
+            # «последний добавленный» пункт). Без фолбэка раньше комбобокс языка
+            # мог показать чужой язык (напр. ZH), хотя в настройках был RU.
             saved = gui.settings.get(setting_key, default)
-            for i in range(widget.count()):
-                if widget.itemData(i) == saved:
-                    widget.setCurrentIndex(i)
-                    break
+
+            def _match_index(target) -> int:
+                if target is None:
+                    return -1
+                for i in range(widget.count()):
+                    if widget.itemData(i) == target:
+                        return i
+                t = str(target).strip().lower()
+                for i in range(widget.count()):
+                    if str(widget.itemData(i)).strip().lower() == t:
+                        return i
+                return -1
+
+            idx = _match_index(saved)
+            if idx < 0:
+                idx = _match_index(default)
+            widget.setCurrentIndex(idx if idx >= 0 else 0)
         else:
             widget.setCurrentText(str(gui.settings.get(setting_key, default)))
 
@@ -416,6 +465,7 @@ def create_setting_widget(
                 else:
                     widget.setEnabled(active)
                     lbl.setEnabled(active)
+                    _apply_setting_row_disabled(frame, not active)
 
             _dep_sync()
 
@@ -428,6 +478,7 @@ def create_setting_widget(
         enabled = toggle_chk.isChecked()
         widget.setEnabled(enabled)
         lbl.setEnabled(enabled)
+        _apply_setting_row_disabled(frame, not enabled)
 
     return frame
 

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from main_logger import logger
 from .base import BaseProvider, LLMRequest, LLMResponse, normalize_usage_payload
 from .errors import build_provider_error, coerce_provider_error
+from .message_transforms import trailing_system_to_user_prefix
 from schemas.structured_response import StructuredResponse
 from utils.openrouter_routing import (
     annotate_openrouter_prompt_cache,
@@ -66,6 +67,8 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
         try:
             cleaned_messages = [{k: v for k, v in m.items() if k != "time"} for m in (req.messages or [])]
             if req.protocol_id == "openrouter_default":
+                if bool((req.extra or {}).get("openrouter_tail_system_to_user", True)):
+                    cleaned_messages = trailing_system_to_user_prefix(cleaned_messages, tag="[SYSTEM INFO]")
                 cleaned_messages = annotate_openrouter_prompt_cache(cleaned_messages, model_to_use)
 
             params: Dict[str, Any] = {"model": model_to_use, "messages": cleaned_messages}

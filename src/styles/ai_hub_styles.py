@@ -52,6 +52,11 @@ QLabel#AIHubSidebarStatus {
     font-size: 10px;
     padding: 4px 6px;
 }
+QFrame#AIHubActivityPanel {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid {outline};
+    border-radius: 12px;
+}
 
 QFrame#AIHubQueuePanel {
     background: rgba({accent_rgb}, 0.05);
@@ -607,9 +612,60 @@ QFrame#AIHubSchemaForm QSpinBox[hasError="true"] {
     background: rgba(255,123,123,0.06);
 }
 QFrame#AIHubSchemaForm QCheckBox {
+    background: transparent;
+    border: none;
     color: {text};
     font-size: 12px;
     spacing: 6px;
+    padding: 2px 0;
+}
+
+/* ---------- Нижняя плашка установки (Steam-style, #25) ---------- */
+QFrame#AIHubInstallBar {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid {panel_border};
+    border-radius: 12px;
+}
+QLabel#AIHubInstallBarTitle {
+    color: {text};
+    font-size: 12px;
+    font-weight: 700;
+}
+QLabel#AIHubInstallBarDetail {
+    color: {muted};
+    font-size: 11px;
+}
+QProgressBar#AIHubInstallBarProgress {
+    background: rgba(255, 255, 255, 0.06);
+    border: none;
+    border-radius: 4px;
+}
+QProgressBar#AIHubInstallBarProgress::chunk {
+    background: {accent};
+    border-radius: 4px;
+}
+/* Чип «+N в очереди» и кнопка возврата к логам — в нижней плашке. */
+QLabel#AIHubInstallBarQueue {
+    color: {muted};
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid {panel_border};
+    border-radius: 9px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
+}
+QPushButton#AIHubInstallBarLogsBtn {
+    color: {text};
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid {panel_border};
+    border-radius: 9px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+}
+QPushButton#AIHubInstallBarLogsBtn:hover {
+    background: rgba({accent_rgb}, 0.14);
+    border: 1px solid {accent_border};
 }
 """
 

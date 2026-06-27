@@ -141,7 +141,7 @@ class ChatWidget(QFrame):
 
         painter.save()
         painter.setClipPath(path)
-        painter.setPen(QPen(QColor(219, 101, 150, 14), 1))
+        painter.setPen(QPen(QColor(183, 75, 125, 14), 1))
         step = 32
         rl, rt, rr, rb = int(rect.left()), int(rect.top()), int(rect.right()), int(rect.bottom())
         for x in range(rl, rr, step):
@@ -150,7 +150,7 @@ class ChatWidget(QFrame):
             painter.drawLine(rl, y, rr, y)
         painter.restore()
 
-        painter.setPen(QPen(QColor(219, 101, 150, 105), 1.15))
+        painter.setPen(QPen(QColor(183, 75, 125, 105), 1.15))
         painter.drawPath(path)
 
     # ── Public API ──────────────────────────────────────────────────────────

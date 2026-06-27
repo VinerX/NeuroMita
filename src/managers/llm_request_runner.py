@@ -284,8 +284,12 @@ class LLMRequestRunner:
                 "API preset not configured: missing API model",
                 url=url,
             )
+        # Ключ требуем только у официальных облачных провайдеров (openai/gemini).
+        # 'common' — это произвольный OpenAI-совместимый эндпоинт: помимо
+        # localhost-серверов (LM Studio / Ollama) бывают и безключевые шлюзы,
+        # self-hosted и LAN/туннели, поэтому ключ для него не обязателен.
         if (
-            provider in {"common", "openai", "gemini"}
+            provider in {"openai", "gemini"}
             and str(url or "").startswith(("http://", "https://"))
             and "localhost" not in str(url or "").lower()
             and "127.0.0.1" not in str(url or "").lower()

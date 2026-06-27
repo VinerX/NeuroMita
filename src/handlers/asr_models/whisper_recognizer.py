@@ -17,6 +17,14 @@ from utils.gpu_utils import check_gpu_provider
 
 
 class WhisperRecognizer(SpeechRecognizerInterface):
+    _RUNTIME_PIP_SPECS = (
+        "sounddevice",
+        "silero-vad",
+        "ctranslate2",
+        "faster-whisper",
+        "transformers",
+        "pyyaml>=5.1",
+    )
     
     MODEL_CONFIGS = [
         {
@@ -60,6 +68,8 @@ class WhisperRecognizer(SpeechRecognizerInterface):
         self.model_download_root = "SpeechRecognitionModels/WhisperFW"
         self.FAILED_AUDIO_DIR = "FailedAudios"
         self.TEMP_AUDIO_DIR = "TempAudios"
+        self._last_requirements_probe_message: Optional[str] = None
+        self._last_requirements_probe_status: Optional[dict] = None
 
     # ---------- UI schema ----------
     def settings_spec(self):
@@ -114,12 +124,69 @@ class WhisperRecognizer(SpeechRecognizerInterface):
             "device": self.whisper_device,
             "gpu_vendor": self._current_gpu or "CPU",
         })
-        return [
+        requirements = [
             InstallRequirement(id=f"backend_{backend_kind.value}", kind="backend", backend_kind=backend_kind, required=True),
-            InstallRequirement(id="silero_vad", kind="python_module", module="silero_vad", required=True),
-            InstallRequirement(id="sounddevice", kind="python_module", module="sounddevice", required=True),
-            InstallRequirement(id="faster_whisper", kind="python_module", module="faster_whisper", required=True),
         ]
+        for spec in self._RUNTIME_PIP_SPECS:
+            requirements.append(
+                InstallRequirement(
+                    id=str(spec).split(">=", 1)[0].replace("-", "_"),
+                    kind="python_dist",
+                    spec=spec,
+                    required=True,
+                )
+            )
+        return requirements
+
+    def _describe_requirements_failure(self, status: dict) -> str:
+        missing = [str(item) for item in (status.get("missing_required") or []) if str(item).strip()]
+        details = status.get("details") if isinstance(status.get("details"), list) else []
+
+        detail_parts: list[str] = []
+        for item in details:
+            if not isinstance(item, dict) or item.get("ok", True):
+                continue
+            req_id = str(item.get("id") or "").strip()
+            extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
+            spec = str(extra.get("spec") or "").strip()
+            version = extra.get("version")
+            if spec:
+                detail_parts.append(f"{req_id}<{spec}> version={version}")
+            else:
+                detail_parts.append(f"{req_id} version={version}")
+
+        if detail_parts:
+            base = f"Whisper requirements are missing or broken: {', '.join(detail_parts)}"
+        elif missing:
+            base = f"Whisper requirements are missing or broken: {', '.join(missing)}"
+        else:
+            base = "Whisper requirements are missing or broken."
+
+        if any("pyyaml" in part.lower() and "version=none" in part.lower() for part in detail_parts):
+            return (
+                base
+                + " PyYAML looks corrupted in Lib: the 'yaml' module may exist, but the "
+                + "PyYAML dist-info/METADATA is missing or unreadable. Reinstall the Whisper component."
+            )
+        return base
+
+    def _log_requirements_failure_once(self, status: dict) -> None:
+        message = self._describe_requirements_failure(status)
+        if message != self._last_requirements_probe_message:
+            self.logger.warning(message)
+            self._last_requirements_probe_message = message
+        self._last_requirements_probe_status = status
+
+    def _diagnose_init_failure(self, exc: Exception) -> str | None:
+        text = str(exc or "")
+        lower = text.lower()
+        if "pyyaml" in lower and "found=none" in lower:
+            return (
+                "Whisper init diagnostic: transformers found the 'yaml' module but could not read the "
+                "installed PyYAML distribution version. Usually this means the PyYAML dist-info in Lib "
+                "is missing or corrupted. Reinstall the Whisper ASR component or PyYAML explicitly."
+            )
+        return None
 
     def pip_install_steps(self, ctx: dict) -> List[dict]:
         steps: List[dict] = []
@@ -138,8 +205,8 @@ class WhisperRecognizer(SpeechRecognizerInterface):
         })
         steps.append({
             "progress": 70,
-            "description": _("Установка faster-whisper...", "Installing faster-whisper..."),
-            "packages": ["faster-whisper"],
+            "description": _("Установка faster-whisper и зависимостей...", "Installing faster-whisper and dependencies..."),
+            "packages": ["pyyaml>=5.1", "transformers", "ctranslate2", "faster-whisper"],
             "extra_args": None
         })
 
@@ -157,7 +224,14 @@ class WhisperRecognizer(SpeechRecognizerInterface):
 
         ctx = {"device": self.whisper_device, "gpu_vendor": self._current_gpu}
         st = check_requirements(self.requirements(), ctx=ctx)
-        return bool(st.get("ok"))
+        ok = bool(st.get("ok"))
+        if not ok:
+            self._last_requirements_probe_message = self._describe_requirements_failure(st)
+            self._last_requirements_probe_status = st
+        else:
+            self._last_requirements_probe_message = None
+            self._last_requirements_probe_status = None
+        return ok
         
     def install_manifest(self) -> list[dict]:
         return []
@@ -165,7 +239,7 @@ class WhisperRecognizer(SpeechRecognizerInterface):
     # ---------- artifacts install ----------
     async def install(self) -> bool:
         if not self.is_installed():
-            return False
+            raise RuntimeError(self._describe_requirements_failure(self._last_requirements_probe_status or {}))
 
         try:
             from faster_whisper import WhisperModel
@@ -237,6 +311,9 @@ class WhisperRecognizer(SpeechRecognizerInterface):
             return True
 
         if not self.is_installed():
+            self.logger.error("Whisper init aborted: runtime dependencies are missing or broken.")
+            details = self._describe_requirements_failure(self._last_requirements_probe_status or {})
+            self.logger.error(details)
             return False
 
         try:
@@ -267,6 +344,9 @@ class WhisperRecognizer(SpeechRecognizerInterface):
             return True
 
         except Exception as e:
+            diagnostic = self._diagnose_init_failure(e)
+            if diagnostic:
+                self.logger.error(diagnostic)
             self.logger.error(f"Whisper init failed: {e}", exc_info=True)
             self._is_initialized = False
             return False

@@ -144,7 +144,8 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
             InstallRequirement(id="sounddevice", kind="python_module", module="sounddevice", required=True),
             InstallRequirement(id="silero_vad", kind="python_module", module="silero_vad", required=True),
 
-            InstallRequirement(id="transformers", kind="python_module", module="transformers", required=True),
+            InstallRequirement(id="transformers", kind="python_dist", spec="transformers", required=True),
+            InstallRequirement(id="pyyaml", kind="python_dist", spec="pyyaml>=5.1", required=True),
             InstallRequirement(id="optimum_ort", kind="python_module", module="optimum.onnxruntime", required=True),
 
             InstallRequirement(id="whisper_cfg", kind="file", required=True, path=os.path.join(self.model_dir, "config.json")),
@@ -168,6 +169,7 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
             "packages": [
                 "sounddevice",
                 "silero-vad",
+                "pyyaml>=5.1",
                 "transformers",
             ],
             "extra_args": None

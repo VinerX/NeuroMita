@@ -169,6 +169,11 @@ QPushButton#LauncherHomeMenuButton {
     letter-spacing: 0px;
 }
 
+QPushButton#LauncherHomeMenuButton[hasUpdate="true"] {
+    border: 1px solid rgba(255, 207, 125, 0.55);
+    background-color: rgba(255, 207, 125, 0.10);
+}
+
 QPushButton#LauncherHomeMenuButton:hover {
     background-color: qlineargradient(
         x1: 0, y1: 0, x2: 1, y2: 0,

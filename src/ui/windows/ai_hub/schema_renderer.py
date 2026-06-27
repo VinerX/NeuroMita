@@ -174,7 +174,17 @@ class SchemaForm(QWidget):
         widget_wrap = QHBoxLayout()
         widget_wrap.setContentsMargins(0, 0, 0, 0)
         widget_wrap.setSpacing(8)
-        widget_wrap.addWidget(widget, 1)
+        if type_ == "checkbutton" and isinstance(widget, QCheckBox):
+            # Boolean fields should stay compact instead of filling the whole
+            # form column like text inputs.
+            widget_wrap.addWidget(
+                widget,
+                0,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            )
+            widget_wrap.addStretch(1)
+        else:
+            widget_wrap.addWidget(widget, 1)
         right_col.addLayout(widget_wrap)
 
         if help_text:
@@ -206,6 +216,7 @@ class SchemaForm(QWidget):
         if type_ == "checkbutton":
             w = QCheckBox()
             w.setChecked(bool(default))
+            w.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             self._defaults[key] = "True" if default else "False"
             w.toggled.connect(self._fire_change)
             if locked:

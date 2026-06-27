@@ -335,17 +335,19 @@ class GeminiProvider(BaseProvider):
                     except json.JSONDecodeError:
                         break
 
-            provider_error = coerce_provider_error(self.name, e)
-            logger.error(f"[GeminiProvider] stream error: {provider_error.to_console_summary()}", exc_info=True)
-            raise provider_error from e
-        except Exception as e:
-            logger.error(f"Ошибка обработки Gemini stream: {e}", exc_info=True)
+            # Стрим успешно дочитан до конца — отдаём накопленный текст.
             return LLMResponse(
                 text="".join(full_response_parts),
                 usage=usage,
                 model=response_model,
                 provider_name=self.name,
             )
+        except Exception as e:
+            # Обрыв/ошибка посреди стрима — не маскируем под успех, кидаем ошибку,
+            # чтобы runner ушёл в retry/фоллбэк, а не вернул обрезанный ответ.
+            provider_error = coerce_provider_error(self.name, e, url=getattr(response, "url", None))
+            logger.error(f"[GeminiProvider] stream error: {provider_error.to_console_summary()}", exc_info=True)
+            raise provider_error from e
 
     def _extract_usage(self, response_data):
         if not isinstance(response_data, dict):

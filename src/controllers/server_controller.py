@@ -152,7 +152,7 @@ class ServerController:
             logger.info(f"Shared image transfer root: {transfer_dirs['root']}")
         except Exception as e:
             logger.warning(f"Failed to prepare shared image transfer directories: {e}")
-        logger.info("РСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РЅРѕРІС‹Р№ API СЃРµСЂРІРµСЂ")
+        logger.info("Using new API server")
 
         def _conn_cb(is_connected: bool, _client_id: str | None):
             try:
@@ -191,21 +191,21 @@ class ServerController:
         if not self.running:
             self.running = True
             self.server.start()
-            logger.info("РЎРµСЂРІРµСЂ Р·Р°РїСѓС‰РµРЅ")
+            logger.info("Server started")
 
     def stop_server(self):
         if not self.running:
-            logger.debug("РЎРµСЂРІРµСЂ СѓР¶Рµ РѕСЃС‚Р°РЅРѕРІР»РµРЅ")
+            logger.debug("Server already stopped")
             return
 
-        logger.info("РќР°С‡РёРЅР°РµРј РѕСЃС‚Р°РЅРѕРІРєСѓ СЃРµСЂРІРµСЂР°...")
+        logger.info("Stopping server...")
         self.running = False
 
         try:
             if self.server:
                 self.server.stop()
         except Exception as e:
-            logger.error(f"РћС€РёР±РєР° РїСЂРё РѕСЃС‚Р°РЅРѕРІРєРµ СЃРµСЂРІРµСЂР°: {e}", exc_info=True)
+            logger.error(f"Error while stopping server: {e}", exc_info=True)
 
         try:
             self.ConnectedToGame = False
@@ -214,13 +214,13 @@ class ServerController:
         except Exception:
             pass
 
-        logger.info("РЎРµСЂРІРµСЂ РѕСЃС‚Р°РЅРѕРІР»РµРЅ")
+        logger.info("Server stopped")
 
     def destroy(self):
         if self._destroyed:
             return
 
-        logger.info("РЈРЅРёС‡С‚РѕР¶РµРЅРёРµ ServerController...")
+        logger.info("Destroying ServerController...")
         self._destroyed = True
 
         self._unsubscribe_from_events()
@@ -231,7 +231,7 @@ class ServerController:
             task_manager = get_task_manager()
             task_manager.clear_all_tasks()
         except Exception as e:
-            logger.error(f"РћС€РёР±РєР° РїСЂРё РѕС‡РёСЃС‚РєРµ task manager: {e}")
+            logger.error(f"Error while cleaning up task manager: {e}")
 
         self.server = None
         self.event_bus = None
@@ -311,7 +311,7 @@ class ServerController:
                 body = self._prepare_loaded_settings_body()
                 self.server.schedule_broadcast_loaded_settings(body)
             except Exception as e:
-                logger.warning(f"РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РїСЂР°РІРёС‚СЊ РѕР±РЅРѕРІР»С‘РЅРЅС‹Рµ РЅР°СЃС‚СЂРѕР№РєРё РєР»РёРµРЅС‚Р°Рј ({key}): {e}")
+                logger.warning(f"Failed to push updated settings to clients ({key}): {e}")
 
     def _on_load_server_settings(self, event: Event):
         if self._destroyed or not self.server:

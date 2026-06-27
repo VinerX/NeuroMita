@@ -235,6 +235,12 @@ class EventBus:
 
         return results
 
+    @property
+    def is_running(self) -> bool:
+        """Жива ли шина. Фоновые демон-циклы проверяют это, чтобы не дёргать
+        emit/native-код во время teardown приложения (защита от access violation)."""
+        return self._running
+
     def shutdown(self) -> None:
         """Остановить систему событий"""
         self._running = False

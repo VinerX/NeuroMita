@@ -161,6 +161,7 @@ class ConversationEventWriter:
         structured_data: dict | None = None,
         thinking: str | None = None,
         llm_usage: dict | None = None,
+        sample_id: str | None = None,
     ) -> dict:
         msg = {
             "message_id": self._make_message_id("out", task_uid),
@@ -179,6 +180,8 @@ class ConversationEventWriter:
             msg["thinking"] = thinking
         if llm_usage:
             msg.update(llm_usage)
+        if sample_id:
+            msg["sample_id"] = sample_id
         return msg
 
     def _save_drawings_to_disk(self, image_data: list[Any], character_id: str) -> None:
@@ -224,6 +227,7 @@ class ConversationEventWriter:
         structured_data: dict | None = None,
         thinking: str | None = None,
         llm_usage: dict | None = None,
+        sample_id: str | None = None,
     ) -> None:
         sender = str(sender or "Player")
         responder_character_id = str(responder_character_id or "").strip()
@@ -263,6 +267,7 @@ class ConversationEventWriter:
             structured_data=structured_data,
             thinking=thinking,
             llm_usage=llm_usage,
+            sample_id=sample_id,
         )
 
         if user_event is not None:

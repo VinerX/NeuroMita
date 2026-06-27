@@ -9,6 +9,7 @@ from handlers.voice_models.edge_tts_rvc_model import (
     EdgeTTSRVCCudaModel,
     EdgeTTSRVCOnnxModel,
 )
+from handlers.voice_models.fish_speech_model import FishSpeechInstallSpec
 from installables.registry_builder import build_installable_registry
 
 
@@ -47,6 +48,34 @@ class EdgeTTSRVCInstallablesTests(unittest.TestCase):
 
         self.assertEqual(f0_setting["options"]["values"], ["crepe", "fcpe"])
         self.assertEqual(f0_setting["options"]["default"], "fcpe")
+
+    def test_fish_speech_plus_uninstall_removes_runtime_packages(self):
+        plan = FishSpeechInstallSpec.build_uninstall_plan("medium+", {})
+        calls: list[list[str]] = []
+
+        class _PipInstaller:
+            def uninstall_packages(self, packages, description):
+                calls.append(list(packages))
+                return True
+
+        ok = plan.actions[0].fn(pip_installer=_PipInstaller(), callbacks=None, ctx={})
+
+        self.assertTrue(ok)
+        self.assertEqual(calls, [["fish-speech-lib", "triton-windows"]])
+
+    def test_fish_speech_rvc_uninstall_removes_all_required_packages(self):
+        plan = FishSpeechInstallSpec.build_uninstall_plan("medium+low", {})
+        calls: list[list[str]] = []
+
+        class _PipInstaller:
+            def uninstall_packages(self, packages, description):
+                calls.append(list(packages))
+                return True
+
+        ok = plan.actions[0].fn(pip_installer=_PipInstaller(), callbacks=None, ctx={})
+
+        self.assertTrue(ok)
+        self.assertEqual(calls, [["fish-speech-lib", "triton-windows", "tts-with-rvc"]])
 
 
 if __name__ == "__main__":

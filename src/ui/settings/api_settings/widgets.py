@@ -4,7 +4,7 @@ from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QPainter, QPixmap, QColor, QFont, QFontMetrics, QPalette
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QStyledItemDelegate, QStyle, QListWidgetItem, QComboBox, QSizePolicy, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QTextEdit, QToolButton, QPushButton, QFrame
+    QStyledItemDelegate, QStyle, QListWidget, QListWidgetItem, QComboBox, QSizePolicy, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QTextEdit, QToolButton, QPushButton, QFrame
 )
 import qtawesome as qta
 
@@ -15,6 +15,7 @@ from localization.live import tr_set
 class ProviderDelegate(QStyledItemDelegate):
     _free_pm = None
     _local_pm = None
+    _ru_pm = None
 
     @classmethod
     def _free_pixmap(cls):
@@ -64,6 +65,30 @@ class ProviderDelegate(QStyledItemDelegate):
             cls._local_pm = pm
         return cls._local_pm
 
+    @classmethod
+    def _ru_pixmap(cls):
+        if cls._ru_pm is None:
+            font = QFont("Segoe UI", 7, QFont.Weight.Bold)
+            metrics = QFontMetrics(font)
+            text_w = metrics.horizontalAdvance("RU")
+            w, h = text_w + 10, 14
+            pm = QPixmap(w, h)
+            pm.fill(Qt.GlobalColor.transparent)
+
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setBrush(QColor("#2D66C3"))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(0, 0, w, h, 3, 3)
+
+            p.setPen(QColor("#ffffff"))
+            p.setFont(font)
+            p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, "RU")
+            p.end()
+
+            cls._ru_pm = pm
+        return cls._ru_pm
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.presets_meta = {}
@@ -98,17 +123,21 @@ class ProviderDelegate(QStyledItemDelegate):
             painter.drawPixmap(x, y, self._local_pixmap())
             x += self._local_pixmap().width() + 6
 
-        elif pricing == "free":
+        elif badge_kind == "ru":
+            painter.drawPixmap(x, y, self._ru_pixmap())
+            x += self._ru_pixmap().width() + 6
+
+        if badge_kind != "local" and pricing == "free":
             painter.drawPixmap(x, y, self._free_pixmap())
             x += self._free_pixmap().width() + 6
 
-        elif pricing == "paid":
+        elif badge_kind != "local" and pricing == "paid":
             painter.setPen(QColor("#FFC107"))
             painter.setFont(dollar_font)
             painter.drawText(x, y + ascent, "$")
             x += 12
 
-        elif pricing == "mixed":
+        elif badge_kind != "local" and pricing == "mixed":
             painter.drawPixmap(x, y, self._free_pixmap())
             x += self._free_pixmap().width() + 4
 
@@ -134,6 +163,56 @@ class ProviderDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         sz = super().sizeHint(option, index)
         return sz.expandedTo(QSize(140, 24))
+
+
+class PresetsListWidget(QListWidget):
+    """Список пресетов с подсказкой-приглашением, когда пресетов ещё нет.
+
+    Пустой QListWidget выглядел как пустое поле без намёка на то, что делать.
+    Теперь по центру рисуется «Нажмите, чтобы создать пресет», а клик по
+    пустому списку эмитит create_requested (то же, что кнопка «+» рядом).
+    """
+
+    create_requested = pyqtSignal()
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._placeholder = _("Нажмите, чтобы создать пресет", "Click to create a preset")
+        self._placeholder_hint = _("или нажмите «+» рядом", "or use the “+” button on the right")
+
+    def _is_empty(self) -> bool:
+        return self.count() == 0
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._is_empty():
+            return
+
+        painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.viewport().rect().adjusted(12, 12, -12, -12)
+
+        title_font = QFont(self.font())
+        title_font.setPointSizeF(max(9.5, self.font().pointSizeF()))
+        title_font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(title_font)
+        painter.setPen(QColor(214, 156, 188))  # мягкий акцент
+        title_rect = rect.adjusted(0, 0, 0, -22)
+        painter.drawText(title_rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self._placeholder)
+
+        hint_font = QFont(self.font())
+        hint_font.setPointSizeF(max(8.0, self.font().pointSizeF() - 1.0))
+        painter.setFont(hint_font)
+        painter.setPen(QColor(150, 142, 162))
+        hint_rect = rect.adjusted(0, 24, 0, 0)
+        painter.drawText(hint_rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self._placeholder_hint)
+        painter.end()
+
+    def mousePressEvent(self, event):
+        if self._is_empty():
+            self.create_requested.emit()
+            return
+        super().mousePressEvent(event)
 
 
 class CustomPresetListItem(QListWidgetItem):
@@ -262,7 +341,7 @@ class ReserveKeyRow(QWidget):
         self.key_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         self.remove_btn = QToolButton()
-        self.remove_btn.setIcon(qta.icon("fa5s.times", color="#e26e9e"))
+        self.remove_btn.setIcon(qta.icon("fa5s.times", color="#c04c80"))
         self.remove_btn.setFixedSize(22, 22)
         self.remove_btn.setIconSize(QSize(11, 11))
         self.remove_btn.setAutoRaise(True)
@@ -437,7 +516,7 @@ class FallbackRow(QWidget):
         self.down_btn.setAutoRaise(True)
 
         self.remove_btn = QToolButton()
-        self.remove_btn.setIcon(qta.icon("fa5s.times", color="#e26e9e"))
+        self.remove_btn.setIcon(qta.icon("fa5s.times", color="#c04c80"))
         self.remove_btn.setFixedSize(22, 22)
         self.remove_btn.setIconSize(QSize(11, 11))
         self.remove_btn.setAutoRaise(True)

@@ -195,3 +195,27 @@ def test_find_previous_python_full_asset_accepts_legacy_full_tag_suffix():
     release, asset = found
     assert release["tag_name"] == "v2026.06.12_Full"
     assert asset["name"] == "PythonBuild-v2026.06.12.zip"
+
+
+def test_find_previous_python_full_asset_skips_non_launcher_release():
+    releases = [
+        _raw_release(
+            "voice-assets",
+            "Voice Assets",
+            ["CrazyMita.zip"],
+            published_at="2026-06-20T00:00:00Z",
+        ),
+        _raw_release(
+            "v2026.06.12_Full",
+            "v2026.06.12 Full",
+            ["PythonBuild-v2026.06.12.zip"],
+            published_at="2026-06-12T00:00:00Z",
+        ),
+    ]
+
+    found = release_contract.find_previous_python_full_asset(releases, channel="beta")
+
+    assert found is not None
+    release, asset = found
+    assert release["tag_name"] == "v2026.06.12_Full"
+    assert asset["name"] == "PythonBuild-v2026.06.12.zip"

@@ -25,6 +25,8 @@ _DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 # Older 1809/1903 builds used attribute 19 before it was finalised as 20.
 _DWMWA_USE_IMMERSIVE_DARK_MODE_PRE_20H1 = 19
 
+_TITLEBAR_FILTER_PROP = "_neuromita_dark_titlebar_filter"
+
 
 def apply_dark_titlebar(widget, enabled: bool = True) -> bool:
     """Make the given top-level widget's native title bar dark.
@@ -60,3 +62,44 @@ def apply_dark_titlebar(widget, enabled: bool = True) -> bool:
     except Exception as exc:  # pragma: no cover - platform dependent
         logger.debug(f"apply_dark_titlebar skipped: {exc}")
         return False
+
+
+def install_dark_titlebar_sync(app, enabled: bool = True):
+    """Apply dark native title bars to every shown top-level widget.
+
+    The main window already uses a dark in-app theme; this keeps auxiliary
+    dialogs/windows visually consistent without sprinkling per-dialog logic
+    across the codebase.
+    """
+    if sys.platform != "win32" or app is None:
+        return None
+
+    existing = app.property(_TITLEBAR_FILTER_PROP)
+    if existing is not None:
+        return existing
+
+    try:
+        from PyQt6.QtCore import QObject, QEvent
+        from PyQt6.QtWidgets import QWidget
+
+        class _DarkTitlebarFilter(QObject):
+            def eventFilter(self, obj, event):
+                if isinstance(obj, QWidget) and obj.isWindow():
+                    if event.type() in (QEvent.Type.Show, QEvent.Type.WinIdChange):
+                        apply_dark_titlebar(obj, enabled)
+                return False
+
+        filt = _DarkTitlebarFilter(app)
+        app.installEventFilter(filt)
+        app.setProperty(_TITLEBAR_FILTER_PROP, filt)
+
+        for widget in app.topLevelWidgets():
+            try:
+                if widget.isWindow():
+                    apply_dark_titlebar(widget, enabled)
+            except Exception:
+                pass
+        return filt
+    except Exception as exc:  # pragma: no cover - GUI dependent
+        logger.debug(f"install_dark_titlebar_sync skipped: {exc}")
+        return None

@@ -28,11 +28,11 @@ QDialog { background-color: #1A1A24; }
 QLabel#MsgTitle { color: #f3edf6; font-size: 14px; font-weight: 600; background: transparent; border: none; }
 QLabel#MsgText  { color: #d6cdd6; font-size: 12px; background: transparent; border: none; }
 QPushButton#PrimaryBtn {
-    background-color: #db6596; color: #ffffff; font-weight: 600;
-    border: 1px solid rgba(219,101,150,0.46); border-radius: 8px;
+    background-color: #b74b7d; color: #ffffff; font-weight: 600;
+    border: 1px solid rgba(183, 75, 125,0.46); border-radius: 8px;
     padding: 7px 18px; min-width: 88px; font-size: 12px;
 }
-QPushButton#PrimaryBtn:hover { background-color: #e26e9e; }
+QPushButton#PrimaryBtn:hover { background-color: #c04c80; }
 """
 
 

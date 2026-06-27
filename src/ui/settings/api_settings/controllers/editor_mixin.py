@@ -56,6 +56,7 @@ class EditorMixin:
         v = self.view
         return {
             "enabled": bool(getattr(v, "or_enable_cb", None).isChecked()) if getattr(v, "or_enable_cb", None) is not None else False,
+            "tail_system_to_user": bool(getattr(v, "or_tail_system_to_user_cb", None).isChecked()) if getattr(v, "or_tail_system_to_user_cb", None) is not None else True,
             "order": str(getattr(v, "or_order_row", None).text() or "") if getattr(v, "or_order_row", None) is not None else "",
             "only": str(getattr(v, "or_only_row", None).text() or "") if getattr(v, "or_only_row", None) is not None else "",
             "ignore": str(getattr(v, "or_ignore_row", None).text() or "") if getattr(v, "or_ignore_row", None) is not None else "",
@@ -80,6 +81,8 @@ class EditorMixin:
 
         if getattr(v, "or_enable_cb", None) is not None:
             v.or_enable_cb.setChecked(bool(routing.get("enabled", False)))
+        if getattr(v, "or_tail_system_to_user_cb", None) is not None:
+            v.or_tail_system_to_user_cb.setChecked(bool(routing.get("tail_system_to_user", True)))
         if getattr(v, "or_order_row", None) is not None:
             v.or_order_row.set_text(", ".join(routing.get("order", [])) if isinstance(routing.get("order"), list) else str(routing.get("order") or ""))
         if getattr(v, "or_only_row", None) is not None:
@@ -158,9 +161,9 @@ class EditorMixin:
 
         if dirty:
             v.save_preset_button.setStyleSheet("""
-                QPushButton { background-color: #db6596; color: white; font-weight: bold; border: none; padding: 8px; border-radius: 4px; }
-                QPushButton:hover { background-color: #e26e9e; }
-                QPushButton:pressed { background-color: #cb5b89; }
+                QPushButton { background-color: #b74b7d; color: white; font-weight: bold; border: none; padding: 8px; border-radius: 4px; }
+                QPushButton:hover { background-color: #c04c80; }
+                QPushButton:pressed { background-color: #a0436c; }
             """)
         else:
             v.save_preset_button.setStyleSheet("""
@@ -475,11 +478,23 @@ class EditorMixin:
         logger.info("[API UI] add preset clicked")
         v = self.view
         template_options: list[tuple[str, object]] = []
+        template_presets_meta: list[object] = []
         for i in range(v.template_combo.count()):
             template_options.append((v.template_combo.itemText(i), v.template_combo.itemData(i)))
+            template_id = v.template_combo.itemData(i)
+            if template_id is None:
+                continue
+            preset_meta = getattr(getattr(v, "provider_delegate", None), "presets_meta", {}).get(template_id)
+            if preset_meta is not None:
+                template_presets_meta.append(preset_meta)
 
         initial_template = v.template_combo.currentData() if getattr(v, "template_combo", None) is not None else None
-        dlg = NewPresetDialog(v, template_options=template_options, initial_template_data=initial_template)
+        dlg = NewPresetDialog(
+            v,
+            template_options=template_options,
+            initial_template_data=initial_template,
+            template_presets_meta=template_presets_meta,
+        )
         if dlg.exec() != dlg.DialogCode.Accepted:
             logger.info("[API UI] add preset cancelled")
             return
@@ -512,8 +527,8 @@ class EditorMixin:
             if not isinstance(new_id, int):
                 QMessageBox.warning(
                     v,
-                    _("РћС€РёР±РєР°", "Error"),
-                    _("РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕР·РґР°С‚СЊ РїСЂРµСЃРµС‚. РџСЂРѕРІРµСЂСЊ Р»РѕРіРё (SAVE_CUSTOM_PRESET).",
+                    _("Ошибка", "Error"),
+                    _("Не удалось создать пресет. Проверь логи (SAVE_CUSTOM_PRESET).",
                     "Failed to create preset. Check logs (SAVE_CUSTOM_PRESET).")
                 )
                 return

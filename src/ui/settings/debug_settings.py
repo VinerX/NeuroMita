@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
     QComboBox, QCheckBox, QHBoxLayout, QLabel,
-    QPlainTextEdit, QPushButton,
+    QPlainTextEdit, QPushButton, QVBoxLayout,
 )
 from utils import getTranslationVariant as _
 from localization.live import tr_set
@@ -17,6 +17,17 @@ def setup_debug_panel_controls(view, parent_layout):
               widget references needed by handler methods.
         parent_layout: QVBoxLayout of the debug panel.
     """
+
+    def _make_toggle(text: str, tooltip: str | None = None) -> QCheckBox:
+        cb = QCheckBox(text)
+        cb.setObjectName("SandboxCaptureToggle")
+        if tooltip:
+            cb.setToolTip(tooltip)
+        return cb
+
+    def _style_action_button(button: QPushButton) -> QPushButton:
+        button.setObjectName("SandboxQuickAction")
+        return button
 
     # ── Structured output display ────────────────────────────────────────────
     struct_label = tr_set(QLabel(), 'Structured output (дебаг)', 'Structured output (debug)')
@@ -47,6 +58,7 @@ def setup_debug_panel_controls(view, parent_layout):
         _('Если включено — блок с данными открыт сразу, иначе свёрнут.',
           'If enabled — the data block is open immediately, otherwise collapsed.')
     )
+    struct_expanded_cb.setObjectName("SandboxCaptureToggle")
     struct_expanded_cb.setChecked(bool(view._get_setting("STRUCTURED_EXPANDED_DEFAULT", False)))
     struct_expanded_cb.toggled.connect(
         lambda checked: view._save_setting("STRUCTURED_EXPANDED_DEFAULT", checked)
@@ -70,6 +82,7 @@ def setup_debug_panel_controls(view, parent_layout):
         _('Сохранить как role=user с префиксом [Системное]:, чтобы Gemini видел сообщение в контексте',
           'Save as role=user with [System]: prefix so Gemini sees it in context')
     )
+    view._debug_as_user_cb.setObjectName("SandboxCaptureToggle")
     view._debug_as_user_cb.setChecked(bool(view._get_setting("DEBUG_INSERT_AS_USER", False)))
     view._debug_as_user_cb.toggled.connect(
         lambda checked: view._save_setting("DEBUG_INSERT_AS_USER", checked)
@@ -77,6 +90,7 @@ def setup_debug_panel_controls(view, parent_layout):
     parent_layout.addWidget(view._debug_as_user_cb)
 
     sys_btn = tr_set(QPushButton(), 'Отправить системное', 'Send as system')
+    sys_btn.setObjectName("SandboxQuickAction")
     sys_btn.clicked.connect(view._on_debug_insert_system_message)
     parent_layout.addWidget(sys_btn)
 
@@ -85,10 +99,14 @@ def setup_debug_panel_controls(view, parent_layout):
     snap_label.setObjectName('SeparatorLabel')
     parent_layout.addWidget(snap_label)
 
-    snap_row = QHBoxLayout()
+    snap_row = QVBoxLayout()
+    snap_row.setContentsMargins(0, 0, 0, 0)
+    snap_row.setSpacing(6)
     save_snap_btn = tr_set(QPushButton(), 'Сохранить snapshot', 'Save snapshot')
+    save_snap_btn.setObjectName("SandboxQuickAction")
     save_snap_btn.clicked.connect(view._on_debug_save_snapshot)
     load_snap_btn = tr_set(QPushButton(), 'Загрузить snapshot', 'Load snapshot')
+    load_snap_btn.setObjectName("SandboxQuickAction")
     load_snap_btn.clicked.connect(view._on_debug_load_snapshot)
     snap_row.addWidget(save_snap_btn)
     snap_row.addWidget(load_snap_btn)
@@ -104,6 +122,7 @@ def setup_debug_panel_controls(view, parent_layout):
         _('Открыть просмотр контекста последнего запроса к нейросети (сообщения, системные промты, параметры)',
           'Open context viewer for the last request sent to the neural network')
     )
+    ctx_req_btn.setObjectName("SandboxQuickAction")
     ctx_req_btn.clicked.connect(view._on_debug_view_last_context)
 
     ctx_resp_btn = tr_set(QPushButton(), 'Посмотреть последний ответ', 'View last response')
@@ -111,9 +130,12 @@ def setup_debug_panel_controls(view, parent_layout):
         _('Открыть просмотр последнего ответа модели и usage-метрик, если они сохранены.',
           'Open the latest model response and usage metrics if they were saved.')
     )
+    ctx_resp_btn.setObjectName("SandboxQuickAction")
     ctx_resp_btn.clicked.connect(view._on_debug_view_last_response_context)
 
-    ctx_row = QHBoxLayout()
+    ctx_row = QVBoxLayout()
+    ctx_row.setContentsMargins(0, 0, 0, 0)
+    ctx_row.setSpacing(6)
     ctx_row.addWidget(ctx_req_btn)
     ctx_row.addWidget(ctx_resp_btn)
     parent_layout.addLayout(ctx_row)
@@ -123,6 +145,7 @@ def setup_debug_panel_controls(view, parent_layout):
         _('Сохранять вход события GENERATE_RESPONSE до сборки промпта: сырой payload, состояние перед BUILD_PROMPT и краткую сводку по изображениям.',
           'Save GENERATE_RESPONSE ingress before prompt build: raw payload, pre-BUILD_PROMPT state, and compact image summaries.')
     )
+    capture_cb.setObjectName("SandboxCaptureToggle")
     capture_cb.setChecked(bool(view._get_setting("DEBUG_CAPTURE_GENERATION_INPUT_ENABLED", False)))
     capture_cb.toggled.connect(
         lambda checked: view._save_setting("DEBUG_CAPTURE_GENERATION_INPUT_ENABLED", checked)

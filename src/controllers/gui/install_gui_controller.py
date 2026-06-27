@@ -131,12 +131,20 @@ class InstallGuiController(BaseController):
             cbs = (progress_cb, status_cb, log_cb)
             job["win"] = win
 
+        task_title = str(job.get("title") or task_id)
+        last_status = ""
+
         if headless:
             callbacks = None
         else:
-            progress_cb, status_cb, log_cb = cbs if cbs else (
-                (lambda *_: None), (lambda *_: None), (lambda *_: None)
-            )
+            progress_cb = cbs[0] if cbs else (lambda *_: None)
+
+            def status_cb(message):
+                nonlocal last_status
+                last_status = "" if message is None else str(message)
+                (cbs[1] if cbs else (lambda *_: None))(message)
+
+            log_cb = cbs[2] if cbs else (lambda *_: None)
             callbacks = InstallCallbacks(progress=progress_cb, status=status_cb, log=log_cb)
 
         ok = False
@@ -163,7 +171,7 @@ class InstallGuiController(BaseController):
                 logger.error(f"Headless install failed for task_id={task_id}")
                 self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
                     "title": "Installation failed",
-                    "message": f"Task '{task_id}' failed.",
+                    "message": f"Task '{task_title}' failed.",
                 })
             return
 
@@ -185,15 +193,16 @@ class InstallGuiController(BaseController):
         else:
             try:
                 status_cb("Failed")
-                log_cb("Installation failed (see logs above).")
+                log_cb(f"Installation failed for '{task_title}'. See the error lines above.")
             except Exception:
                 pass
             if not shared:
                 # Оставляем окно открытым, чтобы пользователь прочитал логи.
                 self._finish_install_window(win, False)
+            details = f" Last status: {last_status}." if last_status else ""
             self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
                 "title": "Installation failed",
-                "message": f"Task '{task_id}' failed. See install window logs.",
+                "message": f"Task '{task_title}' failed.{details} See install window logs.",
             })
 
     # ------------------------------------------------------------------
@@ -275,7 +284,7 @@ class InstallGuiController(BaseController):
         level = str(data.get("level") or "").strip().lower()
         low = msg.lower()
 
-        if level in ("error", "exception", "critical") or any(k in low for k in ("error", "ошибка", "failed", "exception", "traceback")):
+        if level in ("error", "exception", "critical") or any(k in low for k in ("error", "ошибка", "failed", "traceback")):
             logger.error(f"[INSTALL] {msg}")
         elif level in ("warn", "warning") or any(k in low for k in ("warning", "предупреж")):
             logger.warning(f"[INSTALL] {msg}")

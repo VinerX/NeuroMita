@@ -6,19 +6,21 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class LauncherShellPalette:
-    root_bg: str = "#0c0915"
-    panel_bg: str = "rgba(13, 13, 26, 0.995)"
-    panel_soft: str = "rgba(15, 16, 31, 0.98)"
-    card_bg: str = "rgba(15, 16, 31, 0.92)"
-    card_alt_bg: str = "rgba(16, 13, 25, 0.94)"
-    border: str = "rgba(219, 101, 150, 0.16)"
-    border_strong: str = "rgba(219, 101, 150, 0.30)"
+    # Фоновые ступени эталона (#0A0A18 → #0D0E1C → #101221), сине-серые, без фиолета.
+    root_bg: str = "#0a0a18"
+    panel_bg: str = "rgba(14, 16, 31, 0.995)"
+    panel_soft: str = "rgba(14, 16, 31, 0.98)"
+    card_bg: str = "rgba(14, 16, 31, 0.92)"
+    card_alt_bg: str = "rgba(14, 16, 31, 0.94)"
+    # Нейтрально-серые обводки эталона (#1B1928 / #252236) вместо розовых.
+    border: str = "rgba(27, 25, 40, 0.92)"
+    border_strong: str = "rgba(37, 34, 54, 0.95)"
     text: str = "#f3edf6"
     muted: str = "#bca9bb"
-    accent: str = "#db6596"
-    accent_soft: str = "rgba(219, 101, 150, 0.14)"
-    accent_hover: str = "#e26e9e"
-    accent_pressed: str = "#cb5b89"
+    accent: str = "#b74b7d"
+    accent_soft: str = "rgba(183, 75, 125, 0.14)"
+    accent_hover: str = "#c04c80"
+    accent_pressed: str = "#a0436c"
     success: str = "#89f7b2"
     warning: str = "#ffcf7d"
     danger: str = "#ff7a98"
@@ -38,9 +40,9 @@ def get_launcher_shell_stylesheet() -> str:
     bg_rule = """
         background: qlineargradient(
             x1: 0, y1: 0, x2: 1, y2: 1,
-            stop: 0 #110d1b,
-            stop: 0.42 #0c0915,
-            stop: 1 #080812
+            stop: 0 #0d0e1c,
+            stop: 0.42 #0a0a18,
+            stop: 1 #080814
         );
     """
     return f"""
@@ -67,7 +69,6 @@ def get_launcher_shell_stylesheet() -> str:
     QFrame#LauncherShellPromoCard,
     QFrame#LauncherShellStatusCard,
     QFrame#LauncherShellSocialCard,
-    QFrame#LauncherShellHeroCard,
     QFrame#LauncherShellMetricCard,
     QFrame#LauncherShellNewsCard,
     QFrame#LauncherShellLogCard {{
@@ -75,14 +76,89 @@ def get_launcher_shell_stylesheet() -> str:
         border: 1px solid {p.border};
         border-radius: 22px;
     }}
-    QFrame#LauncherShellSidebar {{
+    /* Шапка страницы выделена отдельным уровнем, чтобы не сливаться 1-в-1 с
+       карточками релизов: чуть приподнятый градиент + акцентная левая грань. */
+    QFrame#LauncherShellHeroCard {{
         background: qlineargradient(
-            x1: 0, y1: 0, x2: 0, y2: 1,
-            stop: 0 rgba(13, 13, 26, 0.995),
-            stop: 1 rgba(12, 9, 21, 0.995)
+            x1: 0, y1: 0, x2: 1, y2: 1,
+            stop: 0 rgba(23, 25, 40, 0.96),
+            stop: 1 rgba(14, 16, 31, 0.96)
         );
+        border: 1px solid {p.border_strong};
+        border-left: 3px solid rgba(183, 75, 125, 0.85);
+        border-radius: 22px;
+    }}
+    /* Заголовок секции (PRE-RELEASES / RELEASES). */
+    QLabel#LauncherShellSectionHeader {{
+        color: {p.muted};
+        font-family: "Segoe UI", "Arial", sans-serif;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 1px;
+        padding: 2px 2px;
+    }}
+    /* Фильтр-табы (Все / Релизы / Пререлизы). */
+    QPushButton#LauncherShellFilterTab {{
+        background-color: rgba(255, 255, 255, 0.03);
+        color: {p.muted};
+        border: 1px solid {p.border};
+        border-radius: 12px;
+        padding: 7px 16px;
+        font-family: "Segoe UI", "Arial", sans-serif;
+        font-size: 12px;
+        font-weight: 700;
+    }}
+    QPushButton#LauncherShellFilterTab:hover {{
+        color: {p.text};
+        border: 1px solid {p.border_strong};
+    }}
+    QPushButton#LauncherShellFilterTab[active="true"] {{
+        background-color: rgba(144, 65, 106, 0.85);
+        color: {p.text};
+        border: 1px solid rgba(130, 56, 88, 0.55);
+    }}
+    /* Цветные бейджи статуса релиза (эталонные оттенки). */
+    QLabel#LauncherShellBadge {{
+        color: #f3dfe9;
+        font-family: "Segoe UI", "Arial", sans-serif;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 1px;
+        border-radius: 7px;
+        padding: 3px 9px;
+        background-color: #792e56;
+    }}
+    QLabel#LauncherShellBadge[kind="pre"] {{
+        background-color: #422258;
+        color: #ddccea;
+    }}
+    QLabel#LauncherShellBadge[kind="offline"] {{
+        background-color: rgba(255, 255, 255, 0.06);
+        color: {p.muted};
+    }}
+    /* Тонкий разделитель между шапкой карточки (бейдж+название) и описанием. */
+    QFrame#LauncherShellCardDivider {{
+        min-height: 1px;
+        max-height: 1px;
+        background-color: rgba(255, 255, 255, 0.06);
         border: none;
-        border-right: 1px solid rgba(219, 101, 150, 0.14);
+    }}
+    /* Прокручиваемый контейнер развёрнутого changelog: ограничивает высоту,
+       чтобы длинные заметки не растягивали страницу на километры. */
+    QScrollArea#LauncherShellDetailsScroll {{
+        background: rgba(0, 0, 0, 0.18);
+        border: 1px solid {p.border};
+        border-radius: 12px;
+    }}
+    QScrollArea#LauncherShellDetailsScroll > QWidget > QWidget {{
+        background: transparent;
+    }}
+    QFrame#LauncherShellSidebar {{
+        /* Плоская заливка вместо вертикального градиента: на высокой узкой
+           панели qlineargradient давал видимые «полосы-тайлы» (фидбэк Артёма). */
+        background-color: #0e101f;
+        border: none;
+        border-right: 1px solid rgba(255, 255, 255, 0.06);
         border-radius: 0px;
     }}
     QFrame#LauncherShellNavHost,
@@ -160,15 +236,15 @@ def get_launcher_shell_stylesheet() -> str:
         color: {p.text};
     }}
     QPushButton#LauncherShellNavButton[active="true"] {{
-        background-color: rgba(219, 101, 150, 0.72);
-        border: 1px solid {p.border_strong};
+        background-color: rgba(144, 65, 106, 0.85);
+        border: 1px solid rgba(130, 56, 88, 0.55);
         color: {p.text};
     }}
     QPushButton#LauncherShellActionButton,
     QPushButton#LauncherShellPromoButton {{
         background-color: {p.accent};
         color: white;
-        border: 1px solid rgba(219, 101, 150, 0.42);
+        border: 1px solid rgba(130, 56, 88, 0.60);
         border-radius: 14px;
         padding: 10px 14px;
         font-family: "Segoe UI", "Arial", sans-serif;
@@ -241,7 +317,7 @@ def get_launcher_shell_stylesheet() -> str:
     QPushButton#LauncherShellLangPill {{
         background-color: rgba(255, 255, 255, 0.02);
         color: {p.text};
-        border: 1px solid rgba(219, 101, 150, 0.26);
+        border: 1px solid rgba(183, 75, 125, 0.26);
         border-radius: 12px;
         padding: 0;
         font-family: "Segoe UI", "Arial", sans-serif;
@@ -257,7 +333,7 @@ def get_launcher_shell_stylesheet() -> str:
     QPushButton#LauncherShellLangPill[active="true"] {{
         background-color: {p.accent};
         color: white;
-        border: 1px solid rgba(219, 101, 150, 0.42);
+        border: 1px solid rgba(130, 56, 88, 0.55);
     }}
     QLabel#LauncherShellVersionLabel {{
         color: {p.muted};
@@ -275,7 +351,7 @@ def get_launcher_shell_stylesheet() -> str:
         margin: 4px 0;
     }}
     QScrollBar::handle:vertical {{
-        background: rgba(219, 101, 150, 0.22);
+        background: rgba(183, 75, 125, 0.22);
         border-radius: 5px;
         min-height: 28px;
     }}

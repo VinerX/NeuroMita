@@ -253,6 +253,9 @@ class ChatModel:
                 routing = normalize_openrouter_routing(preset_settings.openrouter_routing)
                 if routing:
                     req.extra["openrouter_routing"] = routing
+                req.extra["openrouter_tail_system_to_user"] = bool(
+                    (preset_settings.openrouter_routing or {}).get("tail_system_to_user", True)
+                )
                 session_id = build_openrouter_session_id(
                     getattr(getattr(self, "current_character", None), "char_id", "") or "",
                     getattr(getattr(self, "current_character", None), "name", "") or "",
@@ -296,13 +299,17 @@ class ChatModel:
                         game_connected = bool(res[0]) if res else False
                     except Exception:
                         game_connected = False
-                    fc.save_sample(
+                    sample_id = fc.save_sample(
                         req=_last_req[0],
                         response_text=response_text.text,
                         character_id=char.char_id if char else "unknown",
                         character_name=char.name if char else "unknown",
                         game_connected=game_connected,
                     )
+                    if sample_id:
+                        if not isinstance(response_text.raw, dict):
+                            response_text.raw = {}
+                        response_text.raw["finetune_sample_id"] = sample_id
             except Exception as _ft_err:
                 logger.debug(f"[FinetuneCollector] save_sample skipped: {_ft_err}")
 

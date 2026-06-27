@@ -18,6 +18,7 @@ from core.installables import (
     make_component_id,
 )
 from core.installables.helpers import build_runtime_ctx, noop_plan, status_from_installed
+from utils import _
 
 
 def _asr_settings_path() -> str:
@@ -242,9 +243,25 @@ class SpeechRecognizerInterface(ABC):
 
         def _final_check(**_kwargs) -> bool:
             try:
-                return bool(self.is_installed())
+                installed = bool(self.is_installed())
             except Exception:
+                # Не валим установку из-за сбоя самой проверки — считаем успешной.
                 return True
+            if not installed:
+                # Раньше шаг просто возвращал False и пользователь видел только
+                # «call step returned False: Finalizing...» без причины (фидбэк Артёма
+                # «даже не понял что произошло»). Теперь пишем, чего не хватает.
+                callbacks = _kwargs.get("callbacks")
+                reason = self._diagnose_install_failure()
+                if callbacks is not None and hasattr(callbacks, "log"):
+                    try:
+                        callbacks.log(
+                            _("Проверка после установки не пройдена — не хватает: {reason}",
+                              "Post-install check failed — missing: {reason}").format(reason=reason)
+                        )
+                    except Exception:
+                        pass
+            return installed
 
         actions.append(
             InstallAction(
@@ -262,6 +279,32 @@ class SpeechRecognizerInterface(ABC):
             required_backend=required_backend,
             backend_context=dict(run_ctx),
         )
+
+    def _diagnose_install_failure(self) -> str:
+        """Человекочитаемая причина, почему is_installed() == False после установки:
+        недостающие python-модули/бэкенд из requirements() + отсутствующие файлы
+        модели из install_manifest()."""
+        parts: list[str] = []
+        try:
+            ctx = {
+                "device": getattr(self, "gigaam_device", None) or getattr(self, "device", None),
+                "gpu_vendor": getattr(self, "_current_gpu", None) or "CPU",
+            }
+            st = check_requirements(self.requirements(), ctx=ctx)
+            for missing in (st.get("missing_required") or []):
+                parts.append(str(missing))
+        except Exception:
+            pass
+        try:
+            for item in (self.install_manifest() or []):
+                dest = str(item.get("dest") or "").strip()
+                if dest and (not os.path.exists(dest) or os.path.getsize(dest) <= 0):
+                    parts.append(os.path.basename(dest) or dest)
+        except Exception:
+            pass
+        if not parts:
+            return _("неизвестно (см. строки лога выше)", "unknown (see log lines above)")
+        return "; ".join(dict.fromkeys(parts))  # dedup, сохраняя порядок
 
     def build_uninstall_plan(self, ctx: dict | None = None) -> InstallPlan:
         return noop_plan("ASR uninstall is not implemented yet.")

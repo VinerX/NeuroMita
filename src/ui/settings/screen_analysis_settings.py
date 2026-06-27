@@ -13,8 +13,8 @@ def get_camera_list():
                 camera_list.append(f"Camera {i}")
                 cap.release()
         return camera_list if camera_list else [_("Камер не найдено", "No cameras found")]
-    except ImportError as ex:
-        logger.warning('OpenCV не установлен: камеры не обнаружены.')
+    except ImportError:
+        logger.warning("[screen_capture] OpenCV is not installed; camera enumeration is unavailable.")
         return [_("Камер не найдено", "No cameras found")]
 
 def update_camera_list(gui):
@@ -33,9 +33,9 @@ def on_camera_selected(gui):
             try:
                 camera_index = int(selection.split(" ")[-1])
                 gui.settings.set("CAMERA_INDEX", camera_index)
-                logger.info(f"Выбрана камера: {camera_index}")
+                logger.info(f"[screen_capture] Selected camera index: {camera_index}")
             except (IndexError, ValueError):
-                logger.error(f"Не удалось извлечь индекс из '{selection}'")
+                logger.error(f"[screen_capture] Failed to parse camera index from '{selection}'")
 
 def setup_screen_analysis_controls(gui, parent_layout):
     # No group header here: the page already carries the "Изображения и камера"

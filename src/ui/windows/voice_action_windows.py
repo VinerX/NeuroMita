@@ -45,42 +45,45 @@ class VoiceInstallationWindow(QDialog):
         self._style_variant = str(style_variant or "default").strip().lower()
         if self._style_variant == "ai_hub":
             self.setObjectName("AIHubInstallDialog")
+            # Эталонная сине-серая гамма (#0A0A18 / #252236), розовый — только на
+            # заполнении прогресс-бара. Раньше тут был фиолетовый набор бордюров
+            # (#3b2748/#4d335c/#5c3b6d), выбивавшийся из остального UI (фидбэк Артёма).
             self.setStyleSheet("""
                 QDialog#AIHubInstallDialog {
-                    background-color: #14101b;
-                    border: 1px solid #3b2748;
+                    background-color: #0d0e1c;
+                    border: 1px solid #252236;
                 }
                 QLabel {
-                    color: #f5edf7;
+                    color: #f3edf6;
                 }
                 QTextEdit {
-                    background-color: #0f0b16;
-                    color: #f0ddea;
-                    border: 1px solid #4d335c;
+                    background-color: #07070f;
+                    color: #d8d2e4;
+                    border: 1px solid #252236;
                     border-radius: 10px;
-                    padding: 6px;
+                    padding: 8px;
                 }
                 QProgressBar {
-                    border: 1px solid #5c3b6d;
+                    border: 1px solid #252236;
                     border-radius: 7px;
-                    background-color: #251a31;
+                    background-color: #14121f;
                     text-align: center;
                 }
                 QProgressBar::chunk {
-                    background-color: #db6596;
+                    background-color: #b74b7d;
                     border-radius: 7px;
                 }
                 QPushButton {
-                    background-color: #2a1d36;
-                    color: #fff6fb;
-                    border: 1px solid #5a3a6a;
+                    background-color: #181826;
+                    color: #f3edf6;
+                    border: 1px solid #252236;
                     border-radius: 10px;
                     padding: 7px 12px;
                     font-weight: 600;
                 }
                 QPushButton:hover {
-                    background-color: #362347;
-                    border-color: #db6596;
+                    background-color: #20202f;
+                    border-color: #3a3750;
                 }
             """)
         else:
@@ -99,7 +102,7 @@ class VoiceInstallationWindow(QDialog):
                     text-align: center;
                 }
                 QProgressBar::chunk {
-                    background-color: #db6596;
+                    background-color: #b74b7d;
                     border-radius: 5px;
                 }
                 QPushButton {
@@ -613,8 +616,8 @@ class VCRedistWarningDialog(QDialog):
                 font-weight: bold;
             }
             QPushButton:hover { background-color: #555555; }
-            #RetryButton { background-color: #db6596; }
-            #RetryButton:hover { background-color: #e26e9e; }
+            #RetryButton { background-color: #b74b7d; }
+            #RetryButton:hover { background-color: #c04c80; }
         """)
         
         self.choice = 'close'
@@ -677,20 +680,33 @@ class TritonDependenciesDialog(QDialog):
         self.setWindowTitle(_("⚠️ Зависимости Triton", "⚠️ Triton Dependencies"))
         self.setModal(True)
         self.setMinimumSize(700, 350)
-        
+
+        # Эталонная сине-серая гамма (как остальной UI), а не старый плоский #1e1e1e
+        # (фидбэк Артёма: «окошко не в том оформлении как все»).
+        self.setObjectName("TritonDependenciesDialog")
         self.setStyleSheet("""
-            QDialog { background-color: #1e1e1e; }
-            QLabel { color: #ffffff; }
-            QPushButton {
-                background-color: #333333;
-                color: #ffffff;
-                border: none;
-                padding: 5px 10px;
-                font-weight: bold;
+            QDialog#TritonDependenciesDialog {
+                background-color: #0d0e1c;
+                border: 1px solid #252236;
             }
-            QPushButton:hover { background-color: #555555; }
-            #ContinueButton { background-color: #db6596; }
-            #ContinueButton:hover { background-color: #e26e9e; }
+            QLabel { color: #f3edf6; }
+            QPushButton {
+                background-color: #181826;
+                color: #f3edf6;
+                border: 1px solid #252236;
+                border-radius: 10px;
+                padding: 7px 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #20202f;
+                border-color: #3a3750;
+            }
+            #ContinueButton {
+                background-color: #b74b7d;
+                border: 1px solid #823858;
+            }
+            #ContinueButton:hover { background-color: #c04c80; }
         """)
         
         self.choice = 'skip'

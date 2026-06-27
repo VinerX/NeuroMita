@@ -30,7 +30,7 @@ _UPDATE_CHECK_THROTTLE_SEC = 600
 
 from core.events import Events
 from main_logger import logger
-from ui.pages.news_support import build_release_news_items, get_news_content, parse_news_items
+from ui.pages.news_support import build_release_news_items, load_news_releases_async
 from ui.widgets.launcher_dashboard_helpers import NewsItem
 from utils import _
 from localization.live import tr_set
@@ -54,6 +54,23 @@ class LauncherHomeBackground(QWidget):
         self.setObjectName("LauncherHomeBackground")
         self._bg = QPixmap(str(Path("assets/launcher_ui/bg.jpg")))
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._rescale_home_logo()
+
+    def _rescale_home_logo(self):
+        """Масштабируем wordmark-логотип по ширине страницы (адаптивно), сохраняя
+        пропорции. Левый столбец ~половина окна, поэтому берём ~42% ширины,
+        кламп 360..720, чтобы лого выглядел крупно, но не вылезал."""
+        src = getattr(self, "_home_logo_src", None)
+        label = getattr(self, "_home_logo", None)
+        if src is None or label is None or src.isNull():
+            return
+        target_w = int(max(400, min(760, self.width() * 0.48)))
+        label.setPixmap(
+            src.scaledToWidth(target_w, Qt.TransformationMode.SmoothTransformation)
+        )
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -105,7 +122,6 @@ class HomePage(LauncherHomeBackground):
         self._update_chip_label = None
         self._backend_status_value = None
         self._unity_status_value = None
-        self._status_line_label = None
         self._news_items_layout = None
         self._news_panel_placeholder = None
 
@@ -117,6 +133,7 @@ class HomePage(LauncherHomeBackground):
         self._update_info_py = None
         self._update_info_unity = None
         self._update_check_inflight = False
+        self._menu_button = None
         self.primary_button = None
         self.progress_bar = None
         self.progress_label = None
@@ -167,18 +184,17 @@ class HomePage(LauncherHomeBackground):
         logo = QLabel()
         logo.setObjectName("LauncherHomeLogo")
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._home_logo = logo
         logo_path = Path("assets/launcher_ui/logo.png")
-        if logo_path.exists():
-            logo.setPixmap(
-                QPixmap(str(logo_path)).scaled(
-                    420,
-                    270,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
-        else:
+        # Логотип — широкий wordmark (~3.8:1). Раньше его вписывали в фикс-бокс
+        # 420×270 → по ширине ужималось до ~109px высоты, выглядел мелко.
+        # Теперь храним оригинал и масштабируем по ширине страницы (адаптивно).
+        self._home_logo_src = QPixmap(str(logo_path)) if logo_path.exists() else None
+        if self._home_logo_src is None or self._home_logo_src.isNull():
+            self._home_logo_src = None
             logo.setText("NeuroMita")
+        else:
+            self._rescale_home_logo()
         logo_layout.addWidget(logo, 0, Qt.AlignmentFlag.AlignHCenter)
         logo_layout.addStretch(1)
         left_column.addWidget(logo_wrap, 1)
@@ -219,6 +235,7 @@ class HomePage(LauncherHomeBackground):
         menu_button.setIconSize(QSize(14, 14))
         menu_button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         menu_button.clicked.connect(lambda: self.show_extra_menu(menu_button))
+        self._menu_button = menu_button
         button_row.addWidget(menu_button)
         left_column.addLayout(button_row)
 
@@ -248,11 +265,6 @@ class HomePage(LauncherHomeBackground):
 
         left_column.addLayout(_progress_row)
 
-        self._status_line_label = QLabel("")
-        self._status_line_label.setObjectName("LauncherHomeFootnote")
-        self._status_line_label.setWordWrap(True)
-        left_column.addWidget(self._status_line_label)
-
         right_column = QVBoxLayout()
         right_column.setContentsMargins(0, 0, 0, 8)
         right_column.addStretch(1)
@@ -277,9 +289,6 @@ class HomePage(LauncherHomeBackground):
             self.gui._home_install_signals_connected = True
         except Exception as exc:
             logger.info(f"Install signals subscribe skipped: {exc}")
-
-    def _get_current_news_items(self) -> list[NewsItem]:
-        return parse_news_items(get_news_content(self.gui))
 
     def _get_release_news_items(self, limit: int = 3) -> list[NewsItem]:
         return build_release_news_items(self.gui, limit=limit)
@@ -469,6 +478,9 @@ class HomePage(LauncherHomeBackground):
         update_check.setChecked(True)
         update_check.setVisible(False)
         tr_set(update_check, "Включить в обновление", "Include in update", "setToolTip")
+        # Кнопка должна реагировать на выбор частей обновления (#11): без этого
+        # переключение чекбокса Unity/Python никак не меняло основную кнопку.
+        update_check.toggled.connect(lambda _checked: self.refresh_primary_label())
         layout.addWidget(update_check, 0, Qt.AlignmentFlag.AlignTop)
         return card, value, update_check
 
@@ -485,12 +497,12 @@ class HomePage(LauncherHomeBackground):
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(8)
-        title = tr_set(QLabel(), "Последние новости", "Latest news", transform=str.upper)
+        title = tr_set(QLabel(), "Последние релизы", "Latest releases", transform=str.upper)
         title.setObjectName("LauncherHomeNewsTitle")
         header.addWidget(title)
         header.addStretch(1)
 
-        all_news = tr_set(QPushButton(), "Все новости", "All news")
+        all_news = tr_set(QPushButton(), "Все релизы", "All releases")
         all_news.setObjectName("LauncherHomeLinkButton")
         all_news.clicked.connect(lambda: self.gui.switch_main_page("news"))
         header.addWidget(all_news)
@@ -512,6 +524,8 @@ class HomePage(LauncherHomeBackground):
     def _build_home_news_item(self, item: NewsItem, *, is_fresh: bool = False) -> QFrame:
         row = QFrame()
         row.setObjectName("LauncherHomeNewsItem")
+        if item.item_id:
+            row.setCursor(Qt.CursorShape.PointingHandCursor)
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 2, 0, 2)
         layout.setSpacing(8)
@@ -523,11 +537,6 @@ class HomePage(LauncherHomeBackground):
         title = QLabel(item.title)
         title.setObjectName("LauncherHomeNewsItemTitle")
         top.addWidget(title)
-
-        if is_fresh:
-            badge = tr_set(QLabel(), "НОВОЕ", "NEW")
-            badge.setObjectName("LauncherHomeNewsBadge")
-            top.addWidget(badge)
 
         top.addStretch(1)
         text_column.addLayout(top)
@@ -542,6 +551,14 @@ class HomePage(LauncherHomeBackground):
             stamp = QLabel(self._format_news_date(item.timestamp))
             stamp.setObjectName("LauncherHomeNewsDate")
             layout.addWidget(stamp, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+
+        if item.item_id:
+            def _open_release(_event, release_id=item.item_id):
+                if hasattr(self.gui, "open_release_page"):
+                    self.gui.open_release_page(release_id)
+                else:
+                    self.gui.switch_main_page("news")
+            row.mousePressEvent = _open_release
 
         return row
 
@@ -636,11 +653,23 @@ class HomePage(LauncherHomeBackground):
                 return True
         return False
 
+    def _has_checked_update(self) -> bool:
+        """Есть ли хоть одна реально выбранная (отмеченная) часть обновления.
+        Если все галки сняты — обновлять нечего, кнопка не должна звать «Обновить» (#11)."""
+        for control in (self._py_update_check, self._unity_update_check):
+            if control is not None and control.isVisible() and control.isChecked():
+                return True
+        return False
+
     def _lock_suffix(self) -> str:
         # Подсказка про код тестера, когда действие потянет зашифрованный архив.
+        # Без эмодзи-замка (qtawesome-иконка замка вешается на саму кнопку).
         if not self._effective_tester_code():
-            return _(" (🔒 нужен код тестера)", " (🔒 tester code needed)")
+            return _(" (нужен код тестера)", " (tester code needed)")
         return ""
+
+    def _needs_tester_code(self) -> bool:
+        return not self._effective_tester_code()
 
     def _has_pending_python_restart(self) -> bool:
         return bool(self._get_pending_python_restart_version())
@@ -660,69 +689,106 @@ class HomePage(LauncherHomeBackground):
             except Exception:
                 logger.warning("[home_update] Failed to refresh sidebar version label", exc_info=True)
 
-    def _get_primary_action_label(self) -> str:
+    def _get_primary_action_state(self) -> str:
+        """Логическое состояние основной кнопки: restart | install | update | play."""
         if self._has_pending_python_restart():
-            return _("↻ Перезапустить", "↻ Restart")
+            return "restart"
         # Unity ещё нет — это «Установить», даже если по нему «доступна обнова»
         # (фоновая проверка помечает неполную установку как available).
         if self.find_unity_executable() is None:
+            return "install"
+        # Unity установлен и есть обнова — кнопка «Обновить», но только если
+        # пользователь оставил хоть одну часть отмеченной (#11). Сняли все — «Играть».
+        if self._has_selectable_update() and self._has_checked_update():
+            return "update"
+        return "play"
+
+    def _get_primary_action_label(self) -> str:
+        state = self._get_primary_action_state()
+        if state == "restart":
+            return _("Перезапустить", "Restart")
+        if state == "install":
             suffix = self._lock_suffix() if self._has_selectable_update() else ""
-            return _("↓ Установить", "↓ Install") + suffix
-        # Unity установлен и есть обнова — кнопка становится «Обновить».
-        if self._has_selectable_update():
-            return _("⟳ Обновить", "⟳ Update") + self._lock_suffix()
-        return _("▶ Играть", "▶ Play")
+            return _("Установить", "Install") + suffix
+        if state == "update":
+            return _("Обновить", "Update") + self._lock_suffix()
+        return _("Играть", "Play")
 
-    def _get_status_line(self, news_items: list[NewsItem]) -> str:
-        active_character = _("Без персонажа", "No character")
-        try:
-            profile_result = self.gui.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
-            profile = profile_result[0] if profile_result else {}
-            active_character = str(profile.get("character_id") or active_character)
-        except Exception:
-            pass
-
-        model_name = str(self.gui._get_setting("MODEL", "") or "").strip()
-        latest = news_items[0].title if news_items else _("Лента новостей офлайн", "News feed offline")
-        parts = [_("Активно: {character}", "Active: {character}").format(character=active_character)]
-        if model_name:
-            parts.append(model_name)
-        parts.append(latest[:48])
-        return " • ".join(parts)
+    def _get_primary_action_icon(self):
+        """qtawesome-иконка под текущее состояние кнопки (вместо текстовых глифов
+        ↓ ⟳ ▶ ↻ и эмодзи-замка)."""
+        state = self._get_primary_action_state()
+        icon_name = {
+            "restart": "fa6s.rotate-right",
+            "install": "fa6s.download",
+            "update": "fa6s.rotate",
+            "play": "fa6s.play",
+        }.get(state, "fa6s.play")
+        # Когда для действия нужен код тестера — показываем замок как намёк.
+        if state in ("install", "update") and self._has_selectable_update() and self._needs_tester_code():
+            icon_name = "fa6s.lock"
+        return qta.icon(icon_name, color="#ffffff")
 
     def refresh_news_content(self):
-        news_items = self._get_current_news_items()
-        headline = news_items[0].title if news_items else _("Новости недоступны", "News unavailable")
-        # if self._update_chip_label is not None:
-        #     self._update_chip_label.setText(
-        #         _("Доступно обновление: {headline}", "Fresh update: {headline}").format(headline=headline[:48])
-        #     )
+        # Лента релизов грузится в фоне (load_news_releases_async), чтобы старт
+        # главной страницы и кнопка обновления не морозили GUI при недоступном
+        # GitHub. Перерисовка панели — в GUI-потоке через _queue_ui_call.
+        if self._news_items_layout is None:
+            return
+        load_news_releases_async(self.gui, lambda _releases: self._queue_ui_call(self._render_news_items))
 
-        if self._news_items_layout is not None:
-            while self._news_items_layout.count():
-                item = self._news_items_layout.takeAt(0)
-                widget = item.widget()
-                if widget is not None:
-                    widget.deleteLater()
+    def _render_news_items(self):
+        if self._news_items_layout is None:
+            return
+        while self._news_items_layout.count():
+            item = self._news_items_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
-            release_items = self._get_release_news_items(limit=3)
-            if not release_items:
-                release_items = news_items[:3] if news_items else [
-                    NewsItem(
-                        _("Новости недоступны", "News unavailable"),
-                        _("Удалённая лента пока недоступна.", "Remote feed is currently unavailable."),
-                    )
-                ]
+        release_items = self._get_release_news_items(limit=3)
+        if not release_items:
+            release_items = [
+                NewsItem(
+                    _("Релизы недоступны", "Releases unavailable"),
+                    _("Удалённая лента релизов пока недоступна.", "Remote release feed is currently unavailable."),
+                )
+            ]
 
-            for index, item in enumerate(release_items):
-                self._news_items_layout.addWidget(self._build_home_news_item(item, is_fresh=index == 0))
-
-        if self._status_line_label is not None:
-            self._status_line_label.setText(self._get_status_line(news_items))
+        for index, item in enumerate(release_items):
+            self._news_items_layout.addWidget(self._build_home_news_item(item, is_fresh=index == 0))
 
     def refresh_primary_label(self):
         if self.primary_button is not None:
             self.primary_button.setText(self._get_primary_action_label())
+            try:
+                self.primary_button.setIcon(self._get_primary_action_icon())
+                self.primary_button.setIconSize(QSize(15, 15))
+            except Exception:
+                pass
+        self._update_menu_indicator()
+
+    def _update_menu_indicator(self):
+        """Жёлтый индикатор на кнопке-меню, когда есть доступные обновления (#12) —
+        как в Visual Studio. Без обнов — обычная розовая стрелка."""
+        btn = getattr(self, "_menu_button", None)
+        if btn is None:
+            return
+        try:
+            has_update = self._has_any_update()
+            color = "#ffcf7d" if has_update else "#ffd2ec"
+            btn.setIcon(qta.icon("fa6s.chevron-down", color=color))
+            btn.setIconSize(QSize(14, 14))
+            btn.setProperty("hasUpdate", "true" if has_update else "false")
+            btn.setToolTip(
+                _("Доступны обновления", "Updates available") if has_update
+                else _("Дополнительно", "More")
+            )
+            # перерисовать под изменившееся property (QSS [hasUpdate="true"])
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+        except Exception:
+            pass
 
     def refresh_status_cards(self):
         if self._backend_status_value is not None:

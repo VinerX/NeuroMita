@@ -11,6 +11,7 @@ import requests
 from main_logger import logger
 from managers.api_preset_resolver import PresetSettings
 from handlers.llm_providers.base import LLMUsage
+from presets.provider_host_metadata import infer_provider_currency
 
 
 def _to_float(value: Any) -> Optional[float]:
@@ -248,13 +249,7 @@ class ModelPricingManager:
 
     @staticmethod
     def _resolve_currency(entry: dict, api_url: str) -> str:
-        currency = str(entry.get("currency") or "").strip().upper()
-        if currency:
-            return currency
-        host = urlparse(str(api_url or "")).netloc.lower()
-        if "proxyapi.ru" in host:
-            return "RUB"
-        return "USD"
+        return infer_provider_currency(api_url, str(entry.get("currency") or "")) or "USD"
 
     @staticmethod
     def _build_flat_pricing(entry: dict, top_provider: dict) -> Dict[str, Any]:

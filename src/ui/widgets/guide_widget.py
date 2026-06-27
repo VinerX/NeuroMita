@@ -1,6 +1,6 @@
 # src/ui/widgets/guide_widget.py
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, QRadioButton, QButtonGroup
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, QRadioButton, QButtonGroup, QComboBox
 from PyQt6.QtGui import QPixmap
 import qtawesome as qta
 from abc import ABC, abstractmethod
@@ -160,8 +160,32 @@ class GuideWidget(QWidget):
                 background-color: {accent};
                 border: 1px solid {accent_alt};
             }
+            QComboBox {
+                min-width: 180px;
+                padding: 6px 10px;
+                border-radius: 10px;
+                border: 1px solid {outline};
+                background-color: {chip_bg};
+                color: {text};
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 26px;
+            }
+            QComboBox QAbstractItemView {
+                border: 1px solid {outline};
+                background-color: {sidebar_panel};
+                color: {text};
+                selection-background-color: {accent};
+                selection-color: #ffffff;
+            }
+            #GuideMetaLabel {
+                color: {muted};
+                font-size: 12px;
+                font-weight: 600;
+            }
         """, get_theme()))
-        
+
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -171,8 +195,8 @@ class GuideWidget(QWidget):
         container_layout.setContentsMargins(20, 20, 20, 20)
         container_layout.setSpacing(15)
         
-        self.setMinimumSize(600, 500)
-        self.setMaximumSize(800, 700)
+        self.setMinimumSize(720, 520)
+        self.setMaximumSize(920, 760)
         
         # --- Level selector ---
         level_row = QWidget()
@@ -184,50 +208,80 @@ class GuideWidget(QWidget):
         self._level_group = QButtonGroup(level_row)
         self._level_group.setExclusive(True)
 
-        for label, key in [("Базовый", "basic"), ("Продвинутый", "advanced"), ("Полный", "full")]:
-            rb = QRadioButton(label)
+        # Кнопки уровней были захардкожены по-русски — теперь локализуются под
+        # выбранный язык и переподписываются при его смене.
+        self._level_buttons: dict[str, QRadioButton] = {}
+        for key in ("basic", "advanced", "full"):
+            rb = QRadioButton("")
             rb.setObjectName("GuideLevelButton")
             rb.setProperty("level_key", key)
             if key == self._guide_level:
                 rb.setChecked(True)
             level_row_layout.addWidget(rb)
             self._level_group.addButton(rb)
+            self._level_buttons[key] = rb
 
         self._level_group.buttonClicked.connect(self._on_level_changed)
         container_layout.addWidget(level_row)
 
-        header_layout = QHBoxLayout()
+        # Пояснение, что показывает выбранный уровень (раньше уровни никак не
+        # раскрывались — было непонятно, чем они отличаются).
+        self._level_hint = QLabel("")
+        self._level_hint.setObjectName("GuideLevelHint")
+        self._level_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._level_hint.setWordWrap(True)
+        container_layout.addWidget(self._level_hint)
+        self._update_level_texts()
+
+        header_layout = QVBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(10)
         self.title_label = QLabel("")
         self.title_label.setObjectName("GuideTitle")
-        header_layout.addWidget(self.title_label)
-        
-        header_layout.addStretch()
+        title_row.addWidget(self.title_label, 1)
+        title_row.addStretch()
+
+        self.skip_button = QPushButton("РџСЂРѕРїСѓСЃС‚РёС‚СЊ")
+        self.skip_button.setObjectName("SkipButton")
+        self.skip_button.clicked.connect(self._on_skip)
+        title_row.addWidget(self.skip_button, 0, Qt.AlignmentFlag.AlignTop)
+        header_layout.addLayout(title_row)
         
         lang_layout = QHBoxLayout()
+        lang_layout.setContentsMargins(0, 0, 0, 0)
         lang_layout.setSpacing(10)
-        
-        self.lang_group = QButtonGroup()
-        for idx, code in enumerate(available_languages()):
-            button = QRadioButton(language_display_name(code))
-            button.setProperty("lang_code", code.lower())
-            if code.lower() == self.current_language:
-                button.setChecked(True)
-            self.lang_group.addButton(button, idx)
-            self._lang_buttons[code.lower()] = button
-            lang_layout.addWidget(button)
-        self.lang_group.buttonClicked.connect(self._on_language_changed)
+
+        self.lang_label = QLabel("")
+        self.lang_label.setObjectName("GuideMetaLabel")
+        lang_layout.addWidget(self.lang_label)
+
+        self.lang_selector = QComboBox()
+        # Заполняем и выставляем стартовый индекс при ЗАГЛУШЁННЫХ сигналах, а
+        # обработчик подключаем уже ПОСЛЕ. Иначе setCurrentIndex(...) во время
+        # построения дёргал _on_language_changed, который обращается к ещё не
+        # созданным виджетам (close_button) и зовёт show_page() до инициализации
+        # страниц → жёсткий вылет процесса при первом запуске (краш на «Принять»).
+        self.lang_selector.blockSignals(True)
+        for code in available_languages():
+            lowered = code.lower()
+            self.lang_selector.addItem(language_display_name(code), lowered)
+            self._lang_buttons[lowered] = None
 
         if self.current_language not in self._lang_buttons:
             self.current_language = "ru"
-            if "ru" in self._lang_buttons:
-                self._lang_buttons["ru"].setChecked(True)
+        current_index = self.lang_selector.findData(self.current_language)
+        if current_index >= 0:
+            self.lang_selector.setCurrentIndex(current_index)
+        self.lang_selector.blockSignals(False)
+        self.lang_selector.currentIndexChanged.connect(self._on_language_changed)
+        lang_layout.addWidget(self.lang_selector, 0)
+        lang_layout.addStretch(1)
         header_layout.addLayout(lang_layout)
-        
-        self.skip_button = QPushButton("Пропустить")
-        self.skip_button.setObjectName("SkipButton")
-        self.skip_button.clicked.connect(self._on_skip)
-        header_layout.addWidget(self.skip_button)
-        
+
         container_layout.addLayout(header_layout)
         
         self.image_frame = QFrame()
@@ -281,20 +335,55 @@ class GuideWidget(QWidget):
         nav_layout.addWidget(self.close_button)
         
         container_layout.addLayout(nav_layout)
+        self._update_language_label_text()
+        self._update_skip_button_text()
+        self._update_close_button_text()
         
         main_layout.addWidget(container)  
 
     def _on_language_changed(self):
-        button = self.lang_group.checkedButton()
-        code = button.property("lang_code") if button is not None else None
+        code = self.lang_selector.currentData() if hasattr(self, "lang_selector") else None
         self.current_language = str(code or "ru")
+        self._update_language_label_text()
         self._update_skip_button_text()
         self._update_close_button_text()
+        self._update_level_texts()
         self.show_page(self.current_page_index)
+
+    # Подписи и пояснения уровней (локализуются под выбранный язык).
+    _LEVEL_LABELS = {
+        "basic": ("Базовый", "Basic"),
+        "advanced": ("Продвинутый", "Advanced"),
+        "full": ("Полный", "Full"),
+    }
+    _LEVEL_HINTS = {
+        "basic": ("Только самое необходимое для старта: подключение, персонаж, чат.",
+                  "Just the essentials to get started: connection, character, chat."),
+        "advanced": ("Базовый + озвучка и микрофон.",
+                     "Basic + voiceover and microphone."),
+        "full": ("Все разделы: + анализ экрана, модели и тонкости чата.",
+                 "All sections: + screen analysis, models and chat details."),
+    }
+
+    def _update_level_texts(self):
+        for key, rb in getattr(self, "_level_buttons", {}).items():
+            ru, en = self._LEVEL_LABELS.get(key, (key, key))
+            rb.setText(translate_for_language(self.current_language, ru, en))
+            hru, hen = self._LEVEL_HINTS.get(key, ("", ""))
+            rb.setToolTip(translate_for_language(self.current_language, hru, hen))
+        hint = getattr(self, "_level_hint", None)
+        if hint is not None:
+            hru, hen = self._LEVEL_HINTS.get(self._guide_level, ("", ""))
+            hint.setText(translate_for_language(self.current_language, hru, hen))
         
     def _update_skip_button_text(self):
         self.skip_button.setText(
             translate_for_language(self.current_language, "Пропустить", "Skip")
+        )
+
+    def _update_language_label_text(self):
+        self.lang_label.setText(
+            translate_for_language(self.current_language, "Язык", "Language")
         )
             
     def _update_close_button_text(self):
@@ -308,6 +397,7 @@ class GuideWidget(QWidget):
             return
         self._guide_level = level
         self._update_filtered_pages()
+        self._update_level_texts()
         self.current_page_index = 0
         self.show_page(0)
         try:
