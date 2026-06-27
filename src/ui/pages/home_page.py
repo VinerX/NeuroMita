@@ -143,6 +143,24 @@ class HomePage(LauncherHomeBackground):
         self._ui_call_requested.connect(self._execute_ui_call)
         self._sync_host_exports()
         self._build_ui()
+
+        # Динамические подписи (баннер обновления, центральная кнопка) считаются
+        # с .format() — перерисовываем их при живой смене языка.
+        try:
+            from localization.live import language_changed_signal
+            language_changed_signal().connect(self._on_language_changed_home)
+        except Exception:
+            pass
+
+    def _on_language_changed_home(self, _code: str = "") -> None:
+        try:
+            self._apply_update_state(self._update_info_py, self._update_info_unity)
+        except Exception:
+            pass
+        try:
+            self.refresh_primary_label()
+        except Exception:
+            pass
         self._connect_install_signals()
         self.on_activated()
 

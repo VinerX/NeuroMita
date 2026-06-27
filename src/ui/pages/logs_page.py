@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QLabel, QFrame, QPlainTextEdit, QVBoxLayout, QWidget
 
 from ui.widgets.launcher_dashboard_helpers import DashboardAction, create_logs_page
 from utils import _
+from localization.live import tr_set
 
 _LOG_TAIL_BYTES = 64 * 1024
 _LOG_TAIL_LINES = 500
@@ -114,15 +115,14 @@ class LogsPage(QWidget):
         card_layout.setContentsMargins(18, 18, 18, 18)
         card_layout.setSpacing(10)
 
-        title = QLabel(_("Живой поток", "Live stream"))
+        title = tr_set(QLabel(), "Живой поток", "Live stream")
         title.setObjectName("LauncherShellSectionTitle")
         card_layout.addWidget(title)
 
-        subtitle = QLabel(
-            _(
-                "Последние строки лог-файла. Обновляются раз в 2 секунды только пока открыта страница логов.",
-                "Latest lines from the log file. Refreshed every 2 seconds only while the logs page is open.",
-            )
+        subtitle = tr_set(
+            QLabel(),
+            "Последние строки лог-файла. Обновляются раз в 2 секунды только пока открыта страница логов.",
+            "Latest lines from the log file. Refreshed every 2 seconds only while the logs page is open.",
         )
         subtitle.setObjectName("LauncherShellMeta")
         subtitle.setWordWrap(True)

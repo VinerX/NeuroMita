@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 from utils import _
+from localization.live import register_if_tr
 
 from ui.widgets.launcher_shell_theme import apply_launcher_shell_theme
 
@@ -150,6 +151,7 @@ def _create_section_block(header_text: str, items: list[NewsItem]) -> QWidget:
     block_layout.setSpacing(12)
 
     header = QLabel(header_text)
+    register_if_tr(header, header_text)
     header.setObjectName("LauncherShellSectionHeader")
     block_layout.addWidget(header)
 
@@ -201,6 +203,7 @@ def _append_release_feed(layout: QVBoxLayout, items: list[NewsItem]) -> None:
             (_("Пререлизы", "Pre-releases"), "pre"),
         ):
             btn = QPushButton(label)
+            register_if_tr(btn, label)
             btn.setObjectName("LauncherShellFilterTab")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setProperty("active", mode == "all")
@@ -250,11 +253,13 @@ def _create_hero_card(
     layout.addWidget(eyebrow)
 
     title = QLabel(title_text)
+    register_if_tr(title, title_text)
     title.setObjectName("LauncherShellTitle")
     title.setWordWrap(True)
     layout.addWidget(title)
 
     subtitle = QLabel(subtitle_text)
+    register_if_tr(subtitle, subtitle_text)
     subtitle.setObjectName("LauncherShellSubtitle")
     subtitle.setWordWrap(True)
     layout.addWidget(subtitle)
@@ -509,6 +514,7 @@ def _create_log_card(item: LogItem) -> QFrame:
 
 def _create_action_button(action: DashboardAction) -> QPushButton:
     button = QPushButton(action.label)
+    register_if_tr(button, action.label)
     button.setObjectName("LauncherShellActionButton" if action.accent else "LauncherShellGhostButton")
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setIcon(qta.icon(action.icon_name, color="#ffffff" if action.accent else "#ffd2ec"))

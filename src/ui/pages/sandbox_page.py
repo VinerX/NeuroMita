@@ -112,6 +112,7 @@ class _SandboxStatusRow(QWidget):
         h.addWidget(self._dot, 0, Qt.AlignmentFlag.AlignVCenter)
 
         name = QLabel(name_text)
+        register_if_tr(name, name_text)
         name.setObjectName("SandboxInfoLabel")
         h.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
 
@@ -329,6 +330,7 @@ class SandboxPage(QWidget):
             h.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
 
         label = QLabel(label_text)
+        register_if_tr(label, label_text)
         label.setObjectName("SandboxInfoLabel")
         if tooltip:
             label.setToolTip(tooltip)
@@ -1142,6 +1144,7 @@ class SandboxPage(QWidget):
             h.setContentsMargins(0, 0, 0, 0)
             h.setSpacing(10)
             lbl = QLabel(label_text)
+            register_if_tr(lbl, label_text)
             lbl.setObjectName("SandboxInfoLabel")
             lbl.setMinimumWidth(104)
             h.addWidget(lbl, 0, Qt.AlignmentFlag.AlignVCenter)

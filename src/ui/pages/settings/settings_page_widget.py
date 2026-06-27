@@ -568,6 +568,7 @@ class SettingsPage(QWidget):
 
         subtitle_text = _(page.spec.subtitle[0], page.spec.subtitle[1])
         subtitle = QLabel(subtitle_text)
+        register_if_tr(subtitle, subtitle_text)
         subtitle.setObjectName("SettingsSubsectionSubtitle")
         subtitle.setWordWrap(True)
         subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)

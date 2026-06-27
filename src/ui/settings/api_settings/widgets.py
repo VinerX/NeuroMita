@@ -177,8 +177,21 @@ class PresetsListWidget(QListWidget):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self._placeholder = _("Нажмите, чтобы создать пресет", "Click to create a preset")
-        self._placeholder_hint = _("или нажмите «+» рядом", "or use the “+” button on the right")
+        # Текст плейсхолдера рисуется в paintEvent (берётся свежим из `_()`),
+        # а на смену языка перерисовываем виджет по сигналу.
+        try:
+            from localization.live import language_changed_signal
+            language_changed_signal().connect(self.viewport().update)
+        except Exception:
+            pass
+
+    @property
+    def _placeholder(self) -> str:
+        return _("Нажмите, чтобы создать пресет", "Click to create a preset")
+
+    @property
+    def _placeholder_hint(self) -> str:
+        return _("или нажмите «+» рядом", "or use the “+” button on the right")
 
     def _is_empty(self) -> bool:
         return self.count() == 0
