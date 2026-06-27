@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit, QPushButton,
 )
 from utils import getTranslationVariant as _
+from localization.live import tr_set
 
 
 def setup_debug_panel_controls(view, parent_layout):
@@ -18,7 +19,7 @@ def setup_debug_panel_controls(view, parent_layout):
     """
 
     # ── Structured output display ────────────────────────────────────────────
-    struct_label = QLabel(_('Structured output (дебаг)', 'Structured output (debug)'))
+    struct_label = tr_set(QLabel(), 'Structured output (дебаг)', 'Structured output (debug)')
     struct_label.setObjectName('SeparatorLabel')
     parent_layout.addWidget(struct_label)
 
@@ -41,7 +42,7 @@ def setup_debug_panel_controls(view, parent_layout):
     combo_row.addStretch()
     parent_layout.addLayout(combo_row)
 
-    struct_expanded_cb = QCheckBox(_('Развёрнуто по умолчанию', 'Expanded by default'))
+    struct_expanded_cb = tr_set(QCheckBox(), 'Развёрнуто по умолчанию', 'Expanded by default')
     struct_expanded_cb.setToolTip(
         _('Если включено — блок с данными открыт сразу, иначе свёрнут.',
           'If enabled — the data block is open immediately, otherwise collapsed.')
@@ -53,12 +54,12 @@ def setup_debug_panel_controls(view, parent_layout):
     parent_layout.addWidget(struct_expanded_cb)
 
     # ── System message insertion ─────────────────────────────────────────────
-    sys_label = QLabel(_('Вставить system-сообщение в историю', 'Insert system message into history'))
+    sys_label = tr_set(QLabel(), 'Вставить system-сообщение в историю', 'Insert system message into history')
     sys_label.setObjectName('SeparatorLabel')
     parent_layout.addWidget(sys_label)
 
     view._debug_system_input = QPlainTextEdit()
-    view._debug_system_input.setPlaceholderText(_('Текст system-сообщения...', 'System message text...'))
+    tr_set(view._debug_system_input, 'Текст system-сообщения...', 'System message text...', "setPlaceholderText")
     view._debug_system_input.setFixedHeight(70)
     parent_layout.addWidget(view._debug_system_input)
 
@@ -75,37 +76,37 @@ def setup_debug_panel_controls(view, parent_layout):
     )
     parent_layout.addWidget(view._debug_as_user_cb)
 
-    sys_btn = QPushButton(_('Отправить системное', 'Send as system'))
+    sys_btn = tr_set(QPushButton(), 'Отправить системное', 'Send as system')
     sys_btn.clicked.connect(view._on_debug_insert_system_message)
     parent_layout.addWidget(sys_btn)
 
     # ── Snapshot save / load ─────────────────────────────────────────────────
-    snap_label = QLabel(_('Snapshot истории', 'History snapshot'))
+    snap_label = tr_set(QLabel(), 'Snapshot истории', 'History snapshot')
     snap_label.setObjectName('SeparatorLabel')
     parent_layout.addWidget(snap_label)
 
     snap_row = QHBoxLayout()
-    save_snap_btn = QPushButton(_('Сохранить snapshot', 'Save snapshot'))
+    save_snap_btn = tr_set(QPushButton(), 'Сохранить snapshot', 'Save snapshot')
     save_snap_btn.clicked.connect(view._on_debug_save_snapshot)
-    load_snap_btn = QPushButton(_('Загрузить snapshot', 'Load snapshot'))
+    load_snap_btn = tr_set(QPushButton(), 'Загрузить snapshot', 'Load snapshot')
     load_snap_btn.clicked.connect(view._on_debug_load_snapshot)
     snap_row.addWidget(save_snap_btn)
     snap_row.addWidget(load_snap_btn)
     parent_layout.addLayout(snap_row)
 
     # ── Context viewer ───────────────────────────────────────────────────────────
-    ctx_label = QLabel(_('Просмотр контекста запроса', 'Request context viewer'))
+    ctx_label = tr_set(QLabel(), 'Просмотр контекста запроса', 'Request context viewer')
     ctx_label.setObjectName('SeparatorLabel')
     parent_layout.addWidget(ctx_label)
 
-    ctx_req_btn = QPushButton(_('Посмотреть последний запрос', 'View last request'))
+    ctx_req_btn = tr_set(QPushButton(), 'Посмотреть последний запрос', 'View last request')
     ctx_req_btn.setToolTip(
         _('Открыть просмотр контекста последнего запроса к нейросети (сообщения, системные промты, параметры)',
           'Open context viewer for the last request sent to the neural network')
     )
     ctx_req_btn.clicked.connect(view._on_debug_view_last_context)
 
-    ctx_resp_btn = QPushButton(_('Посмотреть последний ответ', 'View last response'))
+    ctx_resp_btn = tr_set(QPushButton(), 'Посмотреть последний ответ', 'View last response')
     ctx_resp_btn.setToolTip(
         _('Открыть просмотр последнего ответа модели и usage-метрик, если они сохранены.',
           'Open the latest model response and usage metrics if they were saved.')
@@ -117,7 +118,7 @@ def setup_debug_panel_controls(view, parent_layout):
     ctx_row.addWidget(ctx_resp_btn)
     parent_layout.addLayout(ctx_row)
 
-    capture_cb = QCheckBox(_('Сохранять вход генерации', 'Capture generation input'))
+    capture_cb = tr_set(QCheckBox(), 'Сохранять вход генерации', 'Capture generation input')
     capture_cb.setToolTip(
         _('Сохранять вход события GENERATE_RESPONSE до сборки промпта: сырой payload, состояние перед BUILD_PROMPT и краткую сводку по изображениям.',
           'Save GENERATE_RESPONSE ingress before prompt build: raw payload, pre-BUILD_PROMPT state, and compact image summaries.')

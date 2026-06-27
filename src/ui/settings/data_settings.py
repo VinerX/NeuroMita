@@ -16,6 +16,7 @@ import qtawesome as qta
 
 from ui.gui_templates import create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
+from localization.live import tr_set
 
 
 def setup_data_settings_controls(self, parent):
@@ -65,7 +66,7 @@ def setup_data_settings_controls(self, parent):
     parent.addWidget(info_widget)
 
     # ── Collection toggle ─────────────────────────────────────────────────────
-    chk = QCheckBox(_("Включить сбор данных", "Enable data collection"))
+    chk = tr_set(QCheckBox(), "Включить сбор данных", "Enable data collection")
     chk.setStyleSheet("background: transparent; border: none;")
     chk.setToolTip(_(
         "При включении каждый запрос к модели и ответ сохраняются "
@@ -95,7 +96,7 @@ def setup_data_settings_controls(self, parent):
     chk.stateChanged.connect(_on_toggle)
     parent.addWidget(chk)
 
-    rating_chk = QCheckBox(_("Показывать элементы оценки", "Show rating controls"))
+    rating_chk = tr_set(QCheckBox(), "Показывать элементы оценки", "Show rating controls")
     rating_chk.setStyleSheet("background: transparent; border: none;")
     rating_chk.setToolTip(_(
         "Показывать кнопки оценки на пузырьках ответов ассистента. Работает только при включённом сборе данных.",
@@ -124,7 +125,7 @@ def setup_data_settings_controls(self, parent):
     limit_row.setSpacing(8)
     limit_row.setContentsMargins(0, 2, 0, 2)
 
-    limit_lbl = QLabel(_("Хранить последних:", "Keep last:"))
+    limit_lbl = tr_set(QLabel(), "Хранить последних:", "Keep last:")
     limit_lbl.setStyleSheet("color: #bca9bb; font-size: 11px; background: transparent; border: none;")
     limit_row.addWidget(limit_lbl)
 
@@ -147,7 +148,7 @@ def setup_data_settings_controls(self, parent):
     )
     limit_row.addWidget(limit_spin)
 
-    unlimited_chk = QCheckBox(_("Без лимита", "Unlimited"))
+    unlimited_chk = tr_set(QCheckBox(), "Без лимита", "Unlimited")
     unlimited_chk.setStyleSheet("background: transparent; border: none; color: #bca9bb; font-size: 11px;")
     unlimited_chk.setToolTip(_(
         "Хранить все записи без ограничения. Может занять много места.",
@@ -200,7 +201,7 @@ def setup_data_settings_controls(self, parent):
     path_row.setSpacing(6)
     path_row.setContentsMargins(0, 2, 0, 2)
 
-    path_lbl = QLabel(_("Папка:", "Folder:"))
+    path_lbl = tr_set(QLabel(), "Папка:", "Folder:")
     path_lbl.setStyleSheet("color: #bca9bb; font-size: 11px; background: transparent; border: none;")
     path_lbl.setFixedWidth(60)
     path_row.addWidget(path_lbl)
@@ -213,7 +214,7 @@ def setup_data_settings_controls(self, parent):
     )
     path_row.addWidget(path_edit, stretch=1)
 
-    browse_btn = QPushButton(_("Обзор...", "Browse..."))
+    browse_btn = tr_set(QPushButton(), "Обзор...", "Browse...")
     browse_btn.setFixedWidth(80)
     browse_btn.setStyleSheet(
         "QPushButton { background: #db6596; color: #ffffff; font-weight: 600; border: 1px solid rgba(219,101,150,0.46); border-radius: 10px; "
@@ -272,7 +273,7 @@ def setup_data_settings_controls(self, parent):
     btn_row.setSpacing(8)
     btn_row.setContentsMargins(0, 0, 0, 0)
 
-    export_btn = QPushButton(_("Экспортировать...", "Export..."))
+    export_btn = tr_set(QPushButton(), "Экспортировать...", "Export...")
     export_btn.setIcon(qta.icon("fa6s.file-export", color="#ffffff"))
     export_btn.setToolTip(_(
         "Открыть диалог экспорта с фильтрацией и выбором формата.",
@@ -281,7 +282,7 @@ def setup_data_settings_controls(self, parent):
     export_btn.clicked.connect(lambda: _open_export_dialog(self))
     btn_row.addWidget(export_btn)
 
-    clear_btn = QPushButton(_("Очистить данные...", "Clear data..."))
+    clear_btn = tr_set(QPushButton(), "Очистить данные...", "Clear data...")
     clear_btn.setIcon(qta.icon("fa6s.trash-can", color="#ffffff"))
     clear_btn.setToolTip(_(
         "Удалить все накопленные файлы данных дообучения. Действие необратимо.",
@@ -316,7 +317,7 @@ class _LiveStatsWidget(QFrame):
         header_row = QHBoxLayout()
         header_row.setSpacing(6)
 
-        header = QLabel(_("Статистика", "Statistics"))
+        header = tr_set(QLabel(), "Статистика", "Statistics")
         header.setStyleSheet(
             "font-size: 12px; font-weight: bold; color: #f3edf6; "
             "padding: 2px 0; background: transparent; border: none;"
@@ -324,7 +325,7 @@ class _LiveStatsWidget(QFrame):
         header_row.addWidget(header)
         header_row.addStretch()
 
-        refresh_btn = QPushButton(_("Обновить", "Refresh"))
+        refresh_btn = tr_set(QPushButton(), "Обновить", "Refresh")
         refresh_btn.setIcon(qta.icon("fa6s.rotate", color="#ffffff"))
         refresh_btn.setFixedHeight(22)
         refresh_btn.setStyleSheet(

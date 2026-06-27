@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 import qtawesome as qta
 
 from utils import _
+from localization.live import tr_set
 
 
 class ProviderDelegate(QStyledItemDelegate):
@@ -257,7 +258,7 @@ class ReserveKeyRow(QWidget):
         lay.setSpacing(6)
 
         self.key_edit = QLineEdit()
-        self.key_edit.setPlaceholderText(_("API ключ", "API key"))
+        tr_set(self.key_edit, "API ключ", "API key", "setPlaceholderText")
         self.key_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         self.remove_btn = QToolButton()
@@ -265,7 +266,7 @@ class ReserveKeyRow(QWidget):
         self.remove_btn.setFixedSize(22, 22)
         self.remove_btn.setIconSize(QSize(11, 11))
         self.remove_btn.setAutoRaise(True)
-        self.remove_btn.setToolTip(_("Удалить ключ", "Remove key"))
+        tr_set(self.remove_btn, "Удалить ключ", "Remove key", "setToolTip")
 
         lay.addWidget(self.key_edit, 1)
         lay.addWidget(self.remove_btn)
@@ -317,7 +318,7 @@ class ReserveKeysEditor(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
-        self.add_btn = QPushButton(_("+ Добавить ключ", "+ Add key"))
+        self.add_btn = tr_set(QPushButton(), "+ Добавить ключ", "+ Add key")
         self.add_btn.clicked.connect(lambda *_: self._on_add_clicked())
         btn_row.addWidget(self.add_btn)
         btn_row.addStretch()
@@ -420,7 +421,7 @@ class FallbackRow(QWidget):
             pass
 
         self.model_edit = QLineEdit()
-        self.model_edit.setPlaceholderText(_("модель (необязательно)", "model (optional)"))
+        tr_set(self.model_edit, "модель (необязательно)", "model (optional)", "setPlaceholderText")
         self.model_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         self.up_btn = QToolButton()
@@ -440,7 +441,7 @@ class FallbackRow(QWidget):
         self.remove_btn.setFixedSize(22, 22)
         self.remove_btn.setIconSize(QSize(11, 11))
         self.remove_btn.setAutoRaise(True)
-        self.remove_btn.setToolTip(_("Удалить резерв", "Remove backup"))
+        tr_set(self.remove_btn, "Удалить резерв", "Remove backup", "setToolTip")
 
         lay.addWidget(self.preset_combo, 2)
         lay.addWidget(self.model_edit, 2)
@@ -523,7 +524,7 @@ class FallbackChainEditor(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
-        self.add_btn = QPushButton(_("+ Добавить резерв", "+ Add backup"))
+        self.add_btn = tr_set(QPushButton(), "+ Добавить резерв", "+ Add backup")
         self.add_btn.clicked.connect(lambda *_: self._on_add_clicked())
         btn_row.addWidget(self.add_btn)
         btn_row.addStretch()

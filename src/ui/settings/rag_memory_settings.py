@@ -10,6 +10,7 @@ from PyQt6.QtCore import Qt
 
 from ui.gui_templates import create_settings_section
 from utils import getTranslationVariant as _
+from localization.live import tr_set
 from core.events import get_event_bus, Events
 from managers.rag.install_spec import (
     TARGET_EMBEDDINGS,
@@ -1752,7 +1753,7 @@ def _attach_embed_downloader(gui, section) -> None:
         _dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
         _idx_label = QLabel(_("Индекс:", "Index:") + " " + _get_embed_status_text())
         _idx_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _embed_dl_btn = QPushButton(_("Скачать модель", "Download model"))
+        _embed_dl_btn = tr_set(QPushButton(), "Скачать модель", "Download model")
         _embed_dl_btn.setVisible(not _is_embed_model_downloaded())
         _embed_dl_btn.clicked.connect(lambda: _download_embed_model(gui))
         gui._embed_status_label = _idx_label
@@ -1787,7 +1788,7 @@ def _attach_ce_downloader(gui, section) -> None:
         _ce_dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
         _ce_ld_label = QLabel(_("Статус:", "Status:") + " " + _get_ce_loaded_status())
         _ce_ld_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _ce_dl_btn = QPushButton(_("Скачать модель", "Download model"))
+        _ce_dl_btn = tr_set(QPushButton(), "Скачать модель", "Download model")
         _ce_dl_btn.setVisible(not _is_ce_model_downloaded())
         _ce_dl_btn.clicked.connect(lambda: _download_ce_model(gui))
         gui._ce_dl_label = _ce_dl_label

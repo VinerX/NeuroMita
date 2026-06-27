@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
 import qtawesome as qta
 
 from utils import _
+from localization.live import tr_set
 from .widgets import (
     ProviderDelegate,
     LabeledLineEditRow,
@@ -56,14 +57,14 @@ def build_api_settings_ui(self, parent_layout):
     self.add_preset_btn = QPushButton()
     self.add_preset_btn.setObjectName("AddPresetButton")
     self.add_preset_btn.setIcon(qta.icon('fa5s.plus', color='#e6e6e6'))
-    self.add_preset_btn.setToolTip(_("Добавить пресет", "Add preset"))
+    tr_set(self.add_preset_btn, "Добавить пресет", "Add preset", "setToolTip")
     self.add_preset_btn.setFixedSize(28, 28)
     self.add_preset_btn.setIconSize(QSize(14, 14))
 
     self.remove_preset_btn = QPushButton()
     self.remove_preset_btn.setObjectName("RemovePresetButton")
     self.remove_preset_btn.setIcon(qta.icon('fa5s.minus', color='#e6e6e6'))
-    self.remove_preset_btn.setToolTip(_("Удалить пресет", "Remove preset"))
+    tr_set(self.remove_preset_btn, "Удалить пресет", "Remove preset", "setToolTip")
     self.remove_preset_btn.setEnabled(False)
     self.remove_preset_btn.setFixedSize(28, 28)
     self.remove_preset_btn.setIconSize(QSize(14, 14))
@@ -71,7 +72,7 @@ def build_api_settings_ui(self, parent_layout):
     self.rename_preset_btn = QPushButton()
     self.rename_preset_btn.setObjectName("RenamePresetButton")
     self.rename_preset_btn.setIcon(qta.icon('fa5s.pen', color='#e6e6e6'))
-    self.rename_preset_btn.setToolTip(_("Переименовать пресет", "Rename preset"))
+    tr_set(self.rename_preset_btn, "Переименовать пресет", "Rename preset", "setToolTip")
     self.rename_preset_btn.setEnabled(False)
     self.rename_preset_btn.setFixedSize(28, 28)
     self.rename_preset_btn.setIconSize(QSize(14, 14))
@@ -79,7 +80,7 @@ def build_api_settings_ui(self, parent_layout):
     self.copy_preset_btn = QPushButton()
     self.copy_preset_btn.setObjectName("CopyPresetButton")
     self.copy_preset_btn.setIcon(qta.icon('fa5s.copy', color='#e6e6e6'))
-    self.copy_preset_btn.setToolTip(_("Скопировать пресет", "Copy preset"))
+    tr_set(self.copy_preset_btn, "Скопировать пресет", "Copy preset", "setToolTip")
     self.copy_preset_btn.setEnabled(False)
     self.copy_preset_btn.setFixedSize(28, 28)
     self.copy_preset_btn.setIconSize(QSize(14, 14))
@@ -87,7 +88,7 @@ def build_api_settings_ui(self, parent_layout):
     self.move_up_btn = QPushButton()
     self.move_up_btn.setObjectName("MoveUpButton")
     self.move_up_btn.setIcon(qta.icon('fa5s.arrow-up', color='#e6e6e6'))
-    self.move_up_btn.setToolTip(_("Переместить вверх", "Move up"))
+    tr_set(self.move_up_btn, "Переместить вверх", "Move up", "setToolTip")
     self.move_up_btn.setEnabled(False)
     self.move_up_btn.setFixedSize(28, 28)
     self.move_up_btn.setIconSize(QSize(14, 14))
@@ -95,7 +96,7 @@ def build_api_settings_ui(self, parent_layout):
     self.move_down_btn = QPushButton()
     self.move_down_btn.setObjectName("MoveDownButton")
     self.move_down_btn.setIcon(qta.icon('fa5s.arrow-down', color='#e6e6e6'))
-    self.move_down_btn.setToolTip(_("Переместить вниз", "Move down"))
+    tr_set(self.move_down_btn, "Переместить вниз", "Move down", "setToolTip")
     self.move_down_btn.setEnabled(False)
     self.move_down_btn.setFixedSize(28, 28)
     self.move_down_btn.setIconSize(QSize(14, 14))
@@ -131,7 +132,7 @@ def build_api_settings_ui(self, parent_layout):
 
     # Template row
     template_layout = QHBoxLayout()
-    template_label = QLabel(_("Шаблон:", "Template:"))
+    template_label = tr_set(QLabel(), "Шаблон:", "Template:")
     self.template_combo = QComboBox()
     self.template_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     self.template_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
@@ -175,7 +176,7 @@ def build_api_settings_ui(self, parent_layout):
 
     self.key_visibility_button = QToolButton()
     self.key_visibility_button.setIcon(qta.icon('fa5s.eye'))
-    self.key_visibility_button.setToolTip(_("Показать/скрыть ключ", "Show/hide key"))
+    tr_set(self.key_visibility_button, "Показать/скрыть ключ", "Show/hide key", "setToolTip")
     self.key_visibility_button.setFixedSize(28, 28)
     self.api_key_row.layout().addWidget(self.key_visibility_button, 0, Qt.AlignmentFlag.AlignRight)
 
@@ -209,7 +210,7 @@ def build_api_settings_ui(self, parent_layout):
     self.protocol_transforms_view.setMaximumHeight(110)
     self.protocol_section.add_widget(self.protocol_transforms_view)
 
-    self.configure_pipeline_btn = QPushButton(_("Настроить pipeline", "Configure pipeline"))
+    self.configure_pipeline_btn = tr_set(QPushButton(), "Настроить pipeline", "Configure pipeline")
     self.configure_pipeline_btn.setIcon(qta.icon('fa5s.sliders-h', color='#3498db'))
     self.protocol_section.add_widget(self.configure_pipeline_btn)
 
@@ -244,7 +245,7 @@ def build_api_settings_ui(self, parent_layout):
         row_lay.setSpacing(6)
         chk = QCheckBox()
         chk.setFixedWidth(18)
-        chk.setToolTip(_("Включить переопределение", "Enable override"))
+        tr_set(chk, "Включить переопределение", "Enable override", "setToolTip")
         lbl = QLabel(param_label)
         lbl.setMinimumWidth(130)
         lbl.setMaximumWidth(130)
@@ -266,11 +267,11 @@ def build_api_settings_ui(self, parent_layout):
     et_lay.setSpacing(6)
     et_enable_chk = QCheckBox()
     et_enable_chk.setFixedWidth(18)
-    et_enable_chk.setToolTip(_("Включить переопределение", "Enable override"))
-    et_lbl = QLabel(_("Режим мышления", "Enable thinking"))
+    tr_set(et_enable_chk, "Включить переопределение", "Enable override", "setToolTip")
+    et_lbl = tr_set(QLabel(), "Режим мышления", "Enable thinking")
     et_lbl.setMinimumWidth(130)
     et_lbl.setMaximumWidth(130)
-    et_val_chk = QCheckBox(_("Вкл", "On"))
+    et_val_chk = tr_set(QCheckBox(), "Вкл", "On")
     et_val_chk.setEnabled(False)
     et_enable_chk.toggled.connect(et_val_chk.setEnabled)
     et_lay.addWidget(et_enable_chk)
@@ -293,7 +294,7 @@ def build_api_settings_ui(self, parent_layout):
     or_note.setStyleSheet("color: #bfbfbf; font-size: 11px;")
     self.openrouter_routing_section.add_widget(or_note)
 
-    self.or_enable_cb = QCheckBox(_("Включить provider routing", "Enable provider routing"))
+    self.or_enable_cb = tr_set(QCheckBox(), "Включить provider routing", "Enable provider routing")
     self.openrouter_routing_section.add_widget(self.or_enable_cb)
 
     self.or_order_row = LabeledLineEditRow(_("Приоритет провайдеров", "Provider order"))
@@ -337,16 +338,16 @@ def build_api_settings_ui(self, parent_layout):
     or_flags_layout = QHBoxLayout(or_flags_row)
     or_flags_layout.setContentsMargins(0, 2, 0, 2)
     or_flags_layout.setSpacing(12)
-    self.or_allow_fallbacks_cb = QCheckBox(_("Разрешить fallback", "Allow fallbacks"))
-    self.or_require_parameters_cb = QCheckBox(_("Требовать параметры", "Require parameters"))
-    self.or_zdr_cb = QCheckBox(_("Только ZDR", "ZDR only"))
+    self.or_allow_fallbacks_cb = tr_set(QCheckBox(), "Разрешить fallback", "Allow fallbacks")
+    self.or_require_parameters_cb = tr_set(QCheckBox(), "Требовать параметры", "Require parameters")
+    self.or_zdr_cb = tr_set(QCheckBox(), "Только ZDR", "ZDR only")
     or_flags_layout.addWidget(self.or_allow_fallbacks_cb)
     or_flags_layout.addWidget(self.or_require_parameters_cb)
     or_flags_layout.addWidget(self.or_zdr_cb)
     or_flags_layout.addStretch(1)
     self.openrouter_routing_section.add_widget(or_flags_row)
 
-    or_max_price_label = QLabel(_("Max price ($)", "Max price ($)"))
+    or_max_price_label = tr_set(QLabel(), "Max price ($)", "Max price ($)")
     or_max_price_label.setStyleSheet("color: #bfbfbf; font-size: 11px;")
     self.openrouter_routing_section.add_widget(or_max_price_label)
 
@@ -395,18 +396,18 @@ def build_api_settings_ui(self, parent_layout):
     self.openrouter_routing_section.setVisible(False)
 
     # buttons
-    self.test_button = QPushButton(_("Тест подключения (Получить список моделей)", "Test connection (Fetch model list)"))
+    self.test_button = tr_set(QPushButton(), "Тест подключения (Получить список моделей)", "Test connection (Fetch model list)")
     api_container_layout.addWidget(self.test_button)
 
     btns = QHBoxLayout()
     btns.setSpacing(10)
 
-    self.cancel_button = QPushButton(_("Отменить", "Cancel"))
+    self.cancel_button = tr_set(QPushButton(), "Отменить", "Cancel")
     self.cancel_button.setObjectName("CancelButton")
     self.cancel_button.setIcon(qta.icon('fa5s.undo', color='#ffffff'))
     self.cancel_button.setVisible(False)
 
-    self.save_preset_button = QPushButton(_("Сохранить", "Save"))
+    self.save_preset_button = tr_set(QPushButton(), "Сохранить", "Save")
     self.save_preset_button.setObjectName("SecondaryButton")
     self.save_preset_button.setIcon(qta.icon('fa5s.save', color='#ffffff'))
     self.save_preset_button.setEnabled(False)

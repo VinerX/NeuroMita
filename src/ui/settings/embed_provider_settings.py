@@ -15,6 +15,7 @@ from core.events import get_event_bus, Events
 from managers.settings_manager import InnerCollapsibleSection, SettingsManager
 from ui.gui_templates import SettingsBodyWidget
 from utils import getTranslationVariant as _
+from localization.live import tr_set
 
 
 def build_embed_provider_inner_section(gui) -> InnerCollapsibleSection:
@@ -68,22 +69,22 @@ class _EmbedProviderWidget(QWidget):
         self._add_btn = QToolButton()
         self._add_btn.setText("+")
         self._add_btn.setFixedWidth(24)
-        self._add_btn.setToolTip(_("Добавить пресет", "Add preset"))
+        tr_set(self._add_btn, "Добавить пресет", "Add preset", "setToolTip")
         self._add_btn.clicked.connect(self._on_add)
         self._del_btn = QToolButton()
         self._del_btn.setText("−")
         self._del_btn.setFixedWidth(24)
-        self._del_btn.setToolTip(_("Удалить пресет", "Delete preset"))
+        tr_set(self._del_btn, "Удалить пресет", "Delete preset", "setToolTip")
         self._del_btn.clicked.connect(self._on_delete)
         self._up_btn = QToolButton()
         self._up_btn.setText("↑")
         self._up_btn.setFixedWidth(24)
-        self._up_btn.setToolTip(_("Вверх", "Move up"))
+        tr_set(self._up_btn, "Вверх", "Move up", "setToolTip")
         self._up_btn.clicked.connect(lambda: self._move_current_custom(-1))
         self._down_btn = QToolButton()
         self._down_btn.setText("↓")
         self._down_btn.setFixedWidth(24)
-        self._down_btn.setToolTip(_("Вниз", "Move down"))
+        tr_set(self._down_btn, "Вниз", "Move down", "setToolTip")
         self._down_btn.clicked.connect(lambda: self._move_current_custom(1))
         preset_row.addWidget(self._add_btn)
         preset_row.addWidget(self._del_btn)
@@ -112,7 +113,7 @@ class _EmbedProviderWidget(QWidget):
         # Row: model
         model_row = QHBoxLayout()
         model_row.setSpacing(4)
-        self._model_label = QLabel(_("Модель:", "Model:"))
+        self._model_label = tr_set(QLabel(), "Модель:", "Model:")
         model_row.addWidget(self._model_label)
         self._model_combo = QComboBox()
         self._model_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -122,7 +123,7 @@ class _EmbedProviderWidget(QWidget):
         model_row.addWidget(self._model_combo, 1)
         root.addLayout(model_row)
 
-        self._manual_path_check = QCheckBox(_("Ручное указание пути", "Manual path"))
+        self._manual_path_check = tr_set(QCheckBox(), "Ручное указание пути", "Manual path")
         self._manual_path_check.setToolTip(_(
             "Выключено: выберите стандартную HuggingFace-модель, она хранится в папке checkpoints. "
             "Включено: поле модели становится ручным HF id или полным путем к папке модели.",
@@ -197,7 +198,7 @@ class _EmbedProviderWidget(QWidget):
                 QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password
             )
         )
-        self._download_btn = QPushButton(_("Скачать модель", "Download model"))
+        self._download_btn = tr_set(QPushButton(), "Скачать модель", "Download model")
         self._download_btn.clicked.connect(self._on_download_local_model)
         hf_row.addWidget(self._hf_edit, 1)
         hf_row.addWidget(self._hf_eye)
@@ -262,11 +263,11 @@ class _EmbedProviderWidget(QWidget):
         # Action buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
-        self._save_btn = QPushButton(_("Сохранить", "Save"))
+        self._save_btn = tr_set(QPushButton(), "Сохранить", "Save")
         self._save_btn.clicked.connect(self._on_save)
-        self._test_btn = QPushButton(_("Тест", "Test"))
+        self._test_btn = tr_set(QPushButton(), "Тест", "Test")
         self._test_btn.clicked.connect(self._on_test)
-        self._key_url_btn = QPushButton(_("Получить ключ ↗", "Get key ↗"))
+        self._key_url_btn = tr_set(QPushButton(), "Получить ключ ↗", "Get key ↗")
         self._key_url_btn.setVisible(False)
         self._key_url_btn.clicked.connect(self._on_open_key_url)
         btn_row.addWidget(self._save_btn)
