@@ -887,6 +887,7 @@ class SandboxPage(QWidget):
 
     def _make_inspector_tab_button(self, tab_key: str, label: str) -> QPushButton:
         button = QPushButton(label)
+        register_if_tr(button, label)
         button.setObjectName("SandboxInspectorTabButton")
         button.setCheckable(True)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -920,6 +921,7 @@ class SandboxPage(QWidget):
             title_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         label = QLabel(title)
+        register_if_tr(label, title)
         label.setObjectName("SandboxSelectorLabel")
         title_row.addWidget(label, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addStretch(1)
@@ -1012,6 +1014,7 @@ class SandboxPage(QWidget):
         h.setSpacing(8)
 
         label = QLabel(label_text)
+        register_if_tr(label, label_text)
         label.setObjectName("SandboxInfoLabel")
         h.addWidget(label, 0, Qt.AlignmentFlag.AlignVCenter)
 
@@ -1380,6 +1383,7 @@ class SandboxPage(QWidget):
             row = QHBoxLayout()
             row.setSpacing(8)
             label = QLabel(label_text)
+            register_if_tr(label, label_text)
             label.setObjectName("SandboxInfoLabel")
             row.addWidget(label)
             value = QLabel("—")

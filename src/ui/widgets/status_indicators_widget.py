@@ -2,6 +2,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 from utils import _
+from localization.live import register_if_tr
 
 
 class StatusIndicatorChip(QWidget):
@@ -21,6 +22,7 @@ class StatusIndicatorChip(QWidget):
         layout.addWidget(self.dot_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.text_label = QLabel(text)
+        register_if_tr(self.text_label, text)
         self.text_label.setObjectName("StatusIndicatorText")
         layout.addWidget(self.text_label, 0, Qt.AlignmentFlag.AlignVCenter)
 

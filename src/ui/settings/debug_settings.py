@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit, QPushButton, QVBoxLayout,
 )
 from utils import getTranslationVariant as _
-from localization.live import tr_set
+from localization.live import register_if_tr, tr_set
 
 
 def setup_debug_panel_controls(view, parent_layout):
@@ -20,9 +20,11 @@ def setup_debug_panel_controls(view, parent_layout):
 
     def _make_toggle(text: str, tooltip: str | None = None) -> QCheckBox:
         cb = QCheckBox(text)
+        register_if_tr(cb, text)
         cb.setObjectName("SandboxCaptureToggle")
         if tooltip:
             cb.setToolTip(tooltip)
+            register_if_tr(cb, tooltip, "setToolTip")
         return cb
 
     def _style_action_button(button: QPushButton) -> QPushButton:

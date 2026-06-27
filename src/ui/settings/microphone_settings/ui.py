@@ -9,7 +9,7 @@ import qtawesome as qta
 
 from ui.gui_templates import create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
-from localization.live import tr_set
+from localization.live import register_if_tr, tr_set
 
 
 def make_row(label_text: str, field_widget: QWidget, label_w: int) -> QWidget:
@@ -22,6 +22,7 @@ def make_row(label_text: str, field_widget: QWidget, label_w: int) -> QWidget:
     hl.setSpacing(6)
 
     lbl = QLabel(label_text)
+    register_if_tr(lbl, label_text)
     lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
     lbl.setFixedWidth(label_w)
     hl.addWidget(lbl, 0)

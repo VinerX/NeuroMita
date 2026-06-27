@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QTextBrows
 from ui.widgets.launcher_dashboard_helpers import create_shell_page_container
 from ui.widgets.launcher_dashboard_helpers import _create_hero_card
 from utils import _
+from localization.live import register_if_tr
 
 _DEFAULT_DOC_LANGUAGE = "en"
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
@@ -285,6 +286,7 @@ class WikiPage(QWidget):
 
     def _create_toolbar_button(self, label: str, callback, *, accent: bool = True) -> QPushButton:
         button = QPushButton(label)
+        register_if_tr(button, label)
         button.setObjectName("LauncherShellActionButton" if accent else "LauncherShellGhostButton")
         button.clicked.connect(callback)
         return button
