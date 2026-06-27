@@ -68,12 +68,10 @@ def setup_data_settings_controls(self, parent):
     # ── Collection toggle ─────────────────────────────────────────────────────
     chk = tr_set(QCheckBox(), "Включить сбор данных", "Enable data collection")
     chk.setStyleSheet("background: transparent; border: none;")
-    chk.setToolTip(_(
-        "При включении каждый запрос к модели и ответ сохраняются "
+    tr_set(chk, "При включении каждый запрос к модели и ответ сохраняются "
         "в FineTuneData/ для последующего дообучения.",
         "When enabled, every model request and response is saved "
-        "to FineTuneData/ for later fine-tuning."
-    ))
+        "to FineTuneData/ for later fine-tuning.", "setToolTip")
     try:
         chk.setChecked(bool(self.settings.get("FINETUNE_COLLECTION_ENABLED", True)))
     except Exception:
@@ -98,10 +96,8 @@ def setup_data_settings_controls(self, parent):
 
     rating_chk = tr_set(QCheckBox(), "Показывать элементы оценки", "Show rating controls")
     rating_chk.setStyleSheet("background: transparent; border: none;")
-    rating_chk.setToolTip(_(
-        "Показывать кнопки оценки на пузырьках ответов ассистента. Работает только при включённом сборе данных.",
-        "Show rating buttons on assistant message bubbles. Works only when data collection is enabled."
-    ))
+    tr_set(rating_chk, "Показывать кнопки оценки на пузырьках ответов ассистента. Работает только при включённом сборе данных.",
+        "Show rating buttons on assistant message bubbles. Works only when data collection is enabled.", "setToolTip")
     try:
         rating_chk.setChecked(bool(self.settings.get("SHOW_MESSAGE_RATING_CONTROLS", False)))
     except Exception:
@@ -138,10 +134,8 @@ def setup_data_settings_controls(self, parent):
     except Exception:
         limit_spin.setValue(50)
     limit_spin.setSuffix(_(" записей", " records"))
-    limit_spin.setToolTip(_(
-        "Сколько последних записей хранить. Старые удаляются автоматически.",
-        "How many most-recent records to keep. Older ones are pruned automatically."
-    ))
+    tr_set(limit_spin, "Сколько последних записей хранить. Старые удаляются автоматически.",
+        "How many most-recent records to keep. Older ones are pruned automatically.", "setToolTip")
     limit_spin.setStyleSheet(
         "QSpinBox { background: transparent; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; "
         "color: #f3edf6; font-size: 11px; padding: 5px 8px; }"
@@ -150,10 +144,8 @@ def setup_data_settings_controls(self, parent):
 
     unlimited_chk = tr_set(QCheckBox(), "Без лимита", "Unlimited")
     unlimited_chk.setStyleSheet("background: transparent; border: none; color: #bca9bb; font-size: 11px;")
-    unlimited_chk.setToolTip(_(
-        "Хранить все записи без ограничения. Может занять много места.",
-        "Keep all records with no cap. May use a lot of disk space."
-    ))
+    tr_set(unlimited_chk, "Хранить все записи без ограничения. Может занять много места.",
+        "Keep all records with no cap. May use a lot of disk space.", "setToolTip")
     try:
         unlimited_chk.setChecked(bool(self.settings.get("FINETUNE_UNLIMITED", False)))
     except Exception:
@@ -275,19 +267,15 @@ def setup_data_settings_controls(self, parent):
 
     export_btn = tr_set(QPushButton(), "Экспортировать...", "Export...")
     export_btn.setIcon(qta.icon("fa6s.file-export", color="#ffffff"))
-    export_btn.setToolTip(_(
-        "Открыть диалог экспорта с фильтрацией и выбором формата.",
-        "Open export dialog with filtering and format selection."
-    ))
+    tr_set(export_btn, "Открыть диалог экспорта с фильтрацией и выбором формата.",
+        "Open export dialog with filtering and format selection.", "setToolTip")
     export_btn.clicked.connect(lambda: _open_export_dialog(self))
     btn_row.addWidget(export_btn)
 
     clear_btn = tr_set(QPushButton(), "Очистить данные...", "Clear data...")
     clear_btn.setIcon(qta.icon("fa6s.trash-can", color="#ffffff"))
-    clear_btn.setToolTip(_(
-        "Удалить все накопленные файлы данных дообучения. Действие необратимо.",
-        "Delete all accumulated fine-tuning data files. This action is irreversible."
-    ))
+    tr_set(clear_btn, "Удалить все накопленные файлы данных дообучения. Действие необратимо.",
+        "Delete all accumulated fine-tuning data files. This action is irreversible.", "setToolTip")
     clear_btn.clicked.connect(lambda: _clear_all_data(self))
     btn_row.addWidget(clear_btn)
 

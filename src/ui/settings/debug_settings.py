@@ -43,10 +43,8 @@ def setup_debug_panel_controls(view, parent_layout):
     _idx = struct_combo.findText(str(_cur))
     if _idx >= 0:
         struct_combo.setCurrentIndex(_idx)
-    struct_combo.setToolTip(
-        _('Выкл — не показывать; Кратко — сегменты с командами; JSON — сырой ответ.',
-          'Off — hidden; Brief — segments with commands; JSON — raw response.')
-    )
+    tr_set(struct_combo, 'Выкл — не показывать; Кратко — сегменты с командами; JSON — сырой ответ.',
+          'Off — hidden; Brief — segments with commands; JSON — raw response.', "setToolTip")
     struct_combo.currentTextChanged.connect(
         lambda text: view._save_setting("SHOW_STRUCTURED_IN_GUI", text)
     )
@@ -56,10 +54,8 @@ def setup_debug_panel_controls(view, parent_layout):
     parent_layout.addLayout(combo_row)
 
     struct_expanded_cb = tr_set(QCheckBox(), 'Развёрнуто по умолчанию', 'Expanded by default')
-    struct_expanded_cb.setToolTip(
-        _('Если включено — блок с данными открыт сразу, иначе свёрнут.',
-          'If enabled — the data block is open immediately, otherwise collapsed.')
-    )
+    tr_set(struct_expanded_cb, 'Если включено — блок с данными открыт сразу, иначе свёрнут.',
+          'If enabled — the data block is open immediately, otherwise collapsed.', "setToolTip")
     struct_expanded_cb.setObjectName("SandboxCaptureToggle")
     struct_expanded_cb.setChecked(bool(view._get_setting("STRUCTURED_EXPANDED_DEFAULT", False)))
     struct_expanded_cb.toggled.connect(
@@ -80,10 +76,8 @@ def setup_debug_panel_controls(view, parent_layout):
     view._debug_as_user_cb = QCheckBox(
         _('Как пользователь [Системное]: (видно Gemini)', 'As user [System]: (visible to Gemini)')
     )
-    view._debug_as_user_cb.setToolTip(
-        _('Сохранить как role=user с префиксом [Системное]:, чтобы Gemini видел сообщение в контексте',
-          'Save as role=user with [System]: prefix so Gemini sees it in context')
-    )
+    tr_set(view._debug_as_user_cb, 'Сохранить как role=user с префиксом [Системное]:, чтобы Gemini видел сообщение в контексте',
+          'Save as role=user with [System]: prefix so Gemini sees it in context', "setToolTip")
     view._debug_as_user_cb.setObjectName("SandboxCaptureToggle")
     view._debug_as_user_cb.setChecked(bool(view._get_setting("DEBUG_INSERT_AS_USER", False)))
     view._debug_as_user_cb.toggled.connect(
@@ -120,18 +114,14 @@ def setup_debug_panel_controls(view, parent_layout):
     parent_layout.addWidget(ctx_label)
 
     ctx_req_btn = tr_set(QPushButton(), 'Посмотреть последний запрос', 'View last request')
-    ctx_req_btn.setToolTip(
-        _('Открыть просмотр контекста последнего запроса к нейросети (сообщения, системные промты, параметры)',
-          'Open context viewer for the last request sent to the neural network')
-    )
+    tr_set(ctx_req_btn, 'Открыть просмотр контекста последнего запроса к нейросети (сообщения, системные промты, параметры)',
+          'Open context viewer for the last request sent to the neural network', "setToolTip")
     ctx_req_btn.setObjectName("SandboxQuickAction")
     ctx_req_btn.clicked.connect(view._on_debug_view_last_context)
 
     ctx_resp_btn = tr_set(QPushButton(), 'Посмотреть последний ответ', 'View last response')
-    ctx_resp_btn.setToolTip(
-        _('Открыть просмотр последнего ответа модели и usage-метрик, если они сохранены.',
-          'Open the latest model response and usage metrics if they were saved.')
-    )
+    tr_set(ctx_resp_btn, 'Открыть просмотр последнего ответа модели и usage-метрик, если они сохранены.',
+          'Open the latest model response and usage metrics if they were saved.', "setToolTip")
     ctx_resp_btn.setObjectName("SandboxQuickAction")
     ctx_resp_btn.clicked.connect(view._on_debug_view_last_response_context)
 
@@ -143,10 +133,8 @@ def setup_debug_panel_controls(view, parent_layout):
     parent_layout.addLayout(ctx_row)
 
     capture_cb = tr_set(QCheckBox(), 'Сохранять вход генерации', 'Capture generation input')
-    capture_cb.setToolTip(
-        _('Сохранять вход события GENERATE_RESPONSE до сборки промпта: сырой payload, состояние перед BUILD_PROMPT и краткую сводку по изображениям.',
-          'Save GENERATE_RESPONSE ingress before prompt build: raw payload, pre-BUILD_PROMPT state, and compact image summaries.')
-    )
+    tr_set(capture_cb, 'Сохранять вход события GENERATE_RESPONSE до сборки промпта: сырой payload, состояние перед BUILD_PROMPT и краткую сводку по изображениям.',
+          'Save GENERATE_RESPONSE ingress before prompt build: raw payload, pre-BUILD_PROMPT state, and compact image summaries.', "setToolTip")
     capture_cb.setObjectName("SandboxCaptureToggle")
     capture_cb.setChecked(bool(view._get_setting("DEBUG_CAPTURE_GENERATION_INPUT_ENABLED", False)))
     capture_cb.toggled.connect(

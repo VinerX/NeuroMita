@@ -1685,12 +1685,8 @@ class SandboxPage(QWidget):
         sys_cb = tr_set(QCheckBox(), "Показывать системные сообщения", "Show system messages")
         sys_cb.setObjectName("SandboxCaptureToggle")
         sys_cb.setChecked(bool(self.gui._get_setting("SHOW_SYSTEM_MESSAGES", False)))
-        sys_cb.setToolTip(
-            _(
-                "Показывать системные/контекстные заметки (например «[Easel drawing]…») в чате. По умолчанию скрыты.",
-                "Show system/context notes (e.g. \"[Easel drawing]…\") in chat. Hidden by default.",
-            )
-        )
+        tr_set(sys_cb, "Показывать системные/контекстные заметки (например «[Easel drawing]…») в чате. По умолчанию скрыты.",
+                "Show system/context notes (e.g. \"[Easel drawing]…\") in chat. Hidden by default.", "setToolTip")
         sys_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_SYSTEM_MESSAGES", v))
         display_layout.addWidget(sys_cb)
         self._show_sys_cb = sys_cb

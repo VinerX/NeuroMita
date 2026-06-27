@@ -332,17 +332,15 @@ def build_character_settings_ui(self, parent_layout):
     self.maintenance_section.add_widget(maint_hint)
 
     self.btn_maint_files_db = tr_set(QPushButton(), "Файлы → БД", "Files → DB")
-    self.btn_maint_files_db.setToolTip(
-        _("Перенести историю из JSON-файлов в базу данных SQLite",
-          "Import history from JSON files into the SQLite database"))
+    tr_set(self.btn_maint_files_db, "Перенести историю из JSON-файлов в базу данных SQLite",
+          "Import history from JSON files into the SQLite database", "setToolTip")
     self.btn_maint_files_db.setIcon(qta.icon('fa5s.database', color='#ffffff'))
     self.btn_maint_files_db.setObjectName("SecondaryButton")
     _make_compact(self.btn_maint_files_db)
 
     self.btn_maint_tags = tr_set(QPushButton(), "Теги → данные", "Tags → data")
-    self.btn_maint_tags.setToolTip(
-        _("Перенести теги из поля content в колонку structured_data",
-          "Move inline tags from the content field into the structured_data column"))
+    tr_set(self.btn_maint_tags, "Перенести теги из поля content в колонку structured_data",
+          "Move inline tags from the content field into the structured_data column", "setToolTip")
     self.btn_maint_tags.setIcon(qta.icon('fa5s.exchange-alt', color='#ffffff'))
     self.btn_maint_tags.setObjectName("SecondaryButton")
     _make_compact(self.btn_maint_tags)
@@ -350,15 +348,13 @@ def build_character_settings_ui(self, parent_layout):
     self.maintenance_section.add_widget(_btn_row(self.btn_maint_files_db, self.btn_maint_tags))
 
     self.btn_maint_index_new = tr_set(QPushButton(), "Индекс нового", "Index new")
-    self.btn_maint_index_new.setToolTip(
-        _("Заполнить отсутствующие векторы для RAG", "Fill missing embedding vectors for RAG"))
+    tr_set(self.btn_maint_index_new, "Заполнить отсутствующие векторы для RAG", "Fill missing embedding vectors for RAG", "setToolTip")
     self.btn_maint_index_new.setIcon(qta.icon('fa5s.brain', color='#ffffff'))
     self.btn_maint_index_new.setObjectName("SecondaryButton")
     _make_compact(self.btn_maint_index_new)
 
     self.btn_maint_reindex = tr_set(QPushButton(), "Переиндексация", "Reindex")
-    self.btn_maint_reindex.setToolTip(
-        _("Пересоздать все векторы для RAG (медленно)", "Regenerate ALL embedding vectors for RAG (slow)"))
+    tr_set(self.btn_maint_reindex, "Пересоздать все векторы для RAG (медленно)", "Regenerate ALL embedding vectors for RAG (slow)", "setToolTip")
     self.btn_maint_reindex.setIcon(qta.icon('fa5s.brain', color='#ffffff'))
     self.btn_maint_reindex.setObjectName("SecondaryButton")
     _make_compact(self.btn_maint_reindex)
@@ -382,10 +378,8 @@ def build_character_settings_ui(self, parent_layout):
     self.maintenance_section.add_widget(_make_separator())
 
     self.btn_purge_deleted = tr_set(QPushButton(), "Очистить удалённое (все)", "Purge deleted (all)")
-    self.btn_purge_deleted.setToolTip(
-        _("Физически удалить is_deleted=1 записи для всех персонажей с резервной копией",
-          "Physically delete is_deleted=1 records for all characters with backup")
-    )
+    tr_set(self.btn_purge_deleted, "Физически удалить is_deleted=1 записи для всех персонажей с резервной копией",
+          "Physically delete is_deleted=1 records for all characters with backup", "setToolTip")
     self.btn_purge_deleted.setIcon(qta.icon('fa5s.fire-alt', color='#ffffff'))
     self.btn_purge_deleted.setStyleSheet(
         "QPushButton { background-color: #8b1a1a; color: #ffffff; border-radius: 4px; }"

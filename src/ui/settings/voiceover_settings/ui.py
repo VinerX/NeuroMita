@@ -125,8 +125,8 @@ def build_voiceover_settings_ui(self, parent_layout):
 
     self.local_model_status_label = QLabel("⚠️")
     self.local_model_status_label.setObjectName("WarningIcon")
-    self.local_model_status_label.setToolTip(_("Модель не инициализирована или не установлена.",
-                                               "Model not initialized or not installed."))
+    tr_set(self.local_model_status_label, "Модель не инициализирована или не установлена.",
+                                               "Model not initialized or not installed.", "setToolTip")
     self.local_model_status_label.setFixedWidth(16)
     self.local_model_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 

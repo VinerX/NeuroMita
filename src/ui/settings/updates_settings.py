@@ -474,14 +474,10 @@ def setup_updates_settings_controls(self, parent):
     idx = channel_combo.findText(current_channel)
     if idx >= 0:
         channel_combo.setCurrentIndex(idx)
-    channel_combo.setToolTip(
-        _(
-            "stable - официальные релизы.\n"
+    tr_set(channel_combo, "stable - официальные релизы.\n"
             "beta - включая пре-релизы.",
             "stable - official releases.\n"
-            "beta - including pre-releases.",
-        )
-    )
+            "beta - including pre-releases.", "setToolTip")
 
     def _save_channel(text: str):
         if text == self.settings.get("UPDATE_CHANNEL", "stable"):
@@ -515,16 +511,12 @@ def setup_updates_settings_controls(self, parent):
     mode_idx = mode_combo.findData(current_mode)
     if mode_idx >= 0:
         mode_combo.setCurrentIndex(mode_idx)
-    mode_combo.setToolTip(
-        _(
-            "Дифф - переписываются только изменённые файлы, встроенный питон с\n"
+    tr_set(mode_combo, "Дифф - переписываются только изменённые файлы, встроенный питон с\n"
             "зависимостями и локальные файлы не трогаются (быстро, без переустановки).\n"
             "Полная - папка очищается и релиз раскладывается заново.",
             "Diff - only changed files are rewritten; the embedded Python with its\n"
             "dependencies and local files are left intact (fast, no reinstall).\n"
-            "Full - the folder is wiped and the release is laid out from scratch.",
-        )
-    )
+            "Full - the folder is wiped and the release is laid out from scratch.", "setToolTip")
 
     def _save_mode():
         value = mode_combo.currentData() or "diff"
@@ -540,14 +532,10 @@ def setup_updates_settings_controls(self, parent):
 
     # Preserve local prompts on update
     chk_keep_prompts = tr_set(QCheckBox(), "Не перезаписывать мои промпты", "Keep my prompts")
-    chk_keep_prompts.setToolTip(
-        _(
-            "Файлы в папке Prompts, которые уже есть локально, не будут заменены\n"
+    tr_set(chk_keep_prompts, "Файлы в папке Prompts, которые уже есть локально, не будут заменены\n"
             "версией из релиза. Новые промпты из релиза всё равно добавятся.",
             "Files in the Prompts folder that already exist locally won't be\n"
-            "replaced by the release version. New release prompts are still added.",
-        )
-    )
+            "replaced by the release version. New release prompts are still added.", "setToolTip")
     chk_keep_prompts.setChecked(bool(self.settings.get("UPDATE_PRESERVE_PROMPTS", True)))
 
     def _save_keep_prompts(state):
@@ -560,14 +548,10 @@ def setup_updates_settings_controls(self, parent):
 
     # Background update check (notify only, no auto-apply)
     chk_check_startup = tr_set(QCheckBox(), "Проверять обновления при запуске", "Check for updates on startup")
-    chk_check_startup.setToolTip(
-        _(
-            "Фоновая проверка наличия обновлений и показ плашки на главном экране.\n"
+    tr_set(chk_check_startup, "Фоновая проверка наличия обновлений и показ плашки на главном экране.\n"
             "Ничего не скачивает и не устанавливает само.",
             "Background check for updates and a banner on the home screen.\n"
-            "Does not download or install anything by itself.",
-        )
-    )
+            "Does not download or install anything by itself.", "setToolTip")
     chk_check_startup.setChecked(bool(self.settings.get("UPDATE_CHECK_ON_STARTUP", True)))
 
     def _save_check_startup(state):
@@ -593,12 +577,8 @@ def setup_updates_settings_controls(self, parent):
     parent.addWidget(chk_auto)
 
     chk_unity = tr_set(QCheckBox(), "Авто-обновление Unity при запуске", "Auto-update Unity on startup")
-    chk_unity.setToolTip(
-        _(
-            "Скачивает Unity-часть мода если вышла новая версия",
-            "Downloads Unity part of the mod when a new version is released",
-        )
-    )
+    tr_set(chk_unity, "Скачивает Unity-часть мода если вышла новая версия",
+            "Downloads Unity part of the mod when a new version is released", "setToolTip")
     chk_unity.setChecked(bool(self.settings.get("AUTO_UPDATE_UNITY", False)))
 
     def _save_unity_auto(state):
@@ -631,12 +611,8 @@ def setup_updates_settings_controls(self, parent):
     tester_entry.setEchoMode(QLineEdit.EchoMode.Password)
     tr_set(tester_entry, "пароль для тестовых архивов", "password for test archives", "setPlaceholderText")
     tester_entry.setText(self.settings.get("TESTER_CODE", ""))
-    tester_entry.setToolTip(
-        _(
-            "Пароль для распаковки зашифрованных тестовых архивов.",
-            "Password to unpack encrypted tester archives.",
-        )
-    )
+    tr_set(tester_entry, "Пароль для распаковки зашифрованных тестовых архивов.",
+            "Password to unpack encrypted tester archives.", "setToolTip")
 
     def _save_tester():
         logger.info("[updates_ui] TESTER_CODE updated")

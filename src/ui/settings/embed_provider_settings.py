@@ -124,12 +124,10 @@ class _EmbedProviderWidget(QWidget):
         root.addLayout(model_row)
 
         self._manual_path_check = tr_set(QCheckBox(), "Ручное указание пути", "Manual path")
-        self._manual_path_check.setToolTip(_(
-            "Выключено: выберите стандартную HuggingFace-модель, она хранится в папке checkpoints. "
+        tr_set(self._manual_path_check, "Выключено: выберите стандартную HuggingFace-модель, она хранится в папке checkpoints. "
             "Включено: поле модели становится ручным HF id или полным путем к папке модели.",
             "Off: choose a standard HuggingFace model stored under checkpoints. "
-            "On: the model field becomes a manual HF id or full model directory path.",
-        ))
+            "On: the model field becomes a manual HF id or full model directory path.", "setToolTip")
         self._manual_path_check.toggled.connect(self._on_manual_path_toggled)
         root.addWidget(self._manual_path_check)
 
