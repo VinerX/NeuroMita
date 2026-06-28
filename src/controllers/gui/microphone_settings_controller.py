@@ -13,6 +13,16 @@ from .base_controller import BaseController
 
 
 class MicrophoneSettingsController(BaseController):
+    # Значения VAD-параметров по умолчанию (ключ настройки -> дефолт).
+    VAD_DEFAULTS: dict[str, Any] = {
+        "VOSK_SAMPLE_RATE": 16000,
+        "CHUNK_SIZE": 512,
+        "VAD_THRESHOLD": 0.5,
+        "VAD_SILENCE_TIMEOUT_SEC": 0.15,
+        "VAD_PRE_BUFFER_DURATION_SEC": 0.3,
+        "MAX_SPEECH_DURATION_SEC": 30.0,
+    }
+
     def __init__(self, main_controller, view):
         self._bound_sig: tuple[int, int, int, int, int, int] | None = None
         super().__init__(main_controller, view)
@@ -87,6 +97,10 @@ class MicrophoneSettingsController(BaseController):
             safe_disconnect(v.vad_apply_button.clicked, self._on_apply_vad_params)
             v.vad_apply_button.clicked.connect(self._on_apply_vad_params)
 
+        if hasattr(v, "vad_reset_button") and v.vad_reset_button:
+            safe_disconnect(v.vad_reset_button.clicked, self._on_reset_vad_params)
+            v.vad_reset_button.clicked.connect(self._on_reset_vad_params)
+
         self._load_vad_params()
 
         self.refresh_microphones()
@@ -136,6 +150,31 @@ class MicrophoneSettingsController(BaseController):
             logger.info("VAD параметры применены")
         except Exception as e:
             logger.error(f"VAD params apply error: {e}")
+
+    def _on_reset_vad_params(self):
+        """Сброс параметров распознавания к значениям по умолчанию: ставим
+        дефолты в спинбоксы и сразу сохраняем (как «Применить»)."""
+        v = self.view
+        if not v:
+            return
+        d = self.VAD_DEFAULTS
+        try:
+            if hasattr(v, "vad_sample_rate_spinbox"):
+                v.vad_sample_rate_spinbox.setValue(int(d["VOSK_SAMPLE_RATE"]))
+            if hasattr(v, "vad_chunk_size_spinbox"):
+                v.vad_chunk_size_spinbox.setValue(int(d["CHUNK_SIZE"]))
+            if hasattr(v, "vad_threshold_spinbox"):
+                v.vad_threshold_spinbox.setValue(float(d["VAD_THRESHOLD"]))
+            if hasattr(v, "vad_silence_timeout_spinbox"):
+                v.vad_silence_timeout_spinbox.setValue(float(d["VAD_SILENCE_TIMEOUT_SEC"]))
+            if hasattr(v, "vad_pre_buffer_spinbox"):
+                v.vad_pre_buffer_spinbox.setValue(float(d["VAD_PRE_BUFFER_DURATION_SEC"]))
+            if hasattr(v, "vad_max_speech_duration_spinbox"):
+                v.vad_max_speech_duration_spinbox.setValue(float(d["MAX_SPEECH_DURATION_SEC"]))
+            self._on_apply_vad_params()
+            logger.info("VAD параметры сброшены к значениям по умолчанию")
+        except Exception as e:
+            logger.error(f"VAD params reset error: {e}")
 
     def _open_asr_glossary(self):
         try:

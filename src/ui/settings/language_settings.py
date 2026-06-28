@@ -58,11 +58,15 @@ def setup_language_settings_controls(self, parent):
 
     # Список языков — динамически из доступных JSON-локалей (RU + найденные).
     try:
-        from localization import available_languages
-        _lang_options = available_languages()
+        from localization import available_languages, language_display_name
+        _lang_codes = available_languages()
     except Exception:
-        _lang_options = ["RU", "EN"]
-    _lang_options = ["RU"] + sorted(c for c in _lang_options if c != "RU")
+        _lang_codes = ["RU", "EN"]
+        language_display_name = lambda c: c
+    _lang_codes = ["RU"] + sorted(c for c in _lang_codes if c != "RU")
+    # Пункты вида (display, value): показываем «RU — Русский», но значение
+    # (сохраняемая настройка) остаётся голым кодом языка.
+    _lang_options = [(f"{code} — {language_display_name(code)}", code) for code in _lang_codes]
 
     language_config = [
         {'label': 'Язык / Language', 'key': 'LANGUAGE', 'type': 'combobox',

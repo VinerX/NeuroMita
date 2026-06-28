@@ -335,6 +335,15 @@ def get_launcher_shell_stylesheet() -> str:
         color: white;
         border: 1px solid rgba(130, 56, 88, 0.55);
     }}
+    QPushButton#LauncherShellLangGlobe {{
+        background: transparent;
+        border: none;
+        border-radius: 8px;
+        padding: 0;
+    }}
+    QPushButton#LauncherShellLangGlobe:hover {{
+        background-color: {p.accent_soft};
+    }}
     QLabel#LauncherShellVersionLabel {{
         color: {p.muted};
         font-family: "Segoe UI", "Arial", sans-serif;

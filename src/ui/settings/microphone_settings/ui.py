@@ -151,9 +151,25 @@ def build_microphone_settings_ui(self, parent_layout):
     tr_set(self.vad_max_speech_duration_spinbox, "Макс. длительность речи (сек)", "Max speech duration (sec)", "setToolTip")
     root_lay.addWidget(make_row(_("Макс. речь (сек)", "Max speech (sec)"), self.vad_max_speech_duration_spinbox, label_w))
 
+    # Кнопки «Применить» и «Сбросить» в одном ряду.
+    buttons_row = SettingsBodyWidget()
+    btn_h = QHBoxLayout(buttons_row)
+    btn_h.setContentsMargins(0, 0, 0, 0)
+    btn_h.setSpacing(6)
+
     self.vad_apply_button = tr_set(QPushButton(), "Применить", "Apply")
     self.vad_apply_button.setObjectName("SecondaryButton")
     self.vad_apply_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    root_lay.addWidget(self.vad_apply_button)
+    btn_h.addWidget(self.vad_apply_button, 1)
+
+    self.vad_reset_button = tr_set(QPushButton(), "Сбросить", "Reset")
+    self.vad_reset_button.setObjectName("SecondaryButton")
+    self.vad_reset_button.setIcon(qta.icon("fa5s.undo", color="#ffffff"))
+    self.vad_reset_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    tr_set(self.vad_reset_button, "Сбросить параметры распознавания к значениям по умолчанию",
+           "Reset recognition parameters to defaults", "setToolTip")
+    btn_h.addWidget(self.vad_reset_button, 1)
+
+    root_lay.addWidget(buttons_row)
 
     parent_layout.addWidget(root)

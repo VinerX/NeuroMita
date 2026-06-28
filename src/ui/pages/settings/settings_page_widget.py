@@ -484,8 +484,8 @@ class SettingsPage(QWidget):
         title_col.addLayout(headline_row)
 
         _subtitle_text = _(
-            "Центр конфигурации NeuroMita. Сохраняем логику, переводим интерфейс в компактный рабочий формат.",
-            "NeuroMita configuration hub. Same logic, now presented as a compact workspace.",
+            "Все параметры NeuroMita в одном месте: персонажи, голос, модели ИИ, память и обновления.",
+            "Every NeuroMita setting in one place: characters, voice, AI models, memory and updates.",
         )
         subtitle = QLabel(_subtitle_text)
         register_if_tr(subtitle, _subtitle_text)
