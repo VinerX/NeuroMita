@@ -231,8 +231,13 @@ class SandboxPage(QWidget):
         self._inspector_widget = None
         self._inspector_stack = None
         self._inspector_tab_host = None
+        self._inspector_header = None
+        self._inspector_layout = None
         self._inspector_collapse_btn = None
         self._inspector_tab_buttons = {}
+        # Collapsed-state rail (activity-bar): expand btn + tab icons.
+        self._inspector_rail = None
+        self._rail_tab_buttons = {}
         self._character_avatar_label = None
         self._voice_status_row = None
         self._mic_status_row = None
@@ -248,7 +253,7 @@ class SandboxPage(QWidget):
         self._lr_values = {}
         self._lr_t0 = None
         self._inspector_expanded_width = 420
-        self._inspector_collapsed_width = 56
+        self._inspector_collapsed_width = 60
         self._inspector_tab_indexes = {}
 
         self._build_ui()
@@ -882,6 +887,12 @@ class SandboxPage(QWidget):
             return
         self._inspector_stack.setCurrentIndex(index)
         for key, button in self._inspector_tab_buttons.items():
+            active = key == tab_key
+            button.setProperty("active", active)
+            button.setChecked(active)
+            self._repolish(button)
+        # Keep the collapsed-rail icons highlighting the same tab.
+        for key, button in self._rail_tab_buttons.items():
             active = key == tab_key
             button.setProperty("active", active)
             button.setChecked(active)
@@ -1773,9 +1784,11 @@ class SandboxPage(QWidget):
         layout = QVBoxLayout(inspector)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
+        self._inspector_layout = layout
 
         header = QFrame()
         header.setObjectName("SandboxInspectorTabHeader")
+        self._inspector_header = header
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(8)
@@ -1822,28 +1835,98 @@ class SandboxPage(QWidget):
         layout.addWidget(stack, 1)
         self.gui.sandbox_inspector_tabs = stack
         self._inspector_stack = stack
+
+        # Collapsed-state rail lives in the same layout, hidden until folded.
+        rail = self._build_inspector_rail()
+        rail.setVisible(False)
+        layout.addWidget(rail, 1)
+        self._inspector_rail = rail
+
         self._set_inspector_tab("session")
         return inspector
+
+    def _build_inspector_rail(self) -> QWidget:
+        """Collapsed inspector as a slim activity-bar rail (VS Code style):
+        an expand button, one icon per tab (click → expand straight to it),
+        and a live status-dot cluster — so the folded panel stays glanceable
+        and one click from anywhere instead of being a dead empty strip."""
+        rail = QWidget()
+        rail.setObjectName("SandboxInspectorRail")
+        v = QVBoxLayout(rail)
+        v.setContentsMargins(0, 0, 0, 4)
+        v.setSpacing(10)
+        v.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+
+        expand = QPushButton()
+        expand.setObjectName("SandboxInspectorCollapseBtn")
+        expand.setFixedSize(34, 34)
+        expand.setCursor(Qt.CursorShape.PointingHandCursor)
+        expand.setIcon(qta.icon("fa6s.angles-left", color="#ffd6ee"))
+        expand.setIconSize(QSize(14, 14))
+        tr_set(expand, "Развернуть панель", "Expand panel", "setToolTip")
+        expand.clicked.connect(self._toggle_inspector_collapsed)
+        v.addWidget(expand, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        top_div = QFrame()
+        top_div.setObjectName("SandboxRailDivider")
+        top_div.setFixedSize(24, 1)
+        v.addWidget(top_div, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self._rail_tab_buttons = {}
+        for key, icon_name, tip in (
+            ("session", "fa6s.id-badge", _("Сессия", "Session")),
+            ("state", "fa6s.heart-pulse", _("Состояние", "State")),
+            ("debug", "fa6s.bug", _("Отладка", "Debug")),
+        ):
+            btn = QPushButton()
+            btn.setObjectName("SandboxRailTabButton")
+            btn.setCheckable(True)
+            btn.setFixedSize(38, 38)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setIcon(qta.icon(icon_name, color="#ffd2ec"))
+            btn.setIconSize(QSize(16, 16))
+            btn.setToolTip(tip)
+            register_if_tr(btn, tip, "setToolTip")
+            btn.clicked.connect(lambda _c=False, k=key: self._expand_to_tab(k))
+            self._rail_tab_buttons[key] = btn
+            v.addWidget(btn, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        v.addStretch(1)
+
+        return rail
+
+    def _expand_to_tab(self, tab_key: str):
+        """Rail icon click: unfold the inspector and jump straight to that tab."""
+        if self._inspector_collapsed:
+            self._toggle_inspector_collapsed()
+        self._set_inspector_tab(tab_key)
 
     def _toggle_inspector_collapsed(self):
         self._inspector_collapsed = not self._inspector_collapsed
         if self._inspector_widget is None or self._inspector_stack is None:
             return
-        if self._inspector_collapsed:
-            self._inspector_stack.hide()
-            if self._inspector_tab_host is not None:
-                self._inspector_tab_host.hide()
-            self._inspector_widget.setMinimumWidth(self._inspector_collapsed_width)
-            self._inspector_widget.setMaximumWidth(self._inspector_collapsed_width)
-        else:
-            self._inspector_stack.show()
-            if self._inspector_tab_host is not None:
-                self._inspector_tab_host.show()
-            self._inspector_widget.setMinimumWidth(self._inspector_expanded_width)
-            self._inspector_widget.setMaximumWidth(self._inspector_expanded_width)
+        collapsed = self._inspector_collapsed
+
+        if self._inspector_header is not None:
+            self._inspector_header.setVisible(not collapsed)
+        self._inspector_stack.setVisible(not collapsed)
+        if self._inspector_rail is not None:
+            self._inspector_rail.setVisible(collapsed)
+
+        width = self._inspector_collapsed_width if collapsed else self._inspector_expanded_width
+        self._inspector_widget.setMinimumWidth(width)
+        self._inspector_widget.setMaximumWidth(width)
+        if self._inspector_layout is not None:
+            # Tighten the shell margins when folded so the 38px icons breathe
+            # inside the narrow rail; restore the roomy padding when expanded.
+            if collapsed:
+                self._inspector_layout.setContentsMargins(8, 14, 8, 12)
+            else:
+                self._inspector_layout.setContentsMargins(14, 14, 14, 14)
+
         if self._inspector_collapse_btn is not None:
             self._inspector_collapse_btn.setToolTip(
-                _("Развернуть панель", "Expand panel") if self._inspector_collapsed else _("Свернуть панель", "Collapse panel")
+                _("Развернуть панель", "Expand panel") if collapsed else _("Свернуть панель", "Collapse panel")
             )
         self._update_inspector_collapse_icon()
 

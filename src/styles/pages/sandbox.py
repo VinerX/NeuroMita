@@ -571,6 +571,30 @@ QPushButton#SandboxInspectorCollapseBtn:pressed {
     background-color: rgba({accent_rgb}, 0.24);
 }
 
+/* ── Collapsed inspector rail (activity-bar style) ── */
+QWidget#SandboxInspectorRail {
+    background: transparent;
+}
+
+QFrame#SandboxRailDivider {
+    background-color: rgba(255, 255, 255, 0.08);
+    border: none;
+}
+
+QPushButton#SandboxRailTabButton {
+    background-color: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+}
+QPushButton#SandboxRailTabButton:hover {
+    background-color: rgba({accent_rgb}, 0.14);
+    border: 1px solid rgba({accent_rgb}, 0.30);
+}
+QPushButton#SandboxRailTabButton[active="true"] {
+    background-color: rgba({accent_rgb}, 0.20);
+    border: 1px solid rgba({accent_rgb}, 0.55);
+}
+
 QLabel#SandboxCharacterAvatar {
     border-radius: 16px;
     min-width: 32px;
