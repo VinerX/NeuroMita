@@ -22,6 +22,18 @@ from handlers.voice_models.install_plan_helpers import (
 
 class F5TTSInstallSpec:
     @classmethod
+    def _rvc_package_spec(cls, ctx: dict) -> str:
+        gpu_vendor = str((ctx or {}).get("gpu_vendor") or "CPU").upper()
+        if gpu_vendor == "NVIDIA":
+            return "tts-with-rvc"
+        return "tts-with-rvc-onnx[dml]"
+
+    @classmethod
+    def _rvc_uninstall_package(cls, ctx: dict) -> str:
+        spec = cls._rvc_package_spec(ctx)
+        return spec.split("[", 1)[0]
+
+    @classmethod
     def supported_model_ids(cls) -> list[str]:
         return ["high", "high+low"]
 
@@ -45,7 +57,14 @@ class F5TTSInstallSpec:
         ]
 
         if str(model_id) == "high+low":
-            req.append(InstallRequirement(id="tts_with_rvc", kind="python_dist", spec="tts-with-rvc", required=True))
+            req.append(
+                InstallRequirement(
+                    id="tts_with_rvc",
+                    kind="python_dist",
+                    spec=cls._rvc_package_spec(ctx),
+                    required=True,
+                )
+            )
 
         return req
 
@@ -62,7 +81,7 @@ class F5TTSInstallSpec:
     def build_install_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
         mid = str(model_id)
         backend_kind = cls.required_backend(mid, ctx)
-        compat_warning = rvc_python_compat_error("tts-with-rvc") if mid == "high+low" else None
+        compat_warning = rvc_python_compat_error(cls._rvc_package_spec(ctx)) if mid == "high+low" else None
         if cls.is_installed(mid, ctx):
             return InstallPlan(
                 required_backend=backend_kind,
@@ -94,7 +113,7 @@ class F5TTSInstallSpec:
             "ruaccent",
         ]
         if mid == "high+low":
-            pkgs.insert(0, "tts-with-rvc")
+            pkgs.insert(0, cls._rvc_package_spec(ctx))
 
         actions.append(
             InstallAction(
@@ -160,7 +179,7 @@ class F5TTSInstallSpec:
         mid = str(model_id)
         pkgs = ["f5-tts", "ruaccent"]
         if mid == "high+low":
-            pkgs = ["tts-with-rvc"] + pkgs
+            pkgs = [cls._rvc_uninstall_package(ctx)] + pkgs
 
         return InstallPlan(
             actions=[
@@ -184,7 +203,7 @@ class F5TTSModel(IVoiceModel):
             "id": "high",
             "name": "F5-TTS",
             "min_vram": 4, "rec_vram": 8,
-            "gpu_vendor": ["NVIDIA"],
+            "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "size_gb": 4,
             "languages": ["Russian", "English"],
             "intents": [_("Эмоции", "Emotion"), _("Качество", "Quality")],
@@ -211,7 +230,7 @@ class F5TTSModel(IVoiceModel):
             "id": "high+low",
             "name": "F5-TTS + RVC",
             "min_vram": 6, "rec_vram": 8,
-            "gpu_vendor": ["NVIDIA"],
+            "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "size_gb": 7,
             "languages": ["Russian", "English"],
             "intents": [_("Эмоции", "Emotion"), _("Конверсия голоса", "Voice conversion")],
@@ -221,11 +240,15 @@ class F5TTSModel(IVoiceModel):
             ),
             "settings": [
                 {"key": "f5rvc_f5_device", "label": _("[F5] Устройство", "[F5] Device"), "type": "combobox",
-                 "options": {"values": ["cuda", "cpu"], "default": "cuda"},
+                 "options": {"values_nvidia": ["cuda", "cpu"], "default_nvidia": "cuda",
+                             "values_amd": ["cpu"], "default_amd": "cpu",
+                             "values_intel": ["cpu"], "default_intel": "cpu",
+                             "values_other": ["cpu"], "default_other": "cpu"},
                  "help": _("Устройство для части F5‑TTS.", "Device for F5‑TTS part.")},
                 {"key": "f5rvc_rvc_device", "label": _("[RVC] Устройство RVC", "[RVC] RVC Device"), "type": "combobox",
                  "options": {"values_nvidia": ["dml", "cuda:0", "cpu"], "default_nvidia": "cuda:0",
                              "values_amd": ["dml", "cpu"], "default_amd": "dml",
+                             "values_intel": ["dml", "cpu"], "default_intel": "dml",
                              "values_other": ["cpu", "dml"], "default_other": "cpu"},
                  "help": _("Устройство для части RVC.", "Device for RVC part.")},
 

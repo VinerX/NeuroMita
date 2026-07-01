@@ -121,6 +121,39 @@ class VoiceModelGuiController(BaseController):
             if not proceed:
                 return
 
+        try:
+            preflight = backend.get_install_preflight(str(model_id))
+        except Exception as exc:
+            logger.warning(f"VoiceModelGuiController: install preflight failed for '{model_id}': {exc}")
+            preflight = {}
+
+        if preflight.get("blocked"):
+            self.event_bus.emit(
+                Events.GUI.SHOW_ERROR_MESSAGE,
+                {
+                    "title": preflight.get("title") or _("Ошибка установки", "Installation error"),
+                    "message": preflight.get("message") or _("Установка этой модели сейчас недоступна.", "This model cannot be installed right now."),
+                },
+            )
+            return
+
+        if preflight.get("ask"):
+            proceed = self._ask_question_in_vm_view(
+                str(preflight.get("title") or _("Backend не установлен", "Backend missing")),
+                str(preflight.get("message") or ""),
+            )
+            if not proceed:
+                cancel_message = str(preflight.get("cancel_message") or "").strip()
+                if cancel_message:
+                    self.event_bus.emit(
+                        Events.GUI.SHOW_INFO_MESSAGE,
+                        {
+                            "title": _("Установка отменена", "Installation cancelled"),
+                            "message": cancel_message,
+                        },
+                    )
+                return
+
         backend.start_install(
             str(model_id),
             with_ui=bool(data.get("with_ui", True)),

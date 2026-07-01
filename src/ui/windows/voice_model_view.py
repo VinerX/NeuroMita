@@ -191,17 +191,15 @@ class ModelDetailView(QWidget):
 
         # AMD compatibility check
         model = self._find_model(mid)
-        supported = model.get("gpu_vendor", []) or []
-        is_amd_user = (self.gpu_vendor == "AMD")
-        is_amd_supported = ("AMD" in supported)
+        is_supported = bool(model.get("compat_supported", True))
         allow_unsupported = os.environ.get("ALLOW_UNSUPPORTED_GPU", "0") == "1"
 
         can_install = True
         install_text = _("Установить", "Install")
-        if is_amd_user and not is_amd_supported and not allow_unsupported:
+        if not is_supported and not allow_unsupported:
             can_install = False
-            install_text = _("Несовместимо с AMD", "Incompatible with AMD")
-
+            gpu_label = str(self.gpu_vendor or "GPU")
+            install_text = _(f"Несовместимо с {gpu_label}", f"Incompatible with {gpu_label}")
         self.btn_install.setText(install_text)
         self.btn_install.setEnabled(can_install)
 
@@ -469,18 +467,25 @@ class ModelDetailView(QWidget):
             self.langs_title.setVisible(False)
 
         # AMD warning
-        supported = model.get("gpu_vendor", []) or []
-        is_amd_user = (self.gpu_vendor == "AMD")
-        is_amd_supported = ("AMD" in supported)
+        is_supported = bool(model.get("compat_supported", True))
         allow_unsupported = os.environ.get("ALLOW_UNSUPPORTED_GPU", "0") == "1"
-        if is_amd_user and not is_amd_supported and allow_unsupported:
+        if self.gpu_vendor == "AMD" and not is_supported and allow_unsupported:
             self.warning_label.setText(_("Может не работать на AMD!", "May not work on AMD!"))
-        elif is_amd_user and not is_amd_supported and not allow_unsupported:
+        elif self.gpu_vendor == "AMD" and not is_supported and not allow_unsupported:
             self.warning_label.setText(_("Несовместимо с AMD.", "Incompatible with AMD."))
         else:
             self.warning_label.setText("")
 
         # Описание модели — обычный абзац
+        warning_text = str(model.get("compat_warning") or "").strip()
+        if not is_supported and allow_unsupported:
+            gpu_label = str(self.gpu_vendor or "GPU")
+            warning_text = warning_text or _(f"Может не работать на {gpu_label}.", f"May not work on {gpu_label}.")
+        elif not is_supported and not allow_unsupported:
+            gpu_label = str(self.gpu_vendor or "GPU")
+            warning_text = _(f"Несовместимо с {gpu_label}.", f"Incompatible with {gpu_label}.")
+        self.warning_label.setText(warning_text)
+
         self.profile_desc_label.setText(model_desc_text)
 
         # Кнопки

@@ -42,12 +42,20 @@ class EdgeTTSRVCInstallablesTests(unittest.TestCase):
         self.assertIn("tts-with-rvc", cuda_specs)
         self.assertIn("tts-with-rvc-onnx[dml]", onnx_specs)
 
-    def test_cuda_settings_limit_f0_methods_to_crepe_and_fcpe(self):
+    def test_cuda_settings_keep_full_f0_method_catalog(self):
         config = EdgeTTSRVCCudaModel._find_model_config(EDGE_TTS_RVC_CUDA_ID)
         f0_setting = next(item for item in config["settings"] if item["key"] == "f0method")
 
-        self.assertEqual(f0_setting["options"]["values"], ["crepe", "fcpe"])
-        self.assertEqual(f0_setting["options"]["default"], "fcpe")
+        self.assertEqual(
+            f0_setting["options"]["values"],
+            ["pm", "dio", "crepe", "rmvpe", "harvest", "fcpe"],
+        )
+        self.assertEqual(f0_setting["options"]["default"], "rmvpe")
+
+    def test_onnx_configs_include_intel_support(self):
+        config = EdgeTTSRVCOnnxModel._find_model_config(EDGE_TTS_RVC_ONNX_ID)
+
+        self.assertIn("INTEL", config["gpu_vendor"])
 
     def test_fish_speech_plus_uninstall_removes_runtime_packages(self):
         plan = FishSpeechInstallSpec.build_uninstall_plan("medium+", {})

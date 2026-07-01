@@ -461,9 +461,163 @@ class VoiceModelController:
         self.load_settings()
         return {"changed": changed_total, "changed_by_model": changed_by_model}
 
+    def _normalize_gpu_vendor(self, vendor: Any) -> str:
+        value = str(vendor or "CPU").strip().upper()
+        if value in {"NVIDIA", "AMD", "INTEL", "CPU"}:
+            return value
+        return "CPU"
+
+    def _normalize_gpu_vendor_list(self, vendors: Any) -> list[str]:
+        if not isinstance(vendors, (list, tuple, set)):
+            vendors = [vendors]
+
+        result: list[str] = []
+        for vendor in vendors:
+            normalized = self._normalize_gpu_vendor(vendor)
+            if normalized not in result:
+                result.append(normalized)
+        return result
+
+    def _build_model_compatibility(self, model: dict, detected_vendor: str) -> dict[str, Any]:
+        vendor = self._normalize_gpu_vendor(detected_vendor)
+        vendors = self._normalize_gpu_vendor_list(model.get("gpu_vendor", []))
+        supported = vendor in vendors if vendors else True
+
+        model_id = str(model.get("id") or "").strip()
+        warning = ""
+
+        if model_id == "high":
+            if vendor in ("AMD", "INTEL"):
+                warning = _(
+                    "В этой сборке F5-TTS ускоряется только на NVIDIA. На текущем GPU модель будет работать через CPU, поэтому будет заметно медленнее.",
+                    "In this build F5-TTS is accelerated only on NVIDIA. On the current GPU it will run through the CPU fallback and be noticeably slower.",
+                )
+            elif vendor == "CPU":
+                warning = _(
+                    "F5-TTS будет работать только через CPU. Это совместимо, но заметно медленнее, чем на GPU.",
+                    "F5-TTS will run on CPU only. This is supported, but much slower than on GPU.",
+                )
+        elif model_id == "high+low":
+            if vendor in ("AMD", "INTEL"):
+                warning = _(
+                    "В этой сборке F5-TTS работает через CPU, а RVC — через ONNX/DirectML. Режим совместим, но медленнее, чем на NVIDIA.",
+                    "In this build F5-TTS runs on CPU while RVC uses ONNX/DirectML. This mode is supported, but slower than on NVIDIA.",
+                )
+            elif vendor == "CPU":
+                warning = _(
+                    "И F5-TTS, и RVC будут работать без GPU-ускорения. Режим совместим, но самый медленный.",
+                    "Both F5-TTS and RVC will run without GPU acceleration. This mode is supported, but it is the slowest option.",
+                )
+        elif model_id in {"edge_tts_rvc_onnx", "silero_rvc_onnx"} and vendor == "CPU":
+            warning = _(
+                "RVC будет работать через CPU fallback без DirectML-ускорения.",
+                "RVC will run through the CPU fallback without DirectML acceleration.",
+            )
+
+        return {
+            "vendors": vendors,
+            "supported": supported,
+            "warning": warning,
+        }
+
+    def _voice_installable_component(self, model_id: str):
+        from core.installables import ComponentCategory, make_component_id
+        from installables import get_installable_registry
+
+        component_id = make_component_id(ComponentCategory.TTS, str(model_id))
+        return get_installable_registry().require(component_id)
+
+    def get_install_preflight(self, model_id: str) -> dict[str, Any]:
+        mid = str(model_id or "").strip()
+        if not mid:
+            return {"blocked": True}
+
+        model = next((m for m in (self.local_voice_models or []) if str(m.get("id") or "") == mid), None)
+        if model is None:
+            try:
+                model = next((m for m in self.get_default_model_structure() if str(m.get("id") or "") == mid), None)
+            except Exception:
+                model = None
+        model = model or {"id": mid, "name": mid}
+
+        compat = self._build_model_compatibility(model, self.detected_gpu_vendor)
+        allow_unsupported = os.environ.get("ALLOW_UNSUPPORTED_GPU", "0") == "1"
+        vendor = self._normalize_gpu_vendor(self.detected_gpu_vendor)
+        vendor_label = format_primary_gpu_label() if vendor != "CPU" else "CPU"
+
+        if not compat["supported"] and not allow_unsupported:
+            return {
+                "blocked": True,
+                "title": _("Несовместимая модель", "Incompatible model"),
+                "message": _(
+                    f"Модель '{model.get('name', mid)}' не поддерживает текущий GPU ({vendor_label}).",
+                    f"The model '{model.get('name', mid)}' does not support the current GPU ({vendor_label}).",
+                ),
+            }
+
+        try:
+            component = self._voice_installable_component(mid)
+            install_plan = component.build_install_plan(self._ctx())
+        except Exception as exc:
+            logger.warning(f"Voice install preflight failed for '{mid}': {exc}")
+            return {"blocked": False}
+
+        backend_kind = install_plan.required_backend
+        backend_status = get_backend_service().get_status(backend_kind, ctx=self._ctx())
+        if backend_status.ok or str(getattr(backend_kind, "value", "") or "") in ("", "none"):
+            return {"blocked": False}
+
+        model_name = str(model.get("name") or mid)
+        title = _("Backend не установлен", "Backend missing")
+        cancel_message = _(
+            "Установка модели отменена. Нужный backend можно установить вручную в AI Hub, затем повторить установку.",
+            "Model installation was cancelled. You can install the required backend manually in AI Hub and retry.",
+        )
+
+        if str(backend_kind.value) == "cuda" and vendor == "NVIDIA":
+            message = _(
+                f"Для модели '{model_name}' нужен NVIDIA backend (PyTorch CUDA).\n\n"
+                f"Обнаружена видеокарта: {vendor_label}.\n\n"
+                "Установить NVIDIA backend сейчас и добавить его в план установки?",
+                f"The model '{model_name}' needs the NVIDIA backend (PyTorch CUDA).\n\n"
+                f"Detected GPU: {vendor_label}.\n\n"
+                "Install the NVIDIA backend now and add it to the install plan?",
+            )
+            cancel_message = _(
+                "Установка модели отменена. Если хотите другой путь, можно отдельно поставить ONNX backend в AI Hub и потом вернуться к выбору модели.",
+                "Model installation was cancelled. If you want another path, you can install the ONNX backend manually in AI Hub and return to model setup later.",
+            )
+        elif str(backend_kind.value) == "onnx":
+            backend_label = "ONNX / DirectML" if vendor in ("AMD", "INTEL") else "ONNX"
+            message = _(
+                f"Для модели '{model_name}' нужен backend {backend_label}.\n\n"
+                f"Текущий GPU: {vendor_label}.\n\n"
+                "Установить backend сейчас и добавить его в план установки?",
+                f"The model '{model_name}' needs the {backend_label} backend.\n\n"
+                f"Current GPU: {vendor_label}.\n\n"
+                "Install this backend now and add it to the install plan?",
+            )
+        else:
+            message = _(
+                f"Для модели '{model_name}' нужен CPU backend (PyTorch).\n\n"
+                "Установить его сейчас и добавить в план установки?",
+                f"The model '{model_name}' needs the CPU backend (PyTorch).\n\n"
+                "Install it now and add it to the install plan?",
+            )
+
+        return {
+            "blocked": False,
+            "ask": True,
+            "title": title,
+            "message": message,
+            "cancel_message": cancel_message,
+            "required_backend": str(getattr(backend_kind, "value", "") or ""),
+            "backend_status": backend_status.as_dict(),
+        }
+
     def refresh_installed_models(self):
         ctx_base = self._ctx()
-        vendors = [self.detected_gpu_vendor] if self.detected_gpu_vendor else ["NVIDIA", "AMD", "CPU"]
+        vendors = [self.detected_gpu_vendor] if self.detected_gpu_vendor else ["NVIDIA", "AMD", "INTEL", "CPU"]
         try:
             from core.installables import ComponentCategory, make_component_id
             from installables import get_installable_registry
@@ -617,6 +771,7 @@ class VoiceModelController:
         import copy as _copy
         final_models = _copy.deepcopy(models_list)
 
+        detected_vendor = self._normalize_gpu_vendor(detected_vendor)
         gpu_name_upper = self.gpu_name.upper() if self.gpu_name else ""
         force_fp32 = False
 
@@ -630,17 +785,23 @@ class VoiceModelController:
                 or "1080" in gpu_name_upper
             ):
                 force_fp32 = True
-        elif detected_vendor == "AMD":
+        elif detected_vendor in {"AMD", "INTEL"}:
             force_fp32 = True
 
         for model in final_models:
-            model_vendors = model.get("gpu_vendor", [])
+            compat = self._build_model_compatibility(model, detected_vendor)
+            model_vendors = compat["vendors"]
+            model["gpu_vendor"] = model_vendors
+            model["compat_supported"] = compat["supported"]
+            model["compat_warning"] = compat["warning"]
             vendor_to_adapt_for = None
 
             if detected_vendor == "NVIDIA" and "NVIDIA" in model_vendors:
                 vendor_to_adapt_for = "NVIDIA"
             elif detected_vendor == "AMD" and "AMD" in model_vendors:
                 vendor_to_adapt_for = "AMD"
+            elif detected_vendor == "INTEL" and "INTEL" in model_vendors:
+                vendor_to_adapt_for = "INTEL"
             elif not detected_vendor or detected_vendor not in model_vendors:
                 vendor_to_adapt_for = "OTHER"
             elif detected_vendor in model_vendors:
@@ -653,25 +814,30 @@ class VoiceModelController:
                 is_device_setting = "device" in str(setting_key).lower()
                 is_half_setting = setting_key in ["is_half", "silero_rvc_is_half", "fsprvc_is_half", "half", "fsprvc_fsp_half"]
 
-                adapt_key_suffix = ""
-                if vendor_to_adapt_for == "NVIDIA":
-                    adapt_key_suffix = "_nvidia"
-                elif vendor_to_adapt_for == "AMD":
-                    adapt_key_suffix = "_amd"
-                elif vendor_to_adapt_for == "OTHER":
-                    adapt_key_suffix = "_other"
-
-                values_key = f"values{adapt_key_suffix}"
-                default_key = f"default{adapt_key_suffix}"
-
                 final_values_list = None
-                if values_key in options:
-                    final_values_list = options[values_key]
-                elif "values" in options:
-                    final_values_list = options["values"]
+                suffix_candidates: list[str]
+                if vendor_to_adapt_for == "NVIDIA":
+                    suffix_candidates = ["_nvidia", ""]
+                elif vendor_to_adapt_for == "AMD":
+                    suffix_candidates = ["_amd", ""]
+                elif vendor_to_adapt_for == "INTEL":
+                    suffix_candidates = ["_intel", "_amd", ""]
+                elif vendor_to_adapt_for == "OTHER":
+                    suffix_candidates = ["_other", ""]
+                else:
+                    suffix_candidates = [""]
 
-                if default_key in options:
-                    options["default"] = options[default_key]
+                for suffix in suffix_candidates:
+                    values_key = f"values{suffix}"
+                    if values_key in options:
+                        final_values_list = options[values_key]
+                        break
+
+                for suffix in suffix_candidates:
+                    default_key = f"default{suffix}"
+                    if default_key in options:
+                        options["default"] = options[default_key]
+                        break
 
                 if is_device_setting:
                     if vendor_to_adapt_for == "NVIDIA":
@@ -689,6 +855,23 @@ class VoiceModelController:
                             if "mps" not in base_values:
                                 base_values = list(base_values) + ["mps"]
                             final_values_list = base_values
+
+                if setting_key == "f5rvc_f5_device" and detected_vendor != "NVIDIA":
+                    final_values_list = ["cpu"]
+                    options["default"] = "cpu"
+                    setting["locked"] = True
+
+                if setting_key == "f5rvc_rvc_device":
+                    if detected_vendor in {"AMD", "INTEL"}:
+                        final_values_list = ["dml", "cpu"]
+                        options["default"] = "dml"
+                    elif detected_vendor == "CPU":
+                        final_values_list = ["cpu", "dml"]
+                        options["default"] = "cpu"
+
+                if setting_key == "f5rvc_is_half" and detected_vendor != "NVIDIA":
+                    options["default"] = "False"
+                    setting["locked"] = True
 
                 if final_values_list is not None and widget_type == "combobox":
                     options["values"] = final_values_list
