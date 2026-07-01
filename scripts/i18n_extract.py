@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
-import os
+import re
 import sys
 from pathlib import Path
 
@@ -39,15 +39,25 @@ def _const_str(node: ast.expr | None) -> str | None:
     return None
 
 
-def scan_file(path: Path) -> tuple[list[tuple[str, str]], int, int]:
+def scan_file(path: Path) -> tuple[list[tuple[str, str]], int, int, str | None]:
     """Разбирает один файл.
 
-    Возвращает (пары (ru, en), всего_вызовов_локализации, динамических_пропущено).
+    Возвращает ``(пары (ru, en), всего_вызовов, динамических_пропущено, ошибка)``.
+    ``ошибка`` — ``None`` при успехе, иначе короткая строка с причиной, чтобы
+    вызывающий мог ГРОМКО отчитаться (а не молча потерять весь файл).
+
+    Читаем через ``utf-8-sig``: это снимает BOM (``U+FEFF``), из-за которого
+    ``ast.parse`` иначе падает ``SyntaxError`` — именно так десятки файлов с BOM
+    годами выпадали из экстракта и «утекали» английским в другие языки.
     """
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except (SyntaxError, UnicodeDecodeError):
-        return [], 0, 0
+        text = path.read_text(encoding="utf-8-sig")
+    except (UnicodeDecodeError, OSError) as exc:
+        return [], 0, 0, f"decode: {exc}"
+    try:
+        tree = ast.parse(text, filename=str(path))
+    except SyntaxError as exc:
+        return [], 0, 0, f"parse: {exc.msg} (строка {exc.lineno})"
 
     pairs: list[tuple[str, str]] = []
     total = 0
@@ -81,10 +91,70 @@ def scan_file(path: Path) -> tuple[list[tuple[str, str]], int, int]:
         en = _const_str(node.args[en_idx]) if len(node.args) > en_idx else None
         pairs.append((ru, en or ""))
 
-    return pairs, total, dynamic
+    return pairs, total, dynamic, None
+
+
+def _iter_py(src_dir: Path):
+    """Все .py под src_dir, кроме кэша и вложенных worktree (`.claude`)."""
+    for path in sorted(src_dir.rglob("*.py")):
+        if "__pycache__" in path.parts or ".claude" in path.parts:
+            continue
+        yield path
+
+
+def _scan_tree(src_dir: Path):
+    """Просканировать дерево. Возвращает ``(all_keys, en_seed, stats, failures)``.
+
+    ``failures`` — список ``(rel_path, reason)`` файлов, которые НЕ распарсились
+    (BOM/синтаксис/кодировка). Раньше они молча терялись — теперь их видно.
+    """
+    all_keys: set[str] = set()
+    en_seed: dict[str, str] = {}
+    files_scanned = total_calls = dynamic_calls = 0
+    failures: list[tuple[str, str]] = []
+
+    for path in _iter_py(src_dir):
+        pairs, total, dynamic, err = scan_file(path)
+        files_scanned += 1
+        if err is not None:
+            try:
+                rel = path.relative_to(src_dir.parent).as_posix()
+            except ValueError:
+                rel = path.as_posix()
+            failures.append((rel, err))
+            continue
+        total_calls += total
+        dynamic_calls += dynamic
+        for ru, en in pairs:
+            all_keys.add(ru)
+            if en and ru not in en_seed:
+                en_seed[ru] = en
+
+    stats = {
+        "files": files_scanned,
+        "calls": total_calls,
+        "dynamic": dynamic_calls,
+    }
+    return all_keys, en_seed, stats, failures
+
+
+def _print_failures(failures: list[tuple[str, str]]) -> None:
+    if not failures:
+        return
+    print(f"\n!!! НЕ РАСПАРСИЛИСЬ (строки локализации потеряны): {len(failures)}")
+    for rel, reason in failures:
+        print(f"    {rel}  —  {reason}")
+    print("    Скорее всего UTF-8 BOM. Пересохрани файл как UTF-8 без BOM "
+          "(или экстрактор их пропустит, а переводы утекут английским).")
 
 
 def main() -> int:
+    # Вывод содержит кириллицу/символы валют (₽): консоль Windows по умолчанию
+    # cp1251 и падает UnicodeEncodeError. Переводим stdout на UTF-8.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     project_dir = Path(__file__).resolve().parent.parent
     ap = argparse.ArgumentParser(description="Извлечь строки локализации из UI-кода.")
     ap.add_argument("--src", default=str(project_dir / "src" / "ui"),
@@ -96,33 +166,28 @@ def main() -> int:
                          "(исходник изменился/удалён) и недостающие/пустые переводы")
     ap.add_argument("--prune", action="store_true",
                     help="вместе с --sync: реально удалить осиротевшие ключи из <lang>.json")
+    ap.add_argument("--check", action="store_true",
+                    help="ТОЛЬКО проверка (файлы не пишутся): сканит ВЕСЬ src, "
+                         "репортит парс-фейлы + недостающие/англ-заглушки по языкам, "
+                         "возвращает ненулевой код при проблемах (для CI/pre-commit)")
     args = ap.parse_args()
 
-    src_dir = Path(args.src)
     out_dir = Path(args.out)
+
+    if args.check:
+        return _check(project_dir / "src", out_dir)
+
+    src_dir = Path(args.src)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if not src_dir.is_dir():
         print(f"Папка не найдена: {src_dir}", file=sys.stderr)
         return 1
 
-    all_keys: set[str] = set()
-    en_seed: dict[str, str] = {}
-    files_scanned = 0
-    total_calls = 0
-    dynamic_calls = 0
-
-    for path in sorted(src_dir.rglob("*.py")):
-        if "__pycache__" in path.parts:
-            continue
-        pairs, total, dynamic = scan_file(path)
-        files_scanned += 1
-        total_calls += total
-        dynamic_calls += dynamic
-        for ru, en in pairs:
-            all_keys.add(ru)
-            if en and ru not in en_seed:
-                en_seed[ru] = en
+    all_keys, en_seed, stats, failures = _scan_tree(src_dir)
+    files_scanned = stats["files"]
+    total_calls = stats["calls"]
+    dynamic_calls = stats["dynamic"]
 
     # en.json: сохраняем ручные правки, добавляем новые ключи из инлайна.
     en_path = out_dir / "en.json"
@@ -158,9 +223,63 @@ def main() -> int:
     print(f"Покрытие статикой:     {cov:.1f}%")
     print(f"Записано: {en_path}")
     print(f"Записано: {out_dir / '_template.json'}")
+    _print_failures(failures)
 
     if args.sync:
         _sync_languages(out_dir, all_keys, prune=args.prune)
+    return 0
+
+
+# Кириллица в ключе → это RU-строка, которую переводчик обязан был локализовать.
+_CYRILLIC = re.compile("[А-Яа-яЁё]")
+
+
+def _check(src_dir: Path, out_dir: Path) -> int:
+    """Read-only валидатор для CI: сканит ВЕСЬ src, ничего не пишет.
+
+    Падает (код 1), если:
+      * есть файлы, которые не распарсились (BOM/синтаксис) — их строки утекут;
+      * в каком-то <lang>.json есть недостающие ключи или англ-заглушки
+        (value идентичен английскому инлайну при кириллическом ключе).
+    """
+    all_keys, en_seed, stats, failures = _scan_tree(src_dir)
+
+    print("=== i18n check (весь src, read-only) ===")
+    print(f"Файлов: {stats['files']}   ключей: {len(all_keys)}   "
+          f"с англ-инлайном: {len(en_seed)}")
+    _print_failures(failures)
+
+    problems = len(failures)
+
+    print("\n=== Покрытие по языкам ===")
+    for path in sorted(out_dir.glob("*.json")):
+        name = path.name
+        if name.startswith("_") or name == "en.json":
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            print(f"  {name}: не удалось прочитать — пропуск")
+            problems += 1
+            continue
+        missing = sorted(k for k in all_keys if not data.get(k))
+        # «Англ-заглушка»: перевод есть, но он дословно равен английскому инлайну,
+        # а ключ — кириллица. Значит забыли перевести (оставили английскую рыбу).
+        leftover = sorted(
+            k for k in all_keys
+            if data.get(k) and en_seed.get(k)
+            and data[k] == en_seed[k] and _CYRILLIC.search(k)
+        )
+        problems += len(missing) + len(leftover)
+        print(f"  {name}: недостающих {len(missing)}, англ-заглушек {len(leftover)}")
+        for k in leftover[:8]:
+            print(f"      англ-заглушка: {k!r} = {data[k]!r}")
+
+    if problems:
+        print(f"\nПРОВАЛ: проблем {problems}. "
+              f"Прогони `python scripts/i18n_extract.py` и допереведи каталоги.")
+        return 1
+    print("\nОК: локализация полная, парс-фейлов нет.")
     return 0
 
 

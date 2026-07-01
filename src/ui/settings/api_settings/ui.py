@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 import qtawesome as qta
 
 from utils import _
-from localization.live import tr_set
+from localization.live import tr_set, register_if_tr
 from .widgets import (
     ProviderDelegate,
     PresetsListWidget,
@@ -250,6 +250,7 @@ def build_api_settings_ui(self, parent_layout):
         chk.setFixedWidth(18)
         tr_set(chk, "Включить переопределение", "Enable override", "setToolTip")
         lbl = QLabel(param_label)
+        register_if_tr(lbl, param_label)  # иначе живая смена языка не обновит лейбл
         lbl.setMinimumWidth(130)
         lbl.setMaximumWidth(130)
         val_edit = QLineEdit(default_val)
