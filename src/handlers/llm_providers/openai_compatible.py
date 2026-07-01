@@ -1,4 +1,4 @@
-﻿# src/handlers/llm_providers/openai_compatible.py
+# src/handlers/llm_providers/openai_compatible.py
 from __future__ import annotations
 
 import json

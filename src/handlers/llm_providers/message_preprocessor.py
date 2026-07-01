@@ -1,4 +1,4 @@
-﻿# src/handlers/llm_providers/message_preprocessor.py
+# src/handlers/llm_providers/message_preprocessor.py
 from __future__ import annotations
 
 import json

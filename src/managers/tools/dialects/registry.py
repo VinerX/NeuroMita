@@ -1,4 +1,4 @@
-﻿# src/managers/tools/dialects/registry.py
+# src/managers/tools/dialects/registry.py
 from __future__ import annotations
 
 import importlib

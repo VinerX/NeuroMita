@@ -1,3 +1,3 @@
-﻿from .controller import ApiSettingsController
+from .controller import ApiSettingsController
 
 __all__ = ["ApiSettingsController"]

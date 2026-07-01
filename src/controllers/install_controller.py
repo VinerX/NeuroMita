@@ -1,4 +1,4 @@
-﻿# src/controllers/install_controller.py
+# src/controllers/install_controller.py
 from __future__ import annotations
 
 from typing import Callable, Optional, Any, Iterable

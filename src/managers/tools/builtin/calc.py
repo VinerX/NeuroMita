@@ -1,4 +1,4 @@
-﻿# src/managers/tools/builtin/calc.py
+# src/managers/tools/builtin/calc.py
 from typing import Any
 from managers.tools.base import Tool
 

@@ -1,4 +1,4 @@
-﻿# src/controllers/protocols_controller.py
+# src/controllers/protocols_controller.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional

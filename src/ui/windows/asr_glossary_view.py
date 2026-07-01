@@ -1,4 +1,4 @@
-﻿# src/ui/windows/asr_glossary_view.py
+# src/ui/windows/asr_glossary_view.py
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize

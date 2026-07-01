@@ -1,4 +1,4 @@
-﻿
+
 import threading
 from pathlib import Path
 

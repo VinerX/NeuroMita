@@ -1,4 +1,4 @@
-﻿from core.events import Events, Event
+from core.events import Events, Event
 from .base_controller import BaseController
 
 

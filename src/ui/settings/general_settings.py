@@ -1,4 +1,4 @@
-﻿from ui.gui_templates import create_settings_section, create_section_header
+from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
 
 

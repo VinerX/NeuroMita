@@ -1,4 +1,4 @@
-﻿# src/managers/model_config_loader.py
+# src/managers/model_config_loader.py
 from __future__ import annotations
 
 from dataclasses import dataclass

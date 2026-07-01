@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from core.install_requirements import (
     InstallRequirement as AsrRequirement,

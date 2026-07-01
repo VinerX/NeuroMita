@@ -1,4 +1,4 @@
-﻿# src/managers/game_state.py
+# src/managers/game_state.py
 from __future__ import annotations
 
 from dataclasses import dataclass

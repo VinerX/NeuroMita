@@ -1,4 +1,4 @@
-﻿# src/managers/tools/builtin/web_search.py
+# src/managers/tools/builtin/web_search.py
 import json
 from ddgs import DDGS
 from managers.tools.base import Tool

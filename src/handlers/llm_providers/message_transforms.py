@@ -1,4 +1,4 @@
-﻿# src/handlers/llm_providers/message_transforms.py
+# src/handlers/llm_providers/message_transforms.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple

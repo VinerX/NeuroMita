@@ -1,4 +1,4 @@
-﻿# src/managers/tools/dialects/base.py
+# src/managers/tools/dialects/base.py
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

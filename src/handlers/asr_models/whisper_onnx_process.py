@@ -1,4 +1,4 @@
-﻿# src/handlers/asr_models/whisper_onnx_process.py
+# src/handlers/asr_models/whisper_onnx_process.py
 import os
 import asyncio
 import traceback

@@ -1,4 +1,4 @@
-﻿# src/managers/tools/builtin/__init__.py
+# src/managers/tools/builtin/__init__.py
 from .calc import CalculatorTool
 from .google_search import GoogleSearchTool
 from .web_read import WebPageReaderTool

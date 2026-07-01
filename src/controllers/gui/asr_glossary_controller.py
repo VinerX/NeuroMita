@@ -1,4 +1,4 @@
-﻿from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer
 
 from core.events import Events, Event
 from main_logger import logger

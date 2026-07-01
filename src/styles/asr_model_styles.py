@@ -1,4 +1,4 @@
-﻿# src/styles/asr_model_styles.py
+# src/styles/asr_model_styles.py
 from styles.main_styles import get_stylesheet as get_main_stylesheet, get_theme
 from utils import render_qss
 

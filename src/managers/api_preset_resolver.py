@@ -1,4 +1,4 @@
-﻿# src/managers/api_preset_resolver.py
+# src/managers/api_preset_resolver.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace

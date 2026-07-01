@@ -1,4 +1,4 @@
-﻿# src/managers/tools/tool_manager.py
+# src/managers/tools/tool_manager.py
 from __future__ import annotations
 
 from typing import Dict, List, Any, Optional

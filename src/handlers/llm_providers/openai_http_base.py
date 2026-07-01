@@ -1,4 +1,4 @@
-﻿# src/handlers/llm_providers/openai_http_base.py
+# src/handlers/llm_providers/openai_http_base.py
 from __future__ import annotations
 
 import json

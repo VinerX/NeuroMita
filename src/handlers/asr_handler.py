@@ -1,4 +1,4 @@
-﻿import time
+import time
 import os
 import asyncio
 import concurrent.futures

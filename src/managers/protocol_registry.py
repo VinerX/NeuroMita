@@ -1,4 +1,4 @@
-﻿# src/managers/protocol_registry.py
+# src/managers/protocol_registry.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field

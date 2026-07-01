@@ -1,4 +1,4 @@
-﻿# src/managers/context_counter.py
+# src/managers/context_counter.py
 from __future__ import annotations
 
 import json

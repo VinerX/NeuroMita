@@ -1,4 +1,4 @@
-﻿# src/presets/api_protocols.py
+# src/presets/api_protocols.py
 from __future__ import annotations
 
 

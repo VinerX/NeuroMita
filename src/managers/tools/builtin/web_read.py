@@ -1,4 +1,4 @@
-﻿
+
 import re, requests, bs4
 from managers.tools.base import Tool
 

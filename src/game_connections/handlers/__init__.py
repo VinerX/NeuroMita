@@ -1,4 +1,4 @@
-﻿from .registry import ActionRegistry
+from .registry import ActionRegistry
 from .actions.create_task import CreateTaskAction
 from .actions.get_task_status import GetTaskStatusAction
 from .actions.get_settings import GetSettingsAction

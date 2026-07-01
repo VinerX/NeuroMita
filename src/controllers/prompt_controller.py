@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 from typing import Dict, Any, List, Optional
 import os
 import base64
