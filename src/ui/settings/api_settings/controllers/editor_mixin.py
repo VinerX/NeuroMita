@@ -349,6 +349,20 @@ class EditorMixin:
             v.key_visibility_button.setIcon(qta.icon('fa5s.eye'))
 
     def _apply_help_links(self, preset: dict) -> None:
+        # Запоминаем последний пресет и подписываемся (один раз) на смену языка:
+        # ссылки-подписи ставятся через setText и не в реестре tr_set, поэтому при
+        # живой смене языка их надо переустановить вручную.
+        self._last_help_preset = preset
+        if not getattr(self, "_help_links_lang_hook_bound", False):
+            self._help_links_lang_hook_bound = True
+            try:
+                from localization.live import language_changed_signal
+                language_changed_signal().connect(
+                    lambda *_a: self._apply_help_links(getattr(self, "_last_help_preset", {}) or {})
+                )
+            except Exception:
+                pass
+
         v = self.view
         doc_url = str(preset.get("documentation_url") or "")
         models_url = str(preset.get("models_url") or "")

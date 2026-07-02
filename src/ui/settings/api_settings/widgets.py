@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
 import qtawesome as qta
 
 from utils import _
-from localization.live import tr_set
+from localization.live import tr_set, register_if_tr
 
 
 class ProviderDelegate(QStyledItemDelegate):
@@ -260,6 +260,9 @@ class LabeledLineEditRow(QWidget):
         self.label.setMinimumWidth(140)
         self.label.setMaximumWidth(140)
         self.label.setWordWrap(True)
+        # Живая смена языка: если метка пришла из _()/TrStr — регистрируем, чтобы
+        # переустанавливалась при смене языка (иначе застывает на языке сборки).
+        register_if_tr(self.label, label)
 
         self.edit = QLineEdit()
         if password:

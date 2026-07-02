@@ -10,10 +10,17 @@ from utils.gpu_utils import check_gpu_provider
 
 
 def _(ru_text: str, en_text: str = "") -> str:
-    language = str(os.environ.get("NEUROMITA_LANGUAGE") or "").strip().upper()
-    if language == "EN" and en_text:
-        return en_text
-    return ru_text
+    # Делегируем в общую систему локализации (поддержка всех языков, а не только
+    # RU/EN). Фолбэк на env-переменную оставлен на случай, если модуль
+    # локализации недоступен (напр. запуск сервиса вне GUI-процесса).
+    try:
+        from localization import translate as _translate
+        return str(_translate(ru_text, en_text))
+    except Exception:
+        language = str(os.environ.get("NEUROMITA_LANGUAGE") or "").strip().upper()
+        if language == "EN" and en_text:
+            return en_text
+        return ru_text
 
 
 def _detect_gpu_vendor() -> str:

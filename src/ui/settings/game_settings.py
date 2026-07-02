@@ -299,7 +299,9 @@ def _update_beat_backend_combo(gui, status) -> None:
         for backend_id, default_label in _BEAT_BACKEND_OPTIONS:
             if backend_id not in available_backend_ids:
                 continue
-            combo.addItem(default_label, backend_id)
+            # backend_display_name переводит вживую (для всех языков), в отличие от
+            # default_label, замороженного на языке момента импорта модуля.
+            combo.addItem(backend_display_name(backend_id), backend_id)
 
         selected_index = combo.findData(current_backend)
         if selected_index >= 0:
@@ -598,3 +600,14 @@ def setup_game_controls(self, parent) -> None:
         beat_sync_config
     )
     _refresh_beat_sync_status(self)
+
+    # Живая смена языка: комбобокс бэкендов и строки статуса строятся из строк,
+    # переведённых на момент вызова (не через реестр tr_set), поэтому при смене
+    # языка пере-собираем их вручную. Подписываемся один раз на GUI-объект.
+    if not getattr(self, "_beat_sync_lang_hook_bound", False):
+        self._beat_sync_lang_hook_bound = True
+        try:
+            from localization.live import language_changed_signal
+            language_changed_signal().connect(lambda *_a: _refresh_beat_sync_status(self))
+        except Exception:
+            pass
