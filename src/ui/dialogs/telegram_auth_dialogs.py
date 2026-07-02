@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 
 from core.events import Events
 from ui.widgets.launcher_shell_theme import PALETTE
+from utils import getTranslationVariant as _
 
 
 _AUTH_DIALOG_STYLE = f"""
@@ -129,19 +130,20 @@ def _build_auth_dialog(title: str, eyebrow: str, prompt: str, parent, *, is_pass
     entry.setFocus()
     layout.addWidget(entry)
 
-    hint = QLabel("Enter подтверждает ввод, Esc отменяет окно.")
+    hint = QLabel(_("Enter подтверждает ввод, Esc отменяет окно.",
+                    "Enter confirms, Esc cancels."))
     hint.setObjectName("LauncherShellBody")
     layout.addWidget(hint)
 
     button_row = QHBoxLayout()
     button_row.addStretch()
 
-    cancel_button = QPushButton("Отмена")
+    cancel_button = QPushButton(_("Отмена", "Cancel"))
     cancel_button.setObjectName("LauncherShellGhostButton")
     cancel_button.clicked.connect(dialog.reject)
     button_row.addWidget(cancel_button)
 
-    submit_button = QPushButton("Подтвердить")
+    submit_button = QPushButton(_("Подтвердить", "Confirm"))
     submit_button.setObjectName("LauncherShellActionButton")
     button_row.addWidget(submit_button)
     layout.addLayout(button_row)
@@ -151,9 +153,10 @@ def _build_auth_dialog(title: str, eyebrow: str, prompt: str, parent, *, is_pass
 
 def show_tg_code_dialog(parent, code_future, event_bus):
     dialog, code_entry, submit_button = _build_auth_dialog(
-        "Подтверждение Telegram",
+        _("Подтверждение Telegram", "Telegram confirmation"),
         "TELEGRAM LOGIN",
-        "Введите код подтверждения из Telegram, чтобы завершить вход.",
+        _("Введите код подтверждения из Telegram, чтобы завершить вход.",
+          "Enter the confirmation code from Telegram to finish signing in."),
         parent,
     )
 
@@ -166,7 +169,8 @@ def show_tg_code_dialog(parent, code_future, event_bus):
                     loop[0].call_soon_threadsafe(code_future.set_result, code)
             dialog.accept()
         else:
-            QMessageBox.critical(dialog, "Ошибка", "Введите код подтверждения")
+            QMessageBox.critical(dialog, _("Ошибка", "Error"),
+                                  _("Введите код подтверждения", "Enter the confirmation code"))
 
     def on_reject():
         if code_future and not code_future.done():
@@ -182,9 +186,10 @@ def show_tg_code_dialog(parent, code_future, event_bus):
 
 def show_tg_password_dialog(parent, password_future, event_bus):
     dialog, password_entry, submit_button = _build_auth_dialog(
-        "Двухфакторная аутентификация",
+        _("Двухфакторная аутентификация", "Two-factor authentication"),
         "ACCOUNT SECURITY",
-        "Введите пароль двухфакторной аутентификации для продолжения.",
+        _("Введите пароль двухфакторной аутентификации для продолжения.",
+          "Enter your two-factor authentication password to continue."),
         parent,
         is_password=True,
     )
@@ -198,7 +203,8 @@ def show_tg_password_dialog(parent, password_future, event_bus):
                     loop[0].call_soon_threadsafe(password_future.set_result, pwd)
             dialog.accept()
         else:
-            QMessageBox.critical(dialog, "Ошибка", "Введите пароль")
+            QMessageBox.critical(dialog, _("Ошибка", "Error"),
+                                  _("Введите пароль", "Enter the password"))
 
     def on_reject():
         if password_future and not password_future.done():

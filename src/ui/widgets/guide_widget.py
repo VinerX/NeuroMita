@@ -245,7 +245,7 @@ class GuideWidget(QWidget):
         title_row.addWidget(self.title_label, 1)
         title_row.addStretch()
 
-        self.skip_button = QPushButton("РџСЂРѕРїСѓСЃС‚РёС‚СЊ")
+        self.skip_button = QPushButton("Пропустить")
         self.skip_button.setObjectName("SkipButton")
         self.skip_button.clicked.connect(self._on_skip)
         title_row.addWidget(self.skip_button, 0, Qt.AlignmentFlag.AlignTop)
