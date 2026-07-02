@@ -13,6 +13,7 @@ from PyQt6.QtCore import Qt, QPropertyAnimation, QPoint, QTimer, QRectF
 from PyQt6.QtGui import QPainter, QPainterPath, QColor, QBrush, QBitmap, QRegion, QLinearGradient, QPen
 import qtawesome as qta
 from styles.main_styles import get_theme
+from utils import getTranslationVariant as _tr
 
 _THEME = get_theme()
 _PANEL_BG = f"rgba({_THEME['sandbox_bg_rgb']}, 0.96)"
@@ -210,7 +211,7 @@ class ChatWidget(QFrame):
 
     def show_typing(self, name: str, avatar_pixmap=None):
         """Show typing indicator with character name and optional avatar."""
-        self._typing_label.setText(f"{name} печатает...")
+        self._typing_label.setText(_tr("{} печатает...", "{} is typing...").format(name))
         if avatar_pixmap and not avatar_pixmap.isNull():
             from PyQt6.QtGui import QPixmap
             scaled = avatar_pixmap.scaled(24, 24,

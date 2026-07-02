@@ -455,7 +455,7 @@ class MessageWidget(QWidget):
             self._rate_up_btn.setIcon(qta.icon("fa5s.thumbs-up", color="#9CA3AF"))
             self._rate_up_btn.setFixedSize(16, 16)
             self._rate_up_btn.setFlat(True)
-            self._rate_up_btn.setToolTip("👍 Хороший ответ")
+            self._rate_up_btn.setToolTip("👍 " + _("Хороший ответ", "Good response"))
             self._rate_up_btn.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0px; }")
             self._rate_up_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -463,7 +463,7 @@ class MessageWidget(QWidget):
             self._rate_down_btn.setIcon(qta.icon("fa5s.thumbs-down", color="#9CA3AF"))
             self._rate_down_btn.setFixedSize(16, 16)
             self._rate_down_btn.setFlat(True)
-            self._rate_down_btn.setToolTip("👎 Плохой ответ")
+            self._rate_down_btn.setToolTip("👎 " + _("Плохой ответ", "Bad response"))
             self._rate_down_btn.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0px; }")
             self._rate_down_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -734,10 +734,10 @@ class ThinkBlockWidget(QFrame):
         self._header.setStyleSheet(f"color: #9CA3AF; font-weight: bold; font-size: {self._font_sm}pt; background: transparent; border: none;")
         self._header.setCursor(Qt.CursorShape.PointingHandCursor)
         self._header.mousePressEvent = lambda e: self.toggle()
-        if is_streaming: self._header.setText(f"▼ 💭 {speaker_name} думает.")
+        if is_streaming: self._header.setText("▼ 💭 " + _("{} думает", "{} is thinking").format(speaker_name) + ".")
         else:
             arrow = "▶" if self._collapsed else "▼"
-            self._header.setText(f"{arrow} 💭 {speaker_name} думала...")
+            self._header.setText(f"{arrow} 💭 " + _("{} думала...", "{} was thinking...").format(speaker_name))
         layout.addWidget(self._header)
 
         self._content_label = QLabel(self)
@@ -757,7 +757,7 @@ class ThinkBlockWidget(QFrame):
         self._collapsed = not self._collapsed
         self._content_label.setVisible(not self._collapsed)
         arrow = "▶" if self._collapsed else "▼"
-        self._header.setText(f"{arrow} 💭 {self._speaker_name} думала...")
+        self._header.setText(f"{arrow} 💭 " + _("{} думала...", "{} was thinking...").format(self._speaker_name))
 
     def append_content(self, text: str):
         self._content_text += text
@@ -766,7 +766,7 @@ class ThinkBlockWidget(QFrame):
     def finalize(self):
         self._is_streaming = False
         self._stop_animation()
-        self._header.setText(f"▼ 💭 {self._speaker_name} думала...")
+        self._header.setText("▼ 💭 " + _("{} думала...", "{} was thinking...").format(self._speaker_name))
 
     def _start_animation(self):
         from PyQt6.QtCore import QTimer
@@ -783,4 +783,4 @@ class ThinkBlockWidget(QFrame):
         phases = [".  ", ".. ", "..."]
         self._anim_phase = (self._anim_phase + 1) % 3
         dots = phases[self._anim_phase]
-        self._header.setText(f"▼ 💭 {self._speaker_name} думает{dots}")
+        self._header.setText("▼ 💭 " + _("{} думает", "{} is thinking").format(self._speaker_name) + dots)
