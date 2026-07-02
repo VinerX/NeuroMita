@@ -140,6 +140,13 @@ class ASRService:
                     pre_buffer_duration=pre_buffer_duration,
                     max_speech_duration=max_speech_duration,
                 )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # Без этого события ошибка цикла (не открылся микрофон, VAD не
+                # принял чанк и т.п.) умирала молча, а GUI продолжал считать,
+                # что распознавание работает.
+                self.emit_event("error", {"message": f"{type(e).__name__}: {e}"})
             finally:
                 self._active = False
                 self.emit_event("status", {"running": False})

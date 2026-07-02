@@ -51,6 +51,13 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
         }
     ]
 
+    # Единственный источник истины по допустимым моделям и дефолту.
+    # SSL/Emo-чекпоинты (v3_ssl и т.п.) не умеют распознавать речь и сюда
+    # не входят; сохранённые в настройках недопустимые значения приводятся
+    # к DEFAULT_MODEL (см. set_options и SpeechController._load_asr_settings).
+    VALID_MODELS = ("v2_rnnt", "v2_ctc", "v3_rnnt", "v3_ctc", "v3_e2e_ctc", "v3_e2e_rnnt")
+    DEFAULT_MODEL = "v3_e2e_rnnt"
+
     def __init__(self, pip_installer, logger):
         super().__init__(pip_installer, logger)
 
@@ -60,7 +67,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
 
         self._current_gpu = None
 
-        self.gigaam_model = "v3_rnnt"
+        self.gigaam_model = self.DEFAULT_MODEL
         self.gigaam_device = "auto"  # auto/cuda/cpu
         self.gigaam_model_path = "SpeechRecognitionModels/GigaAM"
 
@@ -69,11 +76,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
 
         self._model = None  # PyTorch model
 
-        self._model_names = [
-            "v2_rnnt", "v2_ctc",
-            "v3_rnnt", "v3_ctc",
-            "v3_e2e_ctc", "v3_e2e_rnnt"
-        ]
+        self._model_names = list(self.VALID_MODELS)
 
     # ---------- UI schema ----------
     def settings_spec(self):
@@ -82,16 +85,12 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
              "type": "combobox", "options": ["auto", "cuda", "cpu"], "default": "auto"},
             {"key": "model", "label_ru": "Model", "label_en": "Model",
              "type": "combobox",
-             "options": [
-                 "v2_rnnt", "v2_ctc",
-                 "v3_rnnt", "v3_ctc",
-                 "v3_e2e_ctc", "v3_e2e_rnnt"
-             ],
-             "default": "v3_e2e_rnnt"}
+             "options": list(self.VALID_MODELS),
+             "default": self.DEFAULT_MODEL}
         ]
 
     def get_default_settings(self):
-        return {"device": "auto", "model": "v3_e2e_rnnt"}
+        return {"device": "auto", "model": self.DEFAULT_MODEL}
 
     def apply_settings(self, settings: dict):
         dev = settings.get("device")
@@ -118,6 +117,12 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
         new_model = old_model
         if model is not None:
             new_model = str(model or old_model).strip()
+        if new_model not in self.VALID_MODELS:
+            self.logger.warning(
+                f"GigaAM: model '{new_model}' is not a valid ASR checkpoint "
+                f"(SSL/Emo checkpoints cannot transcribe speech) — falling back to '{self.DEFAULT_MODEL}'."
+            )
+            new_model = self.DEFAULT_MODEL
 
         new_path = old_path
         if model_path is not None:
@@ -139,7 +144,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
 
     # ---------- naming / paths ----------
     def _normalized_ckpt_name(self) -> str:
-        name = (self.gigaam_model or "v3_rnnt").strip()
+        name = (self.gigaam_model or self.DEFAULT_MODEL).strip()
         if name in ("ctc", "rnnt", "ssl"):
             name = f"v2_{name}"
         if name == "emo":
@@ -220,6 +225,11 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
         if not bool(st.get("ok")):
             return False
         if not self._sentencepiece_available():
+            return False
+
+        # Неизвестная модель даёт пустой install_manifest — без этой проверки
+        # цикл ниже не выполнился бы ни разу и статус был бы «установлено».
+        if self._normalized_ckpt_name() not in self._model_names:
             return False
 
         for item in self.install_manifest():

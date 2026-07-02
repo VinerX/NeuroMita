@@ -49,6 +49,11 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
         }
     ]
 
+    # Единственный источник истины по допустимым моделям и дефолту
+    # (SSL/Emo-чекпоинты распознавать речь не умеют и сюда не входят).
+    VALID_MODELS = ("v2_rnnt", "v2_ctc", "v3_rnnt", "v3_ctc", "v3_e2e_ctc", "v3_e2e_rnnt")
+    DEFAULT_MODEL = "v2_rnnt"
+
     def __init__(self, pip_installer, logger):
         super().__init__(pip_installer, logger)
 
@@ -58,7 +63,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
 
         self._current_gpu = None
 
-        self.gigaam_model = "v2_rnnt"
+        self.gigaam_model = self.DEFAULT_MODEL
         self.gigaam_device = "auto"  # auto/cpu/dml
         self.gigaam_onnx_export_path = "SpeechRecognitionModels/GigaAM_ONNX"
         self.gigaam_model_path = "SpeechRecognitionModels/GigaAM"
@@ -79,11 +84,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
 
         self._url_dir = "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM"
 
-        self._model_names = [
-            "v2_rnnt", "v2_ctc",
-            "v3_rnnt", "v3_ctc",
-            "v3_e2e_ctc", "v3_e2e_rnnt"
-        ]
+        self._model_names = list(self.VALID_MODELS)
 
     # ---------- UI schema ----------
     def settings_spec(self):
@@ -92,16 +93,12 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
              "type": "combobox", "options": ["auto", "cpu", "dml"], "default": "auto"},
             {"key": "model", "label_ru": "Модель", "label_en": "Model",
              "type": "combobox",
-             "options": [
-                "v2_rnnt", "v2_ctc",
-                "v3_rnnt", "v3_ctc",
-                "v3_e2e_ctc", "v3_e2e_rnnt"
-             ],
-             "default": "v2_rnnt"}
+             "options": list(self.VALID_MODELS),
+             "default": self.DEFAULT_MODEL}
         ]
 
     def get_default_settings(self):
-        return {"device": "auto", "model": "v2_rnnt"}
+        return {"device": "auto", "model": self.DEFAULT_MODEL}
 
     def apply_settings(self, settings: dict):
         dev = settings.get("device")
@@ -113,7 +110,14 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
         old_device = self.gigaam_device
         self.gigaam_device = (device or self.gigaam_device).strip().lower()
         if model:
-            self.gigaam_model = str(model).strip()
+            new_model = str(model).strip()
+            if new_model not in self.VALID_MODELS:
+                self.logger.warning(
+                    f"GigaAM ONNX: model '{new_model}' is not a valid ASR checkpoint — "
+                    f"falling back to '{self.DEFAULT_MODEL}'."
+                )
+                new_model = self.DEFAULT_MODEL
+            self.gigaam_model = new_model
         if onnx_path:
             self.gigaam_onnx_export_path = str(onnx_path)
         if model_path:
@@ -126,7 +130,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
 
     # ---------- naming / paths ----------
     def _normalized_ckpt_name(self) -> str:
-        name = (self.gigaam_model or "v2_rnnt").strip()
+        name = (self.gigaam_model or self.DEFAULT_MODEL).strip()
         if name in ("ctc", "rnnt"):
             name = f"v2_{name}"
         return name

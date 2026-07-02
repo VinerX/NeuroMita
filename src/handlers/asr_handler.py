@@ -2,6 +2,7 @@ import time
 import os
 import asyncio
 import concurrent.futures
+import threading
 from collections import deque
 from threading import Lock, RLock, Event as ThreadEvent
 from typing import Optional, List, Dict
@@ -61,12 +62,45 @@ def _on_ai_engine_event(event: Event):
     if data.get("service") != "asr":
         return
     ev = str(data.get("event") or "")
-    if ev != "text":
-        return
     payload = data.get("data") if isinstance(data.get("data"), dict) else {}
-    text = str(payload.get("text") or "").strip()
-    if text:
-        get_event_bus().emit(Events.Speech.SPEECH_TEXT_RECOGNIZED, {"text": text})
+
+    if ev == "text":
+        text = str(payload.get("text") or "").strip()
+        if text:
+            get_event_bus().emit(Events.Speech.SPEECH_TEXT_RECOGNIZED, {"text": text})
+        return
+
+    # Аварийная смерть цикла распознавания в engine-процессе. Раньше эти
+    # события игнорировались, и GUI бесконечно считал ASR работающим.
+    if ev == "error" or (ev == "status" and payload.get("running") is False):
+        if not SpeechRecognition._is_running:
+            return
+        message = str(payload.get("message") or "")
+        if ev == "error":
+            logger.error(f"ASR engine reported an error: {message}")
+        else:
+            logger.warning("ASR engine stopped unexpectedly (status: running=false).")
+
+        def _shutdown():
+            # Отдельный поток обязателен: этот обработчик выполняется в
+            # result-loop потоке AI-движка, а speech_recognition_stop ждёт
+            # ответ на stop_live через этот же поток.
+            try:
+                eb = get_event_bus()
+                eb.emit(Events.Speech.STOP_SPEECH_RECOGNITION)
+                eb.emit(Events.GUI.UPDATE_STATUS_COLORS)
+                if ev == "error":
+                    eb.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
+                        "title": _("Распознавание речи", "Speech recognition"),
+                        "message": _(
+                            "Распознавание речи остановлено из-за ошибки: ",
+                            "Speech recognition stopped due to an error: "
+                        ) + message,
+                    })
+            except Exception:
+                logger.error("ASR engine failure handling error", exc_info=True)
+
+        threading.Thread(target=_shutdown, daemon=True).start()
 
 
 _ASR_ENGINE_BRIDGE_REGISTERED = False
@@ -473,6 +507,10 @@ class SpeechRecognition:
             return
 
         SpeechRecognition.active = False
+        # Сразу помечаем «не запущено»: событие status(running=false), которое
+        # придёт от штатного stop_live, не должно трактоваться мостом
+        # _on_ai_engine_event как аварийная смерть цикла.
+        SpeechRecognition._is_running = False
 
         # stop remote if used
         engine_id = SpeechRecognition._recognizer_type

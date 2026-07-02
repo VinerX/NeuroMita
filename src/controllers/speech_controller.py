@@ -46,8 +46,39 @@ class SpeechController:
                     data = json.load(f)
                     if isinstance(data, dict):
                         self._asr_settings.update(data)
+            if self._sanitize_asr_models():
+                self._save_asr_settings()
         except Exception as e:
             logger.error(f"ASR settings load error: {e}")
+
+    def _sanitize_asr_models(self) -> bool:
+        """Чинит устаревшие/битые значения «model» в asr_settings.json.
+
+        Пример из жизни: у gigaam оставалось model=v3_ssl — SSL-чекпоинт,
+        который не умеет распознавать речь: модель «запускалась», но каждый
+        сегмент падал и текст не приходил. Возвращает True, если что-то
+        поменяли и файл надо пересохранить."""
+        models = self._asr_settings.get("models")
+        if not isinstance(models, dict):
+            return False
+
+        changed = False
+        for engine, cls in SpeechRecognition._registry.items():
+            valid = getattr(cls, "VALID_MODELS", None)
+            default = getattr(cls, "DEFAULT_MODEL", None)
+            if not valid or not default:
+                continue
+            cfg = models.get(engine)
+            if not isinstance(cfg, dict):
+                continue
+            model = str(cfg.get("model") or "").strip()
+            if model and model not in valid:
+                logger.warning(
+                    f"ASR: модель '{model}' недопустима для '{engine}' — заменяю на '{default}'."
+                )
+                cfg["model"] = default
+                changed = True
+        return changed
 
     def _save_asr_settings(self):
         try:
@@ -266,8 +297,34 @@ class SpeechController:
             self.asr_is_ready = False
             started = bool(SpeechRecognition.speech_recognition_start(self.device_id or 0, loop))
             self.mic_recognition_active = started
+            if not started:
+                self._handle_start_failure()
         else:
             logger.error("Не удалось получить event loop для запуска распознавания речи")
+            self._handle_start_failure()
+
+    def _handle_start_failure(self):
+        """Старт распознавания не удался: раньше MIC_ACTIVE оставался
+        включённым и чекбокс «микрофон» горел при мёртвом распознавании."""
+        self.mic_recognition_active = False
+        self.asr_is_ready = False
+        try:
+            if self.settings and bool(self.settings.get("MIC_ACTIVE", False)):
+                self.settings.set("MIC_ACTIVE", False)
+                self.settings.save_settings()
+        except Exception:
+            pass
+        try:
+            self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+        except Exception:
+            pass
+        self.events_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
+            'title': _('Распознавание речи', 'Speech recognition'),
+            'message': _(
+                'Не удалось запустить распознавание речи. Подробности в логе.',
+                'Failed to start speech recognition. See the log for details.'
+            )
+        })
 
     # —— universal ASR settings IO
     def _on_get_recognizer_settings_schema(self, event: Event):
@@ -454,8 +511,11 @@ class SpeechController:
             self.asr_is_ready = False
             started = bool(SpeechRecognition.speech_recognition_start(dev_id, loop))
             self.mic_recognition_active = started
+            if not started:
+                self._handle_start_failure()
         else:
             logger.error("Не удалось получить event loop для запуска распознавания речи")
+            self._handle_start_failure()
 
     def _on_stop_speech_recognition(self, _event: Event):
         SpeechRecognition.speech_recognition_stop()
