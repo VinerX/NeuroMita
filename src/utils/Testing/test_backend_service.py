@@ -4,11 +4,14 @@ import shutil
 import unittest
 import uuid
 import os
+import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from core.backends import (
     BACKEND_NUMPY_SPEC,
+    BackendRequirement,
+    BackendStatus,
     BackendKind,
     BackendService,
     CUDA_INDEX_URL,
@@ -228,6 +231,66 @@ class BackendServiceTests(unittest.TestCase):
         self.assertEqual(plan.required_backend, BackendKind.CUDA)
         self.assertEqual(plan.backend_context["gpu_vendor"], "NVIDIA")
         self.assertEqual(plan.actions[0].type, "pip")
+
+    def test_install_backend_accepts_backend_kind_for_onnx_marker_write(self):
+        pending = BackendStatus(
+            requirement=BackendRequirement(kind=BackendKind.ONNX),
+            requested_kind=BackendKind.ONNX,
+            resolved_kind=BackendKind.ONNX,
+            ok=False,
+            action="install",
+            reason="Installing ONNX backend...",
+            variant="missing",
+            provider="missing",
+            cuda_available=False,
+            onnx_providers=(),
+            install_packages=(ONNX_DIRECTML_PACKAGE,),
+            uninstall_packages=(),
+            extra_args=(),
+            managed_dist_names=("onnxruntime-directml",),
+            target_dir=str(self.libs_dir),
+        )
+        ready = BackendStatus(
+            requirement=BackendRequirement(kind=BackendKind.ONNX),
+            requested_kind=BackendKind.ONNX,
+            resolved_kind=BackendKind.ONNX,
+            ok=True,
+            action="skip",
+            reason="ONNX backend is ready.",
+            variant="onnx_dml",
+            provider="dml",
+            cuda_available=False,
+            onnx_providers=("DmlExecutionProvider", "CPUExecutionProvider"),
+            install_packages=(),
+            uninstall_packages=(),
+            extra_args=(),
+            managed_dist_names=("onnxruntime-directml",),
+            target_dir=str(self.libs_dir),
+        )
+        pip_installer = Mock()
+        pip_installer.install_package.return_value = True
+
+        with patch.object(self.service, "get_status", side_effect=[pending, ready]):
+            status = self.service.install_backend(
+                BackendKind.ONNX,
+                pip_installer=pip_installer,
+                ctx={"gpu_vendor": "AMD", "libs_dir": str(self.libs_dir)},
+            )
+
+        self.assertTrue(status.ok)
+        marker_path = self.libs_dir / ".neuromita_backends.json"
+        self.assertTrue(marker_path.exists())
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        self.assertEqual(marker["onnx"]["provider"], "dml")
+
+    def test_write_backend_marker_uses_atomic_replace(self):
+        with patch("core.backends.service.os.replace", wraps=os.replace) as replace_mock:
+            self.service._write_backend_marker(str(self.libs_dir), BackendKind.CPU, "cpu")
+
+        marker_path = self.libs_dir / ".neuromita_backends.json"
+        self.assertTrue(marker_path.exists())
+        self.assertTrue(replace_mock.called)
+        self.assertEqual(replace_mock.call_args[0][1], str(marker_path))
 
 
 if __name__ == "__main__":

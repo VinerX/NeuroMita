@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -312,11 +313,12 @@ class BackendService:
         # Record the deliberate install so a bundled / transitive runtime is
         # never mistaken for a backend the user actively chose (see
         # _onnx_installed_variant).
-        if requirement.kind == BackendKind.ONNX:
+        marker_kind = status.requirement.kind
+        if marker_kind == BackendKind.ONNX:
             marker_provider = self._preferred_onnx_provider(self._build_ctx(ctx))
         else:
-            marker_provider = requirement.kind.value
-        self._write_backend_marker(status.target_dir, requirement.kind, marker_provider)
+            marker_provider = marker_kind.value
+        self._write_backend_marker(status.target_dir, marker_kind, marker_provider)
         return self.get_status(requirement, ctx=ctx)
 
     def status_snapshot(self, *, ctx: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
@@ -595,11 +597,39 @@ class BackendService:
             return
         data = self._read_backend_marker(target_dir)
         data[kind.value] = {"provider": provider}
+        dir_path = os.path.dirname(path)
+        temp_path: str | None = None
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as fh:
+            os.makedirs(dir_path, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=dir_path,
+                delete=False,
+                prefix=f"{BACKEND_MARKER_FILENAME}.",
+                suffix=".tmp",
+            ) as fh:
+                temp_path = fh.name
                 json.dump(data, fh)
+                fh.flush()
+                os.fsync(fh.fileno())
+            try:
+                os.replace(temp_path, path)
+                temp_path = None
+            except PermissionError:
+                # Some Windows environments allow writing this dotfile directly
+                # but reject rename/replace onto it. Fall back to a non-atomic
+                # direct write instead of silently dropping the marker update.
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(data, fh)
+                os.remove(temp_path)
+                temp_path = None
         except Exception:
+            if temp_path:
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
             pass
 
     def _onnx_providers_for_variant(self, variant: str) -> tuple[str, ...]:
