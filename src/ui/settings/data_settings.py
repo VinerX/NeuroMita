@@ -16,7 +16,7 @@ import qtawesome as qta
 
 from ui.gui_templates import create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
-from localization.live import tr_set
+from localization.live import tr_set, register_if_tr
 
 
 def setup_data_settings_controls(self, parent):
@@ -28,7 +28,7 @@ def setup_data_settings_controls(self, parent):
     info_layout.setContentsMargins(10, 8, 10, 8)
     info_layout.setSpacing(4)
 
-    desc_label = QLabel(_(
+    _desc_tr = _(
         "При включённом сборе каждый диалог с моделью сохраняется локально "
         "вместе с метаданными (модель, провайдер, температура, персонаж). "
         "Накопленные данные можно выгрузить и использовать для дообучения "
@@ -42,20 +42,24 @@ def setup_data_settings_controls(self, parent):
         "via Unsloth or other tools.\n\n"
         "⚠ Files can take significant space: each request includes "
         "the full system prompt and history (~20 messages)."
-    ))
+    )
+    desc_label = QLabel(_desc_tr)
+    register_if_tr(desc_label, _desc_tr)
     desc_label.setWordWrap(True)
     desc_label.setStyleSheet(
         "QLabel { background: transparent; border: none; color: #bca9bb; font-size: 11px; }"
     )
     info_layout.addWidget(desc_label)
 
-    link_label = QLabel(_(
+    _link_tr = _(
         'Загружать данные сюда: <a href="https://drive.google.com/drive/folders/1_RZPS7nTrHI60ZCLTglKNKc1ijG_Wg7X?usp=drive_link" '
         'style="color:#7bc6ff;">Google Drive — NeuroMita Finetune</a>',
 
         'Upload data here: <a href="https://drive.google.com/drive/folders/1_RZPS7nTrHI60ZCLTglKNKc1ijG_Wg7X?usp=drive_link" '
         'style="color:#7bc6ff;">Google Drive — NeuroMita Finetune</a>'
-    ))
+    )
+    link_label = QLabel(_link_tr)
+    register_if_tr(link_label, _link_tr)
     link_label.setOpenExternalLinks(True)
     link_label.setWordWrap(True)
     link_label.setStyleSheet(

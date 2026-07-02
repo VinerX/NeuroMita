@@ -172,6 +172,10 @@ def main() -> int:
     vp.add_argument("lang")
     vp.set_defaults(func=cmd_validate)
 
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     args = ap.parse_args()
     return args.func(args)
 

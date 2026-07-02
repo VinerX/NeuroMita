@@ -249,6 +249,7 @@ def _create_hero_card(
     layout.setSpacing(12)
 
     eyebrow = QLabel(eyebrow_text)
+    register_if_tr(eyebrow, eyebrow_text)  # как и title ниже — иначе live-смена не обновит
     eyebrow.setObjectName("LauncherShellEyebrow")
     layout.addWidget(eyebrow)
 
