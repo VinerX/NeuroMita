@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Dict, Any, List, Optional
 import datetime
 import base64
+import threading
 from io import BytesIO
 
 from core.events import get_event_bus, Events, Event
@@ -15,6 +16,8 @@ class HistoryController:
     def __init__(self):
         self.event_bus = get_event_bus()
         self._messages_since_last_periodic_compression: Dict[str, int] = {}
+        self._compression_guard = threading.Lock()
+        self._compression_inflight: set[str] = set()
         self._subscribe_to_events()
 
     def _subscribe_to_events(self):
@@ -233,7 +236,7 @@ class HistoryController:
                     f"Попытка сжать {len(messages_to_compress)} сообщений, сохранить хвост {keep_tail}."
                 )
 
-                compressed_summary = self._compress_history(
+                compressed_summary = self._compress_history_singleflight(
                     character,
                     messages_to_compress,
                     previous_summary=history_summary if use_external_summary else "",
@@ -288,7 +291,7 @@ class HistoryController:
                     f"[HistoryController][{char_id}] Периодическое сжатие: попытка сжать "
                     f"{len(messages_to_compress)} сообщений."
                 )
-                compressed_summary = self._compress_history(
+                compressed_summary = self._compress_history_singleflight(
                     character,
                     messages_to_compress,
                     previous_summary=history_summary if use_external_summary else "",
@@ -330,6 +333,33 @@ class HistoryController:
                 self._messages_since_last_periodic_compression[char_id] = 0
 
         return llm_messages_history, history_summary, summary_count
+
+    def _compress_history_singleflight(
+        self,
+        character,
+        messages_to_compress: List[Dict[str, Any]],
+        *,
+        previous_summary: str = "",
+    ) -> Optional[str]:
+        char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+        with self._compression_guard:
+            if char_id in self._compression_inflight:
+                logger.info(
+                    f"[HistoryController][{char_id}] Compression already in flight; "
+                    f"skipping duplicate request."
+                )
+                return None
+            self._compression_inflight.add(char_id)
+
+        try:
+            return self._compress_history(
+                character,
+                messages_to_compress,
+                previous_summary=previous_summary,
+            )
+        finally:
+            with self._compression_guard:
+                self._compression_inflight.discard(char_id)
 
     def _compress_history(
         self,

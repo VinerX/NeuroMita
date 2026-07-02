@@ -664,130 +664,53 @@ class HistoryManager:
             return " AND is_deleted = 0 "
         return ""
 
-    def _insert_history_row(self, *, msg: dict, is_active: int) -> Optional[int]:
-        """
-        Вставка строки history без падений на старых БД:
-        - берём только существующие колонки
-        - всё остальное дублируем в meta_data
-        """
-        # на всякий случай (если БД обновили пока объект жив)
-        if not self._history_cols:
-            self._ensure_history_schema()
+    def _content_for_dedupe(self, raw_content) -> str:
+        try:
+            if raw_content is None:
+                return ""
+            if isinstance(raw_content, str):
+                return raw_content
+            if isinstance(raw_content, list):
+                parts: list[str] = []
+                for it in raw_content:
+                    if not isinstance(it, dict):
+                        continue
+                    if it.get("type") == "text":
+                        txt = it.get("text")
+                        if txt is None:
+                            txt = it.get("content", "")
+                        parts.append(str(txt or ""))
+                return "\n".join(parts)
+            if isinstance(raw_content, dict):
+                extracted_text = raw_content.get("text") or raw_content.get("content") or raw_content.get("value") or raw_content.get("summary")
+                if isinstance(extracted_text, str) and extracted_text:
+                    return extracted_text.strip()
+                return json.dumps(raw_content, ensure_ascii=False)
+            return str(raw_content)
+        except Exception:
+            return str(raw_content) if raw_content is not None else ""
 
+    def _build_history_insert_payload(self, *, msg: dict, is_active: int) -> tuple[str, tuple[Any, ...], str]:
         target_fmt = "%d.%m.%Y %H:%M:%S"
-
         raw_ts = self._coerce_text(msg.get("time")) or self._coerce_text(msg.get("timestamp"))
-        final_ts = None
-        ts = self.data_mormalization(final_ts, raw_ts, target_fmt)
-
-        # Дедуп по правилу: character_id + content + timestamp
-        # ВАЖНО: делаем лёгкое извлечение текста для сравнения (без сохранения картинок на диск),
-        # чтобы при найденном дубле вообще не трогать _prepare_message_for_db().
-        def _content_for_dedupe(raw_content) -> str:
-            try:
-                if raw_content is None:
-                    return ""
-                if isinstance(raw_content, str):
-                    return raw_content
-                if isinstance(raw_content, list):
-                    parts: list[str] = []
-                    for it in raw_content:
-                        if not isinstance(it, dict):
-                            continue
-                        if it.get("type") == "text":
-                            txt = it.get("text")
-                            if txt is None:
-                                txt = it.get("content", "")
-                            parts.append(str(txt or ""))
-                    return "\n".join(parts)
-                if isinstance(raw_content, dict):
-                    extracted_text = raw_content.get("text") or raw_content.get("content") or raw_content.get("value") or raw_content.get("summary")
-                    if isinstance(extracted_text, str) and extracted_text:
-                        return extracted_text.strip()
-                    return json.dumps(raw_content, ensure_ascii=False)
-                return str(raw_content)
-            except Exception:
-                return str(raw_content) if raw_content is not None else ""
-
-        dedupe_content = _content_for_dedupe(msg.get("content"))
-        dedupe_content_ok = bool(str(dedupe_content or "").strip())
-
-        # check-then-insert защищаем локом (хотя стопроцентно от гонок защитит только UNIQUE индекс)
-        with self._write_lock:
-            try:
-                if ts and dedupe_content_ok:
-                    conn0 = self.db.get_connection()
-                    try:
-                        cur0 = conn0.cursor()
-                        not_deleted_clause = " AND is_deleted = 0 " if "is_deleted" in self._history_cols else ""
-
-                        cur0.execute(
-                            f"""
-                            SELECT id, is_active
-                            FROM history
-                            WHERE character_id = ?
-                              AND content   = ?
-                              AND timestamp = ?
-                              AND content   IS NOT NULL AND TRIM(content)   != ''
-                              AND timestamp IS NOT NULL AND TRIM(timestamp) != ''
-                              {not_deleted_clause}
-                            ORDER BY id DESC
-                            LIMIT 1
-                            """,
-                            (self.storage_key, dedupe_content, ts),
-                        )
-                        row0 = cur0.fetchone()
-                        if row0 and row0[0]:
-                            existing_id = int(row0[0])
-                            existing_active = int(row0[1] or 0)
-                            desired_active = int(is_active)
-
-                            # Если нашли дубль, но статус активности отличается — синхронизируем.
-                            # Это важно для сценария: строка есть, но мы "пересобираем" активную историю.
-                            if existing_active != desired_active:
-                                try:
-                                    cur0.execute(
-                                        "UPDATE history SET is_active = ? WHERE id = ?",
-                                        (desired_active, existing_id),
-                                    )
-                                    conn0.commit()
-                                except Exception:
-                                    try:
-                                        conn0.rollback()
-                                    except Exception:
-                                        pass
-
-                            return existing_id
-                    finally:
-                        try:
-                            conn0.close()
-                        except Exception:
-                            pass
-            except Exception:
-                # если дедуп-чек не удался — просто продолжаем вставку
-                pass
+        ts = self.data_mormalization(None, raw_ts, target_fmt)
 
         db_fields = self._extract_history_db_fields(msg)
         extra_meta = self._build_extra_meta_for_db(msg)
-
         db_content, db_meta = self._prepare_message_for_db(
             msg.get("role"),
             msg.get("content"),
             extra_meta
         )
 
-        # строим динамически INSERT
         cols: list[str] = []
         vals: list[Any] = []
-
-        # всегда
         cols.extend(["character_id", "role", "content", "is_active", "meta_data", "timestamp"])
         vals.extend([self.storage_key, msg.get("role"), db_content, int(is_active), db_meta, ts])
         if "is_deleted" in self._history_cols:
             cols.append("is_deleted")
             vals.append(0)
 
-        # опциональные колонки (если они реально есть)
         for k in self._HISTORY_DESIRED_COLUMNS.keys():
             if k in self._history_cols:
                 cols.append(k)
@@ -795,37 +718,138 @@ class HistoryManager:
 
         placeholders = ", ".join(["?"] * len(cols))
         sql = f"INSERT INTO history ({', '.join(cols)}) VALUES ({placeholders})"
+        return sql, tuple(vals), ts
 
-        conn = self.db.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(sql, tuple(vals))
-            row_id = cur.lastrowid
-            conn.commit()
-            return int(row_id) if row_id else None
-        except Exception as e:
-            # Фоллбек: если вдруг вообще всё плохо — вставим минимум
-            logger.warning(f"History INSERT failed, fallback to minimal insert: {e}", exc_info=True)
+    def _find_existing_history_row(
+        self,
+        cursor,
+        *,
+        dedupe_content: str,
+        ts: str,
+    ) -> tuple[int, int] | None:
+        if not ts or not str(dedupe_content or "").strip():
+            return None
+
+        not_deleted_clause = " AND is_deleted = 0 " if "is_deleted" in self._history_cols else ""
+        cursor.execute(
+            f"""
+            SELECT id, is_active
+            FROM history
+            WHERE character_id = ?
+              AND content   = ?
+              AND timestamp = ?
+              AND content   IS NOT NULL AND TRIM(content)   != ''
+              AND timestamp IS NOT NULL AND TRIM(timestamp) != ''
+              {not_deleted_clause}
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (self.storage_key, dedupe_content, ts),
+        )
+        row = cursor.fetchone()
+        if not row or not row[0]:
+            return None
+        return int(row[0]), int(row[1] or 0)
+
+    def _insert_history_row_tx(
+        self,
+        cursor,
+        *,
+        msg: dict,
+        is_active: int,
+        dedupe: bool = True,
+    ) -> Optional[int]:
+        sql, vals, ts = self._build_history_insert_payload(msg=msg, is_active=is_active)
+        dedupe_content = self._content_for_dedupe(msg.get("content"))
+
+        if dedupe:
             try:
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                    INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (self.storage_key, msg.get("role"), db_content, int(is_active), db_meta, ts),
+                existing = self._find_existing_history_row(
+                    cursor,
+                    dedupe_content=dedupe_content,
+                    ts=ts,
                 )
-                row_id = cur.lastrowid
-                conn.commit()
-                return int(row_id) if row_id else None
-            except Exception as e2:
-                logger.error(f"History minimal INSERT failed: {e2}", exc_info=True)
-                return None
-        finally:
-            try:
-                conn.close()
+                if existing is not None:
+                    existing_id, existing_active = existing
+                    desired_active = int(is_active)
+                    if existing_active != desired_active:
+                        cursor.execute(
+                            "UPDATE history SET is_active = ? WHERE id = ?",
+                            (desired_active, existing_id),
+                        )
+                    return existing_id
             except Exception:
                 pass
+
+        cursor.execute(sql, vals)
+        row_id = cursor.lastrowid
+        return int(row_id) if row_id else None
+
+    def _insert_history_row_minimal_tx(
+        self,
+        cursor,
+        *,
+        msg: dict,
+        is_active: int,
+    ) -> Optional[int]:
+        target_fmt = "%d.%m.%Y %H:%M:%S"
+        raw_ts = self._coerce_text(msg.get("time")) or self._coerce_text(msg.get("timestamp"))
+        ts = self.data_mormalization(None, raw_ts, target_fmt)
+        extra_meta = self._build_extra_meta_for_db(msg)
+        db_content, db_meta = self._prepare_message_for_db(
+            msg.get("role"),
+            msg.get("content"),
+            extra_meta,
+        )
+        cursor.execute(
+            """
+            INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (self.storage_key, msg.get("role"), db_content, int(is_active), db_meta, ts),
+        )
+        row_id = cursor.lastrowid
+        return int(row_id) if row_id else None
+
+    def _insert_history_row(self, *, msg: dict, is_active: int) -> Optional[int]:
+        """
+        Вставка строки history без падений на старых БД:
+        - берём только существующие колонки
+        - всё остальное дублируем в meta_data
+        """
+        if not self._history_cols:
+            self._ensure_history_schema()
+
+        with self._write_lock:
+            conn = self.db.get_connection()
+            try:
+                cur = conn.cursor()
+                row_id = self._insert_history_row_tx(cur, msg=msg, is_active=is_active, dedupe=True)
+                conn.commit()
+                return row_id
+            except Exception as e:
+                logger.warning(f"History INSERT failed, fallback to minimal insert: {e}", exc_info=True)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                try:
+                    cur = conn.cursor()
+                    row_id = self._insert_history_row_minimal_tx(cur, msg=msg, is_active=is_active)
+                    conn.commit()
+                    return row_id
+                except Exception as e2:
+                    logger.error(f"History minimal INSERT failed: {e2}", exc_info=True)
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    return None
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def data_mormalization(self, final_ts, raw_ts, target_fmt):
         if raw_ts:
@@ -916,59 +940,62 @@ class HistoryManager:
         messages = data.get("messages", []) or []
         variables = data.get("variables", {}) or {}
 
-        # Сюда собираем (row_id, text) и обновляем эмбеддинги ПОСЛЕ commit/close
         pending_embeddings: list[tuple[int, str]] = []
+        if not self._history_cols:
+            self._ensure_history_schema()
 
-        conn = self.db.get_connection()
-        cursor = conn.cursor()
+        with self._write_lock:
+            conn = self.db.get_connection()
+            try:
+                cursor = conn.cursor()
 
-        try:
-            # 1) Переменные
-            for k, v in variables.items():
-                val_str = json.dumps(v, ensure_ascii=False)
+                for k, v in variables.items():
+                    val_str = json.dumps(v, ensure_ascii=False)
+                    cursor.execute(
+                        """
+                        INSERT INTO variables (character_id, key, value) VALUES(?, ?, ?)
+                        ON CONFLICT(character_id, key) DO UPDATE SET value=excluded.value
+                        """,
+                        (self.storage_key, k, val_str),
+                    )
+
                 cursor.execute(
-                    """
-                    INSERT INTO variables (character_id, key, value) VALUES(?, ?, ?)
-                    ON CONFLICT(character_id, key) DO UPDATE SET value=excluded.value
-                    """,
-                    (self.storage_key, k, val_str),
+                    "DELETE FROM history WHERE character_id = ? AND is_active = 1",
+                    (self.storage_key,),
                 )
 
-            # 2) История (активная)
-            cursor.execute(
-                "DELETE FROM history WHERE character_id = ? AND is_active = 1",
-                (self.storage_key,),
-            )
-            conn.commit()
-        except Exception as e:
-            logger.error(f"DB Error saving history (variables/cleanup): {e}", exc_info=True)
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+                for msg in messages:
+                    if not isinstance(msg, dict):
+                        continue
+                    if not msg.get("role"):
+                        logger.warning(
+                            f"[HistoryManager] save_history: пропущено сообщение без поля 'role': {str(msg)[:120]}"
+                        )
+                        continue
 
-        # Теперь вставляем сообщения через безопасный метод (динамический INSERT)
-        for msg in messages:
-            if not isinstance(msg, dict):
-                continue
+                    row_id = self._insert_history_row_tx(cursor, msg=msg, is_active=1, dedupe=False)
+                    if row_id:
+                        content_text = self._extract_text_for_embedding(msg.get("content"))
+                        if content_text:
+                            pending_embeddings.append((int(row_id), content_text))
 
-            if not msg.get("role"):
-                logger.warning(f"[HistoryManager] save_history: пропущено сообщение без поля 'role': {str(msg)[:120]}")
-                continue
+                conn.commit()
+            except Exception as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.error(f"DB Error saving history atomically: {e}", exc_info=True)
+                return
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
-            row_id = self._insert_history_row(msg=msg, is_active=1)
-            if row_id:
-                # эмбеддим текст из content (и если это list — берём только text части)
-                content_text = self._extract_text_for_embedding(msg.get("content"))
-                if content_text:
-                    pending_embeddings.append((int(row_id), content_text))
-
-        # Эмбеддинги после записи в БД
         if not pending_embeddings or not self.rag:
             return
 
-        # Фоновая векторизация (не блокируем сохранение/GUI).
         rag = self.rag
         items = list(pending_embeddings)
 

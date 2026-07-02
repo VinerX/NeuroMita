@@ -1,6 +1,7 @@
 # OpenMita/DSL/post_dsl_engine.py
 import re
 from typing import List, Dict, Any, Tuple, Callable, TYPE_CHECKING
+from core.safe_eval import SafeEvalError, safe_eval_expression
 from main_logger import logger  # Use OpenMita's logger
 
 if TYPE_CHECKING:
@@ -178,23 +179,28 @@ class PostDslInterpreter:
         It needs access to character variables, local variables, and context_vars (from regex captures).
         Priority: context_vars > _local_vars > character.variables
         """
-        safe_globals = {
-            "__builtins__": {"str": str, "int": int, "float": float, "len": len, "True": True, "False": False,
-                             "None": None, "round": round, "abs": abs, "max": max, "min": min},
-            "default": lambda var_name, def_val: context_vars.get(var_name,
-                                                                  self._local_vars.get(var_name,
-                                                                                       self.character.variables.get(var_name, def_val)))
+        def _default(var_name, def_val):
+            return context_vars.get(
+                var_name,
+                self._local_vars.get(var_name, self.character.variables.get(var_name, def_val))
+            )
+
+        eval_scope = {**self.character.variables, **self._local_vars, **context_vars, **self.character.app_vars}
+        allowed_calls = {
+            "str": str,
+            "int": int,
+            "float": float,
+            "len": len,
+            "round": round,
+            "abs": abs,
+            "max": max,
+            "min": min,
+            "default": _default,
         }
 
-        # Combine all variable scopes for evaluation
-        # Context vars (from regex) should take precedence, then local vars, then character vars
-        eval_scope = {**self.character.variables, **self._local_vars, **context_vars, **self.character.app_vars}
-
         try:
-            # A simplified eval. The editor's version handles auto-str casting and NameError retries.
-            # Consider reusing that more advanced logic.
-            return eval(expr, safe_globals, eval_scope)
-        except Exception as e:
+            return safe_eval_expression(expr, names=eval_scope, allowed_calls=allowed_calls)
+        except SafeEvalError as e:
             logger.error(f"[{self.character.char_id}] Post-DSL: Error evaluating expression '{expr}': {e}",
                          exc_info=True)
             raise PostDslError(f"Error evaluating expression: {expr}") from e

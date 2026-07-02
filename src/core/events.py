@@ -1,6 +1,6 @@
 import threading
 from typing import Dict, List, Callable, Any, Optional
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 import weakref
 from dataclasses import dataclass
 from queue import Queue, Empty
@@ -20,6 +20,16 @@ class Event:
             self.timestamp = time.time()
 
 
+@dataclass
+class _SyncDispatchResult:
+    index: int
+    callback_name: str
+    ok: bool
+    value: Any = None
+    error: BaseException | None = None
+    duration: float = 0.0
+
+
 class EventBus:
     """
     Потокобезопасная система событий с поддержкой слабых ссылок
@@ -31,9 +41,6 @@ class EventBus:
         self._lock = threading.RLock()
 
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
-
-        wait_workers = max(24, max_workers * 4)
-        self._wait_executor = ThreadPoolExecutor(max_workers=wait_workers)
 
         self._event_queue = Queue()
         self._running = True
@@ -103,137 +110,95 @@ class EventBus:
         else:
             self._event_queue.put(event)
     
-    # def emit_and_wait(self, event_name: str, data: Any = None, timeout: float = 5.0) -> List[Any]:
-    #     """
-    #     Отправить событие и дождаться результатов от всех подписчиков
-
-    #     Returns:
-    #         Список результатов от подписчиков
-    #     """
-    #     results: List[Any] = []
-    #     result_queue: Queue = Queue()
-
-    #     if threading.current_thread() is threading.main_thread():
-    #         logger.warning(f"Blocking 'emit_and_wait' called from MainThread for event '{event_name}'. This may freeze GUI.")
-    #         pass
-
-    #     def result_wrapper(callback):
-    #         def wrapper(*args, **kwargs):
-    #             try:
-    #                 result = callback(*args, **kwargs)
-    #                 result_queue.put(result)
-    #             except Exception as e:
-    #                 logger.error("Произошла ошибка в событии, коллектим:")
-    #                 callback_name = getattr(callback, "__qualname__", getattr(callback, "__name__", "unknown"))
-    #                 event_name_for_log = "неизвестного события"
-    #                 if args and isinstance(args[0], Event):
-    #                     event_name_for_log = f"события '{args[0].name}'"
-    #                 logger.error(
-    #                     f"Ошибка в обработчике '{callback_name}' для {event_name_for_log}: {e}",
-    #                     exc_info=True
-    #                 )
-    #                 result_queue.put(None)
-    #         return wrapper
-
-    #     with self._lock:
-    #         subscribers = self._get_active_subscribers(event_name)
-
-    #     if not subscribers:
-    #         logger.debug(f"emit_and_wait: No subscribers for event '{event_name}'")
-    #         return results
-
-    #     for subscriber in subscribers:
-    #         wrapped = result_wrapper(subscriber)
-    #         self._wait_executor.submit(wrapped, Event(name=event_name, data=data))
-
-    #     start_time = time.time()
-    #     collected = 0
-    #     target = len(subscribers)
-
-    #     while collected < target and (time.time() - start_time) < float(timeout):
-    #         try:
-    #             result = result_queue.get(timeout=0.1)
-    #             if result is not None:
-    #                 results.append(result)
-    #             collected += 1
-    #         except Empty:
-    #             continue
-
-    #     return results
-
     def emit_and_wait(self, event_name: str, data: Any = None, timeout: float = 5.0) -> List[Any]:
         """
         Отправить событие и дождаться результатов от всех подписчиков
         """
-        start_time = time.perf_counter() # <--- СТАРТ ТАЙМЕРА
+        start_time = time.perf_counter()
         is_main_thread = (threading.current_thread() is threading.main_thread())
-        
-        results: List[Any] = []
-        result_queue: Queue = Queue()
-
-        def result_wrapper(callback):
-            def wrapper(*args, **kwargs):
-                try:
-                    result = callback(*args, **kwargs)
-                    result_queue.put(result)
-                except Exception as e:
-                    logger.error("Произошла ошибка в событии, коллектим:")
-
-                    callback_name = getattr(callback, "__qualname__", getattr(callback, "__name__", "unknown"))
-
-                    event_name_for_log = "неизвестного события"
-
-                    if args and isinstance(args[0], Event):
-                        event_name_for_log = f"события '{args[0].name}'"
-                        
-                    logger.error(
-                        f"Ошибка в обработчике '{callback_name}' для {event_name_for_log}: {e}",
-                        exc_info=True
-                    )
-                    result_queue.put(None)
-            return wrapper
 
         with self._lock:
             subscribers = self._get_active_subscribers(event_name)
 
         if not subscribers:
-            return results
+            return []
 
-        # Запуск задач
-        for subscriber in subscribers:
-            wrapped = result_wrapper(subscriber)
-            self._wait_executor.submit(wrapped, Event(name=event_name, data=data))
+        event = Event(name=event_name, data=data)
+        executor = ThreadPoolExecutor(
+            max_workers=max(1, len(subscribers)),
+            thread_name_prefix="eventbus-wait",
+        )
+        futures = {}
+        ordered: list[_SyncDispatchResult | None] = [None] * len(subscribers)
 
-        # Сбор результатов
-        collected = 0
-        target = len(subscribers)
-        wait_start = time.time()
+        try:
+            for index, subscriber in enumerate(subscribers):
+                callback_name = getattr(subscriber, "__qualname__", getattr(subscriber, "__name__", "unknown"))
+                future = executor.submit(self._call_sync_subscriber, subscriber, event, index, callback_name)
+                futures[future] = (index, callback_name)
 
-        while collected < target and (time.time() - wait_start) < float(timeout):
-            try:
-                result = result_queue.get(timeout=0.05) # Чуть уменьшил шаг для отзывчивости
-                if result is not None:
-                    results.append(result)
-                collected += 1
-            except Empty:
-                continue
-        
-        # --- ФИНАЛИЗАЦИЯ И ЛОГИРОВАНИЕ ВРЕМЕНИ ---
+            done, not_done = wait(futures.keys(), timeout=max(0.0, float(timeout)))
+
+            for future in done:
+                result = future.result()
+                ordered[result.index] = result
+
+            for future in not_done:
+                index, callback_name = futures[future]
+                ordered[index] = _SyncDispatchResult(
+                    index=index,
+                    callback_name=callback_name,
+                    ok=False,
+                    error=TimeoutError(f"Timed out after {float(timeout):.3f}s"),
+                    duration=float(timeout),
+                )
+                future.cancel()
+                logger.warning(
+                    f"emit_and_wait timeout for event '{event_name}' in subscriber '{callback_name}' "
+                    f"after {float(timeout):.3f}s"
+                )
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
         duration = time.perf_counter() - start_time
-        
-        # Логируем, только если это заняло ощутимое время (например, > 100мс)
         if duration > 0.03:
             msg = f"⏱️ SLOW EVENT: '{event_name}' took {duration:.4f}s"
-            
             if is_main_thread:
-                # Если это MainThread - это 100% фриз интерфейса
                 logger.warning(f"[GUI FREEZE] {msg} (Called from MainThread!)")
             else:
-                # Если фоновый поток - просто инфо о медленной операции
                 logger.info(f"[BG SLOW] {msg}")
-        # -----------------------------------------
 
-        return results
+        return [item.value for item in ordered if item is not None and item.ok]
+
+    def _call_sync_subscriber(
+        self,
+        callback: Callable,
+        event: Event,
+        index: int,
+        callback_name: str,
+    ) -> _SyncDispatchResult:
+        started_at = time.perf_counter()
+        try:
+            value = callback(event)
+            return _SyncDispatchResult(
+                index=index,
+                callback_name=callback_name,
+                ok=True,
+                value=value,
+                duration=time.perf_counter() - started_at,
+            )
+        except Exception as exc:
+            logger.error(
+                f"Ошибка в обработчике '{callback_name}' для события '{event.name}': {exc}",
+                exc_info=True,
+            )
+            return _SyncDispatchResult(
+                index=index,
+                callback_name=callback_name,
+                ok=False,
+                error=exc,
+                duration=time.perf_counter() - started_at,
+            )
 
     @property
     def is_running(self) -> bool:
@@ -247,10 +212,7 @@ class EventBus:
         self._event_queue.put(None)  # Сигнал для остановки
         self._processor_thread.join(timeout=5)
 
-        try:
-            self._executor.shutdown(wait=True)
-        finally:
-            self._wait_executor.shutdown(wait=True)
+        self._executor.shutdown(wait=True)
     
     def _process_events(self) -> None:
         """Обработчик очереди событий (работает в отдельном потоке)"""
