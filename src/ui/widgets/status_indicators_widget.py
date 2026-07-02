@@ -97,7 +97,7 @@ def create_status_indicators(gui, parent_layout):
     _register_indicator(gui, "silero_status_checkbox", widget)
     status_layout.addWidget(widget)
 
-    widget = _create_indicator("RAG")
+    widget = _create_indicator(_("RAG", "RAG"))
     _register_indicator(gui, "rag_status_checkbox", widget)
     status_layout.addWidget(widget)
 
@@ -129,7 +129,7 @@ def create_status_indicators_inline_legacy(gui, layout):
     _register_indicator(gui, "silero_status_checkbox", widget)
     layout.addWidget(widget)
 
-    widget = _create_indicator("RAG")
+    widget = _create_indicator(_("RAG", "RAG"))
     _register_indicator(gui, "rag_status_checkbox", widget)
     layout.addWidget(widget)
 
@@ -167,7 +167,7 @@ def create_status_indicators_inline(gui, layout):
     _register_indicator(gui, "silero_status_checkbox", widget)
     status_layout.addWidget(widget, 0, 1)
 
-    widget = _create_indicator("RAG")
+    widget = _create_indicator(_("RAG", "RAG"))
     _register_indicator(gui, "rag_status_checkbox", widget)
     status_layout.addWidget(widget, 0, 2)
 

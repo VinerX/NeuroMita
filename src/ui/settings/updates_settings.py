@@ -450,6 +450,23 @@ def setup_updates_settings_controls(self, parent):
     parent.addWidget(ver_widget)
     _refresh_version_labels()
 
+    # Живая смена языка: строки версий ставятся через setText с f-строкой (номер
+    # версии), поэтому не в реестре tr_set — переустанавливаем по сигналу.
+    if not getattr(self, "_updates_version_lang_hook_bound", False):
+        self._updates_version_lang_hook_bound = True
+        try:
+            from localization.live import language_changed_signal
+
+            def _relabel_versions(*_a):
+                try:
+                    _refresh_version_labels()
+                except RuntimeError:
+                    pass  # виджеты уже удалены — игнорируем
+
+            language_changed_signal().connect(_relabel_versions)
+        except Exception:
+            pass
+
     # Channel
     channel_row = QWidget()
     channel_row.setObjectName("UpdatesChannelRow")

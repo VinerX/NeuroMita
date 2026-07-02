@@ -54,11 +54,21 @@ class AIHubDialog(QDialog):
         self._queue_state: dict[str, Any] = {"running": None, "pending": []}
         self._refresh_generation = 0
         self._refresh_inflight = False
+        self._rendered_language = ""
 
         self._ui_call_requested.connect(self._execute_ui_call)
 
         self._build()
         self._bind_events()
+
+        # Живая смена языка: диалог — синглтон (не пересоздаётся при переоткрытии),
+        # поэтому карточки/кнопки застывают на языке первого рендера. Перерисовываем
+        # по сигналу смены языка (или при следующем показе, если был скрыт).
+        try:
+            from localization.live import language_changed_signal
+            language_changed_signal().connect(self._on_language_changed)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------ thread hop
     def _execute_ui_call(self, fn) -> None:
@@ -593,10 +603,29 @@ class AIHubDialog(QDialog):
         else:
             self.refresh(force=True)
 
+    def _current_ui_language(self) -> str:
+        try:
+            from localization import _current_language
+            return _current_language()
+        except Exception:
+            return ""
+
+    def _on_language_changed(self, *_a) -> None:
+        # Видимый диалог перерисовываем сразу; скрытый — обновит showEvent при
+        # следующем открытии (сравнение _rendered_language с текущим языком).
+        if self.isVisible():
+            try:
+                self._refresh_views()
+            except Exception:
+                logger.exception("AI Hub: re-render on language change failed")
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if not self._loaded_once and not self._refresh_inflight:
             QTimer.singleShot(0, lambda: self.refresh(force=True))
+        elif self._loaded_once and self._rendered_language and self._rendered_language != self._current_ui_language():
+            # Язык сменился, пока диалог был скрыт — перерисовываем в текущем языке.
+            QTimer.singleShot(0, self._refresh_views)
 
     def refresh(self, *, force: bool = False) -> None:
         self._refresh_generation += 1
@@ -642,6 +671,8 @@ class AIHubDialog(QDialog):
         # propagate the same row set to the Settings panel
         if hasattr(self, "_settings_panel"):
             self._settings_panel.apply_data(self._rows, self._selected_category)
+        # Запоминаем язык последнего рендера (для перерисовки после смены языка).
+        self._rendered_language = self._current_ui_language()
 
     # ----------------------------------------------------------- tabs & filters
     def _set_tab(self, key: str) -> None:
