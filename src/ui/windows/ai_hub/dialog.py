@@ -632,6 +632,11 @@ class AIHubDialog(QDialog):
         generation = self._refresh_generation
         self._refresh_inflight = True
         self.btn_refresh.setEnabled(False)
+        # Пока данных ещё нет (первое открытие) — показываем индикатор загрузки
+        # вместо пустого списка (иначе 1-3 сек видно «0 моделей»). Если карточки
+        # уже есть (пере-опрос) — не мигаем, оставляем их на экране.
+        if not self._rows:
+            self._show_scroll_loading()
 
         def _worker() -> None:
             rows = self._fetch_rows(force=force)
@@ -826,6 +831,39 @@ class AIHubDialog(QDialog):
             if w is not None:
                 w.setParent(None)
                 w.deleteLater()
+
+    def _show_scroll_loading(self) -> None:
+        """Показывает индикатор загрузки в области списка компонентов, пока идёт
+        первичный опрос (иначе несколько секунд виден пустой список / «0 моделей»)."""
+        from PyQt6.QtWidgets import QProgressBar
+
+        self._clear_scroll()
+
+        box = QWidget()
+        box.setObjectName("AIHubLoading")
+        box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, 48, 0, 0)
+        lay.setSpacing(14)
+        lay.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+
+        label = QLabel(_("Загрузка компонентов…", "Loading components…"))
+        label.setObjectName("AIHubEmpty")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(label, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        bar = QProgressBar()
+        bar.setRange(0, 0)  # неопределённый (бегущая) режим
+        bar.setTextVisible(False)
+        bar.setFixedSize(240, 6)
+        bar.setStyleSheet(
+            "QProgressBar { background: rgba(255,255,255,0.06); border: none;"
+            " border-radius: 3px; }"
+            " QProgressBar::chunk { background-color: #b74b7d; border-radius: 3px; }"
+        )
+        lay.addWidget(bar, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self._scroll_layout.insertWidget(self._scroll_layout.count() - 1, box)
 
     def _open_models_folder(self) -> None:
         """Открыть папку с голосовыми моделями (``Models`` или NEUROMITA_MODELS_DIR)

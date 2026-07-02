@@ -539,6 +539,7 @@
   "Загрузка голоса: {name}...": "Stimme wird heruntergeladen: {name}...",
   "Загрузка данных...": "Importing Daten...",
   "Загрузка завершена.\n\n{msg}": "Import abgeschlossen.\n\n{msg}",
+  "Загрузка компонентов…": "Komponenten werden geladen…",
   "Загрузка модели": "Modell wird geladen",
   "Загрузка релизов…": "Releases werden geladen…",
   "Загрузка...": "Herunterladen...",
