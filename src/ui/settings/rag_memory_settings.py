@@ -1109,7 +1109,7 @@ def _build_history_compression_config(self, hc_provider_names) -> list:
 
         {'label': _('Сжимать историю при достижении лимита', 'Compress history on limit'),
          'key': 'ENABLE_HISTORY_COMPRESSION_ON_LIMIT', 'type': 'checkbutton',
-         'default_checkbutton': False,
+         'default_checkbutton': True,
          'tooltip': _('Включить автоматическое сжатие истории чата, когда количество сообщений превышает лимит.',
                       'Enable automatic chat history compression when message count exceeds a limit.')},
         {'label': _('Периодическое сжатие истории', 'Periodic history compression'),

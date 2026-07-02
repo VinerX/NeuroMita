@@ -109,6 +109,46 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         self.assertEqual(len(result["history"]), 3)
         self.assertEqual(result["history_summary"], "summary")
 
+    def test_prepare_for_prompt_counts_only_dialog_messages_for_tail_limit(self):
+        controller = self._make_controller({"HISTORY_COMPRESSION_OUTPUT_TARGET": "history"})
+        character = _StubCharacter(
+            [
+                {"role": "user", "content": "already summarized"},
+                {"role": "system", "content": "older system"},
+                {"role": "user", "content": "u1"},
+                {"role": "event", "content": "e1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "system", "content": "keep system"},
+                {"role": "user", "content": "u2"},
+                {"role": "event", "content": "keep event"},
+                {"role": "assistant", "content": "a2"},
+            ]
+        )
+        character.vars[HistoryController._SUMMARY_TEXT_VAR] = "summary"
+        character.vars[HistoryController._SUMMARY_COUNT_VAR] = 1
+
+        result = controller._on_prepare_for_prompt(
+            SimpleNamespace(
+                data={
+                    "character_id": "TestChar",
+                    "character_ref": character,
+                    "memory_limit": 2,
+                    "save_missed_history": False,
+                    "image_quality": {},
+                }
+            )
+        )
+
+        self.assertEqual(
+            result["history"],
+            [
+                {"role": "system", "content": "keep system"},
+                {"role": "user", "content": "u2"},
+                {"role": "event", "content": "keep event"},
+                {"role": "assistant", "content": "a2"},
+            ],
+        )
+
     def test_apply_compression_result_does_not_advance_memory_mode_without_memory_system(self):
         controller = self._make_controller()
         character = _StubCharacter([], memory_system=None)
@@ -163,6 +203,21 @@ class HistoryControllerCompressionTests(unittest.TestCase):
 
         self.assertEqual(len(started), 1)
         self.assertEqual(started[0][0], "history-compress-TestChar")
+
+    def test_background_compression_uses_model_message_limit_setting(self):
+        controller = self._make_controller({"MODEL_MESSAGE_LIMIT": 3})
+        character = _StubCharacter(
+            [{"role": "user", "content": f"msg-{i}"} for i in range(4)]
+        )
+        captured_limits = []
+
+        controller._process_history_compression = (
+            lambda _character, _history, effective_limit, **_kwargs: captured_limits.append(effective_limit)
+        )
+
+        controller._run_post_response_compression(character)
+
+        self.assertEqual(captured_limits, [3])
 
 
 if __name__ == "__main__":

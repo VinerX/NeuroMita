@@ -78,7 +78,7 @@ class HistoryController:
         for m in llm_messages_history:
             if not isinstance(m, dict):
                 continue
-            if m.get("role") == "user" and not self._has_visible_user_text(m.get("content")):
+            if m.get("role") == "user" and not self._has_visible_message_content(m.get("content")):
                 continue
             filtered.append(m)
         llm_messages_history = filtered
@@ -105,8 +105,10 @@ class HistoryController:
 
         unsummarized_history = llm_messages_history[summary_count:]
         if summary_count > 0:
-            missed_messages: List[Dict[str, Any]] = unsummarized_history[:-effective_limit]
-            history_limited: List[Dict[str, Any]] = unsummarized_history[-effective_limit:]
+            missed_messages, history_limited = self._split_history_by_dialog_limit(
+                unsummarized_history,
+                effective_limit,
+            )
         else:
             # Preserve full context until an async compression actually succeeds.
             missed_messages = []
@@ -235,7 +237,7 @@ class HistoryController:
         background_mode: bool = False,
     ) -> tuple[List[Dict[str, Any]], str, int]:
         compress_percent = float(self._get_setting("HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS", 0.85))
-        enable_on_limit = bool(self._get_setting("ENABLE_HISTORY_COMPRESSION_ON_LIMIT", False))
+        enable_on_limit = bool(self._get_setting("ENABLE_HISTORY_COMPRESSION_ON_LIMIT", True))
         enable_periodic = bool(self._get_setting("ENABLE_HISTORY_COMPRESSION_PERIODIC", False))
         periodic_interval = int(self._get_setting("HISTORY_COMPRESSION_PERIODIC_INTERVAL", 20))
         output_target = str(self._get_setting("HISTORY_COMPRESSION_OUTPUT_TARGET", "memory"))
@@ -294,8 +296,10 @@ class HistoryController:
 
         if output_target == "memory":
             llm_messages_history = llm_messages_history[new_count:]
-            if len(llm_messages_history) > keep_tail:
-                llm_messages_history = llm_messages_history[-keep_tail:]
+            _, llm_messages_history = self._split_history_by_dialog_limit(
+                llm_messages_history,
+                keep_tail,
+            )
 
         if reason == "Periodic compression":
             self._messages_since_last_periodic_compression[char_id] = 0
@@ -314,8 +318,11 @@ class HistoryController:
         background_mode: bool,
         char_id: str,
     ) -> tuple[List[Dict[str, Any]], str] | None:
-        if enable_on_limit and len(source_messages) >= min_len_to_trigger and len(source_messages) > keep_tail:
-            return source_messages[:-keep_tail], "On-limit compression"
+        dialog_count = self._count_dialog_messages(source_messages)
+        if enable_on_limit and dialog_count >= min_len_to_trigger and dialog_count > keep_tail:
+            messages_to_compress, _ = self._split_history_by_dialog_limit(source_messages, keep_tail)
+            if messages_to_compress:
+                return messages_to_compress, "On-limit compression"
 
         if enable_periodic and periodic_interval > 0:
             cnt = self._messages_since_last_periodic_compression.get(char_id, 0)
@@ -323,7 +330,10 @@ class HistoryController:
                 cnt += 1
                 self._messages_since_last_periodic_compression[char_id] = cnt
             if cnt >= periodic_interval:
-                messages_to_compress = source_messages[:periodic_interval]
+                messages_to_compress = self._take_history_prefix_by_dialog_count(
+                    source_messages,
+                    periodic_interval,
+                )
                 if messages_to_compress:
                     return messages_to_compress, "Periodic compression"
                 logger.info(f"[HistoryController][{char_id}] Нет сообщений для периодического сжатия.")
@@ -385,7 +395,7 @@ class HistoryController:
             return False
         source_messages = llm_messages_history[summary_count:]
         emergency_limit = max(effective_limit * 2, effective_limit + 8)
-        return len(source_messages) > emergency_limit
+        return self._count_dialog_messages(source_messages) > emergency_limit
 
     def _start_background_compression(self, character) -> None:
         char_id = getattr(character, "char_id", "Unknown") or "Unknown"
@@ -412,12 +422,12 @@ class HistoryController:
             for m in llm_messages_history:
                 if not isinstance(m, dict):
                     continue
-                if m.get("role") == "user" and not self._has_visible_user_text(m.get("content")):
+                if m.get("role") == "user" and not self._has_visible_message_content(m.get("content")):
                     continue
                 filtered.append(m)
             llm_messages_history = filtered
 
-            memory_limit = int(self._get_setting("memory_limit", 40))
+            memory_limit = int(self._get_setting("MODEL_MESSAGE_LIMIT", 40))
             if memory_limit <= 0:
                 memory_limit = 1
             effective_limit = 8 if getattr(character, "char_id", "") == "GameMaster" else memory_limit
@@ -816,7 +826,7 @@ class HistoryController:
         return out
 
 
-    def _has_visible_user_text(self, content: Any) -> bool:
+    def _has_visible_message_content(self, content: Any) -> bool:
         if isinstance(content, str):
             return bool(content.strip())
         if isinstance(content, list):
@@ -832,3 +842,53 @@ class HistoryController:
                 if it.get("type") == "image_url":
                     return True
         return False
+
+    def _is_dialog_message(self, message: Dict[str, Any]) -> bool:
+        if not isinstance(message, dict):
+            return False
+        if str(message.get("role") or "") not in ("user", "assistant"):
+            return False
+        return self._has_visible_message_content(message.get("content"))
+
+    def _count_dialog_messages(self, messages: List[Dict[str, Any]]) -> int:
+        return sum(1 for message in messages if self._is_dialog_message(message))
+
+    def _split_history_by_dialog_limit(
+        self,
+        messages: List[Dict[str, Any]],
+        dialog_limit: int,
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        if dialog_limit <= 0:
+            return list(messages), []
+
+        total_dialog_messages = self._count_dialog_messages(messages)
+        if total_dialog_messages <= dialog_limit:
+            return [], list(messages)
+
+        omitted_dialog_messages = total_dialog_messages - dialog_limit
+        seen_dialog_messages = 0
+        for index, message in enumerate(messages):
+            if self._is_dialog_message(message):
+                seen_dialog_messages += 1
+                if seen_dialog_messages >= omitted_dialog_messages:
+                    boundary = index + 1
+                    return list(messages[:boundary]), list(messages[boundary:])
+
+        return [], list(messages)
+
+    def _take_history_prefix_by_dialog_count(
+        self,
+        messages: List[Dict[str, Any]],
+        dialog_count: int,
+    ) -> List[Dict[str, Any]]:
+        if dialog_count <= 0:
+            return []
+
+        seen_dialog_messages = 0
+        for index, message in enumerate(messages):
+            if self._is_dialog_message(message):
+                seen_dialog_messages += 1
+                if seen_dialog_messages >= dialog_count:
+                    return list(messages[:index + 1])
+
+        return []
