@@ -146,6 +146,9 @@ class SettingsPage(QWidget):
         self._build_ui()
         self._build_section_containers()
         self._sync_host_exports()
+        # Сразу применяем карту видимости, иначе до первого клика в «Видимых
+        # разделах» показываются все вкладки, включая отключённые.
+        self.apply_section_visibility()
 
     def _sync_host_exports(self):
         self.gui.settings_page = self
