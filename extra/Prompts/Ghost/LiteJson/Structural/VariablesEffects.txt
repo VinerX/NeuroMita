@@ -1,0 +1,5 @@
+VariablesEffects (Ghostly Mita - Lite)
+- attitude: trust and felt safety around the player.
+- boredom: dissociation and retreat into inner fog.
+- stress: pain, fear, panic, instability.
+- secretExposed: true only after a real traumatic reveal.
