@@ -124,6 +124,7 @@ class VoiceModelController:
             "gpu_name": self.gpu_name,
             "platform": platform.system(),
             "libs_dir": os.environ.get("NEUROMITA_LIB_DIR"),
+            "voice_language": str(SettingsManager.get("VOICE_LANGUAGE", "ru") or "ru").strip().lower(),
         }
 
     def _refresh_gpu_runtime_info(self) -> tuple[bool, bool]:
@@ -272,6 +273,15 @@ class VoiceModelController:
             return self.local_voice_models
 
     def _handle_get_installed_models(self, event: Event):
+        with self._lock:
+            installed = self.installed_models.copy()
+        if installed:
+            return installed
+
+        try:
+            self.refresh_installed_models()
+        except Exception:
+            pass
         with self._lock:
             return self.installed_models.copy()
 
@@ -619,31 +629,20 @@ class VoiceModelController:
         ctx_base = self._ctx()
         vendors = [self.detected_gpu_vendor] if self.detected_gpu_vendor else ["NVIDIA", "AMD", "INTEL", "CPU"]
         try:
-            from core.installables import ComponentCategory, make_component_id
+            from core.installables import ComponentCategory
             from installables import get_installable_registry
 
             registry = get_installable_registry()
+            components = list(registry.by_category(ComponentCategory.TTS) or [])
         except Exception:
             registry = None
-            ComponentCategory = None
-            make_component_id = None
+            components = []
 
         installed = set()
-        for m in self.get_default_model_structure():
-            mid = m.get("id")
+        for component in components:
+            mid = str(getattr(component, "item_id", "") or "").strip()
             if not mid:
                 continue
-
-            component = None
-            if registry is not None and ComponentCategory is not None and make_component_id is not None:
-                try:
-                    component = registry.get(make_component_id(ComponentCategory.TTS, str(mid)))
-                except Exception:
-                    component = None
-
-            if component is None:
-                continue
-
             ok = False
             for v in vendors:
                 ctx = dict(ctx_base)
@@ -657,6 +656,40 @@ class VoiceModelController:
 
             if ok:
                 installed.add(mid)
+
+        # Fallback: if the registry is temporarily unavailable, keep the old
+        # config-driven path so the controller degrades gracefully instead of
+        # dropping the whole installed set.
+        if not installed and registry is None:
+            try:
+                from core.installables import ComponentCategory, make_component_id
+                from installables import get_installable_registry
+
+                registry = get_installable_registry()
+                for m in self.get_default_model_structure():
+                    mid = str(m.get("id") or "").strip()
+                    if not mid:
+                        continue
+
+                    component = registry.get(make_component_id(ComponentCategory.TTS, mid))
+                    if component is None:
+                        continue
+
+                    ok = False
+                    for v in vendors:
+                        ctx = dict(ctx_base)
+                        ctx["gpu_vendor"] = v
+                        try:
+                            if component.status(ctx).installed:
+                                ok = True
+                                break
+                        except Exception:
+                            continue
+
+                    if ok:
+                        installed.add(mid)
+            except Exception:
+                pass
 
         with self._lock:
             self.installed_models = installed
