@@ -283,7 +283,7 @@ class VoiceoverGuiController(BaseController):
             self._save_setting("NM_CURRENT_VOICEOVER", model_id)
 
             if not self._check_installed(model_id):
-                self._sync_local_warning_icon()
+                self._sync_local_model_status()
                 self._emit_voice_icon_state()
                 QMessageBox.information(self.view, _("Информация", "Info"), _("Модель не установлена.", "Model is not installed."))
                 return
@@ -292,7 +292,7 @@ class VoiceoverGuiController(BaseController):
                 if not self._select_model(model_id):
                     QMessageBox.critical(self.view, _("Ошибка", "Error"), _("Не удалось активировать модель", "Failed to activate model"))
                 self._set_combobox_by_model_id(model_id)
-                self._sync_local_warning_icon()
+                self._sync_local_model_status()
                 self._emit_voice_icon_state()
                 return
 
@@ -366,7 +366,7 @@ class VoiceoverGuiController(BaseController):
         if allow_autoload:
             self._maybe_autoload_local_model()
 
-        self._sync_local_warning_icon()
+        self._sync_local_model_status()
 
         self._update_tg_connect_button()
         self._maybe_autoconnect_tg()
@@ -474,27 +474,76 @@ class VoiceoverGuiController(BaseController):
             "tooltip": _("Модель готова", "Model ready") if initialized else _("Требуется инициализация", "Initialization required"),
         })
 
-    # ---------- local warning icon ----------
-    def _sync_local_warning_icon(self):
-        lbl = getattr(self.view, "local_model_status_label", None)
-        if lbl is None:
+    # ---------- local model status (chip + action button) ----------
+    def _sync_local_model_status(self):
+        chip = getattr(self.view, "local_model_status_chip", None)
+        btn = getattr(self.view, "local_model_action_btn", None)
+        if chip is None and btn is None:
             return
 
         use_voice = self._effective_use_voice()
         method = self._effective_method()
 
+        # Локальная озвучка неактуальна — прячем и чип, и кнопку.
         if not use_voice or method != "Local":
-            lbl.setVisible(False)
+            if chip is not None:
+                chip.setVisible(False)
+            if btn is not None:
+                btn.setVisible(False)
             return
+
+        if chip is not None:
+            chip.setVisible(True)
 
         model_id = self._current_model_id_from_settings()
-        if not model_id:
-            lbl.setVisible(True)
+
+        # Идёт инициализация именно выбранной модели — прогресс виден в диалоге,
+        # кнопку прячем, чтобы не давать повторно запускать загрузку.
+        if model_id and self._loading_model_id == model_id:
+            self._apply_model_status(chip, btn, "loading",
+                                     _("Инициализация…", "Initializing…"), None, "")
             return
 
-        installed = self._check_installed(model_id)
-        initialized = self._check_initialized(model_id) if installed else False
-        lbl.setVisible(not (installed and initialized))
+        # Модель не выбрана или не установлена — предлагаем установить (AI Hub).
+        if not model_id or not self._check_installed(model_id):
+            self._apply_model_status(chip, btn, "red",
+                                     _("Не установлена", "Not installed"),
+                                     "install", _("Установить", "Install"))
+            return
+
+        # Установлена и уже загружена в память — всё готово, действие не нужно.
+        if self._check_initialized(model_id):
+            self._apply_model_status(chip, btn, "green",
+                                     _("Готова", "Ready"), None, "")
+            return
+
+        # Установлена, но не загружена — предлагаем инициализировать.
+        self._apply_model_status(chip, btn, "orange",
+                                 _("Требуется инициализация", "Initialization required"),
+                                 "init", _("Инициализировать", "Initialize"))
+
+    def _apply_model_status(self, chip, btn, state: str, chip_text: str,
+                            action: str | None, btn_text: str):
+        if chip is not None:
+            chip.setText(f"● {chip_text}")
+            if chip.property("state") != state:
+                chip.setProperty("state", state)
+                # Переполировка нужна, чтобы QSS по динамическому свойству применился.
+                st = chip.style()
+                if st is not None:
+                    st.unpolish(chip)
+                    st.polish(chip)
+        if btn is not None:
+            if action:
+                btn.setProperty("action", action)
+                btn.setText(btn_text)
+                btn.setVisible(True)
+                st = btn.style()
+                if st is not None:
+                    st.unpolish(btn)
+                    st.polish(btn)
+            else:
+                btn.setVisible(False)
 
     # ---------- local combobox ----------
     def _ensure_voice_model_name_map(self):

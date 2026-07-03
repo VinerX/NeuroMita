@@ -2,7 +2,7 @@ import os
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QComboBox,
-    QSizePolicy
+    QSizePolicy, QPushButton
 )
 from ui.gui_templates import create_setting_widget, create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
@@ -123,14 +123,6 @@ def build_voiceover_settings_ui(self, parent_layout):
 
     local_model_label = tr_set(QLabel(), "Локальная модель", "Local Model")
 
-    self.local_model_status_label = QLabel("⚠️")
-    self.local_model_status_label.setObjectName("WarningIcon")
-    tr_set(self.local_model_status_label, "Модель не инициализирована или не установлена.",
-                                               "Model not initialized or not installed.", "setToolTip")
-    self.local_model_status_label.setFixedWidth(16)
-    self.local_model_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-    label_part.addWidget(self.local_model_status_label)
     label_part.addWidget(local_model_label)
 
     label_container = SettingsBodyWidget()
@@ -143,6 +135,29 @@ def build_voiceover_settings_ui(self, parent_layout):
     local_model_layout.addWidget(label_container)
     local_model_layout.addWidget(self.local_voice_combobox, 1)
     local_layout.addWidget(local_model_row)
+
+    # Строка статуса локальной модели: цветной чип-состояние + адаптивная
+    # кнопка действия («Установить» / «Инициализировать»). Состояния и подписи
+    # выставляет VoiceoverGuiController._sync_local_model_status, действие кнопки
+    # разруливает wire_voiceover_settings_logic по свойству "action".
+    status_row = SettingsBodyWidget()
+    status_layout = QHBoxLayout(status_row)
+    status_layout.setContentsMargins(0, 0, 0, 2)
+    status_layout.setSpacing(8)
+
+    self.local_model_status_chip = QLabel()
+    self.local_model_status_chip.setObjectName("VoiceModelStatusChip")
+    self.local_model_status_chip.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
+    self.local_model_action_btn = QPushButton()
+    self.local_model_action_btn.setObjectName("VoiceModelActionButton")
+    self.local_model_action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    self.local_model_action_btn.setVisible(False)
+
+    status_layout.addWidget(self.local_model_status_chip)
+    status_layout.addStretch(1)
+    status_layout.addWidget(self.local_model_action_btn)
+    local_layout.addWidget(status_row)
 
     local_config = [
         {'label': _("Язык локальной озвучки", "Local Voice Language"),

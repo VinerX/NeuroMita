@@ -157,6 +157,31 @@ QLabel#SeparatorLabel {
 QLabel#WarningIcon { color: #ffcc00; }
 QLabel#LinkLabel { color: {link}; }
 
+/* ===== Статус локальной модели озвучки (чип + кнопка действия) ===== */
+QLabel#VoiceModelStatusChip {
+    font-weight: 600;
+    padding: 2px 2px;
+    color: {muted};
+}
+QLabel#VoiceModelStatusChip[state="green"]   { color: #6fd66f; }
+QLabel#VoiceModelStatusChip[state="red"]     { color: #ff6b61; }
+QLabel#VoiceModelStatusChip[state="orange"]  { color: #ffb340; }
+QLabel#VoiceModelStatusChip[state="loading"] { color: #ffd60a; }
+QPushButton#VoiceModelActionButton {
+    padding: 4px 12px;
+    border-radius: 8px;
+    font-weight: 600;
+    color: #ffffff;
+    background-color: {accent};
+    border: 1px solid {accent};
+}
+QPushButton#VoiceModelActionButton:hover { background-color: {accent_hover}; }
+QPushButton#VoiceModelActionButton[action="install"] {
+    background-color: transparent;
+    color: {accent};
+    border: 1px solid {accent};
+}
+
 QFrame#SeparatorH {
     background-color: {border_soft};
     max-height: 1px;

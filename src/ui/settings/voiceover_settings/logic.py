@@ -99,6 +99,31 @@ def wire_voiceover_settings_logic(self):
         self._on_local_model_changed = _on_local_model_changed
         self.local_voice_combobox.activated.connect(self._on_local_model_changed)
 
+    # --- Local model action button (Установить / Инициализировать) ---
+    # Кнопка одна, а действие зависит от свойства "action", которое выставляет
+    # VoiceoverGuiController._sync_local_model_status в зависимости от состояния
+    # выбранной модели. Так пользователь всегда видит, что именно нажать.
+    if hasattr(self, "local_model_action_btn") and self.local_model_action_btn is not None:
+        try:
+            if hasattr(self, "_on_local_model_action"):
+                self.local_model_action_btn.clicked.disconnect(self._on_local_model_action)
+        except Exception:
+            pass
+
+        def _on_local_model_action():
+            action = str(self.local_model_action_btn.property("action") or "").strip()
+            if action == "install":
+                eb.emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "tts"}})
+            elif action == "init":
+                mid = self.local_voice_combobox.currentData() if self.local_voice_combobox is not None else None
+                if mid:
+                    # Тот же поток, что и выбор модели в комбобоксе: покажет диалог
+                    # загрузки и запустит INIT_VOICE_MODEL.
+                    eb.emit(Events.GUI.VOICEOVER_MODEL_SELECTED, {"model_id": mid})
+
+        self._on_local_model_action = _on_local_model_action
+        self.local_model_action_btn.clicked.connect(self._on_local_model_action)
+
     # --- Method combobox ---
     if hasattr(self, "method_combobox") and self.method_combobox is not None:
         try:
