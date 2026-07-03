@@ -1,6 +1,7 @@
 """Экстрактор строк локализации из UI-кода.
 
-Сканирует ``src/ui/**`` (по умолчанию), находит вызовы локализации
+Сканирует ``src/**`` (по умолчанию — весь код, т.к. UI-строки живут и вне
+``src/ui``: в ``controllers``/``handlers`` через ``_()``), находит вызовы локализации
 ``_( "ru", "en" )`` / ``getTranslationVariant(...)`` / алиасов с КОНСТАНТНЫМИ
 строками и формирует JSON-каталоги:
 
@@ -14,7 +15,7 @@ f-строки и любые неконстантные аргументы пр�
 Запуск (любой python)::
 
     python scripts/i18n_extract.py
-    python scripts/i18n_extract.py --src src/ui --out src/localization/locales
+    python scripts/i18n_extract.py --src src --out src/localization/locales
 """
 
 from __future__ import annotations
@@ -157,8 +158,9 @@ def main() -> int:
         pass
     project_dir = Path(__file__).resolve().parent.parent
     ap = argparse.ArgumentParser(description="Извлечь строки локализации из UI-кода.")
-    ap.add_argument("--src", default=str(project_dir / "src" / "ui"),
-                    help="папка для сканирования (default: src/ui)")
+    ap.add_argument("--src", default=str(project_dir / "src"),
+                    help="папка для сканирования (default: src — весь код, "
+                         "т.к. UI-строки живут и вне src/ui: controllers/handlers)")
     ap.add_argument("--out", default=str(project_dir / "src" / "localization" / "locales"),
                     help="папка для JSON-каталогов")
     ap.add_argument("--sync", action="store_true",
