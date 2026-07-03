@@ -549,8 +549,16 @@ class ModelController:
         sender = _norm_actor(sender_raw or speaker_raw)
         target = _norm_actor(target_raw)
 
-        # IMPORTANT: приоритет Player/role=user (как просили)
-        is_player_msg = (raw_role == "user") or _is_player(speaker) or _is_player(sender)
+        # role=user в локальной истории миты может означать не только Player,
+        # но и реплику другой миты. В UI это нельзя безусловно превращать в Player.
+        has_explicit_non_player_actor = any(
+            actor and not _is_player(actor) for actor in (speaker, sender)
+        )
+        is_player_msg = (
+            ((raw_role == "user") and not has_explicit_non_player_actor)
+            or _is_player(speaker)
+            or _is_player(sender)
+        )
 
         if raw_role == "system":
             ui_role = "system"
@@ -2198,7 +2206,16 @@ class ModelController:
         def is_player(x: str) -> bool:
             return str(x or "").strip().lower() == "player"
 
-        if raw_role == "user" or is_player(speaker) or is_player(sender) or sender == "Player" or speaker == "Player":
+        has_explicit_non_player_actor = any(
+            actor and not is_player(actor) for actor in (speaker, sender)
+        )
+        is_player_message = (
+            ((raw_role == "user") and not has_explicit_non_player_actor)
+            or is_player(speaker)
+            or is_player(sender)
+        )
+
+        if is_player_message:
             out = dict(ui_msg)
             out["role"] = "user"
             out["speaker"] = "Player"
