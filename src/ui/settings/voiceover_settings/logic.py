@@ -23,8 +23,32 @@ def wire_voiceover_settings_logic(self):
 
         QTimer.singleShot(0, fire)
 
+    def _local_model_already_installed() -> bool:
+        """Установлена ли уже выбранная локальная модель.
+
+        Пользователь мог положить файлы модели вручную (или поставить её раньше) —
+        тогда предлагать «сначала установить модель» не нужно (фидбэк Артёма:
+        предложение всплывало поверх готовой установки). Источник — тот же
+        синхронный реестр установленных моделей, что и у иконки статуса."""
+        try:
+            res = eb.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=1.0)
+            got = res[0] if res else None
+            installed = {str(x) for x in got} if isinstance(got, (set, list, tuple)) else set()
+        except Exception:
+            installed = set()
+        if not installed:
+            return False
+        current = str(self.settings.get("NM_CURRENT_VOICEOVER", "") or "").strip()
+        # Что-то уже установлено: если конкретная выбранная модель стоит — точно
+        # не предлагаем; если модель не выбрана, но установленные есть — тоже не
+        # навязываем (пользователю есть чем озвучивать).
+        return (not current) or (current in installed)
+
     def _show_ai_hub_offer():
         if bool(self.settings.get("VOICEOVER_LOCAL_AI_HUB_PROMPTED", False)):
+            return
+
+        if _local_model_already_installed():
             return
 
         self.settings.set("VOICEOVER_LOCAL_AI_HUB_PROMPTED", True)

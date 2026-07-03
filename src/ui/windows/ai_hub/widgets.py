@@ -356,16 +356,32 @@ class ModelCard(QFrame):
         root.addWidget(btn, 0)
 
     # ------------------------------------------------------------------
-    def set_busy(self, busy: bool, *, installing: bool = False) -> None:
-        """Блокировка кнопки установки, пока в AI Hub идёт другая установка.
-        Карточка, которая ставится прямо сейчас, показывает «Установка…» (#26)."""
+    def set_state(self, state: str) -> None:
+        """Состояние кнопки установки этой карточки относительно очереди.
+
+        Раньше во время любой установки блокировались ВСЕ кнопки (#26). По
+        фидбэку Артёма чужие кнопки должны оставаться активными и по клику
+        вставать в очередь — блокируется только та карточка, что уже ставится
+        или уже стоит в очереди.
+
+        state:
+          - "running"  → ставится прямо сейчас: «Установка…», выключена
+          - "queued"   → стоит в очереди: «В очереди», выключена
+          - "idle"     → свободна: «Установить», активна (даже если рядом идёт
+                          другая установка)
+        """
         btn = self._install_btn
         if btn is None:
+            # Установленные карточки используют ⋮-меню, отдельной кнопки нет.
             return
-        btn.setEnabled(not busy)
-        if installing:
+        if state == "running":
+            btn.setEnabled(False)
             btn.setText(_t("Установка…", "Installing…"))
+        elif state == "queued":
+            btn.setEnabled(False)
+            btn.setText(_t("В очереди", "Queued"))
         else:
+            btn.setEnabled(True)
             btn.setText(self._install_btn_text or _t("Установить", "Install"))
 
     # ------------------------------------------------------------------
@@ -382,6 +398,12 @@ class ModelCard(QFrame):
                 return
         cid = self._component_id()
         if cid:
+            # Мгновенно блокируем кнопку (оптимистично), не дожидаясь события
+            # QUEUE_CHANGED — иначе между кликом и обновлением очереди кнопка
+            # выглядит серой, но остаётся нажимаемой (фидбэк Артёма: «плохо
+            # заблокирована, только текст посерел»). Точное состояние
+            # (running/queued) выставит _apply_busy_state по событию очереди.
+            self.set_state("queued")
             self._on_install(cid)
 
     def _confirm_incompatible_install(self) -> bool:

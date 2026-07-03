@@ -18,11 +18,32 @@ from core.install_types import InstallCallbacks, InstallAction, InstallPlan
 from packaging.utils import canonicalize_name
 from packaging.requirements import Requirement
 
+# Пакеты, версии которых мы защищаем от изменения при установке новых компонентов.
+# Раньше через uv --overrides пинились ВООБЩЕ ВСЕ установленные пакеты (==version),
+# и это ломало резолв: например, установка f5-tts падала с кодом 2, потому что uv
+# не мог удовлетворить её зависимости под жёстко зафиксированное окружение
+# (фидбэк Артёма: «f5 всё также еррорит при установке», pip exit code 2).
+# Теперь фиксируем только хрупкое ядро (torch/onnx/triton/numpy) — то, ради чего
+# оверрайды и вводились (чтобы не сломать CUDA/ONNX-стек), а всё остальное даём
+# uv резолвить свободно.
+_PROTECTED_CONSTRAINT_NAMES = {
+    canonicalize_name(n)
+    for n in (
+        "torch", "torchaudio", "torchvision", "torchcrepe",
+        "triton", "triton-windows",
+        "onnxruntime", "onnxruntime-gpu", "onnxruntime-directml",
+        "numpy",
+    )
+}
+
+
 def _get_installed_constraints(target_dir: str, exclude_specs: list[str]) -> list[str]:
     """
     Сканирует target_dir на наличие установленных пакетов (.dist-info)
-    и возвращает список ограничений "package==version" для всех пакетов,
-    кроме тех, которые переданы в exclude_specs (устанавливаемые сейчас).
+    и возвращает список ограничений "package==version" — но ТОЛЬКО для защищённого
+    ядра (_PROTECTED_CONSTRAINT_NAMES) и кроме тех, что устанавливаются сейчас
+    (exclude_specs). Массовый пин всего окружения намеренно убран: он делал резолв
+    новых пакетов неразрешимым (см. комментарий к _PROTECTED_CONSTRAINT_NAMES).
     """
     if not target_dir or not os.path.isdir(target_dir):
         return []
@@ -79,9 +100,13 @@ def _get_installed_constraints(target_dir: str, exclude_specs: list[str]) -> lis
 
             if name and version:
                 canon_name = canonicalize_name(name)
-                # Добавляем в оверрайды только если пакет не обновляется прямо сейчас
-                if canon_name not in excluded_names:
-                    constraints.append(f"{name}=={version}")
+                # Пиним только защищённое ядро и только если пакет не ставится
+                # прямо сейчас (иначе заблокировали бы его же обновление).
+                if canon_name in excluded_names:
+                    continue
+                if canon_name not in _PROTECTED_CONSTRAINT_NAMES:
+                    continue
+                constraints.append(f"{name}=={version}")
                     
     except Exception as e:
         logger.warning(f"[InstallController] Ошибка сканирования установленных пакетов: {e}")

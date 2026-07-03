@@ -722,13 +722,13 @@ class TritonDependenciesDialog(QDialog):
         self._update_status_display()
         layout.addLayout(self.status_layout)
         
-        self.warning_label = QLabel(_("⚠️ Модели Fish Speech+ / + RVC требуют всех компонентов!", 
-                                     "⚠️ Models Fish Speech+ / + RVC require all components!"))
+        self.warning_label = QLabel(_("⚠️ Для компиляции ядра Triton нужен MSVC (VC++ Build Tools)!",
+                                     "⚠️ Triton kernel compilation requires MSVC (VC++ Build Tools)!"))
         self.warning_label.setStyleSheet("color: orange; font-weight: bold;")
-        cuda_found = self.dependencies_status.get('cuda_found', False)
-        winsdk_found = self.dependencies_status.get('winsdk_found', False)
+        # CUDA Toolkit больше не является обязательным требованием (фидбэк Артёма):
+        # для линковки ядра достаточно MSVC/VC++. Предупреждение зависит только от MSVC.
         msvc_found = self.dependencies_status.get('msvc_found', False)
-        self.warning_label.setVisible(not (cuda_found and winsdk_found and msvc_found))
+        self.warning_label.setVisible(not msvc_found)
         layout.addWidget(self.warning_label)
         
         info_text = _(
@@ -774,10 +774,12 @@ class TritonDependenciesDialog(QDialog):
             if item.widget():
                 item.widget().deleteLater()
         
+        # CUDA убран из обязательных требований (фидбэк Артёма) — для компиляции
+        # ядра Triton нужен только MSVC/VC++. Windows SDK оставляем как
+        # вспомогательную информацию, CUDA больше не показываем.
         items = [
-            ("CUDA Toolkit:", self.dependencies_status.get('cuda_found', False)),
+            ("MSVC (VC++):", self.dependencies_status.get('msvc_found', False)),
             ("Windows SDK:", self.dependencies_status.get('winsdk_found', False)),
-            ("MSVC:", self.dependencies_status.get('msvc_found', False))
         ]
         
         for text, found in items:
@@ -801,10 +803,8 @@ class TritonDependenciesDialog(QDialog):
         self.status_layout.addStretch()
         
         if hasattr(self, 'warning_label'):
-            cuda_found = self.dependencies_status.get('cuda_found', False)
-            winsdk_found = self.dependencies_status.get('winsdk_found', False)
             msvc_found = self.dependencies_status.get('msvc_found', False)
-            self.warning_label.setVisible(not (cuda_found and winsdk_found and msvc_found))
+            self.warning_label.setVisible(not msvc_found)
     
     def _on_refresh_status(self):
         from core.events import get_event_bus, Events

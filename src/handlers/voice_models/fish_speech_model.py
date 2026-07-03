@@ -274,11 +274,40 @@ class FishSpeechInstallSpec:
             if os.name == "nt" and callable(getattr(eb, "emit_and_wait", None)):
                 status(_("Проверка зависимостей Triton...", "Checking Triton dependencies..."))
                 deps = cls._probe_triton_deps(libs_path_abs)
-                res = eb.emit_and_wait(Events.Audio.SHOW_TRITON_DIALOG, deps, timeout=6000.0)
-                choice = res[0] if res else "continue"
-                if choice == "skip":
-                    status(_("Инициализация ядра пропущена", "Kernel initialization skipped"))
-                    return True
+                # CUDA Toolkit больше не является обязательным требованием для
+                # компиляции ядра Triton — для линковки достаточно MSVC/VC++
+                # (фидбэк Артёма: «убрать там CUDA, оставить максимум msvc»).
+                # Диалог зависимостей показываем ТОЛЬКО когда чего-то не хватает,
+                # иначе не дёргаем пользователя лишним окном, если всё готово.
+                if not bool(deps.get("msvc_found")):
+                    res = eb.emit_and_wait(Events.Audio.SHOW_TRITON_DIALOG, deps, timeout=6000.0)
+                    choice = res[0] if res else "continue"
+                    if choice == "skip":
+                        status(_("Инициализация ядра пропущена", "Kernel initialization skipped"))
+                        return True
+
+            # Прогрев ядра запускает реальный синтез (init.py), которому нужен
+            # референс-голос. init.py использует Models/Mila.wav — если голоса
+            # Мит ещё не установлены, раньше шаг падал сырым FileNotFoundError и
+            # ронял всю установку движка (фидбэк Артёма: «провалившаяся установка
+            # из-за отсутствия моделей»). Движок при этом установлен корректно —
+            # ядро просто скомпилируется при первой реальной озвучке. Поэтому не
+            # валимся, а понятно сообщаем и пропускаем прогрев.
+            ref_wav = os.path.join("Models", "Mila.wav")
+            if not os.path.exists(ref_wav):
+                status(_(
+                    "Прогрев ядра пропущен: не установлены голоса Мит",
+                    "Kernel warm-up skipped: Mita voices are not installed",
+                ))
+                log(_(
+                    "Голоса Мит не найдены (нет Models/Mila.wav) — прогрев ядра Triton пропущен. "
+                    "Движок установлен корректно; установите голоса в AI Hub (категория «Голоса Мит»). "
+                    "Ядро автоматически скомпилируется при первой реальной озвучке.",
+                    "Mita voices not found (no Models/Mila.wav) — Triton kernel warm-up skipped. "
+                    "The engine is installed correctly; get the voices from AI Hub («Mita Voices»). "
+                    "The kernel will compile automatically on the first real voiceover.",
+                ))
+                return True
 
             status(_("Инициализация ядра Triton...", "Initializing Triton kernel..."))
             script_path = cls._script_path(pip_installer)
@@ -296,25 +325,36 @@ class FishSpeechInstallSpec:
                 child_env = os.environ.copy()
                 child_env["PYTHONIOENCODING"] = "utf-8"
                 child_env["PYTHONUTF8"] = "1"
-                result = subprocess.run(
+
+                # Стримим вывод init.py построчно вживую. Раньше здесь был
+                # subprocess.run(capture_output=True), который копил ВЕСЬ вывод и
+                # вываливал его разом только по завершении — из-за чего окно на
+                # «Инициализации ядра Triton…» молчало по несколько минут
+                # (фидбэк Артёма: «просто тупо молчаливая установка»). Popen +
+                # чтение по строкам даёт живой лог компиляции ядра.
+                proc = subprocess.Popen(
                     init_cmd,
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     text=True,
                     encoding="utf-8",
                     errors="ignore",
-                    check=False,
+                    bufsize=1,
                     creationflags=creationflags,
                     env=child_env,
                 )
+                if proc.stdout is not None:
+                    for line in proc.stdout:
+                        line = line.rstrip()
+                        if line:
+                            log(line)
+                    try:
+                        proc.stdout.close()
+                    except Exception:
+                        pass
+                proc.wait()
 
-                if result.stdout:
-                    for line in result.stdout.splitlines():
-                        log(line)
-                if result.stderr:
-                    for line in result.stderr.splitlines():
-                        log(f"STDERR: {line}")
-
-                ok = (result.returncode == 0 and os.path.exists(os.path.join(temp_dir, "inited.wav")))
+                ok = (proc.returncode == 0 and os.path.exists(os.path.join(temp_dir, "inited.wav")))
                 if ok:
                     status(_("Инициализация ядра успешно завершена!", "Kernel initialization completed successfully!"))
                     return True

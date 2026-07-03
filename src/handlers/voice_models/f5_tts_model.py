@@ -33,6 +33,61 @@ class F5TTSInstallSpec:
         spec = cls._rvc_package_spec(ctx)
         return spec.split("[", 1)[0]
 
+    # --- Языковые веса F5 -------------------------------------------------
+    # Раньше веса были захардкожены на русскую модель (F5-TTS_RUSSIAN), хотя
+    # карточка обещала «RUSSIAN / ENGLISH». Теперь набор весов выбирается по
+    # настройке VOICE_LANGUAGE: en → мультиязычная Cross-Lingual F5-TTS
+    # (репозиторий подсказал Артём).
+    _RU_CKPT_URL = (
+        "https://huggingface.co/Misha24-10/F5-TTS_RUSSIAN/resolve/main/"
+        "F5TTS_v1_Base/model_240000_inference.safetensors?download=true"
+    )
+    _RU_VOCAB_URL = (
+        "https://huggingface.co/Misha24-10/F5-TTS_RUSSIAN/resolve/main/"
+        "F5TTS_v1_Base/vocab.txt?download=true"
+    )
+    _EN_CKPT_URL = (
+        "https://huggingface.co/QingyuLiu1/Cross-Lingual_F5-TTS/resolve/main/"
+        "clf5_950000.safetensors?download=true"
+    )
+    _EN_VOCAB_URL = (
+        "https://huggingface.co/QingyuLiu1/Cross-Lingual_F5-TTS/resolve/main/"
+        "vocab.txt?download=true"
+    )
+
+    @classmethod
+    def resolve_language(cls, ctx: dict) -> str:
+        """Язык весов F5: ctx['voice_language'] → настройка VOICE_LANGUAGE → 'ru'."""
+        raw = str((ctx or {}).get("voice_language") or "").strip().lower()
+        if raw in ("ru", "en"):
+            return raw
+        try:
+            from managers.settings_manager import SettingsManager
+            v = str(SettingsManager.get("VOICE_LANGUAGE", "ru") or "ru").strip().lower()
+        except Exception:
+            v = "ru"
+        return "en" if v == "en" else "ru"
+
+    @classmethod
+    def model_dir_for_lang(cls, lang: str) -> str:
+        """Папка весов для языка. RU остаётся в корне checkpoints/F5-TTS
+        (обратная совместимость с уже скачанными весами), EN/мультиязычные —
+        в подпапке, чтобы наборы весов не перетирали друг друга."""
+        base = os.path.join("checkpoints", "F5-TTS")
+        return base if lang == "ru" else os.path.join(base, lang)
+
+    @classmethod
+    def _weight_files(cls, lang: str, ckpt_dest: str, vocab_dest: str) -> list[dict]:
+        if lang == "en":
+            return [
+                {"url": cls._EN_CKPT_URL, "dest": ckpt_dest},
+                {"url": cls._EN_VOCAB_URL, "dest": vocab_dest},
+            ]
+        return [
+            {"url": cls._RU_CKPT_URL, "dest": ckpt_dest},
+            {"url": cls._RU_VOCAB_URL, "dest": vocab_dest},
+        ]
+
     @classmethod
     def supported_model_ids(cls) -> list[str]:
         return ["high", "high+low"]
@@ -44,7 +99,7 @@ class F5TTSInstallSpec:
     @classmethod
     def requirements(cls, model_id: str, ctx: dict) -> list[InstallRequirement]:
         backend_kind = cls.required_backend(model_id, ctx)
-        model_dir = os.path.join("checkpoints", "F5-TTS")
+        model_dir = cls.model_dir_for_lang(cls.resolve_language(ctx))
         ckpt = os.path.join(model_dir, "model.safetensors")
         vocab = os.path.join(model_dir, "vocab.txt")
 
@@ -81,6 +136,7 @@ class F5TTSInstallSpec:
     def build_install_plan(cls, model_id: str, ctx: dict) -> InstallPlan:
         mid = str(model_id)
         backend_kind = cls.required_backend(mid, ctx)
+        lang = cls.resolve_language(ctx)
         compat_warning = rvc_python_compat_error(cls._rvc_package_spec(ctx)) if mid == "high+low" else None
         if cls.is_installed(mid, ctx):
             return InstallPlan(
@@ -91,7 +147,7 @@ class F5TTSInstallSpec:
                 already_installed_status=_("Уже установлено", "Already installed")
             )
 
-        model_dir = os.path.join("checkpoints", "F5-TTS")
+        model_dir = cls.model_dir_for_lang(lang)
         ckpt_dest = os.path.join(model_dir, "model.safetensors")
         vocab_dest = os.path.join(model_dir, "vocab.txt")
 
@@ -133,24 +189,18 @@ class F5TTSInstallSpec:
             )
         )
 
+        weights_desc = (
+            _("Загрузка весов F5-TTS (RU)...", "Downloading F5-TTS weights (RU)...")
+            if lang == "ru"
+            else _("Загрузка весов F5-TTS (мультиязычные/EN)...", "Downloading F5-TTS weights (multilingual/EN)...")
+        )
         actions.append(
             InstallAction(
                 type="download_http",
-                description=_("Загрузка весов F5-TTS...", "Downloading F5-TTS weights..."),
+                description=weights_desc,
                 progress=60,
                 progress_to=90,
-                files=[
-                    {
-                        "url": "https://huggingface.co/Misha24-10/F5-TTS_RUSSIAN/resolve/main/"
-                            "F5TTS_v1_Base/model_240000_inference.safetensors?download=true",
-                        "dest": ckpt_dest,
-                    },
-                    {
-                        "url": "https://huggingface.co/Misha24-10/F5-TTS_RUSSIAN/resolve/main/"
-                            "F5TTS_v1_Base/vocab.txt?download=true",
-                        "dest": vocab_dest,
-                    },
-                ],
+                files=cls._weight_files(lang, ckpt_dest, vocab_dest),
             )
         )
 
@@ -197,6 +247,7 @@ class F5TTSModel(IVoiceModel):
         self.rvc_handler = rvc_handler
         self.ruaccent_instance = None
         self._import_attempted = False
+        self._initialized_lang = None
 
     MODEL_CONFIGS = [
         {
@@ -326,7 +377,15 @@ class F5TTSModel(IVoiceModel):
 
     def initialize(self, init: bool = False) -> bool:
         mode = self._mode()
-        if self.initialized and self.initialized_for == mode:
+        # Веса выбираем по языку озвучки (VOICE_LANGUAGE): RU лежат в корне
+        # checkpoints/F5-TTS, мультиязычные/EN — в подпапке. Это тот же выбор,
+        # что и при установке (F5TTSInstallSpec), поэтому пути совпадают.
+        lang = str(getattr(self.parent, "voice_language", "ru") or "ru").strip().lower()
+        lang = "en" if lang == "en" else "ru"
+        # initialized_for оставляем равным mode (его сравнивают с model_id в
+        # is_model_initialized), а язык держим отдельно: при смене ru↔en без
+        # смены mode пайплайн надо пересобрать под другие веса.
+        if self.initialized and self.initialized_for == mode and getattr(self, "_initialized_lang", None) == lang:
             return True
 
         self._load_module()
@@ -336,12 +395,15 @@ class F5TTSModel(IVoiceModel):
             self.initialized_for = None
             return False
 
-        model_dir = os.path.join("checkpoints", "F5-TTS")
+        model_dir = F5TTSInstallSpec.model_dir_for_lang(lang)
         ckpt_path = os.path.join(model_dir, "model.safetensors")
         vocab_path = os.path.join(model_dir, "vocab.txt")
 
         if not all(os.path.exists(p) for p in [ckpt_path, vocab_path]):
-            logger.error(f"Missing F5-TTS model files in {model_dir}.")
+            logger.error(
+                f"Missing F5-TTS model files in {model_dir} (language '{lang}'). "
+                f"Install the '{lang}' weights via AI Hub."
+            )
             self.initialized = False
             self.initialized_for = None
             return False
@@ -368,6 +430,7 @@ class F5TTSModel(IVoiceModel):
 
         self.initialized = True
         self.initialized_for = mode
+        self._initialized_lang = lang
         return True
 
     def cleanup_state(self):
@@ -376,6 +439,7 @@ class F5TTSModel(IVoiceModel):
         self.f5_pipeline_module = None
         self.ruaccent_instance = None
         self._import_attempted = False
+        self._initialized_lang = None
         try:
             if self.rvc_handler and self.rvc_handler.initialized:
                 self.rvc_handler.cleanup_state()

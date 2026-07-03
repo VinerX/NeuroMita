@@ -914,15 +914,29 @@ class AIHubDialog(QDialog):
         self._apply_busy_state()
 
     def _apply_busy_state(self) -> None:
-        """Пока выполняется любая установка — все кнопки «Установить» заблокированы,
-        а карточка, которая ставится прямо сейчас, показывает «Установка…» (#26)."""
+        """Проставляет каждой карточке её состояние относительно очереди установок.
+
+        Раньше во время любой установки блокировались ВСЕ кнопки. По фидбэку
+        Артёма чужие кнопки должны оставаться активными и по клику вставать в
+        очередь (наработки очереди уже есть в InstallGuiController). Блокируется
+        только та карточка, что ставится прямо сейчас («Установка…») или уже
+        стоит в очереди («В очереди»)."""
         running = self._queue_state.get("running") if isinstance(self._queue_state, dict) else None
-        busy = bool(running)
-        running_cid = str((running or {}).get("component_id") or "").strip()
+        pending = self._queue_state.get("pending") if isinstance(self._queue_state, dict) else []
+        running_tid = str((running or {}).get("task_id") or "").strip()
+        pending_tids = {str((j or {}).get("task_id") or "").strip() for j in (pending or [])}
         for card in getattr(self, "_component_cards", []) or []:
             try:
-                installing = busy and bool(running_cid) and card._component_id() == running_cid
-                card.set_busy(busy, installing=installing)
+                cid = card._component_id()
+                # task_id формируется как "{component_id}:{op}" (см. _task_id_for).
+                install_tid = f"{cid}:install"
+                uninstall_tid = f"{cid}:uninstall"
+                if running_tid in (install_tid, uninstall_tid):
+                    card.set_state("running")
+                elif install_tid in pending_tids or uninstall_tid in pending_tids:
+                    card.set_state("queued")
+                else:
+                    card.set_state("idle")
             except Exception:
                 pass
 

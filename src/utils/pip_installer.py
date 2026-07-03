@@ -1242,7 +1242,17 @@ class PipInstaller:
                 speed_txt = f" · {s}"
 
         stalled_sec = int(now - state.last_activity)
-        msg = f"{state.description} — {state.percent}%"
+        elapsed_sec = int(now - state.start)
+        # Пока реальный процент не удаётся распарсить (частый случай uv в
+        # не-TTY режиме — он почти не пишет проценты в пайп), НЕ показываем
+        # вводящий в заблуждение «— 0%»: из-за него длинный шаг выглядит
+        # зависшим (фидбэк Артёма: «просто тупо молчаливая установка»).
+        # Вместо этого крутим живой счётчик прошедшего времени — видно, что
+        # процесс идёт.
+        if state.percent > 0:
+            msg = f"{state.description} — {state.percent}%"
+        else:
+            msg = f"{state.description} — идёт… {self._fmt_hms(elapsed_sec)}"
         if speed_txt:
             msg += speed_txt
         if eta_txt:
