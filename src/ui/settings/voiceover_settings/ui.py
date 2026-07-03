@@ -2,12 +2,17 @@ import os
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QComboBox,
-    QSizePolicy, QPushButton
+    QSizePolicy, QPushButton, QSlider
 )
 from ui.gui_templates import create_setting_widget, create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
 from localization.live import tr_set
 from core.events import get_event_bus, Events
+
+try:
+    import qtawesome as qta
+except Exception:
+    qta = None
 
 
 def build_voiceover_settings_ui(self, parent_layout):
@@ -132,8 +137,38 @@ def build_voiceover_settings_ui(self, parent_layout):
 
     self.local_voice_combobox = QComboBox()
 
+    # Шестерёнка справа от модели → настройки конкретной модели (AI Hub, раздел TTS).
+    self.local_model_settings_btn = QPushButton()
+    self.local_model_settings_btn.setObjectName("VoiceModelSettingsButton")
+    self.local_model_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    self.local_model_settings_btn.setFixedSize(30, 30)
+    self.local_model_settings_btn.setToolTip(_("Настройки модели", "Model settings"))
+    if qta is not None:
+        try:
+            self.local_model_settings_btn.setIcon(qta.icon("fa5s.cog", color="#cccccc"))
+        except Exception:
+            self.local_model_settings_btn.setText("⚙")
+    else:
+        self.local_model_settings_btn.setText("⚙")
+    def _open_current_model_settings():
+        # Открываем AI Hub на разделе TTS и сразу выделяем текущую модель.
+        # component_id в реестре — "tts:<model_id>" (см. make_component_id).
+        mid = None
+        if self.local_voice_combobox is not None:
+            mid = self.local_voice_combobox.currentData()
+        if not mid:
+            mid = self.settings.get("NM_CURRENT_VOICEOVER")
+        payload = {"category": "tts"}
+        mid = str(mid or "").strip()
+        if mid:
+            payload["component_id"] = f"tts:{mid}"
+        get_event_bus().emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": payload})
+
+    self.local_model_settings_btn.clicked.connect(_open_current_model_settings)
+
     local_model_layout.addWidget(label_container)
     local_model_layout.addWidget(self.local_voice_combobox, 1)
+    local_model_layout.addWidget(self.local_model_settings_btn, 0)
     local_layout.addWidget(local_model_row)
 
     # Строка статуса локальной модели: цветной чип-состояние + адаптивная
@@ -158,6 +193,54 @@ def build_voiceover_settings_ui(self, parent_layout):
     status_layout.addStretch(1)
     status_layout.addWidget(self.local_model_action_btn)
     local_layout.addWidget(status_row)
+
+    # Громкость воспроизведения в питоне (0..200%). Значения выше 100% усиливают
+    # звук покадрово в AudioHandler, чтобы можно было сделать озвучку громче исходной.
+    if self.settings.get("VOICEOVER_LOCAL_VOLUME") is None:
+        self.settings.set("VOICEOVER_LOCAL_VOLUME", 100)
+    try:
+        _init_volume = int(self.settings.get("VOICEOVER_LOCAL_VOLUME", 100))
+    except (TypeError, ValueError):
+        _init_volume = 100
+    _init_volume = max(0, min(200, _init_volume))
+
+    volume_row = SettingsBodyWidget()
+    volume_layout = QHBoxLayout(volume_row)
+    volume_layout.setContentsMargins(0, 2, 0, 2)
+    volume_layout.setSpacing(10)
+
+    volume_label = tr_set(QLabel(), "Громкость озвучки", "Voiceover volume")
+    volume_label.setMinimumWidth(140)
+    volume_label.setMaximumWidth(140)
+    volume_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+
+    self.local_volume_slider = QSlider(Qt.Orientation.Horizontal)
+    self.local_volume_slider.setMinimum(0)
+    self.local_volume_slider.setMaximum(200)
+    self.local_volume_slider.setSingleStep(5)
+    self.local_volume_slider.setPageStep(10)
+    self.local_volume_slider.setValue(_init_volume)
+
+    self.local_volume_value_label = QLabel(f"{_init_volume}%")
+    self.local_volume_value_label.setMinimumWidth(44)
+    self.local_volume_value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+    def _on_volume_changed(value):
+        self.local_volume_value_label.setText(f"{int(value)}%")
+        # Во время перетаскивания не спамим сохранением — запишем на отпускании.
+        if not self.local_volume_slider.isSliderDown():
+            self._save_setting("VOICEOVER_LOCAL_VOLUME", int(value))
+
+    def _on_volume_released():
+        self._save_setting("VOICEOVER_LOCAL_VOLUME", int(self.local_volume_slider.value()))
+
+    self.local_volume_slider.valueChanged.connect(_on_volume_changed)
+    self.local_volume_slider.sliderReleased.connect(_on_volume_released)
+
+    volume_layout.addWidget(volume_label)
+    volume_layout.addWidget(self.local_volume_slider, 1)
+    volume_layout.addWidget(self.local_volume_value_label, 0)
+    local_layout.addWidget(volume_row)
 
     local_config = [
         {'label': _("Язык локальной озвучки", "Local Voice Language"),

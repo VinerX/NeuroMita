@@ -598,6 +598,11 @@ class AIHubDialog(QDialog):
             self._pending_category = cat
         if cid:
             self._pending_component_id = cid
+            # Сразу переключаемся на вкладку «Настройки», не дожидаясь загрузки
+            # списка (иначе окно открывается на «Установке» и переезжает только
+            # через 1-3 сек). Само выделение модели произойдёт в _refresh_views,
+            # когда данные подтянутся.
+            self._set_tab("settings")
         if self._loaded_once and self._rows:
             self._refresh_views()
         else:
@@ -676,6 +681,12 @@ class AIHubDialog(QDialog):
         # propagate the same row set to the Settings panel
         if hasattr(self, "_settings_panel"):
             self._settings_panel.apply_data(self._rows, self._selected_category)
+        # Отложенный переход к настройкам конкретного компонента (шестерёнка у модели
+        # озвучки и т.п.): открываем вкладку «Настройки» и выделяем нужную модель.
+        if self._pending_component_id:
+            cid = self._pending_component_id
+            self._pending_component_id = None
+            self._open_component_settings(cid)
         # Запоминаем язык последнего рендера (для перерисовки после смены языка).
         self._rendered_language = self._current_ui_language()
 

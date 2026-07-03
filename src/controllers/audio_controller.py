@@ -210,7 +210,8 @@ class AudioController:
                 await AudioHandler.handle_voice_file(
                     result_path,
                     self.settings.get("LOCAL_VOICE_DELETE_AUDIO", True)
-                    if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1" else True
+                    if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1" else True,
+                    volume=self._local_playback_volume(),
                 )
             elif is_connected:
                 self.event_bus.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, result_path)
@@ -223,6 +224,14 @@ class AudioController:
                 self._update_task_failed_voiceover(task_uid, str(e))
         finally:
             self.waiting_answer = False
+
+    def _local_playback_volume(self) -> int:
+        """Громкость воспроизведения озвучки в питоне (в процентах, 0..200)."""
+        try:
+            vol = int(self.settings.get("VOICEOVER_LOCAL_VOLUME", 100))
+        except (TypeError, ValueError):
+            vol = 100
+        return max(0, min(200, vol))
 
     @staticmethod
     def delete_all_sound_files():
