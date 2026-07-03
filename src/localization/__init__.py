@@ -49,6 +49,8 @@ LANGUAGE_DISPLAY_NAMES: dict[str, str] = {
     "RO": "Română",
     "NL": "Nederlands",
     "TR": "Türkçe",
+    "PT": "Português",
+    "IT": "Italiano",
 }
 
 
