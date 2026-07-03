@@ -357,7 +357,8 @@ class SpeechRecognition:
                         logger.warning("ASR model is not set. Stopping recognition.")
                         return
 
-                    eb.emit(Events.Speech.ASR_MODEL_INIT_STARTED)
+                    eb.emit(Events.Speech.ASR_MODEL_INIT_STARTED,
+                            {"engine": SpeechRecognition._recognizer_type})
 
                     ok = await inst.init()
                     if not ok:
@@ -451,7 +452,7 @@ class SpeechRecognition:
                 # the status pill was stuck on "Инициализация ASR..." forever
                 # (the 35s timeout guard is only armed by INIT_STARTED).
                 eb = get_event_bus()
-                eb.emit(Events.Speech.ASR_MODEL_INIT_STARTED)
+                eb.emit(Events.Speech.ASR_MODEL_INIT_STARTED, {"engine": engine_id})
                 fut = eng.call("asr", "start_live", {
                     "engine_id": engine_id,
                     "microphone_index": int(device_id or 0),

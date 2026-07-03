@@ -12,6 +12,7 @@ from utils import getTranslationVariant as _
 class AsrEventsController(BaseController):
     def __init__(self, main_controller, view):
         self._asr_initializing: bool = False
+        self._init_engine: str | None = None
         self._asr_installing: bool = False
         self._install_engine: str | None = None
         self._install_progress: int | None = None
@@ -56,8 +57,9 @@ class AsrEventsController(BaseController):
         mic_active = bool(self._settings_cache.get("MIC_ACTIVE", False))
         if mic_active:
             self._asr_initializing = True
+            self._init_engine = str(self._settings_cache.get("RECOGNIZER_TYPE") or "").strip().lower() or None
             self._arm_init_timeout_guard()
-            self._emit_indicator("loading", _("Инициализация ASR...", "Initializing ASR..."))
+            self._emit_indicator("loading", self._asr_loading_text(self._init_engine))
             self._sync_indicator(force=True)
         else:
             self._emit_indicator(None, None)
@@ -69,8 +71,14 @@ class AsrEventsController(BaseController):
         self._init_token += 1
         tok = self._init_token
 
+        # Локальные модели (Whisper/GigaAM) при первом старте докачивают веса и
+        # инициализируют CUDA — это легко занимает минуты. Даём им больше времени,
+        # чтобы «загрузочная» пилюля не сбрасывалась раньше реальной готовности
+        # (сам init ждёт до 300 c). Для остальных — короткий страховочный порог.
+        grace = 300.0 if (self._init_engine in ("whisper", "gigaam")) else 35.0
+
         def _timeout_guard():
-            time.sleep(35.0)
+            time.sleep(grace)
             if self._init_token != tok:
                 return
             if self._asr_initializing:
@@ -79,16 +87,28 @@ class AsrEventsController(BaseController):
 
         threading.Thread(target=_timeout_guard, daemon=True).start()
 
+    def _asr_loading_text(self, engine: str | None) -> str:
+        """Понятный текст «что происходит» вместо общего «Инициализация ASR».
+        Для локальных моделей загрузка (+ первичная докачка весов) занимает
+        десятки секунд, поэтому явно называем модель."""
+        eng = str(engine or "").strip().lower()
+        if eng == "whisper":
+            return _("Загрузка модели Whisper...", "Loading Whisper model...")
+        if eng == "gigaam":
+            return _("Загрузка модели GigaAM...", "Loading GigaAM model...")
+        return _("Инициализация ASR...", "Initializing ASR...")
+
     # ---------------- UI pills from old logic ----------------
     def _on_asr_init_started(self, _event: Event):
         self._asr_initializing = True
+        self._init_engine = str((_event.data or {}).get("engine") or "").strip().lower() or None
         self._arm_init_timeout_guard()
 
         if self.view and hasattr(self.view, "asr_set_pill") and hasattr(self.view, "asr_init_status"):
             try:
                 self.view.asr_set_pill.emit({
                     "label": self.view.asr_init_status,
-                    "text": _("Инициализация...", "Initializing..."),
+                    "text": self._asr_loading_text(self._init_engine),
                     "kind": "progress"
                 })
             except Exception as e:
@@ -387,7 +407,7 @@ class AsrEventsController(BaseController):
             return
 
         if self._asr_initializing:
-            self._emit_indicator("loading", _("Инициализация ASR...", "Initializing ASR..."))
+            self._emit_indicator("loading", self._asr_loading_text(self._init_engine or engine))
             return
 
         ready = self._get_ready_cached()

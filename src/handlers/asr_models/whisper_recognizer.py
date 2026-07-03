@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import wave
 import asyncio
@@ -7,6 +8,40 @@ from typing import Optional, List
 from collections import deque
 
 import numpy as np
+
+
+def _normalize_hallucination(text: str) -> str:
+    """Нормализация для сравнения с чёрным списком галлюцинаций:
+    нижний регистр, только буквы/цифры, схлопнутые пробелы."""
+    t = (text or "").lower()
+    t = re.sub(r"[^0-9a-zа-яё]+", " ", t)
+    return " ".join(t.split())
+
+
+# Известные галлюцинации Whisper на тишине/шуме — артефакты из ютуб-субтитров
+# в обучающих данных. Whisper на пустом/шумном фрагменте любит выдавать эти
+# фразы целиком. Сравниваем по полному нормализованному совпадению сегмента,
+# чтобы не резать легитимную речь ("спасибо" само по себе не пострадает).
+_WHISPER_HALLUCINATIONS = frozenset(
+    _normalize_hallucination(p) for p in (
+        "Субтитры сделал DimaTorzok",
+        "Субтитры делал DimaTorzok",
+        "Субтитры создавал DimaTorzok",
+        "Субтитры сделаны DimaTorzok",
+        "Продолжение следует...",
+        "Спасибо за просмотр!",
+        "Спасибо за внимание!",
+        "Подписывайтесь на канал",
+        "Ставьте лайки",
+        "Редактор субтитров А.Синецкая Корректор А.Егорова",
+        "Субтитры А.Синецкая",
+        "Субтитры и корректура Оксаны Каменской",
+        "続きは次回",
+        "Thanks for watching!",
+        "Субтитры сделаны сообществом Amara.org",
+        "www.amara.org",
+    )
+)
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
 from core.backends import BackendKind, get_backend_service
@@ -405,11 +440,24 @@ class WhisperRecognizer(SpeechRecognizerInterface):
             parts = []
             for seg in segments:
                 t = (getattr(seg, "text", "") or "").strip()
-                if t:
-                    parts.append(t)
+                if not t:
+                    continue
+                if _normalize_hallucination(t) in _WHISPER_HALLUCINATIONS:
+                    self.logger.debug(f"Whisper: отфильтрована галлюцинация-сегмент: {t!r}")
+                    continue
+                parts.append(t)
 
             text = " ".join(parts).strip()
-            return text or None
+            if not text:
+                return None
+
+            # Фолбэк: если весь ответ целиком совпал с известной галлюцинацией
+            # (например, единый сегмент без разбивки), тоже отбрасываем.
+            if _normalize_hallucination(text) in _WHISPER_HALLUCINATIONS:
+                self.logger.debug(f"Whisper: отфильтрована галлюцинация: {text!r}")
+                return None
+
+            return text
 
         except Exception as e:
             self.logger.error(f"Whisper transcribe error: {e}", exc_info=True)
