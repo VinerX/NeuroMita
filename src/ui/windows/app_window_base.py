@@ -81,7 +81,7 @@ class AppWindowBase(QMainWindow):
     append_stream_chunk_signal = pyqtSignal(object)
     finish_stream_signal = pyqtSignal()
 
-    show_thinking_signal = pyqtSignal(str)
+    show_thinking_signal = pyqtSignal(object)
     show_error_signal = pyqtSignal(str)
     hide_status_signal = pyqtSignal()
     pulse_error_signal = pyqtSignal()
@@ -181,12 +181,10 @@ class AppWindowBase(QMainWindow):
         self.hide_status_signal.connect(self._hide_status_slot)
         self.pulse_error_signal.connect(self._pulse_error_slot)
 
+        self.settings_animation = None
         self.setup_ui()
         self.chat_delegate = ChatMessageDelegate()
-        
-        self.settings_animation = QPropertyAnimation(self.settings_overlay, b"maximumWidth")
-        self.settings_animation.setDuration(250)
-        self.settings_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self._ensure_settings_animation()
 
         self.chat_window.installEventFilter(self)
 
@@ -205,12 +203,28 @@ class AppWindowBase(QMainWindow):
         self.prepare_stream_signal.connect(self._on_stream_start)
         self.finish_stream_signal.connect(self._on_stream_finish)
 
-        self.update_status_colors()
+        QTimer.singleShot(0, self.update_status_colors)
         QTimer.singleShot(1000, self._check_eula_and_guide)
 
         self.last_voice_model_selected = None
         self.current_local_voice_id = None
         self.model_loading_cancelled = False
+
+    def _ensure_settings_animation(self):
+        target = getattr(self, "settings_overlay", None) or self.centralWidget()
+        if target is None:
+            return None
+
+        if self.settings_animation is None:
+            self.settings_animation = QPropertyAnimation(target, b"maximumWidth")
+            self.settings_animation.setDuration(250)
+            self.settings_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            return self.settings_animation
+
+        if self.settings_animation.targetObject() is not target:
+            self.settings_animation.stop()
+            self.settings_animation.setTargetObject(target)
+        return self.settings_animation
 
     def _window_specs(self) -> dict:
         return {
@@ -863,10 +877,17 @@ class AppWindowBase(QMainWindow):
         return result[0] if result else "Assistant"
 
     def closeEvent(self, event):
-        self.event_bus.emit(Events.Capture.STOP_SCREEN_CAPTURE)
-        self.event_bus.emit(Events.Capture.STOP_CAMERA_CAPTURE)
-        self.event_bus.emit(Events.Audio.DELETE_SOUND_FILES)
-        self.event_bus.emit(Events.Server.STOP_SERVER)
+        try:
+            main_controller = getattr(self, "main_controller", None)
+            if main_controller is not None:
+                main_controller.close_app()
+            else:
+                self.event_bus.emit(Events.Capture.STOP_SCREEN_CAPTURE)
+                self.event_bus.emit(Events.Capture.STOP_CAMERA_CAPTURE)
+                self.event_bus.emit(Events.Audio.DELETE_SOUND_FILES)
+                self.event_bus.emit(Events.Server.STOP_SERVER)
+        except Exception as exc:
+            logger.error(f"Ошибка при закрытии приложения: {exc}", exc_info=True)
 
         try:
             if hasattr(self, "window_manager") and self.window_manager:
@@ -936,7 +957,7 @@ class AppWindowBase(QMainWindow):
             except Exception as e:
                 logger.error(f"Error toggling think block {block_id}: {e}")
 
-    def _show_thinking_slot(self, character_name: str):
+    def _show_thinking_slot(self, character_name):
         if hasattr(self, 'mita_status') and self.mita_status:
             logger.info('Показываем статус "Думает" для персонажа: %s', character_name)
             self.mita_status.show_thinking(character_name)

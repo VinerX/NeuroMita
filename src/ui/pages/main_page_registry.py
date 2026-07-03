@@ -39,5 +39,12 @@ def get_main_page_specs() -> tuple[MainPageSpec, ...]:
     return MAIN_PAGE_SPECS
 
 
+def get_main_page_factory(page_key: str) -> PageFactory | None:
+    for spec in MAIN_PAGE_SPECS:
+        if spec.key == page_key:
+            return spec.factory
+    return None
+
+
 def build_main_pages(window) -> dict[str, QWidget]:
     return {spec.key: spec.factory(window) for spec in MAIN_PAGE_SPECS}

@@ -1,6 +1,7 @@
 import time
 
 from core.events import Event, Events
+from core.response_status import get_response_status_kind
 from main_logger import logger
 
 from .base_controller import BaseController
@@ -28,11 +29,11 @@ class StatusController(BaseController):
         else:
             logger.error("StatusController: view not found")
 
-    def show_mita_thinking(self, character_name):
-        logger.debug(f"[DEBUG] StatusController: show thinking for {character_name}")
-        logger.info(f"StatusController: show_mita_thinking for {character_name}")
+    def show_mita_thinking(self, payload):
+        logger.debug(f"[DEBUG] StatusController: show thinking for {payload}")
+        logger.info(f"StatusController: show_mita_thinking for {payload}")
         if self.view:
-            self.view.show_thinking_signal.emit(character_name)
+            self.view.show_thinking_signal.emit(payload)
         else:
             logger.error("StatusController: view not found")
 
@@ -82,6 +83,14 @@ class StatusController(BaseController):
 
         if not character_name:
             character_name = "Мита"
+
+        if get_response_status_kind() == "compression":
+            self.show_mita_thinking({
+                "text": "Сжатие истории...",
+                "character_name": character_name,
+                "avatar_name": character_name,
+            })
+            return
 
         self.show_mita_thinking(character_name)
 

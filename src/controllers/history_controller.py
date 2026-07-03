@@ -6,6 +6,7 @@ import threading
 from io import BytesIO
 
 from core.events import get_event_bus, Events, Event
+from core.response_status import response_status_kind
 from main_logger import logger
 
 
@@ -551,19 +552,20 @@ class HistoryController:
                 if preset_id is not None:
                     logger.info(f"[HistoryController] Используется пресет для сжатия истории: {preset_id}")
 
-            res = self.event_bus.emit_and_wait(
-                Events.Model.GENERATE_RESPONSE,
-                {
-                    'user_input': '',
-                    'system_input': full_prompt,
-                    'image_data': [],
-                    'stream_callback': None,
-                    'message_id': None,
-                    'event_type': 'compress',
-                    'preset_id': preset_id
-                },
-                timeout=60.0
-            )
+            with response_status_kind("compression"):
+                res = self.event_bus.emit_and_wait(
+                    Events.Model.GENERATE_RESPONSE,
+                    {
+                        'user_input': '',
+                        'system_input': full_prompt,
+                        'image_data': [],
+                        'stream_callback': None,
+                        'message_id': None,
+                        'event_type': 'compress',
+                        'preset_id': preset_id
+                    },
+                    timeout=60.0
+                )
             if not res:
                 logger.warning("[HistoryController] GENERATE_RESPONSE не вернул результат для сжатия истории.")
                 return None

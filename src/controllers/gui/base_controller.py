@@ -14,6 +14,14 @@ class BaseController:
     def subscribe_to_events(self):
         pass
 
+    def _backend_enabled(self) -> bool:
+        return bool(getattr(self.main_controller, "backend_enabled", True))
+
+    def _service_or_none(self, name: str):
+        if not self._backend_enabled():
+            return None
+        return getattr(self.main_controller, name, None)
+
     def _ui(self, fn):
         if not callable(fn):
             return

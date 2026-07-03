@@ -209,9 +209,11 @@ class InstallGuiController(BaseController):
     # backend / окно
     # ------------------------------------------------------------------
     def _get_backend(self):
-        backend = getattr(self.main_controller, "install_controller", None)
+        backend = self._service_or_none("install_controller")
         if backend is not None:
             return backend
+        if not self._backend_enabled():
+            return None
         try:
             from controllers.install_controller import InstallController
             backend = InstallController()

@@ -28,14 +28,34 @@ class MitaStatusWidget(QWidget):
     def _get_chat(self):
         return self._chat
 
-    def show_thinking(self, character_name="Мита"):
-        if self.current_state == "thinking":
+    def show_thinking(self, payload="Мита"):
+        chat = self._get_chat()
+        if isinstance(payload, dict):
+            text = str(payload.get("text") or "").strip()
+            character_name = str(payload.get("character_name") or "Мита")
+            avatar_name = str(payload.get("avatar_name") or character_name)
+            if not text:
+                text = _("Сжатие истории...", "Compressing history...")
+
+            self.current_state = "status"
+            self._character_name = character_name
+            self._dots_phase = 0
+            self._stop_dots()
+
+            if chat:
+                from ui.chat.message_widget import _get_avatar_pixmap
+
+                avatar = _get_avatar_pixmap(avatar_name, "assistant")
+                chat.show_status(text, avatar)
+            return
+
+        character_name = str(payload or "Мита")
+        if self.current_state == "thinking" and self._character_name == character_name:
             return
         self.current_state = "thinking"
         self._character_name = character_name
         self._dots_phase = 0
 
-        chat = self._get_chat()
         if chat:
             from ui.chat.message_widget import _get_avatar_pixmap
 

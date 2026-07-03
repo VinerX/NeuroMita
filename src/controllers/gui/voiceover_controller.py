@@ -231,6 +231,9 @@ class VoiceoverGuiController(BaseController):
         btn.setText(_("Подключиться к Telegram", "Connect Telegram"))
 
     def _maybe_autoconnect_tg(self):
+        if not self._backend_enabled():
+            return
+
         use_voice = self._effective_use_voice()
         method = self._effective_method()
         if not use_voice or method != "TG":
@@ -260,6 +263,17 @@ class VoiceoverGuiController(BaseController):
             return
 
         def apply():
+            if not self._backend_enabled():
+                self._sync_everything(allow_autoload=False)
+                self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
+                    "title": _("GUI-only режим", "GUI-only mode"),
+                    "message": _(
+                        "Озвучка недоступна: backend-контроллеры не запущены.",
+                        "Voiceover is unavailable because backend controllers are disabled.",
+                    ),
+                })
+                return
+
             self._ensure_voice_model_name_map()
 
             cur = self._current_model_id_from_settings()
@@ -571,6 +585,9 @@ class VoiceoverGuiController(BaseController):
 
     # ---------- local autoload ----------
     def _maybe_autoload_local_model(self):
+        if not self._backend_enabled():
+            return
+
         if not bool(self._get_setting("LOCAL_VOICE_LOAD_LAST", False)):
             return
 

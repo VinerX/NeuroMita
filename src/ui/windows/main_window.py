@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QStackedWidget, QVBoxLayout, QW
 from styles.main_styles import get_stylesheet
 from ui.pages.home_page import build_home_page
 from ui.pages.logs_page import build_logs_page
-from ui.pages.main_page_registry import MAIN_PAGE_ORDER, build_main_pages
+from ui.pages.main_page_registry import MAIN_PAGE_ORDER, get_main_page_factory
 from ui.pages.news_page import build_news_page
 from ui.pages.news_support import get_news_content as load_news_content
 from ui.pages.news_support import get_news_releases as load_news_releases
@@ -48,17 +48,31 @@ class MainWindow(AppWindowBase):
         content_layout.addWidget(self.page_stack)
         main_layout.addWidget(content_host, 1)
 
-        self.page_map = build_main_pages(self)
-        for key in MAIN_PAGE_ORDER:
-            self.page_stack.addWidget(self.page_map[key])
+        self.page_map = {}
 
         try:
             apply_section_visibility(self)
         except Exception:
             pass
 
+        self._ensure_main_page("sandbox")
         self.switch_main_page("sandbox")
         self.resize(1560, 920)
+
+    def _ensure_main_page(self, page_key):
+        page = getattr(self, "page_map", {}).get(page_key)
+        if page is not None:
+            return page
+
+        factory = get_main_page_factory(page_key)
+        if factory is None or not hasattr(self, "page_stack"):
+            return None
+
+        page = factory(self)
+        self.page_map[page_key] = page
+        self.page_stack.addWidget(page)
+        self._ensure_settings_animation()
+        return page
 
     def _init_settings_containers(self):
         page = getattr(self, "settings_page", None)
@@ -71,18 +85,21 @@ class MainWindow(AppWindowBase):
         if page is not None:
             page.show_overview()
         try:
-            self.settings_animation.finished.disconnect(self._on_hide_animation_finished)
+            if self.settings_animation is not None:
+                self.settings_animation.finished.disconnect(self._on_hide_animation_finished)
         except TypeError:
             pass
 
     def show_settings_category(self, category, *, force: bool = False, subsection=None):
-        page = getattr(self, "settings_page", None)
+        page = self._ensure_main_page("settings")
         if page is not None:
             page.show_category(category, force=force, subsection=subsection)
 
     def switch_main_page(self, page_key):
-        page = getattr(self, "page_map", {}).get(page_key)
-        if page is None or not hasattr(self, "page_stack"):
+        if page_key not in MAIN_PAGE_ORDER or not hasattr(self, "page_stack"):
+            return
+        page = self._ensure_main_page(page_key)
+        if page is None:
             return
         current_page = self.page_stack.currentWidget()
 

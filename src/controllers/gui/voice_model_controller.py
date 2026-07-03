@@ -44,7 +44,7 @@ class VoiceModelGuiController(BaseController):
         self.event_bus.subscribe(Events.Audio.SHOW_TRITON_DIALOG, self._on_show_triton_dialog, weak=False)
 
     def _backend(self):
-        return getattr(self.main_controller, "voice_model_controller", None)
+        return self._service_or_none("voice_model_controller")
 
     def _attach_view_to_dialog(self, dialog):
         if not dialog or not hasattr(dialog, "layout") or dialog.layout() is None:
@@ -306,10 +306,12 @@ class VoiceModelGuiController(BaseController):
                 settings.save_settings()
             except Exception:
                 pass
-            try:
-                self.main_controller.audio_controller.current_local_voice_id = new_model_id
-            except Exception:
-                pass
+            audio_controller = self._service_or_none("audio_controller")
+            if audio_controller is not None:
+                try:
+                    audio_controller.current_local_voice_id = new_model_id
+                except Exception:
+                    pass
 
             if self.view and hasattr(self.view, "update_local_voice_combobox"):
                 QTimer.singleShot(0, self.view.update_local_voice_combobox)

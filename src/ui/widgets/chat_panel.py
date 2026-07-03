@@ -35,7 +35,6 @@ class ChatPanel(QWidget):
 
         self._build_ui()
         self.gui.chat_panel = self
-        self.on_activated()
 
     def _get_current_character_id(self) -> str:
         try:
@@ -254,14 +253,10 @@ def update_send_button_state(gui):
     has_text = bool(gui.user_entry.toPlainText().strip())
     has_images = bool(getattr(gui, "staged_image_data", []))
 
-    has_auto_images = False
-    if gui._get_setting("AUTO_ATTACH_IMAGES", False):
-        frames = gui.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {"limit": 1}, timeout=0.5)
-        has_auto_images = bool(frames and frames[0])
-
-    if gui._get_setting("ENABLE_CAMERA_CAPTURE", False):
-        camera_frames = gui.event_bus.emit_and_wait(Events.Capture.GET_CAMERA_FRAMES, {"limit": 1}, timeout=0.5)
-        has_auto_images = has_auto_images or bool(camera_frames and camera_frames[0])
+    has_auto_images = bool(
+        gui._get_setting("AUTO_ATTACH_IMAGES", False)
+        or gui._get_setting("ENABLE_CAMERA_CAPTURE", False)
+    )
 
     gui.send_button.setEnabled(has_text or has_images or has_auto_images)
 

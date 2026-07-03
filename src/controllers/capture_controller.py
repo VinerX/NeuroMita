@@ -24,6 +24,7 @@ class CaptureController:
         self.image_request_running = False
         self.last_image_request_time = time.time()
         self.image_request_timer_running = False
+        self._shutdown_event = threading.Event()
         
         self._subscribe_to_events()
         
@@ -285,11 +286,20 @@ class CaptureController:
             self.image_request_timer_running = False
             logger.info("Таймер периодической отправки изображений остановлен.")
             
+    def shutdown(self):
+        self._shutdown_event.set()
+        self.stop_image_request_timer()
+        self.stop_screen_capture_thread()
+        self.stop_camera_capture_thread()
+
+        if self.image_request_thread and self.image_request_thread.is_alive():
+            self.image_request_thread.join(timeout=2.0)
+
     def _start_periodic_check(self):
         def check_loop():
             # Останавливаемся при закрытии приложения (шина остановлена): иначе
             # send_interval_image() дёргает захват/GUI во время teardown → access violation.
-            while self.event_bus.is_running:
+            while self.event_bus.is_running and not self._shutdown_event.is_set():
                 try:
                     if self.image_request_timer_running:
                         self.send_interval_image()
@@ -298,11 +308,13 @@ class CaptureController:
                     logger.error(f"Ошибка в периодической проверке отправки изображений: {e}")
                     time.sleep(5)
         
-        thread = threading.Thread(target=check_loop, daemon=True)
-        thread.start()
+        self.image_request_thread = threading.Thread(target=check_loop, daemon=True)
+        self.image_request_thread.start()
         logger.info("Поток периодической проверки отправки изображений запущен")
             
     def send_interval_image(self):
+        if self._shutdown_event.is_set():
+            return
         if not self.settings:
             return
             

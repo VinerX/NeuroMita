@@ -255,11 +255,11 @@ class SandboxPage(QWidget):
         self._inspector_expanded_width = 420
         self._inspector_collapsed_width = 60
         self._inspector_tab_indexes = {}
+        self._activation_ticket = 0
 
         self._build_ui()
         self._wire_diagnostics()
         self._sync_host_exports()
-        self.on_activated()
 
     def _sync_host_exports(self):
         self.gui.sandbox_page = self
@@ -847,24 +847,45 @@ class SandboxPage(QWidget):
             safe("camera", lambda: on_off(get("ENABLE_CAMERA_CAPTURE", False)))
 
     # --------- Activation -----------
+    def _schedule_activation_step(self, ticket: int, delay_ms: int, callback) -> None:
+        def _run():
+            if ticket != self._activation_ticket:
+                return
+            if getattr(self.gui, "current_main_page", None) != "sandbox":
+                return
+            try:
+                callback()
+            except Exception:
+                logger.error("Sandbox activation refresh failed", exc_info=True)
+
+        QTimer.singleShot(delay_ms, _run)
+
     def on_activated(self):
-        self._populate_chat_character_combobox()
-        self._populate_model_combobox()
-        self._populate_prompt_pack_combobox()
-        self._refresh_character_avatar()
-        self._refresh_status_values()
         self._sync_toggles_from_settings()
-        self._refresh_memory_summary()
-        self._refresh_context_budget()
         self.apply_panel_visibility()
-        self._refresh_debug_summary()
-        # Sync the status dots (voice / mic / RAG) to their current live state.
-        try:
-            self.gui.update_status_colors()
-        except Exception:
-            pass
-        if self._chat_panel is not None:
-            self._chat_panel.on_activated()
+        self._activation_ticket += 1
+        ticket = self._activation_ticket
+
+        self._schedule_activation_step(ticket, 0, self._populate_chat_character_combobox)
+        self._schedule_activation_step(ticket, 0, self._refresh_character_avatar)
+        self._schedule_activation_step(ticket, 15, self._populate_model_combobox)
+        self._schedule_activation_step(ticket, 30, self._populate_prompt_pack_combobox)
+        self._schedule_activation_step(ticket, 45, self._refresh_status_values)
+        self._schedule_activation_step(ticket, 60, self._refresh_memory_summary)
+        self._schedule_activation_step(ticket, 75, self._refresh_context_budget)
+        self._schedule_activation_step(ticket, 90, self._refresh_debug_summary)
+        self._schedule_activation_step(ticket, 105, lambda: self.gui.update_status_colors())
+        self._schedule_activation_step(
+            ticket,
+            120,
+            lambda: self._chat_panel.on_activated() if self._chat_panel is not None else None,
+        )
+        self._schedule_activation_step(
+            ticket,
+            135,
+            lambda: self._character_state_panel.refresh(rebuild=True)
+            if getattr(self, "_character_state_panel", None) is not None else None,
+        )
 
     def show_debug_tab(self):
         if self._inspector_collapsed:

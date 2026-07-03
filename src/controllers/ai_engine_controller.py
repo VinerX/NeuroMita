@@ -189,6 +189,29 @@ class _Worker:
         except Exception:
             pass
 
+        for queue_obj in (self.res_q, self.log_q):
+            try:
+                queue_obj.put_nowait(None)
+            except Exception:
+                pass
+
+        for thread in (self.res_thread, self.log_thread):
+            try:
+                if thread is not None and thread.is_alive():
+                    thread.join(timeout=1.0)
+            except Exception:
+                pass
+
+        for queue_obj in (self.cmd_q, self.res_q, self.log_q):
+            try:
+                queue_obj.close()
+            except Exception:
+                pass
+            try:
+                queue_obj.cancel_join_thread()
+            except Exception:
+                pass
+
         with self.pending_lock:
             pending = list(self.pending.items())
             self.pending.clear()
@@ -206,9 +229,13 @@ class _Worker:
             try:
                 msg = self.res_q.get()
             except Exception:
+                if self.stopping.is_set():
+                    break
                 time.sleep(0.05)
                 continue
 
+            if msg is None:
+                break
             if not isinstance(msg, dict):
                 continue
 
@@ -253,9 +280,13 @@ class _Worker:
             try:
                 msg = self.log_q.get()
             except Exception:
+                if self.stopping.is_set():
+                    break
                 time.sleep(0.05)
                 continue
 
+            if msg is None:
+                break
             if not isinstance(msg, dict):
                 continue
 

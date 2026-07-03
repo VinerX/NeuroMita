@@ -1,8 +1,10 @@
 import os
+import threading
 import time
 from pathlib import Path
 from PyQt6.QtCore import QTimer
 
+from controllers.gui_fallback_controller import GuiFallbackController
 from controllers.gui_controller import GuiController
 from controllers.audio_controller import AudioController
 from controllers.telegram_controller import TelegramController
@@ -36,18 +38,23 @@ from controllers.server_controller import ServerController
 
 
 class MainController:
-    def __init__(self, view):
+    def __init__(self, view, startup_mode: str = "full"):
         self.view = view
         self.event_bus = get_event_bus()
+        self.startup_mode = self._normalize_startup_mode(startup_mode)
+        self.backend_enabled = self.startup_mode == "full"
 
         self.dialog_active = False
+        self._close_lock = threading.Lock()
+        self._closing_started = False
+        self.gui_fallback_controller = None
 
-        self.loop_controller = LoopController()
+        self.loop_controller = None
         logger.notify("LoopController успешно инициализирован.")
 
         self.gui_controller = None
 
-        self.telegram_controller = TelegramController()
+        self.telegram_controller = None
         logger.notify("TelegramController успешно инициализирован.")
 
         try:
@@ -60,6 +67,19 @@ class MainController:
         except Exception as e:
             logger.info("Не удалось удачно получить из системных переменных все данные", e)
             self.settings = SettingsController("Settings/settings.json").settings
+
+        if not self.backend_enabled:
+            self.gui_fallback_controller = GuiFallbackController(self.settings)
+            logger.notify("GuiFallbackController initialized.")
+            self._subscribe_to_events()
+            logger.notify("MainController initialized in GUI-only mode.")
+            return
+
+        if self.backend_enabled:
+            self.loop_controller = LoopController()
+            logger.notify("LoopController initialized.")
+            self.telegram_controller = TelegramController()
+            logger.notify("TelegramController initialized.")
 
         try:
             self.pip_installer = PipInstaller(
@@ -137,10 +157,19 @@ class MainController:
         self.chat_controller = ChatController(self.settings)
         logger.notify("ChatController успешно инициализирован.")
 
-        self.audio_controller.delete_all_sound_files()
+        audio_controller = getattr(self, "audio_controller", None)
+        if audio_controller is not None:
+            audio_controller.delete_all_sound_files()
 
         self._subscribe_to_events()
         logger.notify("MainController подписался на события")
+
+    @staticmethod
+    def _normalize_startup_mode(startup_mode: str | None) -> str:
+        mode = str(startup_mode or "full").strip().lower()
+        if mode in {"gui-only", "gui_only", "ui-only", "ui_only"}:
+            return "gui_only"
+        return "full"
 
     def _init_server_controller(self):
         # Старый серверный API (ServerControllerOld / server_old.py) удалён —
@@ -155,9 +184,16 @@ class MainController:
     def update_view(self, view):
         if not self.gui_controller:
             self.view = view
+            try:
+                setattr(view, "main_controller", self)
+                setattr(view, "backend_enabled", bool(self.backend_enabled))
+                setattr(view, "startup_mode", self.startup_mode)
+            except Exception:
+                pass
             self.gui_controller = GuiController(self, view)
             logger.notify("GuiController успешно инициализирован.")
-            self.settings_controller.load_api_settings(False)
+            if self.backend_enabled:
+                self.settings_controller.load_api_settings(False)
 
             self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
 
@@ -174,6 +210,10 @@ class MainController:
         self.event_bus.subscribe(Events.Server.SET_DIALOG_ACTIVE, self._on_set_dialog_active, weak=False)
 
     def close_app(self):
+        with self._close_lock:
+            if self._closing_started:
+                return
+            self._closing_started = True
         logger.info("Начинаем закрытие приложения...")
 
         self.event_bus.emit(Events.Speech.STOP_SPEECH_RECOGNITION)
@@ -195,8 +235,11 @@ class MainController:
         except Exception as e:
             logger.error(f"Ошибка при остановке сервера: {e}", exc_info=True)
 
-        self.capture_controller.stop_screen_capture_thread()
-        self.capture_controller.stop_camera_capture_thread()
+        try:
+            if getattr(self, "capture_controller", None):
+                self.capture_controller.shutdown()
+        except Exception as e:
+            logger.error(f"РћС€РёР±РєР° РїСЂРё РѕСЃС‚Р°РЅРѕРІРєРµ capture controller: {e}", exc_info=True)
 
         self.audio_controller.delete_all_sound_files()
 
@@ -206,7 +249,8 @@ class MainController:
         except Exception as e:
             logger.error(f"Ошибка при остановке AI engine: {e}", exc_info=True)
 
-        self.loop_controller.stop_loop()
+        if self.loop_controller is not None:
+            self.loop_controller.stop_loop()
 
         try:
             shutdown_event_bus()

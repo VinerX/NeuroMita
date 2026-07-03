@@ -69,9 +69,9 @@ class GuiController:
         self._connect_view_signals()
         logger.info("GuiController подписался на события")
 
-        QTimer.singleShot(100, self.system_controller.check_and_install_ffmpeg)
-
-        QTimer.singleShot(500, self.voiceover_controller.autoload_last_model_on_startup)
+        if bool(getattr(self.main_controller, "backend_enabled", True)):
+            QTimer.singleShot(100, self.system_controller.check_and_install_ffmpeg)
+            QTimer.singleShot(500, self.voiceover_controller.autoload_last_model_on_startup)
 
     def _connect_view_signals(self):
         if self.view:
