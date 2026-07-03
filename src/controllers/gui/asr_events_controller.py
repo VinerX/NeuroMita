@@ -13,6 +13,7 @@ class AsrEventsController(BaseController):
     def __init__(self, main_controller, view):
         self._asr_initializing: bool = False
         self._init_engine: str | None = None
+        self._pill_kind: str | None = None  # "loading" | "ready" | None — для live-перевода
         self._asr_installing: bool = False
         self._install_engine: str | None = None
         self._install_progress: int | None = None
@@ -46,6 +47,14 @@ class AsrEventsController(BaseController):
         eb.subscribe(Events.Install.TASK_FAILED, self._on_install_failed, weak=False)
 
         eb.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
+
+        # Live-переключение языка интерфейса: перерисовать индикатор/пилюлю ASR
+        # на новом языке без перезапуска (иначе оставался текст прежней локали).
+        try:
+            from localization.live import language_changed_signal
+            language_changed_signal().connect(self._on_language_changed)
+        except Exception as e:
+            logger.debug(f"ASR: language_changed subscribe failed: {e}")
 
         try:
             if self.view and getattr(self.view, "settings", None):
@@ -98,22 +107,39 @@ class AsrEventsController(BaseController):
             return _("Загрузка модели GigaAM...", "Loading GigaAM model...")
         return _("Инициализация ASR...", "Initializing ASR...")
 
+    def _set_pill(self, kind: str | None) -> None:
+        """Единая точка обновления ASR-пилюли. Хранит логическое состояние
+        (а не готовую строку), чтобы уметь перерисовать её на новом языке при
+        live-переключении локали."""
+        self._pill_kind = kind
+        if not kind:
+            return
+        if not (self.view and hasattr(self.view, "asr_set_pill") and hasattr(self.view, "asr_init_status")):
+            return
+
+        if kind == "loading":
+            text, pill_kind = self._asr_loading_text(self._init_engine), "progress"
+        elif kind == "ready":
+            text, pill_kind = _("Готово", "Ready"), "ok"
+        else:
+            return
+
+        try:
+            self.view.asr_set_pill.emit({
+                "label": self.view.asr_init_status,
+                "text": text,
+                "kind": pill_kind,
+            })
+        except Exception as e:
+            logger.debug(f"ASR pill update failed: {e}")
+
     # ---------------- UI pills from old logic ----------------
     def _on_asr_init_started(self, _event: Event):
         self._asr_initializing = True
         self._init_engine = str((_event.data or {}).get("engine") or "").strip().lower() or None
         self._arm_init_timeout_guard()
 
-        if self.view and hasattr(self.view, "asr_set_pill") and hasattr(self.view, "asr_init_status"):
-            try:
-                self.view.asr_set_pill.emit({
-                    "label": self.view.asr_init_status,
-                    "text": self._asr_loading_text(self._init_engine),
-                    "kind": "progress"
-                })
-            except Exception as e:
-                logger.debug(f"ASR init pill update failed: {e}")
-
+        self._set_pill("loading")
         self._sync_indicator()
 
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
@@ -121,18 +147,22 @@ class AsrEventsController(BaseController):
     def _on_asr_initialized(self, _event: Event):
         self._asr_initializing = False
 
-        if self.view and hasattr(self.view, "asr_set_pill") and hasattr(self.view, "asr_init_status"):
-            try:
-                self.view.asr_set_pill.emit({
-                    "label": self.view.asr_init_status,
-                    "text": _("Готово", "Ready"),
-                    "kind": "ok"
-                })
-            except Exception as e:
-                logger.debug(f"ASR initialized pill update failed: {e}")
-
+        self._set_pill("ready")
         self._sync_indicator(force=True)
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+
+    def _on_language_changed(self, *_args) -> None:
+        """Live-переключение языка: перерисовываем индикатор и пилюлю ASR на
+        новом языке. Индикатор пересобирается из состояния, поэтому сбрасываем
+        dedup-кэш; пилюлю перерисовываем по сохранённому логическому состоянию."""
+        self._last_state = None
+        self._last_tooltip = None
+        try:
+            self._sync_indicator(force=True)
+        except Exception:
+            pass
+        if self._pill_kind:
+            self._set_pill(self._pill_kind)
 
     # ---------------- install events ----------------
     def _is_asr_task(self, data: dict) -> bool:
