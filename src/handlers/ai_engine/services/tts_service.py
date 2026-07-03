@@ -87,16 +87,21 @@ class TTSService:
                 return False
 
             lv = self._get_local_voice()
+            self.emit_event("log", f"[tts:init] start model_id={model_id} warmup={do_warmup}")
             ok = await asyncio.to_thread(lv.initialize_model, model_id, init=False)
             if not ok:
+                self.emit_event("log", f"[tts:init] initialize_model returned False for model_id={model_id}")
                 return False
 
             self._current_model_id = model_id
+            self.emit_event("log", f"[tts:init] runtime initialized for model_id={model_id}")
 
             if do_warmup:
                 warm = await self._best_effort_warmup(lv, model_id)
                 if not warm:
+                    self.emit_event("log", f"[tts:init] warmup failed for model_id={model_id}")
                     return False
+                self.emit_event("log", f"[tts:init] warmup finished for model_id={model_id}")
 
             return True
 
@@ -185,27 +190,35 @@ class TTSService:
 
         produced: Optional[str] = None
         try:
+            self.emit_event("log", f"[tts:warmup] synthesizing probe for model_id={model_id} -> {out}")
             produced = await lv.voiceover(
                 text="warmup-вармап",
                 output_file=out,
                 character=None,
             )
             if not produced:
+                self.emit_event("log", f"[tts:warmup] no output returned for model_id={model_id}")
                 return False
             if not os.path.exists(produced) or os.path.getsize(produced) <= 0:
+                self.emit_event("log", f"[tts:warmup] invalid output for model_id={model_id}: {produced}")
                 return False
+            self.emit_event("log", f"[tts:warmup] probe generated for model_id={model_id}: {produced}")
             return True
 
         except FileNotFoundError:
             # "нет reference" или файлов модели — для warmup это допустимо, init уже прошёл
+            self.emit_event("log", f"[tts:warmup] skipped for model_id={model_id}: missing reference/model asset")
             return True
         except RuntimeError as e:
             msg = str(e).lower()
             # generic: "requires reference audio" и т.п.
             if "reference" in msg and ("audio" in msg or "voice" in msg):
+                self.emit_event("log", f"[tts:warmup] skipped for model_id={model_id}: {e}")
                 return True
+            self.emit_event("log", f"[tts:warmup] runtime error for model_id={model_id}: {e}")
             return False
-        except Exception:
+        except Exception as exc:
+            self.emit_event("log", f"[tts:warmup] unexpected error for model_id={model_id}: {exc}")
             return False
         finally:
             for p in [out, produced]:

@@ -1059,11 +1059,362 @@ class PipInstaller:
             self.last_bytes_done: float = 0.0
             self.last_bytes_time: float = self.start
             self.speed_bps: float = 0.0
+            self.uv_progress: Optional["PipInstaller._UvProgressAggregator"] = None
+            self.last_snapshot_emit: float = self.start
             self.is_pytorch_install: bool = (
                 ("download.pytorch.org" in self.cmd_str_low)
                 or ("torch" in self.cmd_str_low and "install" in self.cmd_str_low)
             )
             self.torch_hint_logged: bool = False
+
+    class _UvProgressAggregator:
+        RE_PCT = re.compile(r"(\d{1,3})\s*%")
+        RE_PAIR = re.compile(
+            r"(?P<done>\d+(?:\.\d+)?)\s*(?P<dunit>[KMGTP]?i?B|B)\s*/\s*"
+            r"(?P<total>\d+(?:\.\d+)?)\s*(?P<tunit>[KMGTP]?i?B|B)",
+            re.IGNORECASE,
+        )
+        RE_SPEED = re.compile(r"(?P<speed>\d+(?:\.\d+)?)\s*(?P<sunit>[KMGTP]?i?B|B)/s", re.IGNORECASE)
+        RE_PREP = re.compile(
+            r"preparing packages\.\.\.\s*KATEX_INLINE_OPEN(\d+)\s*/\s*(\d+)KATEX_INLINE_CLOSE",
+            re.IGNORECASE,
+        )
+        RE_WHL = re.compile(r"([A-Za-z0-9_.+-]+-[0-9][^-\\/\s]*?.*?\.whl)", re.IGNORECASE)
+        RE_TAR = re.compile(r"([A-Za-z0-9_.+-]+-.*?\.(?:tar\.gz|zip|bz2|xz))", re.IGNORECASE)
+        RE_PATH = re.compile(r"([A-Za-z]:[^\s]+\.whl|/[^\s]+\.whl)", re.IGNORECASE)
+        RE_TOKEN = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9_.-]{1,})\b")
+
+        SPIN_CHARS = "⠋⠙⠚⠞⠖⠦⠴⠲⠶⠇⠧⠹⠼"
+        NOISE_TOKENS = {
+            "debug", "trace", "info", "warning", "warn", "error",
+            "preparing", "prepared", "resolving", "resolved",
+            "fetching", "fetched", "building", "built",
+            "collecting", "collected",
+            "installing", "installed", "uninstalling", "uninstalled",
+            "downloading", "downloaded",
+        }
+
+        def __init__(self):
+            self.tasks: dict[str, dict] = {}
+            self.completed: dict[str, dict] = {}
+            self.peak_done: dict[str, int] = {}
+            self.peak_total: dict[str, int] = {}
+            self.phase_cur: int | None = None
+            self.phase_tot: int | None = None
+            self.snapshot_tick: int = 0
+            self.done_epsilon_ratio = 0.995
+            self.stale_to_done_sec = 4.0
+            self.hard_stale_sec = 15.0
+            self.hist_window_sec = 8.0
+
+        @staticmethod
+        def unit_mul(unit: str) -> int:
+            u = unit.upper()
+            dec = {"B": 1, "KB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3, "TB": 1000 ** 4, "PB": 1000 ** 5}
+            bin_ = {"KIB": 1024, "MIB": 1024 ** 2, "GIB": 1024 ** 3, "TIB": 1024 ** 4, "PIB": 1024 ** 5}
+            return bin_.get(u, dec.get(u, 1))
+
+        @staticmethod
+        def fmt_bytes(n: float | int) -> str:
+            try:
+                n = float(n)
+            except Exception:
+                return "?"
+            for unit, mul in (("B", 1), ("KiB", 1024), ("MiB", 1024 ** 2), ("GiB", 1024 ** 3), ("TiB", 1024 ** 4)):
+                if n < mul * 1024 or unit == "TiB":
+                    return f"{n / mul:.1f} {unit}"
+            return f"{n:.1f} B"
+
+        @staticmethod
+        def fmt_rate(bps: float | int | None) -> str:
+            if not bps:
+                return "-"
+            try:
+                bps = float(bps)
+            except Exception:
+                return "-"
+            for unit, mul in (("B/s", 1), ("KiB/s", 1024), ("MiB/s", 1024 ** 2), ("GiB/s", 1024 ** 3)):
+                if bps < mul * 1024 or unit == "GiB/s":
+                    return f"{bps / mul:.1f} {unit}"
+            return f"{bps:.1f} B/s"
+
+        @staticmethod
+        def fmt_eta(seconds: float | None) -> str | None:
+            if seconds is None or seconds < 0:
+                return None
+            seconds = int(seconds)
+            m, s = divmod(seconds, 60)
+            h, m = divmod(m, 60)
+            return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+        def bar(self, pct: int | None, width: int = 22, *, indeterminate: bool = False) -> str:
+            if indeterminate:
+                if width <= 0:
+                    return "||"
+                span = max(3, min(6, width // 4 or 1))
+                travel = max(1, width - span + 1)
+                pos = self.snapshot_tick % travel
+                body = ["·"] * width
+                for i in range(span):
+                    idx = min(width - 1, pos + i)
+                    body[idx] = "█" if i == span // 2 else "■"
+                return "|" + "".join(body) + "|"
+            if pct is None:
+                return "|" + "·" * width + "|"
+            fill = max(0, min(width, int(round((pct / 100) * width))))
+            return "|" + "█" * fill + "_" * (width - fill) + "|"
+
+        def ident_and_display(self, s: str) -> tuple[str, str] | None:
+            m = self.RE_WHL.search(s) or self.RE_TAR.search(s) or self.RE_PATH.search(s)
+            if m:
+                return self.canon_name_from_wheel(m.group(1))
+            m = self.RE_TOKEN.match(s)
+            if not m:
+                return None
+            tok = m.group(1)
+            low = tok.lower()
+            if low in self.NOISE_TOKENS:
+                return None
+            if tok and (tok[0] in self.SPIN_CHARS or tok in ("i.", ":", ";", ".", "…")):
+                return None
+            return low, tok.replace("_", "-")
+
+        @staticmethod
+        def canon_name_from_wheel(wheel_path: str) -> tuple[str, str]:
+            base = wheel_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            pkg = base.split("-", 1)[0]
+            return base.lower(), pkg
+
+        def _ensure_hist(self, task: dict) -> None:
+            if "hist" not in task:
+                task["hist"] = deque(maxlen=120)
+
+        def _push_hist(self, task: dict, ts: float) -> None:
+            self._ensure_hist(task)
+            done = task.get("done")
+            if done is None:
+                return
+            hist = task["hist"]
+            if not hist or hist[-1][1] != done:
+                hist.append((ts, int(done)))
+            while len(hist) >= 2 and (ts - hist[0][0] > max(self.hist_window_sec * 1.5, 2 * self.hist_window_sec)):
+                hist.popleft()
+
+        def estimate_speed(self, task: dict) -> float:
+            speed = task.get("speed_bps")
+            if speed and speed > 0:
+                return float(speed)
+            hist = task.get("hist") or []
+            if len(hist) < 2:
+                return 0.0
+            ts_now = hist[-1][0]
+            idx = 0
+            for i in range(len(hist) - 2, -1, -1):
+                if ts_now - hist[i][0] > self.hist_window_sec:
+                    idx = i
+                    break
+            dt = ts_now - hist[idx][0]
+            if dt <= 0:
+                return 0.0
+            dd = float(hist[-1][1] - hist[idx][1])
+            if dd <= 0:
+                return 0.0
+            return dd / dt
+
+        def update(self, raw_line: str) -> None:
+            s = PipInstaller._clean_line(raw_line).strip()
+            if not s:
+                return
+
+            prep = self.RE_PREP.search(s)
+            if prep:
+                try:
+                    self.phase_cur = int(prep.group(1))
+                    self.phase_tot = int(prep.group(2))
+                except Exception:
+                    pass
+                return
+
+            ident_disp = self.ident_and_display(s)
+            if not ident_disp:
+                return
+            cid, disp = ident_disp
+
+            task = self.tasks.get(cid)
+            if not task:
+                task = {
+                    "id": cid,
+                    "name": disp,
+                    "pct": None,
+                    "done": None,
+                    "total": None,
+                    "speed_bps": None,
+                    "eta": None,
+                    "ts": time.time(),
+                }
+                self.tasks[cid] = task
+
+            pct_match = self.RE_PCT.search(s)
+            if pct_match:
+                try:
+                    task["pct"] = max(0, min(100, int(pct_match.group(1))))
+                except Exception:
+                    pass
+
+            pair_match = self.RE_PAIR.search(s)
+            if pair_match:
+                try:
+                    done = float(pair_match.group("done")) * self.unit_mul(pair_match.group("dunit"))
+                    total = float(pair_match.group("total")) * self.unit_mul(pair_match.group("tunit"))
+                    task["done"], task["total"] = int(done), int(total)
+                    if total > 0:
+                        task["pct"] = max(0, min(100, int(round(done / total * 100))))
+                except Exception:
+                    pass
+
+            speed_match = self.RE_SPEED.search(s)
+            if speed_match:
+                try:
+                    task["speed_bps"] = float(speed_match.group("speed")) * self.unit_mul(speed_match.group("sunit"))
+                except Exception:
+                    task["speed_bps"] = None
+
+            now = time.time()
+            if task.get("done") is not None:
+                self._push_hist(task, now)
+
+            if task.get("done") is not None and task.get("total") is not None:
+                remaining = max(0.0, float(task["total"] - task["done"]))
+                speed_est = self.estimate_speed(task)
+                task["eta"] = self.fmt_eta(remaining / speed_est if speed_est > 0 else None)
+            else:
+                task["eta"] = None
+
+            self._record_peaks(task)
+            task["ts"] = now
+
+        def _record_peaks(self, task: dict) -> None:
+            cid = task["id"]
+            if task.get("total") is not None:
+                self.peak_total[cid] = max(self.peak_total.get(cid, 0), int(task["total"]))
+            if task.get("done") is not None:
+                peak_total = self.peak_total.get(cid, int(task.get("done", 0)))
+                self.peak_done[cid] = max(self.peak_done.get(cid, 0), min(int(task.get("done", 0)), peak_total))
+
+        def prune(self, now: float) -> None:
+            to_close: list[str] = []
+            for cid, task in list(self.tasks.items()):
+                pct = task.get("pct")
+                done, total = task.get("done"), task.get("total")
+                ratio = (float(done) / float(total)) if (done is not None and total) else None
+                if (pct is not None and pct >= 99) or (ratio is not None and ratio >= self.done_epsilon_ratio):
+                    to_close.append(cid)
+                    continue
+                idle = now - task["ts"]
+                if ratio is not None and ratio >= 0.95 and idle >= self.stale_to_done_sec:
+                    to_close.append(cid)
+                    continue
+                if idle >= self.hard_stale_sec:
+                    to_close.append(cid)
+
+            for cid in to_close:
+                task = self.tasks.pop(cid, None)
+                if task:
+                    self._record_peaks(task)
+                    self.completed[cid] = task
+
+        def overall_percent(self) -> int | None:
+            if not self.peak_total:
+                return None
+            total_total = sum(self.peak_total.values())
+            if total_total <= 0:
+                return None
+            total_done = 0
+            for cid, total in self.peak_total.items():
+                total_done += min(self.peak_done.get(cid, 0), total)
+            return int(max(0, min(100, round(total_done / total_total * 100))))
+
+        def has_activity(self) -> bool:
+            return bool(self.tasks or self.completed or (self.phase_cur is not None and self.phase_tot is not None))
+
+        def has_confident_progress(self) -> bool:
+            total_bytes = sum(self.peak_total.values())
+            total_tasks = sum(1 for total in self.peak_total.values() if total > 0)
+            pct = self.overall_percent() or 0
+            return total_tasks > 0 and (total_bytes >= 8 * 1024 * 1024 or total_tasks >= 2 or pct >= 5)
+
+        def overall_speed_bps(self) -> float:
+            return sum(self.estimate_speed(task) for task in self.tasks.values())
+
+        def overall_eta_bytes(self) -> float | None:
+            sum_total = 0.0
+            sum_done = 0.0
+            sum_speed = 0.0
+            for task in self.tasks.values():
+                total = task.get("total")
+                done = task.get("done")
+                if total is None or done is None:
+                    continue
+                sum_total += float(total)
+                sum_done += float(done)
+                speed = self.estimate_speed(task)
+                if speed > 0:
+                    sum_speed += speed
+            if sum_total <= 0 or sum_speed <= 0:
+                return None
+            remaining = max(0.0, sum_total - sum_done)
+            if remaining <= 0:
+                return 0.0
+            return remaining / sum_speed
+
+        def snapshot_lines(self, max_lines: int = 8) -> list[str]:
+            self.snapshot_tick += 1
+            lines: list[str] = []
+            if self.phase_cur is not None and self.phase_tot is not None:
+                lines.append(f"Подготовка пакетов: {self.phase_cur}/{self.phase_tot}")
+
+            if not self.tasks:
+                return lines
+
+            items = sorted(self.tasks.values(), key=lambda task: (-task["ts"], task["name"]))
+            sum_done = sum((task.get("done") or 0) for task in items if task.get("total"))
+            sum_total = sum((task.get("total") or 0) for task in items if task.get("total"))
+            pcts = [task["pct"] for task in items if task.get("pct") is not None]
+            summary = f"Активных задач: {len(items)}"
+            if self.has_confident_progress():
+                avg = int(round(sum(pcts) / len(pcts))) if pcts else 0
+                summary += f"  Средний прогресс: {avg}%"
+                summary += f"  Σ {self.fmt_bytes(sum_done)}/{self.fmt_bytes(sum_total)}"
+                sum_speed = self.overall_speed_bps()
+                if sum_speed > 0:
+                    eta_sec = (sum_total - sum_done) / sum_speed if sum_total > sum_done else 0.0
+                    eta_txt = self.fmt_eta(eta_sec)
+                    if eta_txt:
+                        summary += f"  Σскорость: {self.fmt_rate(sum_speed)}  ETA: {eta_txt}"
+            else:
+                summary += "  Ожидание данных о размере пакетов…"
+            lines.append(summary)
+
+            for index, task in enumerate(items):
+                if index >= max_lines:
+                    break
+                name = task["name"]
+                if len(name) > 28:
+                    name = name[:25] + "..."
+                right: list[str] = []
+                indeterminate = task.get("total") is None
+                if task.get("pct") is not None:
+                    right.append(f"{task['pct']:3d}%")
+                if task.get("done") is not None and task.get("total") is not None:
+                    right.append(f"{self.fmt_bytes(task['done'])}/{self.fmt_bytes(task['total'])}")
+                speed = self.estimate_speed(task)
+                if speed > 0:
+                    right.append(self.fmt_rate(speed))
+                if task.get("eta"):
+                    right.append(f"ETA {task['eta']}")
+                suffix = f"  {'  '.join(right)}" if right else ""
+                lines.append(f"{name:28} {self.bar(task.get('pct'), indeterminate=indeterminate)}{suffix}")
+            return lines
 
     # Настройки времени/таймаутов
     STALL_INFO_SEC = 10
@@ -1231,22 +1582,19 @@ class PipInstaller:
             self.update_log(clean)
             state.error_seen = True
         else:
-            # Попробуем вытащить проценты
-            m = self._RE_PCT.search(clean)
-            if m:
+            if state.uv_progress is not None:
                 try:
-                    pct = max(0, min(100, int(m.group(1))))
-                    if pct > state.percent:
-                        state.percent = min(99, pct)  # не прыгать на 100 до конца
-                        self.update_progress(state.percent)
-                        state.history.append((time.time(), state.percent))
+                    state.uv_progress.update(clean)
+                    self._update_progress_from_aggregator(state)
                 except Exception:
                     pass
 
             # Попробуем вытащить отношение done/total
+            has_byte_pair = False
             m2 = self._RE_PAIR.search(clean)
             if m2:
                 try:
+                    has_byte_pair = True
                     d = float(m2.group("done"))  * self._unit_mul(m2.group("dunit"))
                     T = float(m2.group("total")) * self._unit_mul(m2.group("tunit"))
                     if T > 0:
@@ -1260,6 +1608,18 @@ class PipInstaller:
                 except Exception:
                     pass
 
+            # Попробуем вытащить проценты
+            m = self._RE_PCT.search(clean)
+            if m:
+                try:
+                    pct = max(0, min(100, int(m.group(1))))
+                    if self._should_accept_percent(state, pct, has_byte_pair=has_byte_pair) and pct > state.percent:
+                        state.percent = min(99, pct)  # не прыгать на 100 до конца
+                        self.update_progress(state.percent)
+                        state.history.append((time.time(), state.percent))
+                except Exception:
+                    pass
+
             # Транзиентные (\r) перерисовки прогресса в постоянный лог не пишем.
             if not transient:
                 self.update_log(clean)
@@ -1269,24 +1629,76 @@ class PipInstaller:
             # Живой прогресс-бар — сразу обновим строку статуса (со скоростью).
             self._update_status_if_needed(state)
 
+    def _is_progress_confident(self, state: _RunState) -> bool:
+        agg = state.uv_progress
+        if agg is not None and agg.has_confident_progress():
+            return True
+        return state.percent >= 3 and (agg is None or not agg.has_activity())
+
+    def _should_accept_percent(self, state: _RunState, pct: int, *, has_byte_pair: bool) -> bool:
+        if has_byte_pair:
+            return True
+        agg = state.uv_progress
+        if agg is None:
+            return True
+        if agg.has_confident_progress():
+            return True
+        if not agg.has_activity():
+            return pct >= 3
+        return pct >= 5
+
+    def _update_progress_from_aggregator(self, state: _RunState) -> None:
+        agg = state.uv_progress
+        if agg is None:
+            return
+        if not agg.has_confident_progress():
+            return
+        pct = agg.overall_percent()
+        if pct is None:
+            return
+        pct = min(99, max(3, int(pct)))
+        if pct > state.percent:
+            state.percent = pct
+            self.update_progress(state.percent)
+            state.history.append((time.time(), state.percent))
+
+    def _emit_snapshot_if_needed(self, state: _RunState, *, force: bool = False) -> None:
+        agg = state.uv_progress
+        if agg is None:
+            return
+        now = time.time()
+        agg.prune(now)
+        if not force and now - state.last_snapshot_emit < 0.1:
+            return
+        lines = agg.snapshot_lines()
+        if lines:
+            self.update_log("__SNAPSHOT_START__\n" + "\n".join(lines) + "\n__SNAPSHOT_END__")
+        state.last_snapshot_emit = now
+
     def _update_status_if_needed(self, state: _RunState):
         now = time.time()
         if now - state.last_status_emit < 0.5:
             return
 
         eta_txt = ""
-        if len(state.history) >= 2 and state.percent >= 3:
+        eta_seconds = state.uv_progress.overall_eta_bytes() if state.uv_progress is not None else None
+        if eta_seconds is None and len(state.history) >= 2 and state.percent >= 3:
             t0, p0 = state.history[0]
             dt = now - t0
             dp = state.percent - p0
             if dt > 0 and dp > 0:
-                eta_sec = int(max(0.0, (100.0 - state.percent)) / (dp / dt))
-                eta_txt = f" (ETA {self._fmt_hms(eta_sec)})"
+                eta_seconds = max(0.0, (100.0 - state.percent)) / (dp / dt)
+        if eta_seconds is not None:
+            eta_txt = f" (ETA {self._fmt_hms(eta_seconds)})"
 
         # Скорость считаем «свежей» только если данные обновлялись недавно.
         speed_txt = ""
-        if state.speed_bps > 0 and (now - state.last_bytes_time) < 5.0:
-            s = self._fmt_speed(state.speed_bps)
+        agg_speed_bps = state.uv_progress.overall_speed_bps() if state.uv_progress is not None else 0.0
+        live_speed_bps = agg_speed_bps if agg_speed_bps > 0 else (
+            state.speed_bps if state.speed_bps > 0 and (now - state.last_bytes_time) < 5.0 else 0.0
+        )
+        if live_speed_bps > 0:
+            s = self._fmt_speed(live_speed_bps)
             if s:
                 speed_txt = f" · {s}"
 
@@ -1298,7 +1710,7 @@ class PipInstaller:
         # зависшим (фидбэк Артёма: «просто тупо молчаливая установка»).
         # Вместо этого крутим живой счётчик прошедшего времени — видно, что
         # процесс идёт.
-        if state.percent > 0:
+        if state.percent > 0 and self._is_progress_confident(state):
             msg = f"{state.description} — {state.percent}%"
         else:
             msg = f"{state.description} — идёт… {self._fmt_hms(elapsed_sec)}"
@@ -1334,6 +1746,28 @@ class PipInstaller:
                 proc.kill()
         except Exception:
             pass
+
+    def _log_failure_context(self, cmd: List[str], state: _RunState, ret: int) -> None:
+        recent = [line for line in state.recent_lines if str(line).strip()]
+        if recent:
+            heading = "Последние строки установщика перед ошибкой:"
+            self.update_log(heading)
+            logger.error(f"[installer] {heading}")
+            for line in recent[-12:]:
+                self.update_log(line)
+                logger.error(f"[installer] {line}")
+        elif state.uv_progress is not None and state.uv_progress.has_activity():
+            lines = state.uv_progress.snapshot_lines(max_lines=10)
+            if lines:
+                heading = "Последний снимок прогресса перед ошибкой:"
+                self.update_log(heading)
+                logger.error(f"[installer] {heading}")
+                self.update_log("__SNAPSHOT_START__\n" + "\n".join(lines) + "\n__SNAPSHOT_END__")
+                for line in lines:
+                    logger.error(f"[installer] {line}")
+        final_line = f"Команда завершилась с кодом {ret}: {' '.join(cmd)}"
+        self.update_log(final_line)
+        logger.error(f"[installer] {final_line}")
 
     def _is_uv_cache_access_denied_failure(self, cmd: List[str], state: _RunState, ret: int) -> bool:
         if ret == 0 or not self._is_uv_command(cmd):
@@ -1387,22 +1821,32 @@ class PipInstaller:
 
         while proc.poll() is None or t_out.is_alive() or t_err.is_alive():
             processed_any = False
+            processed_weight = 0.0
             while not q_out.empty():
                 line = q_out.get_nowait()
                 self._process_line(state, line)
                 processed_any = True
+                processed_weight += 0.4
             while not q_err.empty():
                 line = q_err.get_nowait()
                 self._process_line(state, line)
                 processed_any = True
+                processed_weight += 0.4
 
             if processed_any:
-                # Плавное движение прогресса, если ничто не пишет проценты
+                # Fallback from the older working installer: when pipe output
+                # is alive but no real percent can be parsed, keep the bar
+                # moving a little instead of leaving the install window stuck.
                 if state.percent < 95:
-                    # Не дергаем часто — история сама обновится при _process_line
-                    pass
+                    next_percent = min(95, int(round(state.percent + processed_weight)))
+                    if next_percent > state.percent:
+                        state.percent = next_percent
+                        self.update_progress(state.percent)
+                        state.history.append((time.time(), state.percent))
 
-            # Обновим статус по таймеру
+            self._emit_snapshot_if_needed(state)
+
+            # Refresh status on the regular timer.
             self._update_status_if_needed(state)
 
             now = time.time()
@@ -1424,6 +1868,7 @@ class PipInstaller:
             self._process_line(state, q_out.get_nowait())
         while not q_err.empty():
             self._process_line(state, q_err.get_nowait())
+        self._emit_snapshot_if_needed(state, force=True)
 
         return True, (proc.returncode or 0)
 
@@ -1447,15 +1892,36 @@ class PipInstaller:
             return False, -1
 
         buffer = ""
-        while pty.isalive():
-            try:
-                chunk = pty.read(4096)
-            except Exception:
-                chunk = ""
+        q_chunks: queue.Queue = queue.Queue()
+
+        def _pty_reader() -> None:
+            while True:
+                try:
+                    chunk = pty.read(4096)
+                except Exception:
+                    chunk = ""
+                if chunk:
+                    q_chunks.put(chunk)
+                    continue
+                if not pty.isalive():
+                    break
+                time.sleep(0.03)
+
+        reader = threading.Thread(target=_pty_reader, daemon=True)
+        reader.start()
+
+        while pty.isalive() or reader.is_alive() or not q_chunks.empty():
+            chunk = ""
+            while not q_chunks.empty():
+                try:
+                    part = q_chunks.get_nowait()
+                except queue.Empty:
+                    break
+                if isinstance(part, bytes):
+                    part = self._decode_subprocess_chunk(part)
+                chunk += part or ""
 
             if chunk:
-                if isinstance(chunk, bytes):
-                    chunk = self._decode_subprocess_chunk(chunk)
                 buffer += chunk
                 parts = re.split(r'(\r|\n)', buffer)
                 buffer = ""
@@ -1474,6 +1940,8 @@ class PipInstaller:
                         acc += tok
                     i += 1
                 buffer = acc
+
+            self._emit_snapshot_if_needed(state)
 
             # Обновим статус
             self._update_status_if_needed(state)
@@ -1500,17 +1968,22 @@ class PipInstaller:
             self._pump_events()
             time.sleep(0.03)
 
+        tail = self._clean_line(buffer.strip())
+        if tail:
+            self._process_line(state, tail)
+        self._emit_snapshot_if_needed(state, force=True)
         ret = pty.exitstatus or 0
         return True, ret
 
     def _run_pip_process(self, cmd: List[str], description: str) -> bool:
         """
-        Упрощённый запуск UV/PIP:
-        - Без снапшотов и специальных маркеров.
-        - Поддержка PTY только на Windows (если доступен winpty/pywinpty), иначе — стандартные пайпы.
-        - Прогресс/ETA извлекаются из процентов или done/total; при их отсутствии — оценка по тренду.
+        Запуск UV/PIP с подробным прогрессом:
+        - под PTY читаем живой UV/pip-вывод и рендерим снапшоты активных задач;
+        - без PTY сохраняем фоллбэк на пайпы и постепенно двигаем верхний progress bar;
+        - статус предпочитает реальную скорость/ETA по байтам, а не грубую оценку по времени.
         """
         state = self._RunState(description, cmd)
+        state.uv_progress = self._UvProgressAggregator()
 
         self.update_status(description)
         self.update_log("Выполняем: " + " ".join(cmd))
@@ -1545,7 +2018,8 @@ class PipInstaller:
             return True
             
         if not ok or ret != 0:
-            err_msg = f"ОШИБКА: Процесс завершился с кодом {ret}. Проверьте лог выше."
+            self._log_failure_context(cmd, state, ret)
+            err_msg = f"ОШИБКА: Процесс завершился с кодом {ret}."
             if not state.error_seen:
                 self.update_log(err_msg)
             # Принудительно пишем в основной логгер

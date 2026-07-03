@@ -418,6 +418,36 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             return self.RVC_DEFAULT_F0_METHOD
         return method
 
+    def _hubert_candidate_paths(self) -> list[str]:
+        candidates = [
+            os.path.abspath(os.path.join(os.getcwd(), "hubert_base.pt")),
+            os.path.abspath(os.path.join(os.environ.get("NEUROMITA_MODELS_DIR", os.path.abspath("Models")), "hubert_base.pt")),
+            os.path.abspath(os.path.join(os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib")), "hubert_base.pt")),
+        ]
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in candidates:
+            key = os.path.normcase(os.path.abspath(str(item)))
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(os.path.abspath(str(item)))
+        return result
+
+    def _describe_hubert_state(self) -> str:
+        parts: list[str] = []
+        for path in self._hubert_candidate_paths():
+            exists = os.path.exists(path)
+            size = 0
+            if exists:
+                try:
+                    size = int(os.path.getsize(path))
+                except Exception:
+                    size = -1
+            suffix = f"exists size={size}" if exists else "missing"
+            parts.append(f"{path} [{suffix}]")
+        return "; ".join(parts)
+
     def initialize(self, init: bool = False) -> bool:
         current_mode = str(self.parent.current_model_id or "").strip()
         runtime_mode = self._runtime_model_id(current_mode)
@@ -439,6 +469,11 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                 device = str(settings.get(device_key, self.RVC_DEFAULT_DEVICE) or self.RVC_DEFAULT_DEVICE)
                 f0_method = self._normalize_f0_method(settings.get(f0_key, self.RVC_DEFAULT_F0_METHOD))
                 model_path_to_use = self._default_model_path()
+                logger.info(
+                    f"RVC init context: cwd='{os.getcwd()}', "
+                    f"models_dir='{os.environ.get('NEUROMITA_MODELS_DIR', os.path.abspath('Models'))}', "
+                    f"hubert_candidates={self._describe_hubert_state()}"
+                )
 
                 parent_model_path = getattr(self.parent, "pth_path", None)
                 parent_ext = os.path.splitext(str(parent_model_path or ""))[1].lower().lstrip(".")
@@ -451,9 +486,16 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                     self.initialized_for = None
                     return False
 
+                logger.info(
+                    f"Creating RVC runtime: model_path='{model_path_to_use}', "
+                    f"device='{device}', f0_method='{f0_method}', init={bool(init)}"
+                )
                 self.current_tts_rvc = self.tts_rvc_module(model_path=model_path_to_use, device=device, f0_method=f0_method)
                 self._apply_backend_sampling_policy()
-                logger.info(f"RVC initialized with device={device}, f0_method={f0_method}")
+                logger.info(
+                    f"RVC initialized with device={device}, f0_method={f0_method}, "
+                    f"hubert_candidates_after={self._describe_hubert_state()}"
+                )
 
             self._set_edge_voice()
 
@@ -467,7 +509,12 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             self.initialized_for = current_mode
             return True
         except Exception as exc:
-            logger.error(f"Failed to initialize {self.__class__.__name__}: {exc}", exc_info=True)
+            logger.error(
+                f"Failed to initialize {self.__class__.__name__}: {exc}. "
+                f"mode='{current_mode}', runtime='{runtime_mode}', "
+                f"hubert_candidates={self._describe_hubert_state()}",
+                exc_info=True,
+            )
             self.initialized = False
             self.initialized_for = None
             return False

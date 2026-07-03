@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from core.backends import BackendKind
 from handlers.voice_models.edge_tts_rvc_model import (
@@ -84,6 +86,26 @@ class EdgeTTSRVCInstallablesTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(calls, [["fish-speech-lib", "triton-windows", "tts-with-rvc"]])
+
+    def test_hubert_candidates_include_runtime_locations(self):
+        class _Parent:
+            current_model_id = EDGE_TTS_RVC_CUDA_ID
+
+            @staticmethod
+            def load_model_settings(_model_id):
+                return {}
+
+        model = EdgeTTSRVCCudaModel(_Parent(), EDGE_TTS_RVC_CUDA_ID)
+        with patch("os.getcwd", return_value=r"C:\RuntimeRoot"), patch.dict(
+            "os.environ",
+            {"NEUROMITA_MODELS_DIR": r"C:\RuntimeRoot\Models", "NEUROMITA_LIB_DIR": r"C:\RuntimeRoot\Lib"},
+            clear=False,
+        ):
+            candidates = model._hubert_candidate_paths()
+
+        self.assertIn(str(Path(r"C:\RuntimeRoot\hubert_base.pt")), candidates)
+        self.assertIn(str(Path(r"C:\RuntimeRoot\Models\hubert_base.pt")), candidates)
+        self.assertIn(str(Path(r"C:\RuntimeRoot\Lib\hubert_base.pt")), candidates)
 
 
 if __name__ == "__main__":

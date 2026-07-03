@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from core.install_requirements import InstallRequirement, check_requirements
 from handlers.voice_models.f5_tts_model import F5TTSInstallSpec
@@ -39,6 +40,41 @@ class F5TTSInstallablesTests(unittest.TestCase):
 
         self.assertFalse(status["ok"])
         self.assertEqual(status["missing_required"], ["tts_with_rvc"])
+
+    def test_final_check_logs_missing_requirement_details(self):
+        logs: list[str] = []
+        callbacks = SimpleNamespace(log=logs.append)
+
+        fake_result = {
+            "ok": False,
+            "missing_required": ["tts_with_rvc", "ckpt"],
+            "details": [
+                {
+                    "id": "tts_with_rvc",
+                    "kind": "python_dist",
+                    "required": True,
+                    "ok": False,
+                    "extra": {"spec": "tts-with-rvc", "version": None},
+                },
+                {
+                    "id": "ckpt",
+                    "kind": "file",
+                    "required": True,
+                    "ok": False,
+                    "extra": {"path": "checkpoints/F5-TTS/model.safetensors"},
+                },
+            ],
+        }
+
+        with patch("handlers.voice_models.f5_tts_model.check_requirements", return_value=fake_result):
+            ok = F5TTSInstallSpec._final_check("high+low", {"gpu_vendor": "NVIDIA"}, callbacks=callbacks)
+
+        self.assertFalse(ok)
+        joined = "\n".join(logs)
+        self.assertIn("ОШИБКА: Финальная проверка установки не пройдена.", joined)
+        self.assertIn("ОШИБКА: Не выполнены обязательные требования: tts_with_rvc, ckpt", joined)
+        self.assertIn("пакет tts-with-rvc не найден", joined)
+        self.assertIn("отсутствует файл checkpoints/F5-TTS/model.safetensors", joined)
 
 
 if __name__ == "__main__":

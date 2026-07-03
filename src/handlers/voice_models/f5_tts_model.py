@@ -22,6 +22,59 @@ from handlers.voice_models.install_plan_helpers import (
 
 class F5TTSInstallSpec:
     @classmethod
+    def _log_final_check_failure(cls, result: dict, callbacks=None) -> None:
+        log = getattr(callbacks, "log", None) if callbacks is not None else None
+        if not callable(log):
+            log = lambda *_: None
+
+        missing_required = list(result.get("missing_required") or [])
+        details = list(result.get("details") or [])
+        log("ОШИБКА: Финальная проверка установки не пройдена.")
+        if missing_required:
+            log("ОШИБКА: Не выполнены обязательные требования: " + ", ".join(missing_required))
+
+        for item in details:
+            if item.get("ok"):
+                continue
+            req_id = str(item.get("id") or "?")
+            kind = str(item.get("kind") or "?")
+            extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
+
+            if kind == "python_dist":
+                spec = str(extra.get("spec") or extra.get("dist") or req_id)
+                version = extra.get("version")
+                if version:
+                    log(f"ОШИБКА: Требование {req_id}: пакет {spec} не удовлетворён, обнаружена версия {version}.")
+                else:
+                    log(f"ОШИБКА: Требование {req_id}: пакет {spec} не найден или не удовлетворяет версии.")
+            elif kind == "file":
+                path = str(extra.get("path") or "")
+                log(f"ОШИБКА: Требование {req_id}: отсутствует файл {path}.")
+            elif kind == "backend":
+                reason = str(extra.get("reason") or "").strip()
+                action = str(extra.get("action") or "").strip()
+                backend_kind = str(extra.get("backend_kind") or req_id)
+                msg = f"ОШИБКА: Требование {req_id}: backend {backend_kind} не готов"
+                if action:
+                    msg += f" (action={action})"
+                if reason:
+                    msg += f": {reason}"
+                log(msg + ".")
+            elif kind == "python_module":
+                module = str(extra.get("module") or req_id)
+                log(f"ОШИБКА: Требование {req_id}: Python-модуль {module} не найден.")
+            else:
+                log(f"ОШИБКА: Требование {req_id}: проверка kind={kind} не пройдена.")
+
+    @classmethod
+    def _final_check(cls, model_id: str, ctx: dict, callbacks=None) -> bool:
+        result = check_requirements(cls.requirements(model_id, ctx), ctx=ctx)
+        ok = bool(result.get("ok"))
+        if not ok:
+            cls._log_final_check_failure(result, callbacks=callbacks)
+        return ok
+
+    @classmethod
     def _rvc_package_spec(cls, ctx: dict) -> str:
         gpu_vendor = str((ctx or {}).get("gpu_vendor") or "CPU").upper()
         if gpu_vendor == "NVIDIA":
@@ -209,7 +262,7 @@ class F5TTSInstallSpec:
                 type="call",
                 description=_("Проверка установки...", "Final check..."),
                 progress=99,
-                fn=lambda **_k: cls.is_installed(mid, ctx),
+                fn=lambda callbacks=None, **_k: cls._final_check(mid, ctx, callbacks=callbacks),
             )
         )
 

@@ -233,6 +233,7 @@ class LocalVoiceController:
 
     async def _async_init_model(self, model_id: str, progress_callback=None):
         try:
+            logger.info(f"LocalVoiceController init start: model_id='{model_id}'")
             if progress_callback:
                 progress_callback("status", _("Инициализация модели...", "Initializing model..."))
 
@@ -243,16 +244,21 @@ class LocalVoiceController:
             )
 
             if ok:
+                logger.info(f"LocalVoiceController init done: model_id='{model_id}'")
                 self._initialized_cache[model_id] = True
                 self.event_bus.emit(Events.Audio.FINISH_MODEL_LOADING, {"model_id": model_id})
             else:
+                logger.error(f"LocalVoiceController init failed: model_id='{model_id}'")
                 self._initialized_cache[model_id] = False
                 self.event_bus.emit(Events.Audio.UPDATE_MODEL_LOADING_STATUS, {
                     "status": _("Ошибка инициализации!", "Initialization error!")
                 })
                 self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
                     "title": _("Ошибка инициализации", "Initialization error"),
-                    "message": _("Не удалось инициализировать модель. Проверьте логи.", "Failed to initialize model. Check logs.")
+                    "message": _(
+                        "Не удалось инициализировать модель {}. Причина записана в логах TTS/инициализации.",
+                        "Failed to initialize model {}. The reason was written to the TTS/init logs."
+                    ).format(model_id)
                 })
                 self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
 

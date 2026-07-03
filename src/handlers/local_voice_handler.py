@@ -170,6 +170,10 @@ class LocalVoice:
         self.current_model_id = model_id
         ok = False
         try:
+            logger.info(
+                f"initialize_model start: model_id='{model_id}', "
+                f"handler='{type(model).__name__}', init={bool(init)}"
+            )
             ok = bool(model.initialize(init=init))
         except Exception as e:
             logger.error(f"initialize_model failed for {model_id}: {e}", exc_info=True)
@@ -177,6 +181,15 @@ class LocalVoice:
 
         if ok:
             self.active_model_instance = model
+            logger.info(
+                f"initialize_model done: model_id='{model_id}', "
+                f"handler='{type(model).__name__}', initialized_for='{getattr(model, 'initialized_for', None)}'"
+            )
+        else:
+            logger.error(
+                f"initialize_model returned False: model_id='{model_id}', "
+                f"handler='{type(model).__name__}'"
+            )
         return ok
 
     def change_voice_language(self, new_voice_language: str):

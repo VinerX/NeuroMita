@@ -4,6 +4,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -83,6 +84,136 @@ class PipInstallerFallbackTests(unittest.TestCase):
             any("встроенный pip" in msg for msg in messages),
             f"fallback log message missing: {messages}",
         )
+
+    def test_weak_task_percent_does_not_pin_global_progress(self):
+        installer = PipInstaller(
+            update_status=lambda *_: None,
+            update_log=lambda *_: None,
+            update_progress=lambda *_: None,
+            protected_packages=[],
+        )
+
+        state = installer._RunState("Installing...", [sys.executable, "-m", "uv"])
+        state.uv_progress = installer._UvProgressAggregator()
+
+        installer._process_line(state, "jinja2")
+        installer._process_line(state, "numpy 1%")
+
+        self.assertEqual(state.percent, 0)
+        self.assertFalse(installer._is_progress_confident(state))
+        self.assertIn(
+            "Ожидание данных о размере пакетов…",
+            "\n".join(state.uv_progress.snapshot_lines()),
+        )
+
+    def test_snapshot_hides_service_status_tokens_and_normalizes_names(self):
+        installer = PipInstaller(
+            update_status=lambda *_: None,
+            update_log=lambda *_: None,
+            update_progress=lambda *_: None,
+            protected_packages=[],
+        )
+
+        agg = installer._UvProgressAggregator()
+        for line in ("Installed", "Downloading", "Resolved", "absl_py", "typing_extensions"):
+            agg.update(line)
+
+        rendered = "\n".join(agg.snapshot_lines())
+        self.assertNotIn("Installed", rendered)
+        self.assertNotIn("Downloading", rendered)
+        self.assertNotIn("Resolved", rendered)
+        self.assertIn("absl-py", rendered)
+        self.assertIn("typing-extensions", rendered)
+
+    def test_failed_run_logs_recent_output_instead_of_log_above_stub(self):
+        messages: list[str] = []
+        tmp = tempfile.mkdtemp(prefix="pip-installer-error-log-")
+        try:
+            with patch.dict(
+                os.environ,
+                {"NEUROMITA_LIB_DIR": tmp, "NEUROMITA_PYTHON": sys.executable},
+                clear=False,
+            ):
+                installer = PipInstaller(
+                    update_status=lambda *_: None,
+                    update_log=messages.append,
+                    update_progress=lambda *_: None,
+                    protected_packages=[],
+                )
+
+                def fake_run(_cmd, _env, state):
+                    state.recent_lines.extend(
+                        [
+                            "Using uv dependency overrides: C:\\temp\\overrides.txt",
+                            "No solution found when resolving dependencies",
+                        ]
+                    )
+                    return True, 2
+
+                with patch.object(installer, "_ensure_pty_available", return_value=False), patch.object(
+                    installer, "_detect_pty", return_value=(False, None)
+                ), patch.object(installer, "_run_with_pipes", side_effect=fake_run):
+                    ok = installer._run_pip_process(
+                        [sys.executable, "-m", "uv", "--verbose", "pip", "install", "tts-with-rvc"],
+                        "Installing...",
+                    )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+        self.assertFalse(ok)
+        joined = "\n".join(messages)
+        self.assertIn("Последние строки установщика перед ошибкой:", joined)
+        self.assertIn("No solution found when resolving dependencies", joined)
+        self.assertIn("ОШИБКА: Процесс завершился с кодом 2.", joined)
+
+    def test_winpty_reader_does_not_block_status_refresh(self):
+        installer = PipInstaller(
+            update_status=lambda *_: None,
+            update_log=lambda *_: None,
+            update_progress=lambda *_: None,
+            protected_packages=[],
+        )
+        state = installer._RunState("Installing...", [sys.executable, "-m", "uv"])
+        state.last_status_emit = state.start - 10.0
+
+        class FakePty:
+            def __init__(self):
+                self.started = time.time()
+                self.exitstatus = 0
+
+            def isalive(self):
+                return (time.time() - self.started) < 0.35
+
+            def read(self, _size):
+                time.sleep(0.2)
+                return ""
+
+            def close(self, force=True):
+                return None
+
+        class FakePtyProcess:
+            @staticmethod
+            def spawn(_cmdline, env=None):
+                return FakePty()
+
+        calls = {"count": 0}
+        original = installer._update_status_if_needed
+
+        def wrapped(s):
+            calls["count"] += 1
+            return original(s)
+
+        with patch.object(installer, "_update_status_if_needed", side_effect=wrapped):
+            ok, ret = installer._run_with_winpty(
+                [sys.executable, "-m", "uv", "--verbose", "pip", "install", "torch"],
+                {},
+                state,
+                FakePtyProcess,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(ret, 0)
+        self.assertGreater(calls["count"], 3)
 
 
 if __name__ == "__main__":

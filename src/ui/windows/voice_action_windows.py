@@ -45,6 +45,9 @@ class VoiceInstallationWindow(QDialog):
         self._style_variant = str(style_variant or "default").strip().lower()
         if self._style_variant == "ai_hub":
             self.setObjectName("AIHubInstallDialog")
+            self._snapshot_bg = "#0b0c14"
+            self._snapshot_border = "#252236"
+            self._snapshot_fg = "#d8d2e4"
             # Эталонная сине-серая гамма (#0A0A18 / #252236), розовый — только на
             # заполнении прогресс-бара. Раньше тут был фиолетовый набор бордюров
             # (#3b2748/#4d335c/#5c3b6d), выбивавшийся из остального UI (фидбэк Артёма).
@@ -87,6 +90,9 @@ class VoiceInstallationWindow(QDialog):
                 }
             """)
         else:
+            self._snapshot_bg = "#14161a"
+            self._snapshot_border = "#30343a"
+            self._snapshot_fg = "#cfe4ff"
             self.setStyleSheet("""
                 QDialog { background-color: #1e1e1e; }
                 QLabel { color: #ffffff; }
@@ -118,6 +124,7 @@ class VoiceInstallationWindow(QDialog):
         self._full_log_lines: list[str] = []
         self._display_lines: deque[str] = deque()
         self._max_display_blocks: int = 200
+        self._snapshot_lines: list[str] = []
 
         self._start_time = QTime.currentTime()
         self._elapsed_timer = QTimer(self)
@@ -155,9 +162,10 @@ class VoiceInstallationWindow(QDialog):
         layout.addLayout(info_layout)
 
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setRange(0, 0)
         self.progress_bar.setTextVisible(False)
         layout.addWidget(self.progress_bar)
+        self.progress_value_label.setText("...")
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
@@ -265,6 +273,13 @@ class VoiceInstallationWindow(QDialog):
 
     def _on_progress_update(self, value: int):
         value = max(0, min(100, int(value)))
+        if value <= 0:
+            if self.progress_bar.minimum() != 0 or self.progress_bar.maximum() != 0:
+                self.progress_bar.setRange(0, 0)
+            self.progress_value_label.setText("...")
+            return
+        if self.progress_bar.minimum() == 0 and self.progress_bar.maximum() == 0:
+            self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(value)
         self.progress_value_label.setText(f"{value}%")
 
@@ -293,10 +308,21 @@ class VoiceInstallationWindow(QDialog):
         old_value = scrollbar.value()
         stick_to_bottom = old_value >= max(0, scrollbar.maximum() - 12)
         # Формируем HTML из текущего окна строк
+        snapshot_html = ""
+        if self._snapshot_lines:
+            snapshot_html = (
+                f"<div style='margin:8px 0 0 0; padding:6px; background:{self._snapshot_bg}; "
+                f"border:1px solid {self._snapshot_border}; border-radius:6px;'>"
+                "<pre style='font-family:Consolas,monospace; font-size:9pt; "
+                f"margin:0; color:{self._snapshot_fg};'>"
+                + html_escape("\n".join(self._snapshot_lines))
+                + "</pre></div>"
+            )
         html = (
             "<div style='white-space: pre-wrap; font-family:Consolas,monospace; font-size:9pt; margin:0;'>"
             + "<br/>".join(self._display_lines) +
             "</div>"
+            + snapshot_html
         )
         self.log_text.setHtml(html)
         if stick_to_bottom:
@@ -304,6 +330,10 @@ class VoiceInstallationWindow(QDialog):
             self.log_text.ensureCursorVisible()
         else:
             scrollbar.setValue(min(old_value, scrollbar.maximum()))
+
+    def _render_snapshot(self, lines: list[str]):
+        self._snapshot_lines = list(lines)
+        self._render_display_lines()
 
     def _append_log_chunk(self, text: str):
         if not text:
@@ -331,6 +361,22 @@ class VoiceInstallationWindow(QDialog):
         self._render_display_lines()
 
     def _on_log_update(self, text: str):
+        if text.startswith("__SNAPSHOT_START__"):
+            in_snapshot = False
+            lines: list[str] = []
+            for line in text.splitlines():
+                if line == "__SNAPSHOT_START__":
+                    in_snapshot = True
+                    continue
+                if line == "__SNAPSHOT_END__":
+                    in_snapshot = False
+                    continue
+                if in_snapshot:
+                    clean = strip_ansi(line).replace("\x1b", "")
+                    if clean.strip():
+                        lines.append(clean)
+            self._render_snapshot(lines)
+            return
         # Окно показа — только последние строки, но полный лог сохраняем отдельно
         self._append_log_chunk(text)
 
@@ -418,6 +464,7 @@ class VoiceActionWindow(QDialog):
         self._full_log_lines: list[str] = []
         self._display_lines: deque[str] = deque()
         self._max_display_blocks: int = 200
+        self._snapshot_lines: list[str] = []
 
         self._start_time = QTime.currentTime()
         self._elapsed_timer = QTimer(self)
@@ -532,10 +579,21 @@ class VoiceActionWindow(QDialog):
         scrollbar = self.log_text.verticalScrollBar()
         old_value = scrollbar.value()
         stick_to_bottom = old_value >= max(0, scrollbar.maximum() - 12)
+        snapshot_html = ""
+        if self._snapshot_lines:
+            snapshot_html = (
+                "<div style='margin:8px 0 0 0; padding:6px; background:#14161a; "
+                "border:1px solid #30343a; border-radius:6px;'>"
+                "<pre style='font-family:Consolas,monospace; font-size:9pt; "
+                "margin:0; color:#cfe4ff;'>"
+                + html_escape("\n".join(self._snapshot_lines))
+                + "</pre></div>"
+            )
         html = (
             "<div style='white-space: pre-wrap; font-family:Consolas,monospace; font-size:9pt; margin:0;'>"
             + "<br/>".join(self._display_lines) +
             "</div>"
+            + snapshot_html
         )
         self.log_text.setHtml(html)
         if stick_to_bottom:
@@ -543,6 +601,10 @@ class VoiceActionWindow(QDialog):
             self.log_text.ensureCursorVisible()
         else:
             scrollbar.setValue(min(old_value, scrollbar.maximum()))
+
+    def _render_snapshot(self, lines: list[str]):
+        self._snapshot_lines = list(lines)
+        self._render_display_lines()
 
     def _append_log_chunk(self, text: str):
         if not text:
@@ -568,6 +630,22 @@ class VoiceActionWindow(QDialog):
         self._render_display_lines()
 
     def _on_log_update(self, text: str):
+        if text.startswith("__SNAPSHOT_START__"):
+            in_snapshot = False
+            lines: list[str] = []
+            for line in text.splitlines():
+                if line == "__SNAPSHOT_START__":
+                    in_snapshot = True
+                    continue
+                if line == "__SNAPSHOT_END__":
+                    in_snapshot = False
+                    continue
+                if in_snapshot:
+                    clean = strip_ansi(line).replace("\x1b", "")
+                    if clean.strip():
+                        lines.append(clean)
+            self._render_snapshot(lines)
+            return
         self._append_log_chunk(text)
 
     def _copy_log(self):
