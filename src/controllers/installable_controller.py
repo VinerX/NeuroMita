@@ -124,6 +124,9 @@ class InstallableController:
 
         if data.get("refresh"):
             self._invalidate_list_cache()
+            # Явный «Проверить обновления» → форсим свежий манифест версий голосов
+            # (компоненты читают ctx["refresh"], чтобы минуть свой TTL-кэш).
+            ctx = {**ctx, "refresh": True}
 
         cached_rows = None
         if not ctx and not data.get("refresh"):

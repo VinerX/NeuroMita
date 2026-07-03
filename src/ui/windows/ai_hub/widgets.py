@@ -217,6 +217,8 @@ class ModelCard(QFrame):
         status = status_from_row(self._row)
         status_code = str(status.get("code") or "unknown")
         installed = bool(status.get("installed")) or status_code in ("ready", "installed")
+        details = status.get("details") if isinstance(status.get("details"), dict) else {}
+        update_available = installed and bool(details.get("update_available"))
         backend = str(meta.get("backend") or "").strip().lower()
         compatible = is_backend_compatible(backend, self._gpu_vendor)
 
@@ -312,8 +314,13 @@ class ModelCard(QFrame):
         from .helpers import qicon
 
         if installed:
-            ok_lbl = QLabel(_t("Установлено", "Installed"))
-            ok_lbl.setObjectName("AIHubStatusInstalled")
+            if update_available:
+                ok_lbl = QLabel(_t("Обновление", "Update"))
+                ok_lbl.setObjectName("AIHubStatusUpdate")
+                ok_lbl.setToolTip(str(status.get("message") or ""))
+            else:
+                ok_lbl = QLabel(_t("Установлено", "Installed"))
+                ok_lbl.setObjectName("AIHubStatusInstalled")
             ok_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter)
             root.addWidget(ok_lbl, 0)
         else:
@@ -334,6 +341,20 @@ class ModelCard(QFrame):
         from PyQt6.QtWidgets import QPushButton
 
         if installed:
+            if update_available:
+                # Голос установлен, но в релизе версия новее — кнопка «Обновить»
+                # запускает обычную установку; build_install_plan сам увидит апдейт
+                # и перекачает. Рядом оставляем ⋮-меню (Переустановить/Удалить).
+                upd = QPushButton(_t("Обновить", "Update"))
+                upd.setObjectName("AIHubCardPrimary")
+                upd_icon = qicon("fa5s.sync", "white")
+                if upd_icon is not None:
+                    upd.setIcon(upd_icon)
+                upd.setCursor(Qt.CursorShape.PointingHandCursor)
+                upd.clicked.connect(self._handle_install_click)
+                self._install_btn = upd
+                self._install_btn_text = upd.text()
+                root.addWidget(upd, 0)
             btn = QPushButton("⋮")
             btn.setObjectName("AIHubCardMenuBtn")
             btn.setFixedSize(34, 34)

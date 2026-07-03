@@ -175,5 +175,93 @@ class DefaultInstalledVoiceTests(unittest.TestCase):
         self.assertEqual(default_installed_voice(self.root), "Mila")
 
 
+class VoiceVersioningTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._prev = os.environ.get("NEUROMITA_MODELS_DIR")
+        os.environ["NEUROMITA_MODELS_DIR"] = self._tmp.name
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        if self._prev is None:
+            os.environ.pop("NEUROMITA_MODELS_DIR", None)
+        else:
+            os.environ["NEUROMITA_MODELS_DIR"] = self._prev
+        self._tmp.cleanup()
+
+    def _install(self, name="CrazyMita"):
+        (self.root / f"{name}.pth").write_bytes(b"x")
+
+    def _manifest(self, name="CrazyMita", **entry):
+        return {"schema": 1, "voices": {name: entry}}
+
+    def test_remote_entry_reads_manifest(self):
+        m = self._manifest("CrazyMita", date="2026-07-03", sha256="abc")
+        self.assertEqual(vi.remote_entry("CrazyMita", m)["date"], "2026-07-03")
+        self.assertIsNone(vi.remote_entry("Nope", m))
+        self.assertIsNone(vi.remote_entry("CrazyMita", None))
+
+    def test_record_and_read_version_roundtrip(self):
+        vi.record_installed_version("CrazyMita", {"date": "2026-07-03", "sha256": "abc", "size": 5})
+        got = vi.installed_version("CrazyMita")
+        self.assertEqual(got, {"date": "2026-07-03", "sha256": "abc", "size": 5})
+
+    def test_not_installed_never_updates(self):
+        m = self._manifest("CrazyMita", date="2026-07-03")
+        self.assertFalse(vi.is_update_available("CrazyMita", m))
+
+    def test_installed_without_marker_is_stale(self):
+        # Ставился до появления версий → маркера нет → считаем устаревшим.
+        self._install()
+        m = self._manifest("CrazyMita", date="2026-07-03", sha256="abc")
+        self.assertTrue(vi.is_update_available("CrazyMita", m))
+
+    def test_matching_sha_is_up_to_date(self):
+        self._install()
+        vi.record_installed_version("CrazyMita", {"date": "2026-07-03", "sha256": "abc"})
+        m = self._manifest("CrazyMita", date="2026-07-03", sha256="abc")
+        self.assertFalse(vi.is_update_available("CrazyMita", m))
+
+    def test_differing_sha_is_update(self):
+        self._install()
+        vi.record_installed_version("CrazyMita", {"date": "2026-07-03", "sha256": "old"})
+        m = self._manifest("CrazyMita", date="2026-07-04", sha256="new")
+        self.assertTrue(vi.is_update_available("CrazyMita", m))
+
+    def test_date_fallback_when_no_sha(self):
+        self._install()
+        vi.record_installed_version("CrazyMita", {"date": "2026-06-20"})
+        self.assertTrue(vi.is_update_available("CrazyMita", self._manifest("CrazyMita", date="2026-07-03")))
+        vi.record_installed_version("CrazyMita", {"date": "2026-07-03"})
+        self.assertFalse(vi.is_update_available("CrazyMita", self._manifest("CrazyMita", date="2026-07-03")))
+
+    def test_no_remote_entry_no_update(self):
+        self._install()
+        self.assertFalse(vi.is_update_available("CrazyMita", {"schema": 1, "voices": {}}))
+
+    def test_remove_clears_version_marker(self):
+        self._install()
+        vi.record_installed_version("CrazyMita", {"date": "2026-07-03"})
+        self.assertTrue(vi.remove_assets("CrazyMita", base=self.root))
+        self.assertIsNone(vi.installed_version("CrazyMita"))
+
+    def test_update_available_plan_redownloads(self):
+        from installables.voice_assets import VoiceAssetComponent
+        self._install()
+        vi.record_installed_version("CrazyMita", {"date": "2026-06-20", "sha256": "old"})
+        comp = VoiceAssetComponent({"short_name": "CrazyMita", "title": "Crazy"})
+        manifest = self._manifest("CrazyMita", date="2026-07-03", sha256="new")
+        # ctx с готовым манифестом минует сеть: подложим его в кэш модуля.
+        vi._MANIFEST_CACHE["data"] = manifest
+        vi._MANIFEST_CACHE["ts"] = 1e18  # не протухнет
+        try:
+            plan = comp.build_install_plan({})
+            self.assertFalse(plan.already_installed)
+            self.assertTrue(any(a.type == "download_http" for a in plan.actions))
+        finally:
+            vi._MANIFEST_CACHE["data"] = None
+            vi._MANIFEST_CACHE["ts"] = 0.0
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -19,16 +19,24 @@ unit-testable on the embedded runtime.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import time
+import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
 # Where voice assets live on GitHub. Overridable via env so the repo/tag can be
 # repointed (e.g. to a dedicated voices repo) without a code change.
 DEFAULT_VOICE_REPO = os.environ.get("NEUROMITA_VOICE_REPO", "Atm4x/NeuroMita")
 DEFAULT_VOICE_TAG = os.environ.get("NEUROMITA_VOICE_TAG", "voice-assets")
+
+# Имя ассета-манифеста рядом с zip'ами голосов. Несёт версии (дату/sha256/размер)
+# каждого голоса — источник правды для «доступно обновление», развязанный от
+# релиза приложения: правишь голос → перезаливаешь zip + бампаешь манифест.
+MANIFEST_ASSET = "manifest.json"
 
 _Log = Callable[[str], None]
 
@@ -45,6 +53,129 @@ def models_dir() -> Path:
 
 def bundle_url(short_name: str, repo: str = DEFAULT_VOICE_REPO, tag: str = DEFAULT_VOICE_TAG) -> str:
     return f"https://github.com/{repo}/releases/download/{tag}/{short_name}.zip"
+
+
+def manifest_url(repo: str = DEFAULT_VOICE_REPO, tag: str = DEFAULT_VOICE_TAG) -> str:
+    return f"https://github.com/{repo}/releases/download/{tag}/{MANIFEST_ASSET}"
+
+
+# --- Удалённый манифест версий (кэш с TTL) --------------------------------
+# Кэшируем распарсенный манифест: status() вызывается по одному разу на каждый
+# голос при переопросе списка — без кэша это N сетевых запросов. Переопрос через
+# «Проверить обновления» приходит с force=True (см. ctx в контроллере) и кэш минует.
+_MANIFEST_CACHE: dict[str, Any] = {"data": None, "ts": 0.0}
+_MANIFEST_TTL = 120.0
+
+
+def fetch_remote_manifest(force: bool = False, timeout: float = 4.0) -> dict[str, Any] | None:
+    """Скачать и распарсить ``manifest.json`` релиза. Кэш с TTL; при сетевом сбое
+    возвращаем прежний кэш (пусть устаревший), чтобы не терять уже известные версии.
+
+    Формат: ``{"schema": 1, "voices": {"<Name>": {"date": "...", "sha256": "...",
+    "size": 123}}}``. Отсутствие манифеста в релизе (404) — норм: вернём None, и
+    механизм обновлений просто «молчит»."""
+    now = time.time()
+    cached = _MANIFEST_CACHE.get("data")
+    if not force and cached is not None and (now - float(_MANIFEST_CACHE.get("ts") or 0.0)) < _MANIFEST_TTL:
+        return cached
+    try:
+        req = urllib.request.Request(manifest_url(), headers={"User-Agent": "NeuroMita"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict) or not isinstance(data.get("voices"), dict):
+            return cached
+        _MANIFEST_CACHE["data"] = data
+        _MANIFEST_CACHE["ts"] = now
+        return data
+    except Exception:
+        return cached
+
+
+def remote_entry(short_name: str, manifest: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(manifest, dict):
+        return None
+    voices = manifest.get("voices")
+    if not isinstance(voices, dict):
+        return None
+    entry = voices.get(short_name)
+    return entry if isinstance(entry, dict) else None
+
+
+# --- Локальный маркер установленных версий --------------------------------
+
+def versions_store_path(base: Path | None = None) -> Path:
+    root = base if base is not None else models_dir()
+    return root / ".voice_versions.json"
+
+
+def read_installed_versions(base: Path | None = None) -> dict[str, Any]:
+    path = versions_store_path(base)
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _write_installed_versions(data: dict[str, Any], base: Path | None = None) -> None:
+    path = versions_store_path(base)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def installed_version(short_name: str, base: Path | None = None) -> dict[str, Any] | None:
+    entry = read_installed_versions(base).get(short_name)
+    return entry if isinstance(entry, dict) else None
+
+
+def record_installed_version(short_name: str, entry: dict[str, Any] | None, base: Path | None = None) -> None:
+    """Запомнить, какую версию голоса мы только что распаковали (дата/sha256/размер)."""
+    data = read_installed_versions(base)
+    if entry:
+        data[short_name] = {k: entry.get(k) for k in ("date", "sha256", "size") if entry.get(k) is not None}
+    else:
+        data[short_name] = {}
+    _write_installed_versions(data, base)
+
+
+def clear_installed_version(short_name: str, base: Path | None = None) -> None:
+    data = read_installed_versions(base)
+    if short_name in data:
+        data.pop(short_name, None)
+        _write_installed_versions(data, base)
+
+
+def is_update_available(short_name: str, manifest: dict[str, Any] | None, base: Path | None = None) -> bool:
+    """Голос установлен, но версия на диске отличается от релизной.
+
+    Сверяем по sha256 (если есть с обеих сторон), иначе по дате. Установленный
+    голос без локального маркера (ставился до появления версионирования) считаем
+    устаревшим — так пользователи со старой озвучкой получат перекачку."""
+    if not is_installed(short_name):
+        return False
+    remote = remote_entry(short_name, manifest)
+    if not remote:
+        return False
+    local = installed_version(short_name, base)
+    if not local:
+        return True
+    r_sha, l_sha = remote.get("sha256"), local.get("sha256")
+    if r_sha and l_sha:
+        return str(r_sha) != str(l_sha)
+    r_date, l_date = remote.get("date"), local.get("date")
+    if r_date and l_date:
+        return str(r_date) != str(l_date)
+    # Недостаточно данных для сравнения — не дёргаем пользователя.
+    return False
 
 
 def bundle_cache_path(short_name: str, base: Path | None = None) -> Path:
@@ -195,4 +326,5 @@ def remove_assets(short_name: str, log: _Log = _noop, *, base: Path | None = Non
     if model_left:
         log(f"Voice {short_name} still has model files (possibly in use).")
         return False
+    clear_installed_version(short_name, base=root)
     return True

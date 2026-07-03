@@ -373,6 +373,13 @@ QLabel#AIHubStatusInstalled {
     padding-right: 4px;
 }
 
+QLabel#AIHubStatusUpdate {
+    color: {accent};
+    font-size: 11px;
+    font-weight: 700;
+    padding-right: 4px;
+}
+
 QLabel#AIHubStatusPill {
     font-size: 11px;
     font-weight: 600;

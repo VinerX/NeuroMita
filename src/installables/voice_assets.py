@@ -28,9 +28,20 @@ from utils.voice_assets_installer import (
     bundle_cache_path,
     bundle_url,
     extract_bundle,
+    fetch_remote_manifest,
     is_installed,
+    is_update_available,
+    record_installed_version,
+    remote_entry,
     remove_assets,
 )
+
+
+def _manifest_from_ctx(ctx: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Единый манифест версий для status()/плана. force=True приходит при явном
+    «Проверить обновления» (контроллер кладёт refresh в ctx) — минуем кэш."""
+    force = bool((ctx or {}).get("refresh"))
+    return fetch_remote_manifest(force=force)
 
 
 # Manifest of shippable voices. ``short_name`` must match the file stem used by
@@ -43,6 +54,7 @@ MITA_VOICES: tuple[dict[str, str], ...] = (
     {"short_name": "Mila", "title": "Mila", "size": "~230 MB"},
     {"short_name": "ShorthairMita", "title": "Shorthair Mita", "size": "~170 MB"},
     {"short_name": "SleepyMita", "title": "Sleepy Mita", "size": "~170 MB"},
+    {"short_name": "GhostMita", "title": "Ghost Mita", "size": "~190 MB"},
 )
 
 
@@ -63,7 +75,7 @@ def _download_action(short_name: str, progress: int, progress_to: int) -> Instal
     )
 
 
-def _extract_action(short_name: str, progress: int) -> InstallAction:
+def _extract_action(short_name: str, progress: int, version: dict[str, Any] | None = None) -> InstallAction:
     def _extract(**kwargs) -> bool:
         log = _log_from_ctx(kwargs)
         zip_path = bundle_cache_path(short_name)
@@ -72,6 +84,10 @@ def _extract_action(short_name: str, progress: int) -> InstallAction:
             zip_path.unlink(missing_ok=True)
         except OSError:
             pass
+        if ok:
+            # Штампуем локальный маркер версии — по нему потом видно, что на диске
+            # уже актуальный релиз (иначе он навсегда считался бы «обновляемым»).
+            record_installed_version(short_name, version)
         return ok
 
     return InstallAction(
@@ -99,6 +115,25 @@ def _clean_action(short_name: str, progress: int = 4) -> InstallAction:
         description=_("Очистка перед переустановкой: {name}...", "Cleaning before reinstall: {name}...").format(name=short_name),
         progress=progress,
         fn=_clean,
+    )
+
+
+def _drop_cache_action(short_name: str, progress: int = 4) -> InstallAction:
+    """Только удалить кэшированный архив (для обновления): файлы на диске трогать
+    не надо — extract перезапишет их атомарно, а вот download_http иначе пропустит
+    скачивание при совпадении имени уже лежащего .zip."""
+    def _drop(**kwargs) -> bool:
+        try:
+            bundle_cache_path(short_name).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return True
+
+    return InstallAction(
+        type="call",
+        description=_("Подготовка обновления: {name}...", "Preparing update: {name}...").format(name=short_name),
+        progress=progress,
+        fn=_drop,
     )
 
 
@@ -134,20 +169,32 @@ class VoiceAssetComponent:
 
     def status(self, ctx: dict[str, Any] | None = None) -> ComponentStatus:
         installed = is_installed(self.short_name)
+        manifest = _manifest_from_ctx(ctx) if installed else None
+        update = installed and is_update_available(self.short_name, manifest)
+        if installed:
+            message = (
+                _("Доступно обновление голоса.", "Voice update available.")
+                if update
+                else _("Голос установлен.", "Voice installed.")
+            )
+        else:
+            message = _("Голос не установлен.", "Voice not installed.")
         return ComponentStatus(
             id=self.id,
             code=ComponentStatusCode.INSTALLED if installed else ComponentStatusCode.NOT_INSTALLED,
             installed=installed,
             ready=installed,
-            message=_("Голос установлен.", "Voice installed.")
-            if installed
-            else _("Голос не установлен.", "Voice not installed."),
+            message=message,
             backend=BackendKind.NONE,
+            details={"update_available": bool(update)},
         )
 
     def build_install_plan(self, ctx: dict[str, Any] | None = None) -> InstallPlan:
         clean = bool((ctx or {}).get("clean"))
-        if is_installed(self.short_name) and not clean:
+        manifest = _manifest_from_ctx(ctx)
+        version = remote_entry(self.short_name, manifest)
+        update = is_update_available(self.short_name, manifest)
+        if is_installed(self.short_name) and not clean and not update:
             return InstallPlan(
                 actions=[],
                 already_installed=True,
@@ -157,8 +204,11 @@ class VoiceAssetComponent:
         actions: list[InstallAction] = []
         if clean:
             actions.append(_clean_action(self.short_name))
+        elif update:
+            # Обновление ставим поверх — extract перезапишет файлы; чистим лишь кэш zip.
+            actions.append(_drop_cache_action(self.short_name))
         actions.append(_download_action(self.short_name, progress=10, progress_to=85))
-        actions.append(_extract_action(self.short_name, progress=90))
+        actions.append(_extract_action(self.short_name, progress=90, version=version))
         return InstallPlan(actions=actions, ok_status=_("Готово", "Done"))
 
     def build_uninstall_plan(self, ctx: dict[str, Any] | None = None) -> InstallPlan:
@@ -222,19 +272,33 @@ class AllVoicesComponent:
         installed_n = sum(1 for n in names if is_installed(n))
         total = len(names)
         all_in = installed_n >= total and total > 0
+        # Манифест тянем только если есть что обновлять (иначе лишний сетевой запрос).
+        manifest = _manifest_from_ctx(ctx) if installed_n else None
+        updates = sum(1 for n in names if is_update_available(n, manifest))
+        if updates:
+            message = _("Доступно обновлений: {u} (установлено {a} из {b}).",
+                        "{u} update(s) available ({a} of {b} installed).").format(u=updates, a=installed_n, b=total)
+        else:
+            message = _("Установлено {a} из {b} голосов.", "{a} of {b} voices installed.").format(a=installed_n, b=total)
         return ComponentStatus(
             id=self.id,
             code=ComponentStatusCode.INSTALLED if all_in else ComponentStatusCode.NOT_INSTALLED,
             installed=all_in,
             ready=all_in,
-            message=_("Установлено {a} из {b} голосов.", "{a} of {b} voices installed.").format(a=installed_n, b=total),
+            message=message,
             backend=BackendKind.NONE,
-            details={"installed": installed_n, "total": total},
+            details={"installed": installed_n, "total": total, "updates": updates,
+                     "update_available": bool(updates)},
         )
 
     def build_install_plan(self, ctx: dict[str, Any] | None = None) -> InstallPlan:
         clean = bool((ctx or {}).get("clean"))
-        pending = [n for n in self._names() if clean or not is_installed(n)]
+        manifest = _manifest_from_ctx(ctx)
+        # Ставим недостающие + обновляем устаревшие (при clean — все).
+        pending = [
+            n for n in self._names()
+            if clean or not is_installed(n) or is_update_available(n, manifest)
+        ]
         if not pending:
             return InstallPlan(
                 actions=[],
@@ -249,10 +313,13 @@ class AllVoicesComponent:
             lo = int(i * 100 / n)
             mid = int((i + 0.8) * 100 / n)
             hi = int((i + 1) * 100 / n)
+            version = remote_entry(name, manifest)
             if clean:
                 actions.append(_clean_action(name, progress=max(1, lo)))
+            elif is_installed(name) and is_update_available(name, manifest):
+                actions.append(_drop_cache_action(name, progress=max(1, lo)))
             actions.append(_download_action(name, progress=max(1, lo), progress_to=max(2, mid)))
-            actions.append(_extract_action(name, progress=max(3, hi)))
+            actions.append(_extract_action(name, progress=max(3, hi), version=version))
         return InstallPlan(actions=actions, ok_status=_("Готово", "Done"))
 
     def build_uninstall_plan(self, ctx: dict[str, Any] | None = None) -> InstallPlan:
