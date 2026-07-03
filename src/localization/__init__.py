@@ -44,6 +44,9 @@ LANGUAGE_DISPLAY_NAMES: dict[str, str] = {
     "EL": "Ελληνικά",
     "JA": "日本語",
     "KO": "한국어",
+    "ES": "Español",
+    "PL": "Polski",
+    "RO": "Română",
 }
 
 
