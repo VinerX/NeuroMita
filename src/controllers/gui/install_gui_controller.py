@@ -92,6 +92,15 @@ class InstallGuiController(BaseController):
         except Exception:
             pass
 
+    @staticmethod
+    def _normalize_callback_triplet(callbacks):
+        if not isinstance(callbacks, (tuple, list)) or len(callbacks) != 3:
+            return None
+        normalized = []
+        for cb in callbacks:
+            normalized.append(cb if callable(cb) else (lambda *_: None))
+        return tuple(normalized)
+
     def _worker_loop(self) -> None:
         while True:
             with self._queue_cond:
@@ -318,9 +327,10 @@ class InstallGuiController(BaseController):
         if custom_window is not None:
             if custom_callbacks is None and hasattr(custom_window, "get_threadsafe_callbacks"):
                 custom_callbacks = custom_window.get_threadsafe_callbacks()
-            if isinstance(custom_callbacks, (tuple, list)) and len(custom_callbacks) == 3:
+            normalized_callbacks = self._normalize_callback_triplet(custom_callbacks)
+            if normalized_callbacks is not None:
                 win = custom_window
-                cbs = tuple(custom_callbacks)
+                cbs = normalized_callbacks
             else:
                 logger.warning(
                     "InstallGuiController: invalid install_callbacks for custom install window, "

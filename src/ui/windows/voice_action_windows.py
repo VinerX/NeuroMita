@@ -384,7 +384,7 @@ class VoiceActionWindow(QDialog):
 
     def get_threadsafe_callbacks(self):
         return (
-            None,
+            lambda *_: None,
             self.status_updated.emit,
             self.log_updated.emit
         )

@@ -189,6 +189,19 @@ class PipInstaller:
         "pyyaml": ("yaml",),
         "opencv-python": ("cv2",),
     }
+    _UV_PIP_FALLBACK_NAMES = {
+        canonicalize_name(name)
+        for name in (
+            "f5-tts",
+            "tts-with-rvc",
+            "tts-with-rvc-onnx",
+            "fairseq-built",
+            "torchcrepe",
+            "pyarrow",
+            "ruaccent",
+            "cached_path",
+        )
+    }
 
     def __init__(
         self,
@@ -210,6 +223,8 @@ class PipInstaller:
         self.protected_packages = protected_packages or ["g4f", "gigaam", "pillow", "silero-vad"]
         self._preferred_installer_cmd: Optional[List[str]] = None
         self._last_run_uv_cache_access_denied: bool = False
+        self._last_run_returncode: int = 0
+        self._last_run_recent_lines: List[str] = []
         # Однократная (best-effort) установка pywinpty для живого PTY-вывода.
         self._pty_bootstrap_attempted: bool = False
         self._ensure_libs_path()
@@ -291,7 +306,21 @@ class PipInstaller:
             else:
                 cmd.append(package_spec)
             ok = self._run_pip_process(cmd, description)
-            if ok or force_pip or not is_uv or not self._last_run_uv_cache_access_denied:
+            if ok or force_pip or not is_uv:
+                return ok
+            if self._should_retry_failed_uv_with_pip(package_spec):
+                self.update_log(
+                    "uv не смог установить F5/RVC-стек через target-режим. "
+                    "Повторяем ту же установку через встроенный pip."
+                )
+                return self._install_package_attempt(
+                    package_spec,
+                    description=description,
+                    extra_args=extra_args,
+                    uv_overrides=uv_overrides,
+                    force_pip=True,
+                )
+            if not self._last_run_uv_cache_access_denied:
                 return ok
 
             self.update_log(
@@ -336,6 +365,26 @@ class PipInstaller:
             seen.add(key)
             result.append(item)
         return result
+
+    def _should_retry_failed_uv_with_pip(self, package_spec) -> bool:
+        if self._last_run_returncode == 0:
+            return False
+        requested = self._requested_dist_names(package_spec)
+        if not (requested & self._UV_PIP_FALLBACK_NAMES):
+            return False
+        if self._last_run_returncode == 2:
+            return True
+
+        recent = " ".join(self._last_run_recent_lines).lower()
+        return any(
+            marker in recent
+            for marker in (
+                "no solution found",
+                "failed to resolve",
+                "unsatisfiable",
+                "resolution impossible",
+            )
+        )
 
     def _is_uv_command(self, cmd: List[str]) -> bool:
         parts = [str(p).lower() for p in cmd]
@@ -1482,6 +1531,8 @@ class PipInstaller:
         else:
             ok, ret = self._run_with_pipes(cmd, self._prepare_env(), state)
         self._last_run_uv_cache_access_denied = self._is_uv_cache_access_denied_failure(cmd, state, ret)
+        self._last_run_returncode = ret
+        self._last_run_recent_lines = list(state.recent_lines)
 
         # Завершение
         elapsed = time.time() - state.start
