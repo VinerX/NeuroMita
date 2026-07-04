@@ -389,7 +389,8 @@ def clear_staged_images(gui):
 
 def send_screen_capture(gui):
     logger.info("Запрошена отправка скриншота.")
-    frames = gui.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {"limit": 1}, timeout=0.5)
+    # Запас времени на one-shot захват экрана.
+    frames = gui.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {"limit": 1}, timeout=5.0)
     if not frames or not frames[0]:
         from PyQt6.QtWidgets import QMessageBox
 

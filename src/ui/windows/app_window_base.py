@@ -804,7 +804,8 @@ class AppWindowBase(QMainWindow):
 
         if self._get_setting("AUTO_ATTACH_IMAGES", False):
             history_limit = int(self._get_setting("SCREEN_CAPTURE_HISTORY_LIMIT", 1))
-            frames = self.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {'limit': history_limit}, timeout=0.5)
+            # Запас времени на one-shot захват экрана (grab+resize+JPEG).
+            frames = self.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {'limit': history_limit}, timeout=5.0)
             if frames and frames[0]:
                 current_image_data.extend(frames[0])
             else:
@@ -814,7 +815,7 @@ class AppWindowBase(QMainWindow):
 
         if self._get_setting("ENABLE_CAMERA_CAPTURE", False):
             history_limit = int(self._get_setting("CAMERA_CAPTURE_HISTORY_LIMIT", 1))
-            camera_frames = self.event_bus.emit_and_wait(Events.Capture.GET_CAMERA_FRAMES, {'limit': history_limit}, timeout=0.5)
+            camera_frames = self.event_bus.emit_and_wait(Events.Capture.GET_CAMERA_FRAMES, {'limit': history_limit}, timeout=2.0)
             if camera_frames and camera_frames[0]:
                 all_image_data.extend(camera_frames[0])
                 logger.info(f"Добавлено {len(camera_frames[0])} кадров с камеры для отправки.")
