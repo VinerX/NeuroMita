@@ -218,6 +218,9 @@ class SandboxPage(QWidget):
     _budget_refresh_signal = pyqtSignal()
     _indicator_signal = pyqtSignal(dict)
     _setting_changed_signal = pyqtSignal(str)
+    # Emitted when an install/voice-model task finishes (on a bg thread) so the
+    # Status block re-reads disk state on the GUI thread — задача #7.
+    _status_refresh_signal = pyqtSignal()
 
     def __init__(self, gui):
         super().__init__(gui)
@@ -394,6 +397,27 @@ class SandboxPage(QWidget):
             else:
                 rag_val = _("Выключен", "Disabled")
             self._rag_status_row.set_value(rag_val)
+
+    def _refresh_status_panel(self):
+        """Полное обновление блока «Статус» без перезапуска приложения.
+
+        Дёргается кнопкой в шапке блока и автоматически по завершении установки
+        (см. подписки на Install.TASK_FINISHED / VoiceModel.MODEL_INSTALL_FINISHED).
+        Помимо пере-чтения значений из настроек, просит контроллеры голоса
+        пере-сканировать диск на предмет вновь установленных моделей.
+        """
+        self._refresh_status_values()
+        try:
+            self.gui.update_status_colors()
+        except Exception:
+            pass
+        bus = getattr(self.gui, "event_bus", None)
+        if bus is not None:
+            for evt in (Events.GUI.VOICEOVER_REFRESH, Events.VoiceModel.REFRESH_MODEL_PANELS):
+                try:
+                    bus.emit(evt)
+                except Exception as exc:
+                    logger.debug(f"status refresh emit {evt} failed: {exc}")
 
     def _local_voice_name(self, model_id: str) -> str:
         try:
@@ -993,10 +1017,15 @@ class SandboxPage(QWidget):
             layout.addLayout(title_row)
         return card, layout
 
-    def _make_strip(self, title_text: str, icon_name: str | None = None) -> tuple[QWidget, QVBoxLayout]:
+    def _make_strip(self, title_text: str, icon_name: str | None = None,
+                    header_action: "QWidget | None" = None) -> tuple[QWidget, QVBoxLayout]:
         """Stack-panel section: flat, no card border, just a title row
         with an optional icon and an underline. Used everywhere except the
-        State tab (which keeps cards on the character_state_panel)."""
+        State tab (which keeps cards on the character_state_panel).
+
+        `header_action` — необязательный виджет (обычно маленькая кнопка),
+        прижимается к правому краю строки заголовка (напр. «обновить статус»).
+        """
         strip = QWidget()
         strip.setObjectName("SandboxInspectorStrip")
         layout = QVBoxLayout(strip)
@@ -1016,6 +1045,8 @@ class SandboxPage(QWidget):
         title.setObjectName("SandboxStripTitle")
         title_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addStretch(1)
+        if header_action is not None:
+            title_row.addWidget(header_action, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addLayout(title_row)
 
         underline = QFrame()
@@ -1227,7 +1258,18 @@ class SandboxPage(QWidget):
         # via the shared indicator registry (green = active); each row shows
         # what's actually configured and a gear that jumps to its settings
         # section to change it.
-        status_strip, status_layout = self._make_strip(_("Статус", "Status"), "fa6s.wave-square")
+        status_refresh_btn = QPushButton()
+        status_refresh_btn.setObjectName("SandboxInfoEditBtn")
+        status_refresh_btn.setIcon(qta.icon("fa6s.rotate", color="#ffd2ec"))
+        status_refresh_btn.setFixedSize(26, 26)
+        status_refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        tr_set(status_refresh_btn,
+               "Перечитать состояние с диска (голоса, модели, RAG)",
+               "Re-read state from disk (voices, models, RAG)",
+               "setToolTip")
+        status_refresh_btn.clicked.connect(self._refresh_status_panel)
+        status_strip, status_layout = self._make_strip(
+            _("Статус", "Status"), "fa6s.wave-square", header_action=status_refresh_btn)
 
         self._voice_status_row = self._make_status_row(
             _("Голос", "Voice"),
@@ -1443,6 +1485,7 @@ class SandboxPage(QWidget):
         self._budget_refresh_signal.connect(self._refresh_context_budget)
         self._indicator_signal.connect(self._on_indicator_ui)
         self._setting_changed_signal.connect(self._on_setting_changed_ui)
+        self._status_refresh_signal.connect(self._refresh_status_panel)
 
         bus = getattr(self.gui, "event_bus", None)
         if bus is None:
@@ -1454,8 +1497,15 @@ class SandboxPage(QWidget):
             bus.subscribe(Events.GUI.UPDATE_TOKEN_COUNT_UI, self._on_token_count_evt, weak=False)
             bus.subscribe(Events.GUI.SET_SETTINGS_ICON_INDICATOR, self._on_indicator_evt, weak=False)
             bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed_evt, weak=False)
+            # Авто-обновление блока «Статус» по завершении установок (задача #7).
+            bus.subscribe(Events.Install.TASK_FINISHED, self._on_install_finished_evt, weak=False)
+            bus.subscribe(Events.VoiceModel.MODEL_INSTALL_FINISHED, self._on_install_finished_evt, weak=False)
         except Exception as exc:
             logger.debug(f"Sandbox diagnostics wiring failed: {exc}")
+
+    def _on_install_finished_evt(self, event=None):
+        # Может прилететь из фонового потока установки — маршалим в GUI-поток.
+        self._status_refresh_signal.emit()
 
     # Keys that affect the status rows / context budget / memory-stat readouts.
     _STATUS_KEYS = frozenset({
