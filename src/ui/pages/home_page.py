@@ -125,11 +125,13 @@ class HomePage(LauncherHomeBackground):
         self._news_items_layout = None
         self._news_panel_placeholder = None
 
-        # Выборочное обновление: чекбоксы на карточках + баннер-обнова.
+        # Выборочное обновление: чекбоксы на карточках + метка NEW прямо на них.
+        # Отдельного баннера-обновы больше нет (#9): версия обновы показывается
+        # меткой NEW на карточке Python/Unity, а не занимает лишнюю строку.
         self._py_update_check = None
         self._unity_update_check = None
-        self._update_banner = None
-        self._update_banner_label = None
+        self._py_new_badge = None
+        self._unity_new_badge = None
         self._update_info_py = None
         self._update_info_unity = None
         self._update_check_inflight = False
@@ -219,7 +221,7 @@ class HomePage(LauncherHomeBackground):
 
         backend_row = QHBoxLayout()
         backend_row.setSpacing(12)
-        backend_card, self._backend_status_value, self._py_update_check = self._build_home_status_card(
+        backend_card, self._backend_status_value, self._py_update_check, self._py_new_badge = self._build_home_status_card(
             "fa6b.python",
             _("Python-бэкенд", "Python backend"),
             "",
@@ -227,7 +229,7 @@ class HomePage(LauncherHomeBackground):
         )
         backend_row.addWidget(backend_card)
 
-        unity_card, self._unity_status_value, self._unity_update_check = self._build_home_status_card(
+        unity_card, self._unity_status_value, self._unity_update_check, self._unity_new_badge = self._build_home_status_card(
             "mdi.unity",
             "Unity",
             "",
@@ -235,9 +237,6 @@ class HomePage(LauncherHomeBackground):
         )
         backend_row.addWidget(unity_card)
         left_column.addLayout(backend_row)
-
-        self._update_banner = self._build_update_banner()
-        left_column.addWidget(self._update_banner)
 
         button_row = QHBoxLayout()
         button_row.setSpacing(0)
@@ -334,31 +333,6 @@ class HomePage(LauncherHomeBackground):
         layout.addWidget(link)
         return card
 
-    def _build_update_banner(self) -> QFrame:
-        """Тонкий баннер «доступно обновление». Скрыт, пока обнов нет.
-
-        Только информация о версиях. Само обновление запускает центральная
-        кнопка (она же показывает, что нужен код тестера); выбор частей — на
-        чекбоксах карточек. Код тестера спрашивается всплывающим окном.
-        """
-        banner = QFrame()
-        banner.setObjectName("LauncherHomeUpdateChip")
-        banner.setVisible(False)
-        layout = QHBoxLayout(banner)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(10)
-
-        dot = QLabel()
-        dot.setObjectName("LauncherHomeUpdateDot")
-        dot.setFixedSize(10, 10)
-        layout.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        self._update_banner_label = QLabel("")
-        self._update_banner_label.setObjectName("LauncherHomeUpdateText")
-        self._update_banner_label.setWordWrap(True)
-        layout.addWidget(self._update_banner_label, 1)
-        return banner
-
     def _effective_tester_code(self) -> str:
         return str(self.gui.settings.get("TESTER_CODE", "") or "").strip()
 
@@ -434,39 +408,30 @@ class HomePage(LauncherHomeBackground):
 
         if self._py_update_check is not None:
             self._py_update_check.setVisible(py_avail)
-            if py_avail:
-                self._py_update_check.setChecked(True)
-            else:
-                self._py_update_check.setChecked(False)
+            self._py_update_check.setChecked(py_avail)
         if self._unity_update_check is not None:
             self._unity_update_check.setVisible(unity_avail)
-            if unity_avail:
-                self._unity_update_check.setChecked(True)
-            else:
-                self._unity_update_check.setChecked(False)
+            self._unity_update_check.setChecked(unity_avail)
 
-        if not py_avail and not unity_avail:
-            if self._update_banner is not None:
-                self._update_banner.setVisible(False)
-            self.refresh_primary_label()
-            return
-
-        parts = []
-        if py_avail:
-            parts.append(_("Python {ver}", "Python {ver}").format(ver=_strip_v(str((py_info or {}).get("latest_version", "")))))
-        if unity_avail:
-            parts.append(_("Unity {ver}", "Unity {ver}").format(ver=_strip_v(str((unity_info or {}).get("latest_version", "")))))
-        text = _("Доступно обновление: {p}", "Update available: {p}").format(p=" • ".join(parts))
-        if self._update_banner_label is not None:
-            self._update_banner_label.setText(text)
-
-        if self._update_banner is not None:
-            self._update_banner.setVisible(True)
+        # #9: метка NEW прямо на карточке вместо отдельного баннера-обновы.
+        self._set_new_badge(self._py_new_badge, py_avail, (py_info or {}).get("latest_version"))
+        self._set_new_badge(self._unity_new_badge, unity_avail, (unity_info or {}).get("latest_version"))
 
         # Центральная кнопка берёт роль «Обновить» — обновляем её подпись.
         self.refresh_primary_label()
 
-    def _build_home_status_card(self, icon_name: str, title_text: str, value_text: str, color: str) -> tuple[QFrame, QLabel, QCheckBox]:
+    def _set_new_badge(self, badge, available: bool, version) -> None:
+        """Показать/скрыть метку NEW на карточке статуса (#9)."""
+        if badge is None:
+            return
+        if available:
+            ver = _strip_v(str(version or "")).strip()
+            badge.setText(_("NEW {ver}", "NEW {ver}").format(ver=ver).strip() if ver else _("NEW", "NEW"))
+            badge.setVisible(True)
+        else:
+            badge.setVisible(False)
+
+    def _build_home_status_card(self, icon_name: str, title_text: str, value_text: str, color: str) -> tuple[QFrame, QLabel, QCheckBox, QLabel]:
         card = QFrame()
         card.setObjectName("LauncherHomeStatusCard")
         layout = QHBoxLayout(card)
@@ -479,9 +444,22 @@ class HomePage(LauncherHomeBackground):
 
         text_column = QVBoxLayout()
         text_column.setSpacing(2)
+
+        # Верхняя строка карточки: подпись + метка NEW (#9). Метка появляется
+        # только когда по этой части доступна обнова — заменяет отдельный баннер.
+        eyebrow_row = QHBoxLayout()
+        eyebrow_row.setSpacing(6)
+        eyebrow_row.setContentsMargins(0, 0, 0, 0)
         title = QLabel(title_text.upper())
         title.setObjectName("LauncherHomeStatusEyebrow")
-        text_column.addWidget(title)
+        eyebrow_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        new_badge = QLabel("")
+        new_badge.setObjectName("LauncherHomeNewBadge")
+        new_badge.setVisible(False)
+        eyebrow_row.addWidget(new_badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        eyebrow_row.addStretch(1)
+        text_column.addLayout(eyebrow_row)
 
         value = QLabel(value_text)
         value.setObjectName("LauncherHomeStatusValue")
@@ -500,7 +478,7 @@ class HomePage(LauncherHomeBackground):
         # переключение чекбокса Unity/Python никак не меняло основную кнопку.
         update_check.toggled.connect(lambda _checked: self.refresh_primary_label())
         layout.addWidget(update_check, 0, Qt.AlignmentFlag.AlignTop)
-        return card, value, update_check
+        return card, value, update_check, new_badge
 
     def _build_home_news_panel(self) -> QFrame:
         panel = QFrame()

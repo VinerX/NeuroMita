@@ -235,6 +235,17 @@ QLabel#LauncherHomeNewsBadge {
     letter-spacing: 0px;
 }
 
+QLabel#LauncherHomeNewBadge {
+    background-color: rgba(255, 207, 125, 0.16);
+    border: 1px solid rgba(255, 207, 125, 0.55);
+    border-radius: 7px;
+    color: #ffcf7d;
+    padding: 1px 7px;
+    font-size: 7.5pt;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+}
+
 QPushButton#LauncherHomeCancelButton {
     background: transparent;
     border: 1px solid rgba({accent_rgb}, 0.28);

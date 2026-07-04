@@ -7,6 +7,7 @@ from ui.pages.main_page_registry import MAIN_PAGE_ORDER, get_main_page_factory
 from ui.pages.news_page import build_news_page
 from ui.pages.news_support import get_news_content as load_news_content
 from ui.pages.news_support import get_news_releases as load_news_releases
+from ui.pages.news_support import load_news_releases_async
 from ui.widgets.launcher_shell_sidebar import LauncherSidebarWidget
 from ui.widgets.settings_panel import apply_section_visibility
 from ui.windows.app_window_base import AppWindowBase
@@ -58,6 +59,22 @@ class MainWindow(AppWindowBase):
         self._ensure_main_page("sandbox")
         self.switch_main_page("sandbox")
         self._apply_initial_geometry(1560, 920)
+        self._prefetch_release_feed()
+
+    def _prefetch_release_feed(self):
+        """Прогреть ленту релизов в фоне сразу на старте (#8).
+
+        Раньше страницы Home/Releases создавались лениво (по клику), поэтому
+        лента релизов с GitHub тянулась только когда пользователь открывал их —
+        Артём это и заметил («грузятся только по клику»). Тянем её отдельным
+        фоновым потоком на старте: `load_news_releases_async` коалесцирует
+        запросы и кладёт результат в кэш, так что к моменту открытия Home/News
+        данные уже готовы. Колбэк-заглушка ничего не трогает в GUI.
+        """
+        try:
+            load_news_releases_async(self, lambda _releases: None)
+        except Exception:
+            pass
 
     def _apply_initial_geometry(self, design_w: int, design_h: int) -> None:
         """Стартовый размер окна, но не больше доступной области экрана.

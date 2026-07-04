@@ -34,7 +34,10 @@ class NewsPage(QWidget):
 
         self._releases_ready.connect(self._on_releases_ready)
         self._sync_host_exports()
-        self.refresh_content()
+        # Первый показ использует уже прогретый на старте кэш (#8) — без
+        # invalidate, иначе повторно ходили бы в сеть при каждом открытии
+        # страницы. Принудительное обновление — только по кнопке «Обновить».
+        self._load_content()
 
     def _sync_host_exports(self):
         self.gui.news_page = self
@@ -81,9 +84,14 @@ class NewsPage(QWidget):
         self._root_layout.addWidget(new_widget)
 
     def refresh_content(self):
-        # Не блокируем GUI: показываем плейсхолдер «Загрузка…» и грузим ленту
-        # в фоне. Готовый список придёт сигналом _releases_ready на GUI-поток.
+        # Кнопка «Обновить»: принудительно сбрасываем кэш и тянем ленту заново.
         invalidate_news_releases(self.gui)
+        self._load_content()
+
+    def _load_content(self):
+        # Не блокируем GUI: показываем плейсхолдер «Загрузка…» и грузим ленту
+        # в фоне (из кэша, если он уже прогрет). Готовый список придёт сигналом
+        # _releases_ready на GUI-поток.
         self._set_page_widget(self._build_page_widget(loading=True))
         load_news_releases_async(self.gui, lambda releases: self._releases_ready.emit(releases))
 
