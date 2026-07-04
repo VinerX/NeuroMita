@@ -45,6 +45,7 @@ class MicrophoneSettingsController(BaseController):
             "asr_refresh_button",
             "mic_active_checkbox",
             "mic_instant_checkbox",
+            "mic_mute_while_speaking_checkbox",
             "vad_apply_button",
         )
         for n in need:
@@ -88,6 +89,9 @@ class MicrophoneSettingsController(BaseController):
 
         safe_disconnect(v.mic_instant_checkbox.stateChanged, self._on_instant_toggled)
         v.mic_instant_checkbox.stateChanged.connect(self._on_instant_toggled)
+
+        safe_disconnect(v.mic_mute_while_speaking_checkbox.stateChanged, self._on_mute_while_speaking_toggled)
+        v.mic_mute_while_speaking_checkbox.stateChanged.connect(self._on_mute_while_speaking_toggled)
 
         if hasattr(v, "asr_manage_button") and v.asr_manage_button:
             safe_disconnect(v.asr_manage_button.clicked, self._open_asr_glossary)
@@ -479,6 +483,9 @@ class MicrophoneSettingsController(BaseController):
 
     def _on_instant_toggled(self, state: int):
         self._save_setting("MIC_INSTANT_SENT", bool(state))
+
+    def _on_mute_while_speaking_toggled(self, state: int):
+        self._save_setting("MIC_MUTE_WHILE_SPEAKING", bool(state))
 
     def _is_asr_task(self, data: dict) -> bool:
         if not isinstance(data, dict):

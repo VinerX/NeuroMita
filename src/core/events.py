@@ -470,6 +470,11 @@ class Events:
         FINISH_MODEL_LOADING = "finish_model_loading"
         CANCEL_MODEL_LOADING = "cancel_model_loading"
         GET_WAITING_ANSWER = "get_waiting_answer"
+        # Окно «Мита сейчас говорит» — чтобы ASR не засчитывал её собственный
+        # голос из микрофона. payload: {"active": bool} (открытое окно,
+        # локальное воспроизведение) или {"duration": float} (окно по длине
+        # аудио — для проигрывания в игре, где конец проигрывания нам не виден).
+        MITA_SPEAKING_WINDOW = "mita_speaking_window"
         VOICEOVER_REQUESTED = "voiceover_requested"
         OPEN_VOICE_MODEL_SETTINGS = "open_voice_model_settings"
         OPEN_VOICE_MODEL_SETTINGS_DIALOG = "open_voice_model_settings_dialog"

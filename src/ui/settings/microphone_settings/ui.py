@@ -101,6 +101,14 @@ def build_microphone_settings_ui(self, parent_layout):
     tr_set(self.mic_instant_checkbox, "Мгновенная отправка распознанного текста", "Send recognized text immediately", "setToolTip")
     root_lay.addWidget(make_row(_("Мгновенная отправка", "Instant send"), self.mic_instant_checkbox, label_w))
 
+    self.mic_mute_while_speaking_checkbox = QCheckBox("")
+    self.mic_mute_while_speaking_checkbox.setChecked(bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True)))
+    self.mic_mute_while_speaking_checkbox.setToolTip(_(
+        "Не засчитывать распознанное, пока Мита говорит (чтобы её голос из колонок не улетал в чат)",
+        "Ignore recognized speech while Mita is talking (so her voice from the speakers isn't sent to chat)"
+    ))
+    root_lay.addWidget(make_row(_("Не слышать Миту", "Ignore Mita's voice"), self.mic_mute_while_speaking_checkbox, label_w))
+
     # 5) Статус (как раньше) — под кнопками
     self.asr_init_status = QLabel("—")
     root_lay.addWidget(make_row(_("Статус", "Status"), self.asr_init_status, label_w))

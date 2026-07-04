@@ -47,6 +47,33 @@ class AudioController:
         eb.subscribe(Events.Audio.GET_WAITING_ANSWER, self._on_get_waiting_answer, weak=False)
         eb.subscribe(Events.Audio.SET_WAITING_ANSWER, self._on_set_waiting_answer, weak=False)
 
+    def _set_mita_speaking(self, active: bool):
+        """Сообщить, что Мита начала/закончила говорить (открытое окно)."""
+        try:
+            self.event_bus.emit(Events.Audio.MITA_SPEAKING_WINDOW, {"active": bool(active)})
+        except Exception:
+            pass
+
+    @staticmethod
+    def _audio_duration(path) -> float:
+        """Длительность аудиофайла в секундах (0.0 — определить не удалось)."""
+        try:
+            import soundfile as sf
+            info = sf.info(path)
+            if info.frames and info.samplerate:
+                return float(info.frames) / float(info.samplerate)
+        except Exception:
+            pass
+        try:
+            import wave
+            with wave.open(path, "rb") as w:
+                fr = w.getframerate()
+                if fr:
+                    return float(w.getnframes()) / float(fr)
+        except Exception:
+            pass
+        return 0.0
+
     def _on_get_waiting_answer(self, event: Event):
         return self.waiting_answer
 
@@ -210,13 +237,26 @@ class AudioController:
             is_connected = server_res[0] if server_res else False
 
             if not is_connected and self.settings.get("VOICEOVER_LOCAL_CHAT"):
-                await AudioHandler.handle_voice_file(
-                    result_path,
-                    self.settings.get("LOCAL_VOICE_DELETE_AUDIO", True)
-                    if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1" else True,
-                    volume=self._local_playback_volume(),
-                )
+                # Воспроизведение идёт в нашем процессе — точно знаем начало и
+                # конец, поэтому держим окно «Мита говорит» открытым на всю
+                # длительность play (см. SpeechController: ASR в это время
+                # не засчитывает распознанное).
+                self._set_mita_speaking(True)
+                try:
+                    await AudioHandler.handle_voice_file(
+                        result_path,
+                        self.settings.get("LOCAL_VOICE_DELETE_AUDIO", True)
+                        if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1" else True,
+                        volume=self._local_playback_volume(),
+                    )
+                finally:
+                    self._set_mita_speaking(False)
             elif is_connected:
+                # Аудио проигрывает мод в игре — конец воспроизведения нам не
+                # виден. Прикидываем окно по длительности самого файла.
+                dur = self._audio_duration(result_path)
+                if dur > 0:
+                    self.event_bus.emit(Events.Audio.MITA_SPEAKING_WINDOW, {"duration": dur})
                 self.event_bus.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, result_path)
             else:
                 logger.info("Озвучка в локальном чате отключена.")

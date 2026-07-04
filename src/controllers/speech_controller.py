@@ -13,6 +13,10 @@ from utils import getTranslationVariant as _
 
 
 class SpeechController:
+    # Хвост после конца реплики: гасим затухание звука и задержку VAD,
+    # который выдаёт текст уже после паузы.
+    _MUTE_TAIL_SEC = 0.4
+
     def __init__(self):
         self.settings = None
         self.device_id = 0
@@ -25,6 +29,11 @@ class SpeechController:
         self._last_text = ""
         self._last_text_norm = ""
         self._last_text_time = 0.0
+
+        # «Мита говорит» — чтобы ASR не засчитывал её собственный голос из
+        # микрофона (см. _on_speech_text_recognized / _is_mita_speaking).
+        self._mita_speaking = False        # открытое окно (локальное воспроизведение)
+        self._mita_speaking_until = 0.0    # окно по таймеру (монотонные секунды)
 
         self._asr_settings_path = os.path.join("Settings", "asr_settings.json")
         self._asr_settings = {
@@ -97,6 +106,7 @@ class SpeechController:
         eb.subscribe(Events.Speech.GET_INSTANT_SEND_STATUS, self._on_get_instant_send_status, weak=False)
         eb.subscribe(Events.Speech.SET_INSTANT_SEND_STATUS, self._on_set_instant_send_status, weak=False)
         eb.subscribe(Events.Speech.SPEECH_TEXT_RECOGNIZED, self._on_speech_text_recognized, weak=False)
+        eb.subscribe(Events.Audio.MITA_SPEAKING_WINDOW, self._on_mita_speaking_window, weak=False)
         eb.subscribe(Events.Speech.GET_MIC_STATUS, self._on_get_mic_status, weak=False)
         eb.subscribe(Events.Speech.GET_USER_INPUT, self._on_get_user_input, weak=False)
 
@@ -432,11 +442,39 @@ class SpeechController:
 
         return False
 
+    def _on_mita_speaking_window(self, event: Event):
+        data = event.data or {}
+        now = time.monotonic()
+        if "active" in data:
+            if bool(data.get("active")):
+                self._mita_speaking = True
+            else:
+                # Закрыли открытое окно — держим ещё хвост на затухание/VAD.
+                self._mita_speaking = False
+                self._mita_speaking_until = max(self._mita_speaking_until, now + self._MUTE_TAIL_SEC)
+        if "duration" in data:
+            dur = 0.0
+            try:
+                dur = float(data.get("duration") or 0.0)
+            except Exception:
+                dur = 0.0
+            if dur > 0:
+                self._mita_speaking_until = max(self._mita_speaking_until, now + dur + self._MUTE_TAIL_SEC)
+
+    def _is_mita_speaking(self) -> bool:
+        return self._mita_speaking or time.monotonic() < self._mita_speaking_until
+
     def _on_speech_text_recognized(self, event: Event):
         text = (event.data or {}).get('text', '').strip()
         if not text or not self.settings:
             return
         if not bool(self.settings.get("MIC_ACTIVE")):
+            return
+
+        # Не засчитываем то, что говорит сама Мита (её голос ловит микрофон),
+        # пока активно окно её речи. Распознавание при этом не выключается.
+        if bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True)) and self._is_mita_speaking():
+            logger.debug(f"ASR заглушён (Мита говорит): игнор '{text}'")
             return
 
         now = time.time()
