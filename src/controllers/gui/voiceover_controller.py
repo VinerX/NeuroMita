@@ -109,10 +109,68 @@ class VoiceoverGuiController(BaseController):
             if key == "VOICE_LANGUAGE":
                 lang = str(value or self._get_setting("VOICE_LANGUAGE", "ru") or "ru")
                 self.event_bus.emit_and_wait(Events.Audio.CHANGE_VOICE_LANGUAGE, {"language": lang}, timeout=1.0)
+            if key == "USE_VOICEOVER" and bool(value):
+                self._maybe_warn_backend_missing()
             self._sync_everything(allow_autoload=False)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
         self._ui(apply)
+
+    def _maybe_warn_backend_missing(self):
+        """Задача #1: при включении озвучки (Local) без установленного бэкенда
+        показываем плашку с тем, какой вариант будет поставлен по видеокарте.
+        Показывается один раз за сессию, чтобы не спамить."""
+        if getattr(self, "_backend_notice_shown", False) or not self.view:
+            return
+        # Локальная озвучка использует torch-бэкенд; для TG/прочего он не нужен.
+        if self._effective_method() != "Local":
+            return
+        try:
+            from core.backends.service import get_backend_service
+            variant = get_backend_service().get_installed_torch_variant()
+        except Exception:
+            variant = "cuda"  # при ошибке проверки — не пугаем пользователя
+        if variant and variant != "missing":
+            return
+
+        self._backend_notice_shown = True
+        try:
+            from utils.gpu_utils import (
+                get_primary_gpu_name, _classify_gpu_vendor, format_primary_gpu_label,
+            )
+            gpu_name = get_primary_gpu_name()
+            vendor = _classify_gpu_vendor(gpu_name or "")
+            gpu_label = gpu_name or format_primary_gpu_label()
+        except Exception:
+            vendor, gpu_label = "CPU", ""
+        is_nvidia = str(vendor).upper() == "NVIDIA"
+        backend_word = "CUDA" if is_nvidia else "CPU"
+        gpu_suffix_ru = f" ({gpu_label})" if gpu_label else ""
+        gpu_suffix_en = f" ({gpu_label})" if gpu_label else ""
+
+        box = QMessageBox(self.view)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(_("Бэкенд озвучки не установлен", "Voice backend not installed"))
+        box.setText(_(
+            f"Не установлен бэкенд озвучки. Судя по вашей видеокарте{gpu_suffix_ru} "
+            f"будет поставлен вариант {backend_word}.\n\nЕсли вы не согласны — "
+            f"установите бэкенд самостоятельно через AI Hub.",
+            f"The voice backend is not installed. Based on your GPU{gpu_suffix_en} "
+            f"the {backend_word} variant will be installed.\n\nIf you disagree — "
+            f"install the backend yourself via the AI Hub.",
+        ))
+        open_btn = box.addButton(_("Открыть AI Hub", "Open AI Hub"),
+                                 QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(_("Позже", "Later"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            try:
+                self.event_bus.emit(
+                    Events.GUI.SHOW_WINDOW,
+                    {"window_id": "ai_hub", "payload": {"category": "backend"}},
+                )
+            except Exception as exc:
+                logger.error(f"Failed to open AI Hub (backend) from notice: {exc}")
 
     # ---------- Telegram ----------
     def _on_tg_connected_event(self, event: Event):
@@ -669,9 +727,27 @@ class VoiceoverGuiController(BaseController):
             return
 
         if not os.path.exists("models"):
-            QMessageBox.critical(self.view, _("Ошибка", "Error"),
-                                 _("Не найдена папка models. Инициализация отменена.",
-                                   "Failed to find models folder. Initialization cancelled."))
+            box = QMessageBox(self.view)
+            box.setIcon(QMessageBox.Icon.Critical)
+            box.setWindowTitle(_("Ошибка", "Error"))
+            box.setText(_(
+                "Невозможно инициализировать модель — не хватает установленной "
+                "папки с моделями (models).\n\nСкачайте голоса Мит через AI Hub.",
+                "Cannot initialize the model — the installed models folder is "
+                "missing.\n\nDownload the Mita voices via the AI Hub.",
+            ))
+            open_btn = box.addButton(_("Открыть AI Hub", "Open AI Hub"),
+                                     QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(_("Отмена", "Cancel"), QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is open_btn:
+                try:
+                    self.event_bus.emit(
+                        Events.GUI.SHOW_WINDOW,
+                        {"window_id": "ai_hub", "payload": {"category": "voices"}},
+                    )
+                except Exception as exc:
+                    logger.error(f"Failed to open AI Hub from models error: {exc}")
             return
 
         self._loading_model_id = model_id
