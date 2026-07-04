@@ -143,11 +143,11 @@ class _SandboxStatusRow(QWidget):
 
         self._value = QLabel("—")
         self._value.setObjectName("SandboxInfoValue")
-        self._value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._value.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._value.setMinimumWidth(0)
-        value_layout.addWidget(self._value, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        value_layout.addWidget(self._value, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         h.addWidget(self._value_slot, 1, Qt.AlignmentFlag.AlignVCenter)
         self._full_value_text = "—"
 
@@ -203,6 +203,10 @@ class _SandboxStatusRow(QWidget):
         self._full_value_text = text or "—"
         self._value.setToolTip(self._full_value_text)
         self._apply_value_text()
+        # Ширина слота может быть ещё не разложена в момент set_value —
+        # пересчитаем элизию после текущего цикла layout, иначе текст
+        # схлопывается до одной буквы.
+        QTimer.singleShot(0, self._apply_value_text)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -263,7 +267,10 @@ class _SandboxStatusRow(QWidget):
 
     def _apply_value_text(self):
         value = self._full_value_text or "—"
-        available = max(24, self._value.width() - 2)
+        # Ширину берём у слота, а не у самого QLabel: у него size policy
+        # Ignored, поэтому width() бывает устаревшим/нулевым до раскладки.
+        slot_w = self._value_slot.width() or self._value.width()
+        available = max(24, slot_w - 2)
         elided = self._value.fontMetrics().elidedText(
             value,
             Qt.TextElideMode.ElideRight,
