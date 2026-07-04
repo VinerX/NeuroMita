@@ -1076,9 +1076,18 @@ class PipInstaller:
         )
         RE_SPEED = re.compile(r"(?P<speed>\d+(?:\.\d+)?)\s*(?P<sunit>[KMGTP]?i?B|B)/s", re.IGNORECASE)
         RE_PREP = re.compile(
-            r"preparing packages\.\.\.\s*KATEX_INLINE_OPEN(\d+)\s*/\s*(\d+)KATEX_INLINE_CLOSE",
+            r"preparing packages\.\.\.\s*\((\d+)\s*/\s*(\d+)\)",
             re.IGNORECASE,
         )
+        # Вехи uv печатаются как итоговые строки и видны даже без TTY (в отличие
+        # от indicatif-прогрессбаров, которые uv глушит при перехвате вывода в
+        # пайп). По ним ведём стадийный прогресс: разрешение → подготовка →
+        # установка. Требуем число + «package», чтобы голые токены-статусы
+        # (Resolved/Installed без счётчика) не срабатывали.
+        RE_RESOLVED = re.compile(r"\bresolved\s+(\d+)\s+packages?\b", re.IGNORECASE)
+        RE_PREPARED = re.compile(r"\bprepared\s+(\d+)\s+packages?\b", re.IGNORECASE)
+        RE_INSTALLED = re.compile(r"\binstalled\s+(\d+)\s+packages?\b", re.IGNORECASE)
+        RE_AUDITED = re.compile(r"\baudited\s+(\d+)\s+packages?\b", re.IGNORECASE)
         RE_WHL = re.compile(r"([A-Za-z0-9_.+-]+-[0-9][^-\\/\s]*?.*?\.whl)", re.IGNORECASE)
         RE_TAR = re.compile(r"([A-Za-z0-9_.+-]+-.*?\.(?:tar\.gz|zip|bz2|xz))", re.IGNORECASE)
         RE_PATH = re.compile(r"([A-Za-z]:[^\s]+\.whl|/[^\s]+\.whl)", re.IGNORECASE)
@@ -1101,6 +1110,9 @@ class PipInstaller:
             self.peak_total: dict[str, int] = {}
             self.phase_cur: int | None = None
             self.phase_tot: int | None = None
+            # Стадия по вехам uv: resolving → preparing → installing → done.
+            self.stage: str = "resolving"
+            self.total_packages: int | None = None
             self.snapshot_tick: int = 0
             self.done_epsilon_ratio = 0.995
             self.stale_to_done_sec = 4.0
@@ -1233,6 +1245,35 @@ class PipInstaller:
                     self.phase_tot = int(prep.group(2))
                 except Exception:
                     pass
+                if self.stage == "resolving":
+                    self.stage = "preparing"
+                return
+
+            # Вехи uv: обновляем стадию и общее число пакетов.
+            m = self.RE_RESOLVED.search(s)
+            if m:
+                try:
+                    self.total_packages = int(m.group(1))
+                except Exception:
+                    pass
+                if self.stage == "resolving":
+                    self.stage = "preparing"
+                return
+            m = self.RE_PREPARED.search(s)
+            if m:
+                if self.total_packages is None:
+                    try:
+                        self.total_packages = int(m.group(1))
+                    except Exception:
+                        pass
+                self.stage = "installing"
+                # Фаза подготовки завершена — сбрасываем её счётчик, иначе он
+                # застопорил бы прогресс/подпись на «Подготовка X/Y».
+                self.phase_cur = self.phase_tot = None
+                return
+            if self.RE_INSTALLED.search(s) or self.RE_AUDITED.search(s):
+                self.stage = "done"
+                self.phase_cur = self.phase_tot = None
                 return
 
             ident_disp = self.ident_and_display(s)
@@ -1323,12 +1364,30 @@ class PipInstaller:
                     self._record_peaks(task)
                     self.completed[cid] = task
 
+        def _stage_percent(self) -> int | None:
+            """Прогресс без байтовых размеров: по счётчику «Preparing (X/Y)» либо
+            по стадии-вехе uv. Полосы: разрешение 0–10, подготовка/скачивание
+            10–90, установка 90–100."""
+            if self.phase_tot and self.phase_tot > 0 and self.phase_cur is not None:
+                frac = self.phase_cur / self.phase_tot
+                return int(max(0, min(100, round(10 + 80 * frac))))
+            if self.stage == "done":
+                return 100
+            if self.stage == "installing":
+                return 92
+            if self.stage == "preparing":
+                # Скачивание идёт, гранулярности нет — держим начало полосы.
+                return 12
+            return None
+
         def overall_percent(self) -> int | None:
             if not self.peak_total:
-                return None
+                # uv часто не отдаёт размеры пакетов (байтовый путь пуст) —
+                # ведём прогресс по стадиям/счётчику подготовки, чтобы бар шёл.
+                return self._stage_percent()
             total_total = sum(self.peak_total.values())
             if total_total <= 0:
-                return None
+                return self._stage_percent()
             total_done = 0
             for cid, total in self.peak_total.items():
                 total_done += min(self.peak_done.get(cid, 0), total)
@@ -1338,6 +1397,12 @@ class PipInstaller:
             return bool(self.tasks or self.completed or (self.phase_cur is not None and self.phase_tot is not None))
 
         def has_confident_progress(self) -> bool:
+            # Счётчик «Preparing packages... (X/Y)» и вехи uv — надёжные
+            # детерминированные сигналы даже без байтовых размеров.
+            if self.phase_tot and self.phase_tot > 0 and self.phase_cur is not None:
+                return True
+            if self.stage in ("preparing", "installing", "done"):
+                return True
             total_bytes = sum(self.peak_total.values())
             total_tasks = sum(1 for total in self.peak_total.values() if total > 0)
             pct = self.overall_percent() or 0
@@ -1367,11 +1432,24 @@ class PipInstaller:
                 return 0.0
             return remaining / sum_speed
 
+        def _stage_label(self) -> str:
+            total = f" ({self.total_packages})" if self.total_packages else ""
+            return {
+                "preparing": f"Скачивание и подготовка пакетов…{total}",
+                "installing": f"Установка пакетов…{total}",
+                "done": "Установка завершена",
+            }.get(self.stage, "")
+
         def snapshot_lines(self, max_lines: int = 8) -> list[str]:
             self.snapshot_tick += 1
             lines: list[str] = []
             if self.phase_cur is not None and self.phase_tot is not None:
                 lines.append(f"Подготовка пакетов: {self.phase_cur}/{self.phase_tot}")
+            elif self.stage != "resolving":
+                # Нет счётчика подготовки — показываем стадию по вехам uv.
+                label = self._stage_label()
+                if label:
+                    lines.append(label)
 
             if not self.tasks:
                 return lines
@@ -1381,7 +1459,7 @@ class PipInstaller:
             sum_total = sum((task.get("total") or 0) for task in items if task.get("total"))
             pcts = [task["pct"] for task in items if task.get("pct") is not None]
             summary = f"Активных задач: {len(items)}"
-            if self.has_confident_progress():
+            if sum_total > 0:
                 avg = int(round(sum(pcts) / len(pcts))) if pcts else 0
                 summary += f"  Средний прогресс: {avg}%"
                 summary += f"  Σ {self.fmt_bytes(sum_done)}/{self.fmt_bytes(sum_total)}"
@@ -1391,6 +1469,10 @@ class PipInstaller:
                     eta_txt = self.fmt_eta(eta_sec)
                     if eta_txt:
                         summary += f"  Σскорость: {self.fmt_rate(sum_speed)}  ETA: {eta_txt}"
+            elif self.phase_tot and self.phase_cur is not None:
+                # Прогресс идёт по счётчику «Preparing packages... (X/Y)» (см.
+                # строку выше) — байтовых размеров uv не дал, поэтому Σ не пишем.
+                pass
             else:
                 summary += "  Ожидание данных о размере пакетов…"
             lines.append(summary)

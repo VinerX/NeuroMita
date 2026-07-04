@@ -287,7 +287,7 @@ class VoiceInstallationWindow(QDialog):
         message = strip_ansi(message)
         self.status_label.setText(message)
         # Вынимаем ETA из сообщения, если есть
-        m = re.search(r'KATEX_INLINE_OPEN\s*ETA\s+([^)]+)KATEX_INLINE_CLOSE', message, flags=re.IGNORECASE)
+        m = re.search(r'\(\s*ETA\s+([^)]+)\)', message, flags=re.IGNORECASE)
         if m:
             self.eta_label.setText(f"ETA {m.group(1)}")
         elif any(k in message.lower() for k in ("завершено", "complete", "done")):
@@ -560,7 +560,7 @@ class VoiceActionWindow(QDialog):
     def _on_status_update(self, message: str):
         message = strip_ansi(message)
         self.status_label.setText(message)
-        m = re.search(r'KATEX_INLINE_OPEN\s*ETA\s+([^)]+)KATEX_INLINE_CLOSE', message, flags=re.IGNORECASE)
+        m = re.search(r'\(\s*ETA\s+([^)]+)\)', message, flags=re.IGNORECASE)
         if m:
             self.eta_label.setText(f"ETA {m.group(1)}")
         elif any(k in message.lower() for k in ("завершено", "complete", "done")):
