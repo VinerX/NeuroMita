@@ -161,23 +161,32 @@ class ImagePreviewBar(QWidget):
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setMaximumHeight(56)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet("""
             QScrollArea {
-                background-color: transparent;
+                background: transparent;
                 border: none;
             }
             QScrollBar:horizontal {
                 height: 8px;
             }
         """)
-        
+        # QScrollArea рисует фон не сам виджет, а его viewport — отдельный QWidget,
+        # который по умолчанию заливается тёмным цветом палитры (тот самый
+        # «проклятый» чёрный фон под прикреплениями, фидбэк Артёма). Явно делаем
+        # viewport прозрачным, чтобы бар сливался с полем ввода.
+        scroll.viewport().setAutoFillBackground(False)
+        scroll.viewport().setStyleSheet("background: transparent; border: none;")
+
         # Контейнер для миниатюр
         self.thumbnail_container = QWidget()
+        self.thumbnail_container.setAutoFillBackground(False)
+        self.thumbnail_container.setStyleSheet("background: transparent;")
         self.thumbnail_layout = QHBoxLayout(self.thumbnail_container)
         self.thumbnail_layout.setContentsMargins(0, 0, 0, 0)
         self.thumbnail_layout.setSpacing(6)
         self.thumbnail_layout.addStretch()
-        
+
         scroll.setWidget(self.thumbnail_container)
         main_layout.addWidget(scroll)
         

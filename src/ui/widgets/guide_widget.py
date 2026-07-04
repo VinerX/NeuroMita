@@ -183,6 +183,24 @@ class GuideWidget(QWidget):
                 color: {muted};
                 font-size: 12px;
                 font-weight: 600;
+                padding: 6px 12px;
+                border-radius: 8px;
+                background-color: {chip_bg};
+            }
+            /* Раньше строка выбора уровня, подсказка и метка «Язык» не имели
+               своей поверхности и читались как чёрный фон поверх тёмного
+               контейнера (фидбэк Артёма). Даём им ту же лёгкую подложку, что и
+               у заголовка. */
+            #GuideLevelRow {
+                background-color: {chip_bg};
+                border-radius: 16px;
+            }
+            #GuideLevelHint {
+                color: {muted};
+                font-size: 12px;
+                padding: 6px 12px;
+                border-radius: 8px;
+                background-color: {chip_bg};
             }
         """, get_theme()))
 
@@ -200,8 +218,11 @@ class GuideWidget(QWidget):
         
         # --- Level selector ---
         level_row = QWidget()
+        level_row.setObjectName("GuideLevelRow")
+        # Плоский QWidget без этого атрибута не рисует фон из QSS.
+        level_row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         level_row_layout = QHBoxLayout(level_row)
-        level_row_layout.setContentsMargins(0, 0, 0, 4)
+        level_row_layout.setContentsMargins(8, 6, 8, 6)
         level_row_layout.setSpacing(8)
         level_row_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
