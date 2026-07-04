@@ -258,6 +258,13 @@ class SandboxPage(QWidget):
     # Emitted when an install/voice-model task finishes (on a bg thread) so the
     # Status block re-reads disk state on the GUI thread — задача #7.
     _status_refresh_signal = pyqtSignal()
+    # Лёгкая пере-синхронизация тумблеров статуса из настроек на GUI-потоке.
+    # Нужна, когда подсистема сама выключает себя (напр. speech_controller
+    # ставит MIC_ACTIVE=False при сбое старта) через settings.set() — это НЕ
+    # эмитит SETTING_CHANGED, поэтому тумблер «Микрофон» рассинхронивался с
+    # реальным состоянием. Зато UPDATE_STATUS_COLORS в таких местах шлётся —
+    # на него и пере-читаем значения тумблеров (фидбэк Винера).
+    _status_values_signal = pyqtSignal()
 
     def __init__(self, gui):
         super().__init__(gui)
@@ -1523,6 +1530,7 @@ class SandboxPage(QWidget):
         self._indicator_signal.connect(self._on_indicator_ui)
         self._setting_changed_signal.connect(self._on_setting_changed_ui)
         self._status_refresh_signal.connect(self._refresh_status_panel)
+        self._status_values_signal.connect(self._refresh_status_values)
 
         bus = getattr(self.gui, "event_bus", None)
         if bus is None:
@@ -1534,6 +1542,9 @@ class SandboxPage(QWidget):
             bus.subscribe(Events.GUI.UPDATE_TOKEN_COUNT_UI, self._on_token_count_evt, weak=False)
             bus.subscribe(Events.GUI.SET_SETTINGS_ICON_INDICATOR, self._on_indicator_evt, weak=False)
             bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed_evt, weak=False)
+            # Пере-синхронизация тумблеров, когда подсистема сама себя выключает
+            # (MIC_ACTIVE=False при сбое ASR) — она шлёт UPDATE_STATUS_COLORS.
+            bus.subscribe(Events.GUI.UPDATE_STATUS_COLORS, self._on_status_colors_evt, weak=False)
             # Авто-обновление блока «Статус» по завершении установок (задача #7).
             bus.subscribe(Events.Install.TASK_FINISHED, self._on_install_finished_evt, weak=False)
             bus.subscribe(Events.VoiceModel.MODEL_INSTALL_FINISHED, self._on_install_finished_evt, weak=False)
@@ -1558,6 +1569,12 @@ class SandboxPage(QWidget):
         key = str(data.get("key") or "")
         if key:
             self._setting_changed_signal.emit(key)
+
+    def _on_status_colors_evt(self, event=None):
+        # Приходит с шины (в т.ч. из фонового потока) — маршалим в GUI-поток
+        # и пере-читаем тумблеры из настроек, чтобы «Микрофон» не залипал ON,
+        # когда ASR сам себя выключил.
+        self._status_values_signal.emit()
 
     def _on_setting_changed_ui(self, key: str):
         if key in self._STATUS_KEYS:
