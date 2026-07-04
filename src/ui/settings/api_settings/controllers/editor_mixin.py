@@ -123,6 +123,7 @@ class EditorMixin:
             key=str(v.api_key_row.text() or ""),
             base=base,
             reserve_keys_text=str(v.reserve_keys_row.text() or "").strip(),
+            reserve_keys_distribute=bool(v.reserve_keys_row.is_distribute()),
             protocol_id=self._current_protocol_id_ui(),
             generation_overrides=self._read_generation_overrides(),
             openrouter_routing=self._read_openrouter_routing(),
@@ -144,7 +145,9 @@ class EditorMixin:
             v.api_url_row.set_dirty(cur.url != self._snapshot.url)
             v.api_model_row.set_dirty(cur.model != self._snapshot.model)
             v.api_key_row.set_dirty(cur.key != self._snapshot.key)
-            v.reserve_keys_row.set_dirty(cur.reserve_keys_text != self._snapshot.reserve_keys_text)
+            v.reserve_keys_row.set_dirty(
+                cur.reserve_keys_text != self._snapshot.reserve_keys_text
+                or cur.reserve_keys_distribute != self._snapshot.reserve_keys_distribute)
 
             if cur.base is None:
                 v.protocol_row.set_dirty(cur.protocol_id != self._snapshot.protocol_id)
@@ -303,6 +306,7 @@ class EditorMixin:
             "model": v.api_model_row.text(),
             "key": v.api_key_row.text(),
             "reserve_keys": [k.strip() for k in v.reserve_keys_row.text().splitlines() if k.strip()],
+            "reserve_keys_distribute": bool(v.reserve_keys_row.is_distribute()),
             "fallbacks": v.fallback_editor.get_value() if hasattr(v, "fallback_editor") else [],
         }
 
@@ -322,6 +326,7 @@ class EditorMixin:
         data["default_model"] = v.api_model_row.text()
         data["key"] = v.api_key_row.text()
         data["reserve_keys"] = [k.strip() for k in v.reserve_keys_row.text().splitlines() if k.strip()]
+        data["reserve_keys_distribute"] = bool(v.reserve_keys_row.is_distribute())
 
         base = self._parse_base(v.template_combo.currentData())
         data["base"] = base
@@ -394,6 +399,7 @@ class EditorMixin:
         v.api_model_row.set_text(self._snapshot.model)
         v.api_key_row.set_text(self._snapshot.key)
         v.reserve_keys_row.set_text(self._snapshot.reserve_keys_text)
+        v.reserve_keys_row.set_distribute(self._snapshot.reserve_keys_distribute)
 
         v.template_combo.blockSignals(True)
         if self._snapshot.base is None:

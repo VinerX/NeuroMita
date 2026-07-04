@@ -4,7 +4,7 @@ from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QPainter, QPixmap, QColor, QFont, QFontMetrics, QPalette
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QStyledItemDelegate, QStyle, QListWidget, QListWidgetItem, QComboBox, QSizePolicy, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QTextEdit, QToolButton, QPushButton, QFrame
+    QStyledItemDelegate, QStyle, QListWidget, QListWidgetItem, QComboBox, QSizePolicy, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QTextEdit, QToolButton, QPushButton, QFrame, QCheckBox
 )
 import qtawesome as qta
 
@@ -229,10 +229,11 @@ class PresetsListWidget(QListWidget):
 
 
 class CustomPresetListItem(QListWidgetItem):
-    def __init__(self, preset_id, name, has_changes=False):
+    def __init__(self, preset_id, name, has_changes=False, model=""):
         super().__init__()
         self.preset_id = preset_id
         self.base_name = name
+        self.model = str(model or "")
         self.has_changes = has_changes
         self.update_display()
 
@@ -242,8 +243,10 @@ class CustomPresetListItem(QListWidgetItem):
 
     def update_display(self):
         display_text = self.base_name
+        if self.model:
+            display_text = f"{self.base_name} ({self.model})"
         if self.has_changes:
-            display_text = f"{self.base_name}   *"
+            display_text = f"{display_text}   *"
         self.setText(display_text)
 
 
@@ -420,6 +423,15 @@ class ReserveKeysEditor(QWidget):
         hint.setStyleSheet("color: #bfbfbf; font-size: 11px;")
         outer.addWidget(hint)
 
+        self.distribute_checkbox = tr_set(QCheckBox(), "Всегда распределять", "Always distribute")
+        self.distribute_checkbox.setToolTip(_(
+            "Использовать основной и резервные ключи по кругу на каждый запрос "
+            "(лимиты всех ключей тратятся одновременно), а не только при сбое.",
+            "Use the main and reserve keys in round-robin on every request "
+            "(all keys' limits are spent at once), not only on failure."))
+        self.distribute_checkbox.toggled.connect(lambda *_: self.changed.emit())
+        outer.addWidget(self.distribute_checkbox)
+
         self._rows_container = QFrame()
         self._rows_layout = QVBoxLayout(self._rows_container)
         self._rows_layout.setContentsMargins(0, 0, 0, 0)
@@ -497,6 +509,16 @@ class ReserveKeysEditor(QWidget):
             ks = str(k or "").strip()
             if ks:
                 self._add_row(ks)
+
+    def is_distribute(self) -> bool:
+        return bool(self.distribute_checkbox.isChecked())
+
+    def set_distribute(self, value: bool) -> None:
+        self.distribute_checkbox.blockSignals(True)
+        try:
+            self.distribute_checkbox.setChecked(bool(value))
+        finally:
+            self.distribute_checkbox.blockSignals(False)
 
     # --- интерфейс, совместимый с прежним LabeledTextEditRow ---
     def text(self) -> str:

@@ -85,7 +85,8 @@ class PresetsMixin:
                 name = getattr(p, "name", "")
                 if not isinstance(pid, int):
                     continue
-                item = Item(pid, str(name), has_changes=bool(current_changes.get(pid, False)))
+                item = Item(pid, str(name), has_changes=bool(current_changes.get(pid, False)),
+                            model=str(getattr(p, "default_model", "") or ""))
                 v.custom_presets_list.addItem(item)
                 self.custom_presets_list_items[pid] = item
 
@@ -185,6 +186,8 @@ class PresetsMixin:
             reserve_keys = state.get("reserve_keys", preset.get("reserve_keys", []))
             if not isinstance(reserve_keys, list):
                 reserve_keys = []
+            reserve_keys_distribute = bool(
+                state.get("reserve_keys_distribute", preset.get("reserve_keys_distribute", False)))
 
             base = self._parse_base(preset.get("base", None))
             self._set_protocol_config_visible(base is None)
@@ -222,6 +225,7 @@ class PresetsMixin:
             v.api_model_row.set_text(model)
             v.api_key_row.set_text(key)
             v.reserve_keys_row.set_text("\n".join([str(k).strip() for k in reserve_keys if str(k).strip()]))
+            v.reserve_keys_row.set_distribute(reserve_keys_distribute)
 
             gen_overrides = preset.get("generation_overrides") or {}
             if isinstance(gen_overrides, dict):

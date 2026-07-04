@@ -24,6 +24,7 @@ class PresetSettings:
 
     preset_name: str
     reserve_keys: List[str]
+    distribute_keys: bool = False
     generation_overrides: Dict[str, Any] = field(default_factory=dict)
     openrouter_routing: Dict[str, Any] = field(default_factory=dict)
 
@@ -44,6 +45,9 @@ class ApiPresetResolver:
     def __init__(self, settings: Any, event_bus: Any):
         self.settings = settings
         self.event_bus = event_bus
+        # Round-robin для режима «Всегда распределять» (ключ словарей — имя пресета).
+        self._distribute_counter: Dict[str, int] = {}
+        self._distribute_base: Dict[str, int] = {}
 
     # ---------------------------
     # Public API
@@ -83,6 +87,7 @@ class ApiPresetResolver:
         if not isinstance(reserve_keys, list):
             reserve_keys = []
         reserve_keys = [str(k) for k in reserve_keys if str(k).strip()]
+        distribute_keys = bool((preset or {}).get("reserve_keys_distribute", False))
 
         # Build base URL (no auth logic here)
         base_url = self._compute_base_url(preset or {}, api_model)
@@ -146,6 +151,7 @@ class ApiPresetResolver:
             api_model=api_model,
             preset_name=preset_name,
             reserve_keys=reserve_keys,
+            distribute_keys=distribute_keys,
             generation_overrides=generation_overrides,
             openrouter_routing=openrouter_routing,
         )
@@ -234,15 +240,17 @@ class ApiPresetResolver:
         Rotates api_key across reserve_keys and rebuilds (url, headers) via protocol factory,
         so bearer/query auth stays consistent without dialect-specific logic.
         """
-        if attempt <= 1:
-            return preset
         if not preset.reserve_keys:
+            return preset
+
+        key_index = self._resolve_key_index(preset, attempt)
+        if key_index <= 0 and not preset.distribute_keys:
             return preset
 
         new_key = self.select_key_for_attempt(
             current_key=preset.api_key,
             reserve_keys=preset.reserve_keys,
-            attempt_index=attempt - 1,
+            attempt_index=key_index,
         )
         if not new_key or new_key == preset.api_key:
             return preset
@@ -257,6 +265,20 @@ class ApiPresetResolver:
         )
 
         return replace(preset, api_key=new_key, api_url=new_url, headers=new_headers)
+
+    def _resolve_key_index(self, preset: PresetSettings, attempt: int) -> int:
+        """Индекс ключа в списке [main, *reserve] для данной попытки."""
+        if not preset.distribute_keys:
+            return max(0, attempt - 1)
+
+        key = preset.preset_name or ""
+        if attempt <= 1:
+            base = self._distribute_counter.get(key, 0)
+            self._distribute_counter[key] = base + 1
+            self._distribute_base[key] = base
+        else:
+            base = self._distribute_base.get(key, 0)
+        return base + max(0, attempt - 1)
 
     def select_key_for_attempt(self, current_key: str, reserve_keys: List[str], attempt_index: int) -> Optional[str]:
         all_keys: List[str] = []

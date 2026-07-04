@@ -25,6 +25,7 @@ class PresetMeta:
     protocol_id: str = ""
     dialect_id: str = ""
     provider_name: str = ""
+    default_model: str = ""
 
 
 @dataclass
@@ -58,6 +59,8 @@ class UserPreset:
     url: str = ""
     key: str = ""
     reserve_keys: List[str] = field(default_factory=list)
+    # Round-robin по всем ключам на каждый запрос, а не только при сбое.
+    reserve_keys_distribute: bool = False
     protocol_id: str = ""
     protocol_overrides: Dict[str, Any] = field(default_factory=dict)
     generation_overrides: Dict[str, Any] = field(default_factory=dict)
@@ -421,6 +424,7 @@ class ApiPresetsController:
         if not isinstance(rk, list):
             rk = []
         reserve_keys = [str(k) for k in rk if str(k).strip()]
+        reserve_keys_distribute = bool(raw.get("reserve_keys_distribute", False))
 
         protocol_id = str(raw.get("protocol_id", "") or "").strip()
 
@@ -452,6 +456,7 @@ class ApiPresetsController:
             url=url,
             key=str(raw.get("key", "") or ""),
             reserve_keys=reserve_keys,
+            reserve_keys_distribute=reserve_keys_distribute,
             protocol_id=protocol_id,
             protocol_overrides=dict(po),
             generation_overrides=dict(go),
@@ -727,6 +732,7 @@ class ApiPresetsController:
 
             "key": p.key,
             "reserve_keys": p.reserve_keys or [],
+            "reserve_keys_distribute": bool(p.reserve_keys_distribute),
             "protocol_overrides": p.protocol_overrides or {},
             "generation_overrides": p.generation_overrides or {},
             "openrouter_routing": p.openrouter_routing or {},
@@ -794,6 +800,7 @@ class ApiPresetsController:
                 protocol_id=str(tpl.protocol_id or ""),
                 dialect_id=str(getattr(proto, "dialect", "") or ""),
                 provider_name=str(getattr(proto, "provider", "") or ""),
+                default_model=str(tpl.default_model or ""),
             ))
 
         ordered_custom: List[UserPreset] = []
@@ -810,6 +817,8 @@ class ApiPresetsController:
             protocol_id = self._effective_protocol_id_for(up, tpl)
             proto = reg.get(protocol_id) if protocol_id else None
 
+            eff_model = (self.preset_states.get(up.id) or {}).get("model") or up.default_model or (tpl.default_model if tpl else "")
+
             meta["custom"].append(PresetMeta(
                 id=up.id,
                 name=up.name,
@@ -818,6 +827,7 @@ class ApiPresetsController:
                 protocol_id=protocol_id,
                 dialect_id=str(getattr(proto, "dialect", "") or ""),
                 provider_name=str(getattr(proto, "provider", "") or ""),
+                default_model=str(eff_model or ""),
             ))
         return meta
 
@@ -888,6 +898,9 @@ class ApiPresetsController:
             if not isinstance(rk, list):
                 rk = []
             up.reserve_keys = [str(k) for k in rk if str(k).strip()]
+
+        if "reserve_keys_distribute" in data:
+            up.reserve_keys_distribute = bool(data.get("reserve_keys_distribute"))
 
         if "fallbacks" in data:
             up.fallbacks = self._normalize_fallbacks(data.get("fallbacks"))
@@ -977,6 +990,7 @@ class ApiPresetsController:
                 url=str(data.get("url", "") or "") if not base else "",
                 key=str(data.get("key", "") or ""),
                 reserve_keys=[str(k) for k in (data.get("reserve_keys", []) or []) if str(k).strip()],
+                reserve_keys_distribute=bool(data.get("reserve_keys_distribute", False)),
                 protocol_id=str(data.get("protocol_id", "") or "").strip(),
                 fallbacks=self._normalize_fallbacks(data.get("fallbacks", [])),
             )
@@ -1372,6 +1386,8 @@ class ApiPresetsController:
                 rk = state.get("reserve_keys") or []
                 if isinstance(rk, list):
                     up.reserve_keys = [str(k) for k in rk if str(k).strip()]
+            if "reserve_keys_distribute" in state:
+                up.reserve_keys_distribute = bool(state.get("reserve_keys_distribute"))
             if "fallbacks" in state:
                 up.fallbacks = self._normalize_fallbacks(state.get("fallbacks"))
 

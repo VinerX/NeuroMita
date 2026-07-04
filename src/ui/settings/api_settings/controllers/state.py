@@ -11,6 +11,7 @@ class PresetSnapshot:
     key: str
     base: Optional[int]
     reserve_keys_text: str
+    reserve_keys_distribute: bool
     protocol_id: str
     generation_overrides: Dict[str, Any] = field(default_factory=dict)
     openrouter_routing: Dict[str, Any] = field(default_factory=dict)
