@@ -11,6 +11,7 @@ import requests
 from main_logger import logger
 from handlers.llm_providers.base import BaseProvider, LLMRequest, LLMResponse, normalize_usage_payload
 from handlers.llm_providers.errors import build_provider_error, coerce_provider_error
+from handlers.llm_providers.message_transforms import trailing_system_to_user_prefix
 from schemas.structured_response import StructuredResponse
 from utils.openrouter_routing import (
     annotate_openrouter_prompt_cache,
@@ -169,6 +170,8 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
     def _build_payload(self, req: LLMRequest, model_to_use: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         if req.protocol_id == "openrouter_default":
+            if bool((req.extra or {}).get("openrouter_tail_system_to_user", True)):
+                messages = trailing_system_to_user_prefix(messages, tag="[SYSTEM INFO]")
             messages = annotate_openrouter_prompt_cache(messages, model_to_use)
         payload: Dict[str, Any] = {
             "model": model_to_use,
