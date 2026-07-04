@@ -231,10 +231,10 @@ def build_api_settings_ui(self, parent_layout):
 
     # Numeric generation params: (key, display_label, default_value)
     _gen_params = [
-        ("temperature",       _("Температура",       "Temperature"),       "1.0"),
+        ("temperature",       _("Температура",       "Temperature"),       ""),
         ("max_tokens",        _("Макс. токенов",      "Max tokens"),        "2500"),
-        ("top_p",             "Top-P",                                      "1.0"),
-        ("top_k",             "Top-K",                                      "0"),
+        ("top_p",             "Top-P",                                      ""),
+        ("top_k",             "Top-K",                                      ""),
         ("presence_penalty",  _("Штраф присутствия", "Presence penalty"),   "0.0"),
         ("frequency_penalty", _("Штраф частоты",     "Frequency penalty"),  "0.0"),
         ("thinking_budget",        _("Бюджет мышления",          "Thinking budget"),         "0.0"),

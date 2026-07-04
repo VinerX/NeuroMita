@@ -7,22 +7,22 @@ from typing import Any, Optional
 from main_logger import logger
 
 
-def _to_int(v: Any, default: int) -> int:
+def _to_int(v: Any, default: Optional[int]) -> Optional[int]:
     try:
         if v == "" or v is None:
-            return int(default)
+            return int(default) if default is not None else None
         return int(v)
     except Exception:
-        return int(default)
+        return int(default) if default is not None else None
 
 
-def _to_float(v: Any, default: float) -> float:
+def _to_float(v: Any, default: Optional[float]) -> Optional[float]:
     try:
         if v == "" or v is None:
-            return float(default)
+            return float(default) if default is not None else None
         return float(v)
     except Exception:
-        return float(default)
+        return float(default) if default is not None else None
 
 
 def _to_bool(v: Any, default: bool) -> bool:
@@ -41,12 +41,12 @@ def _to_bool(v: Any, default: bool) -> bool:
 @dataclass
 class ModelRuntimeConfig:
     # generation params
-    max_response_tokens: int = 3000
-    temperature: float = 0.5
+    max_response_tokens: int = 2500
+    temperature: Optional[float] = None
     presence_penalty: float = 0.0
     frequency_penalty: float = 0.0
-    top_k: int = 0
-    top_p: float = 1.0
+    top_k: Optional[int] = None
+    top_p: Optional[float] = None
     thinking_budget: float = 0.0
     log_probability: float = 0.0
     enable_thinking: bool | None = None  # None = не передавать параметр
@@ -144,12 +144,12 @@ class ModelConfigLoader:
     def load(self) -> ModelRuntimeConfig:
         s = self.settings
         cfg = ModelRuntimeConfig(
-            max_response_tokens=_to_int(s.get("MODEL_MAX_RESPONSE_TOKENS", 3000), 3000),
-            temperature=_to_float(s.get("MODEL_TEMPERATURE", 0.5), 0.5),
+            max_response_tokens=_to_int(s.get("MODEL_MAX_RESPONSE_TOKENS"), 2500) or 2500,
+            temperature=_to_float(s.get("MODEL_TEMPERATURE"), None),
             presence_penalty=_to_float(s.get("MODEL_PRESENCE_PENALTY", 0.0), 0.0),
             frequency_penalty=_to_float(s.get("MODEL_FREQUENCY_PENALTY", 0.0), 0.0),
-            top_k=_to_int(s.get("MODEL_TOP_K", 0), 0),
-            top_p=_to_float(s.get("MODEL_TOP_P", 1.0), 1.0),
+            top_k=_to_int(s.get("MODEL_TOP_K"), None),
+            top_p=_to_float(s.get("MODEL_TOP_P"), None),
             thinking_budget=_to_float(s.get("MODEL_THINKING_BUDGET", 0.0), 0.0),
             log_probability=_to_float(s.get("MODEL_LOG_PROBABILITY", 0.0), 0.0),
             enable_thinking=_to_bool(s.get("ENABLE_THINKING"), True) if s.get("ENABLE_THINKING") is not None else None,

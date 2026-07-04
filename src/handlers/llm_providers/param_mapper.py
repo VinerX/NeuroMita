@@ -43,7 +43,7 @@ def build_unified_generation_params(
     if (bool(settings.get("USE_MODEL_TEMPERATURE", True)) or "temperature" in force_params) and temperature is not None:
         params["temperature"] = float(temperature)
 
-    if (bool(settings.get("USE_MODEL_MAX_RESPONSE_TOKENS")) or "max_tokens" in force_params) and max_response_tokens is not None:
+    if (bool(settings.get("USE_MODEL_MAX_RESPONSE_TOKENS", True)) or "max_tokens" in force_params) and max_response_tokens is not None:
         params["max_tokens"] = int(max_response_tokens)
 
     if (bool(settings.get("USE_MODEL_PRESENCE_PENALTY")) or "presence_penalty" in force_params) and presence_penalty is not None:
