@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Dict, Any, List, Optional
 import datetime
 import base64
+import time
 import threading
 from io import BytesIO
 
@@ -20,6 +21,8 @@ class HistoryController:
         self._compression_guard = threading.Lock()
         self._compression_inflight: set[str] = set()
         self._background_compression_inflight: set[str] = set()
+        self._background_compression_timers: Dict[str, threading.Timer] = {}
+        self._compression_cooldowns: Dict[str, float] = {}
         self._subscribe_to_events()
 
     def _subscribe_to_events(self):
@@ -276,6 +279,7 @@ class HistoryController:
             character,
             messages_to_compress,
             previous_summary=history_summary if use_external_summary else "",
+            background_mode=background_mode,
         )
 
         if not compressed_summary:
@@ -400,10 +404,45 @@ class HistoryController:
 
     def _start_background_compression(self, character) -> None:
         char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+        delay_sec = self._compression_background_delay_seconds()
+        remaining_cooldown = self._get_compression_cooldown_remaining(char_id)
+        self._schedule_background_compression(character, delay_sec=max(delay_sec, remaining_cooldown))
+
+    def _schedule_background_compression(self, character, *, delay_sec: float) -> None:
+        char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+        timer = threading.Timer(
+            max(0.0, float(delay_sec)),
+            self._run_scheduled_background_compression,
+            args=(character,),
+        )
+        timer.daemon = True
+        timer.name = f"history-compress-delay-{char_id}"
+
         with self._compression_guard:
+            previous_timer = self._background_compression_timers.get(char_id)
+            if previous_timer is not None:
+                previous_timer.cancel()
+            self._background_compression_timers[char_id] = timer
+
+        logger.info(
+            f"[HistoryController][{char_id}] Scheduling background compression in "
+            f"{max(0.0, float(delay_sec)):.2f}s."
+        )
+        timer.start()
+
+    def _run_scheduled_background_compression(self, character) -> None:
+        char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+        should_reschedule = False
+        with self._compression_guard:
+            self._background_compression_timers.pop(char_id, None)
             if char_id in self._background_compression_inflight:
-                return
-            self._background_compression_inflight.add(char_id)
+                should_reschedule = True
+            else:
+                self._background_compression_inflight.add(char_id)
+        if should_reschedule:
+            reschedule_delay = max(1.0, self._compression_background_delay_seconds())
+            self._schedule_background_compression(character, delay_sec=reschedule_delay)
+            return
         worker = threading.Thread(
             target=self._run_post_response_compression,
             args=(character,),
@@ -462,6 +501,7 @@ class HistoryController:
         messages_to_compress: List[Dict[str, Any]],
         *,
         previous_summary: str = "",
+        background_mode: bool = False,
     ) -> Optional[str]:
         char_id = getattr(character, "char_id", "Unknown") or "Unknown"
         with self._compression_guard:
@@ -478,6 +518,7 @@ class HistoryController:
                 character,
                 messages_to_compress,
                 previous_summary=previous_summary,
+                background_mode=background_mode,
             )
         finally:
             with self._compression_guard:
@@ -489,6 +530,7 @@ class HistoryController:
         messages_to_compress: List[Dict[str, Any]],
         *,
         previous_summary: str = "",
+        background_mode: bool = False,
     ) -> Optional[str]:
         try:
             template_path = str(self._get_setting(
@@ -519,6 +561,19 @@ class HistoryController:
             full_prompt = full_prompt.replace("{your character}", getattr(character, "name", "Character"))
             full_prompt = full_prompt.replace("{current_character_name}", getattr(character, "name", "Character"))
             full_prompt = full_prompt.replace("{previous_summary}", previous_summary_trimmed)
+            max_attempts = max(1, int(self._get_setting("HISTORY_COMPRESSION_MAX_ATTEMPTS", 3)))
+            base_retry_delay = max(0.0, float(self._get_setting("HISTORY_COMPRESSION_RETRY_BASE_DELAY_SEC", 2.0)))
+            max_retry_delay = max(base_retry_delay, float(self._get_setting("HISTORY_COMPRESSION_RETRY_MAX_DELAY_SEC", 20.0)))
+            request_timeout = max(1.0, float(self._get_setting("HISTORY_COMPRESSION_REQUEST_TIMEOUT_SEC", 60.0)))
+            char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+
+            cooldown_remaining = self._get_compression_cooldown_remaining(char_id)
+            if cooldown_remaining > 0:
+                logger.info(
+                    f"[HistoryController][{char_id}] Compression skipped because provider cooldown is active "
+                    f"for another {cooldown_remaining:.2f}s."
+                )
+                return None
 
             hc_provider = str(self._get_setting("HC_PROVIDER", "Current"))
             preset_id: Optional[int] = None
@@ -552,6 +607,17 @@ class HistoryController:
                 if preset_id is not None:
                     logger.info(f"[HistoryController] Используется пресет для сжатия истории: {preset_id}")
 
+            return self._run_compression_request(
+                character=character,
+                full_prompt=full_prompt,
+                preset_id=preset_id,
+                max_attempts=max_attempts,
+                base_retry_delay=base_retry_delay,
+                max_retry_delay=max_retry_delay,
+                request_timeout=request_timeout,
+                background_mode=background_mode,
+            )
+
             with response_status_kind("compression"):
                 res = self.event_bus.emit_and_wait(
                     Events.Model.GENERATE_RESPONSE,
@@ -580,6 +646,131 @@ class HistoryController:
         except Exception as e:
             logger.error(f"[HistoryController] Ошибка при сжатии истории: {e}", exc_info=True)
             return None
+
+    def _run_compression_request(
+        self,
+        *,
+        character,
+        full_prompt: str,
+        preset_id: Optional[int],
+        max_attempts: int,
+        base_retry_delay: float,
+        max_retry_delay: float,
+        request_timeout: float,
+        background_mode: bool,
+    ) -> Optional[str]:
+        char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+        last_failure: Dict[str, Any] = {}
+
+        for attempt in range(1, max_attempts + 1):
+            with response_status_kind("compression"):
+                res = self.event_bus.emit_and_wait(
+                    Events.Model.GENERATE_RESPONSE,
+                    {
+                        'user_input': '',
+                        'system_input': full_prompt,
+                        'image_data': [],
+                        'stream_callback': None,
+                        'message_id': None,
+                        'event_type': 'compress',
+                        'preset_id': preset_id,
+                        'return_details': True,
+                        'request_options_override': {
+                            'max_attempts': 1,
+                            'retry_delay': 0.0,
+                            'request_timeout': request_timeout,
+                            'suppress_failure_events': True,
+                        },
+                    },
+                    timeout=request_timeout
+                )
+
+            result_payload = res[0] if res else None
+            if isinstance(result_payload, dict):
+                if result_payload.get("ok") and str(result_payload.get("text") or "").strip():
+                    self._clear_compression_cooldown(char_id)
+                    logger.info("[HistoryController] РСЃС‚РѕСЂРёСЏ СѓСЃРїРµС€РЅРѕ СЃР¶Р°С‚Р°.")
+                    return str(result_payload.get("text")).strip()
+                last_failure = result_payload
+            elif isinstance(result_payload, str) and result_payload.strip():
+                self._clear_compression_cooldown(char_id)
+                logger.info("[HistoryController] РСЃС‚РѕСЂРёСЏ СѓСЃРїРµС€РЅРѕ СЃР¶Р°С‚Р°.")
+                return result_payload.strip()
+            else:
+                last_failure = {
+                    "ok": False,
+                    "text": "",
+                    "error": "",
+                    "details": "",
+                    "status_code": None,
+                    "retryable": False,
+                    "retry_after_sec": None,
+                }
+
+            retryable = bool(last_failure.get("retryable", False))
+            retry_after_sec = self._coerce_positive_float(last_failure.get("retry_after_sec"))
+            status_code = last_failure.get("status_code")
+            error_text = str(last_failure.get("details") or last_failure.get("error") or "").strip()
+            logger.warning(
+                f"[HistoryController][{char_id}] Compression attempt {attempt}/{max_attempts} failed: "
+                f"status={status_code}, retryable={retryable}, details={error_text or 'n/a'}"
+            )
+
+            if not retryable:
+                break
+
+            delay_sec = retry_after_sec
+            if delay_sec is None:
+                delay_sec = min(max_retry_delay, base_retry_delay * (2 ** (attempt - 1)))
+            self._set_compression_cooldown(char_id, delay_sec)
+
+            if attempt < max_attempts:
+                time.sleep(delay_sec)
+
+        logger.warning("[HistoryController] РЎР¶Р°С‚РёРµ РёСЃС‚РѕСЂРёРё Р·Р°РІРµСЂС€РёР»РѕСЃСЊ Р±РµР· СѓСЃРїРµС…Р°.")
+        if background_mode and self._get_compression_cooldown_remaining(char_id) > 0:
+            self._schedule_background_compression(
+                character,
+                delay_sec=max(
+                    self._compression_background_delay_seconds(),
+                    self._get_compression_cooldown_remaining(char_id),
+                ),
+            )
+        return None
+
+    def _compression_background_delay_seconds(self) -> float:
+        return max(0.0, float(self._get_setting("HISTORY_COMPRESSION_BACKGROUND_DELAY_SEC", 8.0)))
+
+    def _coerce_positive_float(self, value: Any) -> Optional[float]:
+        try:
+            if value is None or value == "":
+                return None
+            out = float(value)
+            if out <= 0:
+                return None
+            return out
+        except Exception:
+            return None
+
+    def _get_compression_cooldown_remaining(self, char_id: str) -> float:
+        now = time.monotonic()
+        with self._compression_guard:
+            until = float(self._compression_cooldowns.get(char_id, 0.0) or 0.0)
+            if until <= now:
+                self._compression_cooldowns.pop(char_id, None)
+                return 0.0
+            return until - now
+
+    def _set_compression_cooldown(self, char_id: str, delay_sec: float) -> None:
+        delay_sec = max(0.0, float(delay_sec))
+        if delay_sec <= 0:
+            return
+        with self._compression_guard:
+            self._compression_cooldowns[char_id] = time.monotonic() + delay_sec
+
+    def _clear_compression_cooldown(self, char_id: str) -> None:
+        with self._compression_guard:
+            self._compression_cooldowns.pop(char_id, None)
 
     def _get_history_summary(self, character) -> str:
         try:

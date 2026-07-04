@@ -172,6 +172,7 @@ class ChatModel:
         preset_id: Optional[int] = None,
         *,
         capabilities_override: Optional[Dict[str, Any]] = None,
+        request_options_override: Optional[Dict[str, Any]] = None,
         structured_model: Optional[type] = None,
     ) -> Optional[LLMResponse]:
         if messages is None:
@@ -181,6 +182,7 @@ class ChatModel:
             stream_callback=stream_callback,
             preset_id=preset_id,
             capabilities_override=capabilities_override,
+            request_options_override=request_options_override,
             structured_model=structured_model,
         )
         if not success:
@@ -194,11 +196,14 @@ class ChatModel:
         preset_id: Optional[int] = None,
         *,
         capabilities_override: Optional[Dict[str, Any]] = None,
+        request_options_override: Optional[Dict[str, Any]] = None,
         structured_model: Optional[type] = None,
     ):
-        max_attempts = self.cfg.max_request_attempts
-        retry_delay = self.cfg.request_delay
-        request_timeout = 45
+        request_options = dict(request_options_override or {})
+        max_attempts = int(request_options.get("max_attempts", self.cfg.max_request_attempts) or 1)
+        retry_delay = float(request_options.get("retry_delay", self.cfg.request_delay) or 0.0)
+        request_timeout = float(request_options.get("request_timeout", 45) or 45)
+        suppress_failure_events = bool(request_options.get("suppress_failure_events", False))
 
         self._log_generation_start(preset_id)
 
@@ -276,6 +281,7 @@ class ChatModel:
                 max_attempts=max_attempts,
                 retry_delay=retry_delay,
                 request_timeout=request_timeout,
+                suppress_failure_events=suppress_failure_events,
             )
         except Exception as e:
             logger.error(f"Runner failed unexpectedly: {e}", exc_info=True)

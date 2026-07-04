@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import threading
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -53,6 +54,8 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         controller._compression_guard = threading.Lock()
         controller._compression_inflight = set()
         controller._background_compression_inflight = set()
+        controller._background_compression_timers = {}
+        controller._compression_cooldowns = {}
         cfg = dict(settings or {})
         controller._get_setting = lambda key, default=None: cfg.get(key, default)
         controller._sanitize_history_for_llm = lambda _character, messages: messages
@@ -178,31 +181,41 @@ class HistoryControllerCompressionTests(unittest.TestCase):
 
         self.assertEqual(called, ["TestChar"])
 
-    def test_background_compression_launch_is_singleflight_per_character(self):
-        controller = self._make_controller()
+    def test_background_compression_is_delayed_and_rescheduled(self):
+        controller = self._make_controller({"HISTORY_COMPRESSION_BACKGROUND_DELAY_SEC": 6})
         character = _StubCharacter([])
-        started = []
-        original_thread = history_controller_module.threading.Thread
+        created = []
+        original_timer = history_controller_module.threading.Timer
 
-        class _FakeThread:
-            def __init__(self, *, target, args, daemon, name):
-                self._target = target
-                self._args = args
-                self.daemon = daemon
-                self.name = name
+        class _FakeTimer:
+            def __init__(self, delay, callback, args=None, kwargs=None):
+                self.delay = delay
+                self.callback = callback
+                self.args = args or ()
+                self.kwargs = kwargs or {}
+                self.daemon = False
+                self.name = ""
+                self.cancelled = False
+                created.append(self)
 
             def start(self):
-                started.append((self.name, self._args))
+                return None
 
-        history_controller_module.threading.Thread = _FakeThread
+            def cancel(self):
+                self.cancelled = True
+
+        history_controller_module.threading.Timer = _FakeTimer
         try:
             controller._start_background_compression(character)
             controller._start_background_compression(character)
         finally:
-            history_controller_module.threading.Thread = original_thread
+            history_controller_module.threading.Timer = original_timer
 
-        self.assertEqual(len(started), 1)
-        self.assertEqual(started[0][0], "history-compress-TestChar")
+        self.assertEqual(len(created), 2)
+        self.assertEqual(created[0].delay, 6)
+        self.assertEqual(created[1].delay, 6)
+        self.assertTrue(created[0].cancelled)
+        self.assertIs(controller._background_compression_timers["TestChar"], created[1])
 
     def test_background_compression_uses_model_message_limit_setting(self):
         controller = self._make_controller({"MODEL_MESSAGE_LIMIT": 3})
@@ -218,6 +231,51 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         controller._run_post_response_compression(character)
 
         self.assertEqual(captured_limits, [3])
+
+    def test_compress_history_retries_retryable_failure_with_retry_after(self):
+        controller = self._make_controller(
+            {
+                "HISTORY_COMPRESSION_MAX_ATTEMPTS": 2,
+                "HISTORY_COMPRESSION_RETRY_BASE_DELAY_SEC": 1.5,
+                "HISTORY_COMPRESSION_RETRY_MAX_DELAY_SEC": 10,
+            }
+        )
+        character = _StubCharacter([])
+        calls = []
+        sleeps = []
+        original_sleep = history_controller_module.time.sleep
+        original_status = history_controller_module.response_status_kind
+
+        def _emit_and_wait(_event_name, payload, timeout=0):
+            calls.append((payload, timeout))
+            if len(calls) == 1:
+                return [{
+                    "ok": False,
+                    "text": "",
+                    "error": "rate limited",
+                    "details": "retry later",
+                    "status_code": 429,
+                    "retryable": True,
+                    "retry_after_sec": 3,
+                }]
+            return [{"ok": True, "text": "summary"}]
+
+        controller.event_bus = SimpleNamespace(emit_and_wait=_emit_and_wait)
+        history_controller_module.time.sleep = lambda seconds: sleeps.append(seconds)
+        history_controller_module.response_status_kind = lambda *_args, **_kwargs: nullcontext()
+        try:
+            result = controller._compress_history(character, [{"role": "user", "content": "hello"}])
+        finally:
+            history_controller_module.time.sleep = original_sleep
+            history_controller_module.response_status_kind = original_status
+
+        self.assertEqual(result, "summary")
+        self.assertEqual(sleeps, [3])
+        self.assertEqual(len(calls), 2)
+        payload = calls[0][0]
+        self.assertTrue(payload["return_details"])
+        self.assertEqual(payload["request_options_override"]["max_attempts"], 1)
+        self.assertTrue(payload["request_options_override"]["suppress_failure_events"])
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
 import requests
@@ -62,6 +64,76 @@ def _extract_provider_message(payload: Any) -> str:
                 return text
 
     return _compact_text(payload)
+
+
+def _extract_retry_after_seconds(
+    *,
+    response_headers: Any = None,
+    payload: Any = None,
+    provider_message: str = "",
+) -> Optional[float]:
+    header_value = None
+    if response_headers is not None:
+        try:
+            header_value = response_headers.get("Retry-After")
+        except Exception:
+            header_value = None
+
+    if header_value is not None:
+        text = _compact_text(header_value)
+        if text.isdigit():
+            try:
+                return max(0.0, float(text))
+            except Exception:
+                pass
+        try:
+            retry_dt = parsedate_to_datetime(text)
+            if retry_dt.tzinfo is None:
+                retry_dt = retry_dt.replace(tzinfo=timezone.utc)
+            delay = (retry_dt - datetime.now(timezone.utc)).total_seconds()
+            return max(0.0, delay)
+        except Exception:
+            pass
+
+    candidates = []
+    if isinstance(payload, dict):
+        err = payload.get("error")
+        if isinstance(err, dict):
+            candidates.extend(
+                err.get(key)
+                for key in ("retry_after", "retry_after_seconds", "retryAfter", "retryAfterSeconds")
+            )
+        candidates.extend(
+            payload.get(key)
+            for key in ("retry_after", "retry_after_seconds", "retryAfter", "retryAfterSeconds")
+        )
+
+    for value in candidates:
+        try:
+            if value is None or value == "":
+                continue
+            return max(0.0, float(value))
+        except Exception:
+            continue
+
+    message = _compact_text(provider_message)
+    if not message:
+        return None
+
+    patterns = (
+        r"retry after\s+(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)\b",
+        r"try again in\s+(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)\b",
+        r"please wait\s+(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, message, flags=re.IGNORECASE)
+        if match:
+            try:
+                return max(0.0, float(match.group(1)))
+            except Exception:
+                return None
+
+    return None
 
 
 def _should_surface_provider_message(friendly_message: str, provider_message: str) -> bool:
@@ -207,6 +279,7 @@ class LLMProviderError(RuntimeError):
     provider_message: str = ""
     raw_payload: Any = None
     retryable: bool = False
+    retry_after_seconds: Optional[float] = None
     code: Optional[str] = None
     url: Optional[str] = None
 
@@ -238,6 +311,8 @@ class LLMProviderError(RuntimeError):
         if detail:
             parts.append(f"provider_message={detail}")
         parts.append(f"retryable={'yes' if self.retryable else 'no'}")
+        if self.retry_after_seconds is not None:
+            parts.append(f"retry_after={self.retry_after_seconds:.3f}s")
         if self.url:
             parts.append(f"url={mask_sensitive(self.url)}")
         return " | ".join(parts)
@@ -249,6 +324,7 @@ def build_provider_error(
     status_code: Optional[int] = None,
     payload: Any = None,
     provider_message: Optional[str] = None,
+    response_headers: Any = None,
     code: Optional[str] = None,
     url: Optional[str] = None,
 ) -> LLMProviderError:
@@ -258,6 +334,11 @@ def build_provider_error(
 
     friendly_message, _ = _friendly_message(status_code, message)
     retryable = bool(status_code in _RETRYABLE_STATUS_CODES)
+    retry_after_seconds = _extract_retry_after_seconds(
+        response_headers=response_headers,
+        payload=payload,
+        provider_message=message,
+    )
 
     return LLMProviderError(
         provider=provider,
@@ -266,6 +347,7 @@ def build_provider_error(
         provider_message=message,
         raw_payload=payload,
         retryable=retryable,
+        retry_after_seconds=retry_after_seconds,
         code=code,
         url=url,
     )
@@ -327,6 +409,7 @@ def coerce_provider_error(provider: str, exc: Exception, *, url: Optional[str] =
         status_code=status_code,
         payload=payload,
         provider_message=provider_message,
+        response_headers=getattr(response, "headers", None),
         code=str(code) if code is not None else None,
         url=url,
     )

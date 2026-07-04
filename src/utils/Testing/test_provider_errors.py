@@ -76,6 +76,17 @@ class ProviderErrorMappingTests(unittest.TestCase):
         self.assertIn("429", err.friendly_message)
         self.assertTrue(err.retryable)
 
+    def test_retry_after_is_extracted_from_headers(self):
+        err = build_provider_error(
+            "common",
+            status_code=429,
+            payload={"error": {"message": "Rate limit exceeded"}},
+            response_headers={"Retry-After": "7"},
+            url="https://api.example.test/v1/chat/completions",
+        )
+
+        self.assertEqual(err.retry_after_seconds, 7.0)
+
     def test_structured_provider_message_is_not_appended_for_user(self):
         err = build_provider_error(
             "common",

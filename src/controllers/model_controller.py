@@ -1009,6 +1009,8 @@ class ModelController:
 
         req_id = str(data.get("req_id") or "") or None
         task_uid = str(data.get("message_id") or "") or None
+        request_options_override = data.get("request_options_override")
+        return_details = bool(data.get("return_details", False))
 
         policy_dict = data.get("policy")
         policy = (
@@ -1077,10 +1079,42 @@ class ModelController:
                     stream_callback=None,
                     preset_id=preset_id,
                     capabilities_override={"structured_output": False},
+                    request_options_override=request_options_override,
                 )
                 if not result or not result.text:
                     logger.warning(f"[ModelController] {event_type}: model.generate() returned empty/None")
+                    if return_details:
+                        last_error = getattr(self.model, "last_error", None)
+                        return {
+                            "ok": False,
+                            "text": "",
+                            "error": (
+                                last_error.to_user_message()
+                                if last_error and hasattr(last_error, "to_user_message")
+                                else getattr(result, "error_message", "") if result else ""
+                            ),
+                            "details": (
+                                last_error.to_console_summary()
+                                if last_error and hasattr(last_error, "to_console_summary")
+                                else getattr(result, "error_message", "") if result else ""
+                            ),
+                            "status_code": getattr(last_error, "status_code", None) if last_error else None,
+                            "retryable": bool(getattr(last_error, "retryable", False)) if last_error else False,
+                            "retry_after_sec": getattr(last_error, "retry_after_seconds", None) if last_error else None,
+                            "provider": getattr(last_error, "provider", None) if last_error else None,
+                        }
                     return None
+                if return_details:
+                    return {
+                        "ok": True,
+                        "text": result.text,
+                        "error": "",
+                        "details": "",
+                        "status_code": None,
+                        "retryable": False,
+                        "retry_after_sec": None,
+                        "provider": getattr(result, "provider_name", None),
+                    }
                 return result.text
             except Exception as e:
                 logger.error(f"Ошибка при {event_type}: {e}", exc_info=True)

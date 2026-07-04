@@ -52,6 +52,7 @@ class LLMRequestRunner:
         max_attempts: int,
         retry_delay: float,
         request_timeout: float,
+        suppress_failure_events: bool = False,
     ) -> Optional[LLMResponse]:
         if messages is None:
             messages = []
@@ -92,6 +93,7 @@ class LLMRequestRunner:
                 max_attempts=int(max_attempts),
                 retry_delay=float(retry_delay),
                 request_timeout=float(request_timeout),
+                suppress_failure_events=bool(suppress_failure_events),
                 chain_pos=chain_idx,
                 chain_total=total_presets,
             )
@@ -104,7 +106,7 @@ class LLMRequestRunner:
 
         # Вся цепочка пресетов исчерпана — терминальный отказ генерации.
         logger.error("All generation attempts failed across preset chain.")
-        if self.last_error:
+        if self.last_error and not suppress_failure_events:
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
                 "error": self.last_error.to_user_message(),
                 "details": self.last_error.to_console_summary(),
@@ -123,6 +125,7 @@ class LLMRequestRunner:
         max_attempts: int,
         retry_delay: float,
         request_timeout: float,
+        suppress_failure_events: bool,
         chain_pos: int,
         chain_total: int,
     ) -> LLMResponse:
@@ -161,7 +164,8 @@ class LLMRequestRunner:
 
             if req is None:
                 if attempt < max_attempts:
-                    self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE_ATTEMPT)
+                    if not suppress_failure_events:
+                        self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE_ATTEMPT)
                     time.sleep(retry_delay)
                 continue
 
@@ -235,9 +239,21 @@ class LLMRequestRunner:
                         exc_info=True,
                     )
 
-            if attempt < max_attempts:
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE_ATTEMPT)
+            should_retry = bool(
+                attempt < max_attempts and (
+                    self.last_error is None or bool(getattr(self.last_error, "retryable", False))
+                )
+            )
+            if should_retry:
+                if not suppress_failure_events:
+                    self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE_ATTEMPT)
                 time.sleep(retry_delay)
+            elif attempt < max_attempts and self.last_error is not None:
+                logger.info(
+                    f"{preset_tag} Stopping retries after non-retryable failure: "
+                    f"{self.last_error.to_console_summary()}"
+                )
+                break
 
         if last_error_message:
             logger.error(f"{preset_tag} All generation attempts failed. Last error: {last_error_message}")

@@ -263,6 +263,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 self.name,
                 status_code=resp.status_code,
                 payload=err,
+                response_headers=resp.headers,
                 url=request_url,
             )
             logger.error(f"[{self.name}] {provider_error.to_console_summary()}")
@@ -283,6 +284,26 @@ class OpenAIHTTPProviderBase(BaseProvider):
             )
             logger.error(f"[{self.name}] {provider_error.to_console_summary()}", exc_info=True)
             raise provider_error from e
+
+        if isinstance(data, dict) and data.get("error"):
+            status_code = None
+            err_payload = data.get("error")
+            if isinstance(err_payload, dict):
+                raw_code = err_payload.get("code")
+                try:
+                    status_code = int(raw_code)
+                except Exception:
+                    status_code = None
+            provider_error = build_provider_error(
+                self.name,
+                status_code=status_code,
+                payload=data,
+                response_headers=resp.headers,
+                url=request_url,
+            )
+            logger.error(f"[{self.name}] {provider_error.to_console_summary()}")
+            logger.debug(f"[{self.name}] raw error payload: {self._stringify_error(data, limit=800)}")
+            raise provider_error
 
         message = (data.get("choices", [{}])[0].get("message") or {}) if isinstance(data, dict) else {}
         finish_reason = ((data.get("choices") or [{}])[0].get("finish_reason") if isinstance(data, dict) else None)
