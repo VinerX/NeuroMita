@@ -306,6 +306,7 @@ class ChatController:
         req_id: str | None = None,
         origin_message_id: str | None = None,
         policy: dict | None = None,
+        images_shown: bool = False,
     ):
         eff_policy = None
         try:
@@ -403,7 +404,7 @@ class ChatController:
                     "character_id": character_id or "",
                 }, sync=True)
 
-            if image_data and eff_policy.echo_to_ui:
+            if image_data and eff_policy.echo_to_ui and not images_shown:
                 img_display_role = "assistant" if image_source == "mita_camera" else "user"
                 img_content = [
                     {
@@ -625,6 +626,7 @@ class ChatController:
         req_id = data.get("req_id")
         origin_message_id = data.get("origin_message_id")
         policy = data.get("policy")
+        images_shown = bool(data.get("images_shown", False))
 
         if image_data:
             self.event_bus.emit(Events.Capture.UPDATE_LAST_IMAGE_REQUEST_TIME)
@@ -647,6 +649,7 @@ class ChatController:
                     req_id=req_id,
                     origin_message_id=origin_message_id,
                     policy=policy,
+                    images_shown=images_shown,
                 ),
                 loop
             )
@@ -670,6 +673,7 @@ class ChatController:
                     req_id=req_id,
                     origin_message_id=origin_message_id,
                     policy=policy,
+                    images_shown=images_shown,
                 )
             )
 

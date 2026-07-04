@@ -878,6 +878,9 @@ class AppWindowBase(QMainWindow):
             "character_id": character_id,
             "sender": "Player",
             "req_id": req_id,
+            # Изображения уже показаны в чате выше — не дублировать эхом в
+            # async_send_message (иначе картинка рисуется дважды).
+            "images_shown": bool(all_image_data),
         })
 
         # #10: показываем «думает» сразу при отправке, не дожидаясь конца
