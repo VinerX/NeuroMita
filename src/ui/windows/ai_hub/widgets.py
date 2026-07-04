@@ -388,6 +388,8 @@ class ModelCard(QFrame):
         state:
           - "running"  → ставится прямо сейчас: «Установка…», выключена
           - "queued"   → стоит в очереди: «В очереди», выключена
+          - "checking" → идёт проверка файлов на диске: «Проверка файлов…»,
+                          выключена (нельзя повторно кликнуть «Установить», #6)
           - "idle"     → свободна: «Установить», активна (даже если рядом идёт
                           другая установка)
         """
@@ -401,6 +403,9 @@ class ModelCard(QFrame):
         elif state == "queued":
             btn.setEnabled(False)
             btn.setText(_t("В очереди", "Queued"))
+        elif state == "checking":
+            btn.setEnabled(False)
+            btn.setText(_t("Проверка файлов…", "Checking files…"))
         else:
             btn.setEnabled(True)
             btn.setText(self._install_btn_text or _t("Установить", "Install"))

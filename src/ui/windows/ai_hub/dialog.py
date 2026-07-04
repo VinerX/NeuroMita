@@ -642,6 +642,12 @@ class AIHubDialog(QDialog):
         # уже есть (пере-опрос) — не мигаем, оставляем их на экране.
         if not self._rows:
             self._show_scroll_loading()
+        elif force:
+            # #6: принудительная проверка (после установки / кнопкой) реально
+            # опрашивает файлы каждого компонента и это не мгновенно. Пока идёт
+            # проверка — показываем на карточках «Проверка файлов…» и блокируем
+            # кнопку «Установить», чтобы её нельзя было нажать повторно.
+            self._set_cards_checking()
 
         def _worker() -> None:
             rows = self._fetch_rows(force=force)
@@ -923,6 +929,31 @@ class AIHubDialog(QDialog):
             self._scroll_layout.insertWidget(self._scroll_layout.count() - 1, card)
         # Если в этот момент уже идёт установка — сразу заблокировать кнопки (#26).
         self._apply_busy_state()
+
+    def _set_cards_checking(self) -> None:
+        """#6: пометить все свободные карточки как «Проверка файлов…».
+
+        Карточки, которые прямо сейчас ставятся или стоят в очереди, не трогаем —
+        их состояние важнее (его вернёт _apply_busy_state). По завершении
+        проверки список пересобирается (_rebuild_component_list) и состояния
+        восстанавливаются сами.
+        """
+        running = self._queue_state.get("running") if isinstance(self._queue_state, dict) else None
+        pending = self._queue_state.get("pending") if isinstance(self._queue_state, dict) else []
+        running_tid = str((running or {}).get("task_id") or "").strip()
+        pending_tids = {str((j or {}).get("task_id") or "").strip() for j in (pending or [])}
+        for card in getattr(self, "_component_cards", []) or []:
+            try:
+                cid = card._component_id()
+                install_tid = f"{cid}:install"
+                uninstall_tid = f"{cid}:uninstall"
+                if running_tid in (install_tid, uninstall_tid):
+                    continue
+                if install_tid in pending_tids or uninstall_tid in pending_tids:
+                    continue
+                card.set_state("checking")
+            except Exception:
+                pass
 
     def _apply_busy_state(self) -> None:
         """Проставляет каждой карточке её состояние относительно очереди установок.

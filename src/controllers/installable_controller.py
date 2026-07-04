@@ -150,13 +150,33 @@ class InstallableController:
         else:
             items = registry.all()
 
-        result = []
-        for item in items:
-            metadata = self._safe_metadata(item)
-            row = {"metadata": metadata.as_dict()}
-            if include_status:
-                row["status"] = self._safe_status(item, ctx, metadata).as_dict()
-            result.append(row)
+        metadatas = [self._safe_metadata(item) for item in items]
+
+        if include_status and len(items) > 1:
+            # #6: проверка статуса каждого компонента (файлы на диске, pip-мета,
+            # манифест голосов) — не мгновенная. Раньше шли строго по очереди, и
+            # после установки список «оживал» только через ~15 сек. Опрашиваем в
+            # пуле потоков (проверки I/O-bound), сохраняя исходный порядок.
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _status_dict(pair):
+                item, metadata = pair
+                return self._safe_status(item, ctx, metadata).as_dict()
+
+            with ThreadPoolExecutor(max_workers=min(8, len(items)),
+                                    thread_name_prefix="installable-status") as ex:
+                statuses = list(ex.map(_status_dict, zip(items, metadatas)))
+            result = [
+                {"metadata": metadata.as_dict(), "status": status}
+                for metadata, status in zip(metadatas, statuses)
+            ]
+        else:
+            result = []
+            for item, metadata in zip(items, metadatas):
+                row = {"metadata": metadata.as_dict()}
+                if include_status:
+                    row["status"] = self._safe_status(item, ctx, metadata).as_dict()
+                result.append(row)
 
         if not ctx and not category:
             if include_status:
