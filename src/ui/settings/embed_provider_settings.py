@@ -171,10 +171,24 @@ class _EmbedProviderWidget(QWidget):
         rv = QVBoxLayout(self._reserve_widget)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(2)
-        rv.addWidget(QLabel(_("Резервные ключи (по строке):", "Reserve keys (one per line):")))
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(4)
+        header_row.addWidget(QLabel(_("Резервные ключи (по строке):", "Reserve keys (one per line):")))
+        self._reserve_eye = QToolButton()
+        self._reserve_eye.setText("\U0001F441")
+        self._reserve_eye.setCheckable(True)
+        self._reserve_eye.setFixedWidth(24)
+        tr_set(self._reserve_eye, "Показать/скрыть все ключи", "Show/hide all keys", "setToolTip")
+        self._reserve_eye.toggled.connect(self._on_reserve_eye_toggled)
+        header_row.addWidget(self._reserve_eye)
+        header_row.addStretch()
+        rv.addLayout(header_row)
         self._reserve_edit = QTextEdit()
         self._reserve_edit.setFixedHeight(48)
-        self._reserve_edit.textChanged.connect(self._mark_dirty)
+        self._reserve_masked = True
+        self._reserve_original = ""
+        self._reserve_edit.textChanged.connect(self._on_reserve_text_changed)
         rv.addWidget(self._reserve_edit)
         root.addWidget(self._reserve_widget)
 
@@ -376,8 +390,11 @@ class _EmbedProviderWidget(QWidget):
             self._key_edit.setText(cfg.get("api_key") or "")
             rk = cfg.get("reserve_keys") or []
             self._reserve_edit.blockSignals(True)
-            self._reserve_edit.setPlainText("\n".join(rk))
+            self._reserve_original = "\n".join(rk)
+            self._reserve_edit.setPlainText(self._reserve_original)
             self._reserve_edit.blockSignals(False)
+            if self._reserve_masked:
+                self._apply_masking()
             self._prefix_edit.setText(cfg.get("query_prefix") or "")
             extra = dict(cfg.get("extra") or {})
             self._batch_edit.setText(str(extra["batch_size"]) if "batch_size" in extra else "")
@@ -488,6 +505,30 @@ class _EmbedProviderWidget(QWidget):
                 "Unsaved changes. Press Save, otherwise the previous preset will be used.",
             ))
 
+    def _on_reserve_text_changed(self):
+        if self._reserve_masked:
+            return
+        text = self._reserve_edit.toPlainText()
+        if text != self._reserve_original:
+            self._reserve_original = text
+            self._mark_dirty()
+
+    def _on_reserve_eye_toggled(self, checked: bool):
+        current = self._reserve_edit.toPlainText()
+        if not self._reserve_masked:
+            self._reserve_original = current
+        self._reserve_masked = not checked
+        self._reserve_edit.blockSignals(True)
+        if self._reserve_masked:
+            self._apply_masking()
+        else:
+            self._reserve_edit.setPlainText(self._reserve_original)
+        self._reserve_edit.blockSignals(False)
+
+    def _apply_masking(self):
+        masked = "\n".join("\u2022" * len(ln) for ln in self._reserve_original.splitlines())
+        self._reserve_edit.setPlainText(masked)
+
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _on_save(self):
@@ -498,7 +539,8 @@ class _EmbedProviderWidget(QWidget):
         model = self._model_combo.currentText().strip()
         url = self._url_edit.text().strip()
         key = self._key_edit.text().strip()
-        reserve_keys = [l.strip() for l in self._reserve_edit.toPlainText().splitlines() if l.strip()]
+        reserve_keys_text = self._reserve_original if self._reserve_masked else self._reserve_edit.toPlainText()
+        reserve_keys = [l.strip() for l in reserve_keys_text.splitlines() if l.strip()]
         prefix = self._prefix_edit.text()
         hf_token = self._hf_edit.text().strip()
         extra: Dict[str, Any] = {}

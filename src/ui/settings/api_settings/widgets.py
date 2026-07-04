@@ -340,8 +340,8 @@ class LabeledTextEditRow(QWidget):
 
 class ReserveKeyRow(QWidget):
     """
-    Одна строка списка резервных ключей: поле ввода + кнопка удаления.
-    Ключ хранится в открытом виде (как и раньше), но в отдельном поле.
+    Одна строка списка резервных ключей: поле ввода + кнопка показа + кнопка удаления.
+    По умолчанию ключ скрыт (Password), кнопка глаза переключает видимость.
     """
     changed = pyqtSignal()
     remove_requested = pyqtSignal(object)
@@ -353,8 +353,20 @@ class ReserveKeyRow(QWidget):
         lay.setSpacing(6)
 
         self.key_edit = QLineEdit()
+        self.key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         tr_set(self.key_edit, "API ключ", "API key", "setPlaceholderText")
         self.key_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        self.eye_btn = QToolButton()
+        self.eye_btn.setText("\U0001F441")
+        self.eye_btn.setCheckable(True)
+        self.eye_btn.setFixedWidth(24)
+        tr_set(self.eye_btn, "Показать/скрыть ключ", "Show/hide key", "setToolTip")
+        self.eye_btn.toggled.connect(
+            lambda on: self.key_edit.setEchoMode(
+                QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password
+            )
+        )
 
         self.remove_btn = QToolButton()
         self.remove_btn.setIcon(qta.icon("fa5s.times", color="#c04c80"))
@@ -364,10 +376,14 @@ class ReserveKeyRow(QWidget):
         tr_set(self.remove_btn, "Удалить ключ", "Remove key", "setToolTip")
 
         lay.addWidget(self.key_edit, 1)
+        lay.addWidget(self.eye_btn)
         lay.addWidget(self.remove_btn)
 
         self.key_edit.textChanged.connect(lambda *_: self.changed.emit())
         self.remove_btn.clicked.connect(lambda *_: self.remove_requested.emit(self))
+
+    def set_visible(self, visible: bool) -> None:
+        self.eye_btn.setChecked(visible)
 
     def set_value(self, key: str) -> None:
         self.key_edit.blockSignals(True)
@@ -415,6 +431,15 @@ class ReserveKeysEditor(QWidget):
         self.add_btn = tr_set(QPushButton(), "+ Добавить ключ", "+ Add key")
         self.add_btn.clicked.connect(lambda *_: self._on_add_clicked())
         btn_row.addWidget(self.add_btn)
+
+        self._toggle_all_btn = QToolButton()
+        self._toggle_all_btn.setText("\U0001F441")
+        self._toggle_all_btn.setCheckable(True)
+        self._toggle_all_btn.setFixedWidth(24)
+        tr_set(self._toggle_all_btn, "Показать/скрыть все ключи", "Show/hide all keys", "setToolTip")
+        self._toggle_all_btn.toggled.connect(self._on_toggle_all)
+        btn_row.addWidget(self._toggle_all_btn)
+
         btn_row.addStretch()
         outer.addLayout(btn_row)
 
@@ -450,6 +475,10 @@ class ReserveKeysEditor(QWidget):
             row.setParent(None)
             row.deleteLater()
             self.changed.emit()
+
+    def _on_toggle_all(self, checked: bool) -> None:
+        for row in self._iter_rows():
+            row.set_visible(checked)
 
     def clear(self) -> None:
         for r in list(self._iter_rows()):
