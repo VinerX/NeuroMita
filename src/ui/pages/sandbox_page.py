@@ -396,10 +396,12 @@ class SandboxPage(QWidget):
             row.set_enabled_state(bool(checked))
 
     def _make_toggle_row(self, label_text: str, on_toggle, initial_on: bool,
-                         tooltip: str | None = None, with_dot: bool = False):
-        """A [label … switch] row using the same pill toggle as the status
+                         tooltip: str | None = None, with_dot: bool = False,
+                         on_settings=None, settings_tooltip: str = ""):
+        """A [label … switch (gear)] row using the same pill toggle as the status
         rows. When *with_dot* is set, a leading status dot (like the Status
         rows above) reflects the switch — two states only: grey off / green on.
+        When *on_settings* is set, a trailing gear jumps to settings (как у RAG).
         Returns (row_widget, switch)."""
         row = QWidget()
         row.setObjectName("SandboxInfoRow")
@@ -432,6 +434,18 @@ class SandboxPage(QWidget):
             switch.toggled.connect(lambda checked, d=dot: self._style_toggle_dot(d, bool(checked)))
             self._toggle_dots[switch] = dot
         h.addWidget(switch, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        if on_settings is not None:
+            gear = QPushButton()
+            gear.setObjectName("SandboxInfoEditBtn")
+            gear.setIcon(qta.icon("fa6s.gear", color="#ffd2ec"))
+            gear.setFixedSize(26, 26)
+            gear.setCursor(Qt.CursorShape.PointingHandCursor)
+            if settings_tooltip:
+                gear.setToolTip(settings_tooltip)
+            gear.clicked.connect(on_settings)
+            h.addWidget(gear, 0, Qt.AlignmentFlag.AlignVCenter)
+
         return row, switch
 
     @staticmethod
@@ -1405,11 +1419,15 @@ class SandboxPage(QWidget):
 
         # ── Захват ─────────────────────────────────────────────────────────
         capture_strip, capture_layout = self._make_strip(_("Захват", "Capture"), "fa6s.camera-retro")
+        _img_settings_tip = _("Открыть настройки изображений и камеры",
+                              "Open image & camera settings")
         screen_row, self._capture_screen_cb = self._make_toggle_row(
             _("Захват экрана", "Screen capture"),
             lambda v: self._on_capture_toggle("ENABLE_SCREEN_ANALYSIS", v),
             bool(self.gui._get_setting("ENABLE_SCREEN_ANALYSIS", False)),
             with_dot=True,
+            on_settings=lambda: self._jump_to_settings("screen"),
+            settings_tooltip=_img_settings_tip,
         )
         capture_layout.addWidget(screen_row)
 
@@ -1418,6 +1436,8 @@ class SandboxPage(QWidget):
             lambda v: self._on_capture_toggle("AUTO_ATTACH_IMAGES", v),
             bool(self.gui._get_setting("AUTO_ATTACH_IMAGES", False)),
             with_dot=True,
+            on_settings=lambda: self._jump_to_settings("screen"),
+            settings_tooltip=_img_settings_tip,
         )
         capture_layout.addWidget(attach_row)
 
@@ -1426,6 +1446,8 @@ class SandboxPage(QWidget):
             lambda v: self._on_capture_toggle("ENABLE_CAMERA_CAPTURE", v),
             bool(self.gui._get_setting("ENABLE_CAMERA_CAPTURE", False)),
             with_dot=True,
+            on_settings=lambda: self._jump_to_settings("screen"),
+            settings_tooltip=_img_settings_tip,
         )
         capture_layout.addWidget(camera_row)
         layout.addWidget(capture_strip)
