@@ -101,7 +101,8 @@ class AppWindowBase(QMainWindow):
     hide_loading_popup_signal = pyqtSignal()          
 
     clear_user_input_signal = pyqtSignal()
-    insert_user_input_signal = pyqtSignal(str) 
+    insert_user_input_signal = pyqtSignal(str)
+    send_text_message_signal = pyqtSignal(str)
     update_chat_font_size_signal = pyqtSignal(int)
     switch_voiceover_settings_signal = pyqtSignal()
     load_chat_history_signal = pyqtSignal()
@@ -281,6 +282,10 @@ class AppWindowBase(QMainWindow):
         self.remove_last_chat_widgets_signal.connect(self._on_remove_last_chat_widgets)
         self.clear_user_input_signal.connect(self._on_clear_user_input)
         self.insert_user_input_signal.connect(self._on_insert_user_input)
+        self.send_text_message_signal.connect(
+            lambda text: self.send_message(user_input=text),
+            type=Qt.ConnectionType.QueuedConnection,
+        )
         self.show_info_message_signal.connect(self._on_show_info_message)
         self.show_error_message_signal.connect(self._on_show_error_message)
         self.update_model_loading_status_signal.connect(self._on_update_model_loading_status)
@@ -788,8 +793,14 @@ class AppWindowBase(QMainWindow):
             result.append(img)
         return result
 
-    def send_message(self, system_input: str = "", image_data: list[bytes] = None):
-        user_input = self.user_entry.toPlainText().strip()
+    def send_message(self, system_input: str = "", image_data: list[bytes] = None, user_input: str = None):
+        # user_input=None → берём из поля ввода (обычная отправка). Задан явно
+        # (напр. мгновенная отправка из ASR) — используем его и не трогаем поле.
+        from_entry = user_input is None
+        if from_entry:
+            user_input = self.user_entry.toPlainText().strip()
+        else:
+            user_input = str(user_input).strip()
         current_image_data = []
         staged_image_data = self.staged_image_data.copy()
 
@@ -841,7 +852,8 @@ class AppWindowBase(QMainWindow):
 
         if user_input:
             message_renderer.insert_message(self, "user", user_input, message_id=user_message_id)
-            self.user_entry.clear()
+            if from_entry:
+                self.user_entry.clear()
 
         if all_image_data:
             image_content_for_display = [{"type": "image_url", "image_url": {

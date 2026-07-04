@@ -511,8 +511,10 @@ class SpeechController:
 
 
     def _send_instant(self, text):
-        self.events_bus.emit(Events.GUI.UPDATE_CHAT_UI, {'role': 'user', 'response': text, 'is_initial': False, 'emotion': ''})
-        self.events_bus.emit(Events.Chat.SEND_MESSAGE, {'user_input': text, 'system_input': '', 'image_data': []})
+        # Через GUI-отправку, а не напрямую SEND_MESSAGE: так подхватываются
+        # авто-захват экрана, прикреплённые и кадры камеры (иначе ASR-отправка
+        # игнорировала изображения). GUI сам рисует сообщение пользователя.
+        self.events_bus.emit(Events.GUI.SEND_TEXT_MESSAGE, {'text': text})
 
     def _on_get_mic_status(self, event: Event):
         data = event.data or {}

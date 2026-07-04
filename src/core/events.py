@@ -395,6 +395,7 @@ class Events:
         UPDATE_STATUS_COLORS = "update_status_colors"
         UPDATE_CHAT_UI = "update_chat_ui"
         INSERT_TEXT_TO_INPUT = "insert_text_to_input"
+        SEND_TEXT_MESSAGE = "send_text_message"
         CHECK_USER_ENTRY_EXISTS = "check_user_entry_exists"
         SWITCH_VOICEOVER_SETTINGS = "switch_voiceover_settings"
         SHOW_INFO_MESSAGE = "show_info_message"

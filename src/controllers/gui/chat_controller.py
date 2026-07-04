@@ -15,6 +15,7 @@ class ChatController(BaseController):
         self.event_bus.subscribe(Events.GUI.UPDATE_TOKEN_COUNT, self._on_update_token_count, weak=False)
         self.event_bus.subscribe(Events.GUI.UPDATE_TOKEN_COUNT_UI, self._on_update_token_count_ui, weak=False)
         self.event_bus.subscribe(Events.GUI.INSERT_TEXT_TO_INPUT, self._on_insert_text_to_input, weak=False)
+        self.event_bus.subscribe(Events.GUI.SEND_TEXT_MESSAGE, self._on_send_text_message, weak=False)
         self.event_bus.subscribe(Events.GUI.CHECK_USER_ENTRY_EXISTS, self._on_check_user_entry_exists, weak=False)
 
     def clear_user_input(self):
@@ -135,6 +136,13 @@ class ChatController(BaseController):
             self.view.insert_user_input_signal.emit(text)
         elif self.view.user_entry:
             QTimer.singleShot(0, lambda: self.view.user_entry.insertPlainText(text + " "))
+
+    def _on_send_text_message(self, event: Event):
+        text = (event.data or {}).get('text', '')
+        if not self.view or not str(text).strip():
+            return
+        if hasattr(self.view, "send_text_message_signal"):
+            self.view.send_text_message_signal.emit(str(text))
 
     def _on_check_user_entry_exists(self, event: Event):
         return bool(self.view and self.view.user_entry)
