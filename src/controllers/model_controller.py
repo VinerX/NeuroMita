@@ -1067,7 +1067,15 @@ class ModelController:
             )
 
             try:
-                result = self.model.generate(messages, stream_callback=None, preset_id=preset_id)
+                # Сжатие/граф-извлечение — обычный текст, а не сегментный JSON
+                # Миты. Иначе провайдер навязывает response_format схемы
+                # StructuredResponse, и сводка возвращается пустой.
+                result = self.model.generate(
+                    messages,
+                    stream_callback=None,
+                    preset_id=preset_id,
+                    capabilities_override={"structured_output": False},
+                )
                 if not result or not result.text:
                     logger.warning(f"[ModelController] {event_type}: model.generate() returned empty/None")
                     return None
