@@ -74,46 +74,61 @@ def _make_separator() -> QWidget:
     return sep
 
 
-def build_character_settings_ui(self, parent_layout):
-    try:
-        scrollbar_guard = max(12, self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent))
-    except Exception:
-        scrollbar_guard = 14
+def _mark_danger_hover(btn: QPushButton):
+    btn.setObjectName("SecondaryButton")
+    btn.setProperty("dangerHover", True)
+    btn.style().unpolish(btn)
+    btn.style().polish(btn)
+    btn.update()
 
-    sidebar_w = getattr(self, "SETTINGS_SIDEBAR_WIDTH", 50)
-    right_pad = max(scrollbar_guard, min(18, int(sidebar_w * 0.25)))
 
-    container = SettingsBodyWidget()
-    container_lay = QVBoxLayout(container)
-    container_lay.setContentsMargins(0, 0, right_pad, 0)
-    container_lay.setSpacing(6)
+def _make_compact(btn: QPushButton):
+    btn.setProperty("compact", True)
+    btn.setMinimumWidth(0)
+    btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+    btn.style().unpolish(btn)
+    btn.style().polish(btn)
+    btn.update()
 
-    create_section_header(container_lay, _("Настройки персонажей", "Characters Settings"))
 
-    overlay_w = getattr(self, "SETTINGS_PANEL_WIDTH", 400)
-    label_w = max(90, min(120, int(overlay_w * 0.3)))
-    self.mic_label_width = label_w
+def _btn_row(*widgets) -> QWidget:
+    r = SettingsBodyWidget()
+    r.setObjectName("SettingRow")
+    rl = QHBoxLayout(r)
+    rl.setContentsMargins(8, 4, 8, 4)
+    rl.setSpacing(6)
+    for w in widgets:
+        rl.addWidget(w, 1)
+    return r
 
-    root = SettingsBodyWidget()
-    lay = QVBoxLayout(root)
+
+_DANGER_QSS = (
+    "QPushButton { background-color: #8b1a1a; color: #ffffff; border-radius: 4px; }"
+    "QPushButton:hover { background-color: #b22222; }"
+    "QPushButton:pressed { background-color: #6a0f0f; }"
+)
+
+
+def _build_char_config_panel(self, label_w: int) -> QWidget:
+    """Общая панель настроек ОДНОГО персонажа.
+
+    Строится один раз и переносится (reparent) логикой в раскрытую секцию
+    аккордеона (#17). Все виджеты кладём в self.* — logic.py крутит вокруг них
+    весь пайплайн (набор промптов, провайдер, инфо, история, обслуживание).
+    Область действий по умолчанию — «текущий» персонаж (logic._scope() без
+    тумблера отдаёт "current"); действия «для всех» вынесены в опасную зону.
+    """
+    panel = SettingsBodyWidget()
+    panel.setObjectName("CharConfigPanel")
+    lay = QVBoxLayout(panel)
     lay.setContentsMargins(0, 0, 0, 0)
     lay.setSpacing(6)
 
-    character_field = SettingsBodyWidget()
-    ch_h = QHBoxLayout(character_field)
-    ch_h.setContentsMargins(0, 0, 0, 0)
-    ch_h.setSpacing(6)
-
-    self.character_combobox = TRQComboBox()
-    self.character_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    ch_h.addWidget(self.character_combobox, 1)
-    lay.addWidget(_make_row(_("Персонажи", "Characters"), character_field, label_w))
-
+    # -------- Набор промптов + провайдер --------
     prompt_field = SettingsBodyWidget()
     pr_h = QHBoxLayout(prompt_field)
     pr_h.setContentsMargins(0, 0, 0, 0)
     pr_h.setSpacing(6)
-
     self.prompt_pack_combobox = TRQComboBox()
     self.prompt_pack_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     pr_h.addWidget(self.prompt_pack_combobox, 1)
@@ -123,16 +138,12 @@ def build_character_settings_ui(self, parent_layout):
     pv_h = QHBoxLayout(provider_field)
     pv_h.setContentsMargins(0, 0, 0, 0)
     pv_h.setSpacing(6)
-
     self.char_provider_combobox = TRQComboBox()
     self.char_provider_combobox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     pv_h.addWidget(self.char_provider_combobox, 1)
     lay.addWidget(_make_row(_("Провайдер для персонажа", "Provider for character"), provider_field, label_w))
 
-    sub_title1 = tr_set(QLabel(), "Управление персонажем", "Character management")
-    sub_title1.setStyleSheet("font-weight: 600;")
-    lay.addWidget(sub_title1)
-
+    # -------- Управление набором --------
     self.btn_reload_character_data = tr_set(QPushButton(), "Перезагрузить", "Reload")
     self.btn_reload_character_data.setObjectName("SecondaryButton")
     self.btn_reload_character_data.setIcon(qta.icon('fa5s.sync', color='#ffffff'))
@@ -143,30 +154,26 @@ def build_character_settings_ui(self, parent_layout):
     mg_h = QHBoxLayout(mgmt_row)
     mg_h.setContentsMargins(0, 0, 0, 0)
     mg_h.setSpacing(6)
-
     self.btn_open_character_folder = tr_set(QPushButton(), "Открыть папку набора", "Open prompt set folder")
     self.btn_open_character_folder.setObjectName("SecondaryButton")
     self.btn_open_character_folder.setIcon(qta.icon('fa5s.folder-open', color='#ffffff'))
     mg_h.addWidget(self.btn_open_character_folder, 1)
-
     self.btn_open_history_folder = tr_set(QPushButton(), "Папку истории", "History folder")
     self.btn_open_history_folder.setObjectName("SecondaryButton")
     self.btn_open_history_folder.setIcon(qta.icon('fa5s.clock', color='#ffffff'))
     mg_h.addWidget(self.btn_open_history_folder, 1)
-
     lay.addWidget(mgmt_row)
 
     lay.addSpacing(6)
 
-    self.prompt_info_section = InnerCollapsibleSection(_("Информация о наборе", "Set information"), parent=self)
+    # -------- Информация о наборе (автор/версия/описание) --------
+    self.prompt_info_section = InnerCollapsibleSection(_("Автор набора и описание", "Set author & description"), parent=self)
     lay.addWidget(self.prompt_info_section)
-
     try:
         if getattr(self.prompt_info_section, "is_collapsed", False):
             self.prompt_info_section.toggle()
     except Exception:
         pass
-
     try:
         self.prompt_info_section.content_layout.setContentsMargins(16, 8, 12, 8)
         self.prompt_info_section.content_layout.setSpacing(8)
@@ -174,115 +181,21 @@ def build_character_settings_ui(self, parent_layout):
         pass
 
     self.prompt_info_labels = {}
-
     self.prompt_info_section.add_widget(
         _make_info_row(_("Автор:", "Author:"), _make_info_value_label(self, "author"))
     )
     self.prompt_info_section.add_widget(
         _make_info_row(_("Версия:", "Version:"), _make_info_value_label(self, "version"))
     )
-
     desc_title = tr_set(QLabel(), "Описание:", "Description:")
     desc_title.setStyleSheet("font-weight: 600;")
     self.prompt_info_section.add_widget(desc_title)
-
     self.prompt_info_section.add_widget(_make_info_value_label(self, "description"))
 
     lay.addSpacing(6)
 
-    # ══════════════════════════════════════════════════════
-    # История и обслуживание — единый набор действий с переключателем области
-    # (вариант A+B: тумблер «Выбранный / Все» убирает дублирование, плюс
-    #  визуальная иерархия и сворачиваемое «Обслуживание»)
-    # ══════════════════════════════════════════════════════
-
-    def _mark_danger_hover(btn: QPushButton):
-        btn.setObjectName("SecondaryButton")
-        btn.setProperty("dangerHover", True)
-        btn.style().unpolish(btn)
-        btn.style().polish(btn)
-        btn.update()
-
-    def _make_compact(btn: QPushButton):
-        btn.setProperty("compact", True)
-        btn.setMinimumWidth(0)
-        btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        btn.style().unpolish(btn)
-        btn.style().polish(btn)
-        btn.update()
-
-    def _btn_row(*widgets) -> QWidget:
-        r = SettingsBodyWidget()
-        r.setObjectName("SettingRow")
-        rl = QHBoxLayout(r)
-        rl.setContentsMargins(8, 4, 8, 4)
-        rl.setSpacing(6)
-        for w in widgets:
-            rl.addWidget(w, 1)
-        return r
-
-    # -------- Переключатель области: выбранный персонаж / все --------
-    scope_row = SettingsBodyWidget()
-    scope_row.setObjectName("SettingRow")
-    scope_l = QHBoxLayout(scope_row)
-    scope_l.setContentsMargins(8, 4, 8, 4)
-    scope_l.setSpacing(8)
-
-    scope_caption = tr_set(QLabel(), "Область:", "Scope:")
-    scope_caption.setStyleSheet("font-weight: 600;")
-    scope_l.addWidget(scope_caption, 0)
-
-    scope_toggle = SettingsBodyWidget()
-    scope_toggle.setObjectName("ScopeToggle")
-    st_l = QHBoxLayout(scope_toggle)
-    st_l.setContentsMargins(2, 2, 2, 2)
-    st_l.setSpacing(2)
-
-    self._scope_btn_current = tr_set(QPushButton(), "Выбранный", "Selected")
-    self._scope_btn_current.setObjectName("ScopeToggleButton")
-    self._scope_btn_current.setCheckable(True)
-    self._scope_btn_current.setCursor(Qt.CursorShape.PointingHandCursor)
-
-    self._scope_btn_all = tr_set(QPushButton(), "Все персонажи", "All characters")
-    self._scope_btn_all.setObjectName("ScopeToggleButton")
-    self._scope_btn_all.setCheckable(True)
-    self._scope_btn_all.setCursor(Qt.CursorShape.PointingHandCursor)
-
-    st_l.addWidget(self._scope_btn_current, 1)
-    st_l.addWidget(self._scope_btn_all, 1)
-    scope_l.addWidget(scope_toggle, 1)
-
-    self._char_history_scope = "current"
-
-    def _set_history_scope(scope: str):
-        scope = "all" if scope == "all" else "current"
-        self._char_history_scope = scope
-        for key, btn in (("current", self._scope_btn_current), ("all", self._scope_btn_all)):
-            active = key == scope
-            btn.setChecked(active)
-            btn.setProperty("active", "true" if active else "false")
-            btn.style().unpolish(btn)
-            btn.style().polish(btn)
-        # «Обновить формат» имеет смысл только для выбранного персонажа
-        if hasattr(self, "btn_maint_update_format"):
-            sel = scope == "current"
-            self.btn_maint_update_format.setEnabled(sel)
-            self.btn_maint_update_format.setToolTip(
-                _("Конвертировать JSON-файл истории в новый structured формат (создаёт резервную копию)",
-                  "Convert JSON history file to the new structured format (creates a backup)")
-                if sel else
-                _("Доступно только для выбранного персонажа",
-                  "Available only for the selected character")
-            )
-
-    self._set_history_scope = _set_history_scope
-    self._scope_btn_current.clicked.connect(lambda: _set_history_scope("current"))
-    self._scope_btn_all.clicked.connect(lambda: _set_history_scope("all"))
-
-    lay.addWidget(scope_row)
-
-    # -------- Действия с историей (зависят от области) --------
-    hist_title = tr_set(QLabel(), "История", "History")
+    # -------- История этого персонажа --------
+    hist_title = tr_set(QLabel(), "История персонажа", "Character history")
     hist_title.setStyleSheet("font-weight: 600;")
     lay.addWidget(hist_title)
 
@@ -304,8 +217,8 @@ def build_character_settings_ui(self, parent_layout):
     self.btn_history_import.setObjectName("SecondaryButton")
     _make_compact(self.btn_history_import)
 
-    self.btn_history_reset = tr_set(QPushButton(), "Сбросить", "Reset")
-    tr_set(self.btn_history_reset, "Сбросить историю", "Reset history", "setToolTip")
+    self.btn_history_reset = tr_set(QPushButton(), "Сбросить историю", "Reset history")
+    tr_set(self.btn_history_reset, "Сбросить историю этого персонажа", "Reset this character's history", "setToolTip")
     self.btn_history_reset.setIcon(qta.icon('fa5s.undo-alt', color='#ffffff'))
     _mark_danger_hover(self.btn_history_reset)
     _make_compact(self.btn_history_reset)
@@ -315,10 +228,9 @@ def build_character_settings_ui(self, parent_layout):
 
     lay.addSpacing(4)
 
-    # -------- Обслуживание (свёрнуто по умолчанию) --------
+    # -------- Обслуживание (свёрнуто) — для этого персонажа --------
     self.maintenance_section = InnerCollapsibleSection(_("Обслуживание", "Maintenance"), parent=self)
     lay.addWidget(self.maintenance_section)
-
     try:
         self.maintenance_section.content_layout.setContentsMargins(16, 8, 12, 8)
         self.maintenance_section.content_layout.setSpacing(8)
@@ -326,8 +238,8 @@ def build_character_settings_ui(self, parent_layout):
         pass
 
     maint_hint = tr_set(QLabel(),
-        "Действия применяются к выбранной области (переключатель выше).",
-        "Actions apply to the selected scope (toggle above).")
+        "Действия применяются к этому персонажу.",
+        "Actions apply to this character.")
     maint_hint.setObjectName("SeparatorLabel")
     maint_hint.setWordWrap(True)
     self.maintenance_section.add_widget(maint_hint)
@@ -369,30 +281,149 @@ def build_character_settings_ui(self, parent_layout):
     _make_compact(self.btn_maint_dedupe)
 
     self.btn_maint_update_format = tr_set(QPushButton(), "Обновить формат", "Update format")
+    tr_set(self.btn_maint_update_format,
+           "Конвертировать JSON-файл истории в новый structured формат (создаёт резервную копию)",
+           "Convert JSON history file to the new structured format (creates a backup)", "setToolTip")
     self.btn_maint_update_format.setIcon(qta.icon('fa5s.file-code', color='#ffffff'))
     self.btn_maint_update_format.setObjectName("SecondaryButton")
     _make_compact(self.btn_maint_update_format)
 
     self.maintenance_section.add_widget(_btn_row(self.btn_maint_dedupe, self.btn_maint_update_format))
 
-    # -------- Разделитель + деструктивное действие (всегда «все») --------
-    self.maintenance_section.add_widget(_make_separator())
+    return panel
 
-    self.btn_purge_deleted = tr_set(QPushButton(), "Очистить удалённое (все)", "Purge deleted (all)")
-    tr_set(self.btn_purge_deleted, "Физически удалить is_deleted=1 записи для всех персонажей с резервной копией",
+
+def _build_danger_zone(self) -> QWidget:
+    """Опасная зона: действия «для ВСЕХ персонажей» вне секций персонажей (#17).
+
+    Сюда вынесены красные деструктивные кнопки (сброс всей истории, физическая
+    очистка удалённого) и «all»-обслуживание, чтобы их нельзя было случайно
+    нажать, копаясь в настройках конкретной Миты.
+    """
+    section = InnerCollapsibleSection(_("Опасная зона — все персонажи", "Danger zone — all characters"), parent=self)
+    try:
+        section.content_layout.setContentsMargins(16, 8, 12, 8)
+        section.content_layout.setSpacing(8)
+    except Exception:
+        pass
+
+    hint = tr_set(QLabel(),
+        "Эти действия затрагивают ВСЕХ персонажей. Отмена невозможна.",
+        "These actions affect ALL characters. They cannot be undone.")
+    hint.setObjectName("SeparatorLabel")
+    hint.setWordWrap(True)
+    section.add_widget(hint)
+
+    # «all»-обслуживание (не деструктивное) — сверху.
+    self.btn_all_files_db = tr_set(QPushButton(), "Файлы → БД (все)", "Files → DB (all)")
+    self.btn_all_files_db.setIcon(qta.icon('fa5s.database', color='#ffffff'))
+    self.btn_all_files_db.setObjectName("SecondaryButton")
+    _make_compact(self.btn_all_files_db)
+
+    self.btn_all_dedupe = tr_set(QPushButton(), "Удалить дубли (все)", "Remove duplicates (all)")
+    self.btn_all_dedupe.setIcon(qta.icon('fa5s.broom', color='#ffffff'))
+    self.btn_all_dedupe.setObjectName("SecondaryButton")
+    _make_compact(self.btn_all_dedupe)
+
+    section.add_widget(_btn_row(self.btn_all_files_db, self.btn_all_dedupe))
+
+    self.btn_all_index_new = tr_set(QPushButton(), "Индекс нового (все)", "Index new (all)")
+    self.btn_all_index_new.setIcon(qta.icon('fa5s.brain', color='#ffffff'))
+    self.btn_all_index_new.setObjectName("SecondaryButton")
+    _make_compact(self.btn_all_index_new)
+
+    self.btn_all_reindex = tr_set(QPushButton(), "Переиндексация (все)", "Reindex (all)")
+    self.btn_all_reindex.setIcon(qta.icon('fa5s.brain', color='#ffffff'))
+    self.btn_all_reindex.setObjectName("SecondaryButton")
+    _make_compact(self.btn_all_reindex)
+
+    section.add_widget(_btn_row(self.btn_all_index_new, self.btn_all_reindex))
+
+    section.add_widget(_make_separator())
+
+    # Красные деструктивные — снизу.
+    self.btn_all_reset_history = tr_set(QPushButton(), "Сбросить историю ВСЕХ", "Reset ALL history")
+    tr_set(self.btn_all_reset_history, "Удалить историю всех персонажей без возможности восстановления",
+          "Delete the history of all characters, cannot be undone", "setToolTip")
+    self.btn_all_reset_history.setIcon(qta.icon('fa5s.trash-alt', color='#ffffff'))
+    self.btn_all_reset_history.setStyleSheet(_DANGER_QSS)
+    self.btn_all_reset_history.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    _make_compact(self.btn_all_reset_history)
+    section.add_widget(self.btn_all_reset_history)
+
+    self.btn_all_purge = tr_set(QPushButton(), "Очистить удалённое (все)", "Purge deleted (all)")
+    tr_set(self.btn_all_purge, "Физически удалить is_deleted=1 записи для всех персонажей с резервной копией",
           "Physically delete is_deleted=1 records for all characters with backup", "setToolTip")
-    self.btn_purge_deleted.setIcon(qta.icon('fa5s.fire-alt', color='#ffffff'))
-    self.btn_purge_deleted.setStyleSheet(
-        "QPushButton { background-color: #8b1a1a; color: #ffffff; border-radius: 4px; }"
-        "QPushButton:hover { background-color: #b22222; }"
-        "QPushButton:pressed { background-color: #6a0f0f; }"
-    )
-    self.btn_purge_deleted.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    _make_compact(self.btn_purge_deleted)
-    self.maintenance_section.add_widget(self.btn_purge_deleted)
+    self.btn_all_purge.setIcon(qta.icon('fa5s.fire-alt', color='#ffffff'))
+    self.btn_all_purge.setStyleSheet(_DANGER_QSS)
+    self.btn_all_purge.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    _make_compact(self.btn_all_purge)
+    section.add_widget(self.btn_all_purge)
 
-    # Инициализируем активное состояние тумблера (после создания всех кнопок)
-    _set_history_scope("current")
+    return section
+
+
+def build_character_settings_ui(self, parent_layout):
+    try:
+        scrollbar_guard = max(12, self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent))
+    except Exception:
+        scrollbar_guard = 14
+
+    sidebar_w = getattr(self, "SETTINGS_SIDEBAR_WIDTH", 50)
+    right_pad = max(scrollbar_guard, min(18, int(sidebar_w * 0.25)))
+
+    container = SettingsBodyWidget()
+    container_lay = QVBoxLayout(container)
+    container_lay.setContentsMargins(0, 0, right_pad, 0)
+    container_lay.setSpacing(6)
+
+    create_section_header(container_lay, _("Настройки персонажей", "Characters Settings"))
+
+    overlay_w = getattr(self, "SETTINGS_PANEL_WIDTH", 400)
+    label_w = max(90, min(120, int(overlay_w * 0.3)))
+    self.mic_label_width = label_w
+
+    root = SettingsBodyWidget()
+    lay = QVBoxLayout(root)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(6)
+
+    # Скрытый комбобокс — источник правды для logic.py (весь пайплайн крутится
+    # вокруг него). В UI не показывается: выбор персонажа теперь аккордеон (#17).
+    self.character_combobox = TRQComboBox()
+    self.character_combobox.setVisible(False)
+    lay.addWidget(self.character_combobox)
+
+    intro = tr_set(QLabel(),
+        "Разверни персонажа, чтобы настроить его набор промптов, провайдера и историю.",
+        "Expand a character to configure its prompt set, provider and history.")
+    intro.setObjectName("SeparatorLabel")
+    intro.setWordWrap(True)
+    lay.addWidget(intro)
+
+    # Хост аккордеона персонажей. Секции добавит логика (там есть список Мит).
+    self._char_accordion_host = SettingsBodyWidget()
+    self._char_accordion_layout = QVBoxLayout(self._char_accordion_host)
+    self._char_accordion_layout.setContentsMargins(0, 0, 0, 0)
+    self._char_accordion_layout.setSpacing(6)
+    self._char_sections = {}
+    lay.addWidget(self._char_accordion_host)
+
+    # Общая панель одного персонажа — строится один раз, логика переносит её
+    # в раскрытую секцию. Пока не раскрыт никто — держим в скрытом «кармане».
+    self._char_config_panel = _build_char_config_panel(self, label_w)
+    self._char_config_holder = SettingsBodyWidget()
+    holder_l = QVBoxLayout(self._char_config_holder)
+    holder_l.setContentsMargins(0, 0, 0, 0)
+    holder_l.setSpacing(0)
+    holder_l.addWidget(self._char_config_panel)
+    self._char_config_holder.setVisible(False)
+    lay.addWidget(self._char_config_holder)
+
+    lay.addSpacing(6)
+
+    # Опасная зона — вне секций персонажей.
+    lay.addWidget(_build_danger_zone(self))
 
     container_lay.addWidget(root)
     parent_layout.addWidget(container)

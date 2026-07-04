@@ -301,14 +301,100 @@ def wire_character_settings_logic(self):
         self.btn_maint_dedupe.clicked.connect(
             lambda: run_history_dedup(self) if _scope() == "current" else run_history_dedup_all(self))
 
-    # «Обновить формат» — только для выбранного персонажа (кнопка блокируется
-    # для области «все» в ui.py); «Очистить удалённое» — всегда для всех.
+    # «Обновить формат» — всегда для выбранного персонажа.
     if hasattr(self, 'btn_maint_update_format'):
         self.btn_maint_update_format.clicked.connect(lambda: migrate_history(self))
-    if hasattr(self, 'btn_purge_deleted'):
-        self.btn_purge_deleted.clicked.connect(lambda: purge_deleted_data(self))
+
+    # --- Опасная зона (все персонажи) — вне секций (#17) ---
+    if hasattr(self, 'btn_all_files_db'):
+        self.btn_all_files_db.clicked.connect(lambda: migrate_to_db_all(self))
+    if hasattr(self, 'btn_all_dedupe'):
+        self.btn_all_dedupe.clicked.connect(lambda: run_history_dedup_all(self))
+    if hasattr(self, 'btn_all_index_new'):
+        self.btn_all_index_new.clicked.connect(lambda: run_reindexing_all(self))
+    if hasattr(self, 'btn_all_reindex'):
+        self.btn_all_reindex.clicked.connect(lambda: run_full_reindexing_all(self))
+    if hasattr(self, 'btn_all_reset_history'):
+        self.btn_all_reset_history.clicked.connect(lambda: clear_history_all(self))
+    if hasattr(self, 'btn_all_purge'):
+        self.btn_all_purge.clicked.connect(lambda: purge_deleted_data(self))
+
+    # Аккордеон персонажей: секции строим здесь (тут есть список Мит),
+    # раскрытие секции выбирает персонажа и переносит в неё общую панель.
+    _build_character_accordion(self, character_list, current_char_id)
 
     update_prompt_set_info(self)
+
+
+def _build_character_accordion(self, character_list, current_char_id):
+    """Построить аккордеон персонажей (#17): по секции на каждую Миту.
+
+    Раскрытие секции: сворачивает соседние, переносит в неё общую панель
+    настроек (`_char_config_panel`) и делает персонажа текущим (через скрытый
+    `character_combobox`, вокруг которого крутится вся логика).
+    """
+    from managers.settings_manager import InnerCollapsibleSection
+
+    layout = getattr(self, "_char_accordion_layout", None)
+    if layout is None:
+        return
+
+    self._char_sections = {}
+    for cid in (character_list or []):
+        cid = str(cid or "").strip()
+        if not cid:
+            continue
+        section = InnerCollapsibleSection(cid, parent=self)
+        self._char_sections[cid] = section
+
+        def _make_handler(_cid, _section):
+            orig_toggle = _section.toggle
+
+            def _wrapped(event=None):
+                orig_toggle()
+                if not _section.is_collapsed:
+                    _on_character_section_expanded(self, _cid, _section)
+            return _wrapped
+
+        handler = _make_handler(cid, section)
+        section.toggle = handler
+        section.header.mousePressEvent = handler
+        layout.addWidget(section)
+
+    # Раскрываем секцию текущего персонажа (переносит панель + выбирает).
+    target = current_char_id if current_char_id in self._char_sections else None
+    if target is None and self._char_sections:
+        target = next(iter(self._char_sections))
+    if target is not None:
+        self._char_sections[target].toggle()
+
+
+def _on_character_section_expanded(self, character_id, section):
+    # Свернуть остальные секции — открыт только один персонаж за раз.
+    for cid, sec in getattr(self, "_char_sections", {}).items():
+        if sec is not section and not sec.is_collapsed:
+            try:
+                sec.collapse()
+            except Exception:
+                pass
+
+    # Перенести общую панель настроек в раскрытую секцию.
+    panel = getattr(self, "_char_config_panel", None)
+    if panel is not None:
+        section.content_layout.addWidget(panel)
+        panel.setVisible(True)
+
+    # Сделать персонажа текущим — это дёргает всю логику (набор промптов,
+    # провайдер, инфо). Если индекс уже тот же — обновляем вручную.
+    combo = getattr(self, "character_combobox", None)
+    if combo is not None:
+        idx = combo.findText(character_id, Qt.MatchFlag.MatchFixedString)
+        if idx >= 0 and combo.currentIndex() != idx:
+            combo.setCurrentIndex(idx)
+        else:
+            change_character_actions(self, character_id)
+    else:
+        change_character_actions(self, character_id)
 
 
 def reload_character_data(gui):
