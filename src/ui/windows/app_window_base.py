@@ -85,7 +85,7 @@ class AppWindowBase(QMainWindow):
     show_error_signal = pyqtSignal(str)
     hide_status_signal = pyqtSignal()
     pulse_error_signal = pyqtSignal()
-    show_voicing_signal = pyqtSignal()
+    show_voicing_signal = pyqtSignal(object)
     hide_voicing_signal = pyqtSignal()
 
     history_loaded_signal = pyqtSignal(dict)          
@@ -283,7 +283,10 @@ class AppWindowBase(QMainWindow):
         self.clear_user_input_signal.connect(self._on_clear_user_input)
         self.insert_user_input_signal.connect(self._on_insert_user_input)
         self.send_text_message_signal.connect(
-            lambda text: self.send_message(user_input=text),
+            lambda text: self.send_message(
+                user_input=text,
+                merge_input_from_entry=bool(self._get_setting("MIC_INSTANT_MERGE_CHAT_INPUT", True)),
+            ),
             type=Qt.ConnectionType.QueuedConnection,
         )
         self.show_info_message_signal.connect(self._on_show_info_message)
@@ -793,14 +796,37 @@ class AppWindowBase(QMainWindow):
             result.append(img)
         return result
 
-    def send_message(self, system_input: str = "", image_data: list[bytes] = None, user_input: str = None):
+    @staticmethod
+    def _merge_explicit_and_entry_text(explicit_text: str, entry_text: str, *, merge_with_entry: bool) -> tuple[str, bool]:
+        explicit = str(explicit_text or "").strip()
+        draft = str(entry_text or "").strip()
+        if not merge_with_entry or not draft:
+            return explicit, False
+        if not explicit:
+            return draft, True
+        return f"{explicit}\n{draft}", True
+
+    def send_message(
+        self,
+        system_input: str = "",
+        image_data: list[bytes] = None,
+        user_input: str = None,
+        merge_input_from_entry: bool = False,
+    ):
         # user_input=None → берём из поля ввода (обычная отправка). Задан явно
         # (напр. мгновенная отправка из ASR) — используем его и не трогаем поле.
         from_entry = user_input is None
+        clear_entry_after_send = False
         if from_entry:
             user_input = self.user_entry.toPlainText().strip()
+            clear_entry_after_send = bool(user_input)
         else:
-            user_input = str(user_input).strip()
+            entry_text = self.user_entry.toPlainText().strip() if self.user_entry else ""
+            user_input, clear_entry_after_send = self._merge_explicit_and_entry_text(
+                user_input,
+                entry_text,
+                merge_with_entry=merge_input_from_entry,
+            )
         current_image_data = []
         staged_image_data = self.staged_image_data.copy()
 
@@ -852,7 +878,7 @@ class AppWindowBase(QMainWindow):
 
         if user_input:
             message_renderer.insert_message(self, "user", user_input, message_id=user_message_id)
-            if from_entry:
+            if from_entry or clear_entry_after_send:
                 self.user_entry.clear()
 
         if all_image_data:
@@ -1035,9 +1061,9 @@ class AppWindowBase(QMainWindow):
         if hasattr(self, 'mita_status') and self.mita_status:
             self.mita_status.pulse_error_animation()
 
-    def _show_voicing_slot(self):
+    def _show_voicing_slot(self, payload=None):
         if hasattr(self, 'mita_status') and self.mita_status:
-            self.mita_status.show_voicing()
+            self.mita_status.show_voicing(payload)
 
     def _hide_voicing_slot(self):
         if hasattr(self, 'mita_status') and self.mita_status:

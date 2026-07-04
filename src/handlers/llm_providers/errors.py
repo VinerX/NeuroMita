@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -43,27 +45,80 @@ def _extract_status_code(text: str) -> Optional[int]:
 
 
 def _extract_provider_message(payload: Any) -> str:
-    if payload is None:
-        return ""
+    candidates = list(_iter_provider_message_candidates(payload))
+    for candidate in candidates:
+        if not _looks_like_generic_provider_wrapper(candidate):
+            return candidate
+    return candidates[0] if candidates else _compact_text(payload)
+
+
+def _parse_embedded_payload(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+
+    text = value.strip()
+    if not text or text[0] not in "{[":
+        return value
+
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            return parser(text)
+        except Exception:
+            continue
+    return value
+
+
+def _looks_like_generic_provider_wrapper(text: str) -> bool:
+    low = _compact_text(text).lower()
+    return low in {
+        "",
+        "provider returned error",
+        "provider error",
+        "bad request from provider.",
+        "unknown provider error.",
+    }
+
+
+def _iter_provider_message_candidates(payload: Any, *, _depth: int = 0):
+    if payload is None or _depth > 4:
+        return
+
+    if isinstance(payload, str):
+        text = _compact_text(payload)
+        if text:
+            yield text
+        parsed = _parse_embedded_payload(payload)
+        if parsed is not payload:
+            yield from _iter_provider_message_candidates(parsed, _depth=_depth + 1)
+        return
 
     if isinstance(payload, dict):
         err = payload.get("error")
         if isinstance(err, dict):
+            metadata = err.get("metadata")
+            if isinstance(metadata, dict) and metadata.get("raw") is not None:
+                yield from _iter_provider_message_candidates(metadata.get("raw"), _depth=_depth + 1)
             for key in ("message", "detail", "error", "title", "type"):
                 text = _compact_text(err.get(key))
                 if text:
-                    return text
+                    yield text
+            yield from _iter_provider_message_candidates(err, _depth=_depth + 1)
         elif err:
-            text = _compact_text(err)
-            if text:
-                return text
+            yield from _iter_provider_message_candidates(err, _depth=_depth + 1)
 
-        for key in ("message", "detail", "error_description", "title"):
+        metadata = payload.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("raw") is not None:
+            yield from _iter_provider_message_candidates(metadata.get("raw"), _depth=_depth + 1)
+
+        for key in ("message", "detail", "error_description", "title", "type"):
             text = _compact_text(payload.get(key))
             if text:
-                return text
+                yield text
+        return
 
-    return _compact_text(payload)
+    text = _compact_text(payload)
+    if text:
+        yield text
 
 
 def _extract_retry_after_seconds(
@@ -177,6 +232,20 @@ def _looks_like_unsupported_thinking_error(status_code: Optional[int], provider_
 
 def _friendly_message(status_code: Optional[int], provider_message: str) -> tuple[str, str]:
     low = (provider_message or "").lower()
+
+    if (
+        "user location is not supported" in low
+        or "location is not supported for the api use" in low
+        or "unsupported country" in low
+        or "unsupported region" in low
+    ):
+        return (
+            _(
+                "Провайдер отклонил запрос по региональному ограничению. Для этого пресета нужен другой провайдер, прокси или маршрут.",
+                "The provider rejected the request due to a regional restriction. This preset needs a different provider, proxy, or route.",
+            ),
+            _("Provider is blocked for this region.", "Provider is blocked for this region."),
+        )
 
     if (
         "provider not configured" in low

@@ -30,6 +30,8 @@ class StatusControllerTests(unittest.TestCase):
             hide_status_signal=_SignalStub(),
             pulse_error_signal=_SignalStub(),
             update_status_signal=_SignalStub(),
+            show_voicing_signal=_SignalStub(),
+            hide_voicing_signal=_SignalStub(),
         )
         controller = StatusController.__new__(StatusController)
         controller.view = view
@@ -55,11 +57,19 @@ class StatusControllerTests(unittest.TestCase):
         self.assertEqual(
             view.show_thinking_signal.calls,
             [{
+                "state": "compression",
                 "text": "Сжатие истории...",
-                "character_name": "Мита",
-                "avatar_name": "Мита",
+                "icon_names": ["fa6s.box-archive", "fa5s.archive", "fa5s.compress-alt"],
             }],
         )
+
+    def test_show_voicing_forwards_payload(self):
+        controller, view = self._make_controller()
+        payload = {"character_name": "Мита", "icon_names": ["fa6s.volume-high"]}
+
+        controller._on_show_voicing(SimpleNamespace(data=payload))
+
+        self.assertEqual(view.show_voicing_signal.calls, [payload])
 
 
 if __name__ == "__main__":

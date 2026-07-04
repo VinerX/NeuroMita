@@ -277,6 +277,49 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         self.assertEqual(payload["request_options_override"]["max_attempts"], 1)
         self.assertTrue(payload["request_options_override"]["suppress_failure_events"])
 
+    def test_compression_falls_back_to_local_summary_after_non_retryable_failure(self):
+        controller = self._make_controller(
+            {
+                "HISTORY_COMPRESSION_OUTPUT_TARGET": "history",
+                "HISTORY_COMPRESSION_LOCAL_FALLBACK_ENABLED": True,
+                "HISTORY_COMPRESSION_PROMPT_TEMPLATE": "Prompts/System/compression_prompt.txt",
+            }
+        )
+        character = _StubCharacter(
+            [
+                {"role": "user", "content": "hello there"},
+                {"role": "assistant", "content": "general kenobi"},
+                {"role": "user", "content": "compress me"},
+                {"role": "assistant", "content": "done"},
+            ]
+        )
+        controller.event_bus = SimpleNamespace(
+            emit_and_wait=lambda *_args, **_kwargs: [{
+                "ok": False,
+                "text": "",
+                "error": "Provider returned error. Reason: User location is not supported for the API use.",
+                "details": "HTTP 400 | provider=common | provider_message=User location is not supported for the API use.",
+                "status_code": 400,
+                "retryable": False,
+                "retry_after_sec": None,
+            }]
+        )
+        original_status = history_controller_module.response_status_kind
+        history_controller_module.response_status_kind = lambda *_args, **_kwargs: nullcontext()
+        try:
+            result = controller._compress_history(
+                character,
+                character.history_manager.load_history()["messages"],
+                previous_summary="Older summary",
+            )
+        finally:
+            history_controller_module.response_status_kind = original_status
+
+        self.assertIsInstance(result, str)
+        self.assertIn("Older summary", result)
+        self.assertIn("Player: hello there", result)
+        self.assertIn("TestChar: general kenobi", result)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -118,6 +118,25 @@ class ProviderErrorMappingTests(unittest.TestCase):
         self.assertIn("Отключите режим мышления", err.friendly_message)
         self.assertFalse(err.retryable)
 
+    def test_nested_openrouter_raw_error_is_extracted(self):
+        err = build_provider_error(
+            "common",
+            status_code=400,
+            payload={
+                "error": {
+                    "message": "Provider returned error",
+                    "code": 400,
+                    "metadata": {
+                        "raw": "{\"error\":{\"message\":\"User location is not supported for the API use.\"}}"
+                    },
+                }
+            },
+            url="https://openrouter.ai/api/v1/chat/completions",
+        )
+
+        self.assertIn("регион", err.friendly_message.lower())
+        self.assertIn("User location is not supported for the API use.", err.provider_message)
+
 
 if __name__ == "__main__":
     unittest.main()

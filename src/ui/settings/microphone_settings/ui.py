@@ -101,6 +101,22 @@ def build_microphone_settings_ui(self, parent_layout):
     tr_set(self.mic_instant_checkbox, "Мгновенная отправка распознанного текста", "Send recognized text immediately", "setToolTip")
     root_lay.addWidget(make_row(_("Мгновенная отправка", "Instant send"), self.mic_instant_checkbox, label_w))
 
+    self.mic_instant_merge_input_checkbox = QCheckBox("")
+    self.mic_instant_merge_input_checkbox.setChecked(bool(self.settings.get("MIC_INSTANT_MERGE_CHAT_INPUT", True)))
+    tr_set(
+        self.mic_instant_merge_input_checkbox,
+        "При мгновенной отправке добавлять текст из поля ввода",
+        "On instant send, include the typed chat input",
+        "setToolTip",
+    )
+    root_lay.addWidget(
+        make_row(
+            _("Добавлять текст из чата", "Include chat text"),
+            self.mic_instant_merge_input_checkbox,
+            label_w,
+        )
+    )
+
     self.mic_mute_while_speaking_checkbox = QCheckBox("")
     self.mic_mute_while_speaking_checkbox.setChecked(bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True)))
     self.mic_mute_while_speaking_checkbox.setToolTip(_(

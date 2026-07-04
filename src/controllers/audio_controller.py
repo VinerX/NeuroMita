@@ -92,6 +92,16 @@ class AudioController:
             "error": error
         })
 
+    @staticmethod
+    def _voice_status_name(voice_profile, speaker: str) -> str:
+        if isinstance(voice_profile, dict):
+            for key in ("name", "short_name", "character_id"):
+                value = str(voice_profile.get(key) or "").strip()
+                if value:
+                    return value
+        speaker = str(speaker or "").strip()
+        return speaker.lstrip("/") if speaker else ""
+
     def _on_voiceover_requested(self, event: Event):
         data = event.data or {}
         text = data.get("text", "")
@@ -159,7 +169,10 @@ class AudioController:
 
             logger.info("Запрос озвучки принят")
             # #11: индикатор «Озвучивает…» на время синтеза/воспроизведения.
-            self.event_bus.emit(Events.GUI.SHOW_MITA_VOICING)
+            self.event_bus.emit(Events.GUI.SHOW_MITA_VOICING, {
+                "character_name": self._voice_status_name(voice_profile, speaker),
+                "icon_names": ["fa6s.volume-high"],
+            })
         except Exception as e:
             logger.error(f"Ошибка при отправке текста на озвучку: {e}")
             if task_uid:

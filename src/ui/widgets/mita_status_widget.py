@@ -12,13 +12,12 @@ from PyQt6.QtWidgets import QWidget
 from main_logger import logger
 from utils import _
 
-# Страховочный таймаут «завис» для занятых состояний (думает/сжатие/озвучивает).
+# Страховочный таймаут "завис" для занятых состояний (думает/сжатие/озвучивает).
 # Нормальный поток гасит статус по событиям успеха/ошибки, но если соединение с
-# игрой оборвалось посреди запроса, эти события могут не прийти и «думает»
-# висит вечно (фидбэк Винера). Таймер срабатывает только на крайний случай,
-# поэтому окно щедрое — не мешает долгой генерации/синтезу, но не даёт залипнуть.
-# Перезапускается на каждую смену состояния (в т.ч. повторные попытки генерации).
-_BUSY_WATCHDOG_MS = 240_000  # 4 минуты
+# игрой оборвалось посреди запроса, эти события могут не прийти и "думает"
+# висит вечно. Таймер срабатывает только на крайний случай, поэтому окно щедрое:
+# не мешает долгой генерации/синтезу, но не даёт залипнуть.
+_BUSY_WATCHDOG_MS = 240_000  # 4 minutes
 
 
 class MitaStatusWidget(QWidget):
@@ -38,26 +37,39 @@ class MitaStatusWidget(QWidget):
     def _get_chat(self):
         return self._chat
 
+    @staticmethod
+    def _status_icon(icon_names, *, fallback: str, color: str):
+        names = icon_names if isinstance(icon_names, (list, tuple)) else [icon_names]
+        for icon_name in names:
+            if not icon_name:
+                continue
+            try:
+                return qta.icon(str(icon_name), color=color).pixmap(24, 24)
+            except Exception:
+                continue
+        return qta.icon(fallback, color=color).pixmap(24, 24)
+
     def show_thinking(self, payload="Мита"):
         chat = self._get_chat()
         if isinstance(payload, dict):
             text = str(payload.get("text") or "").strip()
-            character_name = str(payload.get("character_name") or "Мита")
-            avatar_name = str(payload.get("avatar_name") or character_name)
+            state = str(payload.get("state") or "status").strip() or "status"
             if not text:
                 text = _("Сжатие истории...", "Compressing history...")
 
-            self.current_state = "status"
-            self._character_name = character_name
+            self.current_state = state
+            self._character_name = ""
             self._dots_phase = 0
             self._stop_dots()
             self._arm_watchdog()
 
             if chat:
-                from ui.chat.message_widget import _get_avatar_pixmap
-
-                avatar = _get_avatar_pixmap(avatar_name, "assistant")
-                chat.show_status(text, avatar)
+                icon = self._status_icon(
+                    payload.get("icon_names"),
+                    fallback="fa6s.circle-info",
+                    color="#b74b7d",
+                )
+                chat.show_status(text, icon)
             return
 
         character_name = str(payload or "Мита")
@@ -78,17 +90,27 @@ class MitaStatusWidget(QWidget):
             )
             self._start_dots()
 
-    def show_voicing(self):
-        """#11: статус «Озвучивает…» с иконкой динамика. Отдельное состояние,
-        чтобы поздний hide_voicing не гасил уже показанный «думает» следующего
-        сообщения (гасим только если всё ещё в состоянии voicing)."""
+    def show_voicing(self, payload=None):
         self.current_state = "voicing"
         self._stop_dots()
         self._arm_watchdog()
         chat = self._get_chat()
         if chat:
-            icon = qta.icon("fa6s.volume-high", color="#b74b7d").pixmap(24, 24)
-            chat.show_status(_("Озвучивает…", "Voicing…"), icon)
+            data = payload if isinstance(payload, dict) else {}
+            character_name = str(data.get("character_name") or data.get("name") or "").strip()
+            text = str(data.get("text") or "").strip()
+            if not text:
+                text = (
+                    _("Озвучивает: {name}", "Voicing: {name}").format(name=character_name)
+                    if character_name
+                    else _("Озвучивает...", "Voicing...")
+                )
+            icon = self._status_icon(
+                data.get("icon_names"),
+                fallback="fa6s.volume-high",
+                color="#b74b7d",
+            )
+            chat.show_status(text, icon)
 
     def hide_voicing(self):
         if self.current_state != "voicing":
@@ -133,7 +155,6 @@ class MitaStatusWidget(QWidget):
             chat.hide_typing()
 
     def _arm_watchdog(self):
-        """Перезапустить страховочный таймер для текущего занятого состояния."""
         self._disarm_watchdog()
         self._watchdog_timer = QTimer()
         self._watchdog_timer.setSingleShot(True)
@@ -146,12 +167,10 @@ class MitaStatusWidget(QWidget):
             self._watchdog_timer = None
 
     def _on_watchdog(self):
-        # Занятое состояние висит слишком долго — вероятно, оборвалось соединение
-        # и события успеха/ошибки не пришли. Гасим статус, чтобы не залипал.
-        if self.current_state in ("thinking", "status", "voicing"):
+        if self.current_state in ("thinking", "status", "compression", "voicing"):
             logger.warning(
-                f"MitaStatusWidget: статус '{self.current_state}' завис на "
-                f"{_BUSY_WATCHDOG_MS // 1000}с — сбрасываю по таймауту"
+                f"MitaStatusWidget: status '{self.current_state}' hung for "
+                f"{_BUSY_WATCHDOG_MS // 1000}s; clearing by timeout"
             )
             self.hide_animated()
 

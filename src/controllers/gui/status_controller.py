@@ -47,9 +47,10 @@ class StatusController(BaseController):
         else:
             logger.error("StatusController: view not found")
 
-    def _on_show_voicing(self, _event: Event):
+    def _on_show_voicing(self, event: Event):
         if self.view and getattr(self.view, "show_voicing_signal", None):
-            self.view.show_voicing_signal.emit()
+            payload = event.data if event and isinstance(getattr(event, "data", None), dict) else None
+            self.view.show_voicing_signal.emit(payload)
 
     def _on_hide_voicing(self, _event: Event):
         if self.view and getattr(self.view, "hide_voicing_signal", None):
@@ -96,9 +97,9 @@ class StatusController(BaseController):
 
         if get_response_status_kind() == "compression":
             self.show_mita_thinking({
+                "state": "compression",
                 "text": "Сжатие истории...",
-                "character_name": character_name,
-                "avatar_name": character_name,
+                "icon_names": ["fa6s.box-archive", "fa5s.archive", "fa5s.compress-alt"],
             })
             return
 

@@ -45,6 +45,7 @@ class MicrophoneSettingsController(BaseController):
             "asr_refresh_button",
             "mic_active_checkbox",
             "mic_instant_checkbox",
+            "mic_instant_merge_input_checkbox",
             "mic_mute_while_speaking_checkbox",
             "vad_apply_button",
         )
@@ -89,6 +90,9 @@ class MicrophoneSettingsController(BaseController):
 
         safe_disconnect(v.mic_instant_checkbox.stateChanged, self._on_instant_toggled)
         v.mic_instant_checkbox.stateChanged.connect(self._on_instant_toggled)
+
+        safe_disconnect(v.mic_instant_merge_input_checkbox.stateChanged, self._on_instant_merge_input_toggled)
+        v.mic_instant_merge_input_checkbox.stateChanged.connect(self._on_instant_merge_input_toggled)
 
         safe_disconnect(v.mic_mute_while_speaking_checkbox.stateChanged, self._on_mute_while_speaking_toggled)
         v.mic_mute_while_speaking_checkbox.stateChanged.connect(self._on_mute_while_speaking_toggled)
@@ -483,6 +487,9 @@ class MicrophoneSettingsController(BaseController):
 
     def _on_instant_toggled(self, state: int):
         self._save_setting("MIC_INSTANT_SENT", bool(state))
+
+    def _on_instant_merge_input_toggled(self, state: int):
+        self._save_setting("MIC_INSTANT_MERGE_CHAT_INPUT", bool(state))
 
     def _on_mute_while_speaking_toggled(self, state: int):
         self._save_setting("MIC_MUTE_WHILE_SPEAKING", bool(state))

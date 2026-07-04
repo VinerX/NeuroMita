@@ -609,6 +609,8 @@ class HistoryController:
 
             return self._run_compression_request(
                 character=character,
+                messages_to_compress=messages_to_compress,
+                previous_summary=previous_summary_trimmed,
                 full_prompt=full_prompt,
                 preset_id=preset_id,
                 max_attempts=max_attempts,
@@ -651,6 +653,8 @@ class HistoryController:
         self,
         *,
         character,
+        messages_to_compress: List[Dict[str, Any]],
+        previous_summary: str,
         full_prompt: str,
         preset_id: Optional[int],
         max_attempts: int,
@@ -736,6 +740,15 @@ class HistoryController:
                     self._get_compression_cooldown_remaining(char_id),
                 ),
             )
+        fallback_summary = self._build_local_compression_fallback(
+            character,
+            messages_to_compress,
+            previous_summary=previous_summary,
+            failure_details=str(last_failure.get("details") or last_failure.get("error") or "").strip(),
+        )
+        if fallback_summary:
+            self._clear_compression_cooldown(char_id)
+            return fallback_summary
         return None
 
     def _compression_background_delay_seconds(self) -> float:
@@ -804,6 +817,88 @@ class HistoryController:
 
         keep = max(0, limit - len("\n...[truncated]"))
         return text[:keep].rstrip() + "\n...[truncated]"
+
+    def _content_to_plain_text(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content.strip()
+
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                item_type = str(item.get("type") or "")
+                if item_type == "text":
+                    value = item.get("text")
+                    if value is None:
+                        value = item.get("content", "")
+                    text = str(value or "").strip()
+                    if text:
+                        parts.append(text)
+                elif item_type == "image_url":
+                    parts.append("[image]")
+            return " ".join(part for part in parts if part).strip()
+
+        return str(content or "").strip()
+
+    def _build_local_compression_fallback(
+        self,
+        character,
+        messages_to_compress: List[Dict[str, Any]],
+        *,
+        previous_summary: str = "",
+        failure_details: str = "",
+    ) -> Optional[str]:
+        if not bool(self._get_setting("HISTORY_COMPRESSION_LOCAL_FALLBACK_ENABLED", True)):
+            return None
+
+        summary_limit = max(200, int(self._get_setting("HISTORY_COMPRESSION_LOCAL_FALLBACK_MAX_CHARS", 4000)))
+        per_message_limit = max(40, int(self._get_setting("HISTORY_COMPRESSION_LOCAL_FALLBACK_MESSAGE_MAX_CHARS", 220)))
+        max_messages = max(1, int(self._get_setting("HISTORY_COMPRESSION_LOCAL_FALLBACK_MAX_MESSAGES", 24)))
+
+        lines: List[str] = []
+        previous_summary = str(previous_summary or "").strip()
+        if previous_summary:
+            lines.append(
+                self._truncate_text_for_prompt(
+                    previous_summary,
+                    min(summary_limit // 2, max(200, per_message_limit * 3)),
+                )
+            )
+
+        assistant_name = str(getattr(character, "name", "") or "Character")
+        for msg in messages_to_compress:
+            if not isinstance(msg, dict):
+                continue
+
+            text = self._content_to_plain_text(msg.get("content"))
+            if not text:
+                continue
+
+            role = str(msg.get("role") or "")
+            if role == "user":
+                speaker = "Player"
+            elif role == "assistant":
+                speaker = assistant_name
+            elif role == "system":
+                speaker = "System"
+            else:
+                speaker = role.title() or "Event"
+
+            lines.append(f"{speaker}: {self._truncate_text_for_prompt(text, per_message_limit)}")
+            if len(lines) >= max_messages + (1 if previous_summary else 0):
+                break
+
+        fallback_summary = "\n".join(line for line in lines if line).strip()
+        if not fallback_summary:
+            return None
+
+        fallback_summary = self._truncate_text_for_prompt(fallback_summary, summary_limit)
+        logger.warning(
+            f"[HistoryController][{getattr(character, 'char_id', 'Unknown')}] "
+            f"Using local compression fallback after provider failure: {failure_details or 'n/a'}"
+        )
+        return fallback_summary
 
     def _process_image_quality(self, image_bytes: bytes, target_quality: int) -> Optional[bytes]:
         if not image_bytes:
