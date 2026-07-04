@@ -833,6 +833,15 @@ class AppWindowBase(QMainWindow):
             "req_id": req_id,
         })
 
+        # #10: показываем «думает» сразу при отправке, не дожидаясь конца
+        # подготовки контекста (RAG/промпт), из-за которой ON_STARTED прилетает
+        # с заметной задержкой — казалось, что запрос не ушёл. Повторный
+        # ON_STARTED с тем же именем безопасен (show_thinking его гасит).
+        try:
+            self.show_thinking_signal.emit(self._get_character_name())
+        except Exception:
+            pass
+
         if staged_image_data:
             self.event_bus.emit(Events.Chat.CLEAR_STAGED_IMAGES)
             self.staged_image_data.clear()
