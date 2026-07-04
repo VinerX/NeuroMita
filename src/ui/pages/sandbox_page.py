@@ -79,15 +79,19 @@ def _round_pixmap(src: QPixmap, size: int) -> QPixmap:
 
 
 class _SandboxStatusRow(QWidget):
-    """A live status line: [dot] [name] … [value] [switch] [gear→settings].
+    """A live status line: [name] [state-chip] … [value] [switch] [gear→settings].
 
-    * The multi-state dot reflects real state: grey = off, green = active,
-      yellow = initialising, red = error. Green/off come from
-      update_status_colors() (registry `setChecked`); yellow/red come from the
-      SET_SETTINGS_ICON_INDICATOR feed routed in via `set_indicator()`.
+    * Раньше слева был крошечный цветной кружок — Артём читал его как «пункт
+      списка», а не индикатор работы (#15). Заменён на текстовую плашку-статус:
+      «Активно» (зелёная), «Не инициализировано» (жёлтая), «Ошибка» (красная),
+      «Выключено» (серая). Состояние берётся так же: green/off — из
+      update_status_colors() (`setChecked`), loading/red — из
+      SET_SETTINGS_ICON_INDICATOR через `set_indicator()`.
     * The switch turns the feature on/off (its enable setting); the gear jumps
       to settings to actually pick the engine/model.
     * The "what exactly" value is filled by the sandbox via `set_value()`.
+      Когда подсистема выключена — значение скрываем (плашка уже говорит «Выкл»),
+      чтобы не плодить лишние поля (просьба Артёма про микрофон).
     """
 
     _DOT_COLORS = {
@@ -95,6 +99,14 @@ class _SandboxStatusRow(QWidget):
         "active": ("#79e78c", "rgba(121,231,140,0.88)"),
         "init": ("#ffd60a", "rgba(255,214,10,0.85)"),
         "error": ("#ff453a", "rgba(255,69,58,0.85)"),
+    }
+
+    # Плашка-статус: (фон, рамка/текст) для каждого состояния.
+    _CHIP_STYLE = {
+        "off": ("rgba(255,255,255,0.06)", "rgba(255,255,255,0.45)"),
+        "active": ("rgba(121,231,140,0.16)", "#79e78c"),
+        "init": ("rgba(255,214,10,0.16)", "#ffd60a"),
+        "error": ("rgba(255,69,58,0.18)", "#ff6b61"),
     }
 
     def __init__(self, name_text: str, on_settings, settings_tooltip: str,
@@ -109,14 +121,15 @@ class _SandboxStatusRow(QWidget):
         self._active = False
         self._indicator = None  # None | "loading" | "red" | "green"
 
-        self._dot = QLabel()
-        self._dot.setFixedSize(12, 12)
-        h.addWidget(self._dot, 0, Qt.AlignmentFlag.AlignVCenter)
-
         name = QLabel(name_text)
         register_if_tr(name, name_text)
         name.setObjectName("SandboxInfoLabel")
         h.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._chip = QLabel("")
+        self._chip.setObjectName("SandboxStatusChip")
+        self._chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h.addWidget(self._chip, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._value = QLabel("—")
         self._value.setObjectName("SandboxInfoValue")
@@ -143,13 +156,13 @@ class _SandboxStatusRow(QWidget):
         gear.clicked.connect(on_settings)
         h.addWidget(gear, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        self._apply_dot()
+        self._apply_chip()
 
     # ----- state inputs -----
     def setChecked(self, checked: bool):
         # update_status_colors() → True means the subsystem is actually live.
         self._active = bool(checked)
-        self._apply_dot()
+        self._apply_chip()
 
     def setText(self, _text: str):
         # update_status_colors() pushes a terse label for the voice chip; the
@@ -164,13 +177,13 @@ class _SandboxStatusRow(QWidget):
             self._switch.setChecked(bool(enabled))
         finally:
             self._switch.blockSignals(False)
-        self._apply_dot()
+        self._apply_chip()
 
     def set_indicator(self, state):
         # state: None | "loading" | "red" | "green" (from SET_SETTINGS_ICON_INDICATOR)
         st = str(state).strip().lower() if state else None
         self._indicator = st if st in ("loading", "red", "green") else None
-        self._apply_dot()
+        self._apply_chip()
 
     def set_value(self, text: str):
         self._full_value_text = text or "—"
@@ -181,7 +194,7 @@ class _SandboxStatusRow(QWidget):
         super().resizeEvent(event)
         self._apply_value_text()
 
-    # ----- dot rendering -----
+    # ----- chip rendering -----
     def _resolve_state(self) -> str:
         if not self._enabled:
             return "off"
@@ -194,11 +207,29 @@ class _SandboxStatusRow(QWidget):
         # Enabled but not confirmed active yet and no explicit signal.
         return "init"
 
-    def _apply_dot(self):
-        bg, border = self._DOT_COLORS[self._resolve_state()]
-        self._dot.setStyleSheet(
-            f"background-color: {bg}; border: 1px solid {border}; border-radius: 6px;"
+    @staticmethod
+    def _chip_label(state: str) -> str:
+        return {
+            "off": _("Выключено", "Off"),
+            "active": _("Активно", "Active"),
+            "init": _("Не инициализировано", "Not initialized"),
+            "error": _("Ошибка", "Error"),
+        }.get(state, "")
+
+    def _apply_chip(self):
+        state = self._resolve_state()
+        bg, fg = self._CHIP_STYLE[state]
+        self._chip.setText(self._chip_label(state))
+        self._chip.setStyleSheet(
+            f"QLabel#SandboxStatusChip {{"
+            f" background-color: {bg}; color: {fg};"
+            f" border: 1px solid {bg}; border-radius: 8px;"
+            f" padding: 1px 9px; font-size: 8pt; font-weight: 700;"
+            f" letter-spacing: 0.3px; }}"
         )
+        # Когда выключено — прячем «что именно» (плашка уже сказала «Выкл»);
+        # так у микрофона/голоса не мозолят глаза лишние поля в отключённом виде.
+        self._value.setVisible(state != "off")
 
     def _apply_value_text(self):
         value = self._full_value_text or "—"
