@@ -49,7 +49,6 @@ def setup_screen_analysis_controls(gui, parent_layout):
             'type': 'text',
         },
         {'label': _('Разрешить обработку изображений', 'Enable Image Analysis'), 'key': 'ENABLE_IMAGE_ANALYSIS', 'type': 'checkbutton', 'default_checkbutton': True, 'hide': True},
-        {'label': _('Включить захват экрана', 'Enable Screen Capture'), 'key': 'ENABLE_SCREEN_ANALYSIS', 'type': 'checkbutton', 'default_checkbutton': False},
         {'label': _('Прикладывать скриншот к каждому сообщению', 'Attach a screenshot to every message'), 'key': 'AUTO_ATTACH_IMAGES', 'type': 'checkbutton', 'default_checkbutton': False,
          'tooltip': _(
              'При каждой отправке сообщения делает свежий снимок экрана и прикладывает его к запросу — модель видит, что сейчас на экране.\n'
@@ -58,6 +57,19 @@ def setup_screen_analysis_controls(gui, parent_layout):
              'On every message send, takes a fresh screenshot and attaches it to the request — the model sees what is on screen right now.\n'
              'Works without "Enable Screen Capture": if continuous capture is off, a single snapshot is taken at send time.\n'
              'Requires "Enable Image Analysis" and a vision-capable model.'
+         )},
+        {'label': _('Включить захват экрана (фоновый)', 'Enable Screen Capture (background)'), 'key': 'ENABLE_SCREEN_ANALYSIS', 'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _(
+             'Непрерывный фоновый захват: отдельный поток снимает экран каждые N секунд в буфер кадров.\n'
+             'Нужен НЕ для обычного прикрепления (для него хватает галки выше), а для:\n'
+             '• периодической отправки кадров Мите по таймеру («Отправлять запросы с кадрами»);\n'
+             '• прикрепления нескольких последних кадров сразу (история кадров).\n'
+             'Если нужно просто «Мита видит мой экран, когда я пишу» — это можно НЕ включать.',
+             'Continuous background capture: a separate thread grabs the screen every N seconds into a frame buffer.\n'
+             'NOT needed for normal attachment (the checkbox above is enough), but for:\n'
+             '• sending frames to Mita periodically on a timer ("Send Image Requests");\n'
+             '• attaching several recent frames at once (frame history).\n'
+             'If you just want "Mita sees my screen when I type" — you can leave this off.'
          )},
         {'label': _('Интервал захвата (сек)', 'Capture Interval (sec)'), 'key': 'SCREEN_CAPTURE_INTERVAL', 'type': 'entry', 'default': '5.0', 'validation': gui.validate_float_positive},
         {'label': _('Сжатие (%)', 'Compression (%)'), 'key': 'SCREEN_CAPTURE_QUALITY', 'type': 'entry', 'default': '25', 'validation': gui.validate_positive_integer},

@@ -1421,16 +1421,6 @@ class SandboxPage(QWidget):
         capture_strip, capture_layout = self._make_strip(_("Захват", "Capture"), "fa6s.camera-retro")
         _img_settings_tip = _("Открыть настройки изображений и камеры",
                               "Open image & camera settings")
-        screen_row, self._capture_screen_cb = self._make_toggle_row(
-            _("Захват экрана", "Screen capture"),
-            lambda v: self._on_capture_toggle("ENABLE_SCREEN_ANALYSIS", v),
-            bool(self.gui._get_setting("ENABLE_SCREEN_ANALYSIS", False)),
-            with_dot=True,
-            on_settings=lambda: self._jump_to_settings("screen"),
-            settings_tooltip=_img_settings_tip,
-        )
-        capture_layout.addWidget(screen_row)
-
         attach_row, self._capture_auto_attach_cb = self._make_toggle_row(
             _("Авто-прикрепление", "Auto-attach"),
             lambda v: self._on_capture_toggle("AUTO_ATTACH_IMAGES", v),
@@ -1440,6 +1430,16 @@ class SandboxPage(QWidget):
             settings_tooltip=_img_settings_tip,
         )
         capture_layout.addWidget(attach_row)
+
+        screen_row, self._capture_screen_cb = self._make_toggle_row(
+            _("Захват экрана", "Screen capture"),
+            lambda v: self._on_capture_toggle("ENABLE_SCREEN_ANALYSIS", v),
+            bool(self.gui._get_setting("ENABLE_SCREEN_ANALYSIS", False)),
+            with_dot=True,
+            on_settings=lambda: self._jump_to_settings("screen"),
+            settings_tooltip=_img_settings_tip,
+        )
+        capture_layout.addWidget(screen_row)
 
         camera_row, self._capture_camera_cb = self._make_toggle_row(
             _("Захват с камеры", "Camera capture"),
