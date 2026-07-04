@@ -49,8 +49,8 @@ class NewsPage(QWidget):
                 NewsItem(
                     _("Загрузка релизов…", "Loading releases…"),
                     _(
-                        "Получаем ленту релизов с GitHub…",
-                        "Fetching the release feed from GitHub…",
+                        "Релизы ещё загружаются в фоне. Страница обновится автоматически.",
+                        "Releases are still loading in the background. This page will refresh automatically.",
                     ),
                     tag="…",
                 )
@@ -93,7 +93,7 @@ class NewsPage(QWidget):
         # в фоне (из кэша, если он уже прогрет). Готовый список придёт сигналом
         # _releases_ready на GUI-поток.
         self._set_page_widget(self._build_page_widget(loading=True))
-        load_news_releases_async(self.gui, lambda releases: self._releases_ready.emit(releases))
+        QTimer.singleShot(0, lambda: load_news_releases_async(self.gui, lambda releases: self._releases_ready.emit(releases)))
 
     def _on_releases_ready(self, releases):
         self._set_page_widget(self._build_page_widget())

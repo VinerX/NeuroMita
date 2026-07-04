@@ -30,6 +30,7 @@ _fetch_lock = threading.Lock()
 
 def invalidate_news_releases(gui) -> None:
     gui._news_releases_cache = None
+    gui._news_release_cards_cache = None
 
 
 def load_news_releases_async(gui, on_ready: Callable[[list[dict[str, Any]]], None]) -> None:
@@ -103,15 +104,18 @@ def get_news_releases(gui) -> list[dict[str, Any]]:
         if response.status_code != 200:
             logger.info(f"[news] Failed to fetch releases: HTTP {response.status_code}")
             gui._news_releases_cache = []
+            gui._news_release_cards_cache = []
             return []
 
         raw_data = response.json() or []
         data = [item for item in raw_data if raw_release_has_launcher_assets(item)]
         gui._news_releases_cache = data
+        gui._news_release_cards_cache = _prepare_release_cards(data)
         return data
     except Exception as exc:
         logger.info(f"[news] Failed to fetch releases: {exc}")
         gui._news_releases_cache = []
+        gui._news_release_cards_cache = []
         return []
 
 
@@ -127,6 +131,72 @@ def get_news_content(gui) -> str:
         if body:
             chunks.append(body)
     return "\n".join(chunks)
+
+
+def _iter_clean_release_lines(body: str):
+    for raw_line in str(body or "").splitlines():
+        line = _clean_release_line(raw_line)
+        if line:
+            yield line
+
+
+def _build_release_preview(body: str, *, limit: int = 280) -> tuple[str, bool]:
+    preferred: list[str] = []
+    fallback: list[str] = []
+    meaningful_count = 0
+
+    for line in _iter_clean_release_lines(body):
+        meaningful_count += 1
+        lower = line.lower()
+        if lower.startswith("установка:") or lower.startswith("installation:"):
+            if len(fallback) < 3:
+                fallback.append(line)
+            continue
+        if lower.startswith("изменения") or lower.startswith("changes"):
+            continue
+        if len(preferred) < 3:
+            preferred.append(line)
+        if len(preferred) >= 3 and meaningful_count >= 4:
+            break
+
+    candidate_lines = preferred or fallback
+    if not candidate_lines:
+        return _("Без описания.", "No description."), False
+
+    summary = " ".join(candidate_lines).strip()[:limit]
+    has_details = meaningful_count > len(candidate_lines)
+    return summary, has_details
+
+
+def _prepare_release_cards(releases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    repo_url = f"https://github.com/{NEWS_REPO}/releases"
+    prepared: list[dict[str, Any]] = []
+    for release in releases:
+        tag_name = str(release.get("tag_name") or "")
+        name = str(release.get("name") or "").strip() or tag_name or _("Релиз", "Release")
+        body = str(release.get("body") or "").strip()
+        summary, _has_details = _build_release_preview(body, limit=280)
+        prepared.append(
+            {
+                "name": name,
+                "tag_name": tag_name,
+                "summary": summary,
+                "published": str(release.get("published_at") or "")[:10],
+                "tag": "PRE-RELEASE" if release.get("prerelease") else "RELEASE",
+                "url": str(release.get("html_url") or repo_url),
+            }
+        )
+    return prepared
+
+
+def _get_prepared_release_cards(gui) -> list[dict[str, Any]]:
+    cached = getattr(gui, "_news_release_cards_cache", None)
+    if cached is not None:
+        return cached
+    releases = get_news_releases(gui)
+    prepared = _prepare_release_cards(releases)
+    gui._news_release_cards_cache = prepared
+    return prepared
 
 
 def _clean_release_line(raw_line: str) -> str:
@@ -251,9 +321,8 @@ def parse_news_items(raw_text: str) -> list[NewsItem]:
 
 
 def build_release_news_items(gui, *, limit: int | None = 8) -> list[NewsItem]:
-    releases = get_news_releases(gui)
-    repo_url = f"https://github.com/{NEWS_REPO}/releases"
-    if not releases:
+    prepared_cards = _get_prepared_release_cards(gui)
+    if not prepared_cards:
         return [
             NewsItem(
                 _("Релизы недоступны", "Releases unavailable"),
@@ -265,17 +334,15 @@ def build_release_news_items(gui, *, limit: int | None = 8) -> list[NewsItem]:
             )
         ]
 
-    selected = releases if limit is None else releases[:limit]
+    selected = prepared_cards if limit is None else prepared_cards[:limit]
     items: list[NewsItem] = []
     for release in selected:
         tag_name = str(release.get("tag_name") or "")
         name = str(release.get("name") or "").strip() or tag_name or _("Релиз", "Release")
-        body = str(release.get("body") or "").strip()
-        summary = build_release_summary(body, limit=280)
-        full_text = normalize_release_body(body)
-        published = str(release.get("published_at") or "")[:10]
-        tag = "PRE-RELEASE" if release.get("prerelease") else "RELEASE"
-        url = str(release.get("html_url") or repo_url)
+        summary = str(release.get("summary") or "").strip() or build_release_summary("")
+        published = str(release.get("published") or "")[:10]
+        tag = str(release.get("tag") or "RELEASE")
+        url = str(release.get("url") or f"https://github.com/{NEWS_REPO}/releases")
         items.append(
             NewsItem(
                 name,
@@ -283,7 +350,7 @@ def build_release_news_items(gui, *, limit: int | None = 8) -> list[NewsItem]:
                 tag=tag,
                 item_id=tag_name or name,
                 timestamp=published,
-                full_text=full_text,
+                full_text="",
                 action=DashboardAction(
                     _("Открыть релиз", "Open release"),
                     callback=lambda _checked=False, target_url=url: QDesktopServices.openUrl(QUrl(target_url)),

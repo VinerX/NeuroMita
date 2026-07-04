@@ -1,3 +1,4 @@
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QStackedWidget, QVBoxLayout, QWidget
 
 from styles.main_styles import get_stylesheet
@@ -59,7 +60,7 @@ class MainWindow(AppWindowBase):
         self._ensure_main_page("sandbox")
         self.switch_main_page("sandbox")
         self._apply_initial_geometry(1560, 920)
-        self._prefetch_release_feed()
+        QTimer.singleShot(0, self._prefetch_release_feed)
 
     def _prefetch_release_feed(self):
         """Прогреть ленту релизов в фоне сразу на старте (#8).

@@ -90,8 +90,8 @@ class _SandboxStatusRow(QWidget):
     * The switch turns the feature on/off (its enable setting); the gear jumps
       to settings to actually pick the engine/model.
     * The "what exactly" value is filled by the sandbox via `set_value()`.
-      Когда подсистема выключена — значение скрываем (плашка уже говорит «Выкл»),
-      чтобы не плодить лишние поля (просьба Артёма про микрофон).
+      Когда подсистема выключена — скрываем сам текст, но сохраняем отдельный
+      растягивающийся слот в layout, чтобы строка не прыгала по горизонтали.
     """
 
     _DOT_COLORS = {
@@ -131,16 +131,23 @@ class _SandboxStatusRow(QWidget):
         self._chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
         h.addWidget(self._chip, 0, Qt.AlignmentFlag.AlignVCenter)
 
+        self._value_slot = QWidget()
+        self._value_slot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        # Небольшой резерв спасает от схлопывания до одной буквы, но не
+        # раздувает строку так агрессивно, как старый минимум 112px.
+        self._value_slot.setMinimumWidth(64)
+        value_layout = QHBoxLayout(self._value_slot)
+        value_layout.setContentsMargins(0, 0, 0, 0)
+        value_layout.setSpacing(0)
+
         self._value = QLabel("—")
         self._value.setObjectName("SandboxInfoValue")
+        self._value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        # Без жёсткого минимума: раньше стоял 112px, и вместе с длинной плашкой
-        # «Не инициализировано» строка переполняла узкую панель — шестерёнку
-        # выдавливало за край (фидбэк Винера). Значение и так эллиптится + tooltip,
-        # поэтому пусть ужимается, а свитч/шестерёнка остаются видимыми.
         self._value.setMinimumWidth(0)
-        h.addWidget(self._value, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        value_layout.addWidget(self._value, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        h.addWidget(self._value_slot, 1, Qt.AlignmentFlag.AlignVCenter)
         self._full_value_text = "—"
 
         from ui.widgets.toggle_switch import ToggleSwitch
