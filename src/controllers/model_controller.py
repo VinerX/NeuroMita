@@ -1048,10 +1048,12 @@ class ModelController:
         if event_type in ("compress", "graph_extract"):
             messages = []
             if system_input:
-                if event_type == "graph_extract":
-                    messages.append({"role": "user", "content": system_input})
-                else:
-                    messages.append({"role": "system", "content": system_input})
+                # И сжатие, и граф-извлечение — это разовая задача с одним
+                # запросом. Кладём контент в user-сообщение, а не в system:
+                # запрос из одного лишь system-сообщения часть провайдеров
+                # (в т.ч. маршруты OpenRouter) отклоняет с HTTP 400, и это
+                # не зависит от опции tail_system_to_user.
+                messages.append({"role": "user", "content": system_input})
 
             preset_id = preset_id_override
 
