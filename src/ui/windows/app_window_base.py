@@ -768,6 +768,26 @@ class AppWindowBase(QMainWindow):
         self.event_bus.emit(Events.Chat.CLEAR_CHAT)
         logger.debug("[Clear] clear_chat_display: конец")
 
+    @staticmethod
+    def _dedupe_images(image_list):
+        """Убрать дубли изображений по содержимому, сохранив порядок (#14).
+
+        Одно и то же изображение могло прийти из нескольких источников
+        (прикреплённое вручную + авто-кадр экрана/камеры) и попадало в чат
+        дважды. Сравниваем по байтам (bytes хешируемы), не-байтовые элементы
+        пропускаем как есть.
+        """
+        seen = set()
+        result = []
+        for img in image_list or []:
+            if isinstance(img, (bytes, bytearray)):
+                key = bytes(img)
+                if key in seen:
+                    continue
+                seen.add(key)
+            result.append(img)
+        return result
+
     def send_message(self, system_input: str = "", image_data: list[bytes] = None):
         user_input = self.user_entry.toPlainText().strip()
         current_image_data = []
@@ -804,6 +824,12 @@ class AppWindowBase(QMainWindow):
         if not self._get_setting("ENABLE_IMAGE_ANALYSIS", True):
             all_image_data = []
             logger.info("ENABLE_IMAGE_ANALYSIS отключен — изображения не отправляются.")
+
+        # #14: одно изображение могло попасть в список дважды (напр. и как
+        # прикреплённое вручную, и как авто-кадр экрана) и рисовалось в чате
+        # два раза, хотя в истории сохранялась одна копия. Дедупим по
+        # содержимому, сохраняя порядок — одна копия и в UI, и в отправке.
+        all_image_data = self._dedupe_images(all_image_data)
 
         if not user_input and not system_input and not all_image_data:
             return
