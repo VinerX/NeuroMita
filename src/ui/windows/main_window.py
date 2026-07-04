@@ -57,7 +57,29 @@ class MainWindow(AppWindowBase):
 
         self._ensure_main_page("sandbox")
         self.switch_main_page("sandbox")
-        self.resize(1560, 920)
+        self._apply_initial_geometry(1560, 920)
+
+    def _apply_initial_geometry(self, design_w: int, design_h: int) -> None:
+        """Стартовый размер окна, но не больше доступной области экрана.
+
+        Раньше стоял жёсткий resize(1560, 920) — на RDP / небольших мониторах
+        окно вылезало за пределы экрана (фидбэк Артёма). Ужимаем до ~92% рабочей
+        области и центрируем.
+        """
+        try:
+            screen = self.screen()
+            if screen is None:
+                from PyQt6.QtWidgets import QApplication
+                screen = QApplication.primaryScreen()
+            avail = screen.availableGeometry()
+            w = min(design_w, int(avail.width() * 0.92))
+            h = min(design_h, int(avail.height() * 0.92))
+            self.resize(w, h)
+            frame = self.frameGeometry()
+            frame.moveCenter(avail.center())
+            self.move(frame.topLeft())
+        except Exception:
+            self.resize(design_w, design_h)
 
     def _ensure_main_page(self, page_key):
         page = getattr(self, "page_map", {}).get(page_key)
