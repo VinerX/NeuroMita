@@ -377,9 +377,19 @@ class VoiceoverGuiController(BaseController):
 
         def apply():
             had_dialog = (self._loading_dialog is not None)
+            # #4: инициализацию могли отменить, пока движок догружал модель в
+            # фоне. Если ждали НЕ этот model_id (после отмены _loading_model_id
+            # обнуляется/восстанавливается) — не применяем результат: не делаем
+            # его текущим и не показываем «успешно». Фоновая загрузка в движке
+            # уже не остановить, но в приложении отмена реально срабатывает.
+            was_awaited = bool(model_id) and (self._loading_model_id == model_id)
 
             self._close_loading_dialog()
             self._loading_model_id = None
+
+            if not was_awaited:
+                self._sync_everything(allow_autoload=False)
+                return
 
             ok = True
             if model_id:
