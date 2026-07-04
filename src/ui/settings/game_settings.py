@@ -376,6 +376,11 @@ def setup_game_controls(self, parent) -> None:
 
     dialogue_config = [
         {
+            'label': _('Управление автодиалогами Мит и режимом ГеймМастера.',
+                       'Manage Mitas auto-dialogues and the GameMaster mode.'),
+            'type': 'text',
+        },
+        {
             'label': _('Диалоги Мит автоматически', "Mitas's dialogues automatically"),
             'key': 'MITA_DIALOGUE_AUTO',
             'type': 'checkbutton',
@@ -434,6 +439,11 @@ def setup_game_controls(self, parent) -> None:
 
     mod_config = [
         {
+            'label': _('Внутриигровые меню мода и обработка запросов из игры.',
+                       'In-game mod menus and handling of requests from the game.'),
+            'type': 'text',
+        },
+        {
             'label': _('Меню действий', 'Action menu'),
             'key': 'ACTION_MENU',
             'type': 'checkbutton',
@@ -488,6 +498,11 @@ def setup_game_controls(self, parent) -> None:
 
     games_config = [
         {
+            'label': _('Включение и выбор доступных мини-игр с Митой.',
+                       'Enable and choose available mini-games with Mita.'),
+            'type': 'text',
+        },
+        {
             'label': _('Включить игры', 'Enable games'),
             'key': 'ENABLE_GAMES',
             'type': 'checkbutton',
@@ -534,6 +549,11 @@ def setup_game_controls(self, parent) -> None:
     )
 
     beat_sync_config = [
+        {
+            'label': _('Синхронизация покачивания головы Миты с битами музыки.',
+                       'Sync Mita head bob with the music beats.'),
+            'type': 'text',
+        },
         {
             'label': _('Синхронизация покачивания от бита', 'Beat-driven head bob sync'),
             'key': 'BEAT_SYNC_ENABLED',

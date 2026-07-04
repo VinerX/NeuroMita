@@ -2097,6 +2097,11 @@ def _attach_ce_downloader(gui, section) -> None:
 def build_memory_section(self, parent, hc_provider_names) -> None:
     """Секция «Память»: лимиты, TTL, сжатие истории."""
     config = (
+        [{
+            'label': _('Лимиты памяти, TTL-забывание и сжатие истории чата.',
+                       'Memory limits, TTL auto-forget and chat history compression.'),
+            'type': 'text',
+        }] +
         _build_memory_limits_config(self) +
         _build_history_ttl_config(self) +
         _build_history_compression_config(self, hc_provider_names)
@@ -2110,6 +2115,11 @@ def build_memory_section(self, parent, hc_provider_names) -> None:
 def build_rag_section(self, parent, hc_provider_names) -> None:
     """Секция «RAG»: pipeline preset, поиск, эмбеддинги, граф, веса."""
     config = (
+        [{
+            'label': _('Поиск по памяти (RAG): пресеты пайплайна, эмбеддинги, граф знаний и веса.',
+                       'Memory retrieval (RAG): pipeline presets, embeddings, knowledge graph and weights.'),
+            'type': 'text',
+        }] +
         _build_pipeline_preset_config(self) +
         _build_rag_core_config(self) +
         _build_embed_config(self) +

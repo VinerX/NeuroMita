@@ -43,6 +43,11 @@ def setup_screen_analysis_controls(gui, parent_layout):
 
     # Первая CollapsibleSection
     screen_analysis_config = [
+        {
+            'label': _('Настройки регулярного захвата и отправки кадров экрана модели.',
+                       'Configure periodic screen capture and sending frames to the model.'),
+            'type': 'text',
+        },
         {'label': _('Разрешить обработку изображений', 'Enable Image Analysis'), 'key': 'ENABLE_IMAGE_ANALYSIS', 'type': 'checkbutton', 'default_checkbutton': True, 'hide': True},
         {'label': _('Включить захват экрана', 'Enable Screen Capture'), 'key': 'ENABLE_SCREEN_ANALYSIS', 'type': 'checkbutton', 'default_checkbutton': False},
         {'label': _('Прикладывать кадры к сообщениям', 'Auto-attach frames'), 'key': 'AUTO_ATTACH_IMAGES', 'type': 'checkbutton', 'default_checkbutton': False, 'depends_on': 'ENABLE_SCREEN_ANALYSIS'},
@@ -62,6 +67,11 @@ def setup_screen_analysis_controls(gui, parent_layout):
 
     # Вторая CollapsibleSection
     camera_analysis_config = [
+        {
+            'label': _('Настройки захвата изображения с веб-камеры для отправки модели.',
+                       'Configure webcam capture for sending frames to the model.'),
+            'type': 'text',
+        },
         {'label': _('Включить захват с камеры', 'Enable Camera Capture'), 'key': 'ENABLE_CAMERA_CAPTURE', 'type': 'checkbutton', 'default_checkbutton': False},
         {'label': _('Камера', 'Camera'), 'key': 'CAMERA_DEVICE', 'type': 'combobox', 'options': get_camera_list(), 'default': get_camera_list()[0], 'command': lambda _: on_camera_selected(gui), 'widget_name': 'camera_combobox'},
         {'label': _("Обновить список", "Refresh list"), 'type': 'button', 'command': lambda: update_camera_list(gui)},
@@ -77,6 +87,11 @@ def setup_screen_analysis_controls(gui, parent_layout):
 
     # Третья CollapsibleSection
     frame_compression_config = [
+        {
+            'label': _('Постепенное снижение качества старых кадров для экономии трафика.',
+                       'Gradually reduces the quality of older frames to save bandwidth.'),
+            'type': 'text',
+        },
         {'label': _('Включить угасание кадров', 'Enable Frame Regression'), 'key': 'IMAGE_QUALITY_REDUCTION_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False},
         {'label': _('Начальный индекс снижения', 'Reduction Start Index'), 'key': 'IMAGE_QUALITY_REDUCTION_START_INDEX', 'type': 'entry', 'default': '25', 'validation': gui.validate_positive_integer_or_zero},
         {'label': _('Исп. процентное снижение', 'Use Percentage Reduction'), 'key': 'IMAGE_QUALITY_REDUCTION_USE_PERCENTAGE', 'type': 'checkbutton', 'default_checkbutton': False},
@@ -98,6 +113,11 @@ def setup_screen_analysis_controls(gui, parent_layout):
         logger.warning(f"[screen_analysis_settings] Не удалось загрузить список пресетов: {_e}")
 
     image_description_config = [
+        {
+            'label': _('Настройки автоматического текстового описания изображений моделью.',
+                       'Configure automatic text description of images by the model.'),
+            'type': 'text',
+        },
         {
             'label': _('Инлайн-описание (vision-модели)', 'Inline Description (vision models)'),
             'key': 'IMAGE_INLINE_DESCRIPTION',
@@ -275,6 +295,11 @@ def _setup_image_cleanup_section(gui, parent_layout) -> None:
 
     cleanup_config = [
         {
+            'label': _('Инструменты для просмотра и удаления накопленных файлов изображений.',
+                       'Tools for viewing and removing accumulated image files.'),
+            'type': 'text',
+        },
+        {
             'label': _('Подсчитать файлы', 'Count files'),
             'type': 'button',
             'command': lambda: _show_image_stats(result_label),
@@ -348,6 +373,11 @@ def _setup_mita_camera_section(gui, parent_layout) -> None:
                       немедленно захватывает кадр и отправляет Python как отдельный диалог.
     """
     mita_camera_config = [
+        {
+            'label': _('Настройки виртуальной камеры на голове Миты в игре.',
+                       'Configure the in-game head-mounted camera on Mita.'),
+            'type': 'text',
+        },
         {
             'label': _('Включить камеру Миты (FrameRecorder)', 'Enable Mita Camera (FrameRecorder)'),
             'key': 'MITA_CAMERA_ENABLED',

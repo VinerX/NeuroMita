@@ -12,6 +12,11 @@ def setup_model_interaction_controls(self, parent):
     create_section_header(parent, _("Настройки взаимодействия с моделью", "Model Interaction Settings"))
 
     general_config = [
+        {
+            'label': _('Параметры генерации ответов моделью и работы инструментов (tools).',
+                       'Parameters for response generation and tool usage.'),
+            'type': 'text',
+        },
         {'label': _('Настройки сообщений', 'Message settings'), 'type': 'subsection'},
         {'label': _('Промты раздельно', 'Separated prompts'), 'key': 'SEPARATE_PROMPTS',
          'type': 'checkbutton', 'default_checkbutton': True},

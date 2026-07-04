@@ -69,6 +69,8 @@ def setup_language_settings_controls(self, parent):
     _lang_options = [(f"{code} — {language_display_name(code)}", code) for code in _lang_codes]
 
     language_config = [
+        {'label': _('Выбор языка интерфейса приложения.', 'Select the application interface language.'),
+         'type': 'text'},
         {'label': 'Язык / Language', 'key': 'LANGUAGE', 'type': 'combobox',
          'options': _lang_options, 'default': "RU",
          'command': lambda v: _on_language_changed(self, v),
