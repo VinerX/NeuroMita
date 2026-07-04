@@ -1,6 +1,16 @@
 ### main.py
 import faulthandler
-faulthandler.enable()
+
+# Нативные «fatal exception» (в т.ч. при закрытии через крестик, #19) валятся в
+# stderr, а в оконном запуске stderr в никуда — поэтому такие падения раньше
+# не попадали в лог и были неотлаживаемы. Дублируем дамп faulthandler в файл
+# рядом с основным логом; файл держим открытым на всё время процесса.
+_crash_log_fh = None
+try:
+    _crash_log_fh = open("NeuroMitaCrash.log", "a", buffering=1, encoding="utf-8")
+    faulthandler.enable(file=_crash_log_fh, all_threads=True)
+except Exception:
+    faulthandler.enable()
 
 import pydantic.fields
 import uvicorn
@@ -12,6 +22,33 @@ os.environ["QT_API"] = "pyqt6"
 
 from main_logger import logger
 from _version import __version__
+
+
+def _log_uncaught_exception(exc_type, exc_value, exc_tb):
+    """Логировать любое неперехваченное исключение (в т.ч. при закрытии, #19),
+    чтобы оно попадало в NeuroMitaLogs.log, а не терялось в пустом stderr."""
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+        return
+    logger.critical("Неперехваченное исключение", exc_info=(exc_type, exc_value, exc_tb))
+
+
+sys.excepthook = _log_uncaught_exception
+
+try:
+    import threading as _threading
+
+    def _log_thread_exception(args):
+        if issubclass(args.exc_type, SystemExit):
+            return
+        logger.critical(
+            f"Неперехваченное исключение в потоке {getattr(args.thread, 'name', '?')}",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    _threading.excepthook = _log_thread_exception
+except Exception:
+    pass
 def create_startup_banner(title: str, version: str) -> str:
     version_info = f"Version {version}"
     

@@ -95,8 +95,13 @@ class EventBus:
             data: Данные события
             sync: Выполнить синхронно (блокирующий вызов)
         """
+        # После teardown шины ничего не диспетчеризуем — иначе поздние вызовы
+        # плодили бы потоки на завершающемся интерпретаторе (#19).
+        if not self._running:
+            return
+
         event = Event(name=event_name, data=data)
-        
+
         # Добавить отладку
         with self._lock:
             subscribers_count = len(self._get_active_subscribers(event_name))
@@ -114,6 +119,10 @@ class EventBus:
         """
         Отправить событие и дождаться результатов от всех подписчиков
         """
+        # То же, что и в emit: после shutdown не создаём executor-потоки (#19).
+        if not self._running:
+            return []
+
         start_time = time.perf_counter()
         is_main_thread = (threading.current_thread() is threading.main_thread())
 
@@ -303,22 +312,27 @@ class EventBus:
 
 # Глобальный экземпляр для удобства использования
 _global_event_bus: Optional[EventBus] = None
+# После shutdown повторно шину НЕ создаём: иначе поздний демон-поток, дёрнувший
+# get_event_bus() во время teardown, поднял бы новый processor-поток на
+# завершающемся интерпретаторе — классический источник fatal-падений на
+# закрытии (#19). Возвращаем уже остановленную шину (emit на ней — no-op).
+_event_bus_shutdown = False
 
 
 def get_event_bus() -> EventBus:
     """Получить глобальный экземпляр EventBus"""
     global _global_event_bus
-    if _global_event_bus is None:
+    if _global_event_bus is None and not _event_bus_shutdown:
         _global_event_bus = EventBus()
     return _global_event_bus
 
 
 def shutdown_event_bus() -> None:
     """Остановить глобальный EventBus"""
-    global _global_event_bus
+    global _global_event_bus, _event_bus_shutdown
+    _event_bus_shutdown = True
     if _global_event_bus is not None:
         _global_event_bus.shutdown()
-        _global_event_bus = None
 
 
 # Удобные алиасы для быстрого доступа
