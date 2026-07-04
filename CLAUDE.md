@@ -53,14 +53,13 @@ C:\Games\NeuroMita\NeuroMita\libs\python\python.exe
 - `Common/` — общие файлы (graph_extraction_prompt.txt и т.п.)
 - `System/` — системные (compression_prompt.txt, participants_dialogue.system)
 - `Structural/` — глобальные структурные (response_format_json.txt)
-- `<CharName>/Default/` — legacy тег-формат (`<e>`, `<a>`, `<p>` …)
-- `<CharName>/DefaultJson/Structural/` — JSON structured-output формат
+- `<CharName>/Default/` — основной формат, содержит JSON structured-output
   (`response_structure.txt` = схема, `VariablesEffects.txt` = маппинг тег→JSON)
 
 Цепочка загрузки промпта (приоритет): персональный `Structural/<file>` → `Prompts/Common/<file>`
 → хардкод-дефолт в Python.
 
-Эталон structured-формата: `extra/Prompts/Crazy/DefaultJson/Structural/response_structure.txt`.
+Эталон structured-формата: `extra/Prompts/Crazy/Default/Structural/response_structure.txt`.
 
 ---
 
