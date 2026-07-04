@@ -187,6 +187,17 @@ def missing_pip_specs(specs: List[str], ctx: Optional[dict] = None) -> List[str]
 
 def check_requirements(requirements: list[InstallRequirement], ctx: Optional[dict] = None) -> dict:
     ctx = ctx or {}
+    # Пакеты ставятся в --target Lib (он в sys.path с запуска). Но FileFinder
+    # кэширует содержимое директорий в sys.path_importer_cache, поэтому пакет,
+    # установленный посреди сессии, не виден find_spec/importlib.metadata до
+    # перезапуска — из-за чего финальная проверка ложно падала «не найден»
+    # (пакет фактически стоял и «повисал» установленным после перезахода).
+    # Сбрасываем кэш, чтобы видеть свежую установку в той же сессии.
+    try:
+        importlib.invalidate_caches()
+    except Exception:
+        pass
+
     missing_required: list[str] = []
     missing_optional: list[str] = []
     details: list[dict[str, Any]] = []

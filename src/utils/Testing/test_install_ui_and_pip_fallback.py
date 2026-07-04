@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import os
 import shutil
 import sys
@@ -10,6 +12,7 @@ from unittest.mock import patch
 
 from controllers.gui.install_gui_controller import InstallGuiController
 from utils.pip_installer import PipInstaller
+from core.install_requirements import InstallRequirement, check_requirements
 
 
 class InstallUiCallbackTests(unittest.TestCase):
@@ -214,6 +217,43 @@ class PipInstallerFallbackTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(ret, 0)
         self.assertGreater(calls["count"], 3)
+
+
+class CheckRequirementsCacheTests(unittest.TestCase):
+    """Регресс на ложноотрицательную финальную проверку: пакет, установленный в
+    target-Lib посреди сессии, не виден find_spec/metadata из-за кеша FileFinder
+    (sys.path_importer_cache) — из-за чего установка ложно падала «не найден»,
+    хотя после перезахода «повисала установленной». Фикс — invalidate_caches()
+    в начале check_requirements."""
+
+    def test_check_requirements_invalidates_import_caches(self):
+        import importlib
+
+        with patch.object(importlib, "invalidate_caches") as inv:
+            check_requirements(
+                [InstallRequirement(id="probe", kind="python_module", module="sys", required=True)]
+            )
+        inv.assert_called()
+
+    def test_check_requirements_sees_module_created_after_cache_primed(self):
+        modname = "neuromita_probe_pkg_20260704"
+        tmpdir = tempfile.mkdtemp(prefix="reqcheck-")
+        sys.path.insert(0, tmpdir)
+        try:
+            # Прогреваем кеш промахом — FileFinder закеширует пустую директорию.
+            self.assertIsNone(importlib.util.find_spec(modname))
+            # Создаём пакет уже ПОСЛЕ прогрева кеша (имитация установки в сессии).
+            os.makedirs(os.path.join(tmpdir, modname))
+            open(os.path.join(tmpdir, modname, "__init__.py"), "w").close()
+            # check_requirements должен увидеть его благодаря invalidate_caches().
+            res = check_requirements(
+                [InstallRequirement(id="probe", kind="python_module", module=modname, required=True)]
+            )
+            self.assertTrue(res["ok"], res)
+        finally:
+            sys.path.remove(tmpdir)
+            sys.modules.pop(modname, None)
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 if __name__ == "__main__":
