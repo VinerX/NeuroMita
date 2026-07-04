@@ -124,6 +124,7 @@ class _SandboxStatusRow(QWidget):
         name = QLabel(name_text)
         register_if_tr(name, name_text)
         name.setObjectName("SandboxInfoLabel")
+        name.setMinimumWidth(88)
         h.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._chip = QLabel("")
@@ -555,9 +556,11 @@ class SandboxPage(QWidget):
                 for preset in customs:
                     preset_id = getattr(preset, "id", None)
                     name = getattr(preset, "name", "")
+                    model = str(getattr(preset, "default_model", "") or "")
                     if preset_id is None:
                         continue
-                    combo.add_data_item(str(name), value=int(preset_id))
+                    label = f"{name} ({model})" if model else str(name)
+                    combo.add_data_item(label, value=int(preset_id))
                 combo.insertSeparator(combo.count())
             else:
                 combo.add_tr_item("Нет настроенных моделей", "No configured models", value=None)
@@ -594,7 +597,18 @@ class SandboxPage(QWidget):
             self.gui.event_bus.emit(Events.ApiPresets.SET_CURRENT_PRESET_ID, {"id": int(data)})
         except Exception as exc:
             logger.error(f"Failed to switch preset: {exc}")
+        self._clear_stale_error_status()
         self._refresh_debug_summary()
+
+    def _clear_stale_error_status(self):
+        try:
+            status = getattr(self.gui, "mita_status", None)
+            if status is not None and getattr(status, "current_state", None) == "error":
+                status.hide_animated()
+        except Exception:
+            pass
+        if self._lr_values and "status" in self._lr_values:
+            self._lr_values["status"].setText("—")
 
     def _current_preset_name(self) -> str:
         try:

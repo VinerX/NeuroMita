@@ -331,6 +331,8 @@ QLabel#SandboxInfoValue {
     color: {text};
     font-size: 9.5pt;
     font-weight: 700;
+    background: transparent;
+    border: none;
 }
 QPushButton#SandboxInfoEditBtn {
     background-color: transparent;
