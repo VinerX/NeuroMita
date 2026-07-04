@@ -111,15 +111,21 @@ class CaptureController:
     
     def _on_capture_screen(self, event: Event):
         history_limit = event.data.get('limit', 1) if event.data else 1
-        
+
+        # Мастер-переключатель обработки изображений. Дефолт True — как и в
+        # чек-боксе и в send_message; иначе авто-прикрепление молча не работало,
+        # если скрытая настройка не была сохранена.
+        if not self.settings.get("ENABLE_IMAGE_ANALYSIS", True):
+            return []
+
+        # Есть готовые кадры от непрерывного захвата — берём их.
         if self.screen_capture_instance:
             frames = self.screen_capture_instance.get_recent_frames(history_limit)
             if frames:
                 return frames
 
-        if not self.settings.get("ENABLE_IMAGE_ANALYSIS", False):
-            return []
-
+        # Непрерывный захват не запущен — делаем одиночный снимок на месте
+        # (это и есть путь авто-прикрепления без включённого захвата экрана).
         quality = int(self.settings.get("SCREEN_CAPTURE_QUALITY", 25))
         width = int(self.settings.get("SCREEN_CAPTURE_WIDTH", 1024))
         height = int(self.settings.get("SCREEN_CAPTURE_HEIGHT", 768))
