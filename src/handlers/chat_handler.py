@@ -3,7 +3,7 @@ import re
 from typing import List, Dict, Any, Optional
 
 from main_logger import logger
-from utils import _
+from utils import _, mask_sensitive
 
 from characters.character import Character
 
@@ -352,7 +352,7 @@ class ChatModel:
         logger.info(
             f"Presence Penalty: {self.cfg.presence_penalty} (Used: {bool(self.settings.get('USE_MODEL_PRESENCE_PENALTY'))})"
         )
-        logger.info(f"API URL: {preset_settings.api_url}, API Model: {preset_settings.api_model}")
+        logger.info(f"API URL: {mask_sensitive(preset_settings.api_url)}, API Model: {preset_settings.api_model}")
 
     def try_print_error(self, completion_or_error):
         logger.warning("Attempting to print error details from API response/error object.")

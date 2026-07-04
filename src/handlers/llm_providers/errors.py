@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 import requests
 
-from utils import _
+from utils import _, mask_sensitive
 
 
 _RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
@@ -220,7 +220,7 @@ class LLMProviderError(RuntimeError):
                 "{friendly} Reason: {detail}",
             ).format(
                 friendly=self.friendly_message,
-                detail=_compact_text(self.provider_message),
+                detail=mask_sensitive(_compact_text(self.provider_message)),
             )
         return self.friendly_message
 
@@ -232,14 +232,14 @@ class LLMProviderError(RuntimeError):
             parts.insert(0, "Provider error")
 
         friendly = _compact_text(self.friendly_message)
-        detail = _compact_text(self.provider_message)
+        detail = mask_sensitive(_compact_text(self.provider_message))
         if friendly:
             parts.append(f"user_message={friendly}")
         if detail:
             parts.append(f"provider_message={detail}")
         parts.append(f"retryable={'yes' if self.retryable else 'no'}")
         if self.url:
-            parts.append(f"url={self.url}")
+            parts.append(f"url={mask_sensitive(self.url)}")
         return " | ".join(parts)
 
 
