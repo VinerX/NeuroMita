@@ -135,7 +135,11 @@ class _SandboxStatusRow(QWidget):
         self._value.setObjectName("SandboxInfoValue")
         self._value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self._value.setMinimumWidth(112)
+        # Без жёсткого минимума: раньше стоял 112px, и вместе с длинной плашкой
+        # «Не инициализировано» строка переполняла узкую панель — шестерёнку
+        # выдавливало за край (фидбэк Винера). Значение и так эллиптится + tooltip,
+        # поэтому пусть ужимается, а свитч/шестерёнка остаются видимыми.
+        self._value.setMinimumWidth(0)
         h.addWidget(self._value, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
         self._full_value_text = "—"
 
@@ -215,10 +219,21 @@ class _SandboxStatusRow(QWidget):
 
     @staticmethod
     def _chip_label(state: str) -> str:
+        # Коротко, чтобы плашка не распирала узкую строку статуса и не выдавливала
+        # шестерёнку за край (фидбэк Винера). Полный текст — в tooltip плашки.
         return {
-            "off": _("Выключено", "Off"),
+            "off": _("Выкл.", "Off"),
             "active": _("Активно", "Active"),
-            "init": _("Не инициализировано", "Not initialized"),
+            "init": _("Не готово", "Not ready"),
+            "error": _("Ошибка", "Error"),
+        }.get(state, "")
+
+    @staticmethod
+    def _chip_tooltip(state: str) -> str:
+        return {
+            "off": _("Выключено", "Disabled"),
+            "active": _("Активно и готово", "Active and ready"),
+            "init": _("Включено, но не инициализировано", "Enabled but not initialized"),
             "error": _("Ошибка", "Error"),
         }.get(state, "")
 
@@ -226,6 +241,7 @@ class _SandboxStatusRow(QWidget):
         state = self._resolve_state()
         bg, fg = self._CHIP_STYLE[state]
         self._chip.setText(self._chip_label(state))
+        self._chip.setToolTip(self._chip_tooltip(state))
         self._chip.setStyleSheet(
             f"QLabel#SandboxStatusChip {{"
             f" background-color: {bg}; color: {fg};"
