@@ -354,7 +354,11 @@ class VoiceoverGuiController(BaseController):
                 self._emit_voice_icon_state()
                 return
 
-            self._show_loading_dialog(model_id)
+            if not self._show_loading_dialog(model_id):
+                # Нет папки models и т.п. — инициализацию НЕ запускаем
+                # (раньше эмитили INIT_VOICE_MODEL несмотря на ошибку).
+                self._emit_voice_icon_state()
+                return
             self._emit_voice_icon_state()
 
             def progress_callback(status_type: str, message: str):
@@ -719,7 +723,9 @@ class VoiceoverGuiController(BaseController):
             self._select_model(model_id)
             return
 
-        self._show_loading_dialog(model_id)
+        if not self._show_loading_dialog(model_id):
+            self._emit_voice_icon_state()
+            return
         self._emit_voice_icon_state()
 
         def progress_callback(status_type: str, message: str):
@@ -732,9 +738,12 @@ class VoiceoverGuiController(BaseController):
         })
 
     # ---------- local loading dialog ----------
-    def _show_loading_dialog(self, model_id: str):
+    def _show_loading_dialog(self, model_id: str) -> bool:
+        """Возвращает True, если можно продолжать инициализацию, и False, если
+        она должна быть отменена (например, нет папки models) — тогда вызывающий
+        НЕ эмитит INIT_VOICE_MODEL."""
         if not self.view:
-            return
+            return False
 
         if not os.path.exists("models"):
             box = QMessageBox(self.view)
@@ -758,7 +767,7 @@ class VoiceoverGuiController(BaseController):
                     )
                 except Exception as exc:
                     logger.error(f"Failed to open AI Hub from models error: {exc}")
-            return
+            return False
 
         self._loading_model_id = model_id
         model_name = self._model_id_to_name.get(model_id, model_id)
@@ -770,6 +779,7 @@ class VoiceoverGuiController(BaseController):
         )
         self._loading_dialog.show()
         self._set_loading_status(_("Инициализация модели...", "Initializing model..."))
+        return True
 
     def _user_cancel_loading(self):
         self._close_loading_dialog()
