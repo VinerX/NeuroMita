@@ -9,7 +9,16 @@ import qtawesome as qta
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QWidget
 
+from main_logger import logger
 from utils import _
+
+# Страховочный таймаут «завис» для занятых состояний (думает/сжатие/озвучивает).
+# Нормальный поток гасит статус по событиям успеха/ошибки, но если соединение с
+# игрой оборвалось посреди запроса, эти события могут не прийти и «думает»
+# висит вечно (фидбэк Винера). Таймер срабатывает только на крайний случай,
+# поэтому окно щедрое — не мешает долгой генерации/синтезу, но не даёт залипнуть.
+# Перезапускается на каждую смену состояния (в т.ч. повторные попытки генерации).
+_BUSY_WATCHDOG_MS = 240_000  # 4 минуты
 
 
 class MitaStatusWidget(QWidget):
@@ -23,6 +32,7 @@ class MitaStatusWidget(QWidget):
         self._dots_phase = 0
         self._dots_timer = None
         self._character_name = ""
+        self._watchdog_timer = None
         self.hide()  # this widget itself is never shown
 
     def _get_chat(self):
@@ -41,6 +51,7 @@ class MitaStatusWidget(QWidget):
             self._character_name = character_name
             self._dots_phase = 0
             self._stop_dots()
+            self._arm_watchdog()
 
             if chat:
                 from ui.chat.message_widget import _get_avatar_pixmap
@@ -55,6 +66,7 @@ class MitaStatusWidget(QWidget):
         self.current_state = "thinking"
         self._character_name = character_name
         self._dots_phase = 0
+        self._arm_watchdog()
 
         if chat:
             from ui.chat.message_widget import _get_avatar_pixmap
@@ -72,6 +84,7 @@ class MitaStatusWidget(QWidget):
         сообщения (гасим только если всё ещё в состоянии voicing)."""
         self.current_state = "voicing"
         self._stop_dots()
+        self._arm_watchdog()
         chat = self._get_chat()
         if chat:
             icon = qta.icon("fa6s.volume-high", color="#b74b7d").pixmap(24, 24)
@@ -87,6 +100,7 @@ class MitaStatusWidget(QWidget):
             error_message = _("Произошла ошибка", "Error occurred")
         self.current_state = "error"
         self._stop_dots()
+        self._disarm_watchdog()
         chat = self._get_chat()
         if chat:
             icon = qta.icon("fa6s.triangle-exclamation", color="#b74b7d").pixmap(24, 24)
@@ -97,6 +111,7 @@ class MitaStatusWidget(QWidget):
             message = _("Готово", "Done")
         self.current_state = "success"
         self._stop_dots()
+        self._disarm_watchdog()
         chat = self._get_chat()
         if chat:
             icon = qta.icon("fa6s.circle-check", color="#77d188").pixmap(24, 24)
@@ -112,9 +127,33 @@ class MitaStatusWidget(QWidget):
             return
         self.current_state = "idle"
         self._stop_dots()
+        self._disarm_watchdog()
         chat = self._get_chat()
         if chat:
             chat.hide_typing()
+
+    def _arm_watchdog(self):
+        """Перезапустить страховочный таймер для текущего занятого состояния."""
+        self._disarm_watchdog()
+        self._watchdog_timer = QTimer()
+        self._watchdog_timer.setSingleShot(True)
+        self._watchdog_timer.timeout.connect(self._on_watchdog)
+        self._watchdog_timer.start(_BUSY_WATCHDOG_MS)
+
+    def _disarm_watchdog(self):
+        if self._watchdog_timer:
+            self._watchdog_timer.stop()
+            self._watchdog_timer = None
+
+    def _on_watchdog(self):
+        # Занятое состояние висит слишком долго — вероятно, оборвалось соединение
+        # и события успеха/ошибки не пришли. Гасим статус, чтобы не залипал.
+        if self.current_state in ("thinking", "status", "voicing"):
+            logger.warning(
+                f"MitaStatusWidget: статус '{self.current_state}' завис на "
+                f"{_BUSY_WATCHDOG_MS // 1000}с — сбрасываю по таймауту"
+            )
+            self.hide_animated()
 
     def _start_dots(self):
         self._stop_dots()
