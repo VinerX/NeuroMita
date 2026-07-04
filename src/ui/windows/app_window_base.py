@@ -85,6 +85,8 @@ class AppWindowBase(QMainWindow):
     show_error_signal = pyqtSignal(str)
     hide_status_signal = pyqtSignal()
     pulse_error_signal = pyqtSignal()
+    show_voicing_signal = pyqtSignal()
+    hide_voicing_signal = pyqtSignal()
 
     history_loaded_signal = pyqtSignal(dict)          
     more_history_loaded_signal = pyqtSignal(dict)     
@@ -180,6 +182,8 @@ class AppWindowBase(QMainWindow):
         self.show_error_signal.connect(self._show_error_slot)
         self.hide_status_signal.connect(self._hide_status_slot)
         self.pulse_error_signal.connect(self._pulse_error_slot)
+        self.show_voicing_signal.connect(self._show_voicing_slot)
+        self.hide_voicing_signal.connect(self._hide_voicing_slot)
 
         self.settings_animation = None
         self.setup_ui()
@@ -984,6 +988,14 @@ class AppWindowBase(QMainWindow):
     def _pulse_error_slot(self):
         if hasattr(self, 'mita_status') and self.mita_status:
             self.mita_status.pulse_error_animation()
+
+    def _show_voicing_slot(self):
+        if hasattr(self, 'mita_status') and self.mita_status:
+            self.mita_status.show_voicing()
+
+    def _hide_voicing_slot(self):
+        if hasattr(self, 'mita_status') and self.mita_status:
+            self.mita_status.hide_voicing()
 
     def _on_stream_start(self):
         pass

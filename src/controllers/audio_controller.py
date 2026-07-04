@@ -131,6 +131,8 @@ class AudioController:
                 return
 
             logger.info("Запрос озвучки принят")
+            # #11: индикатор «Озвучивает…» на время синтеза/воспроизведения.
+            self.event_bus.emit(Events.GUI.SHOW_MITA_VOICING)
         except Exception as e:
             logger.error(f"Ошибка при отправке текста на озвучку: {e}")
             if task_uid:
@@ -170,6 +172,7 @@ class AudioController:
                 self._update_task_failed_voiceover(task_uid, str(e))
         finally:
             self.waiting_answer = False
+            self.event_bus.emit(Events.GUI.HIDE_MITA_VOICING)
 
         logger.info("Завершение получения фразы (Telegram)")
 
@@ -224,6 +227,7 @@ class AudioController:
                 self._update_task_failed_voiceover(task_uid, str(e))
         finally:
             self.waiting_answer = False
+            self.event_bus.emit(Events.GUI.HIDE_MITA_VOICING)
 
     def _local_playback_volume(self) -> int:
         """Громкость воспроизведения озвучки в питоне (в процентах, 0..200)."""

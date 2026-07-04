@@ -66,6 +66,22 @@ class MitaStatusWidget(QWidget):
             )
             self._start_dots()
 
+    def show_voicing(self):
+        """#11: статус «Озвучивает…» с иконкой динамика. Отдельное состояние,
+        чтобы поздний hide_voicing не гасил уже показанный «думает» следующего
+        сообщения (гасим только если всё ещё в состоянии voicing)."""
+        self.current_state = "voicing"
+        self._stop_dots()
+        chat = self._get_chat()
+        if chat:
+            icon = qta.icon("fa6s.volume-high", color="#b74b7d").pixmap(24, 24)
+            chat.show_status(_("Озвучивает…", "Voicing…"), icon)
+
+    def hide_voicing(self):
+        if self.current_state != "voicing":
+            return
+        self.hide_animated()
+
     def show_error(self, error_message=None):
         if error_message is None:
             error_message = _("Произошла ошибка", "Error occurred")

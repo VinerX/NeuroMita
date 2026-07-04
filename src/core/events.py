@@ -367,6 +367,8 @@ class Events:
         SHOW_MITA_THINKING = "show_mita_thinking"
         SHOW_MITA_ERROR = "show_mita_error"
         HIDE_MITA_STATUS = "hide_mita_status"
+        SHOW_MITA_VOICING = "show_mita_voicing"
+        HIDE_MITA_VOICING = "hide_mita_voicing"
         PULSE_MITA_ERROR = "pulse_mita_error"
         SHOW_LOADING_POPUP = "show_loading_popup"
         CLOSE_LOADING_POPUP = "close_loading_popup"

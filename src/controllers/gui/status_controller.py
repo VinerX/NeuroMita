@@ -21,6 +21,8 @@ class StatusController(BaseController):
         self.event_bus.subscribe(Events.Model.ON_FAILED_RESPONSE_ATTEMPT, self._on_failed_response_attempt, weak=False)
         self.event_bus.subscribe(Events.Model.ON_FAILED_RESPONSE, self._on_failed_response, weak=False)
         self.event_bus.subscribe(Events.Model.ON_TOOL_EXECUTING, self._on_tool_executing, weak=False)
+        self.event_bus.subscribe(Events.GUI.SHOW_MITA_VOICING, self._on_show_voicing, weak=False)
+        self.event_bus.subscribe(Events.GUI.HIDE_MITA_VOICING, self._on_hide_voicing, weak=False)
 
     def update_status_colors(self):
         logger.debug("StatusController: update_status_colors")
@@ -44,6 +46,14 @@ class StatusController(BaseController):
             self.view.show_error_signal.emit(error_message)
         else:
             logger.error("StatusController: view not found")
+
+    def _on_show_voicing(self, _event: Event):
+        if self.view and getattr(self.view, "show_voicing_signal", None):
+            self.view.show_voicing_signal.emit()
+
+    def _on_hide_voicing(self, _event: Event):
+        if self.view and getattr(self.view, "hide_voicing_signal", None):
+            self.view.hide_voicing_signal.emit()
 
     def hide_mita_status(self):
         logger.debug("[DEBUG] StatusController: hide status")
