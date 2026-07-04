@@ -180,9 +180,11 @@ class _SandboxStatusRow(QWidget):
         self._apply_chip()
 
     def set_indicator(self, state):
-        # state: None | "loading" | "red" | "green" (from SET_SETTINGS_ICON_INDICATOR)
+        # state: None | "loading" | "red" | "green" | "warn" (from
+        # SET_SETTINGS_ICON_INDICATOR). "warn" = настроено, но не
+        # инициализировано/не готово — это НЕ ошибка.
         st = str(state).strip().lower() if state else None
-        self._indicator = st if st in ("loading", "red", "green") else None
+        self._indicator = st if st in ("loading", "red", "green", "warn") else None
         self._apply_chip()
 
     def set_value(self, text: str):
@@ -198,6 +200,10 @@ class _SandboxStatusRow(QWidget):
     def _resolve_state(self) -> str:
         if not self._enabled:
             return "off"
+        # "warn" — настроено, но не инициализировано → жёлтая плашка «Не
+        # инициализировано», а не красная «Ошибка» (различаем, фидбэк Винера).
+        if self._indicator == "warn":
+            return "init"
         if self._indicator == "red":
             return "error"
         if self._indicator == "loading":

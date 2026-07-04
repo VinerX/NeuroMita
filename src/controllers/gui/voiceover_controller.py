@@ -540,9 +540,12 @@ class VoiceoverGuiController(BaseController):
             return
 
         initialized = self._check_initialized(model_id)
+        # Модель установлена, но ещё не инициализирована — это НЕ ошибка, а
+        # «не инициализировано» (фидбэк Винера). Шлём "warn" (жёлтый), чтобы
+        # статус-плашка различала это с реальной ошибкой ("red").
         self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
             "category": "voice",
-            "state": "green" if initialized else "red",
+            "state": "green" if initialized else "warn",
             "tooltip": _("Модель готова", "Model ready") if initialized else _("Требуется инициализация", "Initialization required"),
         })
 

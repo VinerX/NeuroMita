@@ -51,7 +51,7 @@ class SettingsIconButton(QPushButton):
 
     def set_indicator_state(self, state: str | None, tooltip_text: str | None = None):
         st = (str(state).strip().lower() if state is not None else None)
-        if st not in (None, "red", "green", "loading"):
+        if st not in (None, "red", "green", "loading", "warn"):
             st = None
 
         self._indicator_state = st
@@ -96,6 +96,11 @@ class SettingsIconButton(QPushButton):
             self._badge.show()
         elif st == "loading":
             self._badge.setStyleSheet(self._badge_stylesheet("#ffd60a"))
+            self._badge.show()
+        elif st == "warn":
+            # Настроено, но не инициализировано — статичный янтарный бейдж
+            # (без спиннера, в отличие от loading).
+            self._badge.setStyleSheet(self._badge_stylesheet("#ffb340"))
             self._badge.show()
 
         self._reposition_badge()
