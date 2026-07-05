@@ -208,7 +208,7 @@ class ChessGame(GameInterface):
         self._drain_state_for_errors()
 
     def _drain_state_for_errors(self):
-        """Сливает state_queue и обновляет переменные ошибок немедленно (не ждём след. запроса LLM)."""
+        """Сливает state_queue: проверяет gui_closed и обновляет переменные ошибок."""
         if not self.state_queue:
             return
         latest = None
@@ -217,13 +217,22 @@ class ChessGame(GameInterface):
                 latest = self.state_queue.get_nowait()
             except Exception:
                 break
-        if latest and isinstance(latest, dict):
-            if latest.get("error"):
-                self.character.set_variable("GAME_STATE_ERROR_MSG", latest["error"])
-            if latest.get("error_move"):
-                self.character.set_variable("GAME_STATE_INVALID_MOVE_TEXT", latest["error_move"])
-            if latest.get("error_message_for_move"):
-                self.character.set_variable("GAME_STATE_INVALID_MOVE_REASON", latest["error_message_for_move"])
+        if not latest or not isinstance(latest, dict):
+            return
+
+        # Проверяем закрытие окна / сбой процесса
+        ev = str(latest.get("event") or "").strip().lower()
+        if ev == "gui_closed" or latest.get("critical_process_failure") is True:
+            self.cleanup()
+            return
+
+        # Ошибки нелегальных ходов
+        if latest.get("error"):
+            self.character.set_variable("GAME_STATE_ERROR_MSG", latest["error"])
+        if latest.get("error_move"):
+            self.character.set_variable("GAME_STATE_INVALID_MOVE_TEXT", latest["error_move"])
+        if latest.get("error_message_for_move"):
+            self.character.set_variable("GAME_STATE_INVALID_MOVE_REASON", latest["error_message_for_move"])
 
     def get_state_prompt(self) -> Optional[str]:
         if self.gui_thread and not self.gui_thread.is_alive():
