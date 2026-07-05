@@ -88,7 +88,8 @@ QPushButton#LauncherShellGhostButton:hover {{
 """
 
 
-def _build_auth_dialog(title: str, eyebrow: str, prompt: str, parent, *, is_password: bool = False):
+def _build_auth_dialog(title: str, eyebrow: str, prompt: str, parent, *, is_password: bool = False,
+                       error: str = ""):
     dialog = QDialog(parent)
     dialog.setObjectName("LauncherShellDialog")
     dialog.setStyleSheet(_AUTH_DIALOG_STYLE)
@@ -121,6 +122,13 @@ def _build_auth_dialog(title: str, eyebrow: str, prompt: str, parent, *, is_pass
     prompt_label.setWordWrap(True)
     layout.addWidget(prompt_label)
 
+    if error:
+        error_label = QLabel(error)
+        error_label.setObjectName("LauncherShellBody")
+        error_label.setWordWrap(True)
+        error_label.setStyleSheet("color: #e06c6c; font-weight: 600;")
+        layout.addWidget(error_label)
+
     entry = QLineEdit()
     entry.setObjectName("LauncherShellInput")
     if is_password:
@@ -151,13 +159,14 @@ def _build_auth_dialog(title: str, eyebrow: str, prompt: str, parent, *, is_pass
     return dialog, entry, submit_button
 
 
-def show_tg_code_dialog(parent, code_future, event_bus):
+def show_tg_code_dialog(parent, code_future, event_bus, *, error: str = ""):
     dialog, code_entry, submit_button = _build_auth_dialog(
         _("Подтверждение Telegram", "Telegram confirmation"),
         "TELEGRAM LOGIN",
         _("Введите код подтверждения из Telegram, чтобы завершить вход.",
           "Enter the confirmation code from Telegram to finish signing in."),
         parent,
+        error=error,
     )
 
     def submit_code():
@@ -184,7 +193,7 @@ def show_tg_code_dialog(parent, code_future, event_bus):
     dialog.exec()
 
 
-def show_tg_password_dialog(parent, password_future, event_bus):
+def show_tg_password_dialog(parent, password_future, event_bus, *, error: str = ""):
     dialog, password_entry, submit_button = _build_auth_dialog(
         _("Двухфакторная аутентификация", "Two-factor authentication"),
         "ACCOUNT SECURITY",
@@ -192,6 +201,7 @@ def show_tg_password_dialog(parent, password_future, event_bus):
           "Enter your two-factor authentication password to continue."),
         parent,
         is_password=True,
+        error=error,
     )
 
     def submit_password():

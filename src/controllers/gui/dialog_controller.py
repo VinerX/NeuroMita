@@ -30,12 +30,18 @@ class DialogController(BaseController):
             QTimer.singleShot(0, lambda: QMessageBox.critical(self.view, title, message))
             
     def _on_prompt_for_tg_code(self, event: Event):
-        code_future = event.data.get('future')    
-        self.view.show_tg_code_dialog_signal.emit({'future': code_future})
+        code_future = event.data.get('future')
+        self.view.show_tg_code_dialog_signal.emit({
+            'future': code_future,
+            'error': event.data.get('error', ''),
+        })
 
     def _on_prompt_for_tg_password(self, event: Event):
         password_future = event.data.get('future')
-        self.view.show_tg_password_dialog_signal.emit({'future': password_future})
+        self.view.show_tg_password_dialog_signal.emit({
+            'future': password_future,
+            'error': event.data.get('error', ''),
+        })
 
     def _on_show_eula_dialog(self, event: Event):
         if self.view and hasattr(self.view, '_show_eula_dialog'):

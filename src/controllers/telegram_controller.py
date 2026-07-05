@@ -278,6 +278,13 @@ class TelegramController:
             self.silero_connected = False
             self.bot_handler_ready = False
             self.event_bus.emit(Events.Telegram.SET_SILERO_CONNECTED, {'connected': False})
+        finally:
+            # На случай отмены пользователем (CancelledError — BaseException, не ловится
+            # except Exception): не оставляем _connecting=True, иначе повторный коннект
+            # заблокирован навсегда.
+            if self._connecting and not self.silero_connected:
+                self._connecting = False
+                self.event_bus.emit(Events.Telegram.SET_SILERO_CONNECTED, {'connected': False})
 
     def stop_silero_async(self, *, source: str = "api") -> bool:
         logger.info(f"Запрос на остановку Telegram клиента ({source})")
