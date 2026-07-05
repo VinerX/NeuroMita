@@ -350,6 +350,48 @@ class SandboxPage(QWidget):
             profile = {}
         return str((profile or {}).get("character_id") or "")
 
+    def _get_current_character_ref(self):
+        character_id = self._get_current_character_id()
+        if not character_id:
+            return None
+        try:
+            result = self.gui.event_bus.emit_and_wait(
+                Events.Character.GET,
+                {"character_id": character_id},
+                timeout=0.5,
+            )
+            return result[0] if result else None
+        except Exception:
+            return None
+
+    def _get_effective_prompt_history_count(self, character_ref, dialog_limit: int):
+        if character_ref is None:
+            return None
+
+        char_id = str(getattr(character_ref, "char_id", "") or "").strip()
+        if not char_id:
+            return None
+
+        try:
+            result = self.gui.event_bus.emit_and_wait(
+                Events.History.PREPARE_FOR_PROMPT,
+                {
+                    "character_id": char_id,
+                    "character_ref": character_ref,
+                    "memory_limit": int(dialog_limit or 0),
+                    "save_missed_history": False,
+                    "image_quality": {},
+                    "disable_compression": True,
+                },
+                timeout=1.0,
+            )
+            payload = result[0] if result else {}
+            history = payload.get("history", []) if isinstance(payload, dict) else []
+            return len(history) if isinstance(history, list) else None
+        except Exception as exc:
+            logger.debug(f"Sandbox effective prompt history count failed: {exc}")
+            return None
+
     def _jump_to_settings(self, category: str, subsection=None):
         # Шестерёнка у строки статуса ведёт ИМЕННО в её раздел, даже если подсистема
         # сейчас выключена/скрыта в «Видимых разделах» (фидбэк #14). subsection —
@@ -834,6 +876,7 @@ class SandboxPage(QWidget):
         msg_limit = get("MODEL_MESSAGE_LIMIT", 35)
         mem_limit = get("MEMORY_CAPACITY", 50)
         cid = self._get_current_character_id()
+        character_ref = self._get_current_character_ref()
 
         try:
             from managers.database_manager import DatabaseManager
@@ -861,8 +904,13 @@ class SandboxPage(QWidget):
                 return "—"
             return f"{a or 0} / {b or 0}"
 
+        effective_history_count = self._get_effective_prompt_history_count(character_ref, msg_limit)
+
         mapping = {
-            "messages": _fmt(stats.get("history_active"), msg_limit),
+            "messages": _fmt(
+                effective_history_count if effective_history_count is not None else stats.get("history_active"),
+                msg_limit,
+            ),
             "memories": _fmt(stats.get("memories_active"), mem_limit),
             "forgotten": _fmt(stats.get("memories_forgotten")),
             "missing": _pair(miss_h, miss_m),
