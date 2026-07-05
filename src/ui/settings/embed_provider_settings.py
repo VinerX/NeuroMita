@@ -319,7 +319,13 @@ class _EmbedProviderWidget(QWidget):
     def _select_preset(self, preset_id: Any):
         idx = self._find_combo_index(preset_id)
         if idx >= 0:
-            self._preset_combo.setCurrentIndex(idx)
+            if self._preset_combo.currentIndex() == idx:
+                # setCurrentIndex не эмитит сигнал при совпадении индекса — а после
+                # _load_presets текущий индекс уже 0. Для первого пресета (local_hf/Qwen)
+                # это значило, что редактор не подгружался и поле модели оставалось пустым.
+                self._load_into_editor(preset_id)
+            else:
+                self._preset_combo.setCurrentIndex(idx)
         else:
             self._load_into_editor(preset_id)
 
