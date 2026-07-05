@@ -1515,6 +1515,11 @@ class PipInstaller:
     TIMEOUT_SEC = 7200000   # как было ранее (очень большой общий таймаут)
     NO_ACTIVITY_SEC = 3600000
 
+    # Раннер: период опроса и «мягкий» прогресс, пока реальный % ещё не парсится.
+    _POLL_INTERVAL_SEC = 0.03
+    _SOFT_PROGRESS_MAX = 95        # выше этого «мягкий» бамп не поднимает бар
+    _PIPE_LINE_WEIGHT = 0.4        # вклад одной строки пайпа в «мягкий» прогресс
+
     _RE_PCT = re.compile(r'(\d{1,3})\s?%')
     _RE_PAIR = re.compile(
         r'(?P<done>\d+(?:\.\d+)?)\s*(?P<dunit>[KMGTP]?i?B|B)\s*/\s*'
@@ -1830,15 +1835,60 @@ class PipInstaller:
         if app and QThread.currentThread() == app.thread():
             QApplication.processEvents()
 
-    def _terminate_process(self, proc, reason: str):
+    def _terminate_process(self, proc, reason: str = ""):
         try:
-            self.update_log(reason)
+            if reason:
+                self.update_log(reason)
             proc.terminate()
             time.sleep(0.5)
             if proc.poll() is None:
                 proc.kill()
         except Exception:
             pass
+
+    def _advance_soft_progress(self, state: _RunState, weight: float) -> None:
+        """Общий «мягкий» бамп верхней полосы для обоих раннеров (PTY и пайпы).
+
+        Пока реальный процент/байты ещё не парсятся (uv не начал качать), двигаем
+        полосу по факту прихода вывода — чтобы окно не выглядело зависшим. Реальный
+        процент из агрегатора всё равно перекроет это, когда появится. Вес задаёт
+        вызывающий: пайпы копят по строке, PTY — по завершённой (\\n) строке."""
+        if weight <= 0 or state.percent >= self._SOFT_PROGRESS_MAX:
+            return
+        next_percent = min(self._SOFT_PROGRESS_MAX, int(round(state.percent + weight)))
+        if next_percent > state.percent:
+            state.percent = next_percent
+            self.update_progress(state.percent)
+            state.history.append((time.time(), state.percent))
+
+    def _check_timeouts(self, state: _RunState, kill) -> Optional[Tuple[bool, int]]:
+        """Общая проверка таймаутов неактивности/общего для обоих раннеров.
+
+        При срабатывании вызывает kill() (способ убийства процесса зависит от
+        раннера), пишет статус и возвращает (False, -1); иначе None."""
+        now = time.time()
+        if now - state.last_activity > self.NO_ACTIVITY_SEC:
+            kill()
+            self.update_status(state.description + " — прервано по таймауту неактивности.")
+            return False, -1
+        if now - state.start > self.TIMEOUT_SEC:
+            kill()
+            self.update_status(state.description + " — прервано по общему таймауту.")
+            return False, -1
+        return None
+
+    def _service_tick(self, state: _RunState, kill) -> Optional[Tuple[bool, int]]:
+        """Общий «хвост» итерации цикла опроса для обоих раннеров: снимок прогресса,
+        обновление статуса, проверка таймаутов, прокачка Qt-событий и пауза.
+        Возвращает (False, -1) если пора прерваться (таймаут), иначе None."""
+        self._emit_snapshot_if_needed(state)
+        self._update_status_if_needed(state)
+        aborted = self._check_timeouts(state, kill)
+        if aborted is not None:
+            return aborted
+        self._pump_events()
+        time.sleep(self._POLL_INTERVAL_SEC)
+        return None
 
     def _log_failure_context(self, cmd: List[str], state: _RunState, ret: int) -> None:
         recent = [line for line in state.recent_lines if str(line).strip()]
@@ -1913,48 +1963,17 @@ class PipInstaller:
         t_err.start()
 
         while proc.poll() is None or t_out.is_alive() or t_err.is_alive():
-            processed_any = False
             processed_weight = 0.0
-            while not q_out.empty():
-                line = q_out.get_nowait()
-                self._process_line(state, line)
-                processed_any = True
-                processed_weight += 0.4
-            while not q_err.empty():
-                line = q_err.get_nowait()
-                self._process_line(state, line)
-                processed_any = True
-                processed_weight += 0.4
+            for q in (q_out, q_err):
+                while not q.empty():
+                    self._process_line(state, q.get_nowait())
+                    processed_weight += self._PIPE_LINE_WEIGHT
 
-            if processed_any:
-                # Fallback from the older working installer: when pipe output
-                # is alive but no real percent can be parsed, keep the bar
-                # moving a little instead of leaving the install window stuck.
-                if state.percent < 95:
-                    next_percent = min(95, int(round(state.percent + processed_weight)))
-                    if next_percent > state.percent:
-                        state.percent = next_percent
-                        self.update_progress(state.percent)
-                        state.history.append((time.time(), state.percent))
+            self._advance_soft_progress(state, processed_weight)
 
-            self._emit_snapshot_if_needed(state)
-
-            # Refresh status on the regular timer.
-            self._update_status_if_needed(state)
-
-            now = time.time()
-            if now - state.last_activity > self.NO_ACTIVITY_SEC:
-                self._terminate_process(proc, "Process inactive for too long; terminating.")
-                self.update_status(state.description + " — прервано по таймауту неактивности.")
-                return False, -1
-
-            if now - state.start > self.TIMEOUT_SEC:
-                self._terminate_process(proc, "Process timeout reached; terminating.")
-                self.update_status(state.description + " — прервано по общему таймауту.")
-                return False, -1
-
-            self._pump_events()
-            time.sleep(0.03)
+            aborted = self._service_tick(state, lambda: self._terminate_process(proc))
+            if aborted is not None:
+                return aborted
 
         # Дочистим очереди
         while not q_out.empty():
@@ -1986,6 +2005,12 @@ class PipInstaller:
 
         buffer = ""
         q_chunks: queue.Queue = queue.Queue()
+
+        def _kill_pty():
+            try:
+                pty.close(force=True)
+            except Exception:
+                pass
 
         def _pty_reader() -> None:
             while True:
@@ -2020,6 +2045,7 @@ class PipInstaller:
                 buffer = ""
                 acc = ""
                 i = 0
+                permanent_lines = 0
                 while i < len(parts):
                     tok = parts[i]
                     if tok in ("\r", "\n"):
@@ -2028,38 +2054,21 @@ class PipInstaller:
                             # \r — живая перерисовка прогресс-бара (transient),
                             # \n — завершённая строка лога.
                             self._process_line(state, line, transient=(tok == "\r"))
+                            if tok == "\n":
+                                permanent_lines += 1
                         acc = ""
                     else:
                         acc += tok
                     i += 1
                 buffer = acc
 
-            self._emit_snapshot_if_needed(state)
+                # Как в древнем TTY-раннере: двигаем полосу по факту прихода
+                # завершённых (\n) строк, пока реальный процент ещё не парсится.
+                self._advance_soft_progress(state, permanent_lines)
 
-            # Обновим статус
-            self._update_status_if_needed(state)
-
-            now = time.time()
-            if now - state.last_activity > self.NO_ACTIVITY_SEC:
-                try:
-                    pty.close(force=True)
-                except Exception:
-                    pass
-                self.update_log("Process inactive for too long; terminating.")
-                self.update_status(state.description + " — прервано по таймауту неактивности.")
-                return False, -1
-
-            if now - state.start > self.TIMEOUT_SEC:
-                try:
-                    pty.close(force=True)
-                except Exception:
-                    pass
-                self.update_log("Process timeout reached; terminating.")
-                self.update_status(state.description + " — прервано по общему таймауту.")
-                return False, -1
-
-            self._pump_events()
-            time.sleep(0.03)
+            aborted = self._service_tick(state, _kill_pty)
+            if aborted is not None:
+                return aborted
 
         tail = self._clean_line(buffer.strip())
         if tail:
