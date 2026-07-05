@@ -273,6 +273,7 @@ class ChessGuiTkinter(QMainWindow):
     def __init__(self, game_controller: ChessGameController): 
         super().__init__()
         self.game_controller = game_controller
+        self.is_auto = game_controller.is_auto if game_controller else False
         self.setWindowTitle(f"Шахматы против Maia ELO {self.game_controller.current_maia_elo if self.game_controller else DEFAULT_MAIA_ELO}")
         self.setStyleSheet(f"QMainWindow {{ background-color: {ChessGameModelTkStyles.COLOR_WINDOW_BG}; }}")
 
@@ -358,43 +359,47 @@ class ChessGuiTkinter(QMainWindow):
         board_area_widget.setLayout(board_area_layout)
         main_layout.addWidget(board_area_widget)
         
-        # Control panel
-        control_panel_widget = QWidget()
-        control_panel_widget.setStyleSheet(f"""
-            QWidget {{
-                background-color: {ChessGameModelTkStyles.COLOR_PANEL_BG};
-                border: 1px solid {ChessGameModelTkStyles.COLOR_BORDER};
-                border-radius: 12px;
-            }}
-        """)
-        control_panel_widget.setFixedWidth(220)
-        control_panel_layout = QVBoxLayout()
-        control_panel_layout.setContentsMargins(16, 16, 16, 16)
-        control_panel_layout.setSpacing(10)
-        
-        panel_title = QLabel("Управление")
-        panel_title.setStyleSheet(f"""
-            color: {ChessGameModelTkStyles.COLOR_TEXT_LIGHT};
-            font-family: {ChessGameModelTkStyles.UI_FONT_FAMILY};
-            font-size: 14pt;
-            font-weight: 700;
-            background: transparent;
-            border: none;
-        """)
-        control_panel_layout.addWidget(panel_title)
-        
-        self.btn_new_game_white = self._create_button(control_panel_widget, "Новая игра (Белыми)",
-                                                       lambda: self.game_controller.new_game(player_is_white_gui_override=True) if self.game_controller else None)
-        control_panel_layout.addWidget(self.btn_new_game_white)
-        
-        self.btn_new_game_black = self._create_button(control_panel_widget, "Новая игра (Черными)",
-                                                       lambda: self.game_controller.new_game(player_is_white_gui_override=False) if self.game_controller else None)
-        control_panel_layout.addWidget(self.btn_new_game_black)
-        
-        control_panel_layout.addStretch()
-        
-        control_panel_widget.setLayout(control_panel_layout)
-        main_layout.addWidget(control_panel_widget)
+        # Control panel — скрыта в авто-режиме
+        if not self.is_auto:
+            control_panel_widget = QWidget()
+            control_panel_widget.setStyleSheet(f"""
+                QWidget {{
+                    background-color: {ChessGameModelTkStyles.COLOR_PANEL_BG};
+                    border: 1px solid {ChessGameModelTkStyles.COLOR_BORDER};
+                    border-radius: 12px;
+                }}
+            """)
+            control_panel_widget.setFixedWidth(220)
+            control_panel_layout = QVBoxLayout()
+            control_panel_layout.setContentsMargins(16, 16, 16, 16)
+            control_panel_layout.setSpacing(10)
+            
+            panel_title = QLabel("Управление")
+            panel_title.setStyleSheet(f"""
+                color: {ChessGameModelTkStyles.COLOR_TEXT_LIGHT};
+                font-family: {ChessGameModelTkStyles.UI_FONT_FAMILY};
+                font-size: 14pt;
+                font-weight: 700;
+                background: transparent;
+                border: none;
+            """)
+            control_panel_layout.addWidget(panel_title)
+            
+            self.btn_new_game_white = self._create_button(control_panel_widget, "Новая игра (Белыми)",
+                                                           lambda: self.game_controller.new_game(player_is_white_gui_override=True) if self.game_controller else None)
+            control_panel_layout.addWidget(self.btn_new_game_white)
+            
+            self.btn_new_game_black = self._create_button(control_panel_widget, "Новая игра (Черными)",
+                                                           lambda: self.game_controller.new_game(player_is_white_gui_override=False) if self.game_controller else None)
+            control_panel_layout.addWidget(self.btn_new_game_black)
+            
+            control_panel_layout.addStretch()
+            
+            control_panel_widget.setLayout(control_panel_layout)
+            main_layout.addWidget(control_panel_widget)
+        else:
+            self.btn_new_game_white = None
+            self.btn_new_game_black = None
         
         central_widget.setLayout(main_layout)
         
@@ -635,8 +640,8 @@ class ChessGuiTkinter(QMainWindow):
             event.ignore()
 
 def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiprocessing.Queue,
-                          initial_elo: int, player_is_white_gui: bool):
-    print(f"CONSOLE (chess_board_process): >>> ЗАПУСК ПРОЦЕССА GUI. ELO: {initial_elo}, Игрок GUI белый: {player_is_white_gui}")
+                          initial_elo: int, player_is_white_gui: bool, is_auto: bool = False, is_cheat: bool = False):
+    print(f"CONSOLE (chess_board_process): >>> ЗАПУСК. ELO: {initial_elo}, Белый: {player_is_white_gui}, auto={is_auto}, cheat={is_cheat}")
     
     app_instance_ref = {"instance": None} 
     logged_command_q_none_warning_for_this_run = False
@@ -686,7 +691,9 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
             state_q=state_q,
             status_update_cb_gui=_proxy_update_status,
             board_update_cb_gui=_proxy_update_board,
-            game_over_cb_gui=_proxy_game_over
+            game_over_cb_gui=_proxy_game_over,
+            is_auto=is_auto,
+            is_cheat=is_cheat
         )
         print(f"CONSOLE (chess_board_process): [STAGE 1] ChessGameController создан.")
 
@@ -702,6 +709,11 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
         app = ChessGuiTkinter(game_controller)
         app_instance_ref["instance"] = app
         app.show()
+        try:
+            from utils.win_titlebar import apply_dark_titlebar
+            apply_dark_titlebar(app, True)
+        except Exception:
+            pass
         print(f"CONSOLE (chess_board_process): [STAGE 3] ChessGuiTkinter (окно) СОЗДАНО.")
 
         print(f"CONSOLE (chess_board_process): [STAGE 4] Вызов game_controller.new_game()...")

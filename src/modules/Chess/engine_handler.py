@@ -221,19 +221,22 @@ def setup_maia_weights(maia_elo: int):
 
 class ChessGameController:
     def __init__(self, initial_elo: int, player_is_white_gui: bool,
-                 state_q: queue.Queue, status_update_cb_gui, board_update_cb_gui, game_over_cb_gui):
+                 state_q: queue.Queue, status_update_cb_gui, board_update_cb_gui, game_over_cb_gui,
+                 is_auto: bool = False, is_cheat: bool = False):
         self.board_logic = PureBoardLogic()
         self.engine = None
         self.current_maia_elo = initial_elo
         self.current_maia_weights_path = None
         self.player_is_white_in_gui = player_is_white_gui
         self.engine_is_thinking = False
-        self.is_engine_enabled_for_moves = True # По умолчанию движок (Maia) может делать ходы, когда LLM просит
+        self.is_engine_enabled_for_moves = True
         self.state_queue = state_q
         self.status_update_cb_gui = status_update_cb_gui
         self.board_update_cb_gui = board_update_cb_gui
         self.game_over_cb_gui = game_over_cb_gui
         self.think_time = ENGINE_THINK_TIME_DEFAULT
+        self.is_auto = is_auto    # True = Maia ходит сама, False = LLM выбирает ходы
+        self.is_cheat = is_cheat  # True = разрешены чит-команды
         self._send_status_to_gui_if_possible(f"Контроллер инициализирован. ELO: {self.current_maia_elo}")
 
     def _send_status_to_gui_if_possible(self, message: str):
@@ -329,7 +332,6 @@ class ChessGameController:
             self.player_is_white_in_gui = player_is_white_gui_override
         
         self.engine_is_thinking = False
-        # self.is_engine_enabled_for_moves = True # Already true by default, or set by LLM command logic
         
         current_turn_color = "Белые" if self.board_logic.get_turn() == chess.WHITE else "Черные"
         player_color_str = "белыми" if self.player_is_white_in_gui else "черными"
@@ -337,27 +339,51 @@ class ChessGameController:
         self._send_status_to_gui_if_possible(f"Новая игра. Игрок в GUI {player_color_str}. Ход {current_turn_color}.")
         if self.board_update_cb_gui: self.board_update_cb_gui()
         
-        # Отправляем состояние LLM. LLM решит, если это ее ход, и сделает ход.
-        self._send_state_to_main_process(last_move_san="Новая игра") 
-
-        # УБРАН АВТОМАТИЧЕСКИЙ ХОД ДВИЖКА, ЕСЛИ ОЧЕРЕДЬ ИИ НАЧИНАТЬ ИГРУ
-        # LLM получит состояние от _send_state_to_main_process() и затем выдаст команду
-        # (<RequestBestChessMove!> или <MakeChessMoveAsLLM>), которая будет обработана self.process_command()
-        print("CONSOLE (ChessGameController new_game): Состояние новой игры отправлено. Ожидание решения LLM, если это ход ИИ.")
+        self._send_state_to_main_process(last_move_san="Новая игра")
+        
+        if self.is_auto and self._is_controlled_side_turn():
+            self._make_engine_move_sync()
+        print(f"CONSOLE (ChessGameController new_game): Состояние отправлено. auto={self.is_auto}, cheat={self.is_cheat}.")
 
 
     def _is_controlled_side_turn(self):
         board_turn_is_white = self.board_logic.get_turn() == chess.WHITE
         return board_turn_is_white != self.player_is_white_in_gui
 
+    def _make_engine_move_sync(self):
+        """Авто-ход движка (для auto/cheat режимов). Синхронно, без потоков."""
+        if self.engine_is_thinking or not self.engine:
+            return
+        if not self._is_controlled_side_turn():
+            return
+        self.engine_is_thinking = True
+        self._send_status_to_gui_if_possible(f"Maia (ELO {self.current_maia_elo}) думает...")
+        try:
+            result = self.engine.play(self.board_logic.board, chess.engine.Limit(time=self.think_time))
+            if result.move:
+                uci = result.move.uci()
+                san = self.board_logic.board.san(result.move)
+                success, msg, _ = self.board_logic.make_move(uci)
+                if success:
+                    self._send_status_to_gui_if_possible(f"Maia: {san}")
+                    if self.board_update_cb_gui: self.board_update_cb_gui()
+                    if not self._check_and_handle_game_over(moved_by="Maia", san_move=san):
+                        self._send_state_to_main_process()
+                else:
+                    self._send_status_to_gui_if_possible(f"Maia: ошибка хода {uci}")
+            else:
+                self._send_status_to_gui_if_possible("Maia не смогла сделать ход.")
+        except Exception as e:
+            self._send_status_to_gui_if_possible(f"Ошибка Maia: {e}")
+        finally:
+            self.engine_is_thinking = False
+
     def handle_player_move_from_gui(self, uci_move_str):
         print(f"CONSOLE (ChessGameController handle_player_move_from_gui): UCI: '{uci_move_str}'")
-        if self.engine_is_thinking: # Движок думает над ходом, запрошенным LLM
+        if self.engine_is_thinking:
             self._send_status_to_gui_if_possible("Движок думает, подождите.")
             return False
         
-        # Эта проверка актуальна, чтобы игрок не мог ходить, пока LLM "думает" (т.е. пока ChatModel ждет ответа от LLM API)
-        # или если это действительно ход ИИ по правилам.
         if self._is_controlled_side_turn(): 
              self._send_status_to_gui_if_possible("Сейчас не ваш ход (ожидается ход LLM/Maia).")
              return False
@@ -368,22 +394,16 @@ class ChessGameController:
             if self.board_update_cb_gui: self.board_update_cb_gui()
             
             if self._check_and_handle_game_over(moved_by="Игрок GUI", san_move=san_move):
-                return True # Игра окончена, состояние уже отправлено
+                return True
 
-            # Отправляем состояние LLM, чтобы она знала, что игрок походил, и могла решить свой ход.
-            self._send_state_to_main_process() 
+            self._send_state_to_main_process()
 
-            # УБРАН АВТОМАТИЧЕСКИЙ ОТВЕТ ДВИЖКА
-            # LLM получит состояние от _send_state_to_main_process()
-            # и затем выдаст команду (<RequestBestChessMove!> или <MakeChessMoveAsLLM>),
-            # которая будет обработана self.process_command()
-            print("CONSOLE (ChessGameController handle_player_move_from_gui): Ход игрока обработан, состояние отправлено. Ожидание решения LLM.")
+            if self.is_auto and not self.board_logic.is_game_over()[0]:
+                self._make_engine_move_sync()
+            print(f"CONSOLE (ChessGameController handle_player_move_from_gui): auto={self.is_auto}")
             return True
         else:
             self._send_status_to_gui_if_possible(f"Игрок GUI: {message} (ход {uci_move_str})")
-            # Можно отправить состояние с ошибкой, если ход игрока был нелегален,
-            # хотя GUI обычно этого не допускает для корректных UCI.
-            # self._send_state_to_main_process(error_move=uci_move_str, error_message=message)
             return False
 
     def force_llm_or_engine_move(self, uci_move_str, is_llm_decision=True):
@@ -552,12 +572,16 @@ class ChessGameController:
 
         state_data = {
             "fen": self.board_logic.get_fen(),
+            "board_ascii": self.board_logic.ascii_board(),
             "turn": "white" if self.board_logic.get_turn() == chess.WHITE else "black",
-            "legal_moves_uci": self.board_logic.get_legal_moves_uci() if not (game_over or game_resigned or game_stopped_by_llm or critical_process_failure) else [], # Не отправляем ходы, если игра окончена
+            "legal_moves_uci": self.board_logic.get_legal_moves_uci() if not (game_over or game_resigned or game_stopped_by_llm or critical_process_failure) else [],
+            "legal_moves_short": self.board_logic.get_legal_moves_uci_short(10) if not (game_over or game_resigned or game_stopped_by_llm or critical_process_failure) else [],
             "is_game_over": game_over or game_resigned or game_stopped_by_llm or critical_process_failure,
             "outcome_message": outcome_msg_board,
             "player_is_white_in_gui": self.player_is_white_in_gui,
             "current_elo": self.current_maia_elo,
+            "is_auto": self.is_auto,
+            "is_cheat": self.is_cheat,
             "last_move_san": current_last_move_san if current_last_move_san else "N/A",
             "timestamp": time.time()
         }
@@ -637,6 +661,50 @@ class ChessGameController:
             # self.shutdown_engine_process()
             self._send_state_to_main_process(game_stopped_by_llm=True)
         elif action == "get_state":
+            self._send_state_to_main_process()
+        elif action == "cheat_move":
+            move_uci = command_data.get("move")
+            if move_uci:
+                success, msg, san = self.board_logic.force_move(move_uci)
+                self._send_status_to_gui_if_possible(f"Чит: {msg}")
+                if self.board_update_cb_gui: self.board_update_cb_gui()
+                if not self._check_and_handle_game_over(moved_by="Чит", san_move=san or move_uci):
+                    self._send_state_to_main_process()
+            else:
+                self._send_state_to_main_process(error="cheat_move без хода")
+        elif action == "cheat_spawn":
+            square = command_data.get("square")
+            piece = command_data.get("piece")
+            if square and piece:
+                success, msg, _ = self.board_logic.spawn_piece(square, piece)
+                self._send_status_to_gui_if_possible(f"Чит: {msg}")
+                if self.board_update_cb_gui: self.board_update_cb_gui()
+                self._send_state_to_main_process()
+            else:
+                self._send_state_to_main_process(error="cheat_spawn: нужны square и piece")
+        elif action == "cheat_remove":
+            square = command_data.get("square")
+            if square:
+                success, msg, _ = self.board_logic.remove_piece(square)
+                self._send_status_to_gui_if_possible(f"Чит: {msg}")
+                if self.board_update_cb_gui: self.board_update_cb_gui()
+                self._send_state_to_main_process()
+            else:
+                self._send_state_to_main_process(error="cheat_remove: нужен square")
+        elif action == "switch_auto":
+            enable = command_data.get("enable", True)
+            old = self.is_auto
+            self.is_auto = bool(enable)
+            msg = f"Авто-режим: {'ВКЛ' if self.is_auto else 'ВЫКЛ'}."
+            self._send_status_to_gui_if_possible(msg)
+            if self.is_auto and not old and self._is_controlled_side_turn() and not self.board_logic.is_game_over()[0]:
+                self._make_engine_move_sync()
+            else:
+                self._send_state_to_main_process()
+        elif action == "switch_cheat":
+            self.is_cheat = bool(command_data.get("enable", True))
+            msg = f"Чит-режим: {'ВКЛ' if self.is_cheat else 'ВЫКЛ'}."
+            self._send_status_to_gui_if_possible(msg)
             self._send_state_to_main_process()
         # stop_gui_process обрабатывается в цикле run_chess_gui_process
         else:

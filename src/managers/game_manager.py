@@ -17,12 +17,28 @@ class GameManager:
         game_name = parts[0].lower()
         params = {}
         if len(parts) > 1:
-            param_str = parts[1]
+            remaining = parts[1:]
             if game_name == "chess":
-                if param_str in self.available_games["chess"](self.character, "chess").elo_mapping:
-                    params["difficulty"] = param_str
-                elif param_str == "resign":
-                    params["resign"] = True
+                elo_map = {"easy": 1100, "medium": 1500, "hard": 1900}
+                for part in remaining:
+                    part = part.lower()
+                    if part in elo_map:
+                        params["difficulty"] = part
+                    elif part == "auto":
+                        params["is_auto"] = True
+                    elif part == "cheat":
+                        params["is_cheat"] = True
+                    elif part == "resign":
+                        params["resign"] = True
+                    elif part == "white":
+                        params["player_is_white"] = True
+                    elif part == "black":
+                        params["player_is_white"] = False
+            elif game_name == "seabattle":
+                for part in remaining:
+                    part = part.lower()
+                    if part == "resign":
+                        params["resign"] = True
         return game_name, params
 
     def _setting_bool(self, key: str, default: bool = False) -> bool:

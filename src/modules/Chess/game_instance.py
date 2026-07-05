@@ -16,6 +16,8 @@ class ChessGame(GameInterface):
         self.command_queue: Optional[multiprocessing.Queue] = None
         self.state_queue: Optional[multiprocessing.Queue] = None
         self.current_elo: Optional[int] = None
+        self.is_auto: bool = False
+        self.is_cheat: bool = False
         self.elo_mapping: Dict[str, int] = {"easy": 1100, "medium": 1500, "hard": 1900}
 
     def start(self, params: Dict[str, Any]):
@@ -29,18 +31,22 @@ class ChessGame(GameInterface):
             difficulty = params.get("difficulty", "medium")
             self.current_elo = self.elo_mapping.get(difficulty, self.elo_mapping["medium"])
             player_is_white = params.get("player_is_white", True)
+            self.is_auto = params.get("is_auto", False)
+            self.is_cheat = params.get("is_cheat", False)
 
             self.character.set_variable("playingGame", True)
             self.character.set_variable("game_id", self.game_id)
+            self.character.set_variable("GAME_CHESS_IS_AUTO", self.is_auto)
+            self.character.set_variable("GAME_CHESS_IS_CHEAT", self.is_cheat)
 
             self.command_queue = multiprocessing.Queue()
             self.state_queue = multiprocessing.Queue()
 
-            logger.info(f"[{self.character.char_id}] Запуск шахматного GUI. ELO: {self.current_elo}")
+            logger.info(f"[{self.character.char_id}] Запуск шахматного GUI. ELO: {self.current_elo}, auto={self.is_auto}, cheat={self.is_cheat}")
 
             self.gui_thread = multiprocessing.Process(
                 target=run_chess_gui_process,
-                args=(self.command_queue, self.state_queue, self.current_elo, player_is_white),
+                args=(self.command_queue, self.state_queue, self.current_elo, player_is_white, self.is_auto, self.is_cheat),
                 daemon=True
             )
             self.gui_thread.start()
@@ -147,9 +153,77 @@ class ChessGame(GameInterface):
                     logger.info(f"[{self.character.char_id}] Structured: смена сложности на '{difficulty_str}' (ELO {new_elo}).")
                 else:
                     logger.warning(f"[{self.character.char_id}] Structured: неизвестная сложность в ChangeChessDifficulty: {cmd!r}")
+            elif cmd.startswith("CheatMove,"):
+                if not self.is_cheat:
+                    logger.warning(f"[{self.character.char_id}] Structured: CheatMove в не-чит режиме, игнорируем.")
+                    continue
+                uci = cmd.split(",", 1)[1].strip().lower()
+                if uci:
+                    self._send_command({"action": "cheat_move", "move": uci})
+                    logger.info(f"[{self.character.char_id}] Structured: чит-ход {uci}.")
+            elif cmd.startswith("CheatSpawn,"):
+                if not self.is_cheat:
+                    logger.warning(f"[{self.character.char_id}] Structured: CheatSpawn в не-чит режиме, игнорируем.")
+                    continue
+                parts = cmd.split(",")
+                if len(parts) >= 3:
+                    square = parts[1].strip()
+                    piece = parts[2].strip()
+                    self._send_command({"action": "cheat_spawn", "square": square, "piece": piece})
+                    logger.info(f"[{self.character.char_id}] Structured: чит-спавн {piece} на {square}.")
+            elif cmd.startswith("CheatRemove,"):
+                if not self.is_cheat:
+                    logger.warning(f"[{self.character.char_id}] Structured: CheatRemove в не-чит режиме, игнорируем.")
+                    continue
+                square = cmd.split(",", 1)[1].strip().lower()
+                if square:
+                    self._send_command({"action": "cheat_remove", "square": square})
+                    logger.info(f"[{self.character.char_id}] Structured: чит-удаление с {square}.")
+            elif cmd == "EnableAuto":
+                self.is_auto = True
+                self._send_command({"action": "switch_auto", "enable": True})
+                self.character.set_variable("GAME_CHESS_IS_AUTO", True)
+                logger.info(f"[{self.character.char_id}] Structured: авто-режим ВКЛ.")
+            elif cmd == "DisableAuto":
+                self.is_auto = False
+                self._send_command({"action": "switch_auto", "enable": False})
+                self.character.set_variable("GAME_CHESS_IS_AUTO", False)
+                logger.info(f"[{self.character.char_id}] Structured: авто-режим ВЫКЛ.")
+            elif cmd == "EnableCheats":
+                self.is_cheat = True
+                self._send_command({"action": "switch_cheat", "enable": True})
+                self.character.set_variable("GAME_CHESS_IS_CHEAT", True)
+                logger.info(f"[{self.character.char_id}] Structured: чит-режим ВКЛ.")
+            elif cmd == "DisableCheats":
+                self.is_cheat = False
+                self._send_command({"action": "switch_cheat", "enable": False})
+                self.character.set_variable("GAME_CHESS_IS_CHEAT", False)
+                logger.info(f"[{self.character.char_id}] Structured: чит-режим ВЫКЛ.")
             else:
                 logger.debug(f"[{self.character.char_id}] Structured: неизвестная шахматная команда, игнорируем: {cmd!r}")
                 continue
+
+        # Сразу после отправки команд — сливаем очередь состояний,
+        # чтобы ошибки нелегальных ходов были видны в этом же ответе.
+        self._drain_state_for_errors()
+
+    def _drain_state_for_errors(self):
+        """Сливает state_queue и обновляет переменные ошибок немедленно (не ждём след. запроса LLM)."""
+        if not self.state_queue:
+            return
+        latest = None
+        while not self.state_queue.empty():
+            try:
+                latest = self.state_queue.get_nowait()
+            except Exception:
+                break
+        if latest and isinstance(latest, dict):
+            if latest.get("error"):
+                self.character.set_variable("GAME_STATE_ERROR_MSG", latest["error"])
+            if latest.get("error_move"):
+                self.character.set_variable("GAME_STATE_INVALID_MOVE_TEXT", latest["error_move"])
+            if latest.get("error_message_for_move"):
+                self.character.set_variable("GAME_STATE_INVALID_MOVE_REASON", latest["error_message_for_move"])
 
     def get_state_prompt(self) -> Optional[str]:
         if self.gui_thread and not self.gui_thread.is_alive():
@@ -193,17 +267,21 @@ class ChessGame(GameInterface):
         self.character.set_variable("GAME_STATE_ELO", latest_state_data.get('current_elo', 'N/A'))
         self.character.set_variable("GAME_STATE_LLM_COLOR_TEXT", "белыми" if not player_gui_is_white else "черными")
         self.character.set_variable("GAME_STATE_PLAYER_COLOR_TEXT", "белыми" if player_gui_is_white else "черными")
+        self.character.set_variable("GAME_CHESS_IS_AUTO", latest_state_data.get('is_auto', self.is_auto))
+        self.character.set_variable("GAME_CHESS_IS_CHEAT", latest_state_data.get('is_cheat', self.is_cheat))
         self.character.set_variable("GAME_STATE_LAST_MOVE_SAN", latest_state_data.get('last_move_san', 'Нет (начало игры)'))
         self.character.set_variable("GAME_STATE_IS_LLM_LAST_MOVER", last_mover_color == llm_actual_color)
         self.character.set_variable("GAME_STATE_FEN", latest_state_data.get('fen', 'N/A'))
+        self.character.set_variable("GAME_STATE_BOARD_ASCII", latest_state_data.get('board_ascii', None))
         self.character.set_variable("GAME_STATE_TURN_COLOR_TEXT", 'белые' if current_board_turn == 'white' else 'черные')
         self.character.set_variable("GAME_STATE_IS_OVER", latest_state_data.get('is_game_over', False))
         self.character.set_variable("GAME_STATE_OUTCOME", latest_state_data.get('outcome_message', 'Игра продолжается'))
         self.character.set_variable("GAME_STATE_IS_LLM_TURN", is_llm_turn_now)
 
         legal_moves = latest_state_data.get('legal_moves_uci', [])
+        legal_moves_short = latest_state_data.get('legal_moves_short', legal_moves[:10])
         self.character.set_variable("GAME_STATE_HAS_LEGAL_MOVES", bool(legal_moves))
-        self.character.set_variable("GAME_STATE_LEGAL_MOVES_STRING", ", ".join(legal_moves))
+        self.character.set_variable("GAME_STATE_LEGAL_MOVES_STRING", ", ".join(legal_moves_short))
         self.character.set_variable("GAME_STATE_HAS_PROMOTION_MOVE", any(len(m) == 5 and m[4] in 'qrbn' for m in legal_moves))
 
         self.character.set_variable("GAME_STATE_ERROR_MSG", latest_state_data.get("error", None))
