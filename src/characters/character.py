@@ -746,7 +746,7 @@ class Character:
                 logger.warning(f"[{self.char_id}] Structured: reminder_delete bad format: {delete_str!r}")
 
     def _process_structured_game_tags(self, structured: StructuredResponse):
-        """Process start_game / end_game from segments."""
+        """Process start_game / end_game from segments, and dispatch commands to active game."""
         for seg in structured.segments:
             if seg.start_game:
                 started = self.game_manager.start_game(seg.start_game)
@@ -758,6 +758,9 @@ class Character:
             if seg.end_game:
                 self.game_manager.stop_game(seg.end_game)
                 logger.info(f"[{self.char_id}] Structured: ended game '{seg.end_game}'")
+
+            if seg.commands and self.get_variable("playingGame", False):
+                self.game_manager.process_active_game_structured_commands(seg.commands)
 
     def _process_game_tags(self, response: str) -> str:
         """

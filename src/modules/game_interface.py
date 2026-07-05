@@ -1,6 +1,6 @@
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Type
+from typing import Dict, Any, Optional, Type, List
 
 class GameInterface(ABC):
     """Абстрактный базовый класс для всех игр."""
@@ -34,4 +34,8 @@ class GameInterface(ABC):
         Формирует и возвращает системный промпт с текущим состоянием игры,
         используя DSL-шаблон.
         """
+        pass
+
+    def process_structured_commands(self, commands: List[str]):
+        """Обрабатывает команды из structured response (commands array). По умолчанию — no-op."""
         pass

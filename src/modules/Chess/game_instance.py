@@ -120,6 +120,37 @@ class ChessGame(GameInterface):
             
         return response
     
+    def process_structured_commands(self, commands: list):
+        for cmd in commands:
+            if not isinstance(cmd, str):
+                continue
+            cmd = cmd.strip()
+            if not cmd:
+                continue
+
+            if cmd == "RequestBestChessMove":
+                self._send_command({"action": "engine_move"})
+                logger.info(f"[{self.character.char_id}] Structured: запрошен лучший ход Maia.")
+            elif cmd.startswith("MakeChessMoveAsLLM,"):
+                uci_move = cmd.split(",", 1)[1].strip().lower()
+                if uci_move:
+                    self._send_command({"action": "force_engine_move", "move": uci_move})
+                    logger.info(f"[{self.character.char_id}] Structured: ход LLM — {uci_move}.")
+                else:
+                    logger.warning(f"[{self.character.char_id}] Structured: пустой UCI в MakeChessMoveAsLLM: {cmd!r}")
+            elif cmd.startswith("ChangeChessDifficulty,"):
+                difficulty_str = cmd.split(",", 1)[1].strip().lower()
+                new_elo = self.elo_mapping.get(difficulty_str)
+                if new_elo:
+                    self.current_elo = new_elo
+                    self._send_command({"action": "change_elo", "elo": new_elo})
+                    logger.info(f"[{self.character.char_id}] Structured: смена сложности на '{difficulty_str}' (ELO {new_elo}).")
+                else:
+                    logger.warning(f"[{self.character.char_id}] Structured: неизвестная сложность в ChangeChessDifficulty: {cmd!r}")
+            else:
+                logger.debug(f"[{self.character.char_id}] Structured: неизвестная шахматная команда, игнорируем: {cmd!r}")
+                continue
+
     def get_state_prompt(self) -> Optional[str]:
         if self.gui_thread and not self.gui_thread.is_alive():
             self.cleanup()

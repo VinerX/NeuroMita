@@ -117,6 +117,10 @@ class GameManager:
             return self.active_game.process_llm_tags(response)
         return response
 
+    def process_active_game_structured_commands(self, commands: list):
+        if self.active_game:
+            self.active_game.process_structured_commands(commands)
+
     def get_active_game_state_prompt(self) -> Optional[str]:
         if self.active_game:
             return self.active_game.get_state_prompt()
