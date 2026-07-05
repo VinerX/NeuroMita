@@ -111,6 +111,25 @@ _SH_STRING   = "#86EFAC"   # "quoted"
 _SH_NUMBER   = "#93C5FD"   # 42 / 3.14
 _SH_COLON    = "#F4D35E"   # :
 
+# ── Section markers (тегирование блоков внутри промпта) ───────────────────────
+# Категория → (иконка, цвет). Определяется по ключевым словам в имени тега/заголовка.
+_SECTION_STYLE = {
+    "memory":      ("🧠", "#34D399"),  # <relevant_memories>
+    "history":     ("🕰", "#60A5FA"),  # <past_context> / history
+    "entity":      ("🕸", "#A78BFA"),  # <entity_knowledge> / graph
+    "summary":     ("📜", "#F4D35E"),  # [HISTORY SUMMARY]
+    "state":       ("🕐", "#22D3EE"),  # [Current State]
+    "behavior":    ("📊", "#F472B6"),  # состояние поведения
+    "participant": ("👥", "#FBBF24"),  # участники диалога
+    "game":        ("🎮", "#4ADE80"),  # состояние мини-игры
+    "default":     ("🏷", "#9CA3AF"),  # прочие теги/заголовки
+}
+# Заголовок-строка целиком: <tag> / </tag> либо [Header].
+_RE_TAG_RAW = re.compile(r"^<(/?)([A-Za-z_][\w]*)>$")
+_RE_HDR_RAW = re.compile(r"^\[([A-Za-z][A-Za-z0-9 _/\-]{1,48})\]$")
+_RE_TAG_ESC = re.compile(r"^&lt;(/?)([A-Za-z_][\w]*)&gt;$")
+_RE_HDR_ESC = re.compile(r"^\[([A-Za-z][A-Za-z0-9 _/\-]{1,48})\]$")
+
 
 class ContextViewerDialog(QDialog):
     """Большой диалог для просмотра контекста запроса к нейросети.
@@ -381,9 +400,9 @@ class ContextViewerDialog(QDialog):
         for msg in self._messages:
             role = msg.get("role") or "unknown"
             role_counters[role] = role_counters.get(role, 0) + 1
-            icon = _ROLE_ICONS.get(role, "•")
-            label = f"{icon} {role} #{role_counters[role]}"
+            label = self._classify_message_label(msg, role, role_counters[role])
             child = QTreeWidgetItem(msgs_item, [label])
+            child.setToolTip(0, f"{role} #{role_counters[role]}")
             self._items.append((child, "message", msg))
 
         self._render_response_tab()
@@ -418,13 +437,16 @@ class ContextViewerDialog(QDialog):
 
         elif kind == "overview":
             lines = [f"<p><b style='color:{_TEXT}'>{_('Всего сообщений', 'Total messages')}:</b> {len(self._messages)}</p><hr style='border-color:{_BORDER}'>"]
+            role_counters: Dict[str, int] = {}
             for i, msg in enumerate(self._messages):
                 role = msg.get("role") or "?"
+                role_counters[role] = role_counters.get(role, 0) + 1
                 color = _ROLE_COLORS.get(role, _TEXT)
                 content = msg.get("content") or ""
                 preview = self._get_preview(content, 160)
+                tag = self._classify_message_label(msg, role, role_counters[role])
                 lines.append(
-                    f"<p><b style='color:{color}'>{i + 1}. {self._esc(role)}</b>"
+                    f"<p><b style='color:{color}'>{i + 1}. {self._esc(tag)}</b>"
                     f"&nbsp;<span style='color:{_MUTED}'>{self._esc(preview)}</span></p>"
                 )
             self._viewer.setHtml(self._wrap("".join(lines)))
@@ -438,10 +460,7 @@ class ContextViewerDialog(QDialog):
             if isinstance(content, list):
                 rendered_content = self._render_content_blocks(content)
             else:
-                body = self._colorize(str(content))
-                rendered_content = (
-                    f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{body}</div>"
-                )
+                rendered_content = self._render_prompt_body(str(content))
 
             html = (
                 f"<p><b style='color:{color};font-size:13px'>"
@@ -598,10 +617,7 @@ class ContextViewerDialog(QDialog):
                 continue
             btype = block.get("type", "")
             if btype == "text":
-                body = self._colorize(block.get('text') or '')
-                parts.append(
-                    f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{body}</div>"
-                )
+                parts.append(self._render_prompt_body(block.get('text') or ''))
             elif btype in ("image_url", "image"):
                 parts.append(f"<p style='color:{_MUTED}'><i>[{_('изображение', 'image')}]</i></p>")
             else:
@@ -701,6 +717,107 @@ class ContextViewerDialog(QDialog):
             return m.group(0)
 
         return _combined.sub(_replace, escaped)
+
+    # ── Section markers (тегирование блоков промпта) ──────────────────────────
+
+    @staticmethod
+    def _content_plain(content: Any) -> str:
+        """Плоский текст с сохранением переносов (для поиска строк-заголовков)."""
+        if isinstance(content, list):
+            return "\n".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        return str(content or "")
+
+    def _marker_meta(self, name: str) -> tuple[str, str, str]:
+        """По имени тега/заголовка → (иконка, цвет, человекочитаемый ярлык)."""
+        key = name.lower().replace("_", " ")
+        if "memor" in key:
+            cat = "memory"
+        elif "summary" in key:
+            cat = "summary"
+        elif "entity" in key or "graph" in key or "knowledge" in key:
+            cat = "entity"
+        elif "behavior" in key or "behaviour" in key:
+            cat = "behavior"
+        elif "participant" in key:
+            cat = "participant"
+        elif "game" in key:
+            cat = "game"
+        elif "state" in key:
+            cat = "state"
+        elif "past" in key or "context" in key or "history" in key:
+            cat = "history"
+        else:
+            cat = "default"
+        icon, color = _SECTION_STYLE[cat]
+        label = name.replace("_", " ").strip()
+        label = label.title() if label.isupper() else (label[:1].upper() + label[1:])
+        return icon, color, label
+
+    def _classify_message_label(self, msg: dict, role: str, ordinal: int) -> str:
+        """Ярлык узла дерева: осмысленный для system-сообщений, обычный для остальных."""
+        icon = _ROLE_ICONS.get(role, "•")
+        if role != "system":
+            return f"{icon} {role} #{ordinal}"
+
+        text = self._content_plain(msg.get("content"))
+        first = next((ln.strip() for ln in text.split("\n") if ln.strip()), "")
+        m = _RE_TAG_RAW.match(first) or _RE_HDR_RAW.match(first)
+        if m:
+            name = m.group(2) if m.re is _RE_TAG_RAW else m.group(1)
+            s_icon, _c, s_label = self._marker_meta(name)
+            return f"{s_icon} {s_label}"
+        # крупный блок без явного заголовка — основной системный промпт
+        if len(text) > 400:
+            return "📖 " + _("Системный промпт", "System prompt")
+        return f"{icon} system #{ordinal}"
+
+    def _banner_html(self, name: str, closing: bool) -> str:
+        icon, color, label = self._marker_meta(name)
+        if closing:
+            return f"<span style='color:#5A5A6A;font-size:10px'>◂ {self._esc(label)}</span>"
+        return (
+            f"<span style='background:#232333;color:{color};"
+            f"border-left:3px solid {color};padding:2px 10px;font-weight:bold'>"
+            f"{icon} {self._esc(label)}</span>"
+        )
+
+    def _render_prompt_body(self, text: str) -> str:
+        """Рендер тела сообщения с подсветкой и «баннерами» секций.
+
+        Строки-заголовки (<tag>, </tag>, [Header]) заменяются на цветные плашки;
+        остальной текст проходит обычную подсветку синтаксиса.
+        """
+        normalized = self._normalize_newlines(text)
+        escaped = self._esc(normalized)
+
+        banners: Dict[str, str] = {}
+        out_lines: list[str] = []
+        for ln in escaped.split("\n"):
+            s = ln.strip()
+            m = _RE_TAG_ESC.match(s)
+            if m:
+                meta = (m.group(2), bool(m.group(1)))
+            else:
+                m = _RE_HDR_ESC.match(s)
+                meta = (m.group(1), False) if m else None
+            if meta is not None:
+                # плейсхолдер из PUA-символов: не трогается подсветкой и inline-конвертером
+                token = "" + chr(0xE100 + len(banners)) + ""
+                banners[token] = self._banner_html(meta[0], meta[1])
+                out_lines.append(token)
+            else:
+                out_lines.append(ln)
+
+        body = "\n".join(out_lines)
+        if self._highlight_enabled:
+            body = self._highlight(body)
+        body = self._to_inline_html(body)
+        for token, html in banners.items():
+            body = body.replace(token, html)
+        return f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{body}</div>"
 
     @staticmethod
     def _get_preview(content: Any, max_len: int) -> str:
