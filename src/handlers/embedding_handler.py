@@ -202,12 +202,45 @@ class EmbeddingModelHandler:
         logger.info("CUDA недоступна. Используется CPU.")
         return torch.device('cpu')
 
+    def _model_is_cached(self) -> bool:
+        """Модель уже локально: либо это путь к папке, либо есть HF-кэш
+        `models--<repo>` в checkpoints (туда же качает AI Hub)."""
+        name = str(self.model_name or "")
+        if not name:
+            return False
+        if os.path.isdir(name):
+            return True
+        marker = os.path.join(checkpoints_dir, "models--" + name.replace("/", "--"))
+        return os.path.isdir(marker)
+
     def _load_model(self) -> Tuple["AutoTokenizer", "AutoModel"]:
+        """Загружает модель и токенизатор.
+
+        Если веса уже в кэше — грузим офлайн (`local_files_only=True`), иначе
+        `from_pretrained` каждый раз дёргает HF Hub за метаданными ревизии
+        (то самое `unauthenticated requests to the HF Hub`), что без токена под
+        троттлингом висит и роняет запрос в таймаут даже при скачанной модели.
+        На случай неполного кэша — фоллбэк на онлайн-загрузку."""
+        cached = self._model_is_cached()
+        try:
+            return self._load_model_impl(local_files_only=cached)
+        except Exception as e:
+            if cached:
+                logger.warning(
+                    f"Офлайн-загрузка модели не удалась ({e}); повтор с обращением к HF Hub."
+                )
+                return self._load_model_impl(local_files_only=False)
+            raise
+
+    def _load_model_impl(self, *, local_files_only: bool) -> Tuple["AutoTokenizer", "AutoModel"]:
         """Загружает модель и токенизатор с указанными параметрами."""
         import torch  # локальный импорт
         from transformers import AutoModel, AutoTokenizer  # локальные импорты
 
-        logger.info(f"Загрузка токенизатора и модели '{self.model_name}' на {self.device.type.upper()}...")
+        logger.info(
+            f"Загрузка токенизатора и модели '{self.model_name}' на {self.device.type.upper()} "
+            f"(local_files_only={local_files_only})..."
+        )
         logger.info(f"Модель будет сохранена в {checkpoints_dir}")
         start_time = time.time()
 
@@ -219,12 +252,18 @@ class EmbeddingModelHandler:
             self.model_name,
             cache_dir=checkpoints_dir,
             token=hf_token,
+            local_files_only=local_files_only,
         )
 
         # Цепочка загрузки: sdpa+extras → sdpa → eager → базовая
         # use_memory_efficient_attention и add_pooling_layer — специфичны для Snowflake,
         # другие модели (XLMRoberta и т.д.) их не поддерживают.
-        _base = dict(trust_remote_code=True, cache_dir=checkpoints_dir, token=hf_token)
+        _base = dict(
+            trust_remote_code=True,
+            cache_dir=checkpoints_dir,
+            token=hf_token,
+            local_files_only=local_files_only,
+        )
         _load_attempts = [
             {**_base, "add_pooling_layer": False, "attn_implementation": "sdpa", "use_memory_efficient_attention": False},
             {**_base, "add_pooling_layer": False, "attn_implementation": "sdpa"},

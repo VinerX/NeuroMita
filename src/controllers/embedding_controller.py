@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from threading import Lock, Thread
 from typing import List, Optional
 
@@ -50,14 +51,30 @@ class EmbeddingController:
             logger.info("RAG is disabled in settings. Embedding backend warmup skipped.")
             return
 
-        preload = SettingsManager.get("RAG_PRELOAD_EMBEDDINGS_MODEL", False)
-        provider_name = self._provider_name()
-        if bool(preload) and provider_name == "local":
-            Thread(target=self._warmup_local_backend, daemon=True).start()
-        else:
-            logger.debug(
-                f"EmbeddingController: preload skipped (preload={bool(preload)}, provider='{provider_name}')"
-            )
+        self._maybe_start_warmup(reason="startup")
+
+    def _should_warmup(self) -> bool:
+        """Модель эмбеддингов нужна, когда включён векторный поиск (либо явный
+        preload). Тогда её стоит грузить в фоне заранее — иначе первый RAG-запрос
+        упирается в таймаут на «холодной» загрузке/скачивании весов с HuggingFace."""
+        if not SettingsManager.get("RAG_ENABLED", False):
+            return False
+        if self._provider_name() != "local":
+            return False
+        preload = bool(SettingsManager.get("RAG_PRELOAD_EMBEDDINGS_MODEL", False))
+        vector = bool(SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False))
+        return preload or vector
+
+    def _maybe_start_warmup(self, *, reason: str) -> None:
+        if not self._should_warmup():
+            return
+        if self.handler is not None or self._handler_failed:
+            return
+        Thread(
+            target=self._warmup_local_backend,
+            name=f"embed-warmup-{reason}",
+            daemon=True,
+        ).start()
 
     def _provider_name(self) -> str:
         try:
@@ -77,10 +94,20 @@ class EmbeddingController:
         )
 
     def _warmup_local_backend(self) -> None:
-        try:
-            self._ensure_local_backend()
-        except Exception:
-            pass
+        # AI engine может подняться позже контроллера, а первый запуск модели —
+        # тянуть веса с HF (~минуты). Поэтому ретраим до готовности движка, чтобы
+        # прогрев состоялся в фоне, а не сорвался из-за стартовой гонки.
+        for _ in range(150):  # ~5 минут ожидания движка (загрузка идёт уже в нём)
+            if self.handler is not None or self._handler_failed:
+                return
+            if not self._should_warmup():
+                return
+            try:
+                if self._ensure_local_backend():
+                    return
+            except Exception:
+                pass
+            time.sleep(2.0)
 
     def _ensure_local_backend(self) -> bool:
         if self._handler_failed:
@@ -107,6 +134,13 @@ class EmbeddingController:
                     )
                     self.handler = object()
                 except Exception as e:
+                    if "AI engine not available" in str(e):
+                        # Движок ещё не поднялся — не окончательный провал, фоновый
+                        # прогрев повторит попытку позже.
+                        logger.debug(
+                            "EmbeddingController: AI engine ещё не готов для прогрева эмбеддингов, повторю позже"
+                        )
+                        return False
                     logger.error(
                         f"EmbeddingController: не удалось прогреть local embedding backend: {e}",
                         exc_info=True,
@@ -136,6 +170,10 @@ class EmbeddingController:
                 "value": data.get("value"),
             })
 
+        # Включили векторный поиск / сменили модель — прогреваем в фоне сразу,
+        # чтобы первый запрос не ждал холодную загрузку.
+        self._maybe_start_warmup(reason=f"setting:{key}")
+
     def _on_install_task_finished(self, event: Event) -> None:
         data = event.data if isinstance(event.data, dict) else {}
         meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
@@ -146,6 +184,9 @@ class EmbeddingController:
         with self._init_lock:
             self.handler = None
             self._handler_failed = False
+
+        # Модель эмбеддингов только что доустановлена — прогреем в фоне.
+        self._maybe_start_warmup(reason="install_finished")
 
     def _on_get_embedding(self, event: Event) -> Optional[np.ndarray]:
         data = event.data or {}
