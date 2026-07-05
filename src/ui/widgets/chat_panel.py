@@ -55,7 +55,17 @@ class ChatPanel(QWidget):
 
     def on_activated(self):
         self._refresh_conversation_title()
-        update_send_button_state(self.gui)
+        refresh_composer_state(self.gui)
+
+    def _open_block_settings(self):
+        category = getattr(self.gui, "_composer_block_category", "api") or "api"
+        try:
+            if hasattr(self.gui, "switch_main_page"):
+                self.gui.switch_main_page("settings")
+            if hasattr(self.gui, "show_settings_category"):
+                self.gui.show_settings_category(category, force=True)
+        except Exception as exc:
+            logger.error(f"Failed to open settings from composer warning: {exc}", exc_info=True)
 
     def _build_conversation_strip(self) -> QFrame:
         strip = QFrame()
@@ -168,6 +178,35 @@ class ChatPanel(QWidget):
         bar_layout.addWidget(self.gui.send_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
         wrapper_layout.addWidget(bar)
+        self.gui.composer_bar = bar
+
+        # (#5) Предупреждение вместо строки ввода, когда нельзя отправлять
+        # (не настроен пресет / нет набора промптов). По умолчанию скрыто —
+        # refresh_composer_state() покажет при необходимости.
+        warning = QFrame()
+        warning.setObjectName("ChatComposerBar")
+        warn_layout = QHBoxLayout(warning)
+        warn_layout.setContentsMargins(12, 6, 6, 6)
+        warn_layout.setSpacing(8)
+        warn_icon = QLabel()
+        warn_icon.setPixmap(qta.icon("fa6s.triangle-exclamation", color="#ffb454").pixmap(18, 18))
+        warn_layout.addWidget(warn_icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.gui.composer_warning_label = QLabel("")
+        self.gui.composer_warning_label.setObjectName("ComposerWarningLabel")
+        self.gui.composer_warning_label.setWordWrap(True)
+        self.gui.composer_warning_label.setStyleSheet("color:#ffd2a0;")
+        warn_layout.addWidget(self.gui.composer_warning_label, 1, Qt.AlignmentFlag.AlignVCenter)
+        warn_settings_btn = QPushButton()
+        warn_settings_btn.setObjectName("ChatComposerIconBtn")
+        warn_settings_btn.setIcon(qta.icon("fa6s.gear", color="#ffd2ec"))
+        warn_settings_btn.setFixedSize(32, 32)
+        warn_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        tr_set(warn_settings_btn, "Открыть настройки", "Open settings", "setToolTip")
+        warn_settings_btn.clicked.connect(self._open_block_settings)
+        warn_layout.addWidget(warn_settings_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        warning.setVisible(False)
+        self.gui.composer_warning = warning
+        wrapper_layout.addWidget(warning)
 
         token_row = QHBoxLayout()
         token_row.setContentsMargins(6, 0, 8, 0)
@@ -246,8 +285,77 @@ def adjust_input_height(gui):
     gui.user_entry.setFixedHeight(new_height)
 
 
+def _send_block_reason(gui):
+    """(#5) Причина, по которой отправка сейчас запрещена, либо None.
+
+    Блокируем, если не настроен API-пресет ИЛИ у текущего персонажа нет набора
+    промптов (например, удалена стандартная папка Prompts). Возвращает кортеж
+    (текст_предупреждения, категория_настроек_для_перехода)."""
+    # 1) API-пресет: не выбран никто и в списке пусто (не создавался).
+    try:
+        meta = gui.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
+        m = meta[0] if meta else None
+        custom = (m or {}).get("custom") or []
+        has_selected = bool(gui._get_setting("LAST_API_PRESET_ID", 0))
+        if not custom and not has_selected:
+            return (
+                _("Нельзя отправлять сообщения: не настроен API-пресет. "
+                  "Создайте или выберите пресет в настройках.",
+                  "Can't send messages: no API preset configured. "
+                  "Create or select a preset in settings."),
+                "api",
+            )
+    except Exception:
+        pass
+
+    # 2) Набор промптов текущего персонажа.
+    try:
+        from managers.prompt_catalogue_manager import list_prompt_sets
+        res = gui.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
+        char_id = str((res[0] if res else {}).get("character_id") or "").strip()
+        if char_id and not list_prompt_sets("Prompts", char_id):
+            return (
+                _("Нельзя отправлять сообщения: у персонажа нет набора промптов "
+                  "(папка Prompts). Восстановите промпты.",
+                  "Can't send messages: character has no prompt set "
+                  "(Prompts folder). Restore prompts."),
+                "characters",
+            )
+    except Exception:
+        pass
+
+    return None
+
+
+def refresh_composer_state(gui):
+    """Переключает строку ввода на предупреждение, когда отправка заблокирована
+    (#5), и обратно. Дёргать при активации песочницы и смене пресета/персонажа."""
+    reason = _send_block_reason(gui)
+    gui._composer_blocked = bool(reason)
+
+    bar = getattr(gui, "composer_bar", None)
+    warning = getattr(gui, "composer_warning", None)
+    if reason is not None:
+        text, category = reason
+        gui._composer_block_category = category
+        lbl = getattr(gui, "composer_warning_label", None)
+        if lbl is not None:
+            lbl.setText(text)
+    if bar is not None:
+        bar.setVisible(not gui._composer_blocked)
+    if warning is not None:
+        warning.setVisible(gui._composer_blocked)
+
+    update_send_button_state(gui)
+
+
 def update_send_button_state(gui):
     if not getattr(gui, "user_entry", None) or not getattr(gui, "send_button", None):
+        return
+
+    # Отправка полностью заблокирована (нет пресета/промптов) — см. #5.
+    if getattr(gui, "_composer_blocked", False):
+        gui.send_button.setEnabled(False)
         return
 
     has_text = bool(gui.user_entry.toPlainText().strip())
