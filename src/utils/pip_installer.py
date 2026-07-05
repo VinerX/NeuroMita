@@ -528,7 +528,13 @@ class PipInstaller:
             return True
 
     def _uv_base_cmd(self) -> List[str]:
-        return [self.script_path, "-m", "uv", "--verbose", "pip"]
+        # БЕЗ --verbose: в verbose-режиме uv переключается на DEBUG-логирование и
+        # глушит свои живые прогресс-бары (indicatif) → в вывод не идут байтовые
+        # пары done/total и скорость, все бары в AI Hub остаются пустыми и висит
+        # «Ожидание данных о размере пакетов…». Без verbose uv под PTY рисует
+        # живой прогресс, а строки-вехи (Resolved/Prepared/Installed) и ошибки
+        # разрешения печатаются в обоих режимах — диагностика при падении не теряется.
+        return [self.script_path, "-m", "uv", "pip"]
 
     def _pip_base_cmd(self) -> List[str]:
         return [self.script_path, "-m", "pip"]
@@ -582,7 +588,7 @@ class PipInstaller:
         self.update_status(description)
         base = self._resolve_installer_base_cmd()
         if self._is_uv_command(base):
-            root = [p for p in base if str(p).lower() not in ("pip", "--verbose")]
+            root = [p for p in base if str(p).lower() != "pip"]
             cmd = root + ["cache", "clean"]
         else:
             cmd = list(base) + ["cache", "purge"]
@@ -1101,6 +1107,11 @@ class PipInstaller:
             "collecting", "collected",
             "installing", "installed", "uninstalling", "uninstalled",
             "downloading", "downloaded",
+            # uv-преамбула: строки «Using CPython …», «Using uv dependency
+            # overrides …», «Audited N packages», «Found …» и т.п. — не пакеты.
+            # Без этого «Using» становится фантомной задачей без размеров и
+            # висит как единственная «Активных задач: 1» на тихой фазе torch.
+            "using", "audited", "found", "note", "updating", "creating",
         }
 
         def __init__(self):
