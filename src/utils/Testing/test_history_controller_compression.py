@@ -152,6 +152,40 @@ class HistoryControllerCompressionTests(unittest.TestCase):
             ],
         )
 
+    def test_build_compression_plan_triggers_at_threshold_and_keeps_keep_last(self):
+        controller = self._make_controller()
+        msgs = [{"role": "user", "content": f"m{i}"} for i in range(40)]
+        plan = controller._build_compression_plan(
+            source_messages=msgs,
+            keep_last=10,
+            trigger_at=40,
+            enable_on_limit=True,
+            enable_periodic=False,
+            periodic_interval=0,
+            background_mode=False,
+            char_id="c",
+        )
+        self.assertIsNotNone(plan)
+        to_compress, reason = plan
+        self.assertEqual(reason, "On-limit compression")
+        # дошло до 40 → сжимаем 30, оставляем последние 10
+        self.assertEqual(len(to_compress), 30)
+
+    def test_build_compression_plan_does_not_trigger_below_threshold(self):
+        controller = self._make_controller()
+        msgs = [{"role": "user", "content": f"m{i}"} for i in range(39)]
+        plan = controller._build_compression_plan(
+            source_messages=msgs,
+            keep_last=10,
+            trigger_at=40,
+            enable_on_limit=True,
+            enable_periodic=False,
+            periodic_interval=0,
+            background_mode=False,
+            char_id="c",
+        )
+        self.assertIsNone(plan)
+
     def test_apply_compression_result_does_not_advance_memory_mode_without_memory_system(self):
         controller = self._make_controller()
         character = _StubCharacter([], memory_system=None)

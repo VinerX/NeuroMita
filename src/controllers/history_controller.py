@@ -240,7 +240,8 @@ class HistoryController:
         summary_count: int = 0,
         background_mode: bool = False,
     ) -> tuple[List[Dict[str, Any]], str, int]:
-        compress_percent = float(self._get_setting("HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS", 0.85))
+        compress_percent = float(self._get_setting("HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS", 1.0))
+        keep_last_setting = int(self._get_setting("HISTORY_COMPRESSION_KEEP_LAST", 10))
         enable_on_limit = bool(self._get_setting("ENABLE_HISTORY_COMPRESSION_ON_LIMIT", True))
         enable_periodic = bool(self._get_setting("ENABLE_HISTORY_COMPRESSION_PERIODIC", False))
         periodic_interval = int(self._get_setting("HISTORY_COMPRESSION_PERIODIC_INTERVAL", 20))
@@ -248,16 +249,26 @@ class HistoryController:
 
         char_id = getattr(character, "char_id", "Unknown")
 
-        keep_tail = int(effective_limit) if effective_limit and effective_limit > 0 else 1
-        keep_tail = max(1, keep_tail)
+        # Окно контекста — сколько последних сообщений модель видит в промпте.
+        context_limit = int(effective_limit) if effective_limit and effective_limit > 0 else 1
+        context_limit = max(1, context_limit)
 
-        min_len_to_trigger = max(1, int(keep_tail * compress_percent))
+        # keep_last — сколько сообщений остаётся НЕсжатыми после сжатия (абсолютная величина,
+        # напр. 10: «дошло до 40 → сжалось до 10»). Больше окна контекста держать бессмысленно.
+        keep_last = max(1, keep_last_setting)
+        keep_last = min(keep_last, context_limit)
+
+        # Порог запуска сжатия: процент от окна контекста, допускается > 1 (1.2 → 48 при 40).
+        # Раньше процент почти не работал: сверх него требовалось ещё dialog_count > context_limit.
+        trigger_at = max(1, round(context_limit * compress_percent))
+        trigger_at = max(trigger_at, keep_last + 1)
+
         use_external_summary = (output_target == "history")
         source_messages = llm_messages_history[summary_count:]
         plan = self._build_compression_plan(
             source_messages=source_messages,
-            keep_tail=keep_tail,
-            min_len_to_trigger=min_len_to_trigger,
+            keep_last=keep_last,
+            trigger_at=trigger_at,
             enable_on_limit=enable_on_limit,
             enable_periodic=enable_periodic,
             periodic_interval=periodic_interval,
@@ -303,7 +314,7 @@ class HistoryController:
             llm_messages_history = llm_messages_history[new_count:]
             _, llm_messages_history = self._split_history_by_dialog_limit(
                 llm_messages_history,
-                keep_tail,
+                context_limit,
             )
 
         if reason == "Periodic compression":
@@ -315,8 +326,8 @@ class HistoryController:
         self,
         *,
         source_messages: List[Dict[str, Any]],
-        keep_tail: int,
-        min_len_to_trigger: int,
+        keep_last: int,
+        trigger_at: int,
         enable_on_limit: bool,
         enable_periodic: bool,
         periodic_interval: int,
@@ -324,8 +335,8 @@ class HistoryController:
         char_id: str,
     ) -> tuple[List[Dict[str, Any]], str] | None:
         dialog_count = self._count_dialog_messages(source_messages)
-        if enable_on_limit and dialog_count >= min_len_to_trigger and dialog_count > keep_tail:
-            messages_to_compress, _ = self._split_history_by_dialog_limit(source_messages, keep_tail)
+        if enable_on_limit and dialog_count >= trigger_at and dialog_count > keep_last:
+            messages_to_compress, _ = self._split_history_by_dialog_limit(source_messages, keep_last)
             if messages_to_compress:
                 return messages_to_compress, "On-limit compression"
 

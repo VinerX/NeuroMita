@@ -1132,11 +1132,20 @@ def _build_history_compression_config(self, hc_provider_names) -> list:
          'default': 6000, 'validation': self.validate_positive_integer_or_zero,
          'tooltip': _('Сколько символов из предыдущего summary передавать в следующий запрос на сжатие. 0 = не передавать.',
                       'How many characters from the previous summary to include in the next compression request. 0 = do not include it.')},
-        {'label': _('Процент для сжатия', 'Percent to compress'),
+        {'label': _('Порог сжатия (× от лимита)', 'Compression trigger (× of limit)'),
          'key': 'HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS', 'type': 'entry',
-         'default': 0.85, 'validation': self.validate_float_0_1,
-         'tooltip': _('Минимальное количество сообщений в истории, необходимое для запуска процесса сжатия.',
-                      'Minimum number of messages in history required to trigger compression.')},
+         'default': 1.0, 'validation': self.validate_float_positive,
+         'tooltip': _('Во сколько раз от лимита сообщений (окна контекста) история должна вырасти, '
+                      'чтобы запустить сжатие. Можно больше 1: например 1.2 при лимите 40 → сжатие на 48 сообщениях.',
+                      'How many times the message limit (context window) the history must grow to trigger '
+                      'compression. May exceed 1: e.g. 1.2 with a limit of 40 → compression at 48 messages.')},
+        {'label': _('Оставлять сообщений после сжатия', 'Keep last messages after compression'),
+         'key': 'HISTORY_COMPRESSION_KEEP_LAST', 'type': 'entry',
+         'default': 10, 'validation': self.validate_positive_integer,
+         'tooltip': _('Сколько последних сообщений остаётся несжатыми после сжатия (абсолютное число). '
+                      'Пример: дошло до 40 → сжалось до 10. Не больше лимита сообщений.',
+                      'How many latest messages remain uncompressed after compression (absolute number). '
+                      'Example: reached 40 → compressed to 10. Not more than the message limit.')},
         {'label': _('Цель вывода сжатой истории', 'Compressed history output target'),
          'key': 'HISTORY_COMPRESSION_OUTPUT_TARGET', 'type': 'combobox',
          'options': ['history', 'memory'], 'default': "history",
