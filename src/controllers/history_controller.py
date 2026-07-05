@@ -307,6 +307,11 @@ class HistoryController:
             history_len=len(llm_messages_history),
         )
 
+        # Сжатие реально применилось (summary_count продвинулся) — сообщаем UI,
+        # чтобы живые счётчики (напр. «сообщений в окне» в песочнице) обновились.
+        if new_count != summary_count:
+            self._emit_compressed(char_id)
+
         if background_mode:
             return llm_messages_history, new_summary, new_count
 
@@ -321,6 +326,12 @@ class HistoryController:
             self._messages_since_last_periodic_compression[char_id] = 0
 
         return llm_messages_history, new_summary, new_count
+
+    def _emit_compressed(self, char_id: str) -> None:
+        try:
+            self.event_bus.emit(Events.History.COMPRESSED, {"character_id": char_id})
+        except Exception:
+            pass
 
     def _build_compression_plan(
         self,

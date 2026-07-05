@@ -649,6 +649,9 @@ class Events:
         PREPARE_FOR_PROMPT = "prepare_history_for_prompt"
         SAVE_AFTER_RESPONSE = "save_history_after_response"
         MESSAGE_COMPLETED = "history_message_completed"
+        # Эмитится ПОСЛЕ фактического применения сжатия (история подрезана,
+        # summary_count обновлён). Для обновления живых счётчиков в UI.
+        COMPRESSED = "history_compressed"
 
     class RAG:
         GET_EMBEDDING = "rag_get_embedding"

@@ -296,6 +296,7 @@ class SandboxPage(QWidget):
     # реальным состоянием. Зато UPDATE_STATUS_COLORS в таких местах шлётся —
     # на него и пере-читаем значения тумблеров (фидбэк Винера).
     _status_values_signal = pyqtSignal()
+    _memory_summary_signal = pyqtSignal()
 
     def __init__(self, gui):
         super().__init__(gui)
@@ -1642,6 +1643,7 @@ class SandboxPage(QWidget):
         self._setting_changed_signal.connect(self._on_setting_changed_ui)
         self._status_refresh_signal.connect(self._refresh_status_panel)
         self._status_values_signal.connect(self._refresh_status_values)
+        self._memory_summary_signal.connect(self._refresh_memory_summary)
 
         bus = getattr(self.gui, "event_bus", None)
         if bus is None:
@@ -1659,8 +1661,14 @@ class SandboxPage(QWidget):
             # Авто-обновление блока «Статус» по завершении установок (задача #7).
             bus.subscribe(Events.Install.TASK_FINISHED, self._on_install_finished_evt, weak=False)
             bus.subscribe(Events.VoiceModel.MODEL_INSTALL_FINISHED, self._on_install_finished_evt, weak=False)
+            # После фактического сжатия истории — обновить счётчик «сообщений в окне».
+            bus.subscribe(Events.History.COMPRESSED, self._on_history_compressed_evt, weak=False)
         except Exception as exc:
             logger.debug(f"Sandbox diagnostics wiring failed: {exc}")
+
+    def _on_history_compressed_evt(self, event=None):
+        # Прилетает из фонового потока сжатия — маршалим в GUI-поток.
+        self._memory_summary_signal.emit()
 
     def _on_install_finished_evt(self, event=None):
         # Может прилететь из фонового потока установки — маршалим в GUI-поток.
