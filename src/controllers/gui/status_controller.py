@@ -1,7 +1,6 @@
 import time
 
 from core.events import Event, Events
-from core.response_status import get_response_status_kind
 from main_logger import logger
 
 from .base_controller import BaseController
@@ -17,6 +16,7 @@ class StatusController(BaseController):
         self.event_bus.subscribe(Events.GUI.UPDATE_STATUS_COLORS, self._on_update_status_colors, weak=False)
         self.event_bus.subscribe(Events.GUI.UPDATE_STATUS, self._on_update_status, weak=False)
         self.event_bus.subscribe(Events.Model.ON_STARTED_RESPONSE_GENERATION, self._on_started_response, weak=False)
+        self.event_bus.subscribe(Events.Model.ON_COMPRESSION_STARTED, self._on_compression_started, weak=False)
         self.event_bus.subscribe(Events.Model.ON_COMPRESSION_FINISHED, self._on_compression_finished, weak=False)
         self.event_bus.subscribe(Events.Model.ON_SUCCESSFUL_RESPONSE, self._on_successful_response, weak=False)
         self.event_bus.subscribe(Events.Model.ON_FAILED_RESPONSE_ATTEMPT, self._on_failed_response_attempt, weak=False)
@@ -96,15 +96,15 @@ class StatusController(BaseController):
         if not character_name:
             character_name = "Мита"
 
-        if get_response_status_kind() == "compression":
-            self.show_mita_thinking({
-                "state": "compression",
-                "text": "Сжатие истории...",
-                "icon_names": ["fa6s.box-archive", "fa5s.archive", "fa5s.compress-alt"],
-            })
-            return
-
         self.show_mita_thinking(character_name)
+
+    def _on_compression_started(self, event: Event):
+        logger.info("StatusController: ON_COMPRESSION_STARTED")
+        self.show_mita_thinking({
+            "state": "compression",
+            "text": "Сжатие истории...",
+            "icon_names": ["fa6s.box-archive", "fa5s.archive", "fa5s.compress-alt"],
+        })
 
     def _on_successful_response(self, event: Event):
         logger.info("StatusController: ON_SUCCESSFUL_RESPONSE")

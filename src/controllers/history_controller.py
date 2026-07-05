@@ -693,12 +693,12 @@ class HistoryController:
             if isinstance(result_payload, dict):
                 if result_payload.get("ok") and str(result_payload.get("text") or "").strip():
                     self._clear_compression_cooldown(char_id)
-                    logger.info("[HistoryController] РСЃС‚РѕСЂРёСЏ СѓСЃРїРµС€РЅРѕ СЃР¶Р°С‚Р°.")
+                    logger.info("[HistoryController] History compressed successfully.")
                     return str(result_payload.get("text")).strip()
                 last_failure = result_payload
             elif isinstance(result_payload, str) and result_payload.strip():
                 self._clear_compression_cooldown(char_id)
-                logger.info("[HistoryController] РСЃС‚РѕСЂРёСЏ СѓСЃРїРµС€РЅРѕ СЃР¶Р°С‚Р°.")
+                logger.info("[HistoryController] History compressed successfully.")
                 return result_payload.strip()
             else:
                 last_failure = {
@@ -731,7 +731,7 @@ class HistoryController:
             if attempt < max_attempts:
                 time.sleep(delay_sec)
 
-        logger.warning("[HistoryController] РЎР¶Р°С‚РёРµ РёСЃС‚РѕСЂРёРё Р·Р°РІРµСЂС€РёР»РѕСЃСЊ Р±РµР· СѓСЃРїРµС…Р°.")
+        logger.warning("[HistoryController] History compression finished without success.")
         if background_mode and self._get_compression_cooldown_remaining(char_id) > 0:
             self._schedule_background_compression(
                 character,

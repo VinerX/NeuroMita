@@ -431,9 +431,12 @@ class Events:
         RELOAD_PROMPTS_ASYNC = "reload_prompts_async"
         GET_DEBUG_INFO = "get_debug_info"
         ON_STARTED_RESPONSE_GENERATION = "on_started_response_generation"
-        # Завершение фонового/синхронного сжатия истории (успех или ошибка) —
-        # чтобы погасить статус «Сжатие истории…», который показывается по
-        # ON_STARTED_RESPONSE_GENERATION и своего события завершения не имел.
+        # Сжатие истории — ОТДЕЛЬНЫЙ статус, со своими старт/финиш-событиями.
+        # Не переиспользуем ON_STARTED_RESPONSE_GENERATION: (1) оно триггерит и
+        # sandbox-диагностику «последнего запроса», (2) детект «это сжатие» через
+        # ContextVar не переживал смену потока диспетчера → статус залипал как
+        # «… думает» и не гасился. Свои события снимают обе проблемы.
+        ON_COMPRESSION_STARTED = "on_compression_started"
         ON_COMPRESSION_FINISHED = "on_compression_finished"
         ON_SUCCESSFUL_RESPONSE = "on_successful_response"
         ON_FAILED_RESPONSE = "on_failed_response"

@@ -1060,7 +1060,9 @@ class ModelController:
             preset_id = preset_id_override
 
             if event_type == "compress":
-                self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
+                # Отдельное событие статуса сжатия (не ON_STARTED_RESPONSE_GENERATION,
+                # чтобы не путать с реальной генерацией и не залипать).
+                self.event_bus.emit(Events.Model.ON_COMPRESSION_STARTED, {
                     "character_id": char_id,
                     "character_name": char_name or char_id or "Мита",
                 })
