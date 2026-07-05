@@ -372,9 +372,11 @@ def _build_character_accordion(self, character_list, current_char_id):
             continue
         section = InnerCollapsibleSection(cid, parent=self)
         # Иконка-аватар персонажа слева от заголовка секции (#6).
+        # resolve_character_avatar понимает id-формат ("KindMita"), а не только
+        # display-имя ("Kind Mita") — иначе у части персонажей была плашка.
         try:
-            from ui.chat.message_widget import _get_avatar_pixmap
-            section.set_header_pixmap(_get_avatar_pixmap(cid, "assistant"))
+            from ui.chat.message_widget import resolve_character_avatar
+            section.set_header_pixmap(resolve_character_avatar(cid, 22))
         except Exception:
             pass
         self._char_sections[cid] = section

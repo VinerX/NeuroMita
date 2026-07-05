@@ -132,6 +132,30 @@ def _get_avatar_pixmap(character_name: str, role: str) -> QPixmap:
             if not pm.isNull(): return _round_pixmap(pm, AVATAR_SIZE)
     return _placeholder_avatar(AVATAR_SIZE, ROLE_COLORS.get(role, "#A78BFA"), character_name)
 
+
+def resolve_character_avatar(character_id: str, size: int = 32, role: str = "assistant") -> QPixmap:
+    """Аватар персонажа по его ID ИЛИ display-name. В отличие от
+    _get_avatar_pixmap (матчит только точные/префиксные ключи AVATAR_MAP —
+    display-имена вида "Kind Mita"), понимает и голый id "KindMita", и "Kind".
+    Если реального файла нет — плашка с инициалом."""
+    char_id = (character_id or "").strip()
+    candidates = []
+    if char_id:
+        low = char_id.lower()
+        for key, fn in AVATAR_MAP.items():
+            kl = key.lower()
+            if kl.startswith(low) or low.startswith(kl.split()[0]):
+                candidates.append(fn)
+        candidates.append(f"{low}.png")
+    avatar_dir = _get_avatar_dir()
+    for fn in candidates:
+        path = os.path.join(avatar_dir, fn)
+        if os.path.isfile(path):
+            pm = QPixmap(path)
+            if not pm.isNull():
+                return _round_pixmap(pm, size)
+    return _placeholder_avatar(size, ROLE_COLORS.get(role, "#A78BFA"), char_id)
+
 class BubbleFrame(QFrame):
     def __init__(self, role: str, tail_side: str | None = "left", parent=None):
         super().__init__(parent)

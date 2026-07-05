@@ -526,24 +526,9 @@ class SandboxPage(QWidget):
 
     # --------- Avatar -----------
     def _resolve_avatar_pixmap(self, character_id: str, size: int = 32) -> QPixmap:
-        char_id = (character_id or "").strip()
-        candidates = []
-        if char_id:
-            # Direct match in AVATAR_MAP keys (e.g. "Crazy Mita")
-            for key, fn in AVATAR_MAP.items():
-                if key.lower().startswith(char_id.lower()) or char_id.lower().startswith(key.lower().split()[0]):
-                    candidates.append(fn)
-            candidates.append(f"{char_id.lower()}.png")
-        avatar_dir = _get_avatar_dir()
-        for fn in candidates:
-            path = os.path.join(avatar_dir, fn)
-            if os.path.isfile(path):
-                pm = QPixmap(path)
-                if not pm.isNull():
-                    return _round_pixmap(pm, size)
-        # Fallback icon
-        icon_pm = qta.icon("fa6s.user", color="#ffd2ec").pixmap(size - 4, size - 4)
-        return _round_pixmap(icon_pm, size)
+        # Единый резолвер аватара (по id или display-имени) — общий с настройками.
+        from ui.chat.message_widget import resolve_character_avatar
+        return resolve_character_avatar(character_id, size)
 
     def _refresh_character_avatar(self):
         if self._character_avatar_label is None:
