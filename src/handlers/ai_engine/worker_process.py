@@ -47,6 +47,10 @@ def run_worker_process(worker_name: str, cmd_queue, res_queue, log_queue) -> Non
       - "shared" -> один worker для TTS + ASR
     """
     try:
+        # torch/MKL (libiomp5md) + onnxruntime (libomp140) в одном процессе дают
+        # OMP Error #15 → abort. Ставим до любых тяжёлых импортов. См. __main__.py.
+        os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
         _ensure_lib_on_path()
 
         try:

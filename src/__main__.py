@@ -18,7 +18,12 @@ import os
 import sys
 import re
 
-os.environ["QT_API"] = "pyqt6" 
+os.environ["QT_API"] = "pyqt6"
+
+# torch/MKL тянет libiomp5md.dll, onnxruntime — libomp140.dll. Когда обе OpenMP-рантайм
+# попадают в один процесс (shared AI-worker: RAG+ASR+TTS), падает OMP Error #15 → abort
+# (наблюдался краш с кодом 3 при инициализации RAG). Разрешаем сосуществование дублей.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 from main_logger import logger
 from _version import __version__
