@@ -171,6 +171,13 @@ def setup_general_settings_controls(self, parent):
                       'По умолчанию скрыты. Дублируется в Песочнице → Отладка.',
                       'Show system/context notes (e.g. "[Easel drawing]…") in chat. '
                       'Hidden by default. Also available in Sandbox → Debug.')},
+
+        {'label': _('Показывать статистику токенов/стоимости', 'Show token/cost stats'), 'key': 'SHOW_TOKEN_INFO',
+         'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _('Строка снизу чата с токенами, заполнением контекста, кешем и стоимостью. '
+                      'По умолчанию выключена.',
+                      'Bottom-of-chat line with tokens, context fill, cache and cost. '
+                      'Off by default.')},
     ]
 
     create_settings_section(

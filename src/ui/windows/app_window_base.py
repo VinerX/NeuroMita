@@ -708,7 +708,9 @@ class AppWindowBase(QMainWindow):
         return str(n)
 
     def update_token_count(self, event=None):
-        show_token_info = self._get_setting("SHOW_TOKEN_INFO", True)
+        # По умолчанию выключено (#7): строка со статистикой токенов/стоимости
+        # включается галкой «Показывать статистику токенов/стоимости».
+        show_token_info = self._get_setting("SHOW_TOKEN_INFO", False)
         if show_token_info:
             stats_res = self.event_bus.emit_and_wait(Events.Model.GET_TOKEN_STATS, timeout=0.5)
             stats = stats_res[0] if stats_res and isinstance(stats_res[0], dict) else {}
