@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Dict, Any, List, Optional
 import datetime
 import base64
+import json
 import time
 import threading
 from io import BytesIO
@@ -14,6 +15,15 @@ from main_logger import logger
 class HistoryController:
     _SUMMARY_TEXT_VAR = "HISTORY_COMPRESSION_SUMMARY"
     _SUMMARY_COUNT_VAR = "HISTORY_COMPRESSION_SUMMARY_COUNT"
+    _SUMMARY_SEGMENTS_VAR = "HISTORY_COMPRESSION_SUMMARY_SEGMENTS"
+
+    # Режимы вывода сжатия истории (HISTORY_COMPRESSION_OUTPUT_TARGET):
+    #   layered — слоистая сводка в истории (по умолчанию): новое пишется отдельным
+    #             слоем, старые слои изредка схлопываются (без «испорченного телефона»);
+    #   history — единый блоб-сводка в истории, переписывается целиком (легаси);
+    #   memory  — сводка уходит отдельной памятью в MemorySystem (легаси).
+    _DEFAULT_OUTPUT_TARGET = "layered"
+    _EXTERNAL_SUMMARY_TARGETS = ("history", "layered")
 
     def __init__(self):
         self.event_bus = get_event_bus()
@@ -87,8 +97,8 @@ class HistoryController:
             filtered.append(m)
         llm_messages_history = filtered
 
-        output_target = str(self._get_setting("HISTORY_COMPRESSION_OUTPUT_TARGET", "memory"))
-        use_external_summary = output_target == "history"
+        output_target = str(self._get_setting("HISTORY_COMPRESSION_OUTPUT_TARGET", self._DEFAULT_OUTPUT_TARGET))
+        use_external_summary = output_target in self._EXTERNAL_SUMMARY_TARGETS
         history_summary = self._get_history_summary(character) if use_external_summary else ""
         summary_count = self._get_history_summary_count(character)
         summary_count = max(0, min(summary_count, len(llm_messages_history)))
@@ -245,7 +255,7 @@ class HistoryController:
         enable_on_limit = bool(self._get_setting("ENABLE_HISTORY_COMPRESSION_ON_LIMIT", True))
         enable_periodic = bool(self._get_setting("ENABLE_HISTORY_COMPRESSION_PERIODIC", False))
         periodic_interval = int(self._get_setting("HISTORY_COMPRESSION_PERIODIC_INTERVAL", 20))
-        output_target = str(self._get_setting("HISTORY_COMPRESSION_OUTPUT_TARGET", "memory"))
+        output_target = str(self._get_setting("HISTORY_COMPRESSION_OUTPUT_TARGET", self._DEFAULT_OUTPUT_TARGET))
 
         char_id = getattr(character, "char_id", "Unknown")
 
@@ -263,7 +273,7 @@ class HistoryController:
         trigger_at = max(1, round(context_limit * compress_percent))
         trigger_at = max(trigger_at, keep_last + 1)
 
-        use_external_summary = (output_target == "history")
+        use_external_summary = output_target in self._EXTERNAL_SUMMARY_TARGETS
         source_messages = llm_messages_history[summary_count:]
         plan = self._build_compression_plan(
             source_messages=source_messages,
@@ -286,10 +296,14 @@ class HistoryController:
             f"[HistoryController][{char_id}] {reason}: попытка сжать "
             f"{len(messages_to_compress)} сообщений."
         )
+        is_layered = (output_target == "layered")
+        # В layered-режиме прошлую сводку в промпт НЕ подаём: суммируем только новый
+        # кусок и дописываем его отдельным слоем — это и убирает «испорченный телефон».
+        chunk_previous_summary = "" if is_layered else (history_summary if use_external_summary else "")
         compressed_summary = self._compress_history_singleflight(
             character,
             messages_to_compress,
-            previous_summary=history_summary if use_external_summary else "",
+            previous_summary=chunk_previous_summary,
             background_mode=background_mode,
         )
 
@@ -297,15 +311,25 @@ class HistoryController:
             logger.warning(f"[HistoryController][{char_id}] Сжатие истории не удалось.")
             return llm_messages_history, history_summary, summary_count
 
-        new_summary, new_count = self._apply_compression_result(
-            character,
-            output_target=output_target,
-            compressed_summary=compressed_summary,
-            previous_summary=history_summary,
-            summary_count=summary_count,
-            compressed_count=len(messages_to_compress),
-            history_len=len(llm_messages_history),
-        )
+        if is_layered:
+            new_summary, new_count = self._apply_layered_compression_result(
+                character,
+                compressed_summary=compressed_summary,
+                summary_count=summary_count,
+                compressed_count=len(messages_to_compress),
+                history_len=len(llm_messages_history),
+                background_mode=background_mode,
+            )
+        else:
+            new_summary, new_count = self._apply_compression_result(
+                character,
+                output_target=output_target,
+                compressed_summary=compressed_summary,
+                previous_summary=history_summary,
+                summary_count=summary_count,
+                compressed_count=len(messages_to_compress),
+                history_len=len(llm_messages_history),
+            )
 
         # Сжатие реально применилось (summary_count продвинулся) — сообщаем UI,
         # чтобы живые счётчики (напр. «сообщений в окне» в песочнице) обновились.
@@ -494,8 +518,8 @@ class HistoryController:
                 memory_limit = 1
             effective_limit = 8 if getattr(character, "char_id", "") == "GameMaster" else memory_limit
 
-            output_target = str(self._get_setting("HISTORY_COMPRESSION_OUTPUT_TARGET", "memory"))
-            history_summary = self._get_history_summary(character) if output_target == "history" else ""
+            output_target = str(self._get_setting("HISTORY_COMPRESSION_OUTPUT_TARGET", self._DEFAULT_OUTPUT_TARGET))
+            history_summary = self._get_history_summary(character) if output_target in self._EXTERNAL_SUMMARY_TARGETS else ""
             summary_count = max(0, min(self._get_history_summary_count(character), len(llm_messages_history)))
 
             self._process_history_compression(
@@ -828,6 +852,137 @@ class HistoryController:
                 character.flush_variables()
         except Exception as e:
             logger.warning(f"[HistoryController] Не удалось сохранить состояние summary: {e}", exc_info=True)
+
+    # ── Слоистая сводка (layered) ─────────────────────────────────────────────
+
+    def _now_iso(self) -> str:
+        try:
+            return datetime.datetime.now().isoformat(timespec="seconds")
+        except Exception:
+            return ""
+
+    def _load_summary_segments(self, character) -> List[Dict[str, Any]]:
+        """Слои сводки layered-режима. Если их ещё нет — миграция из старого блоба."""
+        try:
+            raw = character.get_variable(self._SUMMARY_SEGMENTS_VAR, None)
+        except Exception:
+            raw = None
+
+        segments: List[Dict[str, Any]] = []
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    segments = [s for s in parsed if isinstance(s, dict)]
+            except Exception:
+                segments = []
+        elif isinstance(raw, list):
+            segments = [s for s in raw if isinstance(s, dict)]
+
+        if segments:
+            return segments
+
+        # миграция: старый одиночный блоб-сводка → один слой
+        blob = self._get_history_summary(character)
+        if blob:
+            return [{
+                "text": blob,
+                "msg_count": self._get_history_summary_count(character),
+                "level": 1,
+                "created": self._now_iso(),
+            }]
+        return []
+
+    def _render_summary_segments(self, segments: List[Dict[str, Any]]) -> str:
+        parts: List[str] = []
+        for s in segments:
+            if not isinstance(s, dict):
+                continue
+            text = str(s.get("text") or "").strip()
+            if text:
+                parts.append(text)
+        return "\n\n".join(parts).strip()
+
+    def _set_summary_segments_state(self, character, segments, rendered, summary_count) -> None:
+        try:
+            character.set_variable(self._SUMMARY_SEGMENTS_VAR, json.dumps(segments, ensure_ascii=False))
+            # блоб держим синхронным с рендером слоёв — для рендера [HISTORY SUMMARY]
+            # и обратной совместимости (_get_history_summary читает именно его).
+            character.set_variable(self._SUMMARY_TEXT_VAR, str(rendered or "").strip())
+            character.set_variable(self._SUMMARY_COUNT_VAR, max(0, int(summary_count or 0)))
+            if hasattr(character, "flush_variables"):
+                character.flush_variables()
+        except Exception as e:
+            logger.warning(f"[HistoryController] Не удалось сохранить слои сводки: {e}", exc_info=True)
+
+    def _maybe_rollup_segments(
+        self, character, segments: List[Dict[str, Any]], *, background_mode: bool
+    ) -> List[Dict[str, Any]]:
+        """Роллап: когда слоёв слишком много — схлопнуть самые старые K в один.
+
+        Это единственное место, где происходит повторная суммаризация, и то —
+        редко и только над старым. Свежие слои остаются нетронутыми.
+        """
+        max_segments = int(self._get_setting("HISTORY_COMPRESSION_LAYERED_MAX_SEGMENTS", 6))
+        batch = int(self._get_setting("HISTORY_COMPRESSION_LAYERED_ROLLUP_BATCH", 3))
+        if max_segments <= 0 or batch <= 1:
+            return segments
+        if len(segments) <= max_segments:
+            return segments
+
+        batch = min(batch, len(segments) - 1)  # хотя бы один свежий слой должен остаться
+        if batch <= 1:
+            return segments
+
+        oldest = segments[:batch]
+        rest = segments[batch:]
+        char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+        logger.info(f"[HistoryController][{char_id}] Роллап {len(oldest)} старых слоёв сводки в один.")
+
+        merged_text = self._compress_history_singleflight(
+            character,
+            [{"role": "system", "content": str(s.get("text") or "")} for s in oldest],
+            previous_summary="",
+            background_mode=background_mode,
+        )
+        if not merged_text or not str(merged_text).strip():
+            logger.warning(f"[HistoryController][{char_id}] Роллап слоёв не удался — оставляю как есть.")
+            return segments
+
+        merged = {
+            "text": str(merged_text).strip(),
+            "msg_count": sum(int(s.get("msg_count") or 0) for s in oldest),
+            "level": max((int(s.get("level") or 0) for s in oldest), default=0) + 1,
+            "created": self._now_iso(),
+        }
+        return [merged] + rest
+
+    def _apply_layered_compression_result(
+        self,
+        character,
+        *,
+        compressed_summary: str,
+        summary_count: int,
+        compressed_count: int,
+        history_len: int,
+        background_mode: bool,
+    ) -> tuple[str, int]:
+        segments = self._load_summary_segments(character)
+        segments.append({
+            "text": str(compressed_summary or "").strip(),
+            "msg_count": int(compressed_count),
+            "level": 0,
+            "created": self._now_iso(),
+        })
+        segments = self._maybe_rollup_segments(character, segments, background_mode=background_mode)
+        new_count = min(history_len, summary_count + compressed_count)
+        rendered = self._render_summary_segments(segments)
+        self._set_summary_segments_state(character, segments, rendered, new_count)
+        logger.info(
+            f"[HistoryController][{getattr(character, 'char_id', 'Unknown')}] "
+            f"Layered summary: {len(segments)} слоёв, свёрнуто {new_count} сообщений."
+        )
+        return rendered, new_count
 
     def _truncate_text_for_prompt(self, text: str, limit: int) -> str:
         if limit <= 0:

@@ -1146,11 +1146,31 @@ def _build_history_compression_config(self, hc_provider_names) -> list:
                       'Пример: дошло до 40 → сжалось до 10. Не больше лимита сообщений.',
                       'How many latest messages remain uncompressed after compression (absolute number). '
                       'Example: reached 40 → compressed to 10. Not more than the message limit.')},
-        {'label': _('Цель вывода сжатой истории', 'Compressed history output target'),
+        {'label': _('Режим сжатой истории', 'Compressed history mode'),
          'key': 'HISTORY_COMPRESSION_OUTPUT_TARGET', 'type': 'combobox',
-         'options': ['history', 'memory'], 'default': "history",
-         'tooltip': _('Куда помещать результат сжатия истории (например, "memory", "summary_message").',
-                      'Where to place the compressed history output (e.g., "memory", "summary_message").')},
+         'options': ['layered', 'history', 'memory'], 'default': "layered",
+         'tooltip': _('layered (по умолч.) — слоистая сводка в истории: новое пишется отдельным слоем, '
+                      'старые слои изредка схлопываются (без деградации фактов). '
+                      'history — единый блоб-сводка, переписывается целиком (легаси). '
+                      'memory — сводка отдельной памятью в MemorySystem (легаси).',
+                      'layered (default) — layered summary in history: new content becomes a separate layer, '
+                      'old layers are occasionally rolled up (no fact degradation). '
+                      'history — single summary blob, fully rewritten each time (legacy). '
+                      'memory — summary as a separate MemorySystem entry (legacy).')},
+        {'label': _('Слои: макс. слоёв до роллапа', 'Layers: max layers before rollup'),
+         'key': 'HISTORY_COMPRESSION_LAYERED_MAX_SEGMENTS', 'type': 'entry',
+         'default': 6, 'validation': self.validate_positive_integer,
+         'tooltip': _('Только для режима layered. Когда слоёв сводки становится больше этого числа, '
+                      'самые старые схлопываются в один. 0 = никогда не схлопывать.',
+                      'Layered mode only. When the number of summary layers exceeds this, the oldest ones '
+                      'are rolled up into one. 0 = never roll up.')},
+        {'label': _('Слои: сколько старых схлопывать за раз', 'Layers: how many old layers per rollup'),
+         'key': 'HISTORY_COMPRESSION_LAYERED_ROLLUP_BATCH', 'type': 'entry',
+         'default': 3, 'validation': self.validate_positive_integer,
+         'tooltip': _('Только для режима layered. Сколько самых старых слоёв объединять в один при роллапе. '
+                      'Хотя бы один свежий слой всегда остаётся нетронутым.',
+                      'Layered mode only. How many oldest layers to merge into one on rollup. '
+                      'At least one fresh layer always remains untouched.')},
         {'label': _('Провайдер для сжатия', 'Provider for compression'),
          'key': 'HC_PROVIDER', 'type': 'combobox',
          'options': hc_provider_names, 'default': _('Текущий', 'Current')},

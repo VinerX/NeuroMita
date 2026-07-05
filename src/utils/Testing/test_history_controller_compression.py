@@ -355,5 +355,110 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         self.assertIn("TestChar: general kenobi", result)
 
 
+    def test_layered_appends_new_layer_below_rollup_threshold(self):
+        import json
+
+        controller = self._make_controller(
+            {"HISTORY_COMPRESSION_LAYERED_MAX_SEGMENTS": 6, "HISTORY_COMPRESSION_LAYERED_ROLLUP_BATCH": 3}
+        )
+        # ниже порога роллапа compressor не должен вызываться вовсе
+        controller._compress_history_singleflight = (
+            lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("unexpected rollup"))
+        )
+        character = _StubCharacter([])
+
+        rendered, count = controller._apply_layered_compression_result(
+            character, compressed_summary="seg-A", summary_count=0,
+            compressed_count=10, history_len=50, background_mode=True,
+        )
+        self.assertEqual(rendered, "seg-A")
+        self.assertEqual(count, 10)
+
+        rendered, count = controller._apply_layered_compression_result(
+            character, compressed_summary="seg-B", summary_count=10,
+            compressed_count=8, history_len=50, background_mode=True,
+        )
+        segments = json.loads(character.vars[HistoryController._SUMMARY_SEGMENTS_VAR])
+        self.assertEqual([s["text"] for s in segments], ["seg-A", "seg-B"])
+        self.assertEqual(rendered, "seg-A\n\nseg-B")
+        self.assertEqual(count, 18)
+
+    def test_layered_process_does_not_refeed_previous_summary_to_chunk(self):
+        # В layered-режиме кусок суммаризуется с previous_summary="" (нет телефона).
+        controller = self._make_controller(
+            {
+                "HISTORY_COMPRESSION_OUTPUT_TARGET": "layered",
+                "HISTORY_COMPRESSION_KEEP_LAST": 2,
+                "HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS": 1.0,
+                "ENABLE_HISTORY_COMPRESSION_ON_LIMIT": True,
+                "HISTORY_COMPRESSION_LAYERED_MAX_SEGMENTS": 6,
+            }
+        )
+        fed_previous = []
+        controller._compress_history_singleflight = (
+            lambda _c, _m, *, previous_summary="", background_mode=False: (
+                fed_previous.append(previous_summary) or "chunk-summary"
+            )
+        )
+        character = _StubCharacter(
+            [{"role": "user", "content": f"m{i}"} for i in range(6)]
+        )
+        character.vars[HistoryController._SUMMARY_TEXT_VAR] = "EXISTING SUMMARY"
+
+        controller._process_history_compression(
+            character,
+            character.history_manager.load_history()["messages"],
+            effective_limit=4,
+            history_summary="EXISTING SUMMARY",
+            summary_count=0,
+            background_mode=True,
+        )
+        self.assertEqual(fed_previous, [""])
+
+    def test_layered_migrates_legacy_blob_into_first_layer(self):
+        import json
+
+        controller = self._make_controller()
+        controller._compress_history_singleflight = (
+            lambda _c, _m, *, previous_summary="", background_mode=False: "seg-new"
+        )
+        character = _StubCharacter([])
+        character.vars[HistoryController._SUMMARY_TEXT_VAR] = "OLD BLOB"
+        character.vars[HistoryController._SUMMARY_COUNT_VAR] = 5
+
+        rendered, count = controller._apply_layered_compression_result(
+            character, compressed_summary="seg-new", summary_count=5,
+            compressed_count=4, history_len=50, background_mode=True,
+        )
+        segments = json.loads(character.vars[HistoryController._SUMMARY_SEGMENTS_VAR])
+        self.assertEqual([s["text"] for s in segments], ["OLD BLOB", "seg-new"])
+        self.assertEqual(count, 9)
+
+    def test_layered_rolls_up_oldest_layers_when_over_limit(self):
+        import json
+
+        controller = self._make_controller(
+            {"HISTORY_COMPRESSION_LAYERED_MAX_SEGMENTS": 3, "HISTORY_COMPRESSION_LAYERED_ROLLUP_BATCH": 2}
+        )
+        controller._compress_history_singleflight = (
+            lambda _c, _m, *, previous_summary="", background_mode=False: "MERGED"
+        )
+        character = _StubCharacter([])
+        character.vars[HistoryController._SUMMARY_SEGMENTS_VAR] = json.dumps([
+            {"text": "L1", "msg_count": 3, "level": 0},
+            {"text": "L2", "msg_count": 3, "level": 0},
+            {"text": "L3", "msg_count": 3, "level": 0},
+        ])
+
+        controller._apply_layered_compression_result(
+            character, compressed_summary="L4", summary_count=9,
+            compressed_count=3, history_len=50, background_mode=True,
+        )
+        segments = json.loads(character.vars[HistoryController._SUMMARY_SEGMENTS_VAR])
+        self.assertEqual([s["text"] for s in segments], ["MERGED", "L3", "L4"])
+        self.assertEqual(segments[0]["level"], 1)
+        self.assertEqual(segments[0]["msg_count"], 6)
+
+
 if __name__ == "__main__":
     unittest.main()
