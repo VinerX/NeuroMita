@@ -180,13 +180,33 @@ def _clear_prompt_info_fields(gui):
             pass
 
 
+def _current_character_id() -> str:
+    """Текущий (активный) персонаж — единственный источник правды теперь в
+    CharacterController. Выбирается ТОЛЬКО в песочнице."""
+    try:
+        res = get_event_bus().emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
+        prof = res[0] if res else {}
+        return str((prof or {}).get("character_id") or "").strip()
+    except Exception:
+        return ""
+
+
+def _configured_character_id(gui) -> str:
+    """Персонаж, чей КОНФИГ сейчас редактируется в настройках (раскрытая секция
+    аккордеона). Раньше эту роль играл скрытый character_combobox. К активному
+    персонажу отношения не имеет — настройка одного не переключает того, с кем
+    идёт чат."""
+    cid = str(getattr(gui, "_configured_char_id", "") or "").strip()
+    return cid or _current_character_id()
+
+
 def update_prompt_set_info(gui, character_id: str | None = None, set_name: str | None = None):
     labels = getattr(gui, "prompt_info_labels", None)
     if not isinstance(labels, dict) or not labels:
         return
 
     if character_id is None:
-        character_id = gui.character_combobox.currentText().strip() if hasattr(gui, "character_combobox") else ""
+        character_id = _configured_character_id(gui)
     if set_name is None:
         set_name = gui.prompt_pack_combobox.currentText().strip() if hasattr(gui, "prompt_pack_combobox") else ""
 
@@ -217,8 +237,6 @@ def wire_character_settings_logic(self):
     all_characters = event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
     character_list = all_characters[0] if all_characters else ["Crazy"]
 
-    self.character_combobox.set_data_items(character_list if character_list else ["Crazy"])
-
     if hasattr(self, 'chat_character_combobox'):
         self.chat_character_combobox.blockSignals(True)
         try:
@@ -243,21 +261,27 @@ def wire_character_settings_logic(self):
     current_profile = current_profile_res[0] if current_profile_res else {}
     current_char_id = current_profile.get('character_id', 'Crazy') if isinstance(current_profile, dict) else "Crazy"
 
-    if current_char_id:
-        idx = self.character_combobox.findText(current_char_id, Qt.MatchFlag.MatchFixedString)
-        if idx >= 0:
-            self.character_combobox.setCurrentIndex(idx)
-        if hasattr(self, 'chat_character_combobox'):
-            chat_idx = self.chat_character_combobox.findText(current_char_id, Qt.MatchFlag.MatchFixedString)
-            if chat_idx >= 0:
-                self.chat_character_combobox.setCurrentIndex(chat_idx)
+    # Стартово редактируем конфиг активного персонажа.
+    self._configured_char_id = current_char_id
+
+    if current_char_id and hasattr(self, 'chat_character_combobox'):
+        chat_idx = self.chat_character_combobox.findText(current_char_id, Qt.MatchFlag.MatchFixedString)
+        if chat_idx >= 0:
+            self.chat_character_combobox.setCurrentIndex(chat_idx)
 
     change_character_actions(self, current_char_id)
 
     if hasattr(self, 'prompt_pack_combobox'):
         self.prompt_pack_combobox.currentTextChanged.connect(lambda _text: on_prompt_set_changed(self))
-    if hasattr(self, 'character_combobox'):
-        self.character_combobox.currentTextChanged.connect(lambda _text: change_character_actions(self))
+    # Индикатор активного персонажа в аккордеоне синхронизируем с песочницей.
+    try:
+        get_event_bus().subscribe(
+            Events.Character.CURRENT_CHANGED,
+            lambda _e=None: _refresh_active_character_indicator(self),
+            weak=False,
+        )
+    except Exception:
+        pass
     if hasattr(self, 'char_provider_combobox'):
         self.char_provider_combobox.currentIndexChanged.connect(
             lambda _i: save_character_provider(self, self.char_provider_combobox.current_value()))
@@ -330,8 +354,10 @@ def _build_character_accordion(self, character_list, current_char_id):
     """Построить аккордеон персонажей (#17): по секции на каждую Миту.
 
     Раскрытие секции: сворачивает соседние, переносит в неё общую панель
-    настроек (`_char_config_panel`) и делает персонажа текущим (через скрытый
-    `character_combobox`, вокруг которого крутится вся логика).
+    настроек (`_char_config_panel`) и загружает КОНФИГ этого персонажа для
+    редактирования. Активного персонажа (с кем идёт чат) секция НЕ переключает —
+    это делается только в песочнице. На активном персонаже — визуальный
+    индикатор (#4, по решению Винера).
     """
     from managers.settings_manager import InnerCollapsibleSection
 
@@ -367,12 +393,37 @@ def _build_character_accordion(self, character_list, current_char_id):
         section.header.mousePressEvent = handler
         layout.addWidget(section)
 
-    # Раскрываем секцию текущего персонажа (переносит панель + выбирает).
+    # Индикатор активного (выбранного в песочнице) персонажа.
+    _refresh_active_character_indicator(self)
+
+    # Раскрываем секцию редактируемого персонажа (переносит панель + грузит конфиг).
     target = current_char_id if current_char_id in self._char_sections else None
     if target is None and self._char_sections:
         target = next(iter(self._char_sections))
     if target is not None:
         self._char_sections[target].toggle()
+
+
+def _refresh_active_character_indicator(self):
+    """Пометить в аккордеоне секцию активного персонажа (того, с кем сейчас
+    идёт чат — из CharacterController). Остальные — без пометки."""
+    sections = getattr(self, "_char_sections", None)
+    if not sections:
+        return
+    active = _current_character_id()
+    for cid, sec in sections.items():
+        title = getattr(sec, "title_label", None)
+        if title is None:
+            continue
+        is_active = (cid == active)
+        try:
+            title.setStyleSheet(
+                "color:#77d188; font-weight:600;" if is_active else ""
+            )
+            tip = _("Сейчас выбран в песочнице", "Currently selected in sandbox")
+            title.setToolTip(tip if is_active else "")
+        except Exception:
+            pass
 
 
 def _on_character_section_expanded(self, character_id, section):
@@ -390,27 +441,21 @@ def _on_character_section_expanded(self, character_id, section):
         section.content_layout.addWidget(panel)
         panel.setVisible(True)
 
-    # Сделать персонажа текущим — это дёргает всю логику (набор промптов,
-    # провайдер, инфо). Если индекс уже тот же — обновляем вручную.
-    combo = getattr(self, "character_combobox", None)
-    if combo is not None:
-        idx = combo.findText(character_id, Qt.MatchFlag.MatchFixedString)
-        if idx >= 0 and combo.currentIndex() != idx:
-            combo.setCurrentIndex(idx)
-        else:
-            change_character_actions(self, character_id)
-    else:
-        change_character_actions(self, character_id)
+    # Загрузить КОНФИГ этого персонажа в панель для редактирования. Активного
+    # персонажа НЕ трогаем (SET_CURRENT тут больше нет) — переключение только
+    # из песочницы.
+    self._configured_char_id = character_id
+    change_character_actions(self, character_id)
 
 
 def reload_character_data(gui):
     event_bus = get_event_bus()
 
-    if not hasattr(gui, "character_combobox") or not hasattr(gui, "prompt_pack_combobox"):
+    if not hasattr(gui, "prompt_pack_combobox"):
         event_bus.emit(Events.Character.RELOAD_DATA)
         return
 
-    character_id = gui.character_combobox.currentText().strip()
+    character_id = _configured_character_id(gui)
     if not character_id:
         event_bus.emit(Events.Character.RELOAD_DATA)
         _clear_prompt_info_fields(gui)
@@ -453,10 +498,10 @@ def reload_character_data(gui):
 
 
 def on_prompt_set_changed(gui):
-    if not hasattr(gui, 'character_combobox') or not hasattr(gui, 'prompt_pack_combobox'):
+    if not hasattr(gui, 'prompt_pack_combobox'):
         return
 
-    character_id = gui.character_combobox.currentText().strip()
+    character_id = _configured_character_id(gui)
     set_name = gui.prompt_pack_combobox.currentText().strip()
 
     update_prompt_set_info(gui, character_id=character_id, set_name=set_name)
@@ -472,28 +517,11 @@ def on_prompt_set_changed(gui):
 
 
 def change_character_actions(gui, character_id=None):
+    """Загрузить конфиг персонажа (набор промптов, провайдер, инфо) в панель
+    настроек. НЕ переключает активного персонажа — выбор только в песочнице."""
     event_bus = get_event_bus()
 
-    if character_id:
-        selected_character = character_id
-    elif hasattr(gui, 'character_combobox'):
-        selected_character = gui.character_combobox.currentText()
-    else:
-        return
-
-    if selected_character:
-        event_bus.emit(Events.Character.SET_CURRENT, {'character_id': selected_character})
-
-    if selected_character and hasattr(gui, 'chat_character_combobox'):
-        chat_combo = gui.chat_character_combobox
-        if chat_combo.currentText() != selected_character:
-            idx = chat_combo.findText(selected_character, Qt.MatchFlag.MatchFixedString)
-            if idx >= 0:
-                chat_combo.blockSignals(True)
-                try:
-                    chat_combo.setCurrentIndex(idx)
-                finally:
-                    chat_combo.blockSignals(False)
+    selected_character = str(character_id or "").strip() or _configured_character_id(gui)
 
     if hasattr(gui, 'char_provider_combobox'):
         provider_key = f"CHAR_PROVIDER_{selected_character}"
@@ -531,10 +559,10 @@ def change_character_actions(gui, character_id=None):
 
 
 def apply_prompt_set(gui, force_apply=True):
-    if not hasattr(gui, 'character_combobox') or not hasattr(gui, 'prompt_pack_combobox'):
+    if not hasattr(gui, 'prompt_pack_combobox'):
         return
 
-    character_id = gui.character_combobox.currentText()
+    character_id = _configured_character_id(gui)
     set_name = gui.prompt_pack_combobox.currentText()
     if not character_id or not set_name:
         return
@@ -772,7 +800,7 @@ def migrate_history(gui):
 
 
 def save_character_provider(gui, provider: str):
-    selected_character = gui.character_combobox.currentText() if hasattr(gui, 'character_combobox') else None
+    selected_character = _configured_character_id(gui)
     if not selected_character:
         QMessageBox.warning(gui, _("Внимание", "Warning"), _("Персонаж не выбран.", "No character selected."))
         return

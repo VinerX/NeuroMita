@@ -388,12 +388,11 @@ def build_character_settings_ui(self, parent_layout):
     lay.setContentsMargins(0, 0, 0, 0)
     lay.setSpacing(6)
 
-    # Скрытый комбобокс — источник правды для logic.py (весь пайплайн крутится
-    # вокруг него). В UI не показывается: выбор персонажа теперь аккордеон (#17).
-    self.character_combobox = TRQComboBox()
-    self.character_combobox.setVisible(False)
-    lay.addWidget(self.character_combobox)
-
+    # Источник правды о ТЕКУЩЕМ персонаже — CharacterController (SET_CURRENT/
+    # GET_CURRENT_PROFILE), выбор делается ТОЛЬКО в песочнице. В настройках
+    # аккордеон лишь настраивает конфиг персонажа; активного персонажа он не
+    # переключает (скрытый combobox-«источник правды» удалён). Какой персонаж
+    # РЕДАКТИРУЕТСЯ сейчас — хранит logic в `self._configured_char_id`.
     intro = tr_set(QLabel(),
         "Разверни персонажа, чтобы настроить его набор промптов, провайдера и историю.",
         "Expand a character to configure its prompt set, provider and history.")

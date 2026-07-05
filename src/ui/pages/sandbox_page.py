@@ -1308,7 +1308,7 @@ class SandboxPage(QWidget):
             setattr(self.gui, attr, combo)
             return combo
 
-        def _combo_row(strip_layout, label_text: str, combo: QComboBox, leading=None) -> None:
+        def _combo_row(strip_layout, label_text: str, combo: QComboBox, leading=None, trailing=None) -> None:
             row = QWidget()
             row.setObjectName("SandboxInfoRow")
             h = QHBoxLayout(row)
@@ -1322,6 +1322,8 @@ class SandboxPage(QWidget):
             if leading is not None:
                 h.addWidget(leading, 0, Qt.AlignmentFlag.AlignVCenter)
             h.addWidget(combo, 1, Qt.AlignmentFlag.AlignVCenter)
+            if trailing is not None:
+                h.addWidget(trailing, 0, Qt.AlignmentFlag.AlignVCenter)
             strip_layout.addWidget(row)
 
         # ── Активная сессия ────────────────────────────────────────────────
@@ -1337,7 +1339,17 @@ class SandboxPage(QWidget):
             change_slot=self._on_chat_character_changed,
             by_text=True,
         )
-        _combo_row(active_layout, _("Персонаж", "Character"), char_combo, leading=self._character_avatar_label)
+        # Кнопка-шестерёнка рядом с выбором персонажа → в настройки персонажа
+        # (промпты/пресеты/история). Выбор — тут, конфиг — там (#4).
+        char_settings_btn = QPushButton()
+        char_settings_btn.setObjectName("SandboxInlineIconBtn")
+        char_settings_btn.setIcon(qta.icon("fa6s.gear", color="#ffd2ec"))
+        char_settings_btn.setFixedSize(28, 28)
+        char_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        char_settings_btn.setToolTip(_("Настройки персонажа", "Character settings"))
+        char_settings_btn.clicked.connect(lambda: self._jump_to_settings("characters"))
+        _combo_row(active_layout, _("Персонаж", "Character"), char_combo,
+                   leading=self._character_avatar_label, trailing=char_settings_btn)
 
         prompt_combo = _session_combo(
             "chat_prompt_pack_combobox",
