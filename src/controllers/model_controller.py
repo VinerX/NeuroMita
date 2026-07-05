@@ -1119,6 +1119,12 @@ class ModelController:
             except Exception as e:
                 logger.error(f"Ошибка при {event_type}: {e}", exc_info=True)
                 return None
+            finally:
+                # Симметрично ON_STARTED_RESPONSE_GENERATION: гасим статус
+                # «Сжатие истории…». Без этого он висел до watchdog (4 мин), а с
+                # частым фоновым сжатием — воспринимался как ложный «думает».
+                if event_type == "compress":
+                    self.event_bus.emit(Events.Model.ON_COMPRESSION_FINISHED)
 
         game_state = self.game_state.to_prompt_dict()
 

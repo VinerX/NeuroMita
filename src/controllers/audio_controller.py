@@ -102,6 +102,14 @@ class AudioController:
         speaker = str(speaker or "").strip()
         return speaker.lstrip("/") if speaker else ""
 
+    def _emit_show_voicing(self, voice_profile, speaker):
+        """Показывает статус «Озвучивает…». Вызывать в момент фактического
+        старта воспроизведения, а не при приёме запроса на синтез."""
+        self.event_bus.emit(Events.GUI.SHOW_MITA_VOICING, {
+            "character_name": self._voice_status_name(voice_profile, speaker),
+            "icon_names": ["fa6s.volume-high"],
+        })
+
     def _on_voiceover_requested(self, event: Event):
         data = event.data or {}
         text = data.get("text", "")
@@ -168,11 +176,10 @@ class AudioController:
                 return
 
             logger.info("Запрос озвучки принят")
-            # #11: индикатор «Озвучивает…» на время синтеза/воспроизведения.
-            self.event_bus.emit(Events.GUI.SHOW_MITA_VOICING, {
-                "character_name": self._voice_status_name(voice_profile, speaker),
-                "icon_names": ["fa6s.volume-high"],
-            })
+            # #11: индикатор «Озвучивает…». Раньше показывался прямо здесь —
+            # то есть на время СИНТЕЗА (а он не мгновенный), из-за чего статус и
+            # блокировка ASR срабатывали раньше фактической озвучки. Теперь
+            # показ переехал к моменту старта воспроизведения (см. корутины ниже).
         except Exception as e:
             logger.error(f"Ошибка при отправке текста на озвучку: {e}")
             if task_uid:
@@ -197,6 +204,9 @@ class AudioController:
             await future
             voiceover_path = future.result()
             logger.notify(voiceover_path)
+
+            # Синтез завершён, файл получен — только теперь показываем «Озвучивает…».
+            self._emit_show_voicing(None, speaker_command)
 
             if task_uid:
                 self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
@@ -253,7 +263,9 @@ class AudioController:
                 # Воспроизведение идёт в нашем процессе — точно знаем начало и
                 # конец, поэтому держим окно «Мита говорит» открытым на всю
                 # длительность play (см. SpeechController: ASR в это время
-                # не засчитывает распознанное).
+                # не засчитывает распознанное). Статус и блокировку ASR включаем
+                # ровно перед стартом play, а не после синтеза.
+                self._emit_show_voicing(voice_profile, character_id)
                 self._set_mita_speaking(True)
                 try:
                     await AudioHandler.handle_voice_file(
@@ -267,6 +279,10 @@ class AudioController:
             elif is_connected:
                 # Аудио проигрывает мод в игре — конец воспроизведения нам не
                 # виден. Прикидываем окно по длительности самого файла.
+                # Точный момент старта у мода тоже не виден (передача файла по
+                # TCP + запуск play), поэтому окно ASR и статус здесь —
+                # оценочные, но выставляются не раньше готовности файла.
+                self._emit_show_voicing(voice_profile, character_id)
                 dur = self._audio_duration(result_path)
                 if dur > 0:
                     self.event_bus.emit(Events.Audio.MITA_SPEAKING_WINDOW, {"duration": dur})

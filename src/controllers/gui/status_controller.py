@@ -17,6 +17,7 @@ class StatusController(BaseController):
         self.event_bus.subscribe(Events.GUI.UPDATE_STATUS_COLORS, self._on_update_status_colors, weak=False)
         self.event_bus.subscribe(Events.GUI.UPDATE_STATUS, self._on_update_status, weak=False)
         self.event_bus.subscribe(Events.Model.ON_STARTED_RESPONSE_GENERATION, self._on_started_response, weak=False)
+        self.event_bus.subscribe(Events.Model.ON_COMPRESSION_FINISHED, self._on_compression_finished, weak=False)
         self.event_bus.subscribe(Events.Model.ON_SUCCESSFUL_RESPONSE, self._on_successful_response, weak=False)
         self.event_bus.subscribe(Events.Model.ON_FAILED_RESPONSE_ATTEMPT, self._on_failed_response_attempt, weak=False)
         self.event_bus.subscribe(Events.Model.ON_FAILED_RESPONSE, self._on_failed_response, weak=False)
@@ -108,6 +109,13 @@ class StatusController(BaseController):
     def _on_successful_response(self, event: Event):
         logger.info("StatusController: ON_SUCCESSFUL_RESPONSE")
         self.hide_mita_status()
+
+    def _on_compression_finished(self, event: Event):
+        logger.info("StatusController: ON_COMPRESSION_FINISHED")
+        # Гасим только статус сжатия (view сам проверит текущее состояние),
+        # чтобы не сбить реальный «думает» активного чата.
+        if self.view and getattr(self.view, "hide_compression_signal", None):
+            self.view.hide_compression_signal.emit()
 
     def _on_failed_response_attempt(self, event: Event):
         logger.info("StatusController: ON_FAILED_RESPONSE_ATTEMPT")

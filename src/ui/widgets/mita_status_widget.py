@@ -117,6 +117,13 @@ class MitaStatusWidget(QWidget):
             return
         self.hide_animated()
 
+    def hide_compression(self):
+        # Гасим статус сжатия только если сейчас показан именно он. Так фоновое
+        # сжатие, завершившись, не собьёт реальный «думает» активного чата.
+        if self.current_state not in ("compression", "status"):
+            return
+        self.hide_animated()
+
     def show_error(self, error_message=None):
         if error_message is None:
             error_message = _("Произошла ошибка", "Error occurred")
