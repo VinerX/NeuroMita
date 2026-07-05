@@ -61,6 +61,12 @@ class MainWindow(AppWindowBase):
         self.switch_main_page("sandbox")
         self._apply_initial_geometry(1560, 920)
         QTimer.singleShot(0, self._prefetch_release_feed)
+        # Настройки — самая тяжёлая страница по сборке виджетов; раньше она
+        # строилась лениво по первому клику и подвисала. Прогреваем её в фоне
+        # (в простое после первой отрисовки), как и ленту релизов, чтобы открытие
+        # было мгновенным. Виджеты можно создавать только в GUI-потоке, поэтому
+        # это отложенная сборка на главном потоке, а не отдельный поток.
+        QTimer.singleShot(300, self._prebuild_settings_page)
 
     def _prefetch_release_feed(self):
         """Прогреть ленту релизов в фоне сразу на старте (#8).
@@ -74,6 +80,20 @@ class MainWindow(AppWindowBase):
         """
         try:
             load_news_releases_async(self, lambda _releases: None)
+        except Exception:
+            pass
+
+    def _prebuild_settings_page(self):
+        """Собрать страницу настроек заранее, в фоне после старта.
+
+        Сборка идёт через тот же `_ensure_main_page`, что и по клику, поэтому
+        результат кэшируется в `page_map` и повторная сборка не выполняется —
+        клик по «Настройкам» становится мгновенным. Ошибки глотаем: если что-то
+        ещё не готово, страница соберётся штатно по первому клику.
+        """
+        try:
+            if not getattr(self, "page_map", {}).get("settings"):
+                self._ensure_main_page("settings")
         except Exception:
             pass
 
