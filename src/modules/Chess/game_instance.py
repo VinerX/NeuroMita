@@ -57,8 +57,18 @@ class ChessGame(GameInterface):
             logger.error(f"[{self.character.char_id}] Ошибка при запуске шахматной игры: {e}", exc_info=True)
             self.cleanup()
 
+    def _ensure_alive(self) -> bool:
+        """Проверяет жив ли процесс. Если нет — чистит состояние. Возвращает True если жив."""
+        if self.gui_thread and not self.gui_thread.is_alive():
+            logger.info(f"[{self.character.char_id}] Шахматный процесс мёртв, авто-очистка.")
+            self.cleanup()
+            return False
+        return True
+
     def _send_command(self, command_data: Dict[str, Any]):
-        if self.character.get_variable("playingGame") and self.command_queue and self.gui_thread and self.gui_thread.is_alive():
+        if not self._ensure_alive():
+            return
+        if self.character.get_variable("playingGame") and self.command_queue:
             try:
                 self.command_queue.put(command_data)
                 logger.debug(f"[{self.character.char_id}] Отправлена команда в поток шахмат: {command_data}")
