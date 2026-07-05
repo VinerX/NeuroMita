@@ -95,6 +95,13 @@ class TelegramController:
             except Exception:
                 pass
 
+        elif key == "NM_TELEGRAM_API_ID":
+            self.api_id = value or ""
+        elif key == "NM_TELEGRAM_API_HASH":
+            self.api_hash = value or ""
+        elif key == "NM_TELEGRAM_PHONE":
+            self.phone = value or ""
+
         # Любое изменение, влияющее на TG автоконнект
         if key in ("USE_VOICEOVER", "VOICEOVER_METHOD", "TG_AUTOCONNECT", "NM_TELEGRAM_API_ID", "NM_TELEGRAM_API_HASH", "NM_TELEGRAM_PHONE"):
             self._maybe_autoconnect(reason=f"setting_changed:{key}")
