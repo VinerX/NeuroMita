@@ -666,22 +666,29 @@ class PipInstaller:
         """Проверяет, является ли пакет защищенной зависимостью"""
         return package_canon in protected_deps
 
-    def uninstall_packages(self, packages: List[str], description="Удаление пакетов...") -> bool:
+    def uninstall_packages(self, packages: List[str], description="Удаление пакетов...",
+                           include_dependencies: bool = True) -> bool:
+        # include_dependencies=False — удалять ТОЛЬКО перечисленные пакеты, без
+        # раскрытия их дерева зависимостей. Нужно, когда пакеты делят общие зависимости
+        # с другими компонентами (напр. faster-whisper тянет tokenizers/huggingface-hub/
+        # onnxruntime/pyyaml, общие с transformers/RAG/onnx-движками): каскадное
+        # удаление снесло бы их и сломало соседей. Вызывающий сам гарантирует, что
+        # перечисленные пакеты эксклюзивны для его компонента.
         if not packages:
             self.update_log("Список пакетов для удаления пуст.")
             return True
 
         resolver = DependencyResolver(self.libs_path_abs, self.update_log)
         requested: Set[NormalizedName] = {canonicalize_name(p) for p in packages}
-        
+
         main_packages_to_remove = packages.copy()
         self.update_log(f"Запрошено удаление пакетов: {main_packages_to_remove}")
 
         protected_canon = {canonicalize_name(p) for p in self.protected_packages}
         protected_deps: Set[NormalizedName] = set()
-        
+
         all_installed = resolver.get_all_installed_packages()
-        
+
         for prot_pkg in self.protected_packages:
             prot_canon = canonicalize_name(prot_pkg)
             if prot_canon in all_installed:
@@ -690,10 +697,11 @@ class PipInstaller:
                 self.update_log(f"Защищенный пакет {prot_pkg} и его зависимости: {deps}")
 
         candidates: Set[NormalizedName] = set()
-        for pkg in requested:
-            candidates.update(resolver.get_dependency_tree(str(pkg)))
+        if include_dependencies:
+            for pkg in requested:
+                candidates.update(resolver.get_dependency_tree(str(pkg)))
         candidates.update(requested)
-        
+
         final_remove = sorted(candidates - protected_deps)
         
         self.update_log(f"Кандидаты на удаление (исключая защищенные): {final_remove}")

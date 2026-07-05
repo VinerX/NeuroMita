@@ -271,6 +271,16 @@ class WhisperRecognizer(SpeechRecognizerInterface):
     def install_manifest(self) -> list[dict]:
         return []
 
+    def uninstall_pip_packages(self) -> list[str]:
+        # Только эксклюзивные для Whisper пакеты. sounddevice/silero-vad/transformers/
+        # pyyaml — общие с другими движками/RAG, их не трогаем (удаление некаскадное).
+        return ["faster-whisper", "ctranslate2"]
+
+    def uninstall_paths(self) -> list[str]:
+        # Кэш скачанных весов модели (~1.5 ГБ) — иначе после удаления они остаются
+        # на диске, а повторная установка думает, что модель уже скачана.
+        return [self.model_download_root]
+
     # ---------- artifacts install ----------
     async def install(self) -> bool:
         if not self.is_installed():

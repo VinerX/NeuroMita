@@ -306,8 +306,73 @@ class SpeechRecognizerInterface(ABC):
             return _("неизвестно (см. строки лога выше)", "unknown (see log lines above)")
         return "; ".join(dict.fromkeys(parts))  # dedup, сохраняя порядок
 
+    def uninstall_pip_packages(self) -> list[str]:
+        """Pip-пакеты для удаления при uninstall — ТОЛЬКО эксклюзивные для этого
+        движка. Общие (transformers/pyyaml/sounddevice/silero-vad и т.п.) не
+        перечисляем: они нужны другим компонентам. Удаляются некаскадно."""
+        return []
+
+    def uninstall_paths(self) -> list[str]:
+        """Каталоги/файлы модели (кэш весов) для удаления при uninstall."""
+        return []
+
     def build_uninstall_plan(self, ctx: dict | None = None) -> InstallPlan:
-        return noop_plan("ASR uninstall is not implemented yet.")
+        import shutil
+
+        pkgs = [str(p).strip() for p in (self.uninstall_pip_packages() or []) if str(p).strip()]
+        paths = [str(p).strip() for p in (self.uninstall_paths() or []) if str(p).strip()]
+
+        actions: List[InstallAction] = []
+
+        if pkgs:
+            def _do_uninstall_pkgs(*, pip_installer=None, callbacks=None, **_kwargs) -> bool:
+                if pip_installer is None:
+                    return True
+                try:
+                    # include_dependencies=False: сносим только эти пакеты, без их
+                    # дерева зависимостей — иначе снесли бы общие с transformers/RAG.
+                    return bool(pip_installer.uninstall_packages(
+                        pkgs,
+                        _("Удаление пакетов движка...", "Removing engine packages..."),
+                        include_dependencies=False,
+                    ))
+                except Exception as exc:
+                    if callbacks is not None:
+                        try:
+                            callbacks.log(str(exc))
+                        except Exception:
+                            pass
+                    return False
+
+            actions.append(InstallAction(
+                type="call",
+                description=_("Удаление пакетов движка...", "Removing engine packages..."),
+                progress=20,
+                fn=_do_uninstall_pkgs,
+            ))
+
+        if paths:
+            def _do_remove_paths(*, callbacks=None, **_kwargs) -> bool:
+                for p in paths:
+                    try:
+                        if os.path.isdir(p):
+                            shutil.rmtree(p, ignore_errors=True)
+                        elif os.path.exists(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
+                return True
+
+            actions.append(InstallAction(
+                type="call",
+                description=_("Удаление файлов модели...", "Removing model files..."),
+                progress=85,
+                fn=_do_remove_paths,
+            ))
+
+        if not actions:
+            return noop_plan("Nothing to uninstall for this ASR engine.")
+        return InstallPlan(actions=actions, ok_status=_("Удалено", "Uninstalled"))
 
     def build_initialize_plan(self, ctx: dict | None = None) -> InstallPlan | None:
         return None
