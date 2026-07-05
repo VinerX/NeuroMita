@@ -1066,8 +1066,8 @@ class AppWindowBase(QMainWindow):
             self.mita_status.pulse_error_animation()
 
     def _show_voicing_slot(self, payload=None):
-        if hasattr(self, 'mita_status') and self.mita_status:
-            self.mita_status.show_voicing(payload)
+        # Keep the signal wired for compatibility; voicing is rendered on the
+        # message bubble instead of the global status bar.
         # Подсветить конкретный пузырь, который сейчас озвучивается.
         message_id = payload.get("message_id") if isinstance(payload, dict) else None
         if message_id and getattr(self, "chat_window", None):
@@ -1077,8 +1077,7 @@ class AppWindowBase(QMainWindow):
                 pass
 
     def _hide_voicing_slot(self):
-        if hasattr(self, 'mita_status') and self.mita_status:
-            self.mita_status.hide_voicing()
+        # No global voicing status to clear; only the per-message marker.
         if getattr(self, "chat_window", None):
             try:
                 self.chat_window.clear_message_voicing()
