@@ -10,8 +10,9 @@ from PyQt6.QtWidgets import (
     QLabel, QWidget, QVBoxLayout, QHBoxLayout, QFrame,
     QPushButton, QLineEdit, QFileDialog, QCheckBox,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
+import threading
 import qtawesome as qta
 
 from ui.gui_templates import create_section_header, SettingsBodyWidget
@@ -296,8 +297,11 @@ def setup_data_settings_controls(self, parent):
 class _LiveStatsWidget(QFrame):
     """Виджет статистики, пересчитывающийся при каждом показе панели."""
 
+    _lines_ready = pyqtSignal(list)
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._lines_ready.connect(self._apply_lines)
         self.setStyleSheet(
             "QFrame { background: transparent; border: none; }"
             "QLabel { background: transparent; border: none; color: #bca9bb; font-size: 11px; }"
@@ -337,13 +341,26 @@ class _LiveStatsWidget(QFrame):
         self._refresh()
 
     def _refresh(self):
+        # Парсинг jsonl может быть тяжёлым — считаем в фоне, чтобы не морозить GUI
+        # при открытии вкладки. Пока считается — плейсхолдер.
+        self._apply_lines([_("Загрузка статистики…", "Loading statistics…")])
+        threading.Thread(target=self._compute_async, daemon=True).start()
+
+    def _compute_async(self):
+        lines = self._build_lines()
+        try:
+            self._lines_ready.emit(lines)
+        except Exception:
+            pass
+
+    def _apply_lines(self, lines: list):
         # keep header row (index 0) only
         while self._stats_layout.count() > 1:
             item = self._stats_layout.takeAt(1)
             if item and item.widget():
                 item.widget().deleteLater()
 
-        for text in self._build_lines():
+        for text in lines:
             lbl = QLabel(text)
             lbl.setStyleSheet(
                 "background: transparent; border: none; color: #bca9bb; font-size: 11px;"
@@ -390,16 +407,20 @@ class _MotivationImage(QLabel):
     _IMG_100    = os.path.join("assets", "finetune_motivation_100.png")
     _WIDTH      = 360
 
+    _total_ready = pyqtSignal(int)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background: transparent; border: none; margin-top: 8px;")
+        self._total_ready.connect(self._apply_total)
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
-        self._update_image()
+        # get_stats() дорогой — считаем в фоне, картинку ставим по готовности.
+        threading.Thread(target=self._compute_async, daemon=True).start()
 
-    def _update_image(self):
+    def _compute_async(self):
         total = 0
         try:
             from managers.finetune_collector import FineTuneCollector
@@ -408,7 +429,12 @@ class _MotivationImage(QLabel):
                 total = fc.get_stats().get("total", 0)
         except Exception:
             pass
+        try:
+            self._total_ready.emit(int(total))
+        except Exception:
+            pass
 
+    def _apply_total(self, total: int):
         path = self._IMG_100 if total >= 100 else self._IMG_NORMAL
         pixmap = QPixmap(path)
         if not pixmap.isNull():
