@@ -13,6 +13,7 @@ from core.backends import BackendKind, get_backend_service
 from core.events import get_event_bus, Events, Event
 from utils.pip_installer import PipInstaller
 from core.install_types import InstallCallbacks, InstallAction, InstallPlan
+from utils import getTranslationVariant as _
 
 
 from packaging.utils import canonicalize_name
@@ -445,6 +446,66 @@ class InstallController:
         cb.progress(end_progress)
         return True
 
+    def _run_with_heartbeat(self, cb: InstallCallbacks, desc: str, run: Callable[[], Any]) -> Any:
+        """Выполняет непрозрачный длительный шаг (call/call_async — напр. докачка
+        весов модели с HuggingFace, которая не стримит прогресс) с «пульсом»:
+        раз в пару секунд обновляет статус живым таймером, чтобы фаза не выглядела
+        зависшей. Пульс молчит, если сам шаг активно шлёт статус (чтобы не перебивать
+        стримящие шаги вроде прогрева F5). Устаревшие pip-метрики в шапке сбрасываем."""
+        import threading
+
+        # Сбросить стухшие метрики предыдущей (pip) фазы — иначе шапка держит
+        # «Готово»/«Пакеты 3/3» и весь экран кажется завершённым.
+        try:
+            cb.log("__STATS__{}")
+        except Exception:
+            pass
+        # Инфо-строку про долгую фоновую загрузку пишем только для шагов, которые
+        # реально что-то качают (по описанию) — чтобы не мусорить на быстром
+        # «Finalizing…». Сброс метрик и пульс работают для любого длительного шага.
+        if any(k in (desc or "").lower() for k in ("download", "model", "скач", "модел", "weight", "вес")):
+            try:
+                cb.log(_(
+                    "Загрузка данных модели — прогресс не потоковый, идёт в фоне; "
+                    "это может занять несколько минут, дождитесь завершения.",
+                    "Downloading model data — progress is not streamed, running in "
+                    "the background; this can take a few minutes, please wait.",
+                ))
+            except Exception:
+                pass
+
+        last = {"t": time.time()}
+        orig_status = cb.status
+
+        def wrapped_status(s):
+            last["t"] = time.time()
+            orig_status(s)
+
+        stop = threading.Event()
+        start = time.time()
+        base = desc or _("Скачивание модели…", "Downloading model…")
+
+        def _tick():
+            while not stop.wait(2.0):
+                # Шаг сам обновлял статус недавно — не мешаем ему.
+                if time.time() - last["t"] < 4.0:
+                    continue
+                el = int(time.time() - start)
+                m, s = divmod(el, 60)
+                h, m = divmod(m, 60)
+                clock = f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+                orig_status(f"{base} — {clock}")
+
+        th = threading.Thread(target=_tick, daemon=True)
+        cb.status = wrapped_status
+        th.start()
+        try:
+            return run()
+        finally:
+            stop.set()
+            th.join(timeout=1.0)
+            cb.status = orig_status
+
     def _execute_plan(
         self,
         plan: InstallPlan,
@@ -566,7 +627,10 @@ class InstallController:
                     cb.log("Invalid plan action: call without fn")
                     return False
                 try:
-                    res = self._call_flex(act.fn, pip_installer=pip_installer, callbacks=cb, ctx=ctx)
+                    res = self._run_with_heartbeat(
+                        cb, desc,
+                        lambda: self._call_flex(act.fn, pip_installer=pip_installer, callbacks=cb, ctx=ctx),
+                    )
                     if res is False:
                         cb.status("Failed")
                         cb.log(f"call step returned False: {desc or atype}")
@@ -585,8 +649,12 @@ class InstallController:
                     import asyncio
 
                     timeout = float(act.timeout_sec or ctx.get("timeout_sec", 3600.0) or 3600.0)
-                    coro = self._call_flex(act.fn, pip_installer=pip_installer, callbacks=cb, ctx=ctx)
-                    ok = bool(asyncio.run(asyncio.wait_for(coro, timeout=timeout)))
+
+                    def _run_async():
+                        coro = self._call_flex(act.fn, pip_installer=pip_installer, callbacks=cb, ctx=ctx)
+                        return bool(asyncio.run(asyncio.wait_for(coro, timeout=timeout)))
+
+                    ok = self._run_with_heartbeat(cb, desc, _run_async)
                     if not ok:
                         cb.status("Failed")
                         cb.log("async step returned False")
