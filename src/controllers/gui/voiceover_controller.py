@@ -545,7 +545,7 @@ class VoiceoverGuiController(BaseController):
         # статус-плашка различала это с реальной ошибкой ("red").
         self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
             "category": "voice",
-            "state": "green" if initialized else "warn",
+            "state": "green",
             "tooltip": _("Модель готова", "Model ready") if initialized else _("Требуется инициализация", "Initialization required"),
         })
 
