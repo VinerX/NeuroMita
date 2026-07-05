@@ -7,6 +7,9 @@ from PyQt6.QtGui import QFont, QTextCursor, QGuiApplication
 from utils import getTranslationVariant as _
 
 import re
+import os
+import json
+import shutil
 from html import escape as html_escape
 from main_logger import logger
 from collections import deque
@@ -161,11 +164,46 @@ class VoiceInstallationWindow(QDialog):
 
         layout.addLayout(info_layout)
 
+        # Второй ряд метрик: счётчик пакетов, скорость+скачано, стадия, ошибки,
+        # свободное место на диске. Заполняется из структурного маркера __STATS__.
+        stats_layout = QHBoxLayout()
+        self.packages_label = QLabel("")
+        self.packages_label.setFont(QFont("Segoe UI", 9))
+        stats_layout.addWidget(self.packages_label, 0)
+
+        self.speed_label = QLabel("")
+        self.speed_label.setFont(QFont("Segoe UI", 9))
+        stats_layout.addWidget(self.speed_label, 0)
+
+        self.issues_label = QLabel("")
+        self.issues_label.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        stats_layout.addWidget(self.issues_label, 0)
+
+        stats_layout.addStretch(1)
+
+        self.stage_badge = QLabel("")
+        self.stage_badge.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        stats_layout.addWidget(self.stage_badge, 0)
+
+        self.disk_label = QLabel("")
+        self.disk_label.setFont(QFont("Segoe UI", 9))
+        self.disk_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        stats_layout.addWidget(self.disk_label, 0)
+        layout.addLayout(stats_layout)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setTextVisible(False)
         layout.addWidget(self.progress_bar)
         self.progress_value_label.setText("...")
+
+        # Целевая папка установки — для показа свободного места. Обновляем по таймеру.
+        self._install_target_dir = os.path.abspath(os.environ.get("NEUROMITA_LIB_DIR", "Lib"))
+        self._disk_timer = QTimer(self)
+        self._disk_timer.setInterval(3000)
+        self._disk_timer.timeout.connect(self._update_disk_free)
+        self._disk_timer.start()
+        self._update_disk_free()
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
@@ -246,7 +284,7 @@ class VoiceInstallationWindow(QDialog):
             except Exception:
                 continue
         self._style_polished = True
-     
+
     def _update_elapsed(self):
         secs = self._start_time.secsTo(QTime.currentTime())
         if secs < 0:
@@ -255,6 +293,93 @@ class VoiceInstallationWindow(QDialog):
         h, m = divmod(m, 60)
         text = f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
         self.elapsed_label.setText(_("Прошло ", "Elapsed ") + text)
+
+    @staticmethod
+    def _fmt_bytes(n) -> str:
+        try:
+            n = float(n)
+        except Exception:
+            return "?"
+        for unit, mul in (("Б", 1), ("КБ", 1024), ("МБ", 1024 ** 2), ("ГБ", 1024 ** 3), ("ТБ", 1024 ** 4)):
+            if n < mul * 1024 or unit == "ТБ":
+                return f"{n / mul:.1f} {unit}"
+        return f"{n:.0f} Б"
+
+    @classmethod
+    def _fmt_speed(cls, bps) -> str:
+        try:
+            bps = float(bps)
+        except Exception:
+            return ""
+        return f"{cls._fmt_bytes(bps)}/с" if bps > 0 else ""
+
+    def _update_disk_free(self):
+        """Свободное место на диске установки; краснеет при нехватке."""
+        target = getattr(self, "_install_target_dir", None) or "."
+        probe = target
+        while probe and not os.path.exists(probe):
+            parent = os.path.dirname(probe)
+            if parent == probe:
+                break
+            probe = parent
+        try:
+            free = shutil.disk_usage(probe or ".").free
+        except Exception:
+            self.disk_label.setText("")
+            return
+        low = free < 3 * 1024 ** 3       # < 3 ГБ — критично для torch-стека
+        warn = free < 8 * 1024 ** 3      # < 8 ГБ — предупреждение
+        color = "#ff5555" if low else ("#ffb86c" if warn else "#9aa0a6")
+        self.disk_label.setStyleSheet(f"color: {color};")
+        self.disk_label.setText(_("Диск: ", "Disk: ") + self._fmt_bytes(free))
+
+    def _apply_stats(self, stats: dict):
+        """Обновляет ряд метрик из структурного маркера __STATS__."""
+        pkg_done = stats.get("packages_done")
+        pkg_total = stats.get("packages_total")
+        if pkg_total:
+            done = pkg_done if isinstance(pkg_done, int) else 0
+            self.packages_label.setText(_("📦 Пакеты: ", "📦 Packages: ") + f"{done} / {pkg_total}")
+        else:
+            self.packages_label.setText("")
+
+        speed = stats.get("speed_bps") or 0
+        dl_done = stats.get("downloaded_bytes") or 0
+        dl_total = stats.get("total_bytes") or 0
+        parts = []
+        speed_txt = self._fmt_speed(speed)
+        if speed_txt:
+            parts.append("↓ " + speed_txt)
+        if dl_total > 0:
+            parts.append(f"{self._fmt_bytes(dl_done)} / {self._fmt_bytes(dl_total)}")
+        self.speed_label.setStyleSheet("color: #9aa0a6;")
+        self.speed_label.setText("   " + " · ".join(parts) if parts else "")
+
+        errors = int(stats.get("errors") or 0)
+        warnings = int(stats.get("warnings") or 0)
+        issues = []
+        if errors:
+            issues.append(f"✖ {errors}")
+        if warnings:
+            issues.append(f"⚠ {warnings}")
+        self.issues_label.setStyleSheet("color: #ff5555;" if errors else "color: #ffb86c;")
+        self.issues_label.setText("   " + "  ".join(issues) if issues else "")
+
+        stage = str(stats.get("stage") or "")
+        badge = {
+            "resolving": (_("Резолв", "Resolving"), "#3a6ea5"),
+            "preparing": (_("Скачивание", "Downloading"), "#b06bd0"),
+            "installing": (_("Установка", "Installing"), "#4a9d6a"),
+            "done": (_("Готово", "Done"), "#4a9d6a"),
+        }.get(stage)
+        if badge:
+            text, bg = badge
+            self.stage_badge.setStyleSheet(
+                f"color: #ffffff; background: {bg}; border-radius: 7px; padding: 1px 8px;"
+            )
+            self.stage_badge.setText(text)
+        else:
+            self.stage_badge.setText("")
 
     def _recalc_max_blocks_and_refresh(self):
         fm = self.log_text.fontMetrics()
@@ -361,6 +486,12 @@ class VoiceInstallationWindow(QDialog):
         self._render_display_lines()
 
     def _on_log_update(self, text: str):
+        if text.startswith("__STATS__"):
+            try:
+                self._apply_stats(json.loads(text[len("__STATS__"):]))
+            except Exception:
+                pass
+            return
         if text.startswith("__SNAPSHOT_START__"):
             in_snapshot = False
             lines: list[str] = []
@@ -630,6 +761,9 @@ class VoiceActionWindow(QDialog):
         self._render_display_lines()
 
     def _on_log_update(self, text: str):
+        if text.startswith("__STATS__"):
+            # Это окно не показывает метрики — просто игнорируем структурный маркер.
+            return
         if text.startswith("__SNAPSHOT_START__"):
             in_snapshot = False
             lines: list[str] = []

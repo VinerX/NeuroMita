@@ -1059,6 +1059,8 @@ class PipInstaller:
             self.history: Deque[tuple[float, int]] = deque(maxlen=180)
             self.history.append((self.start, 0))
             self.error_seen: bool = False
+            self.error_count: int = 0
+            self.warning_count: int = 0
             self.recent_lines: Deque[str] = deque(maxlen=40)
             # Скорость загрузки: считаем по приросту скачанных байт во времени
             # (EMA для сглаживания рывков). Нужна для строки статуса «X МБ/с» (#28).
@@ -1422,6 +1424,26 @@ class PipInstaller:
         def overall_speed_bps(self) -> float:
             return sum(self.estimate_speed(task) for task in self.tasks.values())
 
+        def cumulative_bytes(self) -> tuple[int, int]:
+            """Скачано/всего байт по пикам всех задач (включая завершённые) —
+            монотонный кумулятивный размер загрузки за всю установку."""
+            done = 0
+            for cid, total in self.peak_total.items():
+                done += min(self.peak_done.get(cid, 0), total)
+            total = sum(self.peak_total.values())
+            return int(done), int(total)
+
+        def packages_progress(self) -> tuple[int | None, int | None]:
+            """Счётчик пакетов X/Y: приоритет — «Preparing packages... (X/Y)»
+            (инкрементально), иначе завершённые задачи из total_packages."""
+            if self.phase_cur is not None and self.phase_tot:
+                return self.phase_cur, self.phase_tot
+            if self.total_packages:
+                if self.stage == "done":
+                    return self.total_packages, self.total_packages
+                return len(self.completed), self.total_packages
+            return None, None
+
         def overall_eta_bytes(self) -> float | None:
             sum_total = 0.0
             sum_done = 0.0
@@ -1679,7 +1701,10 @@ class PipInstaller:
             logger.error(clean)
             self.update_log(clean)
             state.error_seen = True
+            state.error_count += 1
         else:
+            if (not transient) and any(k in low for k in ("warning:", "warn:", "предупреж", "deprecat")):
+                state.warning_count += 1
             if state.uv_progress is not None:
                 try:
                     state.uv_progress.update(clean)
@@ -1771,7 +1796,31 @@ class PipInstaller:
         lines = agg.snapshot_lines()
         if lines:
             self.update_log("__SNAPSHOT_START__\n" + "\n".join(lines) + "\n__SNAPSHOT_END__")
+        self._emit_stats(state, agg)
         state.last_snapshot_emit = now
+
+    def _emit_stats(self, state: _RunState, agg: "_UvProgressAggregator") -> None:
+        """Структурные метрики для шапки окна установки — отдельным JSON-маркером
+        на том же log-канале, что и __SNAPSHOT__ (established-паттерн). Окно парсит
+        их в счётчик пакетов, скорость/скачано, стадию и число ошибок; консольные
+        потребители просто игнорируют неизвестный маркер."""
+        try:
+            pkg_done, pkg_total = agg.packages_progress()
+            dl_done, dl_total = agg.cumulative_bytes()
+            stats = {
+                "packages_done": pkg_done,
+                "packages_total": pkg_total,
+                "active_tasks": len(agg.tasks),
+                "speed_bps": agg.overall_speed_bps(),
+                "downloaded_bytes": dl_done,
+                "total_bytes": dl_total,
+                "stage": agg.stage,
+                "errors": state.error_count,
+                "warnings": state.warning_count,
+            }
+            self.update_log("__STATS__" + json.dumps(stats, ensure_ascii=True))
+        except Exception:
+            pass
 
     def _update_status_if_needed(self, state: _RunState):
         now = time.time()
