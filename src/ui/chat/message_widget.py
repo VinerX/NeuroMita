@@ -6,6 +6,7 @@ import os
 import math
 import time as _time
 import base64
+import qtawesome as qta
 from PyQt6.QtWidgets import (
     QDialog, QFrame, QHBoxLayout, QScrollArea, QVBoxLayout,
     QLabel, QWidget, QSizePolicy, QMenu, QApplication,
@@ -425,6 +426,21 @@ class MessageWidget(QWidget):
         self._name_label.setFont(_nf)
         self._name_label.setText(speaker_name or "")
         name_row.addWidget(self._name_label)
+
+        # Индикатор «сейчас озвучивается это сообщение» (скрыт по умолчанию).
+        self._voicing_label = QLabel(self._card)
+        self._voicing_label.setStyleSheet("background: transparent; border: none;")
+        self._voicing_label.setToolTip(_("Озвучивается", "Voicing"))
+        try:
+            _vic = max(10, self._font_sm + 2)
+            self._voicing_label.setPixmap(
+                qta.icon("fa6s.volume-high", color="#ff9cd2").pixmap(_vic, _vic)
+            )
+        except Exception:
+            self._voicing_label.setText("🔊")
+        self._voicing_label.setVisible(False)
+        name_row.addWidget(self._voicing_label)
+
         name_row.addStretch()
 
         if role == "assistant" and sample_id and self._show_rating_controls:
@@ -454,6 +470,12 @@ class MessageWidget(QWidget):
             m = self.contentsMargins()
             return lyt.heightForWidth(max(0, w - m.left() - m.right())) + m.top() + m.bottom()
         return super().heightForWidth(w)
+
+    def set_voicing(self, on: bool):
+        """Показать/скрыть индикатор «это сообщение сейчас озвучивается»."""
+        lbl = getattr(self, "_voicing_label", None)
+        if lbl is not None:
+            lbl.setVisible(bool(on))
 
     def set_text(self, text: str): self._body.set_text(text)
     def append_text(self, text: str): self._body.append_text(text)

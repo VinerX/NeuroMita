@@ -102,18 +102,21 @@ class AudioController:
         speaker = str(speaker or "").strip()
         return speaker.lstrip("/") if speaker else ""
 
-    def _emit_show_voicing(self, voice_profile, speaker):
+    def _emit_show_voicing(self, voice_profile, speaker, message_id=None):
         """Показывает статус «Озвучивает…». Вызывать в момент фактического
-        старта воспроизведения, а не при приёме запроса на синтез."""
+        старта воспроизведения, а не при приёме запроса на синтез. message_id —
+        чтобы подсветить конкретный пузырь, который сейчас озвучивается."""
         self.event_bus.emit(Events.GUI.SHOW_MITA_VOICING, {
             "character_name": self._voice_status_name(voice_profile, speaker),
             "icon_names": ["fa6s.volume-high"],
+            "message_id": message_id,
         })
 
     def _on_voiceover_requested(self, event: Event):
         data = event.data or {}
         text = data.get("text", "")
         task_uid = data.get("task_uid")
+        message_id = data.get("message_id")
 
         character_id = data.get("character_id")
         voice_profile = data.get("voice_profile")
@@ -153,7 +156,8 @@ class AudioController:
                         text_for_voice,
                         original_text,
                         speaker,
-                        task_uid
+                        task_uid,
+                        message_id=message_id,
                     )
                 })
 
@@ -165,6 +169,7 @@ class AudioController:
                         task_uid,
                         character_id=character_id,
                         voice_profile=voice_profile,
+                        message_id=message_id,
                     )
                 })
 
@@ -186,7 +191,7 @@ class AudioController:
                 self._update_task_failed_voiceover(task_uid, str(e))
             self.waiting_answer = False
 
-    async def run_send_and_receive(self, voice_text, original_text, speaker_command, task_uid=None):
+    async def run_send_and_receive(self, voice_text, original_text, speaker_command, task_uid=None, message_id=None):
         logger.info("Попытка получить фразу (Telegram)")
 
         future = asyncio.Future()
@@ -206,7 +211,7 @@ class AudioController:
             logger.notify(voiceover_path)
 
             # Синтез завершён, файл получен — только теперь показываем «Озвучивает…».
-            self._emit_show_voicing(None, speaker_command)
+            self._emit_show_voicing(None, speaker_command, message_id)
 
             if task_uid:
                 self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
@@ -233,6 +238,7 @@ class AudioController:
         task_uid: Optional[str],
         character_id: Optional[str] = None,
         voice_profile: Optional[dict] = None,
+        message_id: Optional[str] = None,
     ):
         future = asyncio.Future()
         self.event_bus.emit(Events.Audio.LOCAL_SEND_VOICE_REQUEST, {
@@ -265,7 +271,7 @@ class AudioController:
                 # длительность play (см. SpeechController: ASR в это время
                 # не засчитывает распознанное). Статус и блокировку ASR включаем
                 # ровно перед стартом play, а не после синтеза.
-                self._emit_show_voicing(voice_profile, character_id)
+                self._emit_show_voicing(voice_profile, character_id, message_id)
                 self._set_mita_speaking(True)
                 try:
                     await AudioHandler.handle_voice_file(
@@ -282,7 +288,7 @@ class AudioController:
                 # Точный момент старта у мода тоже не виден (передача файла по
                 # TCP + запуск play), поэтому окно ASR и статус здесь —
                 # оценочные, но выставляются не раньше готовности файла.
-                self._emit_show_voicing(voice_profile, character_id)
+                self._emit_show_voicing(voice_profile, character_id, message_id)
                 dur = self._audio_duration(result_path)
                 if dur > 0:
                     self.event_bus.emit(Events.Audio.MITA_SPEAKING_WINDOW, {"duration": dur})

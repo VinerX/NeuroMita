@@ -1068,10 +1068,22 @@ class AppWindowBase(QMainWindow):
     def _show_voicing_slot(self, payload=None):
         if hasattr(self, 'mita_status') and self.mita_status:
             self.mita_status.show_voicing(payload)
+        # Подсветить конкретный пузырь, который сейчас озвучивается.
+        message_id = payload.get("message_id") if isinstance(payload, dict) else None
+        if message_id and getattr(self, "chat_window", None):
+            try:
+                self.chat_window.set_message_voicing(message_id, True)
+            except Exception:
+                pass
 
     def _hide_voicing_slot(self):
         if hasattr(self, 'mita_status') and self.mita_status:
             self.mita_status.hide_voicing()
+        if getattr(self, "chat_window", None):
+            try:
+                self.chat_window.clear_message_voicing()
+            except Exception:
+                pass
 
     def _hide_compression_slot(self):
         if hasattr(self, 'mita_status') and self.mita_status:

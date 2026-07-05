@@ -176,6 +176,27 @@ class ChatWidget(QFrame):
         if self._auto_scroll and not at_start:
             QTimer.singleShot(10, self.scroll_to_bottom)
 
+    def set_message_voicing(self, message_id, on: bool = True):
+        """Показать индикатор «озвучивается» на конкретном пузыре (по message_id)
+        и снять с предыдущего. Пузырь с этим id — последний в ответе."""
+        self.clear_message_voicing()
+        if not message_id or not on:
+            return
+        for w in self._messages:
+            if getattr(w, "_message_id", None) == message_id and hasattr(w, "set_voicing"):
+                w.set_voicing(True)
+                self._voicing_message_id = message_id
+                break
+
+    def clear_message_voicing(self):
+        prev = getattr(self, "_voicing_message_id", None)
+        if not prev:
+            return
+        for w in self._messages:
+            if getattr(w, "_message_id", None) == prev and hasattr(w, "set_voicing"):
+                w.set_voicing(False)
+        self._voicing_message_id = None
+
     def remove_widget(self, widget: QWidget):
         """Remove a specific widget from the chat."""
         if widget in self._messages:

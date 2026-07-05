@@ -523,6 +523,7 @@ class ChatController:
                             "character_id": effective_character_id,
                             "voice_profile": voice_profile,
                             "target": target,
+                            "message_id": assistant_message_id,
                         })
                     else:
                         if task_uid:
