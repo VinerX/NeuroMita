@@ -345,6 +345,12 @@ def _build_character_accordion(self, character_list, current_char_id):
         if not cid:
             continue
         section = InnerCollapsibleSection(cid, parent=self)
+        # Иконка-аватар персонажа слева от заголовка секции (#6).
+        try:
+            from ui.chat.message_widget import _get_avatar_pixmap
+            section.set_header_pixmap(_get_avatar_pixmap(cid, "assistant"))
+        except Exception:
+            pass
         self._char_sections[cid] = section
 
         def _make_handler(_cid, _section):

@@ -282,6 +282,24 @@ class CollapsibleSection(QWidget):
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         return lbl
 
+    def set_header_pixmap(self, pixmap, size: int = 22):
+        """Поставить произвольную картинку-иконку слева от заголовка секции
+        (например, аватар персонажа). Создаёт icon_label, если его ещё нет."""
+        if pixmap is None or pixmap.isNull():
+            return
+        if self.icon_label is None:
+            self.icon_label = QLabel(self.header)
+            self.icon_label.setObjectName('CollapsibleIcon')
+            self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            # Вставляем перед колонкой заголовка (индекс 0 — до title_col).
+            self.header.layout().insertWidget(0, self.icon_label)
+        self.icon_label.setFixedSize(size + 4, size + 4)
+        self.icon_label.setPixmap(pixmap.scaled(
+            size, size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        ))
+
     def toggle(self, _=None):
         self.is_collapsed = not self.is_collapsed
         self.content_frame.setVisible(not self.is_collapsed)
