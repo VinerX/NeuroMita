@@ -8,7 +8,7 @@ from pathlib import Path
 
 import qtawesome as qta
 from PyQt6.QtCore import QPoint, QRectF, QSize, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPixmap
+from PyQt6.QtGui import QColor, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -55,23 +55,6 @@ class LauncherHomeBackground(QWidget):
         self._bg = QPixmap(str(Path("assets/launcher_ui/bg.jpg")))
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._rescale_home_logo()
-
-    def _rescale_home_logo(self):
-        """Масштабируем wordmark-логотип по ширине страницы (адаптивно), сохраняя
-        пропорции. Левый столбец ~половина окна, поэтому берём ~42% ширины,
-        кламп 360..720, чтобы лого выглядел крупно, но не вылезал."""
-        src = getattr(self, "_home_logo_src", None)
-        label = getattr(self, "_home_logo", None)
-        if src is None or label is None or src.isNull():
-            return
-        target_w = int(max(400, min(760, self.width() * 0.48)))
-        label.setPixmap(
-            src.scaledToWidth(target_w, Qt.TransformationMode.SmoothTransformation)
-        )
-
     def paintEvent(self, event):
         super().paintEvent(event)
 
@@ -97,18 +80,6 @@ class LauncherHomeBackground(QWidget):
         else:
             painter.fillRect(rect, QColor("#09050f"))
 
-        horizontal = QLinearGradient(rect.topLeft(), rect.topRight())
-        horizontal.setColorAt(0.0, QColor(10, 4, 8, 245))
-        horizontal.setColorAt(0.42, QColor(10, 4, 8, 170))
-        horizontal.setColorAt(0.74, QColor(10, 4, 8, 70))
-        horizontal.setColorAt(1.0, QColor(10, 4, 8, 10))
-        painter.fillRect(rect, horizontal)
-
-        vertical = QLinearGradient(rect.bottomLeft(), rect.topLeft())
-        vertical.setColorAt(0.0, QColor(10, 4, 8, 220))
-        vertical.setColorAt(0.38, QColor(10, 4, 8, 55))
-        vertical.setColorAt(1.0, QColor(10, 4, 8, 0))
-        painter.fillRect(rect, vertical)
 
 
 class HomePage(LauncherHomeBackground):
@@ -194,30 +165,7 @@ class HomePage(LauncherHomeBackground):
         left_column.addWidget(subtitle)
         # left_column.addWidget(self._build_home_update_chip())
 
-        logo_wrap = QWidget()
-        logo_wrap.setObjectName("LauncherHomeLogoZone")
-        logo_layout = QVBoxLayout(logo_wrap)
-        logo_layout.setContentsMargins(0, 0, 0, 0)
-        logo_layout.setSpacing(0)
-        logo_layout.addStretch(1)
-
-        logo = QLabel()
-        logo.setObjectName("LauncherHomeLogo")
-        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._home_logo = logo
-        logo_path = Path("assets/launcher_ui/logo.png")
-        # Логотип — широкий wordmark (~3.8:1). Раньше его вписывали в фикс-бокс
-        # 420×270 → по ширине ужималось до ~109px высоты, выглядел мелко.
-        # Теперь храним оригинал и масштабируем по ширине страницы (адаптивно).
-        self._home_logo_src = QPixmap(str(logo_path)) if logo_path.exists() else None
-        if self._home_logo_src is None or self._home_logo_src.isNull():
-            self._home_logo_src = None
-            logo.setText("NeuroMita")
-        else:
-            self._rescale_home_logo()
-        logo_layout.addWidget(logo, 0, Qt.AlignmentFlag.AlignHCenter)
-        logo_layout.addStretch(1)
-        left_column.addWidget(logo_wrap, 1)
+        left_column.addStretch(1)
 
         backend_row = QHBoxLayout()
         backend_row.setSpacing(12)
