@@ -637,18 +637,31 @@ class _EmbedProviderWidget(QWidget):
         }
         SettingsManager.set("HF_TOKEN", hf_token)
 
-        try:
+        self._save_btn.setEnabled(False)
+        self._status_label.setStyleSheet("")
+        self._status_label.setText(_("Сохранение...", "Saving..."))
+
+        def _worker():
             results = self._bus.emit_and_wait(
                 Events.EmbeddingPresets.SAVE_CUSTOM_PRESET, {"data": data}, timeout=2.0
             )
-            saved_id = results[0] if results else None
+            return results[0] if results else None
+
+        def _apply(saved_id):
+            self._save_btn.setEnabled(True)
             if saved_id is not None:
                 SettingsManager.set("RAG_EMBED_PRESET_ID", saved_id)
                 self._current_preset_id = saved_id
                 self._save_btn.setStyleSheet("")
                 self._load_presets(select_id=saved_id)
-        except Exception as e:
-            self._status_label.setText(_("Ошибка: ", "Error: ") + str(e))
+                self._status_label.setText(_("Сохранено", "Saved"))
+
+        def _error(exc: Exception):
+            self._save_btn.setEnabled(True)
+            self._status_label.setStyleSheet("color: red;")
+            self._status_label.setText(_("Ошибка: ", "Error: ") + str(exc))
+
+        run_async(self._gui, _worker, _apply, _error, name="embed-provider-save")
 
     def _on_add(self):
         from PyQt6.QtWidgets import QInputDialog
@@ -659,27 +672,50 @@ class _EmbedProviderWidget(QWidget):
             return
         data = {"id": None, "name": name.strip(), "provider_name": "local",
                 "model": "", "url": "", "key": "", "reserve_keys": [], "query_prefix": ""}
-        try:
+
+        self._add_btn.setEnabled(False)
+        self._status_label.setStyleSheet("")
+        self._status_label.setText(_("Создание пресета...", "Creating preset..."))
+
+        def _worker():
             results = self._bus.emit_and_wait(
                 Events.EmbeddingPresets.SAVE_CUSTOM_PRESET, {"data": data}, timeout=2.0
             )
-            new_id = results[0] if results else None
+            return results[0] if results else None
+
+        def _apply(new_id):
+            self._add_btn.setEnabled(True)
             if new_id is not None:
                 self._load_presets(select_id=new_id)
-        except Exception as e:
-            self._status_label.setText(str(e))
+
+        def _error(exc: Exception):
+            self._add_btn.setEnabled(True)
+            self._status_label.setStyleSheet("color: red;")
+            self._status_label.setText(str(exc))
+
+        run_async(self._gui, _worker, _apply, _error, name="embed-provider-add")
 
     def _on_delete(self):
         pid = self._current_preset_id
         if pid is None or isinstance(pid, str):
             return
-        try:
+
+        self._del_btn.setEnabled(False)
+
+        def _worker():
             self._bus.emit_and_wait(
                 Events.EmbeddingPresets.DELETE_CUSTOM_PRESET, {"id": pid}, timeout=2.0
             )
-        except Exception:
-            pass
-        self._load_presets()
+            return True
+
+        def _apply(_ok):
+            self._del_btn.setEnabled(True)
+            self._load_presets()
+
+        def _error(_exc: Exception):
+            self._del_btn.setEnabled(True)
+
+        run_async(self._gui, _worker, _apply, _error, name="embed-provider-delete")
 
     def _move_current_custom(self, delta: int):
         pid = self._current_preset_id
@@ -699,15 +735,28 @@ class _EmbedProviderWidget(QWidget):
         if new_idx < 0 or new_idx >= len(custom_ids):
             return
         custom_ids[cur_idx], custom_ids[new_idx] = custom_ids[new_idx], custom_ids[cur_idx]
-        try:
+
+        self._up_btn.setEnabled(False)
+        self._down_btn.setEnabled(False)
+
+        def _worker():
             self._bus.emit_and_wait(
                 Events.EmbeddingPresets.REORDER_PRESETS,
                 {"order": custom_ids},
                 timeout=2.0,
             )
-        except Exception:
-            return
-        self._load_presets(select_id=pid)
+            return True
+
+        def _apply(_ok):
+            self._up_btn.setEnabled(True)
+            self._down_btn.setEnabled(True)
+            self._load_presets(select_id=pid)
+
+        def _error(_exc: Exception):
+            self._up_btn.setEnabled(True)
+            self._down_btn.setEnabled(True)
+
+        run_async(self._gui, _worker, _apply, _error, name="embed-provider-reorder")
 
     def _on_test(self):
         self._status_label.setStyleSheet("")

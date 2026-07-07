@@ -35,6 +35,14 @@ from handlers.embedding_presets import (
 _extr_state: dict = {'worker': None, 'stop': None, 'total': 0, 'last_status': ''}
 
 
+def _selected_character_id(gui) -> str:
+    for attr in ("_configured_char_id", "_active_character_id", "current_character_id", "_current_char_id"):
+        value = str(getattr(gui, attr, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Status helpers
 # ---------------------------------------------------------------------------
@@ -232,15 +240,8 @@ def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> 
     from ui.task_worker import TaskWorker
 
     db = DatabaseManager()
-    eb = get_event_bus()
-
     if mode == "current":
-        try:
-            res = eb.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-            profile = res[0] if res else {}
-            current_cid = (profile or {}).get("character_id", "")
-        except Exception:
-            current_cid = ""
+        current_cid = _selected_character_id(gui)
         if not current_cid:
             QMessageBox.warning(gui, _("Нет персонажа", "No character"),
                                 _("Текущий персонаж не выбран.", "No current character selected."))
@@ -553,14 +554,7 @@ def _run_ttl_cleanup(gui) -> None:
     """Apply TTL cleanup for the current character's memories."""
     try:
         from core.events import get_event_bus, Events
-        bus = get_event_bus()
-        char_id = getattr(gui, 'current_character_id', None) or getattr(gui, '_current_char_id', None)
-        if not char_id:
-            try:
-                res = bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-                char_id = ((res[0] if res else None) or {}).get("character_id", "")
-            except Exception:
-                char_id = ""
+        char_id = _selected_character_id(gui)
         if not char_id:
             QMessageBox.warning(
                 gui,
@@ -589,14 +583,7 @@ def _run_graph_ttl_cleanup(gui) -> None:
     """Apply graph TTL cleanup (relations + orphaned entities)."""
     try:
         from core.events import get_event_bus, Events
-        bus = get_event_bus()
-        char_id = getattr(gui, 'current_character_id', None) or getattr(gui, '_current_char_id', None)
-        if not char_id:
-            try:
-                res = bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-                char_id = ((res[0] if res else None) or {}).get("character_id", "")
-            except Exception:
-                char_id = ""
+        char_id = _selected_character_id(gui)
         if not char_id:
             QMessageBox.warning(gui, _("TTL графа", "Graph TTL"),
                                 _("Не удалось определить текущего персонажа.", "Could not determine the current character."))
@@ -619,14 +606,7 @@ def _run_history_ttl_cleanup(gui) -> None:
     """Apply history TTL cleanup (archive old messages)."""
     try:
         from core.events import get_event_bus, Events
-        bus = get_event_bus()
-        char_id = getattr(gui, 'current_character_id', None) or getattr(gui, '_current_char_id', None)
-        if not char_id:
-            try:
-                res = bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-                char_id = ((res[0] if res else None) or {}).get("character_id", "")
-            except Exception:
-                char_id = ""
+        char_id = _selected_character_id(gui)
         if not char_id:
             QMessageBox.warning(gui, _("TTL истории", "History TTL"),
                                 _("Не удалось определить текущего персонажа.", "Could not determine the current character."))
@@ -1349,13 +1329,7 @@ def _build_graph_config(self, hc_provider_names) -> list:
 def _run_memory_dedup(gui, dry_run: bool = True) -> None:
     """Analyze or apply vector-based memory deduplication for the current character."""
     try:
-        char_id = getattr(gui, 'current_character_id', None) or getattr(gui, '_current_char_id', None)
-        if not char_id:
-            try:
-                res = get_event_bus().emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-                char_id = ((res[0] if res else None) or {}).get("character_id", "")
-            except Exception:
-                char_id = ""
+        char_id = _selected_character_id(gui)
         if not char_id:
             QMessageBox.warning(
                 gui,

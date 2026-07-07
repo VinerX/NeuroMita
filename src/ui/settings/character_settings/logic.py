@@ -207,6 +207,14 @@ def _configured_character_id(gui) -> str:
     return cid or active or _current_character_id()
 
 
+def _selected_character_id(gui) -> str:
+    for attr in ("_configured_char_id", "_active_character_id", "current_character_id", "_current_char_id"):
+        value = str(getattr(gui, attr, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def update_prompt_set_info(gui, character_id: str | None = None, set_name: str | None = None):
     labels = getattr(gui, "prompt_info_labels", None)
     if not isinstance(labels, dict) or not labels:
@@ -759,11 +767,7 @@ def open_folder(path):
 
 
 def open_character_folder(gui):
-    event_bus = get_event_bus()
-    current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-    profile = current_profile_res[0] if current_profile_res else {}
-
-    character_id = profile.get("character_id") if isinstance(profile, dict) else None
+    character_id = _selected_character_id(gui)
     if not character_id:
         QMessageBox.information(gui, _("Информация", "Information"),
                                 _("Персонаж не выбран или его имя недоступно.", "No character selected or its name is not available."))
@@ -789,11 +793,7 @@ def open_character_folder(gui):
 
 
 def open_character_history_folder(gui):
-    event_bus = get_event_bus()
-    current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-    profile = current_profile_res[0] if current_profile_res else {}
-
-    character_id = profile.get("character_id") if isinstance(profile, dict) else None
+    character_id = _selected_character_id(gui)
     if character_id:
         history_folder_path = os.path.join("Histories", character_id)
         if os.path.exists(history_folder_path):
@@ -886,9 +886,7 @@ def purge_deleted_data(gui):
 
 def clear_history(gui):
     event_bus = get_event_bus()
-    current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-    profile = current_profile_res[0] if current_profile_res else {}
-    char_id = profile.get("character_id") if isinstance(profile, dict) else None
+    char_id = _selected_character_id(gui)
     char_name_for_text = char_id or _("(не выбран)", "(not selected)")
 
     title = _("Подтверждение удаления", "Confirm deletion")
@@ -924,10 +922,7 @@ def clear_history_all(gui):
 
 
 def migrate_history(gui):
-    event_bus = get_event_bus()
-    current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-    profile = current_profile_res[0] if current_profile_res else {}
-    char_id = profile.get("character_id") if isinstance(profile, dict) else None
+    char_id = _selected_character_id(gui)
     char_name_for_text = char_id or _("(не выбран)", "(not selected)")
 
     if not char_id:
@@ -982,10 +977,7 @@ def migrate_to_db(gui):
                                "Migration script not found (utils.migrate_to_sql)."))
         return
 
-    event_bus = get_event_bus()
-    current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-    profile = current_profile_res[0] if current_profile_res else {}
-    character_id = profile.get("character_id") if isinstance(profile, dict) else None
+    character_id = _selected_character_id(gui)
 
     if not character_id:
         QMessageBox.information(gui, _("Информация", "Information"),
@@ -1160,9 +1152,7 @@ def migrate_db_to_structured(gui, character_id: str | None = "current"):
     event_bus = get_event_bus()
 
     if character_id == "current":
-        current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-        profile = current_profile_res[0] if current_profile_res else {}
-        character_id = profile.get("character_id") if isinstance(profile, dict) else None
+        character_id = _selected_character_id(gui)
         if not character_id:
             QMessageBox.information(gui, _("Информация", "Information"),
                                     _("Персонаж не выбран.", "No character selected."))
@@ -1256,9 +1246,7 @@ def migrate_db_to_structured(gui, character_id: str | None = "current"):
 
 
 def open_db_viewer(gui):
-    event_bus = get_event_bus()
-    res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-    char_id = res[0].get("character_id") if res else None
+    char_id = _selected_character_id(gui) or None
 
     dialog = DbViewerDialog(gui, character_id=char_id)
     dialog.exec()
@@ -1268,15 +1256,7 @@ def open_db_viewer_global(gui):
     dialog.exec()
 
 def run_history_dedup(gui):
-    # Берём ID персонажа через EventBus (как в run_reindexing)
-    event_bus = get_event_bus()
-    res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-
-    if not res or not res[0]:
-        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Персонаж не найден.", "Character not found."))
-        return
-
-    character_id = res[0].get("character_id")
+    character_id = _selected_character_id(gui)
     if not character_id:
         QMessageBox.warning(gui, _("Ошибка", "Error"), _("Некорректный ID персонажа.", "Invalid character ID."))
         return
@@ -1446,15 +1426,7 @@ def run_history_dedup_all(gui):
     gui._dedupe_all_worker.start()
 
 def run_reindexing(gui):
-    # Получаем ID персонажа через EventBus, а не через контроллер
-    event_bus = get_event_bus()
-    res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-
-    if not res or not res[0]:
-        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Персонаж не найден.", "Character not found."))
-        return
-
-    character_id = res[0].get("character_id")
+    character_id = _selected_character_id(gui)
     if not character_id:
         QMessageBox.warning(gui, _("Ошибка", "Error"), _("Некорректный ID персонажа.", "Invalid character ID."))
         return
@@ -1679,14 +1651,7 @@ def run_reindexing_all(gui):
 
 def run_full_reindexing(gui):
     """Полная переиндексация - пересоздаёт вектора для ВСЕХ записей"""
-    event_bus = get_event_bus()
-    res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-
-    if not res or not res[0]:
-        QMessageBox.warning(gui, _("Ошибка", "Error"), _("Персонаж не найден.", "Character not found."))
-        return
-
-    character_id = res[0].get("character_id")
+    character_id = _selected_character_id(gui)
     if not character_id:
         QMessageBox.warning(gui, _("Ошибка", "Error"), _("Некорректный ID персонажа.", "Invalid character ID."))
         return
@@ -1896,10 +1861,7 @@ def run_full_reindexing_all(gui):
         gui._full_reindex_all_worker = None
 
 def export_db_for_character(gui):
-    event_bus = get_event_bus()
-    res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-    profile = res[0] if res else {}
-    cid = profile.get("character_id") if isinstance(profile, dict) else None
+    cid = _selected_character_id(gui)
     if not cid:
         QMessageBox.warning(gui, _("Ошибка", "Error"), _("Персонаж не выбран.", "No character selected."))
         return
@@ -2000,10 +1962,7 @@ def _start_export_worker(gui, settings: dict):
 
 def import_db_for_character(gui):
     # “просто выбрать путь”, но импорт мапим в текущего персонажа (override character_id)
-    event_bus = get_event_bus()
-    res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-    profile = res[0] if res else {}
-    cid = profile.get("character_id") if isinstance(profile, dict) else None
+    cid = _selected_character_id(gui)
     if not cid:
         QMessageBox.warning(gui, _("Ошибка", "Error"), _("Персонаж не выбран.", "No character selected."))
         return
