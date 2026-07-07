@@ -1191,6 +1191,12 @@ class VoiceoverGuiController(BaseController):
         if not self.view:
             return False
 
+        # Гейт по GPU: не запускаем молча CUDA-модель на не-NVIDIA железе —
+        # раньше это давало каскад triton «Failed to find CUDA» и путало юзеров
+        # без видеокарты NVIDIA (фидбэк Артёма, Intel Iris Xe).
+        if not self._confirm_gpu_compatibility(model_id):
+            return False
+
         if not os.path.exists("models"):
             box = QMessageBox(self.view)
             box.setIcon(QMessageBox.Icon.Critical)
@@ -1251,6 +1257,68 @@ class VoiceoverGuiController(BaseController):
                 pass
         self._loading_dialog = None
         self._loading_status_label = None
+
+    # ---------- GPU compatibility gate ----------
+    def _detected_gpu_vendor(self) -> str:
+        """NVIDIA | AMD | INTEL | CPU. Кэшируем — железо в рамках сессии не меняется."""
+        cached = getattr(self, "_gpu_vendor_cache", None)
+        if cached is not None:
+            return cached
+        vendor = "CPU"
+        try:
+            from utils.gpu_utils import get_primary_gpu_name, _classify_gpu_vendor
+            vendor = str(_classify_gpu_vendor(get_primary_gpu_name() or "") or "CPU").upper()
+        except Exception:
+            vendor = "CPU"
+        self._gpu_vendor_cache = vendor
+        return vendor
+
+    def _model_gpu_vendors(self, model_id: str) -> list[str]:
+        try:
+            from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
+            for m in LOCAL_VOICE_MODELS:
+                if str(m.get("id") or "") == model_id:
+                    return [str(v).upper() for v in (m.get("gpu_vendor") or [])]
+        except Exception:
+            pass
+        return []
+
+    def _is_model_gpu_compatible(self, model_id: str) -> bool:
+        vendors = self._model_gpu_vendors(model_id)
+        if not vendors:
+            return True                      # неизвестная модель — не мешаем
+        if "CPU" in vendors:
+            return True                      # умеет CPU-фолбэк → совместима с любым железом
+        return self._detected_gpu_vendor() in vendors
+
+    def _confirm_gpu_compatibility(self, model_id: str) -> bool:
+        """True — можно инициализировать; False — юзер отменил из-за несовместимости."""
+        if self._is_model_gpu_compatible(model_id):
+            return True
+        if not self.view:
+            return False
+
+        model_name = self._model_id_to_name.get(model_id, model_id)
+        vendors = ", ".join(self._model_gpu_vendors(model_id)) or "NVIDIA"
+        detected = self._detected_gpu_vendor()
+
+        box = QMessageBox(self.view)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(_("Несовместимая модель", "Incompatible model"))
+        box.setText(_(
+            f"Модель «{model_name}» рассчитана на GPU {vendors}, а у вас определилась {detected}.\n\n"
+            f"Инициализация, скорее всего, не запустится (нет CUDA) или будет крайне медленной. "
+            f"Выберите ONNX/CPU-вариант модели.\n\nВсё равно попробовать запустить?",
+            f"The model \"{model_name}\" targets a {vendors} GPU, but {detected} was detected.\n\n"
+            f"Initialization will most likely fail (no CUDA) or be extremely slow. "
+            f"Pick an ONNX/CPU variant instead.\n\nTry to start it anyway?",
+        ))
+        yes_btn = box.addButton(_("Всё равно запустить", "Start anyway"),
+                                QMessageBox.ButtonRole.AcceptRole)
+        cancel_btn = box.addButton(_("Отмена", "Cancel"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel_btn)     # по умолчанию — безопасная отмена
+        box.exec()
+        return box.clickedButton() is yes_btn
 
     # ---------- backend checks ----------
     def _check_installed(self, model_id: str) -> bool:
