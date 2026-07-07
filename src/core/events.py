@@ -102,14 +102,12 @@ class EventBus:
 
         event = Event(name=event_name, data=data)
 
-        # Добавить отладку
-        with self._lock:
-            subscribers_count = len(self._get_active_subscribers(event_name))
-            if subscribers_count > 0:
-                logger.debug(f"Emitting event '{event_name}' to {subscribers_count} subscribers")
-            else:
-                logger.warning(f"No subscribers for event '{event_name}'")
-        
+        # ВАЖНО: никакого логирования/резолва подписчиков под self._lock здесь.
+        # Раньше emit() держал глобальный лок шины во время logger-вызова (диск!)
+        # и лишний раз резолвил подписчиков — на старте это сериализовало ВЕСЬ
+        # поток событий за скоростью диска и упиралось в тот же лок, что нужен
+        # emit_and_wait из GUI. Диспетчер (_emit_sync/_emit_async) сам резолвит
+        # подписчиков один раз и вне лока.
         if sync:
             self._emit_sync(event)
         else:

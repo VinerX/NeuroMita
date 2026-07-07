@@ -35,6 +35,10 @@ class VoiceoverGuiController(BaseController):
 
         self._installed_models_cache: set[str] | None = None
         self._installed_models_cache_ts: float = 0.0
+        # Модели, про которые точно известно, что они инициализированы (загружены
+        # в память). Ведётся из snapshot-пути индикатора; старый путь его читает,
+        # чтобы отдавать честный «green/warn» без блокирующего CHECK_MODEL_INITIALIZED.
+        self._initialized_models_cache: set[str] = set()
 
         super().__init__(main_controller, view)
 
@@ -822,9 +826,17 @@ class VoiceoverGuiController(BaseController):
             return
 
         initialized = bool(state.get("initialized"))
+        # Единый источник правды об инициализации для старого пути индикатора.
+        if initialized:
+            self._initialized_models_cache.add(model_id)
+        else:
+            self._initialized_models_cache.discard(model_id)
+        # Установлена, но не инициализирована — это НЕ «готово». Жёлтый "warn"
+        # (настроено, но требует инициализации), а не зелёный, иначе индикатор
+        # на вкладке противоречит плашке «Требуется инициализация» в теле страницы.
         self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
             "category": "voice",
-            "state": "green",
+            "state": "green" if initialized else "warn",
             "tooltip": _("Модель готова", "Model ready") if initialized else _("Требуется инициализация", "Initialization required"),
         })
 
@@ -970,28 +982,13 @@ class VoiceoverGuiController(BaseController):
             })
             return
 
+        # Установлена, но не инициализирована — жёлтый "warn", а не зелёный.
+        # Данные об инициализации берём из кэша, который ведёт snapshot-путь
+        # (никаких блокирующих CHECK_MODEL_INITIALIZED в пути индикатора).
+        initialized = model_id in self._initialized_models_cache
         self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
             "category": "voice",
-            "state": "green",
-            "tooltip": _("Model status loaded", "Model status loaded"),
-        })
-        return
-
-        if not self._check_installed(model_id):
-            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
-                "category": "voice",
-                "state": "red",
-                "tooltip": _("Модель не установлена", "Model not installed"),
-            })
-            return
-
-        initialized = self._check_initialized(model_id)
-        # Модель установлена, но ещё не инициализирована — это НЕ ошибка, а
-        # «не инициализировано» (фидбэк Винера). Шлём "warn" (жёлтый), чтобы
-        # статус-плашка различала это с реальной ошибкой ("red").
-        self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
-            "category": "voice",
-            "state": "green",
+            "state": "green" if initialized else "warn",
             "tooltip": _("Модель готова", "Model ready") if initialized else _("Требуется инициализация", "Initialization required"),
         })
 

@@ -563,10 +563,13 @@ class SandboxPage(QWidget):
         return model_id
 
     def _format_local_voice_value(self, model_id: str) -> str:
-        base = _("Локально", "Local")
+        # Без префикса «Локально: » — он съедал всю ширину узкой строки статуса,
+        # и от имени модели («Edge-TTS + RVC») ничего не оставалось. Слева уже
+        # есть метка «Голос», а TG-режим отдаёт значение «Telegram», так что
+        # локальную озвучку от телеграмной всё равно видно. Полное имя — в tooltip.
         if not model_id:
-            return base
-        return f"{base}: {self._local_voice_name(model_id)}"
+            return _("Локально", "Local")
+        return self._local_voice_name(model_id)
 
     # --------- Avatar -----------
     def _resolve_avatar_pixmap(self, character_id: str, size: int = 32) -> QPixmap:

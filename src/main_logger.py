@@ -1,6 +1,9 @@
+import atexit
 import logging
 import os
+import queue
 import sys
+from logging.handlers import QueueHandler, QueueListener
 from typing import Any, Optional
 
 try:
@@ -113,7 +116,7 @@ class CustomLogger(logging.Logger):
             console_handler.setFormatter(logging.Formatter('%(levelname)-8s %(location)-30s | %(message)s'))
         console_handler.addFilter(ProjectFilter())
         console_handler.addFilter(LocationFilter())
-        
+
         # Файловый обработчик
         file_handler = logging.FileHandler('NeuroMitaLogs.log', encoding='utf-8')
         file_handler.setFormatter(
@@ -124,10 +127,28 @@ class CustomLogger(logging.Logger):
             )
         )
         file_handler.addFilter(ProjectFilter())
-        
-        # Добавляем обработчики
-        self.addHandler(console_handler)
-        self.addHandler(file_handler)
+
+        # Асинхронное логирование: сам logger.* только кладёт запись в очередь
+        # (микросекунды), а фактическую запись в консоль/файл (диск!) делает
+        # отдельный поток QueueListener. Это убирает блокировку вызывающего
+        # потока на дисковом I/O — на старте лог/варнинг-флуд больше не тормозит
+        # обработку событий и не даёт «GUI FREEZE» из-за медленного диска.
+        try:
+            log_queue: "queue.Queue[Any]" = queue.Queue(-1)
+            queue_handler = QueueHandler(log_queue)
+            listener = QueueListener(
+                log_queue, console_handler, file_handler,
+                respect_handler_level=True,
+            )
+            listener.start()
+            # Останавливаем слушателя на выходе — дописать хвост очереди на диск.
+            atexit.register(listener.stop)
+            self.addHandler(queue_handler)
+        except Exception:
+            # Фолбэк на синхронные обработчики, если очередь по какой-то причине
+            # недоступна — логирование важнее его асинхронности.
+            self.addHandler(console_handler)
+            self.addHandler(file_handler)
         self.propagate = False
 
 # -----------------------------------------------------------------------------
