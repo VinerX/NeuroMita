@@ -404,7 +404,7 @@ def setup_game_controls(self, parent) -> None:
                 'Насколько может отклоняться длина диалога NPC без участия игрока',
                 'How long NPC can talk ignoring player',
             ),
-            'depends_on': 'MITA_DIALOGUE_OLD_ON',
+            'depends_on': 'MITA_DIALOGUE_AUTO',
         },
         {
             'label': _('ГеймМастер — экспериментальная функция', 'GameMaster is experimental feature'),
