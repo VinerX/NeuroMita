@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 from ui.gui_templates import create_settings_section
+from ui.async_bus import run_async
 from utils import getTranslationVariant as _
 from localization.live import tr_set
 from core.events import get_event_bus, Events
@@ -1932,37 +1933,62 @@ def _needs_ce_backend_install() -> bool:
 
 
 def _refresh_ce_status(gui) -> None:
-    try:
-        if hasattr(gui, "_ce_dl_label"):
-            gui._ce_dl_label.setText(_("Backend:", "Backend:") + " " + _get_ce_backend_status())
-        if hasattr(gui, "_ce_model_label"):
-            gui._ce_model_label.setText(_("Модель:", "Model:") + " " + _get_ce_download_status())
-        if hasattr(gui, "_ce_loaded_label"):
-            gui._ce_loaded_label.setText(_("Статус:", "Status:") + " " + _get_ce_loaded_status())
-        if hasattr(gui, "_ce_dl_btn"):
-            if gui._ce_dl_btn.parentWidget() is None:
-                return
-            gui._ce_dl_btn.setEnabled(True)
-            gui._ce_dl_btn.setText(_("Открыть AI Hub", "Open AI Hub"))
-            gui._ce_dl_btn.setVisible(_needs_ce_backend_install() or not _is_ce_model_downloaded())
-    except Exception:
-        pass
+    def _worker():
+        return {
+            "backend": _get_ce_backend_status(),
+            "model": _get_ce_download_status(),
+            "loaded": _get_ce_loaded_status(),
+            "visible": _needs_ce_backend_install() or not _is_ce_model_downloaded(),
+        }
+
+    def _apply(status):
+        try:
+            if hasattr(gui, "_ce_dl_label"):
+                gui._ce_dl_label.setText(_("Backend:", "Backend:") + " " + status["backend"])
+            if hasattr(gui, "_ce_model_label"):
+                gui._ce_model_label.setText(_("Модель:", "Model:") + " " + status["model"])
+            if hasattr(gui, "_ce_loaded_label"):
+                gui._ce_loaded_label.setText(_("Статус:", "Status:") + " " + status["loaded"])
+            if hasattr(gui, "_ce_dl_btn"):
+                if gui._ce_dl_btn.parentWidget() is None:
+                    return
+                gui._ce_dl_btn.setEnabled(True)
+                gui._ce_dl_btn.setText(_("Открыть AI Hub", "Open AI Hub"))
+                gui._ce_dl_btn.setVisible(bool(status["visible"]))
+        except RuntimeError:
+            pass
+        except Exception:
+            pass
+
+    run_async(gui, _worker, _apply, name="rag-ce-status")
 
 
 def _refresh_embed_status(gui) -> None:
-    try:
-        if hasattr(gui, "_embed_dl_label"):
-            gui._embed_dl_label.setText(_("Backend:", "Backend:") + " " + _get_embed_backend_status())
-        if hasattr(gui, "_embed_status_label"):
-            gui._embed_status_label.setText(_("Индекс:", "Index:") + " " + _get_embed_status_text())
-        if hasattr(gui, "_embed_dl_btn"):
-            if gui._embed_dl_btn.parentWidget() is None:
-                return
-            gui._embed_dl_btn.setEnabled(True)
-            gui._embed_dl_btn.setText(_("Открыть AI Hub", "Open AI Hub"))
-            gui._embed_dl_btn.setVisible(_needs_embed_backend_install())
-    except Exception:
-        pass
+    def _worker():
+        return {
+            "backend": _get_embed_backend_status(),
+            "index": _get_embed_status_text(),
+            "visible": _needs_embed_backend_install(),
+        }
+
+    def _apply(status):
+        try:
+            if hasattr(gui, "_embed_dl_label"):
+                gui._embed_dl_label.setText(_("Backend:", "Backend:") + " " + status["backend"])
+            if hasattr(gui, "_embed_status_label"):
+                gui._embed_status_label.setText(_("Индекс:", "Index:") + " " + status["index"])
+            if hasattr(gui, "_embed_dl_btn"):
+                if gui._embed_dl_btn.parentWidget() is None:
+                    return
+                gui._embed_dl_btn.setEnabled(True)
+                gui._embed_dl_btn.setText(_("Открыть AI Hub", "Open AI Hub"))
+                gui._embed_dl_btn.setVisible(bool(status["visible"]))
+        except RuntimeError:
+            pass
+        except Exception:
+            pass
+
+    run_async(gui, _worker, _apply, name="rag-embed-status")
 
 
 def _open_rag_ai_hub(gui, target: str) -> None:
@@ -2034,12 +2060,12 @@ def _attach_embed_downloader(gui, section) -> None:
         _content = getattr(section, "content", None)
         _parent = _content or section
 
-        _dl_label = QLabel(_("Backend:", "Backend:") + " " + _get_embed_backend_status(), _parent)
+        _dl_label = QLabel(_("Backend:", "Backend:") + " " + _("Загрузка...", "Loading..."), _parent)
         _dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _idx_label = QLabel(_("Индекс:", "Index:") + " " + _get_embed_status_text(), _parent)
+        _idx_label = QLabel(_("Индекс:", "Index:") + " " + _("Загрузка...", "Loading..."), _parent)
         _idx_label.setStyleSheet("color: #aaa; font-size: 11px;")
         _embed_dl_btn = QPushButton(_("Открыть AI Hub", "Open AI Hub"), _parent)
-        _embed_dl_btn.setVisible(_needs_embed_backend_install())
+        _embed_dl_btn.setVisible(False)
         _embed_dl_btn.clicked.connect(lambda: _start_rag_backend_install(gui, TARGET_EMBEDDINGS))
         _target_section = None
         if _content:
@@ -2065,6 +2091,7 @@ def _attach_embed_downloader(gui, section) -> None:
         gui._embed_status_label = _idx_label
         gui._embed_dl_label = _dl_label
         gui._embed_dl_btn = _embed_dl_btn
+        _refresh_embed_status(gui)
     except Exception:
         pass
 
@@ -2076,18 +2103,18 @@ def _attach_ce_downloader(gui, section) -> None:
         _content = getattr(section, "content", None)
         _parent = _content or section
 
-        _ce_dl_label = QLabel(_("Backend:", "Backend:") + " " + _get_ce_backend_status(), _parent)
+        _ce_dl_label = QLabel(_("Backend:", "Backend:") + " " + _("Загрузка...", "Loading..."), _parent)
         _ce_dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _ce_model_label = QLabel(_("Модель:", "Model:") + " " + _get_ce_download_status(), _parent)
+        _ce_model_label = QLabel(_("Модель:", "Model:") + " " + _("Загрузка...", "Loading..."), _parent)
         _ce_model_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _ce_ld_label = QLabel(_("Статус:", "Status:") + " " + _get_ce_loaded_status(), _parent)
+        _ce_ld_label = QLabel(_("Статус:", "Status:") + " " + _("Загрузка...", "Loading..."), _parent)
         _ce_ld_label.setStyleSheet("color: #aaa; font-size: 11px;")
         # Одна кнопка «Открыть AI Hub»: и backend (PyTorch), и сама модель
         # реранкера ставятся через одну и ту же категорию AI Hub, поэтому две
         # одинаковые кнопки были дублем (фидбэк vinerx). Показываем, если не
         # хватает чего-либо из двух.
         _ce_dl_btn = QPushButton(_("Открыть AI Hub", "Open AI Hub"), _parent)
-        _ce_dl_btn.setVisible(_needs_ce_backend_install() or not _is_ce_model_downloaded())
+        _ce_dl_btn.setVisible(False)
         _ce_dl_btn.clicked.connect(lambda: _start_rag_backend_install(gui, TARGET_RERANKER))
         _target_section = None
         if _content:
@@ -2115,6 +2142,7 @@ def _attach_ce_downloader(gui, section) -> None:
         gui._ce_model_label = _ce_model_label
         gui._ce_loaded_label = _ce_ld_label
         gui._ce_dl_btn = _ce_dl_btn
+        _refresh_ce_status(gui)
     except Exception:
         pass
 

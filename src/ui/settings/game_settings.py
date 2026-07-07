@@ -17,6 +17,7 @@ from game_connections.services.beat_backend_spec import (
 )
 from game_connections.services.beat_service import get_beat_service
 from main_logger import logger
+from ui.async_bus import dispatch_to_gui
 from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
 from localization.live import tr_set
@@ -326,9 +327,6 @@ def _on_beat_install_finished(gui, event) -> None:
         return
 
     op = str(meta.get("op") or "install")
-    get_beat_service().reset_runtime_state()
-    _set_beat_action_buttons_enabled(gui, True)
-
     msg_map = {
         "install": _("Beat backend установлен", "Beat backend installed"),
         "initialize": _("Beat backend инициализирован", "Beat backend initialized"),
@@ -336,14 +334,19 @@ def _on_beat_install_finished(gui, event) -> None:
     }
     msg = msg_map.get(op, _("Beat backend обновлён", "Beat backend updated"))
 
-    _refresh_beat_sync_status(gui, msg)
-    gui.event_bus.emit(
-        Events.GUI.SHOW_INFO_MESSAGE,
-        {
-            "title": _("Beat Sync", "Beat Sync"),
-            "message": msg,
-        },
-    )
+    def _apply():
+        get_beat_service().reset_runtime_state()
+        _set_beat_action_buttons_enabled(gui, True)
+        _refresh_beat_sync_status(gui, msg)
+        gui.event_bus.emit(
+            Events.GUI.SHOW_INFO_MESSAGE,
+            {
+                "title": _("Beat Sync", "Beat Sync"),
+                "message": msg,
+            },
+        )
+
+    dispatch_to_gui(gui, _apply)
 
 def _on_beat_install_failed(gui, event) -> None:
     data = event.data if isinstance(event.data, dict) else {}
@@ -352,9 +355,6 @@ def _on_beat_install_failed(gui, event) -> None:
         return
 
     op = str(meta.get("op") or "install")
-    get_beat_service().reset_runtime_state()
-    _set_beat_action_buttons_enabled(gui, True)
-
     msg_map = {
         "install": _("Ошибка установки Beat backend", "Beat backend installation failed"),
         "initialize": _("Ошибка инициализации Beat backend", "Beat backend initialization failed"),
@@ -362,14 +362,19 @@ def _on_beat_install_failed(gui, event) -> None:
     }
     msg = msg_map.get(op, _("Ошибка операции Beat backend", "Beat backend operation failed"))
 
-    _refresh_beat_sync_status(gui, msg)
-    gui.event_bus.emit(
-        Events.GUI.SHOW_ERROR_MESSAGE,
-        {
-            "title": _("Beat Sync", "Beat Sync"),
-            "message": msg,
-        },
-    )
+    def _apply():
+        get_beat_service().reset_runtime_state()
+        _set_beat_action_buttons_enabled(gui, True)
+        _refresh_beat_sync_status(gui, msg)
+        gui.event_bus.emit(
+            Events.GUI.SHOW_ERROR_MESSAGE,
+            {
+                "title": _("Beat Sync", "Beat Sync"),
+                "message": msg,
+            },
+        )
+
+    dispatch_to_gui(gui, _apply)
 
 def setup_game_controls(self, parent) -> None:
     _ensure_beat_install_hooks(self)

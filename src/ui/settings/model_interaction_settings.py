@@ -1,6 +1,6 @@
 from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
-from core.events import get_event_bus, Events
+from ui.settings.provider_options import current_provider_options, load_api_provider_options_async
 from ui.settings.rag_memory_settings import (
     build_memory_section,
     build_rag_section,
@@ -229,16 +229,7 @@ def setup_model_interaction_controls(self, parent):
         icon_name='fa5s.cogs'
     )
 
-    event_bus = get_event_bus()
-    presets_meta = event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-    hc_provider_names = [_('Текущий', 'Current')]
-    if presets_meta and presets_meta[0]:
-        for preset in presets_meta[0].get('custom', []):
-            hc_provider_names.append(preset.name)
-    react_provider_names = [_('Текущий', 'Current')]
-    if presets_meta and presets_meta[0]:
-        for preset in presets_meta[0].get('custom', []):
-            react_provider_names.append(preset.name)
+    provider_options = current_provider_options()
 
     react_settings_config = [
         {
@@ -274,7 +265,7 @@ def setup_model_interaction_controls(self, parent):
         {
             'label': _('Провайдер для реакций L1', 'Provider for react L1'),
             'key': 'REACT_PROVIDER_L1', 'type': 'combobox',
-            'options': react_provider_names, 'default': _('Текущий', 'Current'),
+            'options': provider_options, 'default': _('Текущий', 'Current'),
             'depends_on': 'REACT_L1_ENABLED',
             'tooltip': _(
                 'Какой API-пресет использовать для тихих react-сообщений (L1).',
@@ -293,7 +284,7 @@ def setup_model_interaction_controls(self, parent):
         {
             'label': _('Провайдер для реакций L2', 'Provider for react L2'),
             'key': 'REACT_PROVIDER_L2', 'type': 'combobox',
-            'options': react_provider_names, 'default': _('Текущий', 'Current'),
+            'options': provider_options, 'default': _('Текущий', 'Current'),
             'depends_on': 'REACT_L2_ENABLED',
             'tooltip': _(
                 'Какой API-пресет использовать для react-ответов (L2).',
@@ -308,8 +299,13 @@ def setup_model_interaction_controls(self, parent):
         react_settings_config
     )
 
-    build_memory_section(self, parent, hc_provider_names)
-    build_rag_section(self, parent, hc_provider_names)
+    build_memory_section(self, parent, provider_options)
+    build_rag_section(self, parent, provider_options)
+    load_api_provider_options_async(
+        self,
+        ("REACT_PROVIDER_L1", "REACT_PROVIDER_L2", "HC_PROVIDER", "GRAPH_PROVIDER"),
+        name="model-interaction-provider-options",
+    )
 
     # Token pricing/context limits now come from the selected provider/preset,
     # so the old manual "Token Settings" subsection is intentionally removed.

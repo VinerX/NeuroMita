@@ -137,6 +137,9 @@ class SettingsPage(QWidget):
         self._settings_stack = None
         self._page_indexes = {}
         self._tabs_host = None
+        self._loaded_sections = set()
+        self._loading_sections = set()
+        self._pending_section_scroll = {}
 
         self.SETTINGS_PANEL_WIDTH = max(920, int(getattr(gui, "SETTINGS_PANEL_WIDTH", 980) or 980))
         self.SETTINGS_SIDEBAR_WIDTH = 0
@@ -299,6 +302,11 @@ class SettingsPage(QWidget):
             entry = getattr(self.gui, '_tester_code_entry', None)
             if entry is not None:
                 entry.setText(self.gui.settings.get("TESTER_CODE", ""))
+
+        if category not in self._loaded_sections:
+            self._ensure_section_loaded(category, subsection=subsection, smooth_scroll=smooth_scroll)
+            return
+
         if subsection:
             # Разворачиваем целевую подсекцию и скроллим к ней (с задержкой —
             # дать layout пересобраться после expand).
@@ -534,7 +542,67 @@ class SettingsPage(QWidget):
 
         for spec in get_settings_section_specs():
             page = SettingsSectionPage(spec, self._settings_stack)
+            self._set_section_placeholder(page, "idle")
+            self.settings_containers[spec.key] = page
+            index = self._settings_stack.addWidget(page)
+            self._page_indexes[spec.key] = index
 
+    def _set_section_placeholder(self, page: SettingsSectionPage, state: str, message: str | None = None):
+        self._clear_layout(page.body_layout)
+        box = QFrame()
+        box.setObjectName("SettingsSectionLoading")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(24, 44, 24, 44)
+        layout.setSpacing(10)
+
+        icon = QLabel()
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        try:
+            icon.setPixmap(qta.icon("fa6s.circle-notch", color="#ff6db7").pixmap(28, 28))
+        except Exception:
+            icon.setText("...")
+
+        text = message
+        if not text:
+            text = _("Loading section...", "Loading section...") if state == "loading" else _("Section will load on demand.", "Section will load on demand.")
+        label = QLabel(text)
+        label.setObjectName("Subtle")
+        label.setWordWrap(True)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        layout.addStretch(1)
+        layout.addWidget(icon)
+        layout.addWidget(label)
+        layout.addStretch(1)
+        page.body_layout.addWidget(box)
+
+    def _ensure_section_loaded(self, category: str, *, subsection=None, smooth_scroll: bool = False):
+        if category in self._loaded_sections:
+            self._apply_pending_scroll(category, subsection=subsection, smooth_scroll=smooth_scroll)
+            return
+
+        if category in self._loading_sections:
+            self._pending_section_scroll[category] = (subsection, smooth_scroll)
+            return
+
+        page = self.settings_containers.get(category)
+        if page is None:
+            return
+
+        self._loading_sections.add(category)
+        self._pending_section_scroll[category] = (subsection, smooth_scroll)
+        self._set_section_placeholder(page, "loading")
+        QTimer.singleShot(35, lambda cat=category: self._build_section_now(cat))
+
+    def _build_section_now(self, category: str):
+        page = self.settings_containers.get(category)
+        spec = self._section_specs.get(category)
+        if page is None or spec is None:
+            self._loading_sections.discard(category)
+            return
+
+        try:
+            self._clear_layout(page.body_layout)
             builder = spec.builder_ref
             if isinstance(builder, str):
                 getattr(self.gui, builder)(page.body_layout)
@@ -543,10 +611,34 @@ class SettingsPage(QWidget):
 
             self._promote_first_subsection_header(page)
             self._prepare_settings_subsections(page)
+            self._loaded_sections.add(category)
+        except Exception as exc:
+            self._set_section_placeholder(page, "error", f"Failed to load section: {exc}")
+        finally:
+            self._loading_sections.discard(category)
 
-            self.settings_containers[spec.key] = page
-            index = self._settings_stack.addWidget(page)
-            self._page_indexes[spec.key] = index
+        subsection, smooth_scroll = self._pending_section_scroll.pop(category, (None, False))
+        self._apply_pending_scroll(category, subsection=subsection, smooth_scroll=smooth_scroll)
+
+    def _apply_pending_scroll(self, category: str, *, subsection=None, smooth_scroll: bool = False):
+        page = self.settings_containers.get(category)
+        if page is None:
+            return
+        if subsection:
+            QTimer.singleShot(0, lambda p=page, sub=subsection, smooth=smooth_scroll: self._scroll_to_subsection(p, sub, smooth=smooth))
+        elif smooth_scroll:
+            QTimer.singleShot(0, lambda key=category: self._scroll_to_category(key, smooth=True))
+
+    def _clear_layout(self, layout: QLayout):
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+                continue
+            child_layout = item.layout()
+            if child_layout is not None:
+                self._clear_layout(child_layout)
 
     _COLLAPSE_STATE_KEY = "SETTINGS_COLLAPSED_SECTIONS"
 

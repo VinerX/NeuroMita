@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
 
 from core.events import get_event_bus, Events
 from managers.settings_manager import InnerCollapsibleSection, SettingsManager
+from ui.async_bus import dispatch_to_gui, run_async
 from ui.gui_templates import SettingsBodyWidget
 from utils import getTranslationVariant as _
 from localization.live import tr_set
@@ -40,12 +41,12 @@ class _EmbedProviderWidget(QWidget):
         self._is_loading = False
         self._test_timer: Optional[QTimer] = None
         self._key_url: str = ""
+        self._load_ticket = 0
 
         self._setup_ui()
-        self._load_presets()
-
         saved = SettingsManager.get("RAG_EMBED_PRESET_ID", None)
-        self._select_preset(saved if saved is not None else "local_hf")
+        self._status_label.setText(_("Загрузка пресетов...", "Loading presets..."))
+        self._load_presets(select_id=saved if saved is not None else "local_hf")
 
         self._bus.subscribe(Events.EmbeddingPresets.TEST_RESULT, self._on_test_result, weak=False)
 
@@ -290,31 +291,55 @@ class _EmbedProviderWidget(QWidget):
 
     # ── Data ──────────────────────────────────────────────────────────────────
 
-    def _load_presets(self):
-        self._preset_combo.blockSignals(True)
-        self._preset_combo.clear()
-        try:
+    def _load_presets(self, select_id: Any = None):
+        self._preset_combo.setEnabled(False)
+        target_id = select_id if select_id is not None else self._current_preset_id
+
+        def _worker():
             results = self._bus.emit_and_wait(
                 Events.EmbeddingPresets.GET_PRESET_LIST, {}, timeout=2.0
             )
             meta = results[0] if results else {}
-        except Exception:
-            meta = {}
+            return self._preset_items_from_meta(meta)
 
+        def _apply(items):
+            self._preset_combo.blockSignals(True)
+            try:
+                self._preset_combo.clear()
+                for label, item_id in items:
+                    self._preset_combo.addItem(label, userData=item_id)
+            finally:
+                self._preset_combo.blockSignals(False)
+                self._preset_combo.setEnabled(True)
+
+            selected = target_id
+            if selected is None and self._preset_combo.count() > 0:
+                selected = self._preset_combo.itemData(0)
+            if selected is not None:
+                self._select_preset(selected)
+
+        def _error(_exc: Exception):
+            items = self._preset_items_from_meta({})
+            _apply(items)
+
+        run_async(self._gui, _worker, _apply, _error, name="embed-provider-presets")
+
+    def _preset_items_from_meta(self, meta) -> list[tuple[str, Any]]:
+        items: list[tuple[str, Any]] = []
         if not meta:
             from presets.embedding_provider_presets import list_builtin_presets
             for bp in list_builtin_presets():
                 if bp.get("id") == "custom_local":
                     continue
-                self._preset_combo.addItem(bp["name"], userData=bp["id"])
+                items.append((bp["name"], bp["id"]))
         else:
             for b in meta.get("builtin", []):
                 if b.get("id") == "custom_local":
                     continue
-                self._preset_combo.addItem(b["name"], userData=b["id"])
+                items.append((b["name"], b["id"]))
             for c in meta.get("custom", []):
-                self._preset_combo.addItem("✎ " + c["name"], userData=c["id"])
-        self._preset_combo.blockSignals(False)
+                items.append(("✎ " + c["name"], c["id"]))
+        return items
 
     def _select_preset(self, preset_id: Any):
         idx = self._find_combo_index(preset_id)
@@ -341,9 +366,31 @@ class _EmbedProviderWidget(QWidget):
             self._load_into_editor(pid)
 
     def _load_into_editor(self, preset_id: Any):
+        self._load_ticket += 1
+        ticket = self._load_ticket
         self._is_loading = True
+        self._status_label.setStyleSheet("")
+        self._status_label.setText(_("Загрузка пресета...", "Loading preset..."))
+
+        def _worker():
+            return self._fetch_cfg(preset_id)
+
+        def _apply(cfg):
+            if ticket != self._load_ticket:
+                return
+            self._apply_loaded_cfg(preset_id, cfg)
+
+        def _error(exc: Exception):
+            if ticket != self._load_ticket:
+                return
+            self._is_loading = False
+            self._status_label.setStyleSheet("color: red;")
+            self._status_label.setText(_("Ошибка: ", "Error: ") + str(exc))
+
+        run_async(self._gui, _worker, _apply, _error, name="embed-provider-load-preset")
+
+    def _apply_loaded_cfg(self, preset_id: Any, cfg: Optional[Dict[str, Any]]):
         try:
-            cfg = self._fetch_cfg(preset_id)
             if not cfg:
                 return
             self._current_preset_id = preset_id
@@ -421,7 +468,7 @@ class _EmbedProviderWidget(QWidget):
             self._down_btn.setEnabled(not is_builtin)
 
             self._apply_visibility(is_local)
-            self._refresh_index_status()
+            self._refresh_index_status_async()
             self._save_btn.setStyleSheet("")
         finally:
             self._is_loading = False
@@ -599,8 +646,7 @@ class _EmbedProviderWidget(QWidget):
                 SettingsManager.set("RAG_EMBED_PRESET_ID", saved_id)
                 self._current_preset_id = saved_id
                 self._save_btn.setStyleSheet("")
-                self._load_presets()
-                self._select_preset(saved_id)
+                self._load_presets(select_id=saved_id)
         except Exception as e:
             self._status_label.setText(_("Ошибка: ", "Error: ") + str(e))
 
@@ -619,8 +665,7 @@ class _EmbedProviderWidget(QWidget):
             )
             new_id = results[0] if results else None
             if new_id is not None:
-                self._load_presets()
-                self._select_preset(new_id)
+                self._load_presets(select_id=new_id)
         except Exception as e:
             self._status_label.setText(str(e))
 
@@ -635,8 +680,6 @@ class _EmbedProviderWidget(QWidget):
         except Exception:
             pass
         self._load_presets()
-        if self._preset_combo.count() > 0:
-            self._preset_combo.setCurrentIndex(0)
 
     def _move_current_custom(self, delta: int):
         pid = self._current_preset_id
@@ -664,8 +707,7 @@ class _EmbedProviderWidget(QWidget):
             )
         except Exception:
             return
-        self._load_presets()
-        self._select_preset(pid)
+        self._load_presets(select_id=pid)
 
     def _on_test(self):
         self._status_label.setStyleSheet("")
@@ -679,18 +721,22 @@ class _EmbedProviderWidget(QWidget):
         self._test_timer.start(30000)
 
     def _on_test_result(self, event):
-        data = event.data or {}
-        if data.get("id") != self._current_preset_id:
-            return
-        if self._test_timer:
-            self._test_timer.stop()
-        self._test_btn.setEnabled(True)
-        if data.get("success"):
-            self._status_label.setText("✓ " + (data.get("message") or "OK"))
-            self._status_label.setStyleSheet("color: #7fe38c;")
-        else:
-            self._status_label.setText("✗ " + (data.get("message") or "Error"))
-            self._status_label.setStyleSheet("color: red;")
+        data = dict(event.data or {})
+
+        def _apply():
+            if data.get("id") != self._current_preset_id:
+                return
+            if self._test_timer:
+                self._test_timer.stop()
+            self._test_btn.setEnabled(True)
+            if data.get("success"):
+                self._status_label.setText("✓ " + (data.get("message") or "OK"))
+                self._status_label.setStyleSheet("color: #7fe38c;")
+            else:
+                self._status_label.setText("✗ " + (data.get("message") or "Error"))
+                self._status_label.setStyleSheet("color: red;")
+
+        dispatch_to_gui(self._gui, _apply)
 
     def _on_open_key_url(self):
         import webbrowser
@@ -726,10 +772,16 @@ class _EmbedProviderWidget(QWidget):
     def _get_current_display_name(self) -> str:
         return self._preset_combo.currentText().lstrip("✎ ").strip()
 
-    def _refresh_index_status(self):
-        try:
+    def _refresh_index_status_async(self):
+        def _worker():
             from ui.settings.rag_memory_settings import _get_embed_status_text
+            return _get_embed_status_text()
+
+        def _apply(text):
             self._status_label.setStyleSheet("")
-            self._status_label.setText(_get_embed_status_text())
-        except Exception:
-            pass
+            self._status_label.setText(str(text or ""))
+
+        run_async(self._gui, _worker, _apply, name="embed-provider-index-status")
+
+    def _refresh_index_status(self):
+        self._refresh_index_status_async()

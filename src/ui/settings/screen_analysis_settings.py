@@ -1,7 +1,7 @@
 from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
 from main_logger import logger
-from core.events import get_event_bus, Events
+from ui.settings.provider_options import current_provider_options, load_api_provider_options_async
 
 def get_camera_list():
     try:
@@ -121,16 +121,7 @@ def setup_screen_analysis_controls(gui, parent_layout):
     create_settings_section(gui, parent_layout, _("Настройки угасания кадров", "Frame Regression Settings"), frame_compression_config, icon_name="fa6s.hourglass-half")
 
     # Четвёртая CollapsibleSection — описание изображений
-    # Список пресетов для vision-провайдера (тот же паттерн, что у REACT_PROVIDER_L1)
-    _vision_provider_names = [_('Текущий', 'Current')]
-    try:
-        _eb = get_event_bus()
-        _presets_meta = _eb.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-        if _presets_meta and _presets_meta[0]:
-            for _p in _presets_meta[0].get('custom', []):
-                _vision_provider_names.append(_p.name)
-    except Exception as _e:
-        logger.warning(f"[screen_analysis_settings] Не удалось загрузить список пресетов: {_e}")
+    _vision_provider_names = current_provider_options()
 
     image_description_config = [
         {
@@ -199,6 +190,11 @@ def setup_screen_analysis_controls(gui, parent_layout):
         },
     ]
     create_settings_section(gui, parent_layout, _("Описание изображений", "Image Description"), image_description_config, icon_name="fa6s.comment-dots")
+    load_api_provider_options_async(
+        gui,
+        ("IMAGE_DESCRIPTION_PROVIDER",),
+        name="screen-analysis-provider-options",
+    )
     # Detail depends on EITHER inline OR non-native mode being on (both use it)
     _wire_detail_dependency(gui)
 

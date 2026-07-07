@@ -1,5 +1,5 @@
-from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QStackedWidget, QVBoxLayout, QWidget
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QStackedWidget, QVBoxLayout, QWidget
 
 from styles.main_styles import get_stylesheet
 from ui.pages.home_page import build_home_page
@@ -51,13 +51,17 @@ class MainWindow(AppWindowBase):
         main_layout.addWidget(content_host, 1)
 
         self.page_map = {}
+        self._deferred_main_pages = {"home", "news", "developer", "wiki", "logs"}
+        self._page_building = set()
+        self._page_placeholders = {}
+        self._pending_page_actions = {}
 
         try:
             apply_section_visibility(self)
         except Exception:
             pass
 
-        self._ensure_main_page("sandbox")
+        self._ensure_main_page("sandbox", eager=True)
         self.switch_main_page("sandbox")
         self._apply_initial_geometry(1560, 920)
         QTimer.singleShot(0, self._prefetch_release_feed)
@@ -124,7 +128,7 @@ class MainWindow(AppWindowBase):
         except Exception:
             self.resize(design_w, design_h)
 
-    def _ensure_main_page(self, page_key):
+    def _ensure_main_page(self, page_key, *, eager: bool = False):
         page = getattr(self, "page_map", {}).get(page_key)
         if page is not None:
             return page
@@ -133,11 +137,98 @@ class MainWindow(AppWindowBase):
         if factory is None or not hasattr(self, "page_stack"):
             return None
 
+        if not eager and page_key in getattr(self, "_deferred_main_pages", set()):
+            page = self._create_main_page_placeholder(page_key)
+            self.page_map[page_key] = page
+            self._page_placeholders[page_key] = page
+            self.page_stack.addWidget(page)
+            self._schedule_main_page_build(page_key)
+            return page
+
         page = factory(self)
         self.page_map[page_key] = page
         self.page_stack.addWidget(page)
         self._ensure_settings_animation()
         return page
+
+    def _create_main_page_placeholder(self, page_key: str) -> QWidget:
+        frame = QFrame()
+        frame.setObjectName("MainPageDeferredPlaceholder")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(32, 32, 32, 32)
+        layout.setSpacing(10)
+
+        title = QLabel(f"Loading {page_key}...")
+        title.setObjectName("Subtle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setWordWrap(True)
+
+        layout.addStretch(1)
+        layout.addWidget(title)
+        layout.addStretch(1)
+        return frame
+
+    def _schedule_main_page_build(self, page_key: str):
+        if page_key in self._page_building:
+            return
+        self._page_building.add(page_key)
+        QTimer.singleShot(35, lambda key=page_key: self._build_main_page_now(key))
+
+    def _build_main_page_now(self, page_key: str):
+        factory = get_main_page_factory(page_key)
+        placeholder = self._page_placeholders.get(page_key)
+        if factory is None or placeholder is None or not hasattr(self, "page_stack"):
+            self._page_building.discard(page_key)
+            return
+
+        was_current = (
+            getattr(self, "current_main_page", None) == page_key
+            and self.page_stack.currentWidget() is placeholder
+        )
+
+        try:
+            page = factory(self)
+        except Exception as exc:
+            self._page_building.discard(page_key)
+            label = placeholder.findChild(QLabel)
+            if label is not None:
+                label.setText(f"Failed to load {page_key}: {exc}")
+            return
+
+        idx = self.page_stack.indexOf(placeholder)
+        if idx >= 0:
+            self.page_stack.insertWidget(idx, page)
+            self.page_stack.removeWidget(placeholder)
+            placeholder.deleteLater()
+        else:
+            self.page_stack.addWidget(page)
+
+        self.page_map[page_key] = page
+        self._page_placeholders.pop(page_key, None)
+        self._page_building.discard(page_key)
+        self._ensure_settings_animation()
+
+        if was_current:
+            self.page_stack.setCurrentWidget(page)
+            if hasattr(page, "on_activated"):
+                page.on_activated()
+
+        for action in self._pending_page_actions.pop(page_key, []):
+            try:
+                action(page)
+            except Exception:
+                pass
+
+    def _run_when_main_page_ready(self, page_key: str, action):
+        page = getattr(self, "page_map", {}).get(page_key)
+        if page is not None and self._page_placeholders.get(page_key) is not page:
+            try:
+                action(page)
+            except Exception:
+                pass
+            return
+        self._pending_page_actions.setdefault(page_key, []).append(action)
+        self._ensure_main_page(page_key)
 
     def _init_settings_containers(self):
         page = getattr(self, "settings_page", None)
@@ -177,14 +268,16 @@ class MainWindow(AppWindowBase):
         if hasattr(self, "shell_sidebar"):
             self.shell_sidebar.set_active_page(page_key)
 
-        if hasattr(page, "on_activated"):
+        is_placeholder = self._page_placeholders.get(page_key) is page
+        if not is_placeholder and hasattr(page, "on_activated"):
             page.on_activated()
 
     def open_release_page(self, release_id: str = ""):
         self.switch_main_page("news")
-        page = getattr(self, "news_page", None)
-        if page is not None and hasattr(page, "focus_release"):
-            page.focus_release(release_id)
+        self._run_when_main_page_ready(
+            "news",
+            lambda page: page.focus_release(release_id) if hasattr(page, "focus_release") else None,
+        )
 
     def _build_home_page(self):
         return build_home_page(self)

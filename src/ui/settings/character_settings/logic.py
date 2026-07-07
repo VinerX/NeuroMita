@@ -16,6 +16,12 @@ from utils.migrate_tags_to_structured_in_db import migrate as run_tags_to_struct
 from ui.dialogs.db_viewer import DbViewerDialog
 from PyQt6.QtWidgets import QProgressDialog,QFileDialog
 from ui.dialogs.db_export_dialog import DbExportDialog
+from ui.async_bus import dispatch_to_gui, run_async
+
+
+_CURRENT_PROVIDER_ITEM = ("Текущий", "Current", "Текущий")
+
+
 def _create_reindex_worker(character_id: str, *, full: bool = False) -> TaskWorker:
     """Factory for single-character reindex workers."""
     character_id = str(character_id or "").strip()
@@ -197,7 +203,8 @@ def _configured_character_id(gui) -> str:
     персонажу отношения не имеет — настройка одного не переключает того, с кем
     идёт чат."""
     cid = str(getattr(gui, "_configured_char_id", "") or "").strip()
-    return cid or _current_character_id()
+    active = str(getattr(gui, "_active_character_id", "") or "").strip()
+    return cid or active or _current_character_id()
 
 
 def update_prompt_set_info(gui, character_id: str | None = None, set_name: str | None = None):
@@ -230,54 +237,182 @@ def update_prompt_set_info(gui, character_id: str | None = None, set_name: str |
         labels["description"].setText(_norm(info_data.get("description")))
 
 
+def _fallback_character_list(gui) -> list[str]:
+    combo = getattr(gui, "chat_character_combobox", None)
+    if combo is not None:
+        try:
+            values = [
+                str(combo.itemText(i) or "").strip()
+                for i in range(combo.count())
+                if str(combo.itemText(i) or "").strip()
+            ]
+            if values:
+                return values
+        except Exception:
+            pass
+    return ["Crazy"]
+
+
+def _fallback_current_character_id(gui, character_list: list[str] | None = None) -> str:
+    for attr in ("_configured_char_id", "_active_character_id"):
+        value = str(getattr(gui, attr, "") or "").strip()
+        if value:
+            return value
+
+    combo = getattr(gui, "chat_character_combobox", None)
+    if combo is not None:
+        try:
+            value = str(combo.currentText() or "").strip()
+            if value:
+                return value
+        except Exception:
+            pass
+
+    candidates = character_list or _fallback_character_list(gui)
+    return str(candidates[0] if candidates else "Crazy").strip() or "Crazy"
+
+
+def _default_provider_items() -> list:
+    return [_CURRENT_PROVIDER_ITEM]
+
+
+def _provider_items_from_presets_result(presets_meta) -> list:
+    items = _default_provider_items()
+    meta = presets_meta[0] if presets_meta else None
+    if not isinstance(meta, dict):
+        return items
+
+    seen = {"Текущий", "Current"}
+    for preset in meta.get("custom", []) or []:
+        name = str(getattr(preset, "name", "") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        items.append(name)
+    return items
+
+
+def _set_character_provider_items(gui, provider_items: list) -> None:
+    combo = getattr(gui, "char_provider_combobox", None)
+    if combo is None:
+        return
+    try:
+        current = combo.current_value() if hasattr(combo, "current_value") else None
+        combo.set_items(provider_items or _default_provider_items(), current=current)
+    except Exception:
+        logger.warning("[character_settings] Failed to update provider combo", exc_info=True)
+
+
+def _populate_chat_character_combobox(gui, character_list: list[str], current_char_id: str) -> None:
+    combo = getattr(gui, "chat_character_combobox", None)
+    if combo is None:
+        return
+
+    values = [str(c or "").strip() for c in (character_list or []) if str(c or "").strip()]
+    if not values:
+        values = ["Crazy"]
+
+    blocked = combo.blockSignals(True)
+    try:
+        combo.clear()
+        combo.addItems(values)
+        if current_char_id:
+            index = combo.findText(str(current_char_id), Qt.MatchFlag.MatchFixedString)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+    finally:
+        combo.blockSignals(blocked)
+
+
+def _load_character_settings_snapshot_async(gui) -> None:
+    if bool(getattr(gui, "_character_settings_snapshot_loading", False)):
+        return
+    gui._character_settings_snapshot_loading = True
+    event_bus = get_event_bus()
+
+    def _worker():
+        all_characters = event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
+        character_list = all_characters[0] if all_characters else []
+
+        presets_meta = event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
+        provider_items = _provider_items_from_presets_result(presets_meta)
+
+        current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
+        current_profile = current_profile_res[0] if current_profile_res else {}
+        current_char_id = (
+            str(current_profile.get("character_id", "") or "").strip()
+            if isinstance(current_profile, dict)
+            else ""
+        )
+
+        return {
+            "character_list": [str(c or "").strip() for c in (character_list or []) if str(c or "").strip()],
+            "provider_items": provider_items,
+            "current_char_id": current_char_id,
+        }
+
+    def _apply(snapshot: dict) -> None:
+        gui._character_settings_snapshot_loading = False
+        _apply_character_settings_snapshot(gui, snapshot)
+
+    def _error(_exc: Exception) -> None:
+        gui._character_settings_snapshot_loading = False
+        logger.warning(f"[character_settings] Failed to load character settings snapshot: {_exc}")
+        _apply_character_settings_snapshot(gui, {
+            "character_list": _fallback_character_list(gui),
+            "provider_items": _default_provider_items(),
+            "current_char_id": _fallback_current_character_id(gui),
+        })
+
+    run_async(gui, _worker, _apply, _error, name="character-settings-snapshot")
+
+
+def _apply_character_settings_snapshot(gui, snapshot: dict) -> None:
+    character_list = list(snapshot.get("character_list") or []) or _fallback_character_list(gui)
+    current_char_id = str(snapshot.get("current_char_id") or "").strip()
+    if not current_char_id:
+        current_char_id = _fallback_current_character_id(gui, character_list)
+
+    gui._active_character_id = current_char_id
+    gui._configured_char_id = current_char_id
+
+    _populate_chat_character_combobox(gui, character_list, current_char_id)
+    _set_character_provider_items(gui, list(snapshot.get("provider_items") or _default_provider_items()))
+    _build_character_accordion(gui, character_list, current_char_id)
+    update_prompt_set_info(gui)
+
+
 
 def wire_character_settings_logic(self):
     event_bus = get_event_bus()
 
-    all_characters = event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
-    character_list = all_characters[0] if all_characters else ["Crazy"]
-
-    if hasattr(self, 'chat_character_combobox'):
-        self.chat_character_combobox.blockSignals(True)
-        try:
-            self.chat_character_combobox.clear()
-            self.chat_character_combobox.addItems(character_list if character_list else ["Crazy"])
-        finally:
-            self.chat_character_combobox.blockSignals(False)
-
-    presets_meta = event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-    # «Текущий» — переводимый сентинел со СТАБИЛЬНЫМ значением "Текущий" (не
-    # зависит от языка); имена пресетов — data-пункты. Так live-перевод подписи
-    # не ломает сохранённый CHAR_PROVIDER_* (потребители трактуют и "Текущий",
-    # и "Current" как «использовать текущий пресет»).
-    provider_items = [("Текущий", "Current", "Текущий")]
-    if presets_meta and presets_meta[0]:
-        all_presets = presets_meta[0].get('custom', [])
-        for preset in all_presets:
-            provider_items.append(preset.name)
-    self.char_provider_combobox.set_items(provider_items)
-
-    current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-    current_profile = current_profile_res[0] if current_profile_res else {}
-    current_char_id = current_profile.get('character_id', 'Crazy') if isinstance(current_profile, dict) else "Crazy"
-
-    # Стартово редактируем конфиг активного персонажа.
-    self._configured_char_id = current_char_id
-
-    if current_char_id and hasattr(self, 'chat_character_combobox'):
-        chat_idx = self.chat_character_combobox.findText(current_char_id, Qt.MatchFlag.MatchFixedString)
-        if chat_idx >= 0:
-            self.chat_character_combobox.setCurrentIndex(chat_idx)
-
-    change_character_actions(self, current_char_id)
+    initial_characters = _fallback_character_list(self)
+    initial_char_id = _fallback_current_character_id(self, initial_characters)
+    self._configured_char_id = initial_char_id
+    self._active_character_id = initial_char_id
+    _set_character_provider_items(self, _default_provider_items())
 
     if hasattr(self, 'prompt_pack_combobox'):
         self.prompt_pack_combobox.currentTextChanged.connect(lambda _text: on_prompt_set_changed(self))
     # Индикатор активного персонажа в аккордеоне синхронизируем с песочницей.
     try:
+        def _on_active_character_changed(event=None):
+            data = getattr(event, "data", None) or {}
+            character_id = ""
+            if isinstance(data, dict):
+                character_id = str(data.get("character_id", "") or "").strip()
+            if not character_id:
+                return
+
+            def _apply():
+                self._active_character_id = character_id
+                _refresh_active_character_indicator(self, character_id)
+
+            dispatch_to_gui(self, _apply)
+
         get_event_bus().subscribe(
             Events.Character.CURRENT_CHANGED,
-            lambda _e=None: _refresh_active_character_indicator(self),
+            _on_active_character_changed,
             weak=False,
         )
     except Exception:
@@ -343,10 +478,7 @@ def wire_character_settings_logic(self):
     if hasattr(self, 'btn_all_purge'):
         self.btn_all_purge.clicked.connect(lambda: purge_deleted_data(self))
 
-    # Аккордеон персонажей: секции строим здесь (тут есть список Мит),
-    # раскрытие секции выбирает персонажа и переносит в неё общую панель.
-    _build_character_accordion(self, character_list, current_char_id)
-
+    _load_character_settings_snapshot_async(self)
     update_prompt_set_info(self)
 
 
@@ -364,6 +496,14 @@ def _build_character_accordion(self, character_list, current_char_id):
     layout = getattr(self, "_char_accordion_layout", None)
     if layout is None:
         return
+
+    _park_character_config_panel(self)
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.setParent(None)
+            widget.deleteLater()
 
     self._char_sections = {}
     for cid in (character_list or []):
@@ -406,13 +546,33 @@ def _build_character_accordion(self, character_list, current_char_id):
         self._char_sections[target].toggle()
 
 
-def _refresh_active_character_indicator(self):
+def _park_character_config_panel(self) -> None:
+    panel = getattr(self, "_char_config_panel", None)
+    holder = getattr(self, "_char_config_holder", None)
+    if panel is None or holder is None:
+        return
+    layout = holder.layout()
+    if layout is None:
+        return
+    try:
+        panel.setVisible(False)
+        if panel.parent() is not holder:
+            panel.setParent(holder)
+        if layout.indexOf(panel) < 0:
+            layout.addWidget(panel)
+    except Exception:
+        pass
+
+
+def _refresh_active_character_indicator(self, active_character_id: str | None = None):
     """Пометить в аккордеоне секцию активного персонажа (того, с кем сейчас
     идёт чат — из CharacterController). Остальные — без пометки."""
     sections = getattr(self, "_char_sections", None)
     if not sections:
         return
-    active = _current_character_id()
+    active = str(active_character_id or getattr(self, "_active_character_id", "") or "").strip()
+    if not active:
+        return
     for cid, sec in sections.items():
         title = getattr(sec, "title_label", None)
         if title is None:

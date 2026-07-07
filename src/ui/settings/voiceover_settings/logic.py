@@ -30,14 +30,21 @@ def wire_voiceover_settings_logic(self):
         тогда предлагать «сначала установить модель» не нужно (фидбэк Артёма:
         предложение всплывало поверх готовой установки). Источник — тот же
         синхронный реестр установленных моделей, что и у иконки статуса."""
+        combo = getattr(self, "local_voice_combobox", None)
+        if combo is None:
+            return True
+
+        installed = set()
         try:
-            res = eb.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=1.0)
-            got = res[0] if res else None
-            installed = {str(x) for x in got} if isinstance(got, (set, list, tuple)) else set()
+            for index in range(combo.count()):
+                model_id = str(combo.itemData(index) or "").strip()
+                if model_id:
+                    installed.add(model_id)
         except Exception:
             installed = set()
+
         if not installed:
-            return False
+            return True
         current = str(self.settings.get("NM_CURRENT_VOICEOVER", "") or "").strip()
         # Что-то уже установлено: если конкретная выбранная модель стоит — точно
         # не предлагаем; если модель не выбрана, но установленные есть — тоже не
