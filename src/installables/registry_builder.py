@@ -4,6 +4,7 @@ from core.backends.installable_component import create_backend_installable_compo
 from core.installables import InstallableRegistry
 from game_connections.services.beat_install import create_beat_installable_components
 from installables.ffmpeg_component import create_ffmpeg_installable_components
+from installables.opencv_component import create_opencv_installable_components
 from installables.voice_assets import create_voice_asset_installable_components
 from handlers.asr_handler import SpeechRecognition
 from handlers.voice_models.edge_tts_rvc_model import EdgeTTSRVCCudaModel, EdgeTTSRVCOnnxModel
@@ -36,6 +37,7 @@ def build_installable_registry() -> InstallableRegistry:
     _register_component_group(registry, label="rag", factory=create_rag_installable_components)
     _register_component_group(registry, label="beat_sync", factory=create_beat_installable_components)
     _register_component_group(registry, label="ffmpeg", factory=create_ffmpeg_installable_components)
+    _register_component_group(registry, label="opencv", factory=create_opencv_installable_components)
     _register_component_group(registry, label="voice_assets", factory=create_voice_asset_installable_components)
     return registry
 

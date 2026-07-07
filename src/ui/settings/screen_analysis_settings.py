@@ -15,8 +15,11 @@ def get_camera_list():
                 cap.release()
         return camera_list if camera_list else [_("Камер не найдено", "No cameras found")]
     except ImportError:
-        logger.warning("[screen_capture] OpenCV is not installed; camera enumeration is unavailable.")
-        return [_("Камер не найдено", "No cameras found")]
+        # cv2 — опциональная зависимость (ставится как компонент «OpenCV» в AI Hub
+        # или на лету при первом захвате). Не пугаем WARNING-ом на старте и не
+        # пишем «Камер не найдено» (будто нет железа) — сообщаем суть.
+        logger.info("[screen_capture] OpenCV (cv2) не установлен — перечисление камер недоступно.")
+        return [_("OpenCV не установлен (см. AI Hub)", "OpenCV not installed (see AI Hub)")]
 
 def update_camera_list(gui, *, force: bool = False):
     if hasattr(gui, 'camera_combobox'):
