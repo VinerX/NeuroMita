@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 
 from core.events import Events
 from main_logger import logger
+from ui.async_bus import run_async
 from ui.chat.chat_widget import ChatWidget
 from ui.widgets.image_preview_widget import ImagePreviewBar
 from ui.widgets.image_viewer_widget import ImageViewerWidget
@@ -48,7 +49,10 @@ class ChatPanel(QWidget):
         if self._conversation_title_label is None:
             return
 
-        char_id = self._get_current_character_id()
+        combo = getattr(self.gui, "chat_character_combobox", None)
+        char_id = combo.currentText().strip() if combo is not None else ""
+        if not char_id or char_id == "...":
+            char_id = ""
         self._conversation_title_label.setText(
             _("Разговор с ", "Conversation with ") + (char_id or _("персонажем", "character"))
         )
@@ -328,6 +332,42 @@ def _send_block_reason(gui):
 
 
 def refresh_composer_state(gui):
+    ticket = int(getattr(gui, "_composer_state_ticket", 0) or 0) + 1
+    gui._composer_state_ticket = ticket
+    gui._composer_blocked = False
+    update_send_button_state(gui)
+
+    def worker():
+        return _send_block_reason(gui)
+
+    def apply(reason):
+        if ticket != int(getattr(gui, "_composer_state_ticket", 0) or 0):
+            return
+        _apply_composer_state(gui, reason)
+
+    run_async(gui, worker, apply, name="composer-state")
+
+
+def _apply_composer_state(gui, reason):
+    gui._composer_blocked = bool(reason)
+
+    bar = getattr(gui, "composer_bar", None)
+    warning = getattr(gui, "composer_warning", None)
+    if reason is not None:
+        text, category = reason
+        gui._composer_block_category = category
+        lbl = getattr(gui, "composer_warning_label", None)
+        if lbl is not None:
+            lbl.setText(text)
+    if bar is not None:
+        bar.setVisible(not gui._composer_blocked)
+    if warning is not None:
+        warning.setVisible(gui._composer_blocked)
+
+    update_send_button_state(gui)
+
+
+def refresh_composer_state_sync_legacy(gui):
     """Переключает строку ввода на предупреждение, когда отправка заблокирована
     (#5), и обратно. Дёргать при активации песочницы и смене пресета/персонажа."""
     reason = _send_block_reason(gui)

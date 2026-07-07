@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 
 from core.events import Events
 from main_logger import logger
+from ui.async_bus import run_async
 from ui.chat.message_widget import AVATAR_MAP, _get_avatar_dir
 from ui.widgets.chat_panel import ChatPanel
 from ui.widgets.character_state_panel import CharacterStatePanel
@@ -576,15 +577,78 @@ class SandboxPage(QWidget):
     def _refresh_character_avatar(self):
         if self._character_avatar_label is None:
             return
-        char_id = self._get_current_character_id()
-        if not char_id:
-            combo = getattr(self.gui, "chat_character_combobox", None)
-            if combo is not None:
-                char_id = combo.currentText().strip()
+        combo = getattr(self.gui, "chat_character_combobox", None)
+        char_id = combo.currentText().strip() if combo is not None else ""
+        if not char_id or char_id == "...":
+            return
         self._character_avatar_label.setPixmap(self._resolve_avatar_pixmap(char_id, 32))
 
     # --------- Model -----------
     def _populate_model_combobox(self):
+        combo = getattr(self.gui, "chat_model_combobox", None)
+        if combo is None:
+            return
+
+        ticket = self._activation_ticket
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.add_tr_item("Загрузка моделей...", "Loading models...", value=None)
+        finally:
+            combo.blockSignals(False)
+
+        def worker():
+            try:
+                result = self.gui.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
+                meta = result[0] if result else {}
+            except Exception:
+                meta = {}
+            try:
+                current_res = self.gui.event_bus.emit_and_wait(Events.ApiPresets.GET_CURRENT_PRESET_ID, timeout=0.5)
+                current_id = current_res[0] if current_res else None
+            except Exception:
+                current_id = None
+            return meta, current_id
+
+        def apply(payload):
+            if ticket != self._activation_ticket:
+                return
+            if getattr(self.gui, "current_main_page", None) != "sandbox":
+                return
+
+            meta, current_id = payload
+            customs = list((meta or {}).get("custom", []))
+
+            combo.blockSignals(True)
+            try:
+                combo.clear()
+                if customs:
+                    for preset in customs:
+                        preset_id = getattr(preset, "id", None)
+                        name = getattr(preset, "name", "")
+                        model = str(getattr(preset, "default_model", "") or "")
+                        if preset_id is None:
+                            continue
+                        label = f"{name} ({model})" if model else str(name)
+                        combo.add_data_item(label, value=int(preset_id))
+                    combo.insertSeparator(combo.count())
+                else:
+                    combo.add_tr_item("Нет настроенных моделей", "No configured models", value=None)
+                    combo.insertSeparator(combo.count())
+
+                combo.add_tr_item("Настроить...", "Configure...", value=_MODEL_CONFIGURE_SENTINEL)
+
+                if current_id is not None:
+                    for index in range(combo.count()):
+                        if combo.itemData(index) == int(current_id):
+                            combo.setCurrentIndex(index)
+                            break
+            finally:
+                combo.blockSignals(False)
+
+        run_async(self.gui, worker, apply, name="sandbox-model-combobox")
+
+    def _populate_model_combobox_sync_legacy(self):
         combo = getattr(self.gui, "chat_model_combobox", None)
         if combo is None:
             return
@@ -678,6 +742,74 @@ class SandboxPage(QWidget):
         combo = getattr(self.gui, "chat_prompt_pack_combobox", None)
         if combo is None:
             return
+
+        char_combo = getattr(self.gui, "chat_character_combobox", None)
+        char_id = char_combo.currentText().strip() if char_combo is not None else ""
+        if char_id == "...":
+            char_id = ""
+        ticket = self._activation_ticket
+
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.add_tr_item("Загрузка наборов...", "Loading sets...", value=None)
+        finally:
+            combo.blockSignals(False)
+
+        def worker():
+            current_char_id = char_id
+            if not current_char_id:
+                try:
+                    result = self.gui.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
+                    profile = result[0] if result else {}
+                    current_char_id = str((profile or {}).get("character_id") or "")
+                except Exception:
+                    current_char_id = ""
+
+            try:
+                from managers.prompt_catalogue_manager import list_prompt_sets
+                options = list_prompt_sets("Prompts", current_char_id) or []
+            except Exception:
+                options = []
+
+            try:
+                current = str(self.gui._get_setting(f"PROMPT_SET_{current_char_id}", "") or "") if current_char_id else ""
+            except Exception:
+                current = ""
+
+            return current_char_id, options, current
+
+        def apply(payload):
+            if ticket != self._activation_ticket:
+                return
+            if getattr(self.gui, "current_main_page", None) != "sandbox":
+                return
+
+            _char_id, options, current = payload
+            combo.blockSignals(True)
+            try:
+                combo.clear()
+                if options:
+                    for name in options:
+                        combo.add_data_item(str(name), value=str(name))
+                else:
+                    combo.add_tr_item("Нет наборов", "No sets", value=None)
+                combo.insertSeparator(combo.count())
+                combo.add_tr_item("Настроить...", "Configure...", value=_PROMPT_CONFIGURE_SENTINEL)
+
+                if current:
+                    idx = combo.findText(current, Qt.MatchFlag.MatchFixedString)
+                    if idx >= 0:
+                        combo.setCurrentIndex(idx)
+            finally:
+                combo.blockSignals(False)
+
+        run_async(self.gui, worker, apply, name="sandbox-prompt-combobox")
+
+    def _populate_prompt_pack_combobox_sync_legacy(self):
+        combo = getattr(self.gui, "chat_prompt_pack_combobox", None)
+        if combo is None:
+            return
         char_id = self._get_current_character_id()
         if not char_id:
             char_combo = getattr(self.gui, "chat_character_combobox", None)
@@ -746,6 +878,57 @@ class SandboxPage(QWidget):
 
     # --------- Character -----------
     def _populate_chat_character_combobox(self):
+        combo = getattr(self.gui, "chat_character_combobox", None)
+        if combo is None:
+            return
+
+        ticket = self._activation_ticket
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItem("...")
+        finally:
+            combo.blockSignals(False)
+
+        def worker():
+            try:
+                all_characters = self.gui.event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
+                character_list = all_characters[0] if all_characters else ["Crazy"]
+            except Exception:
+                character_list = ["Crazy"]
+            if not character_list:
+                character_list = ["Crazy"]
+
+            try:
+                current_res = self.gui.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
+                profile = current_res[0] if current_res else {}
+                current_char_id = str((profile or {}).get("character_id") or "")
+            except Exception:
+                current_char_id = ""
+            return character_list, (current_char_id or character_list[0])
+
+        def apply(payload):
+            if ticket != self._activation_ticket:
+                return
+            if getattr(self.gui, "current_main_page", None) != "sandbox":
+                return
+
+            character_list, current_char_id = payload
+            combo.blockSignals(True)
+            try:
+                combo.clear()
+                combo.addItems(character_list)
+                index = combo.findText(str(current_char_id), Qt.MatchFlag.MatchFixedString)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+            finally:
+                combo.blockSignals(False)
+
+            self._refresh_character_avatar()
+
+        run_async(self.gui, worker, apply, name="sandbox-character-combobox")
+
+    def _populate_chat_character_combobox_sync_legacy(self):
         combo = getattr(self.gui, "chat_character_combobox", None)
         if combo is None:
             return
@@ -868,6 +1051,75 @@ class SandboxPage(QWidget):
         return normalized
 
     def _refresh_memory_summary(self):
+        if not self._memory_limit_values:
+            return
+
+        ticket = self._activation_ticket
+        for label in self._memory_limit_values.values():
+            try:
+                label.setText("...")
+            except Exception:
+                pass
+
+        def worker():
+            get = self.gui._get_setting
+            msg_limit = get("MODEL_MESSAGE_LIMIT", 35)
+            mem_limit = get("MEMORY_CAPACITY", 50)
+            cid = self._get_current_character_id()
+            character_ref = self._get_current_character_ref()
+
+            try:
+                from managers.database_manager import DatabaseManager
+                db = DatabaseManager()
+                stats = db.get_world_stats(cid)
+            except Exception:
+                db = None
+                stats = {}
+
+            miss_h = miss_m = None
+            if db is not None and cid:
+                try:
+                    miss_h, miss_m = db.count_missing_embeddings(cid)
+                except Exception:
+                    miss_h = miss_m = None
+
+            def _fmt(count, limit=None):
+                if count is None:
+                    return "—"
+                return f"{count} / {limit}" if limit is not None else str(count)
+
+            def _pair(a, b):
+                if a is None and b is None:
+                    return "—"
+                return f"{a or 0} / {b or 0}"
+
+            effective_history_count = self._get_effective_prompt_history_count(character_ref, msg_limit)
+            return {
+                "messages": _fmt(
+                    effective_history_count if effective_history_count is not None else stats.get("history_active"),
+                    msg_limit,
+                ),
+                "memories": _fmt(stats.get("memories_active"), mem_limit),
+                "forgotten": _fmt(stats.get("memories_forgotten")),
+                "missing": _pair(miss_h, miss_m),
+                "trash": _pair(stats.get("history_deleted"), stats.get("memories_deleted")),
+                "last": self._fmt_timestamp(stats.get("last_activity")),
+                "dbsize": self._fmt_bytes(stats.get("db_size_bytes")),
+            }
+
+        def apply(mapping):
+            if ticket != self._activation_ticket:
+                return
+            if getattr(self.gui, "current_main_page", None) != "sandbox":
+                return
+            for stat_key, text in (mapping or {}).items():
+                label = self._memory_limit_values.get(stat_key)
+                if label is not None:
+                    label.setText(str(text))
+
+        run_async(self.gui, worker, apply, name="sandbox-memory-summary")
+
+    def _refresh_memory_summary_sync_legacy(self):
         """Live mini-stats for the current character: real counts vs. limits,
         plus the forgotten-memory count (RAG keeps these retrievable)."""
         if not self._memory_limit_values:
@@ -969,6 +1221,47 @@ class SandboxPage(QWidget):
 
     # --------- Debug summary -----------
     def _refresh_debug_summary(self):
+        get = self.gui._get_setting
+        on_off = lambda v: (_("Вкл", "On") if v else _("Выкл", "Off"))
+
+        def set_value(key: str, value) -> None:
+            widget = self._debug_summary_values.get(key)
+            if widget is None:
+                return
+            try:
+                widget.setText(str(value or "—"))
+            except Exception:
+                pass
+
+        char_combo = getattr(self.gui, "chat_character_combobox", None)
+        prompt_combo = getattr(self.gui, "chat_prompt_pack_combobox", None)
+        model_combo = getattr(self.gui, "chat_model_combobox", None)
+
+        if "character" in self._debug_summary_values:
+            value = char_combo.currentText().strip() if char_combo is not None else ""
+            set_value("character", value if value and value != "..." else "—")
+        if "prompts" in self._debug_summary_values:
+            value = prompt_combo.currentText().strip() if prompt_combo is not None else ""
+            set_value("prompts", value if value else "—")
+        if "model" in self._debug_summary_values:
+            value = model_combo.currentText().strip() if model_combo is not None else ""
+            set_value("model", value if value else "—")
+        if "voice" in self._debug_summary_values:
+            set_value("voice", str(get("VOICEOVER_METHOD", "Local")))
+        if "asr" in self._debug_summary_values:
+            set_value("asr", str(get("RECOGNIZER_TYPE", "") or "—"))
+        if "rag" in self._debug_summary_values:
+            set_value("rag", self._rag_preset_name() if get("RAG_ENABLED", False) else _("Выключен", "Disabled"))
+        if "messages" in self._debug_summary_values:
+            set_value("messages", str(get("MODEL_MESSAGE_LIMIT", 35)))
+        if "memory" in self._debug_summary_values:
+            set_value("memory", str(get("MEMORY_CAPACITY", 50)))
+        if "screen" in self._debug_summary_values:
+            set_value("screen", on_off(get("ENABLE_SCREEN_ANALYSIS", False)))
+        if "camera" in self._debug_summary_values:
+            set_value("camera", on_off(get("ENABLE_CAMERA_CAPTURE", False)))
+
+    def _refresh_debug_summary_sync_legacy(self):
         get = self.gui._get_setting
         on_off = lambda v: (_("Вкл", "On") if v else _("Выкл", "Off"))
 

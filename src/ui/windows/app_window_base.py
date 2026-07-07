@@ -70,6 +70,7 @@ from ui.chat import message_renderer
 from ui.chat.chat_delegate import ChatMessageDelegate
 
 from ui.windows.voice_action_windows import VoiceInstallationWindow
+from ui.async_bus import run_async
 
 
 class AppWindowBase(QMainWindow):
@@ -216,6 +217,9 @@ class AppWindowBase(QMainWindow):
         self.last_voice_model_selected = None
         self.current_local_voice_id = None
         self.model_loading_cancelled = False
+        self._status_refresh_ticket = 0
+        self._debug_refresh_ticket = 0
+        self._token_refresh_ticket = 0
 
     def _ensure_settings_animation(self):
         target = getattr(self, "settings_overlay", None) or self.centralWidget()
@@ -684,12 +688,24 @@ class AppWindowBase(QMainWindow):
             return False
 
     def update_debug_info(self):
-        debug_info_result = self.event_bus.emit_and_wait(Events.Model.GET_DEBUG_INFO, timeout=0.5)
-        debug_info = debug_info_result[0] if debug_info_result else "Debug info not available"
+        if not (hasattr(self, 'debug_window') and self.debug_window):
+            return
 
-        if hasattr(self, 'debug_window') and self.debug_window:
-            self.debug_window.clear()
-            self.debug_window.insertPlainText(debug_info)
+        self._debug_refresh_ticket += 1
+        ticket = self._debug_refresh_ticket
+
+        def worker():
+            debug_info_result = self.event_bus.emit_and_wait(Events.Model.GET_DEBUG_INFO, timeout=0.5)
+            return debug_info_result[0] if debug_info_result else "Debug info not available"
+
+        def apply(debug_info):
+            if ticket != self._debug_refresh_ticket:
+                return
+            if hasattr(self, 'debug_window') and self.debug_window:
+                self.debug_window.clear()
+                self.debug_window.insertPlainText(str(debug_info or "Debug info not available"))
+
+        run_async(self, worker, apply, name="app-debug-info")
 
         # logs_window больше не дублирует debug_info — в нём показывается tail файла логов,
         # а не "Debug info not available". См. _refresh_logs_view().
@@ -712,6 +728,53 @@ class AppWindowBase(QMainWindow):
         # включается галкой «Показывать статистику токенов/стоимости».
         show_token_info = self._get_setting("SHOW_TOKEN_INFO", False)
         if show_token_info:
+            self._token_refresh_ticket += 1
+            ticket = self._token_refresh_ticket
+
+            def worker():
+                stats_res = self.event_bus.emit_and_wait(Events.Model.GET_TOKEN_STATS, timeout=0.5)
+                stats = stats_res[0] if stats_res and isinstance(stats_res[0], dict) else {}
+                return {
+                    "stats": stats,
+                    "max_model_tokens": int(self._get_setting("MAX_MODEL_TOKENS", 32000) or 32000),
+                }
+
+            def apply(payload: dict):
+                if ticket != self._token_refresh_ticket:
+                    return
+
+                stats = payload.get("stats") or {}
+                fmt = self._fmt_tokens
+                current_context_tokens = int(stats.get("estimated_context_tokens") or 0)
+                max_model_tokens = int(stats.get("max_context_tokens") or payload.get("max_model_tokens") or 32000)
+                est_cost = stats.get("estimated_input_cost")
+                est_currency = str(stats.get("estimated_input_cost_currency") or "")
+                est_cost_text = "n/a" if est_cost is None else f"{float(est_cost):.4f} {est_currency}".strip()
+                ctx_pct = int(round(current_context_tokens / max_model_tokens * 100)) if max_model_tokens else 0
+                ctx_str = f"~{ctx_pct}% ({fmt(current_context_tokens)}/{fmt(max_model_tokens)})"
+
+                actual_prompt = stats.get("actual_prompt_tokens")
+                actual_completion = stats.get("actual_completion_tokens")
+                actual_cost = stats.get("actual_cost")
+                actual_currency = str(stats.get("actual_cost_currency") or "")
+                if actual_prompt is not None or actual_completion is not None or actual_cost is not None:
+                    actual_prompt = int(actual_prompt or 0)
+                    actual_completion = int(actual_completion or 0)
+                    actual_total = int(stats.get("actual_total_tokens") or (actual_prompt + actual_completion))
+                    actual_cost_text = "n/a" if actual_cost is None else f"{float(actual_cost):.4f} {actual_currency}".strip()
+                    text = _("Context: {} | Input: {} | Request: {}/{} (total {}) | Actual: {}",
+                             "Context: {} | Input: {} | Request: {}/{} (total {}) | Actual: {}").format(
+                        ctx_str, est_cost_text, fmt(actual_prompt), fmt(actual_completion), fmt(actual_total), actual_cost_text
+                    )
+                else:
+                    text = _("Context: {} | Input: {}", "Context: {} | Input: {}").format(ctx_str, est_cost_text)
+
+                self.token_count_label.setText(text)
+                self.token_count_label.setVisible(True)
+                self.update_debug_info()
+
+            run_async(self, worker, apply, name="app-token-stats")
+            return
             stats_res = self.event_bus.emit_and_wait(Events.Model.GET_TOKEN_STATS, timeout=0.5)
             stats = stats_res[0] if stats_res and isinstance(stats_res[0], dict) else {}
             current_context_tokens = int(stats.get("estimated_context_tokens") or 0)
@@ -962,8 +1025,14 @@ class AppWindowBase(QMainWindow):
         return self.settings.get(key, default)
 
     def _get_character_name(self):
-        result = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_NAME, timeout=0.5)
-        return result[0] if result else "Assistant"
+        combo = getattr(self, "chat_character_combobox", None)
+        try:
+            text = combo.currentText().strip() if combo is not None else ""
+            if text and text != "...":
+                return text
+        except Exception:
+            pass
+        return str(self._get_setting("CHARACTER_NAME", "Assistant") or "Assistant")
 
     def closeEvent(self, event):
         try:
@@ -1397,6 +1466,78 @@ class AppWindowBase(QMainWindow):
     
         # ===== Совместимость: обновление индикаторов статуса =====
     def update_status_colors(self):
+        self._status_refresh_ticket += 1
+        ticket = self._status_refresh_ticket
+
+        def worker():
+            from managers.settings_manager import SettingsManager
+
+            def first(event_name, data=None, timeout=0.5):
+                try:
+                    result = self.event_bus.emit_and_wait(event_name, data, timeout=timeout)
+                    return result[0] if result else None
+                except Exception:
+                    return None
+
+            use_voice = bool(SettingsManager.get("USE_VOICEOVER", False))
+            method = str(SettingsManager.get("VOICEOVER_METHOD", "Local") or "Local")
+            model_id = str(SettingsManager.get("NM_CURRENT_VOICEOVER", "") or "")
+            voice_initialized = (
+                bool(first(Events.Audio.CHECK_MODEL_INITIALIZED, {'model_id': model_id}, timeout=0.5))
+                if use_voice and method == "Local" and model_id else False
+            )
+
+            return {
+                "game_connected": bool(first(Events.Server.GET_GAME_CONNECTION)),
+                "silero_connected": bool(first(Events.Telegram.GET_SILERO_STATUS)),
+                "mic_active": bool(first(Events.Speech.GET_MIC_STATUS)),
+                "screen_capture_active": bool(first(Events.Capture.GET_SCREEN_CAPTURE_STATUS)),
+                "camera_capture_active": bool(first(Events.Capture.GET_CAMERA_CAPTURE_STATUS)),
+                "rag_enabled": bool(SettingsManager.get("RAG_ENABLED", False)),
+                "use_voice": use_voice,
+                "method": method,
+                "voice_initialized": voice_initialized,
+            }
+
+        def apply(state):
+            if ticket != self._status_refresh_ticket:
+                return
+
+            registry = getattr(self, "_status_indicator_registry", {})
+
+            def apply_to(attr_name, checked=None, text=None):
+                widgets = list(registry.get(attr_name, []))
+                fallback = getattr(self, attr_name, None)
+                if fallback is not None and fallback not in widgets:
+                    widgets.append(fallback)
+
+                for widget in widgets:
+                    if text is not None and hasattr(widget, "setText"):
+                        widget.setText(text)
+                    if checked is not None and hasattr(widget, "setChecked"):
+                        widget.setChecked(bool(checked))
+
+            apply_to("game_status_checkbox", checked=bool(state.get("game_connected")))
+
+            if registry.get("silero_status_checkbox") or hasattr(self, "silero_status_checkbox"):
+                method = str(state.get("method") or "Local")
+                use_voice = bool(state.get("use_voice"))
+                if method == "Local":
+                    voice_label = _('Озвучка (Лок.)', 'Voice (Local)')
+                    voice_active = bool(state.get("voice_initialized"))
+                else:
+                    voice_label = _('Озвучка (ТГ)', 'Voice (TG)')
+                    voice_active = bool(use_voice and state.get("silero_connected"))
+                apply_to("silero_status_checkbox", checked=voice_active, text=voice_label)
+
+            apply_to("rag_status_checkbox", checked=bool(state.get("rag_enabled")))
+            apply_to("mic_status_checkbox", checked=bool(state.get("mic_active")))
+            apply_to("screen_capture_status_checkbox", checked=bool(state.get("screen_capture_active")))
+            apply_to("camera_capture_status_checkbox", checked=bool(state.get("camera_capture_active")))
+
+        run_async(self, worker, apply, name="app-status-colors")
+
+    def _update_status_colors_sync_legacy(self):
         from managers.settings_manager import SettingsManager
         game_connected = self.event_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
         silero_connected = self.event_bus.emit_and_wait(Events.Telegram.GET_SILERO_STATUS, timeout=0.5)

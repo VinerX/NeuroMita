@@ -66,7 +66,12 @@ class MainWindow(AppWindowBase):
         # (в простое после первой отрисовки), как и ленту релизов, чтобы открытие
         # было мгновенным. Виджеты можно создавать только в GUI-потоке, поэтому
         # это отложенная сборка на главном потоке, а не отдельный поток.
-        QTimer.singleShot(300, self._prebuild_settings_page)
+        try:
+            prebuild_settings = bool(self.settings.get("PREBUILD_SETTINGS_PAGE_ON_STARTUP", False))
+        except Exception:
+            prebuild_settings = False
+        if prebuild_settings:
+            QTimer.singleShot(3000, self._prebuild_settings_page)
 
     def _prefetch_release_feed(self):
         """Прогреть ленту релизов в фоне сразу на старте (#8).

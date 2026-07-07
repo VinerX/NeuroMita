@@ -108,7 +108,7 @@ class VoiceoverGuiController(BaseController):
         def apply():
             if key == "VOICE_LANGUAGE":
                 lang = str(value or self._get_setting("VOICE_LANGUAGE", "ru") or "ru")
-                self.event_bus.emit_and_wait(Events.Audio.CHANGE_VOICE_LANGUAGE, {"language": lang}, timeout=1.0)
+                self.event_bus.emit(Events.Audio.CHANGE_VOICE_LANGUAGE, {"language": lang})
             if key == "USE_VOICEOVER" and bool(value):
                 self._maybe_warn_backend_missing()
             self._sync_everything(allow_autoload=False)
@@ -332,13 +332,14 @@ class VoiceoverGuiController(BaseController):
                 })
                 return
 
-            self._ensure_voice_model_name_map()
-
             cur = self._current_model_id_from_settings()
             if cur:
                 self._last_selected_model_id = cur
 
             self._save_setting("NM_CURRENT_VOICEOVER", model_id)
+            self._set_combobox_by_model_id(model_id)
+            self._select_or_init_model_async(model_id)
+            return
 
             if not self._check_installed(model_id):
                 self._sync_local_model_status()
@@ -372,6 +373,113 @@ class VoiceoverGuiController(BaseController):
 
         self._ui(apply)
 
+    def _select_or_init_model_async(self, model_id: str):
+        if not model_id:
+            return
+
+        if not self._model_id_to_name:
+            self._model_id_to_name = self._build_model_name_map([])
+
+        ticket = int(getattr(self, "_model_selection_ticket", 0) or 0) + 1
+        self._model_selection_ticket = ticket
+
+        chip = getattr(self.view, "local_model_status_chip", None)
+        btn = getattr(self.view, "local_model_action_btn", None)
+        if chip is not None or btn is not None:
+            self._apply_model_status(chip, btn, "loading", _("Checking...", "Checking..."), None, "")
+
+        def worker():
+            installed_ids: set[str] = set()
+            try:
+                res = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.7)
+                got = res[0] if res else None
+                if isinstance(got, (set, list, tuple)):
+                    installed_ids = {str(x) for x in got}
+            except Exception:
+                installed_ids = set()
+
+            installed = model_id in installed_ids
+            initialized = False
+            selected = None
+
+            if installed:
+                try:
+                    res = self.event_bus.emit_and_wait(
+                        Events.Audio.CHECK_MODEL_INITIALIZED,
+                        {"model_id": model_id},
+                        timeout=0.7,
+                    )
+                    initialized = bool(res and res[0])
+                except Exception:
+                    initialized = False
+
+                if initialized:
+                    try:
+                        res = self.event_bus.emit_and_wait(
+                            Events.Audio.SELECT_VOICE_MODEL,
+                            {"model_id": model_id},
+                            timeout=1.0,
+                        )
+                        selected = bool(res and res[0])
+                    except Exception:
+                        selected = False
+
+            return {
+                "model_id": model_id,
+                "installed_ids": installed_ids,
+                "installed": installed,
+                "initialized": initialized,
+                "selected": selected,
+            }
+
+        def apply(snapshot: dict):
+            if ticket != int(getattr(self, "_model_selection_ticket", 0) or 0):
+                return
+
+            installed_ids = snapshot.get("installed_ids") or set()
+            if not isinstance(installed_ids, set):
+                installed_ids = {str(x) for x in installed_ids}
+            self._installed_models_cache = set(installed_ids)
+            self._installed_models_cache_ts = time.time()
+
+            current_id = str(snapshot.get("model_id") or model_id)
+            state = {
+                "installed": bool(snapshot.get("installed")),
+                "initialized": bool(snapshot.get("initialized")),
+                "current_model_id": current_id,
+            }
+
+            if not state["installed"]:
+                self._sync_local_model_status_from_snapshot(state)
+                self._emit_voice_icon_state_from_snapshot(state)
+                QMessageBox.information(self.view, _("Info", "Info"), _("Model is not installed.", "Model is not installed."))
+                return
+
+            if state["initialized"]:
+                self._set_combobox_by_model_id(current_id)
+                self._sync_local_model_status_from_snapshot(state)
+                self._emit_voice_icon_state_from_snapshot(state)
+                if snapshot.get("selected") is False:
+                    QMessageBox.critical(self.view, _("Error", "Error"), _("Failed to activate model", "Failed to activate model"))
+                return
+
+            if not self._show_loading_dialog(current_id):
+                self._sync_local_model_status_from_snapshot(state)
+                self._emit_voice_icon_state_from_snapshot(state)
+                return
+            self._emit_voice_icon_state_from_snapshot(state)
+
+            def progress_callback(status_type: str, message: str):
+                if status_type == "status":
+                    self._ui(lambda: self._set_loading_status(message))
+
+            self.event_bus.emit(Events.Audio.INIT_VOICE_MODEL, {
+                "model_id": current_id,
+                "progress_callback": progress_callback,
+            })
+
+        self._run_async(worker, apply, name=f"voiceover-select:{model_id}")
+
     def _on_loading_status(self, event: Event):
         status = str((event.data or {}).get("status", "") or "")
         self._ui(lambda: self._set_loading_status(status))
@@ -395,10 +503,28 @@ class VoiceoverGuiController(BaseController):
                 self._sync_everything(allow_autoload=False)
                 return
 
-            ok = True
             if model_id:
                 self._save_setting("NM_CURRENT_VOICEOVER", model_id)
-                ok = bool(self._select_model(model_id))
+
+                def after_select(ok: bool):
+                    self._sync_everything(allow_autoload=False)
+                    if not had_dialog:
+                        return
+                    if ok:
+                        self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
+                            "title": _("Success", "Success"),
+                            "message": _("Model {} initialized successfully!", "Model {} initialized successfully!").format(model_id),
+                        })
+                    else:
+                        self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
+                            "title": _("Error", "Error"),
+                            "message": _("Model initialized, but failed to activate it.", "Model initialized, but failed to activate it."),
+                        })
+
+                self._select_model_async(model_id, after_select, show_error=False)
+                return
+
+            ok = True
 
             self._sync_everything(allow_autoload=False)
 
@@ -427,6 +553,302 @@ class VoiceoverGuiController(BaseController):
 
     # ---------- sync ----------
     def _sync_everything(self, *, allow_autoload: bool):
+        if not self.view:
+            return
+
+        self._apply_voiceover_visibility_from_widgets()
+        self._set_local_voice_loading_placeholders()
+
+        ticket = int(getattr(self, "_sync_ticket", 0) or 0) + 1
+        self._sync_ticket = ticket
+
+        def worker():
+            cfgs = []
+            installed_ids: set[str] = set()
+            initialized = False
+            current_model_id = self._current_model_id_from_settings()
+
+            try:
+                res = self.event_bus.emit_and_wait(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS, timeout=1.5)
+                cfgs = res[0] if res and isinstance(res[0], list) else []
+            except Exception:
+                cfgs = []
+
+            try:
+                res = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.7)
+                got = res[0] if res else None
+                if isinstance(got, (set, list, tuple)):
+                    installed_ids = {str(x) for x in got}
+            except Exception:
+                installed_ids = set()
+
+            if current_model_id:
+                try:
+                    res = self.event_bus.emit_and_wait(
+                        Events.Audio.CHECK_MODEL_INITIALIZED,
+                        {"model_id": current_model_id},
+                        timeout=0.7,
+                    )
+                    initialized = bool(res and res[0])
+                except Exception:
+                    initialized = False
+
+            return {
+                "cfgs": cfgs,
+                "installed_ids": installed_ids,
+                "current_model_id": current_model_id,
+                "initialized": initialized,
+            }
+
+        def apply(snapshot: dict):
+            if ticket != int(getattr(self, "_sync_ticket", 0) or 0):
+                return
+            self._apply_voiceover_snapshot(snapshot, allow_autoload=allow_autoload)
+
+        self._run_async(worker, apply, name="voiceover-sync")
+
+    def _apply_voiceover_snapshot(self, snapshot: dict, *, allow_autoload: bool):
+        cfgs = snapshot.get("cfgs") if isinstance(snapshot, dict) else []
+        installed_ids = snapshot.get("installed_ids") if isinstance(snapshot, dict) else set()
+        current_model_id = str((snapshot or {}).get("current_model_id") or "")
+        initialized = bool((snapshot or {}).get("initialized"))
+
+        if not isinstance(installed_ids, set):
+            installed_ids = {str(x) for x in (installed_ids or [])}
+
+        self._model_id_to_name = self._build_model_name_map(cfgs)
+        self._model_id_to_name_ts = time.time()
+        self._installed_models_cache = set(installed_ids)
+        self._installed_models_cache_ts = time.time()
+
+        self._apply_voiceover_visibility_from_widgets()
+        current_model_id = self._update_local_models_combobox_from_snapshot(installed_ids, current_model_id)
+
+        state = {
+            "installed": bool(current_model_id and current_model_id in installed_ids),
+            "initialized": initialized,
+            "current_model_id": current_model_id,
+        }
+
+        if allow_autoload:
+            self._maybe_autoload_local_model_from_snapshot(state)
+
+        self._sync_local_model_status_from_snapshot(state)
+        self._update_tg_connect_button()
+        self._maybe_autoconnect_tg()
+
+        tg_active = bool(self._effective_use_voice() and self._effective_method() == "TG")
+        self._ensure_tg_polling(tg_active)
+        self._emit_voice_icon_state_from_snapshot(state)
+
+    def _build_model_name_map(self, cfgs) -> dict[str, str]:
+        mp: dict[str, str] = {}
+        for c in cfgs or []:
+            if not isinstance(c, dict):
+                continue
+            mid = str(c.get("id") or "").strip()
+            name = str(c.get("name") or mid).strip()
+            if mid:
+                mp[mid] = name
+
+        if mp:
+            return mp
+
+        try:
+            from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
+            for m in LOCAL_VOICE_MODELS:
+                mid = str(m.get("id") or "").strip()
+                name = str(m.get("name") or mid).strip()
+                if mid:
+                    mp[mid] = name
+        except Exception:
+            pass
+        return mp
+
+    def _set_local_voice_loading_placeholders(self):
+        cb = getattr(self.view, "local_voice_combobox", None)
+        if cb is not None and cb.count() == 0:
+            cb.blockSignals(True)
+            try:
+                cb.addItem(_("Загрузка...", "Loading..."), "")
+            finally:
+                cb.blockSignals(False)
+
+        chip = getattr(self.view, "local_model_status_chip", None)
+        btn = getattr(self.view, "local_model_action_btn", None)
+        if chip is not None and btn is not None and not chip.isVisible():
+            self._apply_model_status(chip, btn, "loading", _("Проверка...", "Checking..."), None, "")
+
+    def _update_local_models_combobox_from_snapshot(self, installed_ids: set[str], current_model_id: str) -> str:
+        cb = getattr(self.view, "local_voice_combobox", None)
+        if cb is None:
+            return current_model_id
+
+        ordered_ids = list(self._model_id_to_name.keys())
+        ids = [mid for mid in ordered_ids if mid in installed_ids]
+        items = [(self._model_id_to_name.get(mid, mid), mid) for mid in ids]
+
+        cb.blockSignals(True)
+        try:
+            cb.clear()
+            for name, mid in items:
+                cb.addItem(name, mid)
+        finally:
+            cb.blockSignals(False)
+
+        if current_model_id and current_model_id in installed_ids:
+            self._set_combobox_by_model_id(current_model_id)
+            return current_model_id
+
+        if items:
+            first_id = items[0][1]
+            self._save_setting("NM_CURRENT_VOICEOVER", first_id)
+            self._set_combobox_by_model_id(first_id)
+            return first_id
+
+        self._save_setting("NM_CURRENT_VOICEOVER", None)
+        return ""
+
+    def _maybe_autoload_local_model_from_snapshot(self, state: dict):
+        if not self._backend_enabled():
+            return
+        if not bool(self._get_setting("LOCAL_VOICE_LOAD_LAST", False)):
+            return
+
+        model_id = str(state.get("current_model_id") or "")
+        if not model_id or not bool(state.get("installed")):
+            return
+
+        if bool(state.get("initialized")):
+            self._select_model_async(model_id, show_error=False)
+            return
+
+        if not self._show_loading_dialog(model_id):
+            self._emit_voice_icon_state_from_snapshot(state)
+            return
+
+        self._emit_voice_icon_state_from_snapshot({**state, "current_model_id": model_id})
+
+        def progress_callback(status_type: str, message: str):
+            if status_type == "status":
+                self._ui(lambda: self._set_loading_status(message))
+
+        self.event_bus.emit(Events.Audio.INIT_VOICE_MODEL, {
+            "model_id": model_id,
+            "progress_callback": progress_callback,
+        })
+
+    def _sync_local_model_status_from_snapshot(self, state: dict):
+        chip = getattr(self.view, "local_model_status_chip", None)
+        btn = getattr(self.view, "local_model_action_btn", None)
+        if chip is None and btn is None:
+            return
+
+        use_voice = self._effective_use_voice()
+        method = self._effective_method()
+
+        if not use_voice or method != "Local":
+            if chip is not None:
+                chip.setVisible(False)
+            if btn is not None:
+                btn.setVisible(False)
+            return
+
+        if chip is not None:
+            chip.setVisible(True)
+
+        model_id = str(state.get("current_model_id") or "")
+
+        if model_id and self._loading_model_id == model_id:
+            self._apply_model_status(chip, btn, "loading", _("Инициализация...", "Initializing..."), None, "")
+            return
+
+        if not model_id or not bool(state.get("installed")):
+            self._apply_model_status(chip, btn, "red", _("Не установлена", "Not installed"), "install", _("Установить", "Install"))
+            return
+
+        if bool(state.get("initialized")):
+            self._apply_model_status(chip, btn, "green", _("Готова", "Ready"), None, "")
+            return
+
+        self._apply_model_status(
+            chip,
+            btn,
+            "orange",
+            _("Требуется инициализация", "Initialization required"),
+            "init",
+            _("Инициализировать", "Initialize"),
+        )
+
+    def _emit_voice_icon_state_from_snapshot(self, state: dict):
+        use_voice = self._effective_use_voice()
+        method = self._effective_method()
+
+        if not use_voice:
+            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {"category": "voice", "state": None, "tooltip": None})
+            return
+
+        if method == "TG":
+            self._emit_voice_icon_state()
+            return
+
+        if method != "Local":
+            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {"category": "voice", "state": None, "tooltip": None})
+            return
+
+        model_id = str(state.get("current_model_id") or "")
+        if not model_id:
+            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
+                "category": "voice",
+                "state": "red",
+                "tooltip": _("Локальная озвучка: модель не выбрана", "Local voiceover: model not selected"),
+            })
+            return
+
+        if self._loading_model_id == model_id:
+            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
+                "category": "voice",
+                "state": "loading",
+                "tooltip": _("Инициализация модели...", "Initializing model..."),
+            })
+            return
+
+        if not bool(state.get("installed")):
+            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
+                "category": "voice",
+                "state": "red",
+                "tooltip": _("Модель не установлена", "Model not installed"),
+            })
+            return
+
+        initialized = bool(state.get("initialized"))
+        self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
+            "category": "voice",
+            "state": "green",
+            "tooltip": _("Модель готова", "Model ready") if initialized else _("Требуется инициализация", "Initialization required"),
+        })
+
+    def _select_model_async(self, model_id: str, on_done=None, *, show_error: bool = True):
+        def worker():
+            try:
+                res = self.event_bus.emit_and_wait(Events.Audio.SELECT_VOICE_MODEL, {"model_id": model_id}, timeout=1.0)
+                return bool(res and res[0])
+            except Exception:
+                return False
+
+        def apply(ok: bool):
+            if not ok and show_error:
+                self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
+                    "title": _("Ошибка", "Error"),
+                    "message": _("Не удалось активировать модель", "Failed to activate model"),
+                })
+
+            if callable(on_done):
+                on_done(bool(ok))
+
+        self._run_async(worker, apply, name="voiceover-select-model")
+
+    def _sync_everything_sync_legacy(self, *, allow_autoload: bool):
         if not self.view:
             return
 
@@ -530,6 +952,30 @@ class VoiceoverGuiController(BaseController):
                 "tooltip": _("Инициализация модели...", "Initializing model..."),
             })
             return
+
+        installed_ids = self._installed_models_cache
+        if installed_ids is None:
+            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
+                "category": "voice",
+                "state": "loading",
+                "tooltip": _("Checking model status...", "Checking model status..."),
+            })
+            return
+
+        if model_id not in installed_ids:
+            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
+                "category": "voice",
+                "state": "red",
+                "tooltip": _("Model not installed", "Model not installed"),
+            })
+            return
+
+        self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
+            "category": "voice",
+            "state": "green",
+            "tooltip": _("Model status loaded", "Model status loaded"),
+        })
+        return
 
         if not self._check_installed(model_id):
             self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {

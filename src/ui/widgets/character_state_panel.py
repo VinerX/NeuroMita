@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 
 from core.events import Events
 from main_logger import logger
+from ui.async_bus import run_async
 from utils import _
 from localization.live import register_if_tr, tr_set
 
@@ -159,6 +160,8 @@ class CharacterStatePanel(QWidget):
         self._dynamic_bars: Dict[str, _StatBar] = {}
         self._dynamic_badges: Dict[str, QLabel] = {}
         self._current_char_id: str = ""
+        self._refresh_ticket = 0
+        self._all_text_ticket = 0
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -377,9 +380,54 @@ class CharacterStatePanel(QWidget):
 
         self._custom_card.setVisible(any_widget)
 
+    def _all_variables_text_for(self, character) -> str:
+        if character is None:
+            return "-"
+        try:
+            variables = dict(getattr(character, "variables", {}) or {})
+        except Exception:
+            variables = {}
+        lines: List[str] = []
+        for k in sorted(variables.keys(), key=str.lower):
+            v = variables[k]
+            try:
+                if isinstance(v, bool):
+                    v_text = "true" if v else "false"
+                elif v is None:
+                    v_text = "None"
+                elif isinstance(v, float):
+                    v_text = f"{v:.3f}".rstrip("0").rstrip(".")
+                elif isinstance(v, str):
+                    v_text = f'"{v}"' if len(v) > 0 and (" " in v or "\n" in v or v[0] in "{[#") else v
+                else:
+                    v_text = str(v)
+            except Exception:
+                v_text = repr(v)
+            if len(v_text) > 300:
+                v_text = v_text[:297] + "..."
+            lines.append(f"{k}: {v_text}")
+        return "\n".join(lines) if lines else "-"
+
     def _refresh_all_text(self) -> None:
         if self._all_text.hasFocus():
             return
+        self._all_text_ticket += 1
+        ticket = self._all_text_ticket
+
+        def worker():
+            return self._all_variables_text_for(self._get_current_character())
+
+        def apply(new_text: str):
+            if ticket != self._all_text_ticket:
+                return
+            scrollbar = self._all_text.verticalScrollBar()
+            scroll_val = scrollbar.value() if scrollbar else 0
+            self._all_text.setPlainText(str(new_text or "-"))
+            if scrollbar:
+                scrollbar.setValue(scroll_val)
+
+        run_async(self.gui, worker, apply, name="character-state-all-vars")
+        return
         character = self._get_current_character()
         if character is None:
             self._all_text.setPlainText("—")
@@ -416,7 +464,20 @@ class CharacterStatePanel(QWidget):
 
     # ─────────────────────────────────────────────────────────────
     def refresh(self, *, rebuild: bool = False) -> None:
-        character = self._get_current_character()
+        self._refresh_ticket += 1
+        ticket = self._refresh_ticket
+
+        def worker():
+            return self._get_current_character()
+
+        def apply(character):
+            if ticket != self._refresh_ticket:
+                return
+            self._apply_character_refresh(character, rebuild=rebuild)
+
+        run_async(self.gui, worker, apply, name="character-state-refresh")
+
+    def _apply_character_refresh(self, character, *, rebuild: bool = False) -> None:
         if character is None:
             self._attitude_bar.set_value(0)
             self._boredom_bar.set_value(0)

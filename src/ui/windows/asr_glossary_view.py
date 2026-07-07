@@ -14,6 +14,7 @@ except Exception:
     qta = None
 
 from core.events import get_event_bus, Events
+from ui.async_bus import run_async
 from utils import getTranslationVariant as _
 from styles.asr_model_styles import get_asr_stylesheet
 
@@ -54,6 +55,7 @@ class AsrModelListItemWidget(QWidget):
 
 
 class AsrGlossaryView(QWidget):
+    run_ui_task_signal = pyqtSignal(object)
     request_install = pyqtSignal(str)
     request_refresh = pyqtSignal()
 
@@ -67,6 +69,8 @@ class AsrGlossaryView(QWidget):
 
         self._models: list[dict] = []
         self._current_engine: str | None = None
+        self._refresh_ticket = 0
+        self._settings_ticket = 0
 
         self.setWindowTitle(_("ASR Модели", "ASR Models"))
         self.setStyleSheet(get_asr_stylesheet())
@@ -77,16 +81,51 @@ class AsrGlossaryView(QWidget):
         self.asr_install_progress_signal.connect(self._on_install_progress_internal)
         self.asr_install_finished_signal.connect(self._on_install_finished_internal)
         self.asr_install_failed_signal.connect(self._on_install_failed_internal)
+        self.run_ui_task_signal.connect(self._run_ui_task, type=Qt.ConnectionType.QueuedConnection)
 
         QTimer.singleShot(0, lambda: self.request_refresh.emit())
 
     def refresh(self):
-        try:
+        self._refresh_ticket += 1
+        ticket = self._refresh_ticket
+        self._set_refresh_loading(True)
+
+        def worker():
             res = self.event_bus.emit_and_wait(Events.Speech.GET_ASR_MODELS_GLOSSARY, timeout=2.0)
-            self._models = res[0] if res and isinstance(res[0], list) else []
-        except Exception:
+            return res[0] if res and isinstance(res[0], list) else []
+
+        def apply(models: list[dict]):
+            if ticket != self._refresh_ticket:
+                return
+            self._models = models or []
+            self._set_refresh_loading(False)
+            self._rebuild_list(keep_selection=True)
+
+        def fail(_exc: Exception):
+            if ticket != self._refresh_ticket:
+                return
             self._models = []
-        self._rebuild_list(keep_selection=True)
+            self._set_refresh_loading(False)
+            self._rebuild_list(keep_selection=True)
+
+        run_async(self, worker, apply, fail, name="asr-glossary-refresh")
+
+    def _run_ui_task(self, fn):
+        if callable(fn):
+            fn()
+
+    def _set_refresh_loading(self, loading: bool):
+        btn = getattr(self, "btn_refresh_list", None)
+        if btn is not None:
+            btn.setEnabled(not loading)
+
+        if not loading or self._models or self.list_widget.count():
+            return
+
+        self.list_widget.clear()
+        item = QListWidgetItem(_("Loading ASR models...", "Loading ASR models..."))
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        self.list_widget.addItem(item)
 
     def on_install_progress(self, model: str, progress: int, status: str):
         self.asr_install_progress_signal.emit({"model": model, "progress": progress, "status": status})
@@ -453,15 +492,41 @@ class AsrGlossaryView(QWidget):
             self.settings_layout.addStretch()
             return
 
-        schema_res = self.event_bus.emit_and_wait(
-            Events.Speech.GET_RECOGNIZER_SETTINGS_SCHEMA, {"engine": engine_id}, timeout=1.0
-        )
-        schema = schema_res[0] if schema_res else []
+        self._settings_ticket += 1
+        ticket = self._settings_ticket
+        loading = QLabel(_("Loading settings...", "Loading settings..."))
+        loading.setObjectName("Subtle")
+        self.settings_layout.addWidget(loading)
+        self.settings_layout.addStretch()
 
-        vals_res = self.event_bus.emit_and_wait(
-            Events.Speech.GET_RECOGNIZER_SETTINGS, {"engine": engine_id}, timeout=1.0
-        )
-        values = vals_res[0] if vals_res else {}
+        def worker():
+            schema_res = self.event_bus.emit_and_wait(
+                Events.Speech.GET_RECOGNIZER_SETTINGS_SCHEMA, {"engine": engine_id}, timeout=1.0
+            )
+            schema = schema_res[0] if schema_res else []
+
+            vals_res = self.event_bus.emit_and_wait(
+                Events.Speech.GET_RECOGNIZER_SETTINGS, {"engine": engine_id}, timeout=1.0
+            )
+            values = vals_res[0] if vals_res else {}
+            return {"engine_id": engine_id, "schema": schema or [], "values": values or {}}
+
+        def apply(payload: dict):
+            if ticket != self._settings_ticket:
+                return
+            if str(payload.get("engine_id") or "") != str(self._current_engine or ""):
+                return
+            self._render_settings_fields(payload.get("schema") or [], payload.get("values") or {}, engine_id)
+
+        def fail(_exc: Exception):
+            if ticket != self._settings_ticket:
+                return
+            self._render_settings_fields([], {}, engine_id)
+
+        run_async(self, worker, apply, fail, name=f"asr-settings:{engine_id}")
+
+    def _render_settings_fields(self, schema: list[dict], values: dict, engine_id: str):
+        self._clear_layout(self.settings_layout)
 
         if not schema:
             lbl = QLabel(_("Нет настроек для этой модели.", "No settings for this model."))

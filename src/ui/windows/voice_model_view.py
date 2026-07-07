@@ -13,6 +13,7 @@ from PyQt6.QtGui import QCursor
 from styles.voice_model_styles import get_stylesheet
 from utils import getTranslationVariant as _
 from core.events import get_event_bus, Events
+from ui.async_bus import run_async
 from ui.windows.voice_action_windows import VCRedistWarningDialog, TritonDependenciesDialog  # NEW
 
 from main_logger import logger
@@ -648,6 +649,7 @@ class ModelListItemWidget(QWidget):
 # ---------- Главное окно настроек ----------
 class VoiceModelSettingsView(QWidget):
 
+    run_ui_task_signal = pyqtSignal(object)
     update_description_signal = pyqtSignal(str)
     clear_description_signal = pyqtSignal()
     install_started_signal = pyqtSignal(str)
@@ -685,6 +687,8 @@ class VoiceModelSettingsView(QWidget):
         self.detail = None
 
         self._initialized = False
+        self._refresh_ticket = 0
+        self._deps_refresh_ticket = 0
         self.btn_save = None
         self._baseline_values: dict[str, object] = {}
         self._dirty_keys: set[str] = set()
@@ -702,6 +706,7 @@ class VoiceModelSettingsView(QWidget):
         self.refresh_settings_signal.connect(self._on_refresh_settings)
         self.ask_question_signal.connect(self._on_ask_question)
         self.create_voice_action_window_signal.connect(self._on_create_voice_action_window)
+        self.run_ui_task_signal.connect(self._run_ui_task, type=Qt.ConnectionType.QueuedConnection)
         self.open_vc_redist_dialog.connect(
             self._slot_open_vc_redist_dialog,
             type=Qt.ConnectionType.BlockingQueuedConnection
@@ -714,12 +719,37 @@ class VoiceModelSettingsView(QWidget):
         if auto_initialize:
             self.refresh_all()
 
+    def _run_ui_task(self, fn):
+        if callable(fn):
+            fn()
+
     def refresh_all(self):
         """
         Вызывай при показе окна:
         - 1-й раз: полноценная инициализация данных;
         - далее: обновление данных и UI.
         """
+        self._refresh_ticket += 1
+        ticket = self._refresh_ticket
+        if self.list is not None and not self.models_data:
+            self.list.clear()
+            self.list.addItem(QListWidgetItem(_("Loading models...", "Loading models...")))
+
+        def worker():
+            return {
+                "models_data": self._get_models_data(),
+                "installed_models": self._get_installed_models(),
+                "dependencies_status": self._get_dependencies_status(),
+            }
+
+        def apply(snapshot: dict):
+            if ticket != self._refresh_ticket:
+                return
+            self._apply_refresh_snapshot(snapshot)
+
+        run_async(self, worker, apply, name="voice-model-view-refresh")
+        return
+
         if not self._initialized:
             self._initialize_data()
             self._initialized = True
@@ -735,6 +765,23 @@ class VoiceModelSettingsView(QWidget):
             self.list.setCurrentRow(0)
 
         self.refresh_dependencies_panel()
+        self._on_selection_changed()
+
+    def _apply_refresh_snapshot(self, snapshot: dict):
+        self.models_data = list(snapshot.get("models_data") or [])
+        installed = snapshot.get("installed_models") or set()
+        self.installed_models = set(installed) if isinstance(installed, (set, list, tuple)) else set()
+        self._cached_dependencies_status = snapshot.get("dependencies_status") or {}
+        self._initialized = True
+
+        self._on_clear_description()
+        self._populate_list()
+        if self.list and self.list.count() and self.list.currentRow() < 0:
+            self.list.setCurrentRow(0)
+
+        self.refresh_dependencies_panel()
+        self._apply_gpu_status()
+        self.detail.set_rtx_check_func(lambda: bool(self._check_gpu_rtx30_40()))
         self._on_selection_changed()
 
     def ensure_initialized(self):
@@ -895,21 +942,34 @@ class VoiceModelSettingsView(QWidget):
         )
 
     def _get_default_description(self):
-        results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_DEFAULT_DESCRIPTION)
-        return results[0] if results else ""
+        return _("Select a model to see details.", "Select a model to see details.")
 
     def _get_model_description(self, model_id):
-        results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_MODEL_DESCRIPTION, model_id)
-        return results[0] if results else self._get_default_description()
+        for model in self.models_data or []:
+            if str(model.get("id") or "") != str(model_id or ""):
+                continue
+            for key in ("description", "desc", "tooltip", "help"):
+                value = model.get(key)
+                if value:
+                    return str(value)
+        return self._get_default_description()
 
     def _check_gpu_rtx30_40(self):
-        results = self.event_bus.emit_and_wait(Events.VoiceModel.CHECK_GPU_RTX30_40)
-        return results[0] if results else False
+        st = self._cached_dependencies_status or {}
+        if "is_rtx30_or_40" in st:
+            return bool(st.get("is_rtx30_or_40"))
+        name = str(st.get("gpu_name") or "")
+        return bool(re.search(r"\bRTX\s*(30|40)\d{2}\b", name, re.IGNORECASE))
 
     # ---------- Dependencies tab ----------
     def _build_dependencies_panel(self, layout: QVBoxLayout):
         # Если кэш ещё пуст при первой отрисовке — подтянем статус напрямую
-        st = self._cached_dependencies_status or self._get_dependencies_status() or {}
+        st = self._cached_dependencies_status or {}
+        if not st:
+            info = QLabel(_("Loading dependencies...", "Loading dependencies..."))
+            info.setObjectName("Subtle")
+            layout.addWidget(info)
+            return
 
         if st.get("show_triton_checks", False):
             row = QHBoxLayout()
@@ -1119,25 +1179,25 @@ class VoiceModelSettingsView(QWidget):
         self.detail.set_button_enabled(False)
 
     def _on_install_finished(self, data):
-        self.installed_models = self._get_installed_models()
-        self._refresh_list_visuals()
-        self._on_selection_changed()
+        self.refresh_all()
 
     def _on_uninstall_started(self, model_id):
         self.detail.set_button_text(_("Удаление...", "Uninstalling..."))
         self.detail.set_button_enabled(False)
 
     def _on_uninstall_finished(self, data):
-        self.installed_models = self._get_installed_models()
-        self._refresh_list_visuals()
-        self._on_selection_changed()
+        self.refresh_all()
 
     def _on_refresh_panels(self):
+        self.refresh_all()
+        return
         self.models_data = self._get_models_data()
         self.installed_models = self._get_installed_models()
         self._populate_list()
 
     def _on_refresh_settings(self):
+        self.refresh_all()
+        return
         self._cached_dependencies_status = self._get_dependencies_status()
         self._apply_gpu_status()
         # Пересобрать вкладку "Зависимости" с актуальными данными
@@ -1216,7 +1276,6 @@ class VoiceModelSettingsView(QWidget):
     
     def refresh_dependencies_panel(self):
         """Пересобирает панель зависимостей с актуальным статусом."""
-        self._cached_dependencies_status = self._get_dependencies_status()
         if hasattr(self, 'deps_container') and self.deps_container is not None:
             self._clear_layout(self.deps_container)
             self._build_dependencies_panel(self.deps_container)
