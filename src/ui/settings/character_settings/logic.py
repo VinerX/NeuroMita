@@ -17,6 +17,13 @@ from ui.dialogs.db_viewer import DbViewerDialog
 from PyQt6.QtWidgets import QProgressDialog,QFileDialog
 from ui.dialogs.db_export_dialog import DbExportDialog
 from ui.async_bus import dispatch_to_gui, run_async
+from ui.settings.data_prefetch import (
+    API_PROVIDER_NAMES,
+    CHARACTER_SETTINGS_SNAPSHOT,
+    api_provider_names_from_result,
+    get_cached_settings_data,
+    request_settings_data,
+)
 
 
 _CURRENT_PROVIDER_ITEM = ("Текущий", "Current", "Текущий")
@@ -335,15 +342,18 @@ def _populate_chat_character_combobox(gui, character_list: list[str], current_ch
 def _load_character_settings_snapshot_async(gui) -> None:
     if bool(getattr(gui, "_character_settings_snapshot_loading", False)):
         return
+
+    cached = get_cached_settings_data(CHARACTER_SETTINGS_SNAPSHOT, None)
+    if cached is not None:
+        _apply_character_settings_snapshot(gui, cached)
+        return
+
     gui._character_settings_snapshot_loading = True
     event_bus = get_event_bus()
 
     def _worker():
         all_characters = event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
         character_list = all_characters[0] if all_characters else []
-
-        presets_meta = event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-        provider_items = _provider_items_from_presets_result(presets_meta)
 
         current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
         current_profile = current_profile_res[0] if current_profile_res else {}
@@ -355,7 +365,6 @@ def _load_character_settings_snapshot_async(gui) -> None:
 
         return {
             "character_list": [str(c or "").strip() for c in (character_list or []) if str(c or "").strip()],
-            "provider_items": provider_items,
             "current_char_id": current_char_id,
         }
 
@@ -372,7 +381,36 @@ def _load_character_settings_snapshot_async(gui) -> None:
             "current_char_id": _fallback_current_character_id(gui),
         })
 
-    run_async(gui, _worker, _apply, _error, name="character-settings-snapshot")
+    request_settings_data(
+        gui,
+        CHARACTER_SETTINGS_SNAPSHOT,
+        _worker,
+        _apply,
+        _error,
+        name="character-settings-snapshot",
+    )
+
+
+def _load_character_provider_items_async(gui) -> None:
+    cached = get_cached_settings_data(API_PROVIDER_NAMES, None)
+    if cached is not None:
+        _set_character_provider_items(gui, [*_default_provider_items(), *cached])
+        return
+
+    def _worker():
+        result = get_event_bus().emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
+        return api_provider_names_from_result(result)
+
+    def _apply(provider_names: list[str]) -> None:
+        _set_character_provider_items(gui, [*_default_provider_items(), *(provider_names or [])])
+
+    request_settings_data(
+        gui,
+        API_PROVIDER_NAMES,
+        _worker,
+        _apply,
+        name="character-provider-options",
+    )
 
 
 def _apply_character_settings_snapshot(gui, snapshot: dict) -> None:
@@ -385,8 +423,18 @@ def _apply_character_settings_snapshot(gui, snapshot: dict) -> None:
     gui._configured_char_id = current_char_id
 
     _populate_chat_character_combobox(gui, character_list, current_char_id)
-    _set_character_provider_items(gui, list(snapshot.get("provider_items") or _default_provider_items()))
-    _build_character_accordion(gui, character_list, current_char_id)
+    provider_items = snapshot.get("provider_items")
+    if provider_items is None:
+        provider_names = snapshot.get("provider_names")
+        if provider_names is not None:
+            provider_items = [*_default_provider_items(), *(provider_names or [])]
+    if provider_items is not None:
+        _set_character_provider_items(gui, list(provider_items or _default_provider_items()))
+    expand_initial = (
+        getattr(gui, "current_main_page", None) == "settings"
+        and getattr(getattr(gui, "settings_page", None), "current_settings_category", None) == "characters"
+    )
+    _build_character_accordion(gui, character_list, current_char_id, expand_initial=expand_initial)
     update_prompt_set_info(gui)
 
 
@@ -487,10 +535,11 @@ def wire_character_settings_logic(self):
         self.btn_all_purge.clicked.connect(lambda: purge_deleted_data(self))
 
     _load_character_settings_snapshot_async(self)
+    _load_character_provider_items_async(self)
     update_prompt_set_info(self)
 
 
-def _build_character_accordion(self, character_list, current_char_id):
+def _build_character_accordion(self, character_list, current_char_id, *, expand_initial: bool = True):
     """Построить аккордеон персонажей (#17): по секции на каждую Миту.
 
     Раскрытие секции: сворачивает соседние, переносит в неё общую панель
@@ -550,7 +599,7 @@ def _build_character_accordion(self, character_list, current_char_id):
     target = current_char_id if current_char_id in self._char_sections else None
     if target is None and self._char_sections:
         target = next(iter(self._char_sections))
-    if target is not None:
+    if expand_initial and target is not None:
         self._char_sections[target].toggle()
 
 

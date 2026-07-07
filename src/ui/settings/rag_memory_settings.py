@@ -10,6 +10,12 @@ from PyQt6.QtCore import Qt
 
 from ui.gui_templates import create_settings_section
 from ui.async_bus import run_async
+from ui.settings.data_prefetch import (
+    RAG_CE_STATUS,
+    RAG_EMBED_STATUS,
+    get_cached_settings_data,
+    request_settings_data,
+)
 from utils import getTranslationVariant as _
 from localization.live import tr_set
 from core.events import get_event_bus, Events
@@ -1203,7 +1209,7 @@ def _build_embed_config(self) -> list:
             {'label': _('Индекс нового', 'Index new'),
              'command': lambda: _reindex_embeddings(self)},
             {'label': _('Обновить статус', 'Refresh status'),
-             'command': lambda: _refresh_embed_status(self)},
+             'command': lambda: _refresh_embed_status(self, force=True)},
         ]},
 
         {'type': 'end'},
@@ -1699,7 +1705,7 @@ def _build_cross_encoder_config(self) -> list:
              '0 = disabled (old behaviour). Recommended: 150.')},
         {'type': 'button_group', 'buttons': [
             {'label': _('Обновить статус', 'Refresh status'),
-             'command': lambda: _refresh_ce_status(self)},
+             'command': lambda: _refresh_ce_status(self, force=True)},
         ]},
 
         {'type': 'end'},
@@ -1906,7 +1912,7 @@ def _needs_ce_backend_install() -> bool:
         return False
 
 
-def _refresh_ce_status(gui) -> None:
+def _refresh_ce_status(gui, *, force: bool = False) -> None:
     def _worker():
         return {
             "backend": _get_ce_backend_status(),
@@ -1934,10 +1940,22 @@ def _refresh_ce_status(gui) -> None:
         except Exception:
             pass
 
-    run_async(gui, _worker, _apply, name="rag-ce-status")
+    cached = get_cached_settings_data(RAG_CE_STATUS, None)
+    if cached is not None and not force:
+        _apply(cached)
+        return
+
+    request_settings_data(
+        gui,
+        RAG_CE_STATUS,
+        _worker,
+        _apply,
+        name="rag-ce-status",
+        force=force,
+    )
 
 
-def _refresh_embed_status(gui) -> None:
+def _refresh_embed_status(gui, *, force: bool = False) -> None:
     def _worker():
         return {
             "backend": _get_embed_backend_status(),
@@ -1962,7 +1980,19 @@ def _refresh_embed_status(gui) -> None:
         except Exception:
             pass
 
-    run_async(gui, _worker, _apply, name="rag-embed-status")
+    cached = get_cached_settings_data(RAG_EMBED_STATUS, None)
+    if cached is not None and not force:
+        _apply(cached)
+        return
+
+    request_settings_data(
+        gui,
+        RAG_EMBED_STATUS,
+        _worker,
+        _apply,
+        name="rag-embed-status",
+        force=force,
+    )
 
 
 def _open_rag_ai_hub(gui, target: str) -> None:

@@ -2,6 +2,7 @@ from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
 from main_logger import logger
 from ui.settings.provider_options import current_provider_options, load_api_provider_options_async
+from ui.settings.data_prefetch import CAMERA_LIST, get_cached_settings_data, request_settings_data
 
 def get_camera_list():
     try:
@@ -17,14 +18,41 @@ def get_camera_list():
         logger.warning("[screen_capture] OpenCV is not installed; camera enumeration is unavailable.")
         return [_("Камер не найдено", "No cameras found")]
 
-def update_camera_list(gui):
+def update_camera_list(gui, *, force: bool = False):
     if hasattr(gui, 'camera_combobox'):
-        current_text = gui.camera_combobox.currentText()
-        gui.camera_combobox.clear()
-        new_list = get_camera_list()
-        gui.camera_combobox.addItems(new_list)
-        if current_text in new_list:
-            gui.camera_combobox.setCurrentText(current_text)
+        combo = gui.camera_combobox
+        current_text = combo.currentText()
+        combo.setEnabled(False)
+
+        def _apply(new_list):
+            combo = getattr(gui, 'camera_combobox', None)
+            if combo is None:
+                return
+            combo.clear()
+            combo.addItems(new_list)
+            if current_text in new_list:
+                combo.setCurrentText(current_text)
+            combo.setEnabled(True)
+
+        def _error(_exc):
+            combo = getattr(gui, 'camera_combobox', None)
+            if combo is not None:
+                combo.setEnabled(True)
+
+        cached = get_cached_settings_data(CAMERA_LIST, None)
+        if cached is not None and not force:
+            _apply(cached)
+            return
+
+        request_settings_data(
+            gui,
+            CAMERA_LIST,
+            get_camera_list,
+            _apply,
+            _error,
+            name="screen-camera-list",
+            force=force,
+        )
 
 def on_camera_selected(gui):
     if hasattr(gui, 'camera_combobox'):
@@ -93,8 +121,11 @@ def setup_screen_analysis_controls(gui, parent_layout):
             'type': 'text',
         },
         {'label': _('Включить захват с камеры', 'Enable Camera Capture'), 'key': 'ENABLE_CAMERA_CAPTURE', 'type': 'checkbutton', 'default_checkbutton': False},
-        {'label': _('Камера', 'Camera'), 'key': 'CAMERA_DEVICE', 'type': 'combobox', 'options': get_camera_list(), 'default': get_camera_list()[0], 'command': lambda _: on_camera_selected(gui), 'widget_name': 'camera_combobox'},
-        {'label': _("Обновить список", "Refresh list"), 'type': 'button', 'command': lambda: update_camera_list(gui)},
+        {'label': _('Камера', 'Camera'), 'key': 'CAMERA_DEVICE', 'type': 'combobox',
+         'options': [_("Загрузка камер...", "Loading cameras...")],
+         'default': _("Загрузка камер...", "Loading cameras..."),
+         'command': lambda _: on_camera_selected(gui), 'widget_name': 'camera_combobox'},
+        {'label': _("Обновить список", "Refresh list"), 'type': 'button', 'command': lambda: update_camera_list(gui, force=True)},
         {'label': _('Интервал захвата (сек)', 'Capture Interval (sec)'), 'key': 'CAMERA_CAPTURE_INTERVAL', 'type': 'entry', 'default': '5.0', 'validation': gui.validate_float_positive},
         {'label': _('Сжатие (%)', 'Compression (%)'), 'key': 'CAMERA_CAPTURE_QUALITY', 'type': 'entry', 'default': '25', 'validation': gui.validate_positive_integer},
         {'label': _('Кадров в секунду', 'Frames per second'), 'key': 'CAMERA_CAPTURE_FPS', 'type': 'entry', 'default': '1', 'validation': gui.validate_positive_integer},
@@ -104,6 +135,7 @@ def setup_screen_analysis_controls(gui, parent_layout):
         {'label': _('Высота захвата', 'Capture Height'), 'key': 'CAMERA_CAPTURE_HEIGHT', 'type': 'entry', 'default': '480', 'validation': gui.validate_positive_integer},
     ]
     gui.camera_section = create_settings_section(gui, parent_layout, _("Настройки захвата с камеры", "Camera Capture Settings"), camera_analysis_config, icon_name="fa6s.camera")
+    update_camera_list(gui)
 
     # Третья CollapsibleSection
     frame_compression_config = [

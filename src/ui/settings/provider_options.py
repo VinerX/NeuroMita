@@ -4,7 +4,12 @@ from typing import Iterable, Sequence
 
 from core.events import Events, get_event_bus
 from main_logger import logger
-from ui.async_bus import run_async
+from ui.settings.data_prefetch import (
+    API_PROVIDER_NAMES,
+    api_provider_names_from_result,
+    get_cached_settings_data,
+    request_settings_data,
+)
 from utils import getTranslationVariant as _
 
 
@@ -13,12 +18,18 @@ CURRENT_PROVIDER_EN_VALUE = "Current"
 
 
 def current_provider_options() -> list:
-    return [_(CURRENT_PROVIDER_VALUE, CURRENT_PROVIDER_EN_VALUE)]
+    names = _unique_provider_names(get_cached_settings_data(API_PROVIDER_NAMES, []))
+    return [_(CURRENT_PROVIDER_VALUE, CURRENT_PROVIDER_EN_VALUE), *names]
 
 
 def load_api_provider_options_async(gui, setting_keys: Sequence[str], *, name: str = "api-provider-options"):
     keys = tuple(str(key) for key in setting_keys if key)
     if not keys:
+        return None
+
+    cached = get_cached_settings_data(API_PROVIDER_NAMES, None)
+    if cached is not None:
+        _apply_api_provider_options(gui, keys, cached)
         return None
 
     def _worker() -> list[str]:
@@ -28,23 +39,11 @@ def load_api_provider_options_async(gui, setting_keys: Sequence[str], *, name: s
     def _apply(provider_names: Iterable[str]) -> None:
         _apply_api_provider_options(gui, keys, provider_names)
 
-    return run_async(gui, _worker, _apply, name=name)
+    return request_settings_data(gui, API_PROVIDER_NAMES, _worker, _apply, name=name)
 
 
 def _provider_names_from_result(result) -> list[str]:
-    meta = result[0] if result else None
-    if not isinstance(meta, dict):
-        return []
-
-    names: list[str] = []
-    seen = set()
-    for preset in meta.get("custom", []) or []:
-        name = str(getattr(preset, "name", "") or "").strip()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        names.append(name)
-    return names
+    return api_provider_names_from_result(result)
 
 
 def _apply_api_provider_options(gui, setting_keys: Sequence[str], provider_names: Iterable[str]) -> None:

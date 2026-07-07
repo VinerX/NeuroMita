@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ui.pages.settings.section_registry import SettingsSectionSpec, get_settings_section_specs
+from ui.settings.data_prefetch import prefetch_settings_data
 from ui.widgets.settings_icon_button import SettingsIconButton
 from utils import _
 from localization.live import tr_set
@@ -140,9 +141,6 @@ class SettingsPage(QWidget):
         self._loaded_sections = set()
         self._loading_sections = set()
         self._pending_section_scroll = {}
-        self._preload_queue = []
-        self._preload_active = False
-        self._preload_scheduled = False
 
         self.SETTINGS_PANEL_WIDTH = max(920, int(getattr(gui, "SETTINGS_PANEL_WIDTH", 980) or 980))
         self.SETTINGS_SIDEBAR_WIDTH = 0
@@ -155,7 +153,7 @@ class SettingsPage(QWidget):
         # Сразу применяем карту видимости, иначе до первого клика в «Видимых
         # разделах» показываются все вкладки, включая отключённые.
         self.apply_section_visibility()
-        self._schedule_background_section_preload(delay_ms=180)
+        QTimer.singleShot(0, lambda: prefetch_settings_data(self.gui))
 
     def _sync_host_exports(self):
         self.gui.settings_page = self
@@ -224,7 +222,6 @@ class SettingsPage(QWidget):
                 self._set_current_category(None)
 
         self._update_nav_state()
-        self._schedule_background_section_preload(delay_ms=120)
 
         try:
             from ui.widgets.status_indicators_widget import apply_capture_visibility
@@ -251,7 +248,6 @@ class SettingsPage(QWidget):
         if self.current_settings_category is None:
             first_key = self._first_available_category() or "api"
             self._activate_category(first_key, smooth_scroll=False)
-        self._schedule_background_section_preload(delay_ms=80)
 
         entry = getattr(self.gui, '_tester_code_entry', None)
         if entry is not None:
@@ -573,7 +569,7 @@ class SettingsPage(QWidget):
             if state == "loading":
                 text = _("Loading section...", "Loading section...")
             else:
-                text = _("Preparing section in background...", "Preparing section in background...")
+                text = _("Section is ready to load.", "Section is ready to load.")
         label = QLabel(text)
         label.setObjectName("Subtle")
         label.setWordWrap(True)
@@ -584,54 +580,6 @@ class SettingsPage(QWidget):
         layout.addWidget(label)
         layout.addStretch(1)
         page.body_layout.addWidget(box)
-
-    def _schedule_background_section_preload(self, *, delay_ms: int = 160):
-        if self._preload_scheduled:
-            return
-        self._preload_scheduled = True
-        QTimer.singleShot(max(0, int(delay_ms)), self._start_background_section_preload)
-
-    def _start_background_section_preload(self):
-        self._preload_scheduled = False
-        if self._preload_active:
-            return
-
-        keys = []
-        current = self.current_settings_category
-        if current:
-            keys.append(current)
-
-        for spec in get_settings_section_specs():
-            if spec.key not in keys:
-                keys.append(spec.key)
-
-        self._preload_queue = [
-            key for key in keys
-            if self._section_enabled(key)
-            and key not in self._loaded_sections
-            and key not in self._loading_sections
-            and key in self.settings_containers
-        ]
-        if not self._preload_queue:
-            return
-
-        self._preload_active = True
-        QTimer.singleShot(0, self._preload_next_section)
-
-    def _preload_next_section(self):
-        while self._preload_queue:
-            category = self._preload_queue.pop(0)
-            if (
-                not self._section_enabled(category)
-                or category in self._loaded_sections
-                or category in self._loading_sections
-                or category not in self.settings_containers
-            ):
-                continue
-            self._ensure_section_loaded(category, background=True)
-            return
-
-        self._preload_active = False
 
     def _ensure_section_loaded(self, category: str, *, subsection=None, smooth_scroll: bool = False, background: bool = False):
         if category in self._loaded_sections:
@@ -679,8 +627,6 @@ class SettingsPage(QWidget):
 
         subsection, smooth_scroll = self._pending_section_scroll.pop(category, (None, False))
         self._apply_pending_scroll(category, subsection=subsection, smooth_scroll=smooth_scroll)
-        if self._preload_active:
-            QTimer.singleShot(80, self._preload_next_section)
 
     def _apply_pending_scroll(self, category: str, *, subsection=None, smooth_scroll: bool = False):
         page = self.settings_containers.get(category)

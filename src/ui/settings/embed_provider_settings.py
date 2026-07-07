@@ -15,6 +15,12 @@ from core.events import get_event_bus, Events
 from managers.settings_manager import InnerCollapsibleSection, SettingsManager
 from ui.async_bus import dispatch_to_gui, run_async
 from ui.gui_templates import SettingsBodyWidget
+from ui.settings.data_prefetch import (
+    EMBED_PRESET_ITEMS,
+    embed_preset_items_from_meta,
+    get_cached_settings_data,
+    request_settings_data,
+)
 from utils import getTranslationVariant as _
 from localization.live import tr_set
 
@@ -291,7 +297,7 @@ class _EmbedProviderWidget(QWidget):
 
     # ── Data ──────────────────────────────────────────────────────────────────
 
-    def _load_presets(self, select_id: Any = None):
+    def _load_presets(self, select_id: Any = None, *, force: bool = False):
         self._preset_combo.setEnabled(False)
         target_id = select_id if select_id is not None else self._current_preset_id
 
@@ -322,24 +328,23 @@ class _EmbedProviderWidget(QWidget):
             items = self._preset_items_from_meta({})
             _apply(items)
 
-        run_async(self._gui, _worker, _apply, _error, name="embed-provider-presets")
+        cached = get_cached_settings_data(EMBED_PRESET_ITEMS, None)
+        if cached is not None and not force:
+            _apply(cached)
+            return
+
+        request_settings_data(
+            self._gui,
+            EMBED_PRESET_ITEMS,
+            _worker,
+            _apply,
+            _error,
+            name="embed-provider-presets",
+            force=force,
+        )
 
     def _preset_items_from_meta(self, meta) -> list[tuple[str, Any]]:
-        items: list[tuple[str, Any]] = []
-        if not meta:
-            from presets.embedding_provider_presets import list_builtin_presets
-            for bp in list_builtin_presets():
-                if bp.get("id") == "custom_local":
-                    continue
-                items.append((bp["name"], bp["id"]))
-        else:
-            for b in meta.get("builtin", []):
-                if b.get("id") == "custom_local":
-                    continue
-                items.append((b["name"], b["id"]))
-            for c in meta.get("custom", []):
-                items.append(("✎ " + c["name"], c["id"]))
-        return items
+        return embed_preset_items_from_meta(meta)
 
     def _select_preset(self, preset_id: Any):
         idx = self._find_combo_index(preset_id)
@@ -653,7 +658,7 @@ class _EmbedProviderWidget(QWidget):
                 SettingsManager.set("RAG_EMBED_PRESET_ID", saved_id)
                 self._current_preset_id = saved_id
                 self._save_btn.setStyleSheet("")
-                self._load_presets(select_id=saved_id)
+                self._load_presets(select_id=saved_id, force=True)
                 self._status_label.setText(_("Сохранено", "Saved"))
 
         def _error(exc: Exception):
@@ -686,7 +691,7 @@ class _EmbedProviderWidget(QWidget):
         def _apply(new_id):
             self._add_btn.setEnabled(True)
             if new_id is not None:
-                self._load_presets(select_id=new_id)
+                self._load_presets(select_id=new_id, force=True)
 
         def _error(exc: Exception):
             self._add_btn.setEnabled(True)
@@ -710,7 +715,7 @@ class _EmbedProviderWidget(QWidget):
 
         def _apply(_ok):
             self._del_btn.setEnabled(True)
-            self._load_presets()
+            self._load_presets(force=True)
 
         def _error(_exc: Exception):
             self._del_btn.setEnabled(True)
@@ -750,7 +755,7 @@ class _EmbedProviderWidget(QWidget):
         def _apply(_ok):
             self._up_btn.setEnabled(True)
             self._down_btn.setEnabled(True)
-            self._load_presets(select_id=pid)
+            self._load_presets(select_id=pid, force=True)
 
         def _error(_exc: Exception):
             self._up_btn.setEnabled(True)
