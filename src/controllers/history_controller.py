@@ -7,6 +7,7 @@ import time
 import threading
 from io import BytesIO
 
+from core.character_locks import character_lock
 from core.events import get_event_bus, Events, Event
 from core.executors import Pools, executors
 from core.response_status import response_status_kind
@@ -75,6 +76,23 @@ class HistoryController(HistoryService):
         if not char_id:
             raise ValueError("prepare_for_prompt: character без char_id")
 
+        # Реентерабельно: обычно нас уже держит generate_chat того же персонажа.
+        # Нужно, чтобы фоновое сжатие не подменило summary/summary_count между
+        # чтением сводки и нарезкой окна.
+        with character_lock(char_id):
+            return self._prepare_for_prompt_locked(
+                character, memory_limit, is_game_master, save_missed_history, image_quality
+            )
+
+    def _prepare_for_prompt_locked(
+        self,
+        character,
+        memory_limit: int,
+        is_game_master: bool,
+        save_missed_history: bool,
+        image_quality: Dict[str, Any],
+    ) -> PreparedHistory:
+        char_id = str(getattr(character, "char_id", "") or "")
         effective_limit = 8 if is_game_master else int(memory_limit)
         if effective_limit <= 0:
             effective_limit = 1
@@ -742,11 +760,14 @@ class HistoryController(HistoryService):
             return 0
 
     def _set_history_summary_state(self, character, summary: str, summary_count: int) -> None:
+        # Короткая критическая секция: сам LLM-вызов сжатия идёт вне блокировки,
+        # иначе генерация ждала бы его минуту.
         try:
-            character.set_variable(self._SUMMARY_TEXT_VAR, str(summary or "").strip())
-            character.set_variable(self._SUMMARY_COUNT_VAR, max(0, int(summary_count or 0)))
-            if hasattr(character, "flush_variables"):
-                character.flush_variables()
+            with character_lock(getattr(character, "char_id", "") or ""):
+                character.set_variable(self._SUMMARY_TEXT_VAR, str(summary or "").strip())
+                character.set_variable(self._SUMMARY_COUNT_VAR, max(0, int(summary_count or 0)))
+                if hasattr(character, "flush_variables"):
+                    character.flush_variables()
         except Exception as e:
             logger.warning(f"[HistoryController] Не удалось сохранить состояние summary: {e}", exc_info=True)
 
@@ -802,13 +823,14 @@ class HistoryController(HistoryService):
 
     def _set_summary_segments_state(self, character, segments, rendered, summary_count) -> None:
         try:
-            character.set_variable(self._SUMMARY_SEGMENTS_VAR, json.dumps(segments, ensure_ascii=False))
-            # блоб держим синхронным с рендером слоёв — для рендера [HISTORY SUMMARY]
-            # и обратной совместимости (_get_history_summary читает именно его).
-            character.set_variable(self._SUMMARY_TEXT_VAR, str(rendered or "").strip())
-            character.set_variable(self._SUMMARY_COUNT_VAR, max(0, int(summary_count or 0)))
-            if hasattr(character, "flush_variables"):
-                character.flush_variables()
+            with character_lock(getattr(character, "char_id", "") or ""):
+                character.set_variable(self._SUMMARY_SEGMENTS_VAR, json.dumps(segments, ensure_ascii=False))
+                # блоб держим синхронным с рендером слоёв — для рендера [HISTORY SUMMARY]
+                # и обратной совместимости (_get_history_summary читает именно его).
+                character.set_variable(self._SUMMARY_TEXT_VAR, str(rendered or "").strip())
+                character.set_variable(self._SUMMARY_COUNT_VAR, max(0, int(summary_count or 0)))
+                if hasattr(character, "flush_variables"):
+                    character.flush_variables()
         except Exception as e:
             logger.warning(f"[HistoryController] Не удалось сохранить слои сводки: {e}", exc_info=True)
 

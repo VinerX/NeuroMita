@@ -12,6 +12,7 @@ import base64
 
 from handlers.chat_handler import ChatModel
 from utils import _, redact_image_payloads
+from core.character_locks import character_lock
 from core.events import get_event_bus, Events, Event
 from core.executors import Pools, executors
 from core.services import services, use
@@ -1091,23 +1092,6 @@ class ModelController(GenerationService):
     # ---------------------------------------------------------------------
 
     def generate_chat(self, request: ChatGenerationRequest) -> Optional[ChatGenerationResult]:
-        user_input = request.user_input or ""
-        visible_user_input = user_input
-        system_input = request.system_input or ""
-        image_data = list(request.image_data or [])
-        image_source = str(request.image_source or "").strip().lower()
-        stream_callback = request.stream_callback
-        event_type = request.event_type or "chat"
-
-        sender = str(request.sender or "Player")
-        participants = list(request.participants or [])
-
-        req_id = request.req_id or None
-        task_uid = request.task_uid or None
-        origin_message_id = request.origin_message_id or None
-
-        policy = request.policy or resolve_policy(model_event_type=str(event_type))
-
         if request.character_id:
             char = self._get_character_ref(str(request.character_id))
             if char is None:
@@ -1125,6 +1109,30 @@ class ModelController(GenerationService):
                 "error": _("Персонаж не выбран.", "Character not selected.")
             })
             return None
+
+        # Пул GENERATION многопоточный: два запроса к одной Мите (реплика игрока и
+        # idle-событие из игры) иначе украли бы друг у друга consume_pending_targets()
+        # и перемешали инкременты attitude/boredom. Разные персонажи идут параллельно.
+        with character_lock(getattr(char, "char_id", "") or ""):
+            return self._generate_chat_locked(request, char)
+
+    def _generate_chat_locked(self, request: ChatGenerationRequest, char) -> Optional[ChatGenerationResult]:
+        user_input = request.user_input or ""
+        visible_user_input = user_input
+        system_input = request.system_input or ""
+        image_data = list(request.image_data or [])
+        image_source = str(request.image_source or "").strip().lower()
+        stream_callback = request.stream_callback
+        event_type = request.event_type or "chat"
+
+        sender = str(request.sender or "Player")
+        participants = list(request.participants or [])
+
+        req_id = request.req_id or None
+        task_uid = request.task_uid or None
+        origin_message_id = request.origin_message_id or None
+
+        policy = request.policy or resolve_policy(model_event_type=str(event_type))
 
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
