@@ -1811,30 +1811,48 @@ class SandboxPage(QWidget):
     def _refresh_context_budget(self):
         if self._budget_bar is None:
             return
-        try:
-            res = self.gui.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CONTEXT_TOKENS, timeout=0.5)
-            used = int(res[0]) if res and res[0] is not None else 0
-        except Exception:
-            used = 0
-        try:
-            max_tokens = int(self.gui._get_setting("MAX_MODEL_TOKENS", 32000) or 32000)
-        except Exception:
-            max_tokens = 32000
-        max_tokens = max(1, max_tokens)
-        try:
-            cres = self.gui.event_bus.emit_and_wait(Events.Model.CALCULATE_COST, timeout=0.5)
-            cost = float(cres[0]) if cres and cres[0] is not None else 0.0
-        except Exception:
-            cost = 0.0
 
-        pct = min(100, int(used * 100 / max_tokens))
-        self._budget_bar.setValue(pct)
-        if self._budget_value is not None:
-            self._budget_value.setText(
-                _("{used} / {max} токенов · {pct}% · ~{cost:.4f} ₽",
-                  "{used} / {max} tokens · {pct}% · ~{cost:.4f} ₽").format(
-                    used=used, max=max_tokens, pct=pct, cost=cost)
-            )
+        self._budget_refresh_ticket = getattr(self, "_budget_refresh_ticket", 0) + 1
+        ticket = self._budget_refresh_ticket
+
+        def worker():
+            # Один проход GET_TOKEN_STATS вместо GET_CURRENT_CONTEXT_TOKENS +
+            # CALCULATE_COST: раньше это были ДВА полных прохода tiktoken (~38мс
+            # каждый) прямо в GUI-потоке — заметный хитч песочницы после каждого
+            # сообщения. Теперь один проход и вне GUI-потока.
+            try:
+                res = self.gui.event_bus.emit_and_wait(Events.Model.GET_TOKEN_STATS, timeout=1.0)
+                stats = res[0] if res and isinstance(res[0], dict) else {}
+            except Exception:
+                stats = {}
+            try:
+                max_tokens = int(self.gui._get_setting("MAX_MODEL_TOKENS", 32000) or 32000)
+            except Exception:
+                max_tokens = 32000
+            used = int(stats.get("estimated_context_tokens") or 0)
+            cost = stats.get("estimated_input_cost")
+            return used, max(1, max_tokens), (float(cost) if cost is not None else 0.0)
+
+        def apply(payload):
+            if ticket != getattr(self, "_budget_refresh_ticket", ticket):
+                return
+            if self._budget_bar is None:
+                return
+            used, max_tokens, cost = payload
+            pct = min(100, int(used * 100 / max_tokens))
+            self._budget_bar.setValue(pct)
+            if self._budget_value is not None:
+                self._budget_value.setText(
+                    _("{used} / {max} токенов · {pct}% · ~{cost:.4f} ₽",
+                      "{used} / {max} tokens · {pct}% · ~{cost:.4f} ₽").format(
+                        used=used, max=max_tokens, pct=pct, cost=cost)
+                )
+            # Метка «Контекст (токены)» в панели последнего запроса — из того же прохода.
+            lr_tokens = getattr(self, "_lr_values", {}).get("tokens")
+            if lr_tokens is not None:
+                lr_tokens.setText(self._fmt_tokens(used))
+
+        run_async(self.gui, worker, apply, name="sandbox-context-budget")
 
     # --------- Last-request diagnostics panel -----------
     def _build_last_request_strip(self) -> QWidget:
@@ -2003,14 +2021,9 @@ class SandboxPage(QWidget):
             self._lr_values["latency"].setText("—")
 
         self._lr_values["model"].setText(self._current_preset_name() or "—")
-        # Context tokens as a proxy for prompt usage — the real API usage object
-        # isn't surfaced up the stack yet (see _refresh_context_budget).
-        try:
-            res = self.gui.event_bus.emit_and_wait(Events.Model.GET_CURRENT_CONTEXT_TOKENS, timeout=0.5)
-            used = int(res[0]) if res and res[0] is not None else 0
-        except Exception:
-            used = 0
-        self._lr_values["tokens"].setText(self._fmt_tokens(used))
+        # Метку токенов обновляет тот же фоновый проход, что и бюджет контекста
+        # (см. _refresh_context_budget) — чтобы не гонять tiktoken по промпту
+        # дважды в GUI-потоке.
         self._lr_values["time"].setText(time.strftime("%H:%M:%S"))
         self._refresh_context_budget()
         # A message (and possibly memories) just changed — refresh the DB stats.
