@@ -11,12 +11,19 @@ from __future__ import annotations
 
 import json
 import os
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from threading import Lock
 from typing import Any, ClassVar, Dict, List, Optional
 
 from core.events import get_event_bus, Events, Event
+from core.executors import Pools, PoolSaturated, executors
+from core.services import use
 from main_logger import logger
+from services.contracts import (
+    GenerationService,
+    SettingsService,
+    UtilityGenerationRequest,
+)
 
 # Default extraction prompt (can be overridden via GRAPH_EXTRACTION_PROMPT setting
 # or via Structural/graph_extraction_prompt.txt in the prompt set).
@@ -45,8 +52,6 @@ Conversation:
 class GraphController:
     """Coordinates background graph extraction."""
 
-    _executor: ClassVar[Optional[ThreadPoolExecutor]] = None
-    _executor_lock: ClassVar[Lock] = Lock()
     # Tracks the last submitted future per character_id to avoid queue buildup
     # when the LLM provider is slow (e.g. local Ollama).
     _pending_futures: ClassVar[Dict[str, Future]] = {}
@@ -56,16 +61,10 @@ class GraphController:
         self.event_bus = get_event_bus()
         self._subscribe()
 
-    @classmethod
-    def _get_executor(cls) -> ThreadPoolExecutor:
-        if cls._executor is not None:
-            return cls._executor
-        with cls._executor_lock:
-            if cls._executor is None:
-                cls._executor = ThreadPoolExecutor(
-                    max_workers=1, thread_name_prefix="graph-extract"
-                )
-            return cls._executor
+    @staticmethod
+    def _submit(fn, *args) -> Future:
+        """Общий фоновый LLM-пул: graph extraction не конкурирует со сжатием истории."""
+        return executors().try_submit(Pools.BACKGROUND_LLM, fn, *args)
 
     def _subscribe(self):
         self.event_bus.subscribe(
@@ -78,15 +77,7 @@ class GraphController:
     # Settings helpers
     # ------------------------------------------------------------------
     def _get_setting(self, key: str, default: Any = None) -> Any:
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Settings.GET_SETTING,
-                {"key": key, "default": default},
-                timeout=1.0,
-            )
-            return res[0] if res else default
-        except Exception:
-            return default
+        return use(SettingsService).get(key, default)
 
     def _is_enabled(self) -> bool:
         return bool(self._get_setting("GRAPH_EXTRACTION_ENABLED", False))
@@ -160,11 +151,13 @@ class GraphController:
         if inline_graph_json and (self._is_inline_mode() or from_structured_output):
             logger.info(f"[GraphController] Inline graph JSON received for '{char_id}', storing directly")
             try:
-                future = self._get_executor().submit(
+                future = self._submit(
                     self._store_inline, character, char_id, inline_graph_json,
                     user_input, assistant_output, created_memory_ids, memories_already_tagged,
                 )
                 self._track_future(char_id, future)
+            except PoolSaturated:
+                logger.warning(f"[GraphController] Фоновая LLM-очередь переполнена — inline store для '{char_id}' пропущен.")
             except Exception as e:
                 logger.warning(f"[GraphController] Failed to schedule inline store: {e}")
             return
@@ -193,11 +186,13 @@ class GraphController:
         # Schedule extraction via separate provider call.
         logger.info(f"[GraphController] Scheduling extraction for '{char_id}' ({len(text)} chars)")
         try:
-            future = self._get_executor().submit(
+            future = self._submit(
                 self._extract_and_store, character, char_id, text.strip(),
                 user_input, assistant_output, created_memory_ids,
             )
             self._track_future(char_id, future)
+        except PoolSaturated:
+            logger.warning(f"[GraphController] Фоновая LLM-очередь переполнена — extraction для '{char_id}' пропущен.")
         except Exception as e:
             logger.warning(f"[GraphController] Failed to schedule extraction: {e}")
 
@@ -237,32 +232,24 @@ class GraphController:
             )
 
             # Call provider.
-            res = self.event_bus.emit_and_wait(
-                Events.Model.GENERATE_RESPONSE,
-                {
-                    "user_input": "",
-                    "system_input": prompt,
-                    "image_data": [],
-                    "stream_callback": None,
-                    "message_id": None,
-                    "event_type": "graph_extract",
-                    "preset_id": preset_id,
-                },
-                timeout=30.0,
+            result = use(GenerationService).generate_utility(
+                UtilityGenerationRequest(
+                    prompt=prompt,
+                    character_id=char_id,
+                    kind="graph_extract",
+                    preset_id=preset_id,
+                    request_timeout=30.0,
+                )
             )
 
-            if not res:
+            if not result.ok or not result.text:
                 logger.warning(
-                    "[GraphController] emit_and_wait returned empty list — "
-                    "either no subscriber for GENERATE_RESPONSE or subscriber returned None "
-                    "(generation failed). Check model_controller logs above."
+                    f"[GraphController] Извлечение графа не удалось: "
+                    f"{(result.details or result.error) or 'пустой ответ'}"
                 )
                 return
-            if not res[0]:
-                logger.warning(f"[GraphController] Provider returned falsy result: {res[0]!r}")
-                return
 
-            raw_response = str(res[0])
+            raw_response = result.text
             # Truncate for logging to avoid flooding.
             preview = raw_response[:500] + ("..." if len(raw_response) > 500 else "")
             logger.info(f"[GraphController] Raw LLM response: {preview}")

@@ -6,6 +6,8 @@ from handlers.telegram_handler import TelegramBotHandler
 from main_logger import logger
 from utils import SH
 from core.events import get_event_bus, Events, Event
+from core.services import use
+from services.contracts import LoopService, SettingsService
 
 
 class TelegramController:
@@ -121,7 +123,7 @@ class TelegramController:
         self._loop = (event.data or {}).get("loop")
         logger.info("TelegramController получил уведомление о готовности loop")
 
-        self.event_bus.emit(Events.Core.RUN_IN_LOOP, {'coroutine': self._init_queue_and_start_worker()})
+        use(LoopService).run(self._init_queue_and_start_worker())
 
         if self._waiting_for_loop:
             self._waiting_for_loop = False
@@ -129,31 +131,12 @@ class TelegramController:
 
     # ---------------- start/stop orchestration ----------------
     def _tg_settings_snapshot(self) -> dict:
-        s = self.settings
-        if s is not None and hasattr(s, "get"):
-            try:
-                return {
-                    "USE_VOICEOVER": bool(s.get("USE_VOICEOVER", False)),
-                    "VOICEOVER_METHOD": str(s.get("VOICEOVER_METHOD", "Local") or "Local"),
-                    "TG_AUTOCONNECT": bool(s.get("TG_AUTOCONNECT", True)),
-                }
-            except Exception:
-                pass
-
-        # fallback: спросим у SettingsController “сырые” settings
-        try:
-            res = self.event_bus.emit_and_wait(Events.Settings.GET_SETTINGS, timeout=0.4)
-            raw = res[0] if res else {}
-            if isinstance(raw, dict):
-                return {
-                    "USE_VOICEOVER": bool(raw.get("USE_VOICEOVER", False)),
-                    "VOICEOVER_METHOD": str(raw.get("VOICEOVER_METHOD", "Local") or "Local"),
-                    "TG_AUTOCONNECT": bool(raw.get("TG_AUTOCONNECT", True)),
-                }
-        except Exception:
-            pass
-
-        return {"USE_VOICEOVER": False, "VOICEOVER_METHOD": "Local", "TG_AUTOCONNECT": True}
+        s = use(SettingsService)
+        return {
+            "USE_VOICEOVER": bool(s.get("USE_VOICEOVER", False)),
+            "VOICEOVER_METHOD": str(s.get("VOICEOVER_METHOD", "Local") or "Local"),
+            "TG_AUTOCONNECT": bool(s.get("TG_AUTOCONNECT", True)),
+        }
 
     def _maybe_autoconnect(self, *, reason: str):
         snap = self._tg_settings_snapshot()
@@ -213,9 +196,9 @@ class TelegramController:
     def start_silero_async(self):
         # Проверяем loop
         if not self._loop:
-            loops = self.event_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=0.1)
-            if loops and loops[0]:
-                self._loop = loops[0]
+            loop_service = use(LoopService)
+            if loop_service.is_running():
+                self._loop = loop_service.loop()
 
         if self._loop and self._loop.is_running():
             self._start_silero_with_loop()
@@ -245,10 +228,7 @@ class TelegramController:
                 if self.settings:
                     audio_bot = self.settings.get("AUDIO_BOT", "@silero_voice_bot")
                 else:
-                    res = self.event_bus.emit_and_wait(Events.Settings.GET_SETTINGS, timeout=0.5)
-                    raw = res[0] if res else {}
-                    if isinstance(raw, dict):
-                        audio_bot = raw.get("AUDIO_BOT", "@silero_voice_bot")
+                    audio_bot = use(SettingsService).get("AUDIO_BOT", "@silero_voice_bot")
             except Exception:
                 pass
 
@@ -292,9 +272,9 @@ class TelegramController:
         self._connecting = False
 
         if not self._loop:
-            loops = self.event_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=0.1)
-            if loops and loops[0]:
-                self._loop = loops[0]
+            loop_service = use(LoopService)
+            if loop_service.is_running():
+                self._loop = loop_service.loop()
 
         if self._loop and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(self.stop_silero(), self._loop)

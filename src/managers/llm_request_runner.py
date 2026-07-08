@@ -8,6 +8,7 @@ from typing import Any, Callable, Optional
 
 from main_logger import logger
 from core.events import Events
+from core.executors import Pools, executors
 from handlers.llm_providers.errors import (
     LLMProviderError,
     build_configuration_error,
@@ -271,11 +272,22 @@ class LLMRequestRunner:
         )
 
     def _call_with_timeout(self, func, args=(), kwargs=None, timeout: float = 30.0):
+        """Вызвать func с ограничением по времени.
+
+        Раньше здесь был `with ThreadPoolExecutor(...)`: его __exit__ делает
+        shutdown(wait=True), поэтому после TimeoutError вызывающий всё равно
+        досиживал до конца HTTP-запроса — таймаут был декоративным. Плюс на
+        каждую попытку создавался новый пул.
+        """
         if kwargs is None:
             kwargs = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(func, *args, **kwargs)
+        future = executors().submit(Pools.LLM_HTTP, func, *args, **kwargs)
+        try:
             return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            # Поток провайдера дожмёт запрос сам; мы его больше не ждём.
+            future.cancel()
+            raise
 
     def _validate_request(self, req) -> Optional[LLMProviderError]:
         provider = getattr(req, "provider_name", "unknown") or "unknown"

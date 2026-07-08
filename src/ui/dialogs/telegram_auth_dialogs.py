@@ -13,6 +13,8 @@ from PyQt6.QtWidgets import (
 )
 
 from core.events import Events
+from core.services import use
+from services.contracts import LoopService
 from ui.widgets.launcher_shell_theme import PALETTE
 from utils import getTranslationVariant as _
 
@@ -173,9 +175,9 @@ def show_tg_code_dialog(parent, code_future, event_bus, *, error: str = ""):
         code = code_entry.text().strip()
         if code:
             if code_future and not code_future.done():
-                loop = event_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
-                if loop and loop[0] and loop[0].is_running():
-                    loop[0].call_soon_threadsafe(code_future.set_result, code)
+                loop_service = use(LoopService)
+                if loop_service.is_running():
+                    loop_service.loop().call_soon_threadsafe(code_future.set_result, code)
             dialog.accept()
         else:
             QMessageBox.critical(dialog, _("Ошибка", "Error"),
@@ -183,9 +185,9 @@ def show_tg_code_dialog(parent, code_future, event_bus, *, error: str = ""):
 
     def on_reject():
         if code_future and not code_future.done():
-            loop = event_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
-            if loop and loop[0] and loop[0].is_running():
-                loop[0].call_soon_threadsafe(code_future.set_exception, asyncio.CancelledError("Ввод кода отменен"))
+            loop_service = use(LoopService)
+            if loop_service.is_running():
+                loop_service.loop().call_soon_threadsafe(code_future.set_exception, asyncio.CancelledError("Ввод кода отменен"))
 
     submit_button.clicked.connect(submit_code)
     code_entry.returnPressed.connect(submit_code)
@@ -208,9 +210,9 @@ def show_tg_password_dialog(parent, password_future, event_bus, *, error: str = 
         pwd = password_entry.text().strip()
         if pwd:
             if password_future and not password_future.done():
-                loop = event_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
-                if loop and loop[0] and loop[0].is_running():
-                    loop[0].call_soon_threadsafe(password_future.set_result, pwd)
+                loop_service = use(LoopService)
+                if loop_service.is_running():
+                    loop_service.loop().call_soon_threadsafe(password_future.set_result, pwd)
             dialog.accept()
         else:
             QMessageBox.critical(dialog, _("Ошибка", "Error"),
@@ -218,9 +220,9 @@ def show_tg_password_dialog(parent, password_future, event_bus, *, error: str = 
 
     def on_reject():
         if password_future and not password_future.done():
-            loop = event_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
-            if loop and loop[0] and loop[0].is_running():
-                loop[0].call_soon_threadsafe(password_future.set_exception, asyncio.CancelledError("Ввод пароля отменен"))
+            loop_service = use(LoopService)
+            if loop_service.is_running():
+                loop_service.loop().call_soon_threadsafe(password_future.set_exception, asyncio.CancelledError("Ввод пароля отменен"))
 
     submit_button.clicked.connect(submit_password)
     password_entry.returnPressed.connect(submit_password)

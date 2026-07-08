@@ -3,6 +3,8 @@ from typing import Dict, Any, Optional, Tuple
 from collections import deque
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
+from core.services import use
+from services.contracts import CharacterRegistry, SettingsService
 
 from managers.task_manager import TaskStatus
 from game_connections.shared_image_transfer import ensure_shared_transfer_dirs
@@ -83,8 +85,10 @@ class ServerEchoSuppressor:
 
 
 class ServerController:
-    def __init__(self):
+    def __init__(self, game_link):
         self.event_bus = get_event_bus()
+        self.game_link = game_link
+        self.game_link.attach_probe(self._probe_connection)
         self.server = None
         self.running = False
         self.ConnectedToGame = False
@@ -115,7 +119,6 @@ class ServerController:
         eb.subscribe(Events.Server.STOP_SERVER, self._on_stop_server, weak=False)
         eb.subscribe(Events.Server.GET_CHAT_SERVER, self._on_get_chat_server, weak=False)
         eb.subscribe(Events.Server.SET_GAME_CONNECTION, self._on_update_game_connection, weak=False)
-        eb.subscribe(Events.Server.GET_GAME_CONNECTION, self._on_get_connection_status, weak=False)
         eb.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
         eb.subscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings, weak=False)
 
@@ -132,7 +135,6 @@ class ServerController:
             eb.unsubscribe(Events.Server.STOP_SERVER, self._on_stop_server)
             eb.unsubscribe(Events.Server.GET_CHAT_SERVER, self._on_get_chat_server)
             eb.unsubscribe(Events.Server.SET_GAME_CONNECTION, self._on_update_game_connection)
-            eb.unsubscribe(Events.Server.GET_GAME_CONNECTION, self._on_get_connection_status)
             eb.unsubscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed)
             eb.unsubscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings)
 
@@ -242,6 +244,7 @@ class ServerController:
 
         prev = bool(self.ConnectedToGame)
         self.ConnectedToGame = bool(is_connected)
+        self.game_link.set_connected(self.ConnectedToGame)
 
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
@@ -258,17 +261,15 @@ class ServerController:
         is_connected = (event.data or {}).get('is_connected', False)
         self.update_game_connection(is_connected)
 
-    def _on_get_connection_status(self, event: Event):
+    def _probe_connection(self) -> Optional[bool]:
+        """Живое состояние соединений сервера; None — если сказать нечего."""
         if self._destroyed:
             return None
-        try:
-            srv = self.server
-            conns = getattr(srv, "active_connections", None) if srv else None
-            if isinstance(conns, dict):
-                return bool(conns)
-        except Exception:
-            pass
-        return bool(self.ConnectedToGame)
+        srv = self.server
+        conns = getattr(srv, "active_connections", None) if srv else None
+        if isinstance(conns, dict):
+            return bool(conns)
+        return None
 
     def _on_stop_server(self, event: Event):
         if self._destroyed:
@@ -328,12 +329,7 @@ class ServerController:
             return {"attitude": 60.0, "boredom": 10.0, "stress": 5.0}
 
         try:
-            res = self.event_bus.emit_and_wait(
-                Events.Character.GET,
-                {"character_id": cid},
-                timeout=1.0,
-            )
-            ch = res[0] if res else None
+            ch = use(CharacterRegistry).get(cid)
             if ch is not None and hasattr(ch, "get_stats_dict"):
                 v = ch.get_stats_dict()
                 if isinstance(v, dict):
@@ -350,11 +346,7 @@ class ServerController:
     def _collect_characters_stats(self) -> Dict[str, Dict[str, float]]:
         out: Dict[str, Dict[str, float]] = {}
 
-        try:
-            all_ids_res = self.event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
-            all_ids = all_ids_res[0] if all_ids_res and isinstance(all_ids_res[0], list) else []
-        except Exception:
-            all_ids = []
+        all_ids = use(CharacterRegistry).all_ids()
 
         for cid in all_ids:
             s = str(cid or "").strip()
@@ -401,15 +393,7 @@ class ServerController:
         return body
 
     def _get_setting(self, key: str, default=None):
-        try:
-            result = self.event_bus.emit_and_wait(
-                Events.Settings.GET_SETTING,
-                {'key': key, 'default': default},
-                timeout=1.0
-            )
-            return result[0] if result else default
-        except Exception:
-            return default
+        return use(SettingsService).get(key, default)
 
     def _on_task_status_changed(self, event: Event):
         data = event.data or {}

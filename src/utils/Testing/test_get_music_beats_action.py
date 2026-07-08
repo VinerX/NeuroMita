@@ -4,18 +4,33 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from core.services import services
 from game_connections.handlers.actions.get_music_beats import GetMusicBeatsAction
 from game_connections.handlers.registry import RequestContext
+from services.contracts import SettingsService
 
 
-class _FakeEventBus:
+class _StubSettings(SettingsService):
+    """Настройки читаются через SettingsService, а не через шину событий."""
+
     def __init__(self, settings: dict[str, object]):
         self._settings = dict(settings)
 
-    def emit_and_wait(self, _event_name, payload=None, timeout=None):
-        key = (payload or {}).get("key")
-        default = (payload or {}).get("default")
-        return [self._settings.get(key, default)]
+    def get(self, key, default=None):
+        return self._settings.get(key, default)
+
+    def set(self, key, value):
+        self._settings[key] = value
+
+    def save_settings(self):
+        pass
+
+    def update(self, key, value):
+        self.set(key, value)
+
+
+def _install_settings(settings: dict[str, object]) -> None:
+    services().register(SettingsService, _StubSettings(settings), replace=True)
 
 
 class _FakeServer:
@@ -34,13 +49,9 @@ class GetMusicBeatsActionTests(unittest.IsolatedAsyncioTestCase):
             server=server,
             client_id="client_1",
             writer=object(),
-            event_bus=_FakeEventBus(
-                {
-                    "BEAT_SYNC_ENABLED": True,
-                    "BEAT_SYNC_USE_FILE_TRANSFER": False,
-                }
-            ),
+            event_bus=SimpleNamespace(),
         )
+        _install_settings({"BEAT_SYNC_ENABLED": True, "BEAT_SYNC_USE_FILE_TRANSFER": False})
 
         fake_result = SimpleNamespace(
             duration=12.5,
@@ -76,12 +87,9 @@ class GetMusicBeatsActionTests(unittest.IsolatedAsyncioTestCase):
             server=server,
             client_id="client_1",
             writer=object(),
-            event_bus=_FakeEventBus(
-                {
-                    "BEAT_SYNC_ENABLED": True,
-                }
-            ),
+            event_bus=SimpleNamespace(),
         )
+        _install_settings({"BEAT_SYNC_ENABLED": True})
 
         fake_result = SimpleNamespace(
             duration=12.5,

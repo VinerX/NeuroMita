@@ -20,6 +20,8 @@ from utils.openrouter_routing import (
 from handlers.llm_providers.param_mapper import build_unified_generation_params
 
 from core.events import get_event_bus
+from core.services import use
+from services.contracts import GameLinkService
 
 
 def _save_last_request_context(req, character_name: str = "") -> None:
@@ -296,15 +298,7 @@ class ChatModel:
                 fc = FineTuneCollector.instance
                 if fc and fc.is_enabled():
                     char = self.current_character
-                    game_connected = False
-                    try:
-                        from core.events import Events
-                        res = self.event_bus.emit_and_wait(
-                            Events.Server.GET_GAME_CONNECTION, timeout=0.3
-                        )
-                        game_connected = bool(res[0]) if res else False
-                    except Exception:
-                        game_connected = False
+                    game_connected = bool(use(GameLinkService).is_connected())
                     sample_id = fc.save_sample(
                         req=_last_req[0],
                         response_text=response_text.text,

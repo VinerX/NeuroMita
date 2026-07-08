@@ -14,6 +14,31 @@ if str(PROJECT_SRC) not in sys.path:
 
 from controllers.history_controller import HistoryController
 from controllers import history_controller as history_controller_module
+from core.services import services
+from services.contracts import GenerationService, UtilityGenerationRequest, UtilityGenerationResult
+
+
+class _StubGenerationService(GenerationService):
+    """Подставной GenerationService: считает вызовы и отдаёт заготовленные ответы."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls: list[UtilityGenerationRequest] = []
+
+    def generate_chat(self, request):  # не используется в этих тестах
+        raise AssertionError("generate_chat не должен вызываться при сжатии истории")
+
+    def generate_utility(self, request: UtilityGenerationRequest) -> UtilityGenerationResult:
+        self.calls.append(request)
+        if self._responses:
+            return self._responses.pop(0)
+        return UtilityGenerationResult(ok=False, error="no more stub responses")
+
+
+def _install_generation(responses) -> _StubGenerationService:
+    stub = _StubGenerationService(responses)
+    services().register(GenerationService, stub, replace=True)
+    return stub
 
 
 class _StubHistoryManager:
@@ -62,55 +87,60 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         controller._apply_history_image_quality_reduction = lambda messages, _cfg: messages
         return controller
 
-    def test_prepare_for_prompt_keeps_full_context_until_summary_exists(self):
-        controller = self._make_controller({"HISTORY_COMPRESSION_OUTPUT_TARGET": "memory"})
-        character = _StubCharacter(
-            [{"role": "user", "content": f"msg-{i}"} for i in range(5)]
-        )
-        controller._process_history_compression = lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("unexpected sync compression")
-        )
+    def test_prepare_for_prompt_never_runs_compression(self):
+        """prepare_for_prompt — чистая функция чтения.
 
-        result = controller._on_prepare_for_prompt(
-            SimpleNamespace(
-                data={
-                    "character_id": "TestChar",
-                    "character_ref": character,
-                    "memory_limit": 3,
-                    "save_missed_history": False,
-                    "image_quality": {},
-                }
-            )
-        )
-
-        self.assertEqual(len(result["history"]), 5)
-
-    def test_prepare_for_prompt_uses_emergency_sync_compression_when_far_over_limit(self):
+        Регрессия на баг: раньше отсюда мог уйти синхронный LLM-вызов на 60с,
+        вызывающий ждал 5с по таймауту шины и получал промпт БЕЗ истории.
+        """
         controller = self._make_controller({"HISTORY_COMPRESSION_OUTPUT_TARGET": "history"})
-        full_history = [{"role": "user", "content": f"msg-{i}"} for i in range(14)]
-        character = _StubCharacter(
-            full_history
+        character = _StubCharacter([{"role": "user", "content": f"msg-{i}"} for i in range(50)])
+        controller._process_history_compression = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("prepare_for_prompt не имеет права запускать сжатие")
         )
-        controller._process_history_compression = lambda *_args, **_kwargs: (
-            list(full_history),
-            "summary",
-            11,
+        _install_generation([])  # любой LLM-вызов -> AssertionError в стабе
+
+        result = controller.prepare_for_prompt(
+            character=character,
+            memory_limit=3,
+            is_game_master=False,
+            save_missed_history=False,
+            image_quality={},
+        )
+        self.assertEqual(len(result.messages), 3)
+
+    def test_prepare_for_prompt_window_is_bounded_even_without_summary(self):
+        """Окно контекста ограничено всегда, даже пока фоновое сжатие не догнало."""
+        controller = self._make_controller({"HISTORY_COMPRESSION_OUTPUT_TARGET": "history"})
+        character = _StubCharacter([{"role": "user", "content": f"msg-{i}"} for i in range(20)])
+
+        result = controller.prepare_for_prompt(
+            character=character,
+            memory_limit=3,
+            is_game_master=False,
+            save_missed_history=False,
+            image_quality={},
+        )
+        self.assertEqual(len(result.messages), 3)
+        self.assertEqual(
+            [m["content"] for m in result.messages], ["msg-17", "msg-18", "msg-19"]
         )
 
-        result = controller._on_prepare_for_prompt(
-            SimpleNamespace(
-                data={
-                    "character_id": "TestChar",
-                    "character_ref": character,
-                    "memory_limit": 3,
-                    "save_missed_history": False,
-                    "image_quality": {},
-                }
-            )
-        )
+    def test_prepare_for_prompt_returns_existing_summary(self):
+        controller = self._make_controller({"HISTORY_COMPRESSION_OUTPUT_TARGET": "history"})
+        character = _StubCharacter([{"role": "user", "content": f"msg-{i}"} for i in range(6)])
+        character.vars[HistoryController._SUMMARY_TEXT_VAR] = "summary"
+        character.vars[HistoryController._SUMMARY_COUNT_VAR] = 3
 
-        self.assertEqual(len(result["history"]), 3)
-        self.assertEqual(result["history_summary"], "summary")
+        result = controller.prepare_for_prompt(
+            character=character,
+            memory_limit=10,
+            is_game_master=False,
+            save_missed_history=False,
+            image_quality={},
+        )
+        self.assertEqual(result.summary, "summary")
+        self.assertEqual(len(result.messages), 3)  # summary_count=3 отрезал первые три
 
     def test_prepare_for_prompt_counts_only_dialog_messages_for_tail_limit(self):
         controller = self._make_controller({"HISTORY_COMPRESSION_OUTPUT_TARGET": "history"})
@@ -130,20 +160,16 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         character.vars[HistoryController._SUMMARY_TEXT_VAR] = "summary"
         character.vars[HistoryController._SUMMARY_COUNT_VAR] = 1
 
-        result = controller._on_prepare_for_prompt(
-            SimpleNamespace(
-                data={
-                    "character_id": "TestChar",
-                    "character_ref": character,
-                    "memory_limit": 2,
-                    "save_missed_history": False,
-                    "image_quality": {},
-                }
-            )
+        result = controller.prepare_for_prompt(
+            character=character,
+            memory_limit=2,
+            is_game_master=False,
+            save_missed_history=False,
+            image_quality={},
         )
 
         self.assertEqual(
-            result["history"],
+            result.messages,
             [
                 {"role": "system", "content": "keep system"},
                 {"role": "user", "content": "u2"},
@@ -162,7 +188,6 @@ class HistoryControllerCompressionTests(unittest.TestCase):
             enable_on_limit=True,
             enable_periodic=False,
             periodic_interval=0,
-            background_mode=False,
             char_id="c",
         )
         self.assertIsNotNone(plan)
@@ -181,7 +206,6 @@ class HistoryControllerCompressionTests(unittest.TestCase):
             enable_on_limit=True,
             enable_periodic=False,
             periodic_interval=0,
-            background_mode=False,
             char_id="c",
         )
         self.assertIsNone(plan)
@@ -275,28 +299,23 @@ class HistoryControllerCompressionTests(unittest.TestCase):
             }
         )
         character = _StubCharacter([])
-        calls = []
         sleeps = []
+        stub = _install_generation([
+            UtilityGenerationResult(
+                ok=False,
+                error="rate limited",
+                details="retry later",
+                status_code=429,
+                retryable=True,
+                retry_after_sec=3,
+            ),
+            UtilityGenerationResult(ok=True, text="summary"),
+        ])
         original_sleep = history_controller_module.time.sleep
         original_status = history_controller_module.response_status_kind
-
-        def _emit_and_wait(_event_name, payload, timeout=0):
-            calls.append((payload, timeout))
-            if len(calls) == 1:
-                return [{
-                    "ok": False,
-                    "text": "",
-                    "error": "rate limited",
-                    "details": "retry later",
-                    "status_code": 429,
-                    "retryable": True,
-                    "retry_after_sec": 3,
-                }]
-            return [{"ok": True, "text": "summary"}]
-
-        controller.event_bus = SimpleNamespace(emit_and_wait=_emit_and_wait)
         history_controller_module.time.sleep = lambda seconds: sleeps.append(seconds)
-        history_controller_module.response_status_kind = lambda *_args, **_kwargs: nullcontext()
+        history_controller_module.response_status_kind = lambda *_a, **_k: nullcontext()
+
         try:
             result = controller._compress_history(character, [{"role": "user", "content": "hello"}])
         finally:
@@ -304,12 +323,12 @@ class HistoryControllerCompressionTests(unittest.TestCase):
             history_controller_module.response_status_kind = original_status
 
         self.assertEqual(result, "summary")
-        self.assertEqual(sleeps, [3])
-        self.assertEqual(len(calls), 2)
-        payload = calls[0][0]
-        self.assertTrue(payload["return_details"])
-        self.assertEqual(payload["request_options_override"]["max_attempts"], 1)
-        self.assertTrue(payload["request_options_override"]["suppress_failure_events"])
+        self.assertEqual(sleeps, [3])  # уважили retry_after от провайдера
+        self.assertEqual(len(stub.calls), 2)
+        first = stub.calls[0]
+        self.assertEqual(first.kind, "compress")
+        self.assertEqual(first.max_attempts, 1)  # ретраями рулит HistoryController, не runner
+        self.assertEqual(first.character_id, "TestChar")
 
     def test_compression_falls_back_to_local_summary_after_non_retryable_failure(self):
         controller = self._make_controller(
@@ -327,19 +346,17 @@ class HistoryControllerCompressionTests(unittest.TestCase):
                 {"role": "assistant", "content": "done"},
             ]
         )
-        controller.event_bus = SimpleNamespace(
-            emit_and_wait=lambda *_args, **_kwargs: [{
-                "ok": False,
-                "text": "",
-                "error": "Provider returned error. Reason: User location is not supported for the API use.",
-                "details": "HTTP 400 | provider=common | provider_message=User location is not supported for the API use.",
-                "status_code": 400,
-                "retryable": False,
-                "retry_after_sec": None,
-            }]
-        )
+        stub = _install_generation([
+            UtilityGenerationResult(
+                ok=False,
+                error="Provider returned error. Reason: User location is not supported for the API use.",
+                details="HTTP 400 | provider=common",
+                status_code=400,
+                retryable=False,
+            )
+        ])
         original_status = history_controller_module.response_status_kind
-        history_controller_module.response_status_kind = lambda *_args, **_kwargs: nullcontext()
+        history_controller_module.response_status_kind = lambda *_a, **_k: nullcontext()
         try:
             result = controller._compress_history(
                 character,
@@ -349,6 +366,7 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         finally:
             history_controller_module.response_status_kind = original_status
 
+        self.assertEqual(len(stub.calls), 1)  # non-retryable -> без повторов
         self.assertIsInstance(result, str)
         self.assertIn("Older summary", result)
         self.assertIn("Player: hello there", result)
@@ -369,14 +387,14 @@ class HistoryControllerCompressionTests(unittest.TestCase):
 
         rendered, count = controller._apply_layered_compression_result(
             character, compressed_summary="seg-A", summary_count=0,
-            compressed_count=10, history_len=50, background_mode=True,
+            compressed_count=10, history_len=50,
         )
         self.assertEqual(rendered, "seg-A")
         self.assertEqual(count, 10)
 
         rendered, count = controller._apply_layered_compression_result(
             character, compressed_summary="seg-B", summary_count=10,
-            compressed_count=8, history_len=50, background_mode=True,
+            compressed_count=8, history_len=50,
         )
         segments = json.loads(character.vars[HistoryController._SUMMARY_SEGMENTS_VAR])
         self.assertEqual([s["text"] for s in segments], ["seg-A", "seg-B"])
@@ -396,7 +414,7 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         )
         fed_previous = []
         controller._compress_history_singleflight = (
-            lambda _c, _m, *, previous_summary="", background_mode=False: (
+            lambda _c, _m, *, previous_summary="": (
                 fed_previous.append(previous_summary) or "chunk-summary"
             )
         )
@@ -411,7 +429,6 @@ class HistoryControllerCompressionTests(unittest.TestCase):
             effective_limit=4,
             history_summary="EXISTING SUMMARY",
             summary_count=0,
-            background_mode=True,
         )
         self.assertEqual(fed_previous, [""])
 
@@ -420,7 +437,7 @@ class HistoryControllerCompressionTests(unittest.TestCase):
 
         controller = self._make_controller()
         controller._compress_history_singleflight = (
-            lambda _c, _m, *, previous_summary="", background_mode=False: "seg-new"
+            lambda _c, _m, *, previous_summary="": "seg-new"
         )
         character = _StubCharacter([])
         character.vars[HistoryController._SUMMARY_TEXT_VAR] = "OLD BLOB"
@@ -428,7 +445,7 @@ class HistoryControllerCompressionTests(unittest.TestCase):
 
         rendered, count = controller._apply_layered_compression_result(
             character, compressed_summary="seg-new", summary_count=5,
-            compressed_count=4, history_len=50, background_mode=True,
+            compressed_count=4, history_len=50,
         )
         segments = json.loads(character.vars[HistoryController._SUMMARY_SEGMENTS_VAR])
         self.assertEqual([s["text"] for s in segments], ["OLD BLOB", "seg-new"])
@@ -441,7 +458,7 @@ class HistoryControllerCompressionTests(unittest.TestCase):
             {"HISTORY_COMPRESSION_LAYERED_MAX_SEGMENTS": 3, "HISTORY_COMPRESSION_LAYERED_ROLLUP_BATCH": 2}
         )
         controller._compress_history_singleflight = (
-            lambda _c, _m, *, previous_summary="", background_mode=False: "MERGED"
+            lambda _c, _m, *, previous_summary="": "MERGED"
         )
         character = _StubCharacter([])
         character.vars[HistoryController._SUMMARY_SEGMENTS_VAR] = json.dumps([
@@ -452,7 +469,7 @@ class HistoryControllerCompressionTests(unittest.TestCase):
 
         controller._apply_layered_compression_result(
             character, compressed_summary="L4", summary_count=9,
-            compressed_count=3, history_len=50, background_mode=True,
+            compressed_count=3, history_len=50,
         )
         segments = json.loads(character.vars[HistoryController._SUMMARY_SEGMENTS_VAR])
         self.assertEqual([s["text"] for s in segments], ["MERGED", "L3", "L4"])

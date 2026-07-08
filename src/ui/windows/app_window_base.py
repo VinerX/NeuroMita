@@ -46,6 +46,8 @@ from ui.window_manager import WindowManager
 from controllers.voice_model_controller import VoiceModelController
 
 from core.events import get_event_bus, Events, Event
+from core.services import use
+from services.contracts import CharacterRegistry, GameLinkService
 
 from ui.dialogs.model_loading_dialog import create_model_loading_dialog
 from ui.dialogs.ffmpeg_dialogs import create_ffmpeg_install_popup, show_ffmpeg_error_popup
@@ -897,14 +899,7 @@ class AppWindowBase(QMainWindow):
         current_image_data = []
         staged_image_data = self.staged_image_data.copy()
 
-        character_id = ""
-        try:
-            prof_res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
-            prof = prof_res[0] if prof_res else {}
-            if isinstance(prof, dict):
-                character_id = str(prof.get("character_id") or "")
-        except Exception:
-            character_id = ""
+        character_id = use(CharacterRegistry).current_id()
 
         if self._get_setting("AUTO_ATTACH_IMAGES", False):
             history_limit = int(self._get_setting("SCREEN_CAPTURE_HISTORY_LIMIT", 1))
@@ -1325,14 +1320,7 @@ class AppWindowBase(QMainWindow):
         self._on_debug_view_last_context(initial_tab="response")
 
     def _get_current_character_id_for_debug(self) -> str:
-        try:
-            res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
-            profile = res[0] if res else {}
-            if isinstance(profile, dict):
-                return str(profile.get("character_id") or "")
-        except Exception:
-            pass
-        return ""
+        return use(CharacterRegistry).current_id()
 
     def _news_wrapper(self, parent_layout):
         self.setup_news_control(parent_layout)
@@ -1488,7 +1476,7 @@ class AppWindowBase(QMainWindow):
             )
 
             return {
-                "game_connected": bool(first(Events.Server.GET_GAME_CONNECTION)),
+                "game_connected": bool(use(GameLinkService).is_connected()),
                 "silero_connected": bool(first(Events.Telegram.GET_SILERO_STATUS)),
                 "mic_active": bool(first(Events.Speech.GET_MIC_STATUS)),
                 "screen_capture_active": bool(first(Events.Capture.GET_SCREEN_CAPTURE_STATUS)),
@@ -1536,55 +1524,6 @@ class AppWindowBase(QMainWindow):
             apply_to("camera_capture_status_checkbox", checked=bool(state.get("camera_capture_active")))
 
         run_async(self, worker, apply, name="app-status-colors")
-
-    def _update_status_colors_sync_legacy(self):
-        from managers.settings_manager import SettingsManager
-        game_connected = self.event_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
-        silero_connected = self.event_bus.emit_and_wait(Events.Telegram.GET_SILERO_STATUS, timeout=0.5)
-        mic_active = self.event_bus.emit_and_wait(Events.Speech.GET_MIC_STATUS, timeout=0.5)
-        screen_capture_active = self.event_bus.emit_and_wait(Events.Capture.GET_SCREEN_CAPTURE_STATUS, timeout=0.5)
-        camera_capture_active = self.event_bus.emit_and_wait(Events.Capture.GET_CAMERA_CAPTURE_STATUS, timeout=0.5)
-        rag_enabled = SettingsManager.get("RAG_ENABLED", False)
-
-        use_voice = bool(SettingsManager.get("USE_VOICEOVER", False))
-        method = str(SettingsManager.get("VOICEOVER_METHOD", "Local") or "Local")
-
-        registry = getattr(self, "_status_indicator_registry", {})
-
-        def apply_to(attr_name, checked=None, text=None):
-            widgets = list(registry.get(attr_name, []))
-            fallback = getattr(self, attr_name, None)
-            if fallback is not None and fallback not in widgets:
-                widgets.append(fallback)
-
-            for widget in widgets:
-                if text is not None and hasattr(widget, "setText"):
-                    widget.setText(text)
-                if checked is not None and hasattr(widget, "setChecked"):
-                    widget.setChecked(bool(checked))
-
-        apply_to("game_status_checkbox", checked=bool(game_connected and game_connected[0]))
-
-        if registry.get("silero_status_checkbox") or hasattr(self, "silero_status_checkbox"):
-            if method == "Local":
-                voice_label = _('Озвучка (Лок.)', 'Voice (Local)')
-                if use_voice:
-                    model_id = str(SettingsManager.get("NM_CURRENT_VOICEOVER", "") or "")
-                    is_init = self.event_bus.emit_and_wait(
-                        Events.Audio.CHECK_MODEL_INITIALIZED, {'model_id': model_id}, timeout=0.5
-                    ) if model_id else None
-                    voice_active = bool(is_init and is_init[0])
-                else:
-                    voice_active = False
-            else:
-                voice_label = _('Озвучка (ТГ)', 'Voice (TG)')
-                voice_active = bool(use_voice and silero_connected and silero_connected[0])
-            apply_to("silero_status_checkbox", checked=voice_active, text=voice_label)
-
-        apply_to("rag_status_checkbox", checked=bool(rag_enabled))
-        apply_to("mic_status_checkbox", checked=bool(mic_active and mic_active[0]))
-        apply_to("screen_capture_status_checkbox", checked=bool(screen_capture_active and screen_capture_active[0]))
-        apply_to("camera_capture_status_checkbox", checked=bool(camera_capture_active and camera_capture_active[0]))
 
     # ===== Совместимость: диалоги g4f =====
     def trigger_g4f_reinstall_schedule(self):

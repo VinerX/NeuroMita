@@ -33,6 +33,19 @@ from main_logger import logger
 from utils.ffmpeg_installer import install_ffmpeg
 from utils.pip_installer import PipInstaller
 from core.events import get_event_bus, Events, Event, shutdown_event_bus
+from core.executors import executors
+from core.services import services
+from services.character_registry import SettingsOnlyCharacterRegistry
+from services.contracts import (
+    AppVarsService,
+    CharacterRegistry,
+    GameLinkService,
+    LoopService,
+    SettingsService,
+)
+from services.game_link_service import DisconnectedGameLinkService, ServerGameLinkService
+from services.loop_service import NoLoopService
+from services.settings_service import DefaultAppVarsService
 
 from controllers.server_controller import ServerController
 
@@ -57,29 +70,40 @@ class MainController:
         self.telegram_controller = None
         logger.notify("TelegramController успешно инициализирован.")
 
-        try:
-            target_folder = "Settings"
-            os.makedirs(target_folder, exist_ok=True)
-            self.config_path = os.path.join(target_folder, "settings.json")
+        target_folder = "Settings"
+        os.makedirs(target_folder, exist_ok=True)
+        self.config_path = os.path.join(target_folder, "settings.json")
 
-            self.settings_controller = SettingsController(self.config_path)
-            self.settings = self.settings_controller.settings
-        except Exception as e:
-            logger.info("Не удалось удачно получить из системных переменных все данные", e)
-            self.settings = SettingsController("Settings/settings.json").settings
+        # Композиционный корень: инфраструктурные сервисы регистрируются
+        # в порядке зависимостей до создания остальных контроллеров.
+        self.settings_controller = SettingsController(self.config_path)
+        self.settings = self.settings_controller.settings
+        settings_service = services().get(SettingsService)
+
+        if self.backend_enabled:
+            self.game_link = ServerGameLinkService()
+        else:
+            self.game_link = DisconnectedGameLinkService()
+        services().register(GameLinkService, self.game_link, replace=True)
+        services().register(
+            AppVarsService, DefaultAppVarsService(settings_service, self.game_link), replace=True
+        )
 
         if not self.backend_enabled:
+            services().register(LoopService, NoLoopService(), replace=True)
+            services().register(
+                CharacterRegistry, SettingsOnlyCharacterRegistry(settings_service), replace=True
+            )
             self.gui_fallback_controller = GuiFallbackController(self.settings)
             logger.notify("GuiFallbackController initialized.")
             self._subscribe_to_events()
             logger.notify("MainController initialized in GUI-only mode.")
             return
 
-        if self.backend_enabled:
-            self.loop_controller = LoopController()
-            logger.notify("LoopController initialized.")
-            self.telegram_controller = TelegramController()
-            logger.notify("TelegramController initialized.")
+        self.loop_controller = LoopController()
+        logger.notify("LoopController initialized.")
+        self.telegram_controller = TelegramController()
+        logger.notify("TelegramController initialized.")
 
         try:
             self.pip_installer = PipInstaller(
@@ -178,7 +202,7 @@ class MainController:
         if getattr(self, 'server_controller', None):
             return
 
-        self.server_controller = ServerController()
+        self.server_controller = ServerController(self.game_link)
         logger.notify("ServerController (новый API) успешно инициализирован.")
 
     def update_view(self, view):
@@ -256,6 +280,11 @@ class MainController:
             shutdown_event_bus()
         except Exception as e:
             logger.error(f"Ошибка при остановке EventBus: {e}", exc_info=True)
+
+        try:
+            executors().shutdown_all(wait=False)
+        except Exception as e:
+            logger.error(f"Ошибка при остановке пулов: {e}", exc_info=True)
 
         logger.info("Закрываемся")
 

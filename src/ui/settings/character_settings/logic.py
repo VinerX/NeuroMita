@@ -10,6 +10,8 @@ from ui.task_worker import TaskWorker
 from utils import getTranslationVariant as _
 from main_logger import logger
 from core.events import get_event_bus, Events
+from core.services import use
+from services.contracts import CharacterRegistry
 from managers.prompt_catalogue_manager import list_prompt_sets, read_info_json
 from utils.migrate_json_to_sqlite import migrate as run_json_migration
 from utils.migrate_tags_to_structured_in_db import migrate as run_tags_to_structured_migration
@@ -196,12 +198,7 @@ def _clear_prompt_info_fields(gui):
 def _current_character_id() -> str:
     """Текущий (активный) персонаж — единственный источник правды теперь в
     CharacterController. Выбирается ТОЛЬКО в песочнице."""
-    try:
-        res = get_event_bus().emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
-        prof = res[0] if res else {}
-        return str((prof or {}).get("character_id") or "").strip()
-    except Exception:
-        return ""
+    return use(CharacterRegistry).current_id()
 
 
 def _configured_character_id(gui) -> str:
@@ -352,16 +349,9 @@ def _load_character_settings_snapshot_async(gui) -> None:
     event_bus = get_event_bus()
 
     def _worker():
-        all_characters = event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
-        character_list = all_characters[0] if all_characters else []
-
-        current_profile_res = event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-        current_profile = current_profile_res[0] if current_profile_res else {}
-        current_char_id = (
-            str(current_profile.get("character_id", "") or "").strip()
-            if isinstance(current_profile, dict)
-            else ""
-        )
+        registry = use(CharacterRegistry)
+        character_list = registry.all_ids()
+        current_char_id = registry.current_id()
 
         return {
             "character_list": [str(c or "").strip() for c in (character_list or []) if str(c or "").strip()],
@@ -1568,12 +1558,7 @@ def run_reindexing(gui):
 def _get_all_character_ids() -> list[str]:
     ids: list[str] = []
     event_bus = get_event_bus()
-    try:
-        all_characters = event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
-        character_list = all_characters[0] if all_characters else []
-        ids.extend(str(c or "").strip() for c in (character_list or []) if str(c or "").strip())
-    except Exception:
-        pass
+    ids.extend(str(c or "").strip() for c in use(CharacterRegistry).all_ids() if str(c or "").strip())
     try:
         from managers.database_manager import DatabaseManager
         db = DatabaseManager()

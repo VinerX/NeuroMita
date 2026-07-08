@@ -12,8 +12,7 @@ import time as _time
 from typing import List, Dict, Any, Optional, Tuple
 
 from managers.database_manager import DatabaseManager
-from handlers.embedding_handler import EmbeddingModelHandler, QUERY_PREFIX
-from handlers.embedding_presets import resolve_model_settings, resolve_full_config
+from handlers.embedding_presets import resolve_full_config
 from managers.rag.pipeline.retrievers.faiss_index import invalidate as _faiss_invalidate
 from core.events import get_event_bus, Events
 from main_logger import logger
@@ -37,12 +36,29 @@ DEFAULT_EXPANDED_QUERY_MAX_CHARS = 4000
 DEFAULT_RECENT_TAIL_MAX_CHARS = 1200
 
 class RAGManager:
-    _fallback_handler: Optional[EmbeddingModelHandler] = None
-    _fallback_lock: Lock = Lock()
-    _fallback_failed: bool = False  # avoid retrying after permanent load failure
+    """Поиск по памяти/истории. Тяжёлые ML-модели живут за границей AI engine —
+    в main-процессе torch/transformers не импортируются вовсе."""
 
     _ACCESS_EXECUTOR: Optional[ThreadPoolExecutor] = None
     _ACCESS_EXECUTOR_LOCK: Lock = Lock()
+
+    # Схема БД в рантайме не меняется, а построение RAGManager на каждый запрос
+    # стоило двух PRAGMA table_info в hot path.
+    _INSTANCES: dict[str, "RAGManager"] = {}
+    _INSTANCES_LOCK: Lock = Lock()
+
+    @classmethod
+    def for_character(cls, character_id: str) -> "RAGManager":
+        key = str(character_id or "")
+        instance = cls._INSTANCES.get(key)
+        if instance is not None:
+            return instance
+        with cls._INSTANCES_LOCK:
+            instance = cls._INSTANCES.get(key)
+            if instance is None:
+                instance = cls(key)
+                cls._INSTANCES[key] = instance
+            return instance
 
     @classmethod
     def _get_access_executor(cls) -> ThreadPoolExecutor:
@@ -51,28 +67,6 @@ class RAGManager:
                 if cls._ACCESS_EXECUTOR is None:
                     cls._ACCESS_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rag_access")
         return cls._ACCESS_EXECUTOR
-
-    @classmethod
-    def _get_fallback_handler(cls) -> EmbeddingModelHandler:
-        """
-        Fallback handler создаём лениво и один раз на процесс.
-        ВАЖНО: используем EmbeddingModelHandler.shared(), чтобы не грузить модель второй раз.
-        """
-        if cls._fallback_failed:
-            raise RuntimeError("Embedding model unavailable (failed to load; restart required)")
-        if cls._fallback_handler is None:
-            with cls._fallback_lock:
-                if cls._fallback_handler is None and not cls._fallback_failed:
-                    try:
-                        ms = resolve_model_settings()
-                        cls._fallback_handler = EmbeddingModelHandler.shared(
-                            model_name=ms["hf_name"],
-                            query_prefix=ms["query_prefix"],
-                        )
-                    except Exception:
-                        cls._fallback_failed = True
-                        raise
-        return cls._fallback_handler
 
     def __init__(self, character_id: str):
         self.character_id = character_id

@@ -18,10 +18,7 @@ class GuiFallbackController:
     def _subscribe_to_events(self) -> None:
         eb = self.event_bus
 
-        eb.subscribe(Events.Character.GET_ALL, self._on_get_character_list, weak=False)
-        eb.subscribe(Events.Character.GET, self._on_get_character, weak=False)
-        eb.subscribe(Events.Character.GET_CURRENT_PROFILE, self._on_get_current_profile, weak=False)
-        eb.subscribe(Events.Character.GET_CURRENT_NAME, self._on_get_current_name, weak=False)
+        # Чтение персонажей идёт через SettingsOnlyCharacterRegistry (MainController).
         eb.subscribe(Events.Character.SET_CURRENT, self._on_set_current_character, weak=False)
 
         eb.subscribe(Events.ApiPresets.GET_PRESET_LIST, self._on_get_empty_list, weak=False)
@@ -34,7 +31,6 @@ class GuiFallbackController:
         eb.subscribe(Events.Model.CALCULATE_COST, self._on_get_empty_dict, weak=False)
         eb.subscribe(Events.Model.SCHEDULE_G4F_UPDATE, self._on_schedule_update, weak=False)
 
-        eb.subscribe(Events.Server.GET_GAME_CONNECTION, self._on_noop_false, weak=False)
         eb.subscribe(Events.Server.STOP_SERVER, self._on_noop_true, weak=False)
         eb.subscribe(Events.Telegram.GET_SILERO_STATUS, self._on_noop_false, weak=False)
         eb.subscribe(Events.Telegram.START_SILERO, self._on_noop_true, weak=False)
@@ -64,25 +60,6 @@ class GuiFallbackController:
         eb.subscribe(Events.Chat.CLEAR_CHAT, self._on_noop_true, weak=False)
         eb.subscribe(Events.Chat.STAGE_IMAGE, self._on_noop_true, weak=False)
         eb.subscribe(Events.Chat.CLEAR_STAGED_IMAGES, self._on_noop_true, weak=False)
-
-    def _on_get_character_list(self, _event: Event):
-        current = self._current_character_id()
-        return [current] if current else []
-
-    def _on_get_character(self, _event: Event):
-        character_id = self._current_character_id()
-        if not character_id:
-            return {}
-        return {"char_id": character_id, "name": character_id}
-
-    def _on_get_current_profile(self, _event: Event):
-        character_id = self._current_character_id()
-        if not character_id:
-            return {}
-        return {"character_id": character_id, "name": character_id}
-
-    def _on_get_current_name(self, _event: Event):
-        return self._current_character_id()
 
     def _on_get_current_preset_id(self, _event: Event):
         return self.settings.get("LAST_API_PRESET_ID", 0) if self.settings else 0

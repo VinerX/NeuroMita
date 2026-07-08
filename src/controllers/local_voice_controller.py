@@ -5,6 +5,8 @@ from typing import Any, Dict, Optional
 
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
+from core.services import use
+from services.contracts import CharacterRegistry, LoopService, SettingsService
 from utils import getTranslationVariant as _
 
 
@@ -46,22 +48,10 @@ class LocalVoiceController:
         return self._engine
 
     def _get_setting(self, key: str, default=None):
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Settings.GET_SETTING,
-                {"key": key, "default": default},
-                timeout=0.8
-            )
-            return res[0] if res else default
-        except Exception:
-            return default
+        return use(SettingsService).get(key, default)
 
     def _get_settings_obj(self):
-        try:
-            res = self.event_bus.emit_and_wait(Events.Settings.GET_SETTINGS, timeout=0.8)
-            return res[0] if res else None
-        except Exception:
-            return None
+        return use(SettingsService)
 
     def _save_setting(self, key: str, value: Any) -> None:
         try:
@@ -227,9 +217,7 @@ class LocalVoiceController:
         if not model_id:
             return
 
-        self.event_bus.emit(Events.Core.RUN_IN_LOOP, {
-            "coroutine": self._async_init_model(model_id, progress_callback)
-        })
+        use(LoopService).run(self._async_init_model(model_id, progress_callback))
 
     async def _async_init_model(self, model_id: str, progress_callback=None):
         try:
@@ -386,7 +374,7 @@ class LocalVoiceController:
             character_id=character_id,
             voice_profile=voice_profile,
         )
-        self.event_bus.emit(Events.Core.RUN_IN_LOOP, {"coroutine": coro})
+        use(LoopService).run(coro)
 
     async def _async_local_voiceover(
         self,
@@ -398,24 +386,15 @@ class LocalVoiceController:
         try:
             resolved_profile = voice_profile if isinstance(voice_profile, dict) else None
 
+            registry = use(CharacterRegistry)
+
             if not resolved_profile and isinstance(character_id, str) and character_id:
-                character_res = self.event_bus.emit_and_wait(
-                    Events.Character.GET,
-                    {"character_id": character_id},
-                    timeout=3.0
-                )
-                ch = character_res[0] if character_res else None
+                ch = registry.get(character_id)
                 if ch is not None and hasattr(ch, "to_voice_profile"):
                     resolved_profile = ch.to_voice_profile()
 
             if not resolved_profile:
-                current_res = self.event_bus.emit_and_wait(
-                    Events.Character.GET_CURRENT_PROFILE,
-                    timeout=3.0
-                )
-                cc = current_res[0] if current_res else None
-                if isinstance(cc, dict):
-                    resolved_profile = cc
+                resolved_profile = registry.current_profile() or None
 
             output_file = f"MitaVoices/output_{uuid.uuid4()}.wav"
             absolute_audio_path = os.path.abspath(output_file)

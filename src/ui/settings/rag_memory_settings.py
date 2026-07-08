@@ -19,6 +19,8 @@ from ui.settings.data_prefetch import (
 from utils import getTranslationVariant as _
 from localization.live import tr_set
 from core.events import get_event_bus, Events
+from core.services import use
+from services.contracts import GenerationService, SettingsService, UtilityGenerationRequest
 from managers.rag.install_spec import (
     TARGET_EMBEDDINGS,
     TARGET_RERANKER,
@@ -269,15 +271,7 @@ def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> 
         eb2 = get_event_bus()
 
         def _resolve_graph_preset():
-            try:
-                res = eb2.emit_and_wait(
-                    Events.Settings.GET_SETTING,
-                    {"key": "GRAPH_PROVIDER", "default": "Current"},
-                    timeout=1.0,
-                )
-                label = str(res[0] if res else "Current")
-            except Exception:
-                label = "Current"
+            label = str(use(SettingsService).get("GRAPH_PROVIDER", "Current"))
             if not label or label in ("Current", "Текущий"):
                 return None
             try:
@@ -300,12 +294,7 @@ def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> 
 
         def _get_workers() -> int:
             try:
-                res = eb2.emit_and_wait(
-                    Events.Settings.GET_SETTING,
-                    {"key": "GRAPH_EXTRACTION_WORKERS", "default": 1},
-                    timeout=1.0,
-                )
-                return max(1, int(res[0] if res else 1))
+                return max(1, int(use(SettingsService).get("GRAPH_EXTRACTION_WORKERS", 1)))
             except Exception:
                 return 1
 
@@ -391,21 +380,17 @@ def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> 
                 return
             prompt = prompt_template.replace("{text}", text)
             try:
-                res = eb2.emit_and_wait(
-                    Events.Model.GENERATE_RESPONSE,
-                    {
-                        "user_input": "",
-                        "system_input": prompt,
-                        "image_data": [],
-                        "stream_callback": None,
-                        "message_id": None,
-                        "event_type": "graph_extract",
-                        "preset_id": graph_preset_id,
-                    },
-                    timeout=60.0,
+                result = use(GenerationService).generate_utility(
+                    UtilityGenerationRequest(
+                        prompt=prompt,
+                        character_id=cid,
+                        kind="graph_extract",
+                        preset_id=graph_preset_id,
+                        request_timeout=60.0,
+                    )
                 )
-                if res and res[0]:
-                    parsed = parse_extraction_response(str(res[0]))
+                if result.ok and result.text:
+                    parsed = parse_extraction_response(result.text)
                     if parsed:
                         store_extraction(gs, parsed, hid)
             except Exception:

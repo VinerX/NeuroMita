@@ -1,16 +1,24 @@
 # src/controllers/chat_controller.py
 import os
-import asyncio
 import tempfile
 import base64
+import threading
 import uuid
 import datetime
 from typing import Any
 
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
+from core.executors import Pools, PoolSaturated, executors
+from core.services import use
 from managers.task_manager import TaskStatus
 from core.request_policy import RequestPolicy, resolve_policy
+from services.contracts import (
+    CharacterRegistry,
+    ChatGenerationRequest,
+    ChatGenerationResult,
+    GenerationService,
+)
 
 
 class StructuredJsonStreamFilter:
@@ -218,11 +226,28 @@ class ChatController:
     def __init__(self, settings):
         self.settings = settings
         self.event_bus = get_event_bus()
-        self.llm_processing = False
+
+        # Генераций может идти несколько (игра + чат + idle), поэтому счётчик,
+        # а не bool: одиночный флаг гасил статус после первой завершившейся.
+        self._inflight_lock = threading.Lock()
+        self._inflight = 0
 
         self.staged_images = []
         self._owned_staged_images = set()
         self._subscribe_to_events()
+
+    @property
+    def llm_processing(self) -> bool:
+        with self._inflight_lock:
+            return self._inflight > 0
+
+    def _enter_generation(self) -> None:
+        with self._inflight_lock:
+            self._inflight += 1
+
+    def _exit_generation(self) -> None:
+        with self._inflight_lock:
+            self._inflight = max(0, self._inflight - 1)
 
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.Chat.SEND_MESSAGE, self._on_send_message, weak=False)
@@ -278,21 +303,9 @@ class ChatController:
     def _resolve_character_name(self, character_id: str | None) -> str:
         if not character_id:
             return ""
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Character.GET,
-                {"character_id": str(character_id)},
-                timeout=0.5
-            )
-            ch = res[0] if res else None
-            name = getattr(ch, "name", None)
-            if name:
-                return str(name)
-        except Exception:
-            pass
-        return str(character_id)
+        return use(CharacterRegistry).name_of(str(character_id))
 
-    async def async_send_message(
+    def _run_request(
         self,
         user_input: str,
         system_input: str = "",
@@ -308,10 +321,15 @@ class ChatController:
         policy: dict | None = None,
         images_shown: bool = False,
     ):
-        eff_policy = None
-        try:
-            self.llm_processing = True
+        """Полный путь одного запроса. Выполняется в пуле GENERATION.
 
+        Раньше это была корутина, внутри которой стоял блокирующий emit_and_wait —
+        то есть на всё время генерации замирал весь asyncio-loop (озвучка, сервер
+        игры, telegram), а вызывающий поток шины стоял на fut.result(600).
+        """
+        eff_policy = None
+        self._enter_generation()
+        try:
             effective_event_type = str(event_type or "chat")
             eff_policy = RequestPolicy.from_dict(policy) if isinstance(policy, dict) else resolve_policy(model_event_type=effective_event_type)
 
@@ -422,54 +440,41 @@ class ChatController:
                     "character_id": character_id or "",
                 }, sync=True)
 
-            response_result = self.event_bus.emit_and_wait(
-                Events.Model.GENERATE_RESPONSE,
-                {
-                    "user_input": user_input,
-                    "system_input": system_input,
-                    "image_data": image_data,
-                    "image_source": image_source,
-                    "stream_callback": stream_callback_handler if is_streaming else None,
-                    "message_id": task_uid,
-                    "event_type": effective_event_type,
-                    "character_id": character_id,
-                    "sender": sender,
-                    "participants": participants or [],
-                    "req_id": req_id,
-                    "origin_message_id": origin_message_id,
-                    "policy": eff_policy.to_dict(),
-                },
-                timeout=600.0
+            result: ChatGenerationResult | None = use(GenerationService).generate_chat(
+                ChatGenerationRequest(
+                    character_id=character_id,
+                    user_input=user_input,
+                    system_input=system_input,
+                    image_data=list(image_data or []),
+                    image_source=image_source,
+                    stream_callback=stream_callback_handler if is_streaming else None,
+                    event_type=effective_event_type,
+                    sender=sender,
+                    participants=list(participants or []),
+                    req_id=req_id,
+                    origin_message_id=origin_message_id,
+                    task_uid=task_uid,
+                    policy=eff_policy,
+                )
             )
 
-            payload = response_result[0] if response_result else None
-            if not payload:
+            if result is None:
                 if task_uid:
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                         "uid": task_uid,
                         "status": TaskStatus.FAILED_ON_GENERATION,
                         "error": "Failed to generate response"
                     })
-                self.llm_processing = False
                 return None
 
-            target = "Player"
-            think_text = None
-            structured_data = None
-            assistant_message_id = ""
-            if isinstance(payload, dict):
-                response_text = payload.get("text")
-                voice_profile = payload.get("voice_profile")
-                effective_character_id = payload.get("character_id") or character_id
-                target = str(payload.get("target") or "Player")
-                targets: list[str] = payload.get("targets") or []
-                think_text = payload.get("think")
-                structured_data = payload.get("structured")  # segments + global fields
-                assistant_message_id = str(payload.get("message_id") or "")
-            else:
-                response_text = payload
-                voice_profile = None
-                effective_character_id = character_id
+            response_text = result.text
+            voice_profile = result.voice_profile
+            effective_character_id = result.character_id or character_id
+            target = result.target
+            targets: list[str] = result.targets
+            think_text = result.think
+            structured_data = result.structured
+            assistant_message_id = result.message_id
 
             if not response_text:
                 if task_uid:
@@ -478,7 +483,6 @@ class ChatController:
                         "status": TaskStatus.FAILED_ON_GENERATION,
                         "error": "Empty response"
                     })
-                self.llm_processing = False
                 if eff_policy.echo_to_ui:
                     self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": "Пустой ответ модели"})
                 return None
@@ -585,24 +589,10 @@ class ChatController:
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)
             self.event_bus.emit(Events.GUI.UPDATE_TOKEN_COUNT)
 
-            self.llm_processing = False
             return response_text
 
-        except asyncio.TimeoutError:
-            logger.warning("Тайм-аут: генерация ответа заняла слишком много времени.")
-            self.llm_processing = False
-            if task_uid:
-                self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
-                    "uid": task_uid,
-                    "status": TaskStatus.FAILED_ON_GENERATION,
-                    "error": "Timeout"
-                })
-            if eff_policy and eff_policy.echo_to_ui:
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": "Превышено время ожидания ответа"})
-            return "Произошла ошибка при обработке вашего сообщения."
         except Exception as e:
-            logger.error(f"Ошибка в async_send_message: {e}", exc_info=True)
-            self.llm_processing = False
+            logger.error(f"Ошибка в обработке запроса: {e}", exc_info=True)
             if task_uid:
                 self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                     "uid": task_uid,
@@ -611,72 +601,49 @@ class ChatController:
                 })
             if eff_policy and eff_policy.echo_to_ui:
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": f"Ошибка: {str(e)[:50]}..."})
-            return "Произошла ошибка при обработке вашего сообщения."
+            return None
+        finally:
+            self._exit_generation()
+
+    def _submit_request(self, **kwargs) -> None:
+        """Ставит запрос в пул генераций. Переполнение — явный отказ, а не рост очереди."""
+        task_uid = kwargs.get("task_uid")
+        try:
+            executors().try_submit(Pools.GENERATION, self._run_request, **kwargs)
+        except PoolSaturated:
+            logger.warning("Очередь генераций переполнена — запрос отклонён.")
+            if task_uid:
+                self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
+                    "uid": task_uid,
+                    "status": TaskStatus.FAILED_ON_GENERATION,
+                    "error": "Generation queue is full",
+                })
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                "error": "Слишком много запросов одновременно. Подождите ответа."
+            })
 
     def _on_send_message(self, event: Event):
         data = event.data or {}
-        user_input = data.get("user_input", "")
-        system_input = data.get("system_input", "")
         image_data = data.get("image_data", [])
-        image_source = data.get("image_source", "")
-        task_uid = data.get("task_uid")
-        event_type = str(data.get("event_type") or "chat")
-        character_id = self._normalize_character_id(data)
-        sender = self._normalize_sender(data)
-        participants = self._normalize_participants(data.get("participants"))
-        req_id = data.get("req_id")
-        origin_message_id = data.get("origin_message_id")
-        policy = data.get("policy")
-        images_shown = bool(data.get("images_shown", False))
 
         if image_data:
             self.event_bus.emit(Events.Capture.UPDATE_LAST_IMAGE_REQUEST_TIME)
 
-        loop_res = self.event_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
-        loop = loop_res[0] if loop_res else None
-
-        if loop and loop.is_running():
-            fut = asyncio.run_coroutine_threadsafe(
-                self.async_send_message(
-                    user_input=user_input,
-                    system_input=system_input,
-                    image_data=image_data,
-                    image_source=image_source,
-                    task_uid=task_uid,
-                    event_type=event_type,
-                    character_id=character_id,
-                    sender=sender,
-                    participants=participants,
-                    req_id=req_id,
-                    origin_message_id=origin_message_id,
-                    policy=policy,
-                    images_shown=images_shown,
-                ),
-                loop
-            )
-            try:
-                return fut.result(timeout=600)
-            except Exception as e:
-                logger.error(f"async_send_message failed: {e}", exc_info=True)
-                return None
-        else:
-            return asyncio.run(
-                self.async_send_message(
-                    user_input=user_input,
-                    system_input=system_input,
-                    image_data=image_data,
-                    image_source=image_source,
-                    task_uid=task_uid,
-                    event_type=event_type,
-                    character_id=character_id,
-                    sender=sender,
-                    participants=participants,
-                    req_id=req_id,
-                    origin_message_id=origin_message_id,
-                    policy=policy,
-                    images_shown=images_shown,
-                )
-            )
+        self._submit_request(
+            user_input=data.get("user_input", ""),
+            system_input=data.get("system_input", ""),
+            image_data=image_data,
+            image_source=data.get("image_source", ""),
+            task_uid=data.get("task_uid"),
+            event_type=str(data.get("event_type") or "chat"),
+            character_id=self._normalize_character_id(data),
+            sender=self._normalize_sender(data),
+            participants=self._normalize_participants(data.get("participants")),
+            req_id=data.get("req_id"),
+            origin_message_id=data.get("origin_message_id"),
+            policy=data.get("policy"),
+            images_shown=bool(data.get("images_shown", False)),
+        )
 
     @staticmethod
     def _build_task_result(response_text: str, target: str, structured_data: dict | None = None, targets: list[str] | None = None) -> dict:
@@ -702,27 +669,18 @@ class ChatController:
         if data.get("image_data"):
             self.event_bus.emit(Events.Capture.UPDATE_LAST_IMAGE_REQUEST_TIME)
 
-        character_id = self._normalize_character_id(data)
-        sender = self._normalize_sender(data)
-        participants = self._normalize_participants(data.get("participants"))
-
-        coro = self.async_send_message(
+        self._submit_request(
             user_input=data.get("user_input", ""),
             system_input=data.get("system_input", ""),
             image_data=data.get("image_data", []),
             image_source=data.get("image_source", ""),
             task_uid=data.get("task_uid"),
             event_type=data.get("event_type"),
-            character_id=character_id,
-            sender=sender,
-            participants=participants,
+            character_id=self._normalize_character_id(data),
+            sender=self._normalize_sender(data),
+            participants=self._normalize_participants(data.get("participants")),
             policy=data.get("policy"),
         )
-
-        self.event_bus.emit(Events.Core.RUN_IN_LOOP, {
-            "coroutine": coro,
-            "callback": None
-        })
 
     def _on_clear_chat(self, event: Event):
         pass
@@ -765,22 +723,10 @@ class ChatController:
     def _get_character_ref(self, character_id: str):
         if not character_id:
             return None
-        res = self.event_bus.emit_and_wait(
-            Events.Character.GET,
-            {"character_id": str(character_id)},
-            timeout=1.0
-        )
-        return res[0] if res else None
+        return use(CharacterRegistry).get(str(character_id))
 
     def _get_current_character_id(self) -> str:
-        try:
-            res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
-            profile = res[0] if res else {}
-            if isinstance(profile, dict):
-                return str(profile.get("character_id") or "")
-        except Exception:
-            pass
-        return ""
+        return use(CharacterRegistry).current_id()
 
     def _on_delete_message(self, event: Event):
         data = event.data or {}

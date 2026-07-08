@@ -10,6 +10,8 @@ from managers.memory_manager import MemoryManager
 from managers.history_manager import HistoryManager
 from utils import clamp
 from core.events import get_event_bus, Events
+from core.services import use
+from services.contracts import AppVarsService, SettingsService
 import os
 
 from managers.game_manager import GameManager
@@ -259,16 +261,7 @@ class Character:
         key = self._get_prompt_set_setting_key()
         selected = ""
 
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Settings.GET_SETTING,
-                {"key": key, "default": ""},
-                timeout=0.5,
-            )
-            if res:
-                selected = str(res[0] or "").strip()
-        except Exception:
-            selected = ""
+        selected = str(use(SettingsService).get(key, "") or "").strip()
 
         char_root = self._character_prompts_root()
         discovered = self._discover_prompt_set_names()
@@ -377,20 +370,7 @@ class Character:
             "LongMemoryRememberCount",
             self.get_variable("LongMemoryRememberCount", 0) + 1,
         )
-        try:
-            results = self.event_bus.emit_and_wait(
-                Events.Settings.GET_APP_VARS, timeout=1.0
-            )
-            app_vars: Dict[str, Any] = {}
-            for r in results or []:
-                if isinstance(r, dict):
-                    app_vars.update(r)
-            self.update_app_vars(app_vars)
-        except Exception as e:
-            logger.warning(
-                f"[{self.char_id}] Не удалось получить app_vars через события: {e}"
-            )
-            self.update_app_vars({})
+        self.update_app_vars(use(AppVarsService).snapshot())
 
         response = self.extract_and_process_memory_data(response, save_as_missed)
 
@@ -442,20 +422,7 @@ class Character:
             "LongMemoryRememberCount",
             self.get_variable("LongMemoryRememberCount", 0) + 1,
         )
-        try:
-            results = self.event_bus.emit_and_wait(
-                Events.Settings.GET_APP_VARS, timeout=1.0
-            )
-            app_vars: Dict[str, Any] = {}
-            for r in results or []:
-                if isinstance(r, dict):
-                    app_vars.update(r)
-            self.update_app_vars(app_vars)
-        except Exception as e:
-            logger.warning(
-                f"[{self.char_id}] Could not get app_vars via events: {e}"
-            )
-            self.update_app_vars({})
+        self.update_app_vars(use(AppVarsService).snapshot())
 
         # Apply behavior changes from global fields
         try:

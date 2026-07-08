@@ -35,22 +35,10 @@ class ReminderController:
 
     def _check_and_fire_reminders(self):
         """Check all characters for due reminders and emit chat events."""
-        try:
-            all_ids_res = self.event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
-            all_ids = all_ids_res[0] if all_ids_res and isinstance(all_ids_res[0], list) else []
-        except Exception as e:
-            logger.warning(f"[ReminderController] Could not get character list: {e}")
-            return
+        registry = use(CharacterRegistry)
 
-        for cid in all_ids:
-            try:
-                char_res = self.event_bus.emit_and_wait(
-                    Events.Character.GET, {"character_id": cid}, timeout=1.0
-                )
-                char = char_res[0] if char_res else None
-            except Exception as e:
-                logger.warning(f"[ReminderController] Could not get character '{cid}': {e}")
-                continue
+        for cid in registry.all_ids():
+            char = registry.get(cid)
 
             if not char or not getattr(char, "reminder_system", None):
                 continue

@@ -20,6 +20,8 @@ from main_logger import logger
 from utils import SH, getTranslationVariant
 import platform
 from core.events import get_event_bus, Events
+from core.services import use
+from services.contracts import GameLinkService, LoopService, SettingsService
 
 
 class TelegramBotHandler:
@@ -35,10 +37,8 @@ class TelegramBotHandler:
         self._last_speaker_command_norm = ""
         self.last_send_time = -1.0
 
-        settings_result = self.event_bus.emit_and_wait(Events.Settings.GET_SETTINGS, timeout=1.0)
-        settings = settings_result[0] if settings_result else {}
         try:
-            self.silero_time_limit = int(settings.get("SILERO_TIME", "10"))
+            self.silero_time_limit = int(use(SettingsService).get("SILERO_TIME", "10"))
         except Exception:
             self.silero_time_limit = 10
         if not hasattr(self, "silero_time_limit") or self.silero_time_limit is None:
@@ -235,15 +235,7 @@ class TelegramBotHandler:
 
             sound_absolute_path = os.path.abspath(file_path)
 
-            # Check game connection status via event bus
-            connection_result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                self.event_bus.emit_and_wait,
-                Events.Server.GET_GAME_CONNECTION,
-                {},
-                1.0
-            )
-            connected_to_game = connection_result[0] if connection_result else False
+            connected_to_game = use(GameLinkService).is_connected()
 
             if connected_to_game:
                 logger.info("Подключен к игре, нужна конвертация")
@@ -279,14 +271,7 @@ class TelegramBotHandler:
 
             await self.client.connect()
 
-            loop_results = await asyncio.get_event_loop().run_in_executor(
-                None,
-                self.event_bus.emit_and_wait,
-                Events.Core.GET_EVENT_LOOP,
-                {},
-                1.0
-            )
-            loop = loop_results[0] if loop_results else asyncio.get_event_loop()
+            loop = use(LoopService).loop()
 
             if not await self.client.is_user_authorized():
                 try:

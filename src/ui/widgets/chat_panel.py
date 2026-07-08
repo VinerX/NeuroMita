@@ -16,6 +16,8 @@ from PyQt6.QtWidgets import (
 )
 
 from core.events import Events
+from core.services import use
+from services.contracts import CharacterRegistry
 from main_logger import logger
 from ui.async_bus import run_async
 from ui.chat.chat_widget import ChatWidget
@@ -38,12 +40,7 @@ class ChatPanel(QWidget):
         self.gui.chat_panel = self
 
     def _get_current_character_id(self) -> str:
-        try:
-            result = self.gui.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
-            profile = result[0] if result else {}
-        except Exception:
-            profile = {}
-        return str((profile or {}).get("character_id") or "")
+        return use(CharacterRegistry).current_id()
 
     def _refresh_conversation_title(self):
         if self._conversation_title_label is None:
@@ -315,8 +312,7 @@ def _send_block_reason(gui):
     # 2) Набор промптов текущего персонажа.
     try:
         from managers.prompt_catalogue_manager import list_prompt_sets
-        res = gui.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
-        char_id = str((res[0] if res else {}).get("character_id") or "").strip()
+        char_id = use(CharacterRegistry).current_id()
         if char_id and not list_prompt_sets("Prompts", char_id):
             return (
                 _("Нельзя отправлять сообщения: у персонажа нет набора промптов "

@@ -8,11 +8,20 @@ import threading
 from io import BytesIO
 
 from core.events import get_event_bus, Events, Event
+from core.executors import Pools, executors
 from core.response_status import response_status_kind
+from core.services import services, use
 from main_logger import logger
+from services.contracts import (
+    GenerationService,
+    HistoryService,
+    PreparedHistory,
+    SettingsService,
+    UtilityGenerationRequest,
+)
 
 
-class HistoryController:
+class HistoryController(HistoryService):
     _SUMMARY_TEXT_VAR = "HISTORY_COMPRESSION_SUMMARY"
     _SUMMARY_COUNT_VAR = "HISTORY_COMPRESSION_SUMMARY_COUNT"
     _SUMMARY_SEGMENTS_VAR = "HISTORY_COMPRESSION_SUMMARY_SEGMENTS"
@@ -33,52 +42,40 @@ class HistoryController:
         self._background_compression_inflight: set[str] = set()
         self._background_compression_timers: Dict[str, threading.Timer] = {}
         self._compression_cooldowns: Dict[str, float] = {}
+
+        services().register(HistoryService, self, replace=True)
         self._subscribe_to_events()
 
     def _subscribe_to_events(self):
-        self.event_bus.subscribe(Events.History.PREPARE_FOR_PROMPT, self._on_prepare_for_prompt, weak=False)
         self.event_bus.subscribe(Events.History.SAVE_AFTER_RESPONSE, self._on_save_after_response, weak=False)
         self.event_bus.subscribe(Events.History.MESSAGE_COMPLETED, self._on_message_completed, weak=False)
 
     def _get_setting(self, key: str, default: Any = None) -> Any:
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Settings.GET_SETTING,
-                {'key': key, 'default': default},
-                timeout=1.0
-            )
-            return res[0] if res else default
-        except Exception:
-            return default
+        return use(SettingsService).get(key, default)
 
-    def _on_prepare_for_prompt(self, event: Event) -> Dict[str, Any]:
-        data = event.data or {}
+    # ------------------------------------------------------------------
+    # HistoryService
+    # ------------------------------------------------------------------
+    def prepare_for_prompt(
+        self,
+        *,
+        character,
+        memory_limit: int,
+        is_game_master: bool,
+        save_missed_history: bool,
+        image_quality: Dict[str, Any],
+    ) -> PreparedHistory:
+        """Готовит историю для промпта. Только чтение и нарезка — никаких LLM-вызовов.
 
-        char_id: str = data.get('character_id')
+        Сжатие живёт исключительно в фоне (см. _start_background_compression).
+        Раньше отсюда мог запуститься синхронный LLM-вызов на 60 секунд, а вызывающий
+        ждал 5 секунд по таймауту шины — в результате запрос уходил в модель БЕЗ истории.
+        """
+        char_id = str(getattr(character, "char_id", "") or "")
         if not char_id:
-            logger.error("[HistoryController] PREPARE_FOR_PROMPT без character_id")
-            return {'history': []}
+            raise ValueError("prepare_for_prompt: character без char_id")
 
-        character = data.get("character_ref")
-        if character is None:
-            logger.error(f"[HistoryController] PREPARE_FOR_PROMPT для '{char_id}' без character_ref")
-            return {'history': []}
-
-        if getattr(character, "char_id", None) != char_id:
-            logger.error(
-                f"[HistoryController] character_ref.char_id != character_id "
-                f"({getattr(character, 'char_id', None)} != {char_id})"
-            )
-            return {'history': []}
-
-        event_type: str = data.get('event_type', 'chat')
-        memory_limit: int = int(data.get('memory_limit', 40))
-        is_gm: bool = bool(data.get('is_game_master', False))
-        save_missed_history: bool = bool(data.get('save_missed_history', True))
-        image_cfg: Dict[str, Any] = data.get('image_quality', {}) or {}
-        disable_compression: bool = bool(data.get('disable_compression', False))
-
-        effective_limit = 8 if is_gm else memory_limit
+        effective_limit = 8 if is_game_master else int(memory_limit)
         if effective_limit <= 0:
             effective_limit = 1
 
@@ -103,42 +100,25 @@ class HistoryController:
         summary_count = self._get_history_summary_count(character)
         summary_count = max(0, min(summary_count, len(llm_messages_history)))
 
-        if not disable_compression and self._needs_emergency_sync_compression(
-            llm_messages_history=llm_messages_history,
-            effective_limit=effective_limit,
-            summary_count=summary_count,
-        ):
-            llm_messages_history, history_summary, summary_count = self._process_history_compression(
-                character,
-                llm_messages_history,
-                effective_limit,
-                history_summary=history_summary,
-                summary_count=summary_count,
-                background_mode=False,
-            )
-
+        # Окно контекста ограничено всегда: промпт не может распухнуть только из-за
+        # того, что фоновое сжатие ещё не догнало историю.
         unsummarized_history = llm_messages_history[summary_count:]
-        if summary_count > 0:
-            missed_messages, history_limited = self._split_history_by_dialog_limit(
-                unsummarized_history,
-                effective_limit,
-            )
-        else:
-            # Preserve full context until an async compression actually succeeds.
-            missed_messages = []
-            history_limited = unsummarized_history
+        missed_messages, history_limited = self._split_history_by_dialog_limit(
+            unsummarized_history,
+            effective_limit,
+        )
 
         if missed_messages and save_missed_history:
             logger.info(f"[HistoryController] Сохраняю {len(missed_messages)} пропущенных сообщений для персонажа {char_id}.")
             character.history_manager.save_missed_history(missed_messages)
 
-        if image_cfg.get('enabled', False):
-            history_limited = self._apply_history_image_quality_reduction(history_limited, image_cfg)
+        if image_quality.get('enabled', False):
+            history_limited = self._apply_history_image_quality_reduction(history_limited, image_quality)
 
         # ключевая часть: подготовка для LLM (без лишних полей + с префиксами speaker/target)
         history_for_llm = self._sanitize_history_for_llm(character, history_limited)
 
-        return {'history': history_for_llm, 'history_summary': history_summary}
+        return PreparedHistory(messages=history_for_llm, summary=history_summary)
 
     def _decorate_messages_with_character_info(
         self,
@@ -248,8 +228,7 @@ class HistoryController:
         *,
         history_summary: str = "",
         summary_count: int = 0,
-        background_mode: bool = False,
-    ) -> tuple[List[Dict[str, Any]], str, int]:
+    ) -> None:
         compress_percent = float(self._get_setting("HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS", 1.0))
         keep_last_setting = int(self._get_setting("HISTORY_COMPRESSION_KEEP_LAST", 10))
         enable_on_limit = bool(self._get_setting("ENABLE_HISTORY_COMPRESSION_ON_LIMIT", True))
@@ -282,15 +261,14 @@ class HistoryController:
             enable_on_limit=enable_on_limit,
             enable_periodic=enable_periodic,
             periodic_interval=periodic_interval,
-            background_mode=background_mode,
             char_id=char_id,
         )
         if not plan:
-            return llm_messages_history, history_summary, summary_count
+            return
 
         messages_to_compress, reason = plan
         if not messages_to_compress:
-            return llm_messages_history, history_summary, summary_count
+            return
 
         logger.info(
             f"[HistoryController][{char_id}] {reason}: попытка сжать "
@@ -304,24 +282,22 @@ class HistoryController:
             character,
             messages_to_compress,
             previous_summary=chunk_previous_summary,
-            background_mode=background_mode,
         )
 
         if not compressed_summary:
             logger.warning(f"[HistoryController][{char_id}] Сжатие истории не удалось.")
-            return llm_messages_history, history_summary, summary_count
+            return
 
         if is_layered:
-            new_summary, new_count = self._apply_layered_compression_result(
+            _, new_count = self._apply_layered_compression_result(
                 character,
                 compressed_summary=compressed_summary,
                 summary_count=summary_count,
                 compressed_count=len(messages_to_compress),
                 history_len=len(llm_messages_history),
-                background_mode=background_mode,
             )
         else:
-            new_summary, new_count = self._apply_compression_result(
+            _, new_count = self._apply_compression_result(
                 character,
                 output_target=output_target,
                 compressed_summary=compressed_summary,
@@ -336,20 +312,8 @@ class HistoryController:
         if new_count != summary_count:
             self._emit_compressed(char_id)
 
-        if background_mode:
-            return llm_messages_history, new_summary, new_count
-
-        if output_target == "memory":
-            llm_messages_history = llm_messages_history[new_count:]
-            _, llm_messages_history = self._split_history_by_dialog_limit(
-                llm_messages_history,
-                context_limit,
-            )
-
         if reason == "Periodic compression":
             self._messages_since_last_periodic_compression[char_id] = 0
-
-        return llm_messages_history, new_summary, new_count
 
     def _emit_compressed(self, char_id: str) -> None:
         try:
@@ -366,7 +330,6 @@ class HistoryController:
         enable_on_limit: bool,
         enable_periodic: bool,
         periodic_interval: int,
-        background_mode: bool,
         char_id: str,
     ) -> tuple[List[Dict[str, Any]], str] | None:
         dialog_count = self._count_dialog_messages(source_messages)
@@ -376,10 +339,8 @@ class HistoryController:
                 return messages_to_compress, "On-limit compression"
 
         if enable_periodic and periodic_interval > 0:
-            cnt = self._messages_since_last_periodic_compression.get(char_id, 0)
-            if background_mode:
-                cnt += 1
-                self._messages_since_last_periodic_compression[char_id] = cnt
+            cnt = self._messages_since_last_periodic_compression.get(char_id, 0) + 1
+            self._messages_since_last_periodic_compression[char_id] = cnt
             if cnt >= periodic_interval:
                 messages_to_compress = self._take_history_prefix_by_dialog_count(
                     source_messages,
@@ -435,19 +396,6 @@ class HistoryController:
         self._set_history_summary_state(character, new_summary, new_count)
         return new_summary, new_count
 
-    def _needs_emergency_sync_compression(
-        self,
-        *,
-        llm_messages_history: List[Dict[str, Any]],
-        effective_limit: int,
-        summary_count: int,
-    ) -> bool:
-        if effective_limit <= 0:
-            return False
-        source_messages = llm_messages_history[summary_count:]
-        emergency_limit = max(effective_limit * 2, effective_limit + 8)
-        return self._count_dialog_messages(source_messages) > emergency_limit
-
     def _start_background_compression(self, character) -> None:
         char_id = getattr(character, "char_id", "Unknown") or "Unknown"
         delay_sec = self._compression_background_delay_seconds()
@@ -489,13 +437,17 @@ class HistoryController:
             reschedule_delay = max(1.0, self._compression_background_delay_seconds())
             self._schedule_background_compression(character, delay_sec=reschedule_delay)
             return
-        worker = threading.Thread(
-            target=self._run_post_response_compression,
-            args=(character,),
-            daemon=True,
-            name=f"history-compress-{char_id}",
-        )
-        worker.start()
+
+        # Единый фоновый LLM-пул (concurrency=1): сжатие и graph extraction
+        # больше не конкурируют друг с другом и не плодят ad-hoc потоки.
+        try:
+            executors().try_submit(
+                Pools.BACKGROUND_LLM, self._run_post_response_compression, character
+            )
+        except Exception as e:
+            logger.warning(f"[HistoryController][{char_id}] Не удалось поставить сжатие в очередь: {e}")
+            with self._compression_guard:
+                self._background_compression_inflight.discard(char_id)
 
     def _run_post_response_compression(self, character) -> None:
         try:
@@ -528,7 +480,6 @@ class HistoryController:
                 effective_limit,
                 history_summary=history_summary,
                 summary_count=summary_count,
-                background_mode=True,
             )
         except Exception as e:
             logger.warning(
@@ -547,7 +498,6 @@ class HistoryController:
         messages_to_compress: List[Dict[str, Any]],
         *,
         previous_summary: str = "",
-        background_mode: bool = False,
     ) -> Optional[str]:
         char_id = getattr(character, "char_id", "Unknown") or "Unknown"
         with self._compression_guard:
@@ -564,7 +514,6 @@ class HistoryController:
                 character,
                 messages_to_compress,
                 previous_summary=previous_summary,
-                background_mode=background_mode,
             )
         finally:
             with self._compression_guard:
@@ -576,7 +525,6 @@ class HistoryController:
         messages_to_compress: List[Dict[str, Any]],
         *,
         previous_summary: str = "",
-        background_mode: bool = False,
     ) -> Optional[str]:
         try:
             template_path = str(self._get_setting(
@@ -663,33 +611,7 @@ class HistoryController:
                 base_retry_delay=base_retry_delay,
                 max_retry_delay=max_retry_delay,
                 request_timeout=request_timeout,
-                background_mode=background_mode,
             )
-
-            with response_status_kind("compression"):
-                res = self.event_bus.emit_and_wait(
-                    Events.Model.GENERATE_RESPONSE,
-                    {
-                        'user_input': '',
-                        'system_input': full_prompt,
-                        'image_data': [],
-                        'stream_callback': None,
-                        'message_id': None,
-                        'event_type': 'compress',
-                        'preset_id': preset_id
-                    },
-                    timeout=60.0
-                )
-            if not res:
-                logger.warning("[HistoryController] GENERATE_RESPONSE не вернул результат для сжатия истории.")
-                return None
-
-            compressed_summary = res[0]
-            if isinstance(compressed_summary, str) and compressed_summary.strip():
-                logger.info("[HistoryController] История успешно сжата.")
-                return compressed_summary
-            logger.warning("[HistoryController] Пустая сводка после сжатия истории.")
-            return None
 
         except Exception as e:
             logger.error(f"[HistoryController] Ошибка при сжатии истории: {e}", exc_info=True)
@@ -707,69 +629,41 @@ class HistoryController:
         base_retry_delay: float,
         max_retry_delay: float,
         request_timeout: float,
-        background_mode: bool,
     ) -> Optional[str]:
         char_id = getattr(character, "char_id", "Unknown") or "Unknown"
-        last_failure: Dict[str, Any] = {}
+        generation = use(GenerationService)
+        last_failure = None
 
         for attempt in range(1, max_attempts + 1):
             with response_status_kind("compression"):
-                res = self.event_bus.emit_and_wait(
-                    Events.Model.GENERATE_RESPONSE,
-                    {
-                        'user_input': '',
-                        'system_input': full_prompt,
-                        'image_data': [],
-                        'stream_callback': None,
-                        'message_id': None,
-                        'event_type': 'compress',
-                        'preset_id': preset_id,
-                        'return_details': True,
-                        'request_options_override': {
-                            'max_attempts': 1,
-                            'retry_delay': 0.0,
-                            'request_timeout': request_timeout,
-                            'suppress_failure_events': True,
-                        },
-                    },
-                    timeout=request_timeout
+                result = generation.generate_utility(
+                    UtilityGenerationRequest(
+                        prompt=full_prompt,
+                        character_id=char_id,
+                        kind="compress",
+                        preset_id=preset_id,
+                        max_attempts=1,
+                        retry_delay=0.0,
+                        request_timeout=request_timeout,
+                    )
                 )
 
-            result_payload = res[0] if res else None
-            if isinstance(result_payload, dict):
-                if result_payload.get("ok") and str(result_payload.get("text") or "").strip():
-                    self._clear_compression_cooldown(char_id)
-                    logger.info("[HistoryController] History compressed successfully.")
-                    return str(result_payload.get("text")).strip()
-                last_failure = result_payload
-            elif isinstance(result_payload, str) and result_payload.strip():
+            if result.ok and result.text.strip():
                 self._clear_compression_cooldown(char_id)
                 logger.info("[HistoryController] History compressed successfully.")
-                return result_payload.strip()
-            else:
-                last_failure = {
-                    "ok": False,
-                    "text": "",
-                    "error": "",
-                    "details": "",
-                    "status_code": None,
-                    "retryable": False,
-                    "retry_after_sec": None,
-                }
+                return result.text.strip()
 
-            retryable = bool(last_failure.get("retryable", False))
-            retry_after_sec = self._coerce_positive_float(last_failure.get("retry_after_sec"))
-            status_code = last_failure.get("status_code")
-            error_text = str(last_failure.get("details") or last_failure.get("error") or "").strip()
+            last_failure = result
+            error_text = (result.details or result.error).strip()
             logger.warning(
                 f"[HistoryController][{char_id}] Compression attempt {attempt}/{max_attempts} failed: "
-                f"status={status_code}, retryable={retryable}, details={error_text or 'n/a'}"
+                f"status={result.status_code}, retryable={result.retryable}, details={error_text or 'n/a'}"
             )
 
-            if not retryable:
+            if not result.retryable:
                 break
 
-            delay_sec = retry_after_sec
+            delay_sec = self._coerce_positive_float(result.retry_after_sec)
             if delay_sec is None:
                 delay_sec = min(max_retry_delay, base_retry_delay * (2 ** (attempt - 1)))
             self._set_compression_cooldown(char_id, delay_sec)
@@ -778,7 +672,7 @@ class HistoryController:
                 time.sleep(delay_sec)
 
         logger.warning("[HistoryController] History compression finished without success.")
-        if background_mode and self._get_compression_cooldown_remaining(char_id) > 0:
+        if self._get_compression_cooldown_remaining(char_id) > 0:
             self._schedule_background_compression(
                 character,
                 delay_sec=max(
@@ -786,11 +680,14 @@ class HistoryController:
                     self._get_compression_cooldown_remaining(char_id),
                 ),
             )
+        failure_details = ""
+        if last_failure is not None:
+            failure_details = (last_failure.details or last_failure.error).strip()
         fallback_summary = self._build_local_compression_fallback(
             character,
             messages_to_compress,
             previous_summary=previous_summary,
-            failure_details=str(last_failure.get("details") or last_failure.get("error") or "").strip(),
+            failure_details=failure_details,
         )
         if fallback_summary:
             self._clear_compression_cooldown(char_id)
@@ -916,7 +813,7 @@ class HistoryController:
             logger.warning(f"[HistoryController] Не удалось сохранить слои сводки: {e}", exc_info=True)
 
     def _maybe_rollup_segments(
-        self, character, segments: List[Dict[str, Any]], *, background_mode: bool
+        self, character, segments: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """Роллап: когда слоёв слишком много — схлопнуть самые старые K в один.
 
@@ -943,7 +840,6 @@ class HistoryController:
             character,
             [{"role": "system", "content": str(s.get("text") or "")} for s in oldest],
             previous_summary="",
-            background_mode=background_mode,
         )
         if not merged_text or not str(merged_text).strip():
             logger.warning(f"[HistoryController][{char_id}] Роллап слоёв не удался — оставляю как есть.")
@@ -965,7 +861,6 @@ class HistoryController:
         summary_count: int,
         compressed_count: int,
         history_len: int,
-        background_mode: bool,
     ) -> tuple[str, int]:
         segments = self._load_summary_segments(character)
         segments.append({
@@ -974,7 +869,7 @@ class HistoryController:
             "level": 0,
             "created": self._now_iso(),
         })
-        segments = self._maybe_rollup_segments(character, segments, background_mode=background_mode)
+        segments = self._maybe_rollup_segments(character, segments)
         new_count = min(history_len, summary_count + compressed_count)
         rendered = self._render_summary_segments(segments)
         self._set_summary_segments_state(character, segments, rendered, new_count)

@@ -23,6 +23,8 @@ from PyQt6.QtWidgets import (
 )
 
 from core.events import Events
+from core.services import use
+from services.contracts import CharacterRegistry, HistoryService
 from main_logger import logger
 from ui.async_bus import run_async
 from ui.chat.message_widget import AVATAR_MAP, _get_avatar_dir
@@ -345,26 +347,10 @@ class SandboxPage(QWidget):
         self.gui.sandbox_page = self
 
     def _get_current_character_id(self) -> str:
-        try:
-            result = self.gui.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
-            profile = result[0] if result else {}
-        except Exception:
-            profile = {}
-        return str((profile or {}).get("character_id") or "")
+        return use(CharacterRegistry).current_id()
 
     def _get_current_character_ref(self):
-        character_id = self._get_current_character_id()
-        if not character_id:
-            return None
-        try:
-            result = self.gui.event_bus.emit_and_wait(
-                Events.Character.GET,
-                {"character_id": character_id},
-                timeout=0.5,
-            )
-            return result[0] if result else None
-        except Exception:
-            return None
+        return use(CharacterRegistry).current()
 
     def _get_effective_prompt_history_count(self, character_ref, dialog_limit: int):
         if character_ref is None:
@@ -375,21 +361,14 @@ class SandboxPage(QWidget):
             return None
 
         try:
-            result = self.gui.event_bus.emit_and_wait(
-                Events.History.PREPARE_FOR_PROMPT,
-                {
-                    "character_id": char_id,
-                    "character_ref": character_ref,
-                    "memory_limit": int(dialog_limit or 0),
-                    "save_missed_history": False,
-                    "image_quality": {},
-                    "disable_compression": True,
-                },
-                timeout=1.0,
+            prepared = use(HistoryService).prepare_for_prompt(
+                character=character_ref,
+                memory_limit=int(dialog_limit or 0),
+                is_game_master=False,
+                save_missed_history=False,
+                image_quality={},
             )
-            payload = result[0] if result else {}
-            history = payload.get("history", []) if isinstance(payload, dict) else []
-            return len(history) if isinstance(history, list) else None
+            return len(prepared.messages)
         except Exception as exc:
             logger.debug(f"Sandbox effective prompt history count failed: {exc}")
             return None
@@ -760,14 +739,7 @@ class SandboxPage(QWidget):
             combo.blockSignals(False)
 
         def worker():
-            current_char_id = char_id
-            if not current_char_id:
-                try:
-                    result = self.gui.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
-                    profile = result[0] if result else {}
-                    current_char_id = str((profile or {}).get("character_id") or "")
-                except Exception:
-                    current_char_id = ""
+            current_char_id = char_id or use(CharacterRegistry).current_id()
 
             try:
                 from managers.prompt_catalogue_manager import list_prompt_sets
@@ -894,20 +866,9 @@ class SandboxPage(QWidget):
             combo.blockSignals(False)
 
         def worker():
-            try:
-                all_characters = self.gui.event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
-                character_list = all_characters[0] if all_characters else ["Crazy"]
-            except Exception:
-                character_list = ["Crazy"]
-            if not character_list:
-                character_list = ["Crazy"]
-
-            try:
-                current_res = self.gui.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
-                profile = current_res[0] if current_res else {}
-                current_char_id = str((profile or {}).get("character_id") or "")
-            except Exception:
-                current_char_id = ""
+            registry = use(CharacterRegistry)
+            character_list = registry.all_ids() or ["Crazy"]
+            current_char_id = registry.current_id()
             return character_list, (current_char_id or character_list[0])
 
         def apply(payload):
@@ -930,28 +891,6 @@ class SandboxPage(QWidget):
             self._refresh_character_avatar()
 
         run_async(self.gui, worker, apply, name="sandbox-character-combobox")
-
-    def _populate_chat_character_combobox_sync_legacy(self):
-        combo = getattr(self.gui, "chat_character_combobox", None)
-        if combo is None:
-            return
-
-        all_characters = self.gui.event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
-        character_list = all_characters[0] if all_characters else ["Crazy"]
-        if not character_list:
-            character_list = ["Crazy"]
-
-        current_char_id = self._get_current_character_id() or character_list[0]
-
-        combo.blockSignals(True)
-        try:
-            combo.clear()
-            combo.addItems(character_list)
-            index = combo.findText(str(current_char_id), Qt.MatchFlag.MatchFixedString)
-            if index >= 0:
-                combo.setCurrentIndex(index)
-        finally:
-            combo.blockSignals(False)
 
     def _on_chat_character_changed(self, character_id):
         character_id = str(character_id or "").strip()

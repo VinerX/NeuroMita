@@ -4,10 +4,18 @@ import os
 import base64
 import datetime
 
-from core.events import get_event_bus, Events, Event
+from core.services import services, use
 from main_logger import logger
+from services.contracts import (
+    AppVarsService,
+    HistoryService,
+    PromptBuildRequest,
+    PromptBuildResult,
+    PromptBuilderService,
+    SettingsService,
+)
 from utils.prompt_builder import build_system_prompts
-from core.request_policy import RequestPolicy, resolve_policy
+from core.request_policy import RequestPolicy
 
 _TYPE_MAP = {"float": "number", "double": "number", "int": "integer",
              "bool": "boolean", "str": "string", "string": "string"}
@@ -31,55 +39,22 @@ def _build_custom_params_schema(custom_params: list) -> str:
     return '  "custom_fields": {\n' + "\n".join(field_lines) + "\n  },\n"
 
 
-class PromptController:
-    def __init__(self):
-        self.event_bus = get_event_bus()
-        self._subscribe_to_events()
+class PromptController(PromptBuilderService):
+    """Сборка промпта. Чистая функция над персонажем и историей — шина не нужна."""
 
-    def _subscribe_to_events(self):
-        self.event_bus.subscribe(Events.Prompt.BUILD_PROMPT, self._on_build_prompt, weak=False)
+    def __init__(self):
+        services().register(PromptBuilderService, self, replace=True)
 
     def _get_setting(self, key: str, default=None):
-        """Fetch a single setting value via the event bus."""
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Settings.GET_SETTING,
-                {"key": key, "default": default},
-                timeout=0.5,
-            )
-            return res[0] if res else default
-        except Exception:
-            return default
-
-    def _load_app_vars(self) -> Dict[str, Any]:
-        app_vars: Dict[str, Any] = {}
-        try:
-            results = self.event_bus.emit_and_wait(Events.Settings.GET_APP_VARS, timeout=1.0)
-            for r in results or []:
-                if isinstance(r, dict):
-                    app_vars.update(r)
-        except Exception as e:
-            logger.warning(f"[PromptController] Не удалось получить app_vars: {e}")
-        return app_vars
+        return use(SettingsService).get(key, default)
 
     def _setup_character_for_prompt(self, character, event_type: str):
         now_str = datetime.datetime.now().strftime("%Y %B %d (%A) %H:%M")
         character.set_variable("SYSTEM_DATETIME", now_str)
-        app_vars = self._load_app_vars()
-        character.update_app_vars(app_vars)
+        character.update_app_vars(use(AppVarsService).snapshot())
 
         if getattr(character, "char_id", "") == "GameMaster":
-            try:
-                res = self.event_bus.emit_and_wait(
-                    Events.Settings.GET_SETTING,
-                    {"key": "GM_SMALL_PROMPT", "default": ""},
-                    timeout=1.0
-                )
-                gm_instr = res[0] if res else ""
-                character.set_variable("GM_INSTRUCTION", gm_instr or "")
-            except Exception as e:
-                logger.warning(f"[PromptController] Не удалось получить GM_SMALL_PROMPT для GameMaster: {e}")
-                character.set_variable("GM_INSTRUCTION", "")
+            character.set_variable("GM_INSTRUCTION", self._get_setting("GM_SMALL_PROMPT", "") or "")
 
     def _build_system_messages(
         self,
@@ -214,52 +189,30 @@ class PromptController:
         normalized = " ".join(block.strip().split()).lower()
         return any(normalized.startswith(prefix) for prefix in _VOLATILE_SYSTEM_BLOCK_PREFIXES)
 
-    def _on_build_prompt(self, event: Event) -> Dict[str, Any]:
-        data = event.data or {}
-
-        char_id: str = data.get("character_id")
+    def build(self, request: PromptBuildRequest) -> PromptBuildResult:
+        character = request.character
+        char_id = str(getattr(character, "char_id", "") or "")
         if not char_id:
-            logger.error("[PromptController] BUILD_PROMPT без character_id")
-            return {"messages": [], "history_messages": [], "user_message": None}
+            raise ValueError("build_prompt: character без char_id")
 
-        character = data.get("character_ref")
-        if character is None:
-            logger.error(f"[PromptController] BUILD_PROMPT для '{char_id}' без character_ref")
-            return {"messages": [], "history_messages": [], "user_message": None}
+        event_type = request.event_type
+        user_input = request.user_input or ""
+        system_input = request.system_input or ""
+        hidden_user_context = request.hidden_user_context or ""
+        image_data = request.image_data or []
 
-        if getattr(character, "char_id", None) != char_id:
-            logger.error(
-                f"[PromptController] character_ref.char_id != character_id "
-                f"({getattr(character, 'char_id', None)} != {char_id})"
-            )
-            return {"messages": [], "history_messages": [], "user_message": None}
+        sender = str(request.sender or "Player")
+        participants = self._normalize_participants(request.participants)
 
-        event_type: str = data.get("event_type", "chat")
-        user_input: str = data.get("user_input", "") or ""
-        system_input: str = data.get("system_input", "") or ""
-        hidden_user_context: str = data.get("hidden_user_context", "") or ""
-        image_data = data.get("image_data") or []
-
-        sender: str = str(data.get("sender") or "Player")
-        participants_raw = data.get("participants") or []
-        participants = self._normalize_participants(participants_raw)
-
-        memory_limit: int = int(data.get("memory_limit", 40))
-        is_game_master: bool = bool(data.get("is_game_master", False))
-        save_missed_history: bool = bool(data.get("save_missed_history", True))
-        image_cfg: Dict[str, Any] = data.get("image_quality", {}) or {}
-        separate_prompts: bool = bool(data.get("separate_prompts", True))
-        extra_system_infos: List[Any] = data.get("extra_system_infos") or []
-        game_state: Dict[str, Any] = data.get("game_state") or {}
-        disable_history_compression: bool = bool(data.get("disable_history_compression", False))
-        capabilities: Dict[str, Any] = data.get("capabilities") or {}
-
-        policy_dict = data.get("policy")
-        policy = (
-            RequestPolicy.from_dict(policy_dict)
-            if isinstance(policy_dict, dict)
-            else resolve_policy(model_event_type=str(event_type or "chat"))
-        )
+        memory_limit = int(request.memory_limit)
+        is_game_master = bool(request.is_game_master)
+        save_missed_history = bool(request.save_missed_history)
+        image_cfg = request.image_quality or {}
+        separate_prompts = bool(request.separate_prompts)
+        extra_system_infos = request.extra_system_infos or []
+        game_state = request.game_state or {}
+        capabilities = request.capabilities or {}
+        policy = request.policy
 
         try:
             character.set_variable("GAME_DISTANCE", float(game_state.get("distance", 0.0)))
@@ -288,23 +241,15 @@ class PromptController:
         history_limited: List[Dict[str, Any]] = []
         history_summary: str = ""
         if policy.use_history_in_prompt:
-            hist_res = self.event_bus.emit_and_wait(
-                Events.History.PREPARE_FOR_PROMPT,
-                {
-                    "character_id": char_id,
-                    "character_ref": character,
-                    "event_type": event_type,
-                    "memory_limit": memory_limit,
-                    "is_game_master": is_game_master,
-                    "save_missed_history": save_missed_history,
-                    "image_quality": image_cfg,
-                    "disable_compression": disable_history_compression,
-                },
-                timeout=5.0
+            prepared = use(HistoryService).prepare_for_prompt(
+                character=character,
+                memory_limit=memory_limit,
+                is_game_master=is_game_master,
+                save_missed_history=save_missed_history,
+                image_quality=image_cfg,
             )
-            if hist_res and isinstance(hist_res[0], dict):
-                history_limited = hist_res[0].get("history", []) or []
-                history_summary = str(hist_res[0].get("history_summary", "") or "").strip()
+            history_limited = list(prepared.messages)
+            history_summary = prepared.summary.strip()
 
         for s in dsl_system_infos:
             if isinstance(s, str):
@@ -421,11 +366,11 @@ class PromptController:
             messages.append(user_message_for_history)
             history_limited.append(user_message_for_history)
 
-        return {
-            "messages": messages,
-            "history_messages": history_limited,
-            "user_message": user_message_for_history,
-        }
+        return PromptBuildResult(
+            messages=messages,
+            history_messages=history_limited,
+            user_message=user_message_for_history,
+        )
 
 
     def _normalize_participants(self, participants: Any) -> List[str]:

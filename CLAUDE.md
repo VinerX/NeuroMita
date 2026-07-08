@@ -69,10 +69,34 @@ C:\Games\NeuroMita\NeuroMita\libs\python\python.exe
 `MainWindow` (`ui/windows/main_window.py`). Запуск разработческий — `launch.py`
 (собирает fast-билд через `build.py`, ставит зависимости, запускает `.pyz`).
 
-### Архитектура: MVC + EventBus
-- **`core/events.py`** — `EventBus` (`get_event_bus()`), классы `Events`/`Event`. Контроллеры
-  общаются через события, а не прямыми вызовами. При добавлении фичи ищи нужную группу `Events.*`.
-- **`controllers/`** — оркестрация. `MainController` создаёт ~25 под-контроллеров:
+### Архитектура: типизированные сервисы + EventBus для уведомлений
+
+**Главное правило: запрос/ответ — через сервис, событие — только уведомление.**
+
+- **`core/services.py`** — `ServiceRegistry` (`services()`, `use(Contract)`). У каждого сервиса
+  один владелец, который регистрирует его в композиционном корне (`MainController`).
+  Отсутствующий сервис → `ServiceNotRegistered`, а не молчаливый дефолт.
+- **`services/contracts.py`** — контракты (ABC) + типы запросов/результатов:
+  `SettingsService`, `AppVarsService`, `CharacterRegistry`, `LoopService`, `GameLinkService`,
+  `HistoryService`, `PromptBuilderService`, `GenerationService`.
+- **`core/executors.py`** — именованные пулы: `GENERATION` (пользовательские генерации,
+  с backpressure), `BACKGROUND_LLM` (сжатие истории + graph extraction, concurrency=1),
+  `LLM_HTTP`, `IO`, `DB_WRITER`, `EVENT_BUS`, `EVENT_BUS_SYNC`.
+  Новые `threading.Thread`/`ThreadPoolExecutor` по месту заводить нельзя.
+- **`core/events.py`** — `EventBus` только для notification-событий (`ON_*`, `GUI.*`, `*_CHANGED`,
+  `MESSAGE_COMPLETED`). **Новые `GET_*`-события заводить нельзя — заведите сервис.**
+  `emit_and_wait` остался для «многие подписчики отвечают», не для вызова сервисов.
+
+Путь одного сообщения (весь — синхронный, в пуле `GENERATION`, без asyncio и без шины):
+`Chat.SEND_MESSAGE` → `ChatController._run_request` → `GenerationService.generate_chat`
+→ RAG → `PromptBuilderService.build` → `HistoryService.prepare_for_prompt` → LLM →
+запись истории → `History.MESSAGE_COMPLETED` (уведомление) → фон: сжатие/граф/эмбеддинги.
+
+`HistoryService.prepare_for_prompt` — **чистое чтение**: LLM-вызовов там быть не должно,
+сжатие живёт только в фоне. Окно контекста ограничено всегда.
+
+- **`controllers/`** — оркестрация. `MainController` — композиционный корень: регистрирует
+  инфраструктурные сервисы в порядке зависимостей, затем создаёт ~25 под-контроллеров:
   - `model_controller.py` — ядро LLM-пайплайна: маршрутизация structured vs legacy,
     сборка контекста, история, токен-статистика, извлечение reasoning.
   - `chat_controller.py` / `handlers/chat_handler.py` (`ChatModel`) — собственно генерация

@@ -4,6 +4,8 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from core.events import Events
+from core.services import use
+from services.contracts import CharacterRegistry, SettingsService
 from core.request_policy import resolve_policy
 from managers.task_manager import TaskStatus
 from game_connections.handlers.registry import RequestContext
@@ -152,12 +154,7 @@ class CreateTaskAction:
             if not cid:
                 return {"attitude": 60.0, "boredom": 10.0, "stress": 5.0}
             try:
-                res = event_bus.emit_and_wait(
-                    Events.Character.GET,
-                    {"character_id": cid},
-                    timeout=1.0
-                )
-                ch = res[0] if res else None
+                ch = use(CharacterRegistry).get(cid)
                 if ch is not None and hasattr(ch, "get_stats_dict"):
                     v = ch.get_stats_dict()
                     if isinstance(v, dict):
@@ -335,12 +332,7 @@ class CreateTaskAction:
         if event_type == "react":
             model_event_type = "react"
 
-            react_enabled_res = event_bus.emit_and_wait(
-                Events.Settings.GET_SETTING,
-                {"key": "REACT_ENABLED", "default": False},
-                timeout=0.8,
-            )
-            if not bool(react_enabled_res and react_enabled_res[0]):
+            if not bool(use(SettingsService).get("REACT_ENABLED", False)):
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="React disabled by settings", req_id=req_id)
                 return
 
@@ -348,8 +340,7 @@ class CreateTaskAction:
             policy = resolve_policy(model_event_type=model_event_type, react_level=incoming_level)
             level_key = "REACT_L2_ENABLED" if policy.react_level == 2 else "REACT_L1_ENABLED"
             level_default = False if policy.react_level == 2 else True
-            level_res = event_bus.emit_and_wait(Events.Settings.GET_SETTING, {"key": level_key, "default": level_default}, timeout=0.8)
-            if not bool(level_res and level_res[0]):
+            if not bool(use(SettingsService).get(level_key, level_default)):
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason=f"React level {policy.react_level or 1} disabled by settings", req_id=req_id)
                 return
 

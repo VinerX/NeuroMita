@@ -3,6 +3,8 @@ from main_logger import logger
 from modules.available_games import get_available_games
 from modules.game_interface import GameInterface
 from core.events import Events
+from core.services import use
+from services.contracts import GameLinkService, SettingsService
 
 
 class GameManager:
@@ -42,38 +44,14 @@ class GameManager:
         return game_name, params
 
     def _setting_bool(self, key: str, default: bool = False) -> bool:
-        try:
-            av = getattr(self.character, "app_vars", None)
-            if isinstance(av, dict) and key in av:
-                return bool(av.get(key))
-        except Exception:
-            pass
+        av = getattr(self.character, "app_vars", None)
+        if isinstance(av, dict) and key in av:
+            return bool(av.get(key))
 
         if key == "GAME_CONNECTED":
-            try:
-                bus = getattr(self.character, "event_bus", None)
-                if bus:
-                    res = bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
-                    if res:
-                        return bool(res[0])
-            except Exception:
-                pass
-            return bool(default)
+            return bool(use(GameLinkService).is_connected())
 
-        try:
-            bus = getattr(self.character, "event_bus", None)
-            if bus:
-                res = bus.emit_and_wait(
-                    Events.Settings.GET_SETTING,
-                    {"key": key, "default": default},
-                    timeout=0.5,
-                )
-                if res:
-                    return bool(res[0])
-        except Exception:
-            pass
-
-        return bool(default)
+        return bool(use(SettingsService).get(key, default))
 
     def _is_game_launch_allowed(self, game_name: str) -> bool:
         if not self._setting_bool("ENABLE_GAMES", False):

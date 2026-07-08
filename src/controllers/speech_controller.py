@@ -9,6 +9,8 @@ import sounddevice as sd
 from handlers.asr_handler import SpeechRecognition
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
+from core.services import use
+from services.contracts import GameLinkService, LoopService
 from utils import getTranslationVariant as _
 
 
@@ -301,16 +303,16 @@ class SpeechController:
 
             return
 
-        loop_res = self.events_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
-        loop = loop_res[0] if loop_res else None
-        if loop:
-            self.asr_is_ready = False
-            started = bool(SpeechRecognition.speech_recognition_start(self.device_id or 0, loop))
-            self.mic_recognition_active = started
-            if not started:
-                self._handle_start_failure()
-        else:
+        loop_service = use(LoopService)
+        if not loop_service.is_running():
             logger.error("Не удалось получить event loop для запуска распознавания речи")
+            self._handle_start_failure()
+            return
+
+        self.asr_is_ready = False
+        started = bool(SpeechRecognition.speech_recognition_start(self.device_id or 0, loop_service.loop()))
+        self.mic_recognition_active = started
+        if not started:
             self._handle_start_failure()
 
     def _handle_start_failure(self):
@@ -484,18 +486,12 @@ class SpeechController:
         self._last_text_norm = self._normalize_asr_text(text)
         self._last_text_time = now
 
-        try:
-            con = self.events_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.3)
-            connected = bool(con and con[0])
-            if connected:
-                engine = str(self._asr_settings.get("engine", "") or "")
-                self.events_bus.emit(getattr(Events.Server, "BROADCAST_ASR_TEXT", "broadcast_asr_text"), {
-                    "text": text,
-                    "engine": engine,
-                    "ts": time.time(),
-                })
-        except Exception:
-            pass
+        if use(GameLinkService).is_connected():
+            self.events_bus.emit(Events.Server.BROADCAST_ASR_TEXT, {
+                "text": text,
+                "engine": str(self._asr_settings.get("engine", "") or ""),
+                "ts": time.time(),
+            })
 
         if bool(self.settings.get("MIC_INSTANT_SENT")):
             waiting = self.events_bus.emit_and_wait(Events.Audio.GET_WAITING_ANSWER, timeout=0.5)
@@ -503,9 +499,6 @@ class SpeechController:
             if not waiting_answer:
                 self._send_instant(text)
         else:
-            connected = self.events_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
-            if connected and connected[0]:
-                pass
             logger.info(f"Распознано: {text}")
             self.events_bus.emit(Events.GUI.INSERT_TEXT_TO_INPUT, {"text": text})
 
@@ -545,16 +538,16 @@ class SpeechController:
 
     def _on_start_speech_recognition(self, event: Event):
         dev_id = event.data.get('device_id', self.device_id)
-        loop_result = self.events_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
-        loop = loop_result[0] if loop_result else None
-        if loop:
-            self.asr_is_ready = False
-            started = bool(SpeechRecognition.speech_recognition_start(dev_id, loop))
-            self.mic_recognition_active = started
-            if not started:
-                self._handle_start_failure()
-        else:
+        loop_service = use(LoopService)
+        if not loop_service.is_running():
             logger.error("Не удалось получить event loop для запуска распознавания речи")
+            self._handle_start_failure()
+            return
+
+        self.asr_is_ready = False
+        started = bool(SpeechRecognition.speech_recognition_start(dev_id, loop_service.loop()))
+        self.mic_recognition_active = started
+        if not started:
             self._handle_start_failure()
 
     def _on_stop_speech_recognition(self, _event: Event):

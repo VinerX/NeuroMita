@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (
 )
 
 from core.events import Events
+from core.services import use
+from services.contracts import CharacterRegistry
 from main_logger import logger
 from ui.async_bus import run_async
 from utils import _
@@ -287,19 +289,7 @@ class CharacterStatePanel(QWidget):
 
     # ─────────────────────────────────────────────────────────────
     def _get_current_character(self):
-        try:
-            res = self.gui.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.3)
-            profile = res[0] if res else {}
-        except Exception:
-            profile = {}
-        char_id = str((profile or {}).get("character_id") or "")
-        if not char_id:
-            return None
-        try:
-            res = self.gui.event_bus.emit_and_wait(Events.Character.GET, {"character_id": char_id}, timeout=0.3)
-            return res[0] if res else None
-        except Exception:
-            return None
+        return use(CharacterRegistry).current()
 
     def _bounds_for(self, character, key: str, default_min: float, default_max: float) -> tuple[float, float]:
         try:

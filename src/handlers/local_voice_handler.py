@@ -214,13 +214,6 @@ class LocalVoice:
             logger.info(f"load_model_settings error for {model_id}: {e}")
             return {}
 
-    def is_cuda_available(self) -> bool:
-        try:
-            import torch
-            return bool(torch.cuda.is_available())
-        except Exception:
-            return False
-
     def convert_wav_to_stereo(
         self,
         input_path: str,

@@ -6,6 +6,8 @@ from typing import Any, Callable
 from PyQt6.QtCore import QTimer
 
 from core.events import Events, get_event_bus
+from core.services import use
+from services.contracts import CharacterRegistry
 from main_logger import logger
 from ui.async_bus import dispatch_to_gui, run_async
 from utils import getTranslationVariant as _
@@ -173,17 +175,9 @@ def _load_api_provider_names() -> list[str]:
 
 
 def _load_character_settings_snapshot() -> dict[str, Any]:
-    bus = get_event_bus()
-    all_characters = bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
-    character_list = all_characters[0] if all_characters else []
-
-    current_profile_res = bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-    current_profile = current_profile_res[0] if current_profile_res else {}
-    current_char_id = (
-        str(current_profile.get("character_id", "") or "").strip()
-        if isinstance(current_profile, dict)
-        else ""
-    )
+    registry = use(CharacterRegistry)
+    character_list = registry.all_ids()
+    current_char_id = registry.current_id()
 
     return {
         "character_list": [str(c or "").strip() for c in (character_list or []) if str(c or "").strip()],
