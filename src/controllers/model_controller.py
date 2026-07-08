@@ -11,7 +11,7 @@ from typing import Optional, Any
 import base64
 
 from handlers.chat_handler import ChatModel
-from utils import _
+from utils import _, redact_image_payloads
 from core.events import get_event_bus, Events, Event
 from core.executors import Pools, executors
 from core.services import services, use
@@ -731,10 +731,16 @@ class ModelController(GenerationService):
     # ---------------------------------------------------------------------
 
     def _cache_base_prompt(self, character_id: str, event_type: str, messages: list[dict]) -> None:
+        """Кэш промпта для подсчёта токенов.
+
+        Раньше здесь был deepcopy всего промпта — вместе с base64-картинками, на
+        каждый ответ. Картинки в кэше не нужны: ContextCounter считает image_url
+        фиксированной ценой, поэтому редакция url не меняет число токенов.
+        """
         if not character_id or not isinstance(messages, list):
             return
 
-        safe = copy.deepcopy(messages)
+        safe = redact_image_payloads(list(messages))
         if safe and isinstance(safe[-1], dict) and safe[-1].get("role") == "user":
             safe = safe[:-1]
 

@@ -29,6 +29,9 @@ class Pools:
     # Исходящие HTTP-вызовы к LLM-провайдерам. Отдельный пул, потому что
     # запрос, брошенный по таймауту, продолжает висеть в своём потоке.
     LLM_HTTP = "llm-http"
+    # Дебаг-дампы запроса/ответа на диск. Один поток: порядок «запрос → ответ»
+    # должен сохраняться, а hot path не должен ждать диск.
+    DEBUG_DUMP = "debug-dump"
     # Асинхронная доставка подписчикам (emit).
     EVENT_BUS = "event-bus"
     # Диспетчеризация emit_and_wait. Отдельный пул: медленный async-подписчик
@@ -49,6 +52,7 @@ _SPECS: Dict[str, _PoolSpec] = {
     Pools.BACKGROUND_LLM: _PoolSpec(max_workers=1, capacity=4),
     Pools.IO: _PoolSpec(max_workers=6),
     Pools.LLM_HTTP: _PoolSpec(max_workers=8),
+    Pools.DEBUG_DUMP: _PoolSpec(max_workers=1),
     Pools.DB_WRITER: _PoolSpec(max_workers=1),
     Pools.EVENT_BUS: _PoolSpec(max_workers=8),
     Pools.EVENT_BUS_SYNC: _PoolSpec(max_workers=16),

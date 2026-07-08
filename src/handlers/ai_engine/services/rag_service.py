@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable
 
+from handlers.ai_engine.gpu_scheduler import Priority, get_scheduler
+
 
 class RAGService:
     def __init__(self, *, emit_event: Callable[[str, Any], None]):
@@ -20,7 +22,9 @@ class RAGService:
         if m == "warmup_embeddings":
             model_name = str(payload.get("model_name") or "").strip()
             query_prefix = str(payload.get("query_prefix") or "")
-            return await asyncio.to_thread(self._warmup_embeddings_sync, model_name, query_prefix)
+            return await get_scheduler().run(
+                Priority.BULK, self._warmup_embeddings_sync, model_name, query_prefix
+            )
 
         if m == "get_embeddings":
             texts = payload.get("texts") or []
@@ -29,7 +33,10 @@ class RAGService:
             prefix = payload.get("prefix")
             prefix = query_prefix if prefix is None else str(prefix or "")
             batch_size = payload.get("batch_size")
-            return await asyncio.to_thread(
+            # Эмбеддинг запроса пользователя обгоняет фоновую индексацию.
+            priority = Priority.parse(payload.get("priority"), default=Priority.HOT)
+            return await get_scheduler().run(
+                priority,
                 self._get_embeddings_sync,
                 list(texts or []),
                 model_name,
@@ -50,7 +57,8 @@ class RAGService:
             total_candidates = int(payload.get("total_candidates") or len(candidates))
 
             reranker = WorkerCrossEncoderReranker.get(model_name)
-            return await asyncio.to_thread(
+            return await get_scheduler().run(
+                Priority.RERANK,
                 reranker.rerank_payload,
                 query,
                 candidates,

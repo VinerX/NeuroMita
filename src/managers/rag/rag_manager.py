@@ -466,6 +466,7 @@ class RAGManager:
         use_event_bus: bool = True,
         batch_size: Optional[int] = None,
         allow_when_rag_disabled: bool = False,
+        priority: str = "hot",
     ) -> List[Optional[np.ndarray]]:
         """
         Массовое получение эмбеддингов:
@@ -510,7 +511,7 @@ class RAGManager:
                     chunk = cleaned[i:i + bs]
                     results = self.event_bus.emit_and_wait(
                         EMBEDS_EVENT_NAME,
-                        {"texts": chunk, "prefix": prefix, "batch_size": bs},
+                        {"texts": chunk, "prefix": prefix, "batch_size": bs, "priority": priority},
                     )
                     if not results:
                         # No subscribers — fall through to fallback handler
@@ -602,7 +603,7 @@ class RAGManager:
         if not sentences:
             return 0
 
-        vecs = self._get_embeddings(sentences, batch_size=batch_size)
+        vecs = self._get_embeddings(sentences, batch_size=batch_size, priority="bulk")
         stored = 0
         for idx, (sent, vec) in enumerate(zip(sentences, vecs)):
             if vec is None:
@@ -704,7 +705,7 @@ class RAGManager:
                 return 0
             model = self._current_model_name()
             names = [e["name"] for e in entities]
-            vecs = self._get_embeddings(names)
+            vecs = self._get_embeddings(names, priority="bulk")
             if not vecs:
                 return 0
             count = 0
@@ -1159,6 +1160,7 @@ class RAGManager:
                     texts,
                     batch_size=batch_size,
                     allow_when_rag_disabled=True,
+                    priority="bulk",
                 )
 
                 for (row_id, _), vec in zip(chunk, vecs):
@@ -1194,6 +1196,7 @@ class RAGManager:
                     texts,
                     batch_size=batch_size,
                     allow_when_rag_disabled=True,
+                    priority="bulk",
                 )
 
                 for (eternal_id, _), vec in zip(chunk, vecs):
@@ -1309,6 +1312,7 @@ class RAGManager:
                     texts,
                     batch_size=batch_size,
                     allow_when_rag_disabled=True,
+                    priority="bulk",
                 )
 
                 for (row_id, _), vec in zip(chunk, vecs):
@@ -1344,6 +1348,7 @@ class RAGManager:
                     texts,
                     batch_size=batch_size,
                     allow_when_rag_disabled=True,
+                    priority="bulk",
                 )
 
                 for (eternal_id, _), vec in zip(chunk, vecs):

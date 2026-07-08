@@ -139,10 +139,13 @@ class LLMRequestRunner:
         for attempt in range(1, max_attempts + 1):
             logger.info(f"{preset_tag} Generation attempt {attempt}/{max_attempts}")
 
+            # Дамп попытки — на диск в фоне: он не должен задерживать запрос.
             try:
                 _base = os.environ.get("NEUROMITA_BASE_DIR", "")
                 _log_path = os.path.join(_base, "SavedMessages", "last_attempt_log") if _base else "SavedMessages/last_attempt_log"
-                save_combined_messages(messages, _log_path)
+                # Снимок списка: дамп уедет в другой поток, а messages ещё могут
+                # дополняться (tool-call добавляет сообщения ко второму запросу).
+                executors().submit(Pools.DEBUG_DUMP, save_combined_messages, list(messages), _log_path)
             except Exception:
                 pass
 

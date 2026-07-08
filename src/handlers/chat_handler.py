@@ -3,7 +3,7 @@ import re
 from typing import List, Dict, Any, Optional
 
 from main_logger import logger
-from utils import _, mask_sensitive
+from utils import _, mask_sensitive, redact_image_payloads
 
 from characters.character import Character
 
@@ -20,6 +20,7 @@ from utils.openrouter_routing import (
 from handlers.llm_providers.param_mapper import build_unified_generation_params
 
 from core.events import get_event_bus
+from core.executors import Pools, executors
 from core.services import use
 from services.contracts import GameLinkService
 
@@ -49,7 +50,7 @@ def _save_last_request_context(req, character_name: str = "") -> None:
             "dialect_id": getattr(req, "dialect_id", None),
             "character_name": character_name or "",
             "extra": {k: v for k, v in extra_raw.items() if k in _KEEP},
-            "messages": getattr(req, "messages", []),
+            "messages": redact_image_payloads(getattr(req, "messages", [])),
         }
         with open(os.path.join(out_dir, "last_request_context.json"), "w", encoding="utf-8") as f:
             json.dump(record, f, ensure_ascii=False, indent=2)
@@ -89,7 +90,7 @@ def _save_last_response_context(req, response: LLMResponse, *, raw_response_text
                 "dialect_id": getattr(req, "dialect_id", None),
                 "character_name": "",
                 "extra": extra_raw,
-                "messages": getattr(req, "messages", []),
+                "messages": redact_image_payloads(getattr(req, "messages", [])),
             }
 
         usage = getattr(response, "usage", None)
@@ -271,7 +272,13 @@ class ChatModel:
                     req.extra["openrouter_session_id"] = session_id
             _last_req[0] = req
             _char = getattr(self, "current_character", None)
-            _save_last_request_context(req, character_name=getattr(_char, "name", "") or "")
+            # Диск — вне hot path: дампы пишутся в своём однопоточном пуле.
+            executors().submit(
+                Pools.DEBUG_DUMP,
+                _save_last_request_context,
+                req,
+                character_name=getattr(_char, "name", "") or "",
+            )
             return req
 
         try:
@@ -319,7 +326,9 @@ class ChatModel:
             if cleaned_response:
                 response_text.text = cleaned_response
                 if _last_req[0]:
-                    _save_last_response_context(
+                    executors().submit(
+                        Pools.DEBUG_DUMP,
+                        _save_last_response_context,
                         _last_req[0],
                         response_text,
                         raw_response_text=raw_response_text,

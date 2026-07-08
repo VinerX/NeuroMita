@@ -42,7 +42,10 @@ def get_embeddings(
     prefix: str = "",
     batch_size: Optional[int] = None,
     timeout_sec: Optional[float] = None,
+    priority: str = "hot",
 ):
+    """priority: "hot" — эмбеддинг запроса пользователя (его ждёт ответ Миты),
+    "bulk" — фоновая индексация, уступает hot в очереди к устройству."""
     n = len(texts or [])
     if timeout_sec is None:
         timeout_sec = max(30.0, min(3600.0, float(max(1, n)) * 20.0))
@@ -54,6 +57,7 @@ def get_embeddings(
             "query_prefix": str(query_prefix or ""),
             "prefix": str(prefix or ""),
             "batch_size": batch_size,
+            "priority": str(priority or "hot"),
         },
         timeout_sec=timeout_sec,
     )

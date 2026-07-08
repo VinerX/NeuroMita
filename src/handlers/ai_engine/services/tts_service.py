@@ -6,6 +6,9 @@ import asyncio
 from typing import Any, Optional, Callable
 
 
+from handlers.ai_engine.gpu_scheduler import Priority, get_scheduler
+
+
 class TTSService:
     """
     Универсальный TTS service поверх LocalVoice.
@@ -88,7 +91,7 @@ class TTSService:
 
             lv = self._get_local_voice()
             self.emit_event("log", f"[tts:init] start model_id={model_id} warmup={do_warmup}")
-            ok = await asyncio.to_thread(lv.initialize_model, model_id, init=False)
+            ok = await get_scheduler().run(Priority.BULK, lv.initialize_model, model_id, init=False)
             if not ok:
                 self.emit_event("log", f"[tts:init] initialize_model returned False for model_id={model_id}")
                 return False
@@ -123,7 +126,10 @@ class TTSService:
             out_abs = os.path.abspath(output_file)
             os.makedirs(os.path.dirname(out_abs) or ".", exist_ok=True)
 
-            return await lv.voiceover(text=text, output_file=out_abs, character=character)
+            # Слот устройства держим на весь синтез: иначе он поедет параллельно
+            # с эмбеддингом/реранком и будет драться за VRAM.
+            async with get_scheduler().slot(Priority.TTS):
+                return await lv.voiceover(text=text, output_file=out_abs, character=character)
 
         if m in ("get_triton_status", "refresh_triton_status"):
             if m == "get_triton_status" and self._triton_status_cache is not None:

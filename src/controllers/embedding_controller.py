@@ -11,7 +11,11 @@ from handlers.ai_engine.rag_client import (
     get_embeddings as rag_get_embeddings,
     warmup_embeddings as rag_warmup_embeddings,
 )
-from handlers.embedding_presets import resolve_full_config, resolve_model_settings
+from handlers.embedding_presets import (
+    invalidate_embedding_config_cache,
+    resolve_full_config,
+    resolve_model_settings,
+)
 from main_logger import logger
 from managers.settings_manager import SettingsManager
 
@@ -29,6 +33,10 @@ class EmbeddingController:
     process.
     """
 
+    # Раньше стояло 3600с: «вечное» ожидание маскировало зависший worker.
+    # Эмбеддинг запроса пользователя не имеет смысла ждать дольше самой генерации.
+    _HOT_TIMEOUT_SEC = 60.0
+
     _EMBED_SETTING_KEYS = frozenset({
         "RAG_EMBED_MODEL",
         "RAG_EMBED_MODEL_CUSTOM",
@@ -43,7 +51,6 @@ class EmbeddingController:
         self.handler: object | None = None
         self._handler_failed: bool = False
         self._init_lock = Lock()
-        self._infer_lock = Lock()
 
         self._subscribe_to_events()
 
@@ -89,6 +96,10 @@ class EmbeddingController:
         self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
         self.event_bus.subscribe(Events.RAG.MODEL_CHANGED, self._on_model_changed, weak=False)
         self.event_bus.subscribe(Events.Install.TASK_FINISHED, self._on_install_task_finished, weak=False)
+        # Содержимое пресета могло измениться при том же id — сигнатура настроек
+        # этого не поймает, поэтому сбрасываем кэш конфига явно.
+        self.event_bus.subscribe(Events.EmbeddingPresets.PRESET_SAVED, self._on_preset_mutated, weak=False)
+        self.event_bus.subscribe(Events.EmbeddingPresets.PRESET_DELETED, self._on_preset_mutated, weak=False)
         logger.notify(
             f"EmbeddingController подписался на события: {EMBED_EVENT_NAME}, {EMBEDS_EVENT_NAME}"
         )
@@ -149,8 +160,12 @@ class EmbeddingController:
                     return False
         return True
 
+    def _on_preset_mutated(self, _event: Event) -> None:
+        invalidate_embedding_config_cache()
+
     def _on_model_changed(self, event: Event) -> None:
         data = event.data or {}
+        invalidate_embedding_config_cache()
         logger.info(f"EmbeddingController: MODEL_CHANGED event received: {data}")
 
     def _on_setting_changed(self, event: Event) -> None:
@@ -160,6 +175,7 @@ class EmbeddingController:
             return
 
         logger.info(f"EmbeddingController: настройка '{key}' изменилась, сбрасываю local backend cache")
+        invalidate_embedding_config_cache()
         with self._init_lock:
             self.handler = None
             self._handler_failed = False
@@ -181,6 +197,7 @@ class EmbeddingController:
         if meta.get("kind") != "rag" and not task_id.startswith("rag:"):
             return
 
+        invalidate_embedding_config_cache()
         with self._init_lock:
             self.handler = None
             self._handler_failed = False
@@ -205,15 +222,18 @@ class EmbeddingController:
         try:
             self._ensure_local_backend()
             ms = resolve_model_settings()
-            with self._infer_lock:
-                results = rag_get_embeddings(
-                    [str(text)],
-                    model_name=ms["hf_name"],
-                    query_prefix=ms["query_prefix"],
-                    prefix=str(prefix or ""),
-                    batch_size=1,
-                    timeout_sec=3600.0,
-                )
+            # Никакого _infer_lock: конкуренцию за устройство разруливает
+            # приоритетный планировщик внутри AI-worker'а. Локальный лок здесь
+            # просто заставлял эмбеддинг запроса ждать фоновую индексацию.
+            results = rag_get_embeddings(
+                [str(text)],
+                model_name=ms["hf_name"],
+                query_prefix=ms["query_prefix"],
+                prefix=str(prefix or ""),
+                batch_size=1,
+                timeout_sec=self._HOT_TIMEOUT_SEC,
+                priority="hot",
+            )
             vec = results[0] if results else None
 
             if future is not None:
@@ -237,6 +257,7 @@ class EmbeddingController:
         texts = data.get("texts") or []
         prefix = data.get("prefix") or ""
         batch_size = data.get("batch_size")
+        priority = str(data.get("priority") or "hot")
         future = data.get("future")
 
         if not texts or self._provider_name() != "local":
@@ -254,15 +275,15 @@ class EmbeddingController:
             if bs <= 0:
                 bs = 32
 
-            with self._infer_lock:
-                results = rag_get_embeddings(
-                    list(texts),
-                    model_name=ms["hf_name"],
-                    query_prefix=ms["query_prefix"],
-                    prefix=str(prefix or ""),
-                    batch_size=bs,
-                    timeout_sec=3600.0,
-                )
+            results = rag_get_embeddings(
+                list(texts),
+                model_name=ms["hf_name"],
+                query_prefix=ms["query_prefix"],
+                prefix=str(prefix or ""),
+                batch_size=bs,
+                timeout_sec=(None if priority == "bulk" else self._HOT_TIMEOUT_SEC),
+                priority=priority,
+            )
 
             if future is not None:
                 try:

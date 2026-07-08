@@ -68,6 +68,30 @@ def run_worker_process(worker_name: str, cmd_queue, res_queue, log_queue) -> Non
         _log(log_queue, "error", f"Worker '{worker_name}' crashed:\n{traceback.format_exc()}")
 
 
+def _respond(res_queue, service_name: str, req_id, *, ok: bool, result=None, error=None) -> None:
+    try:
+        res_queue.put(
+            {
+                "type": "response",
+                "service": service_name,
+                "req_id": req_id,
+                "ok": bool(ok),
+                **({"result": result} if ok else {"error": str(error)}),
+            }
+        )
+    except Exception:
+        pass
+
+
+async def _dispatch(service, service_name: str, method: str, payload: dict, req_id, res_queue, log_queue) -> None:
+    try:
+        result = await service.handle(method, payload)
+        _respond(res_queue, service_name, req_id, ok=True, result=result)
+    except Exception as e:
+        _log(log_queue, "error", f"[{service_name}.{method}] failed: {e}\n{traceback.format_exc()}")
+        _respond(res_queue, service_name, req_id, ok=False, error=e)
+
+
 async def _worker_loop(worker_name: str, cmd_queue, res_queue, log_queue) -> None:
     services = {
         service_name: _load_service(
@@ -81,6 +105,16 @@ async def _worker_loop(worker_name: str, cmd_queue, res_queue, log_queue) -> Non
     for service_name in services.keys():
         _emit_ready(res_queue, service_name)
 
+    # Команды обрабатываются конкурентно: раньше `await service.handle(...)`
+    # стоял прямо в цикле, поэтому синтез TTS предыдущего ответа блокировал
+    # эмбеддинг запроса следующего. Доступ к устройству сериализует
+    # gpu_scheduler с приоритетами, а не порядок чтения очереди.
+    inflight: set[asyncio.Task] = set()
+
+    async def _drain() -> None:
+        if inflight:
+            await asyncio.gather(*list(inflight), return_exceptions=True)
+
     while True:
         cmd = await asyncio.to_thread(cmd_queue.get)
         if not isinstance(cmd, dict):
@@ -93,6 +127,7 @@ async def _worker_loop(worker_name: str, cmd_queue, res_queue, log_queue) -> Non
         payload = cmd.get("payload") if isinstance(cmd.get("payload"), dict) else {}
 
         if control == "shutdown" or method == "shutdown":
+            await _drain()
             for service in services.values():
                 try:
                     if hasattr(service, "shutdown"):
@@ -103,6 +138,8 @@ async def _worker_loop(worker_name: str, cmd_queue, res_queue, log_queue) -> Non
             return
 
         if control == "restart_service":
+            # Перезапуск сервиса не может ехать параллельно с его же запросами.
+            await _drain()
             try:
                 services[service_name] = await _restart_service(
                     services,
@@ -110,72 +147,22 @@ async def _worker_loop(worker_name: str, cmd_queue, res_queue, log_queue) -> Non
                     res_queue=res_queue,
                     log_queue=log_queue,
                 )
-                res_queue.put(
-                    {
-                        "type": "response",
-                        "service": service_name,
-                        "req_id": req_id,
-                        "ok": True,
-                        "result": True,
-                    }
-                )
+                _respond(res_queue, service_name, req_id, ok=True, result=True)
             except Exception as e:
                 _log(log_queue, "error", f"[{service_name}] restart failed: {e}\n{traceback.format_exc()}")
-                try:
-                    res_queue.put(
-                        {
-                            "type": "response",
-                            "service": service_name,
-                            "req_id": req_id,
-                            "ok": False,
-                            "error": str(e),
-                        }
-                    )
-                except Exception:
-                    pass
+                _respond(res_queue, service_name, req_id, ok=False, error=e)
             continue
 
         service = services.get(service_name)
         if service is None:
-            try:
-                res_queue.put(
-                    {
-                        "type": "response",
-                        "service": service_name,
-                        "req_id": req_id,
-                        "ok": False,
-                        "error": f"Unknown service: {service_name}",
-                    }
-                )
-            except Exception:
-                pass
+            _respond(res_queue, service_name, req_id, ok=False, error=f"Unknown service: {service_name}")
             continue
 
-        try:
-            res = await service.handle(method, payload)
-            res_queue.put(
-                {
-                    "type": "response",
-                    "service": service_name,
-                    "req_id": req_id,
-                    "ok": True,
-                    "result": res,
-                }
-            )
-        except Exception as e:
-            _log(log_queue, "error", f"[{service_name}.{method}] failed: {e}\n{traceback.format_exc()}")
-            try:
-                res_queue.put(
-                    {
-                        "type": "response",
-                        "service": service_name,
-                        "req_id": req_id,
-                        "ok": False,
-                        "error": str(e),
-                    }
-                )
-            except Exception:
-                pass
+        task = asyncio.create_task(
+            _dispatch(service, service_name, method, payload, req_id, res_queue, log_queue)
+        )
+        inflight.add(task)
+        task.add_done_callback(inflight.discard)
 
 
 async def _restart_service(services: dict[str, Any], service_name: str, *, res_queue, log_queue):

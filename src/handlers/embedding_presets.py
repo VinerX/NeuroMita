@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Optional
 
 try:
@@ -124,7 +125,53 @@ def resolve_model_settings() -> dict:
     }
 
 
+_CONFIG_CACHE_KEYS = (
+    "RAG_EMBED_PRESET_ID",
+    "RAG_EMBED_MODEL",
+    "RAG_EMBED_MODEL_CUSTOM",
+    "RAG_EMBED_QUERY_PREFIX",
+)
+
+_config_lock = Lock()
+_config_cache: Optional[tuple] = None  # (signature, cfg)
+
+
+def _config_signature() -> tuple:
+    return tuple(SettingsManager.get(key, None) for key in _CONFIG_CACHE_KEYS)
+
+
+def invalidate_embedding_config_cache() -> None:
+    """Сбросить кэш: содержимое пресета могло измениться при том же id."""
+    global _config_cache
+    with _config_lock:
+        _config_cache = None
+
+
 def resolve_full_config() -> Dict[str, Any]:
+    """Кэширующая обёртка. Один RAG-поиск дёргал это 7 раз, а каждый вызов уходил
+    в EventBus (emit_and_wait, timeout=2s) — то есть 7 потоков на запрос.
+
+    Кэш самоинвалидируется по сигнатуре настроек; при правке содержимого пресета
+    владельцы зовут invalidate_embedding_config_cache().
+    """
+    global _config_cache
+    signature = _config_signature()
+
+    with _config_lock:
+        cached = _config_cache
+    if cached is not None and cached[0] == signature:
+        return dict(cached[1])
+
+    cfg = _resolve_full_config_uncached()
+
+    # Сигнатуру берём ПОСЛЕ резолва: он сам может мигрировать легаси-настройки
+    # (проставить RAG_EMBED_PRESET_ID), и кэш под «старой» сигнатурой промахнулся бы.
+    with _config_lock:
+        _config_cache = (_config_signature(), cfg)
+    return dict(cfg)
+
+
+def _resolve_full_config_uncached() -> Dict[str, Any]:
     """Return full embedding config including provider routing info.
 
     Priority:
