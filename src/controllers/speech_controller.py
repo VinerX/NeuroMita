@@ -110,7 +110,6 @@ class SpeechController:
         eb.subscribe(Events.Speech.SPEECH_TEXT_RECOGNIZED, self._on_speech_text_recognized, weak=False)
         eb.subscribe(Events.Audio.MITA_SPEAKING_WINDOW, self._on_mita_speaking_window, weak=False)
         eb.subscribe(Events.Speech.GET_MIC_STATUS, self._on_get_mic_status, weak=False)
-        eb.subscribe(Events.Speech.GET_USER_INPUT, self._on_get_user_input, weak=False)
 
         eb.subscribe(Events.Speech.SET_MICROPHONE, self._on_set_microphone, weak=False)
         eb.subscribe(Events.Speech.START_SPEECH_RECOGNITION, self._on_start_speech_recognition, weak=False)
@@ -567,9 +566,6 @@ class SpeechController:
                 logger.error(f"Ошибка перезапуска распознавания: {e}")
 
         threading.Thread(target=restart, daemon=True).start()
-
-    def _on_get_user_input(self, _event: Event):
-        return ""
 
     def _on_get_microphone_list(self, event: Event):
         data = event.data or {}

@@ -515,7 +515,6 @@ class Events:
         START_SPEECH_RECOGNITION = "start_speech_recognition"
         STOP_SPEECH_RECOGNITION = "stop_speech_recognition"
         UPDATE_SPEECH_SETTINGS = "update_speech_settings"
-        GET_USER_INPUT = "get_user_input"
         GET_INSTANT_SEND_STATUS = "get_instant_send_status"
         SET_INSTANT_SEND_STATUS = "set_instant_send_status"
         SPEECH_TEXT_RECOGNIZED = "speech_text_recognized"

@@ -5,7 +5,10 @@ from PyQt6.QtGui import QPixmap
 import qtawesome as qta
 from abc import ABC, abstractmethod
 from core.events import get_event_bus, Events
+from core.services import use
 from localization import available_languages, language_display_name, translate_for_language
+from main_logger import logger
+from services.contracts import SettingsService
 import os
 from styles.theme import get_theme
 from utils import render_qss
@@ -421,15 +424,14 @@ class GuideWidget(QWidget):
         self._update_level_texts()
         self.current_page_index = 0
         self.show_page(0)
+        # Раньше здесь были: SettingsManager.set() без сохранения на диск и emit
+        # несуществующего Events.Settings.GUIDE_LEVEL_CHANGED — оба под try/except,
+        # то есть уровень гайда молча не сохранялся и никто о смене не узнавал.
+        # SettingsService.update() пишет на диск и эмитит Core.SETTING_CHANGED.
         try:
-            from managers.settings_manager import SettingsManager
-            SettingsManager.set("GUIDE_LEVEL", level)
-        except Exception:
-            pass
-        try:
-            self.event_bus.emit(Events.Settings.GUIDE_LEVEL_CHANGED, level)
-        except Exception:
-            pass
+            use(SettingsService).update("GUIDE_LEVEL", level)
+        except Exception as e:
+            logger.warning(f"[GuideWidget] Не удалось сохранить GUIDE_LEVEL: {e}")
 
     def _update_filtered_pages(self):
         cur_rank = _LEVEL_RANK.get(self._guide_level, 0)

@@ -802,13 +802,11 @@ class ModelController(GenerationService):
         if not base:
             return cid, [], 0
 
-        user_input_res = self.event_bus.emit_and_wait(Events.Speech.GET_USER_INPUT, timeout=1.0)
-        user_text = user_input_res[0] if user_input_res else ""
-
+        # Events.Speech.GET_USER_INPUT удалён: единственный подписчик всегда
+        # возвращал "", то есть это был поход на шину за пустой строкой.
         messages = list(base)
         messages.extend([x for x in self._temporary_system_infos if isinstance(x, dict)])
 
-        messages = self.context_counter.with_user_text(messages, str(user_text or ""))
         return cid, messages, self.context_counter.count_tokens(messages)
 
     def _build_token_stats(self) -> dict[str, Any]:
