@@ -1,10 +1,12 @@
 import threading
 from typing import Dict, List, Callable, Any, Optional
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import wait
 import weakref
 from dataclasses import dataclass
 from queue import Queue, Empty
 import time
+
+from core.executors import Pools, executors
 from main_logger import logger
 
 
@@ -32,15 +34,17 @@ class _SyncDispatchResult:
 
 class EventBus:
     """
-    Потокобезопасная система событий с поддержкой слабых ссылок
-    для предотвращения утечек памяти
+    Шина уведомлений: emit() — fire-and-forget, emit_and_wait() — сбор ответов.
+
+    ВАЖНО: emit_and_wait — не механизм вызова сервисов. Запрос/ответ живёт в
+    core.services (типизированный ServiceRegistry). Здесь он остался только для
+    «многие подписчики отвечают» и для команд UI. Новые GET_*-события заводить
+    нельзя: заведите сервис.
     """
-    
-    def __init__(self, max_workers: int = 5):
+
+    def __init__(self):
         self._subscribers: Dict[str, List[weakref.ref]] = {}
         self._lock = threading.RLock()
-
-        self._executor = ThreadPoolExecutor(max_workers=max_workers)
 
         self._event_queue = Queue()
         self._running = True
@@ -131,41 +135,37 @@ class EventBus:
             return []
 
         event = Event(name=event_name, data=data)
-        executor = ThreadPoolExecutor(
-            max_workers=max(1, len(subscribers)),
-            thread_name_prefix="eventbus-wait",
-        )
+        # Общий пул: раньше на КАЖДЫЙ вызов создавался свой ThreadPoolExecutor,
+        # то есть десятки короткоживущих потоков на один пользовательский запрос.
+        pool = executors().pool(Pools.EVENT_BUS_SYNC)
         futures = {}
         ordered: list[_SyncDispatchResult | None] = [None] * len(subscribers)
 
-        try:
-            for index, subscriber in enumerate(subscribers):
-                callback_name = getattr(subscriber, "__qualname__", getattr(subscriber, "__name__", "unknown"))
-                future = executor.submit(self._call_sync_subscriber, subscriber, event, index, callback_name)
-                futures[future] = (index, callback_name)
+        for index, subscriber in enumerate(subscribers):
+            callback_name = getattr(subscriber, "__qualname__", getattr(subscriber, "__name__", "unknown"))
+            future = pool.submit(self._call_sync_subscriber, subscriber, event, index, callback_name)
+            futures[future] = (index, callback_name)
 
-            done, not_done = wait(futures.keys(), timeout=max(0.0, float(timeout)))
+        done, not_done = wait(futures.keys(), timeout=max(0.0, float(timeout)))
 
-            for future in done:
-                result = future.result()
-                ordered[result.index] = result
+        for future in done:
+            result = future.result()
+            ordered[result.index] = result
 
-            for future in not_done:
-                index, callback_name = futures[future]
-                ordered[index] = _SyncDispatchResult(
-                    index=index,
-                    callback_name=callback_name,
-                    ok=False,
-                    error=TimeoutError(f"Timed out after {float(timeout):.3f}s"),
-                    duration=float(timeout),
-                )
-                future.cancel()
-                logger.warning(
-                    f"emit_and_wait timeout for event '{event_name}' in subscriber '{callback_name}' "
-                    f"after {float(timeout):.3f}s"
-                )
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+        for future in not_done:
+            index, callback_name = futures[future]
+            ordered[index] = _SyncDispatchResult(
+                index=index,
+                callback_name=callback_name,
+                ok=False,
+                error=TimeoutError(f"Timed out after {float(timeout):.3f}s"),
+                duration=float(timeout),
+            )
+            future.cancel()
+            logger.warning(
+                f"emit_and_wait timeout for event '{event_name}' in subscriber '{callback_name}' "
+                f"after {float(timeout):.3f}s"
+            )
 
         duration = time.perf_counter() - start_time
         if duration > 0.03:
@@ -218,8 +218,6 @@ class EventBus:
         self._running = False
         self._event_queue.put(None)  # Сигнал для остановки
         self._processor_thread.join(timeout=5)
-
-        self._executor.shutdown(wait=True)
     
     def _process_events(self) -> None:
         """Обработчик очереди событий (работает в отдельном потоке)"""
@@ -250,9 +248,10 @@ class EventBus:
         """Асинхронная отправка события"""
         with self._lock:
             subscribers = self._get_active_subscribers(event.name)
-        
+
+        pool = executors().pool(Pools.EVENT_BUS)
         for subscriber in subscribers:
-            self._executor.submit(self._safe_call, subscriber, event)
+            pool.submit(self._safe_call, subscriber, event)
     
     def _safe_call(self, callback: Callable, event: Event) -> None:
         """Безопасный вызов обработчика"""
@@ -301,11 +300,16 @@ class EventBus:
         return cleanup
     
     def _is_same_callback(self, ref: Any, callback: Callable) -> bool:
-        """Проверить, указывает ли ссылка на тот же callback"""
-        if isinstance(ref, weakref.ref):
-            return ref() is callback
-        else:
-            return ref is callback
+        """Проверить, указывает ли ссылка на тот же callback.
+
+        Сравнение через `==`, а не `is`: `obj.method` создаёт новый bound-method
+        на каждое обращение, поэтому `is` здесь всегда False — unsubscribe()
+        для методов не срабатывал вовсе. Bound-методы равны по (__self__, __func__).
+        """
+        target = ref() if isinstance(ref, weakref.ref) else ref
+        if target is None:
+            return False
+        return target == callback
 
 
 # Глобальный экземпляр для удобства использования
@@ -364,11 +368,21 @@ class Events:
     Доступ возможен как Events.EVENT_NAME, так и Events.GROUP.EVENT_NAME.
     """
 
+    # УДАЛЕНО (стало сервисами в core/services.py + services/contracts.py):
+    #   Core.GET_EVENT_LOOP, Core.RUN_IN_LOOP      -> LoopService
+    #   Settings.GET_SETTING/GET_SETTINGS          -> SettingsService
+    #   Settings.GET_APP_VARS                      -> AppVarsService
+    #   Character.GET/GET_ALL/GET_CURRENT_*        -> CharacterRegistry
+    #   Server.GET_GAME_CONNECTION                 -> GameLinkService
+    #   Prompt.BUILD_PROMPT                        -> PromptBuilderService
+    #   History.PREPARE_FOR_PROMPT                 -> HistoryService
+    #   Model.GENERATE_RESPONSE                    -> GenerationService
+    # Это были синхронные вызовы функций, замаскированные под события: каждый
+    # тянул поток, executor и таймаут, а вложенность доходила до 5 уровней.
+
     class Core:
         """Системные и межкомпонентные события"""
-        GET_EVENT_LOOP = "get_event_loop"
         LOOP_READY = "loop_ready"
-        RUN_IN_LOOP = "run_in_loop"
         SETTING_CHANGED = "setting_changed"
 
     class GUI:
@@ -442,7 +456,6 @@ class Events:
         ON_TOOL_EXECUTING = "on_tool_executing"   # payload: {tool_name, character_id}
         ON_TOOL_DONE = "on_tool_done"             # payload: {tool_name, character_id}
         ADD_TEMPORARY_SYSTEM_INFO = "add_temporary_system_info"
-        GENERATE_RESPONSE = "generate_response"
         GET_LLM_PROCESSING_STATUS = "get_llm_processing_status"
         GET_GAME_STATE = "get_game_state"
         PEEK_TEMPORARY_SYSTEM_INFOS = "peek_temporary_system_infos"
@@ -547,7 +560,6 @@ class Events:
 
     class Server:
         """События для взаимодействия с игровым клиентом через TCP сервер"""
-        GET_GAME_CONNECTION = "get_connection_status"
         STOP_SERVER = "stop_server"
         SET_GAME_CONNECTION = "update_game_connection"
         SET_GAME_DATA = "set_game_data"
@@ -576,12 +588,9 @@ class Events:
         STOP_SILERO = "telegram_stop_silero"
 
     class Settings:
-        """События для управления настройками"""
+        """События для управления настройками (чтение — через SettingsService)"""
         SAVE_SETTING = "save_setting"
-        GET_SETTING = "get_setting"
         LOAD_SETTINGS = "load_settings"
-        GET_SETTINGS = "get_settings"
-        GET_APP_VARS = "get_app_vars"
 
     class VoiceModel:
         """События для управления локальными голосовыми моделями"""
@@ -638,13 +647,8 @@ class Events:
         UPDATE_PRESET_MODELS = "update_preset_models"
         SAVE_PRESETS_ORDER = "save_presets_order"
 
-    class Prompt:
-        """Сборка промптов для LLM"""
-        BUILD_PROMPT = "build_prompt"
-
     class History:
-        """Работа с историей диалога"""
-        PREPARE_FOR_PROMPT = "prepare_history_for_prompt"
+        """Работа с историей диалога (подготовка промпта — HistoryService)"""
         SAVE_AFTER_RESPONSE = "save_history_after_response"
         MESSAGE_COMPLETED = "history_message_completed"
         # Эмитится ПОСЛЕ фактического применения сжатия (история подрезана,
@@ -689,11 +693,6 @@ class Events:
         SAVE_SETTINGS = "installable_save_settings"
 
     class Character:
-        GET_ALL = "character_get_all"
-        GET = "character_get"
-        GET_CURRENT_PROFILE = "character_get_current_profile"
-        GET_CURRENT_NAME = "character_get_current_name"
-
         SET_CURRENT = "character_set_current"
         RELOAD_DATA = "character_reload_data"
         RELOAD_PROMPTS = "character_reload_prompts"
