@@ -777,58 +777,6 @@ class AppWindowBase(QMainWindow):
 
             run_async(self, worker, apply, name="app-token-stats")
             return
-            stats_res = self.event_bus.emit_and_wait(Events.Model.GET_TOKEN_STATS, timeout=0.5)
-            stats = stats_res[0] if stats_res and isinstance(stats_res[0], dict) else {}
-            current_context_tokens = int(stats.get("estimated_context_tokens") or 0)
-            max_model_tokens = int(stats.get("max_context_tokens") or self._get_setting("MAX_MODEL_TOKENS", 32000))
-            est_cost = stats.get("estimated_input_cost")
-            est_currency = str(stats.get("estimated_input_cost_currency") or "")
-            est_cost_text = "n/a" if est_cost is None else f"{float(est_cost):.4f} {est_currency}".strip()
-            actual_prompt = stats.get("actual_prompt_tokens")
-            actual_completion = stats.get("actual_completion_tokens")
-            actual_cached = stats.get("actual_cached_prompt_tokens")
-            actual_cost = stats.get("actual_cost")
-            actual_currency = str(stats.get("actual_cost_currency") or "")
-            fmt = self._fmt_tokens
-            cost = float(est_cost or 0.0) if est_cost is not None else 0.0
-            self.token_count_label.setText(
-                _("Токены: {}/{} (Макс. токены: {}) | Ориент. стоимость: {:.4f} ₽",
-                  "Tokens: {}/{} (Max tokens: {}) | Approx. cost: {:.4f} ₽").format(
-                    fmt(current_context_tokens), fmt(max_model_tokens), fmt(max_model_tokens), cost
-                )
-            )
-            ctx_pct = int(round(current_context_tokens / max_model_tokens * 100)) if max_model_tokens else 0
-            ctx_str = f"~{ctx_pct}% ({fmt(current_context_tokens)}/{fmt(max_model_tokens)})"
-            if actual_prompt is not None or actual_completion is not None or actual_cost is not None:
-                actual_prompt = int(actual_prompt or 0)
-                actual_completion = int(actual_completion or 0)
-                actual_cached = int(actual_cached or 0)
-                actual_total = int(stats.get("actual_total_tokens") or (actual_prompt + actual_completion))
-                actual_cost_text = "n/a" if actual_cost is None else f"{float(actual_cost):.4f} {actual_currency}".strip()
-                if actual_cached > 0:
-                    # Кеш контекста — как процент от промпта (доля попадания в кеш).
-                    cache_pct = int(round(actual_cached / actual_prompt * 100)) if actual_prompt else 0
-                    self.token_count_label.setText(
-                        _("Контекст: {} | Вход: {} | Запрос: {}/{} (всего {}, кеш {}%) | Факт: {}",
-                          "Context: {} | Input: {} | Request: {}/{} (total {}, cache {}%) | Actual: {}").format(
-                            ctx_str, est_cost_text,
-                            fmt(actual_prompt), fmt(actual_completion), fmt(actual_total), cache_pct, actual_cost_text
-                        )
-                    )
-                else:
-                    self.token_count_label.setText(
-                        _("Контекст: {} | Вход: {} | Запрос: {}/{} (всего {}) | Факт: {}",
-                          "Context: {} | Input: {} | Request: {}/{} (total {}) | Actual: {}").format(
-                            ctx_str, est_cost_text,
-                            fmt(actual_prompt), fmt(actual_completion), fmt(actual_total), actual_cost_text
-                        )
-                    )
-            else:
-                self.token_count_label.setText(
-                    _("Контекст: {} | Вход: {}",
-                      "Context: {} | Input: {}").format(ctx_str, est_cost_text)
-                )
-            self.token_count_label.setVisible(True)
         else:
             self.token_count_label.setVisible(False)
             self.token_count_label.setText(_("Токены: Токенизатор недоступен", "Tokens: Tokenizer not available"))
@@ -896,30 +844,90 @@ class AppWindowBase(QMainWindow):
                 entry_text,
                 merge_with_entry=merge_input_from_entry,
             )
-        current_image_data = []
         staged_image_data = self.staged_image_data.copy()
-
         character_id = use(CharacterRegistry).current_id()
 
-        if self._get_setting("AUTO_ATTACH_IMAGES", False):
+        auto_screen = bool(self._get_setting("AUTO_ATTACH_IMAGES", False))
+        auto_camera = bool(self._get_setting("ENABLE_CAMERA_CAPTURE", False))
+
+        if not (auto_screen or auto_camera):
+            # Захватывать нечего — не платим за поток и не откладываем отрисовку.
+            self._finish_send_message(
+                user_input=user_input,
+                system_input=system_input,
+                explicit_image_data=list(image_data or []),
+                screen_frames=[],
+                camera_frames=[],
+                staged_image_data=staged_image_data,
+                character_id=character_id,
+                from_entry=from_entry,
+                clear_entry_after_send=clear_entry_after_send,
+            )
+            return
+
+        # Захват экрана/камеры делался прямо в GUI-потоке с таймаутами 5с и 2с:
+        # до семи секунд замороженного интерфейса на каждую отправку.
+        def worker():
+            return self._capture_frames_for_send(auto_screen, auto_camera)
+
+        def apply(frames):
+            screen_frames, camera_frames = frames
+            self._finish_send_message(
+                user_input=user_input,
+                system_input=system_input,
+                explicit_image_data=list(image_data or []),
+                screen_frames=screen_frames,
+                camera_frames=camera_frames,
+                staged_image_data=staged_image_data,
+                character_id=character_id,
+                from_entry=from_entry,
+                clear_entry_after_send=clear_entry_after_send,
+            )
+
+        run_async(self, worker, apply, name="app-send-capture")
+
+    def _capture_frames_for_send(self, auto_screen: bool, auto_camera: bool):
+        """Собрать кадры экрана/камеры. Вызывается вне GUI-потока."""
+        screen_frames: list = []
+        camera_frames: list = []
+
+        if auto_screen:
             history_limit = int(self._get_setting("SCREEN_CAPTURE_HISTORY_LIMIT", 1))
             # Запас времени на one-shot захват экрана (grab+resize+JPEG).
             frames = self.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {'limit': history_limit}, timeout=5.0)
             if frames and frames[0]:
-                current_image_data.extend(frames[0])
+                screen_frames.extend(frames[0])
             else:
                 logger.info("Авто-прикрепление кадров включено, но кадры не готовы или история пуста.")
 
-        all_image_data = (image_data or []) + current_image_data + staged_image_data
-
-        if self._get_setting("ENABLE_CAMERA_CAPTURE", False):
+        if auto_camera:
             history_limit = int(self._get_setting("CAMERA_CAPTURE_HISTORY_LIMIT", 1))
-            camera_frames = self.event_bus.emit_and_wait(Events.Capture.GET_CAMERA_FRAMES, {'limit': history_limit}, timeout=2.0)
-            if camera_frames and camera_frames[0]:
-                all_image_data.extend(camera_frames[0])
-                logger.info(f"Добавлено {len(camera_frames[0])} кадров с камеры для отправки.")
+            frames = self.event_bus.emit_and_wait(Events.Capture.GET_CAMERA_FRAMES, {'limit': history_limit}, timeout=2.0)
+            if frames and frames[0]:
+                camera_frames.extend(frames[0])
+                logger.info(f"Добавлено {len(frames[0])} кадров с камеры для отправки.")
             else:
                 logger.info("Захват с камеры включен, но кадры не готовы или история пуста.")
+
+        return screen_frames, camera_frames
+
+    def _finish_send_message(
+        self,
+        *,
+        user_input: str,
+        system_input: str,
+        explicit_image_data: list,
+        screen_frames: list,
+        camera_frames: list,
+        staged_image_data: list,
+        character_id: str,
+        from_entry: bool,
+        clear_entry_after_send: bool,
+    ):
+        """Отрисовка сообщения и отправка. Всегда в GUI-потоке."""
+        image_data = explicit_image_data
+        current_image_data = list(screen_frames)
+        all_image_data = list(image_data) + current_image_data + staged_image_data + list(camera_frames)
 
         if not self._get_setting("ENABLE_IMAGE_ANALYSIS", True):
             all_image_data = []
