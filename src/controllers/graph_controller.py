@@ -20,6 +20,7 @@ from core.executors import Pools, PoolSaturated, executors
 from core.services import use
 from main_logger import logger
 from services.contracts import (
+    ApiPresetService,
     GenerationService,
     SettingsService,
     UtilityGenerationRequest,
@@ -88,20 +89,15 @@ class GraphController:
     def _get_preset_description(self, preset_id: Optional[int]) -> str:
         """Return a human-readable 'Name (model)' string for logging."""
         try:
+            presets = use(ApiPresetService)
             effective_id = preset_id
             if effective_id is None:
-                res = self.event_bus.emit_and_wait(
-                    Events.ApiPresets.GET_CURRENT_PRESET_ID, {}, timeout=1.0
-                )
-                effective_id = res[0] if res else None
+                effective_id = presets.current_id()
 
             if effective_id is None:
                 return "Current"
 
-            res = self.event_bus.emit_and_wait(
-                Events.ApiPresets.GET_PRESET_FULL, {"id": effective_id}, timeout=1.0
-            )
-            info = res[0] if res else None
+            info = presets.get_full(int(effective_id))
             if not info:
                 return f"preset#{effective_id}"
 
@@ -503,12 +499,9 @@ class GraphController:
             return int(label)
         except ValueError:
             pass
-        # Look up by display name via ApiPresets event.
+        # Look up by display name via ApiPresetService.
         try:
-            meta_res = self.event_bus.emit_and_wait(
-                Events.ApiPresets.GET_PRESET_LIST, timeout=1.0
-            )
-            meta = meta_res[0] if meta_res else None
+            meta = use(ApiPresetService).list_meta()
             if meta:
                 for bucket in ("custom", "builtin"):
                     for pm in (meta.get(bucket) or []):

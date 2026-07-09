@@ -14,6 +14,7 @@ from core.response_status import response_status_kind
 from core.services import services, use
 from main_logger import logger
 from services.contracts import (
+    ApiPresetService,
     GenerationService,
     HistoryService,
     PreparedHistory,
@@ -594,12 +595,9 @@ class HistoryController(HistoryService):
                 try:
                     preset_id = int(hc_provider)
                 except ValueError:
-                    # Look up by display name via ApiPresets event.
+                    # Look up by display name via ApiPresetService.
                     try:
-                        meta_res = self.event_bus.emit_and_wait(
-                            Events.ApiPresets.GET_PRESET_LIST, timeout=1.0
-                        )
-                        meta = meta_res[0] if meta_res else None
+                        meta = use(ApiPresetService).list_meta()
                         if meta:
                             for bucket in ("custom", "builtin"):
                                 for pm in (meta.get(bucket) or []):

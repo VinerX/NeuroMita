@@ -252,6 +252,10 @@ class ApiPresetService(ABC):
     def list_meta(self) -> Dict[str, Any]:
         """Метаданные пресетов: {"builtin": [...], "custom": [...]}."""
 
+    @abstractmethod
+    def current_id(self) -> Optional[int]:
+        """Id текущего выбранного пресета или None."""
+
 
 class EmbeddingService(ABC):
     """Локальные эмбеддинги RAG. Реальный бэкенд живёт в AI-engine (service='rag');

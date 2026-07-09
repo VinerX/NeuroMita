@@ -1435,6 +1435,13 @@ class ApiPresetsController(ApiPresetService):
     def _on_get_current_preset_id(self, event: Event):
         return self.current_preset_id
 
+    def current_id(self) -> Optional[int]:
+        pid = self.current_preset_id
+        try:
+            return int(pid) if pid is not None else None
+        except (TypeError, ValueError):
+            return None
+
     def _on_set_current_preset_id(self, event: Event):
         preset_id = (event.data or {}).get("id")
         self.current_preset_id = preset_id
