@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from core.events import Events
 from core.services import use
-from services.contracts import CharacterRegistry, SettingsService
+from services.contracts import CharacterRegistry, SettingsService, TaskService, TelegramService
 from managers.task_manager import TaskStatus
 from game_connections.handlers.registry import RequestContext
 
@@ -16,8 +15,7 @@ class GetTaskStatusAction:
             await ctx.server.send_error(ctx.writer, "Missing task_uid")
             return
 
-        task_result = ctx.event_bus.emit_and_wait(Events.Task.GET_TASK, {"uid": task_uid}, timeout=1.0)
-        task = task_result[0] if task_result else None
+        task = use(TaskService).get_task(task_uid)
         if not task:
             await ctx.server.send_error(ctx.writer, f"Task {task_uid} not found")
             return
@@ -29,8 +27,7 @@ class GetTaskStatusAction:
             if audio_path:
                 response.setdefault("result", {})["audio_path"] = audio_path
 
-            silero_result = ctx.event_bus.emit_and_wait(Events.Telegram.GET_SILERO_STATUS, timeout=1.0)
-            response["silero_connected"] = silero_result[0] if silero_result else False
+            response["silero_connected"] = use(TelegramService).is_silero_connected()
 
             is_gm = (use(CharacterRegistry).current_id() == "GameMaster")
 

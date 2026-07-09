@@ -257,6 +257,39 @@ class ApiPresetService(ABC):
         """Id текущего выбранного пресета или None."""
 
 
+class TelegramService(ABC):
+    """Состояние Telegram/Silero-релея. Игровой сервер (asyncio-loop) читает
+    статус напрямую, без emit_and_wait."""
+
+    @abstractmethod
+    def is_silero_connected(self) -> bool:
+        """Подключён ли Silero-релей озвучки."""
+
+
+class TaskService(ABC):
+    """Задачи диалога/idle игрового сервера. Обработчики TCP-действий живут в
+    asyncio-loop сервера, где emit_and_wait запрещён (блокирует весь loop) —
+    они зовут это напрямую. Операции быстрые, в памяти."""
+
+    @abstractmethod
+    def create_task(self, task_type: str, data: Dict[str, Any]) -> Any:
+        """Создать задачу и уведомить подписчиков (TASK_CREATED)."""
+
+    @abstractmethod
+    def get_task(self, uid: str) -> Optional[Any]:
+        """Задача по uid или None."""
+
+    @abstractmethod
+    def update_task_status(
+        self,
+        uid: str,
+        status: Any,
+        result: Any = None,
+        error: Any = None,
+    ) -> Optional[Any]:
+        """Обновить статус задачи и уведомить (TASK_STATUS_CHANGED)."""
+
+
 class AIEngineService(ABC):
     """Доступ к оркестратору AI-engine (подпроцессы tts/asr/rag/beats).
     rag_client берёт движок отсюда, чтобы hot-path эмбеддинг не звал

@@ -47,6 +47,8 @@ from services.contracts import (
     LoopService,
     ProtocolBuilderService,
     SettingsService,
+    TaskService,
+    TelegramService,
 )
 from services.game_link_service import DisconnectedGameLinkService, ServerGameLinkService
 from services.loop_service import NoLoopService
@@ -108,6 +110,7 @@ class MainController:
         self.loop_controller = LoopController()
         logger.notify("LoopController initialized.")
         self.telegram_controller = TelegramController()
+        services().register(TelegramService, self.telegram_controller, replace=True)
         logger.notify("TelegramController initialized.")
 
         try:
@@ -137,6 +140,7 @@ class MainController:
         logger.notify("LocalVoiceController успешно инициализирован.")
 
         self.task_controller = TaskController()
+        services().register(TaskService, self.task_controller, replace=True)
         logger.notify("TaskController успешно инициализирован.")
 
         self.history_controller = HistoryController()

@@ -7,10 +7,10 @@ from main_logger import logger
 from utils import SH
 from core.events import get_event_bus, Events, Event
 from core.services import use
-from services.contracts import LoopService, SettingsService
+from services.contracts import LoopService, SettingsService, TelegramService
 
 
-class TelegramController:
+class TelegramController(TelegramService):
     def __init__(self):
         self.settings: Any = None
         self.event_bus = get_event_bus()
@@ -116,6 +116,9 @@ class TelegramController:
         logger.info(f"Статус подключения Silero установлен: {self.silero_connected}")
 
     def _on_get_silero_status(self, event: Event):
+        return self.is_silero_connected()
+
+    def is_silero_connected(self) -> bool:
         return self.silero_connected
 
     # ---------------- loop lifecycle ----------------
