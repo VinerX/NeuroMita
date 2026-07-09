@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import time
 import unittest
@@ -10,7 +11,8 @@ PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
-from core.events import EventBus
+from core.events import EventBus, EmitAndWaitContextError
+from core.executors import Pools, executors
 
 
 class EventBusSyncTests(unittest.TestCase):
@@ -69,6 +71,61 @@ class EventBusSyncTests(unittest.TestCase):
 
             result = bus.emit_and_wait("outer", timeout=1.0)
             self.assertEqual(result, ["inner"] * 30)
+        finally:
+            bus.shutdown()
+
+
+class EmitAndWaitGuardrailTests(unittest.TestCase):
+    """Item 6: emit_and_wait из hot-path пулов и asyncio-loop должен падать."""
+
+    def test_rejected_from_generation_pool(self) -> None:
+        bus = EventBus()
+        try:
+            bus.subscribe("x", lambda _e: "ok", weak=False)
+
+            def in_pool():
+                return bus.emit_and_wait("x", timeout=0.2)
+
+            fut = executors().submit(Pools.GENERATION, in_pool)
+            with self.assertRaises(EmitAndWaitContextError):
+                fut.result(timeout=2.0)
+        finally:
+            bus.shutdown()
+
+    def test_rejected_from_background_llm_pool(self) -> None:
+        bus = EventBus()
+        try:
+            bus.subscribe("x", lambda _e: "ok", weak=False)
+            fut = executors().submit(
+                Pools.BACKGROUND_LLM, lambda: bus.emit_and_wait("x", timeout=0.2)
+            )
+            with self.assertRaises(EmitAndWaitContextError):
+                fut.result(timeout=2.0)
+        finally:
+            bus.shutdown()
+
+    def test_rejected_inside_asyncio_loop(self) -> None:
+        bus = EventBus()
+        try:
+            bus.subscribe("x", lambda _e: "ok", weak=False)
+
+            async def run():
+                return bus.emit_and_wait("x", timeout=0.2)
+
+            with self.assertRaises(EmitAndWaitContextError):
+                asyncio.run(run())
+        finally:
+            bus.shutdown()
+
+    def test_allowed_from_plain_worker_thread(self) -> None:
+        bus = EventBus()
+        try:
+            bus.subscribe("x", lambda _e: "ok", weak=False)
+            # Пул IO — не hot-path, обычный воркер: вызов разрешён.
+            fut = executors().submit(
+                Pools.IO, lambda: bus.emit_and_wait("x", timeout=0.3)
+            )
+            self.assertEqual(fut.result(timeout=2.0), ["ok"])
         finally:
             bus.shutdown()
 

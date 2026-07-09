@@ -1,3 +1,4 @@
+import asyncio
 import threading
 from typing import Dict, List, Callable, Any, Optional
 from concurrent.futures import wait
@@ -8,6 +9,46 @@ import time
 
 from core.executors import Pools, executors
 from main_logger import logger
+
+
+class EmitAndWaitContextError(RuntimeError):
+    """emit_and_wait вызван из контекста, где он ломает архитектуру/дедлочит.
+
+    Синхронный сбор ответов на пути генерации или внутри asyncio-loop — это
+    ровно тот анти-паттерн (sync-RPC-через-шину со вложенностью), который
+    рефактор убирал. Такой вызов — не «медленно», а «неправильно»: он должен
+    падать громко, а запрос/ответ жить в типизированном сервисе (core.services).
+    """
+
+
+# Префиксы имён потоков пулов, в которых emit_and_wait запрещён.
+# ThreadPoolExecutor именует потоки как "{prefix}_{n}" (см. core/executors.py).
+_FORBIDDEN_THREAD_PREFIXES = (Pools.GENERATION, Pools.BACKGROUND_LLM)
+
+
+def _guard_emit_and_wait_context(event_name: str) -> None:
+    """Отклоняет emit_and_wait из hot-path пулов и asyncio-loop; на GUI-потоке
+    только предупреждает (там ещё остались легаси-вызовы UI)."""
+    thread = threading.current_thread()
+    thread_name = thread.name or ""
+    for prefix in _FORBIDDEN_THREAD_PREFIXES:
+        if thread_name.startswith(prefix):
+            raise EmitAndWaitContextError(
+                f"emit_and_wait('{event_name}') вызван из пула '{prefix}' "
+                f"(поток '{thread_name}'). На пути генерации синхронный сбор "
+                f"ответов через шину запрещён — заведите сервис в core.services."
+            )
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise EmitAndWaitContextError(
+            f"emit_and_wait('{event_name}') вызван внутри работающего asyncio-loop "
+            f"(поток '{thread_name}'). Это блокирует весь loop — используйте сервис "
+            f"или уведомление emit()."
+        )
 
 
 @dataclass
@@ -124,6 +165,9 @@ class EventBus:
         # То же, что и в emit: после shutdown не создаём executor-потоки (#19).
         if not self._running:
             return []
+
+        # Guardrail: из hot-path пулов и asyncio-loop synchronous-сбор запрещён.
+        _guard_emit_and_wait_context(event_name)
 
         start_time = time.perf_counter()
         is_main_thread = (threading.current_thread() is threading.main_thread())
