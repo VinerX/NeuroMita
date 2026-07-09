@@ -2,6 +2,8 @@ import time
 import threading
 
 from core.events import get_event_bus, Events
+from core.services import use
+from services.contracts import CharacterRegistry
 from main_logger import logger
 
 
