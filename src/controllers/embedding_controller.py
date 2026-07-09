@@ -18,13 +18,14 @@ from handlers.embedding_presets import (
 )
 from main_logger import logger
 from managers.settings_manager import SettingsManager
+from services.contracts import EmbeddingService
 
 
 EMBED_EVENT_NAME = Events.RAG.GET_EMBEDDING
 EMBEDS_EVENT_NAME = Events.RAG.GET_EMBEDDINGS
 
 
-class EmbeddingController:
+class EmbeddingController(EmbeddingService):
     """
     EventBus bridge for RAG embeddings.
 
@@ -207,18 +208,34 @@ class EmbeddingController:
 
     def _on_get_embedding(self, event: Event) -> Optional[np.ndarray]:
         data = event.data or {}
-        text = data.get("text") or ""
-        prefix = data.get("prefix") or ""
         future = data.get("future")
+        vec = self.embed_one(text=data.get("text") or "", prefix=data.get("prefix") or "")
+        if future is not None:
+            try:
+                future.set_result(vec)
+            except Exception:
+                pass
+        return vec
 
+    def _on_get_embeddings(self, event: Event) -> List[Optional[np.ndarray]]:
+        data = event.data or {}
+        future = data.get("future")
+        results = self.embed_many(
+            texts=data.get("texts") or [],
+            prefix=data.get("prefix") or "",
+            batch_size=data.get("batch_size"),
+            priority=str(data.get("priority") or "hot"),
+        )
+        if future is not None:
+            try:
+                future.set_result(results)
+            except Exception:
+                pass
+        return results
+
+    def embed_one(self, text: str, prefix: str = "") -> Optional[np.ndarray]:
         if not text or self._provider_name() != "local":
-            if future is not None:
-                try:
-                    future.set_result(None)
-                except Exception:
-                    pass
             return None
-
         try:
             self._ensure_local_backend()
             ms = resolve_model_settings()
@@ -234,40 +251,20 @@ class EmbeddingController:
                 timeout_sec=self._HOT_TIMEOUT_SEC,
                 priority="hot",
             )
-            vec = results[0] if results else None
-
-            if future is not None:
-                try:
-                    future.set_result(vec)
-                except Exception:
-                    pass
-
-            return vec
+            return results[0] if results else None
         except Exception as e:
-            logger.error(f"EmbeddingController: ошибка get_embedding via AI engine: {e}", exc_info=True)
-            if future is not None:
-                try:
-                    future.set_result(None)
-                except Exception:
-                    pass
+            logger.error(f"EmbeddingController: ошибка embed_one via AI engine: {e}", exc_info=True)
             return None
 
-    def _on_get_embeddings(self, event: Event) -> List[Optional[np.ndarray]]:
-        data = event.data or {}
-        texts = data.get("texts") or []
-        prefix = data.get("prefix") or ""
-        batch_size = data.get("batch_size")
-        priority = str(data.get("priority") or "hot")
-        future = data.get("future")
-
+    def embed_many(
+        self,
+        texts: List[str],
+        prefix: str = "",
+        batch_size: Optional[int] = None,
+        priority: str = "hot",
+    ) -> List[Optional[np.ndarray]]:
         if not texts or self._provider_name() != "local":
-            if future is not None:
-                try:
-                    future.set_result([])
-                except Exception:
-                    pass
             return []
-
         try:
             self._ensure_local_backend()
             ms = resolve_model_settings()
@@ -275,7 +272,7 @@ class EmbeddingController:
             if bs <= 0:
                 bs = 32
 
-            results = rag_get_embeddings(
+            return rag_get_embeddings(
                 list(texts),
                 model_name=ms["hf_name"],
                 query_prefix=ms["query_prefix"],
@@ -284,19 +281,6 @@ class EmbeddingController:
                 timeout_sec=(None if priority == "bulk" else self._HOT_TIMEOUT_SEC),
                 priority=priority,
             )
-
-            if future is not None:
-                try:
-                    future.set_result(results)
-                except Exception:
-                    pass
-
-            return results
         except Exception as e:
-            logger.error(f"EmbeddingController: ошибка get_embeddings via AI engine: {e}", exc_info=True)
-            if future is not None:
-                try:
-                    future.set_result([])
-                except Exception:
-                    pass
+            logger.error(f"EmbeddingController: ошибка embed_many via AI engine: {e}", exc_info=True)
             return []

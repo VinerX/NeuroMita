@@ -40,6 +40,7 @@ from services.contracts import (
     ApiPresetService,
     AppVarsService,
     CharacterRegistry,
+    EmbeddingService,
     GameLinkService,
     LoopService,
     ProtocolBuilderService,
@@ -168,6 +169,7 @@ class MainController:
         logger.notify("ModelController успешно инициализирован.")
 
         self.embedding_controller = EmbeddingController()
+        services().register(EmbeddingService, self.embedding_controller, replace=True)
         logger.notify("EmbeddingController успешно инициализирован.")
 
         self.capture_controller = CaptureController(self.settings)

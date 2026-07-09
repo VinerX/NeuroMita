@@ -14,7 +14,9 @@ from typing import List, Dict, Any, Optional, Tuple
 from managers.database_manager import DatabaseManager
 from handlers.embedding_presets import resolve_full_config
 from managers.rag.pipeline.retrievers.faiss_index import invalidate as _faiss_invalidate
-from core.events import get_event_bus, Events
+from core.events import get_event_bus
+from core.services import use
+from services.contracts import EmbeddingService
 from main_logger import logger
 from ui.task_worker import TaskWorker
 
@@ -23,8 +25,6 @@ from managers.rag.rag_utils import rag_clean_text, make_reindex_progress_logger,
 from managers.settings_manager import SettingsManager
 
 
-EMBED_EVENT_NAME = Events.RAG.GET_EMBEDDING
-EMBEDS_EVENT_NAME = Events.RAG.GET_EMBEDDINGS
 
 # --- Default configuration constants ---
 DEFAULT_QUERY_WEIGHT_USER = 0.7
@@ -435,22 +435,19 @@ class RAGManager:
         text = rag_clean_text(text)
         cfg = resolve_full_config()
         provider_name = str(cfg.get("provider_name") or "local").strip().lower()
-        can_use_event_bus = bool(use_event_bus and provider_name == "local")
+        can_use_local_service = bool(use_event_bus and provider_name == "local")
         logger.debug(
             f"[RAG][embed_one] provider={provider_name} | model={cfg.get('db_model_key') or cfg.get('model') or cfg.get('hf_name')}"
         )
 
-        if can_use_event_bus:
+        if can_use_local_service:
             try:
-                logger.debug(f"RAGManager: Запрашиваю embedding через EventBus: {EMBED_EVENT_NAME}")
-                results = self.event_bus.emit_and_wait(EMBED_EVENT_NAME, {"text": text, "prefix": prefix})
-                if results:
-                    vec = results[0]
-                    if vec is not None:
-                        return vec
+                vec = use(EmbeddingService).embed_one(text, prefix)
+                if vec is not None:
+                    return vec
             except Exception as e:
-                # Не валим RAG из-за EventBus — просто откатываемся на прямой вызов singleton
-                logger.warning(f"RAGManager: EventBus embedding не сработал, fallback на singleton. Причина: {e}")
+                # Не валим RAG из-за сервиса — просто откатываемся на прямой вызов провайдера
+                logger.warning(f"RAGManager: EmbeddingService не сработал, fallback на провайдер. Причина: {e}")
 
         try:
             results = self._embed_via_provider([text], is_query=bool(prefix), prefix=prefix)
@@ -495,56 +492,48 @@ class RAGManager:
 
         out: List[Optional[np.ndarray]] = []
         provider_name = str(cfg.get("provider_name") or "local").strip().lower()
-        can_use_event_bus = bool(use_event_bus and provider_name == "local")
+        can_use_local_service = bool(use_event_bus and provider_name == "local")
         req_delay_sec = float(cfg_extra.get("request_delay_sec") or self._get_float_setting("RAG_EMBED_REQUEST_DELAY_SEC", 0.0))
         if req_delay_sec < 0.0:
             req_delay_sec = 0.0
         logger.debug(
             f"[RAG][embed_batch] provider={provider_name} | model={cfg.get('db_model_key') or cfg.get('model') or cfg.get('hf_name')} | "
-            f"texts={len(cleaned)} | batch_size={bs} | delay={req_delay_sec:.3f}s | event_bus={can_use_event_bus}"
+            f"texts={len(cleaned)} | batch_size={bs} | delay={req_delay_sec:.3f}s | local_service={can_use_local_service}"
         )
 
-        if can_use_event_bus:
+        if can_use_local_service:
             try:
-                _eventbus_ok = False
+                embedder = use(EmbeddingService)
+                _service_ok = False
                 for i in range(0, len(cleaned), bs):
                     chunk = cleaned[i:i + bs]
-                    results = self.event_bus.emit_and_wait(
-                        EMBEDS_EVENT_NAME,
-                        {"texts": chunk, "prefix": prefix, "batch_size": bs, "priority": priority},
-                    )
-                    if not results:
-                        # No subscribers — fall through to fallback handler
-                        out.clear()
-                        _eventbus_ok = False
-                        break
-                    vecs = results[0]
+                    vecs = embedder.embed_many(chunk, prefix=prefix, batch_size=bs, priority=priority)
                     if not isinstance(vecs, list):
                         vecs = []
                     # выравниваем длину под входной chunk
                     if len(vecs) != len(chunk):
                         vecs = (vecs + [None] * len(chunk))[:len(chunk)]
-                    # EventBus local-путь иногда возвращает только None/[] (например handler не инициализировался).
+                    # Local-путь иногда возвращает только None/[] (например handler не инициализировался).
                     # В этом случае считаем батч неуспешным и падаем в provider fallback.
                     if not vecs or all(v is None for v in vecs):
                         logger.warning(
-                            "[RAG][embed_batch] EventBus returned empty/None-only batch; switching to provider fallback"
+                            "[RAG][embed_batch] EmbeddingService returned empty/None-only batch; switching to provider fallback"
                         )
                         out.clear()
-                        _eventbus_ok = False
+                        _service_ok = False
                         break
                     out.extend(vecs)
-                    _eventbus_ok = True
+                    _service_ok = True
                     if req_delay_sec > 0.0 and (i + bs) < len(cleaned):
                         try:
                             _time.sleep(req_delay_sec)
                         except Exception:
                             pass
-                if _eventbus_ok:
+                if _service_ok:
                     return out
             except Exception as e:
                 logger.warning(
-                    f"RAGManager: EventBus batch embedding не сработал, fallback на singleton. Причина: {e}"
+                    f"RAGManager: EmbeddingService batch не сработал, fallback на провайдер. Причина: {e}"
                 )
                 out.clear()
 

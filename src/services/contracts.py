@@ -253,6 +253,26 @@ class ApiPresetService(ABC):
         """Метаданные пресетов: {"builtin": [...], "custom": [...]}."""
 
 
+class EmbeddingService(ABC):
+    """Локальные эмбеддинги RAG. Реальный бэкенд живёт в AI-engine (service='rag');
+    контроллер — мост к нему. RAG зовёт это напрямую вместо emit_and_wait, чтобы
+    hot-path эмбеддинг запроса не падал guardrail'ом в пуле генерации."""
+
+    @abstractmethod
+    def embed_one(self, text: str, prefix: str = "") -> Optional[Any]:
+        """Один вектор (np.ndarray) или None (не-local провайдер / ошибка)."""
+
+    @abstractmethod
+    def embed_many(
+        self,
+        texts: List[str],
+        prefix: str = "",
+        batch_size: Optional[int] = None,
+        priority: str = "hot",
+    ) -> List[Optional[Any]]:
+        """Список векторов (по одному на текст; None на позициях-ошибках)."""
+
+
 class ProtocolBuilderService(ABC):
     """Сборка финального HTTP-запроса (url + headers) по правилам auth протокола.
     На пути генерации резолвер зовёт это напрямую, минуя шину."""
