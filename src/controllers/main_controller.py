@@ -37,10 +37,12 @@ from core.executors import executors
 from core.services import services
 from services.character_registry import SettingsOnlyCharacterRegistry
 from services.contracts import (
+    ApiPresetService,
     AppVarsService,
     CharacterRegistry,
     GameLinkService,
     LoopService,
+    ProtocolBuilderService,
     SettingsService,
 )
 from services.game_link_service import DisconnectedGameLinkService, ServerGameLinkService
@@ -143,9 +145,11 @@ class MainController:
         logger.notify("PromptController успешно инициализирован.")
 
         self.protocols_controller = ProtocolsController()
+        services().register(ProtocolBuilderService, self.protocols_controller, replace=True)
         logger.notify("ProtocolsController успешно инициализирован.")
 
         self.api_presets_controller = ApiPresetsController()
+        services().register(ApiPresetService, self.api_presets_controller, replace=True)
         logger.notify("ApiPresetsController успешно инициализирован.")
 
         self.embedding_presets_controller = EmbeddingPresetsController()

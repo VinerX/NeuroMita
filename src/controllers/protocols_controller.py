@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 import re
 
 from core.events import get_event_bus, Events, Event
+from services.contracts import ProtocolBuilderService
 from main_logger import logger
 from managers.protocol_registry import get_protocol_registry
 
@@ -52,7 +53,7 @@ def _apply_auth(url: str, headers: Dict[str, str], api_key: str, auth: Dict[str,
     return url, headers
 
 
-class ProtocolsController:
+class ProtocolsController(ProtocolBuilderService):
     def __init__(self):
         self.event_bus = get_event_bus()
         self._subscribe()
@@ -127,10 +128,25 @@ class ProtocolsController:
           {"url": str, "headers": dict, "safe_url": str}
         """
         data = event.data if isinstance(event.data, dict) else {}
-        protocol_id = str(data.get("protocol_id") or "").strip()
-        url = str(data.get("url") or "")
-        api_key = str(data.get("api_key") or "")
-        extra_headers = data.get("headers") or {}
+        return self.build_http_request(
+            protocol_id=str(data.get("protocol_id") or "").strip(),
+            url=str(data.get("url") or ""),
+            api_key=str(data.get("api_key") or ""),
+            headers=data.get("headers") or {},
+        )
+
+    def build_http_request(
+        self,
+        *,
+        protocol_id: str,
+        url: str,
+        api_key: str,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        protocol_id = str(protocol_id or "").strip()
+        url = str(url or "")
+        api_key = str(api_key or "")
+        extra_headers = headers or {}
         if not isinstance(extra_headers, dict):
             extra_headers = {}
 

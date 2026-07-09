@@ -233,3 +233,37 @@ class GenerationService(ABC):
 
     @abstractmethod
     def generate_utility(self, request: UtilityGenerationRequest) -> UtilityGenerationResult: ...
+
+
+# ---------------------------------------------------------------------------
+# API-пресеты
+# ---------------------------------------------------------------------------
+
+class ApiPresetService(ABC):
+    """Чтение эффективных API-пресетов. На пути генерации резолвер берёт пресет
+    отсюда напрямую, а не через emit_and_wait — синхронный сбор ответов шины на
+    hot-path запрещён guardrail'ом."""
+
+    @abstractmethod
+    def get_full(self, preset_id: int) -> Optional[Dict[str, Any]]:
+        """Эффективный словарь пресета (шаблон + пользовательские оверрайды) или None."""
+
+    @abstractmethod
+    def list_meta(self) -> Dict[str, Any]:
+        """Метаданные пресетов: {"builtin": [...], "custom": [...]}."""
+
+
+class ProtocolBuilderService(ABC):
+    """Сборка финального HTTP-запроса (url + headers) по правилам auth протокола.
+    На пути генерации резолвер зовёт это напрямую, минуя шину."""
+
+    @abstractmethod
+    def build_http_request(
+        self,
+        *,
+        protocol_id: str,
+        url: str,
+        api_key: str,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Возвращает {"url": str, "headers": dict, "safe_url": str}."""

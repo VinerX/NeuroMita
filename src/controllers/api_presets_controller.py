@@ -7,6 +7,7 @@ from dataclasses import dataclass, asdict, field
 from urllib.parse import urlparse
 
 from core.events import get_event_bus, Events, Event
+from services.contracts import ApiPresetService
 from main_logger import logger
 
 from utils import _
@@ -70,7 +71,7 @@ class UserPreset:
     fallbacks: List[Dict[str, Any]] = field(default_factory=list)
 
 
-class ApiPresetsController:
+class ApiPresetsController(ApiPresetService):
     _MISTRAL_EASTER_EGG_MODEL_ID = "la-chaton-fat"
     _MISTRAL_EASTER_EGG_MODEL_INFO = {
         "id": _MISTRAL_EASTER_EGG_MODEL_ID,
@@ -785,6 +786,9 @@ class ApiPresetsController:
     # ---------- Обработчики событий ----------
 
     def _on_get_preset_list(self, event: Event):
+        return self.list_meta()
+
+    def list_meta(self) -> Dict[str, Any]:
         from managers.protocol_registry import get_protocol_registry
         reg = get_protocol_registry()
 
@@ -833,6 +837,13 @@ class ApiPresetsController:
 
     def _on_get_preset_full(self, event: Event):
         preset_id = (event.data or {}).get("id")
+        try:
+            preset_id = int(preset_id)
+        except Exception:
+            return None
+        return self.get_full(preset_id)
+
+    def get_full(self, preset_id: int) -> Optional[Dict[str, Any]]:
         try:
             preset_id = int(preset_id)
         except Exception:
