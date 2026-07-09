@@ -40,9 +40,10 @@ class LocalVoiceController:
     def _get_engine(self):
         if self._engine is not None:
             return self._engine
+        # Через AIEngineService, а не emit_and_wait (см. rag_client/beat_worker).
         try:
-            res = self.event_bus.emit_and_wait(Events.AI.GET_ENGINE, timeout=0.8)
-            self._engine = res[0] if res else None
+            from services.contracts import AIEngineService
+            self._engine = use(AIEngineService).get_engine()
         except Exception:
             self._engine = None
         return self._engine

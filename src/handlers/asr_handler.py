@@ -416,9 +416,12 @@ class SpeechRecognition:
 
     @staticmethod
     def _get_ai_engine():
+        # Через AIEngineService, а не emit_and_wait: ASR-цикл может крутиться в
+        # asyncio-loop, где синхронный сбор ответов шины запрещён guardrail'ом.
         try:
-            res = get_event_bus().emit_and_wait(Events.AI.GET_ENGINE, timeout=0.8)
-            return res[0] if res else None
+            from core.services import use
+            from services.contracts import AIEngineService
+            return use(AIEngineService).get_engine()
         except Exception:
             return None
 

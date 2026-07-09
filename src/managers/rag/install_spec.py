@@ -285,8 +285,9 @@ def _snapshot_download_action(repo_id: str, *, description: str, progress: int) 
 def _restart_rag_worker_action(*, progress: int = 96) -> InstallAction:
     def _fn(*, callbacks=None, **_kwargs) -> bool:
         try:
-            res = get_event_bus().emit_and_wait(Events.AI.GET_ENGINE, timeout=1.0)
-            engine = res[0] if res else None
+            from core.services import use
+            from services.contracts import AIEngineService
+            engine = use(AIEngineService).get_engine()
         except Exception:
             engine = None
 
