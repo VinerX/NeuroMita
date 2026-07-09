@@ -257,6 +257,16 @@ class ApiPresetService(ABC):
         """Id текущего выбранного пресета или None."""
 
 
+class EmbeddingPresetService(ABC):
+    """Эффективный конфиг пресета эмбеддингов (провайдер, модель, ключ, url).
+    resolve_full_config зовёт это вместо emit_and_wait; при отсутствии сервиса
+    (субпроцесс воркера / ранний старт) вызывающий сам падает на чтение с диска."""
+
+    @abstractmethod
+    def get_full(self, preset_id: Any) -> Optional[Dict[str, Any]]:
+        """Разрешённый конфиг пресета или None."""
+
+
 class EmbeddingService(ABC):
     """Локальные эмбеддинги RAG. Реальный бэкенд живёт в AI-engine (service='rag');
     контроллер — мост к нему. RAG зовёт это напрямую вместо emit_and_wait, чтобы

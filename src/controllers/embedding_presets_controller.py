@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.events import Event, Events, get_event_bus
+from services.contracts import EmbeddingPresetService
 from main_logger import logger
 
 
@@ -46,7 +47,7 @@ class UserEmbedPreset:
 
 # ── Controller ─────────────────────────────────────────────────────────────────
 
-class EmbeddingPresetsController:
+class EmbeddingPresetsController(EmbeddingPresetService):
     _CUSTOM_ID_START = 1001
 
     def __init__(self) -> None:
@@ -299,6 +300,9 @@ class EmbeddingPresetsController:
 
     def _on_get_full(self, event: Event):
         preset_id = (event.data or {}).get("id")
+        return self._build_full_config(preset_id)
+
+    def get_full(self, preset_id: Any) -> Optional[Dict[str, Any]]:
         return self._build_full_config(preset_id)
 
     def _on_save(self, event: Event):

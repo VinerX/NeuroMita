@@ -181,22 +181,17 @@ def _resolve_full_config_uncached() -> Dict[str, Any]:
     # --- New path: RAG_EMBED_PRESET_ID ---
     preset_id = SettingsManager.get("RAG_EMBED_PRESET_ID", None)
     if preset_id is not None:
-        # 1) Fast path via controller/event bus
+        # 1) Fast path via типизированный сервис (без шины — hot-path).
         try:
-            from core.events import get_event_bus, Events
-            bus = get_event_bus()
-            results = bus.emit_and_wait(
-                Events.EmbeddingPresets.GET_PRESET_FULL,
-                {"id": preset_id},
-                timeout=2.0,
-            )
-            cfg = results[0] if results else None
+            from core.services import use
+            from services.contracts import EmbeddingPresetService
+            cfg = use(EmbeddingPresetService).get_full(preset_id)
             if cfg and isinstance(cfg, dict):
                 return cfg
         except Exception:
             pass
 
-        # 2) Robust fallback without EventBus (important for worker/startup races)
+        # 2) Robust fallback без сервиса (важно для субпроцесса воркера / раннего старта)
         try:
             cfg = _resolve_from_preset_storage(preset_id)
             if cfg:

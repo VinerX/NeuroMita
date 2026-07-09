@@ -40,6 +40,7 @@ from services.contracts import (
     ApiPresetService,
     AppVarsService,
     CharacterRegistry,
+    EmbeddingPresetService,
     EmbeddingService,
     GameLinkService,
     LoopService,
@@ -154,6 +155,7 @@ class MainController:
         logger.notify("ApiPresetsController успешно инициализирован.")
 
         self.embedding_presets_controller = EmbeddingPresetsController()
+        services().register(EmbeddingPresetService, self.embedding_presets_controller, replace=True)
         logger.notify("EmbeddingPresetsController успешно инициализирован.")
 
         self.audio_controller = AudioController(self)
