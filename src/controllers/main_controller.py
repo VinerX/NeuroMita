@@ -37,6 +37,7 @@ from core.executors import executors
 from core.services import services
 from services.character_registry import SettingsOnlyCharacterRegistry
 from services.contracts import (
+    AIEngineService,
     ApiPresetService,
     AppVarsService,
     CharacterRegistry,
@@ -127,6 +128,7 @@ class MainController:
         logger.notify("InstallableController initialized.")
 
         self.ai_engine_controller = AIEngineController()
+        services().register(AIEngineService, self.ai_engine_controller, replace=True)
         logger.notify(
             f"AIEngineController успешно инициализирован (mode={getattr(self.ai_engine_controller, 'mode', 'unknown')})."
         )

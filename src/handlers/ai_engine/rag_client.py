@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from core.events import Events, get_event_bus
-
 
 def get_engine(timeout: float = 0.8):
+    # Через типизированный сервис, а не emit_and_wait: get_embeddings зовётся на
+    # hot-path (пул 'generation'), где синхронный сбор ответов шины запрещён
+    # guardrail'ом. timeout сохранён для совместимости сигнатуры, но не нужен.
     try:
-        res = get_event_bus().emit_and_wait(Events.AI.GET_ENGINE, timeout=timeout)
-        return res[0] if res else None
+        from core.services import use
+        from services.contracts import AIEngineService
+        return use(AIEngineService).get_engine()
     except Exception:
         return None
 

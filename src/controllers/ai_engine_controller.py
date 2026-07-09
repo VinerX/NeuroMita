@@ -9,6 +9,7 @@ from concurrent.futures import Future
 from typing import Dict, Optional, Sequence
 
 from core.events import Event, Events, get_event_bus
+from services.contracts import AIEngineService
 from main_logger import logger
 
 
@@ -306,7 +307,7 @@ class _Worker:
                 pass
 
 
-class AIEngineController:
+class AIEngineController(AIEngineService):
     """
     AI Hub в GUI-процессе:
       - управляет topology AI worker'ов (shared/split)
@@ -379,6 +380,9 @@ class AIEngineController:
         return self._workers.get(worker_name)
 
     def _on_get_engine(self, _event: Event):
+        return self
+
+    def get_engine(self) -> Optional["AIEngineController"]:
         return self
 
     def _on_restart_service(self, event: Event):

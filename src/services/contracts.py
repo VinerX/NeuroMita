@@ -257,6 +257,16 @@ class ApiPresetService(ABC):
         """Id текущего выбранного пресета или None."""
 
 
+class AIEngineService(ABC):
+    """Доступ к оркестратору AI-engine (подпроцессы tts/asr/rag/beats).
+    rag_client берёт движок отсюда, чтобы hot-path эмбеддинг не звал
+    emit_and_wait('ai_get_engine') из пула генерации."""
+
+    @abstractmethod
+    def get_engine(self) -> Optional[Any]:
+        """Оркестратор движка (умеет .call(service, method, payload)) или None."""
+
+
 class EmbeddingPresetService(ABC):
     """Эффективный конфиг пресета эмбеддингов (провайдер, модель, ключ, url).
     resolve_full_config зовёт это вместо emit_and_wait; при отсутствии сервиса
