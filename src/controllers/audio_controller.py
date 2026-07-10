@@ -5,7 +5,7 @@ from typing import Optional
 
 from handlers.audio_handler import AudioHandler
 from main_logger import logger
-from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
+from presets.local_voice_models import LOCAL_VOICE_MODELS
 from core.events import get_event_bus, Events, Event
 from core.services import use
 from services.contracts import GameLinkService, LoopService

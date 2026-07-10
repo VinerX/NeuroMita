@@ -8,6 +8,7 @@ import sounddevice as sd
 
 from handlers.asr_handler import SpeechRecognition
 from main_logger import logger
+from core.app_paths import settings_path
 from core.events import get_event_bus, Events, Event
 from core.services import use
 from services.contracts import GameLinkService, LoopService
@@ -37,7 +38,7 @@ class SpeechController:
         self._mita_speaking = False        # открытое окно (локальное воспроизведение)
         self._mita_speaking_until = 0.0    # окно по таймеру (монотонные секунды)
 
-        self._asr_settings_path = os.path.join("Settings", "asr_settings.json")
+        self._asr_settings_path = str(settings_path("asr_settings.json", create_parent=True))
         self._asr_settings = {
             "engine": "google",
             "models": {

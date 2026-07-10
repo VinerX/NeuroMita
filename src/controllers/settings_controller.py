@@ -6,8 +6,6 @@ from typing import Dict, Any
 
 from managers.settings_manager import SettingsManager
 from main_logger import logger
-from PyQt6.QtWidgets import QMessageBox
-from PyQt6.QtCore import QTimer
 from core.events import get_event_bus, Events, Event
 from core.services import services
 from services.contracts import SettingsService

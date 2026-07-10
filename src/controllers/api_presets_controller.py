@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict, field
 from urllib.parse import urlparse
 
+from core.app_paths import settings_path
 from core.events import get_event_bus, Events, Event
 from services.contracts import ApiPresetService
 from main_logger import logger
@@ -97,9 +98,9 @@ class ApiPresetsController(ApiPresetService):
     def __init__(self):
         self.event_bus = get_event_bus()
 
-        self.templates_path = Path("Settings/api_templates.json")
-        self.presets_path = Path("Settings/api_presets.json")
-        self.legacy_path = Path("Settings/presets.json")
+        self.templates_path = settings_path("api_templates.json", create_parent=True)
+        self.presets_path = settings_path("api_presets.json", create_parent=True)
+        self.legacy_path = settings_path("presets.json", create_parent=True)
 
         self.templates: Dict[int, ApiTemplate] = {}
         self.presets: Dict[int, UserPreset] = {}

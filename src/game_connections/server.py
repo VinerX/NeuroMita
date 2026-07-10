@@ -67,9 +67,22 @@ class ChatServerNew:
         # controller hook:
         # called with (is_connected, client_id)
         self.on_connection_changed: Callable[[bool, str | None], None] | None = None
+        self.settings_provider: Callable[[], Dict[str, Any]] | None = None
 
     def set_connection_callback(self, cb: Callable[[bool, str | None], None] | None) -> None:
         self.on_connection_changed = cb
+
+    def set_settings_provider(self, provider: Callable[[], Dict[str, Any]] | None) -> None:
+        self.settings_provider = provider
+
+    def build_loaded_settings_payload(self) -> Dict[str, Any]:
+        provider = self.settings_provider
+        if not callable(provider):
+            raise RuntimeError("Server settings provider is not configured")
+        body = provider()
+        if not isinstance(body, dict):
+            raise TypeError("Server settings provider must return a dictionary")
+        return {"type": "loaded_settings", "body": body}
 
     def _notify_connection_changed(self, is_connected: bool, client_id: str | None):
         cb = self.on_connection_changed
@@ -157,13 +170,9 @@ class ChatServerNew:
         client_id = f"{addr[0]}:{addr[1]}"
         logger.info(f"Новое подключение от {client_id}")
 
-        was_empty = (len(self.active_connections) == 0)
-
         self.active_connections[client_id] = writer
         self.client_tasks[client_id] = set()
-
-        if was_empty:
-            self._notify_connection_changed(True, client_id)
+        self._notify_connection_changed(True, client_id)
 
         buffer = bytearray()
         decoder = json.JSONDecoder()
@@ -220,8 +229,7 @@ class ChatServerNew:
 
             logger.info(f"Клиент {client_id} отключился")
 
-            if not self.active_connections:
-                self._notify_connection_changed(False, client_id)
+            self._notify_connection_changed(False, client_id)
 
     async def process_request(self, request: Dict[str, Any], client_id: str):
         if not isinstance(request, dict):
@@ -357,6 +365,26 @@ class ChatServerNew:
             asyncio.run_coroutine_threadsafe(self.send_task_update(client_id, task), self._loop)
         except Exception:
             pass
+
+    def schedule_send_json(self, client_id: str, payload: Dict[str, Any]) -> None:
+        if not self.can_schedule():
+            return
+
+        async def _push():
+            writer = self.active_connections.get(str(client_id or ""))
+            if writer is not None:
+                await self.send_json(writer, payload)
+
+        try:
+            asyncio.run_coroutine_threadsafe(_push(), self._loop)
+        except Exception:
+            pass
+
+    def schedule_send_loaded_settings(self, client_id: str, body: Dict[str, Any]) -> None:
+        self.schedule_send_json(
+            client_id,
+            {"type": "loaded_settings", "body": body},
+        )
 
     def schedule_broadcast_json(self, payload: Dict[str, Any]) -> None:
         if not self.can_schedule():

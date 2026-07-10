@@ -1,4 +1,5 @@
 # File: src/controllers/server_controller.py
+import os
 from typing import Dict, Any, Optional, Tuple
 from collections import deque
 from main_logger import logger
@@ -118,7 +119,6 @@ class ServerController:
 
         eb.subscribe(Events.Server.STOP_SERVER, self._on_stop_server, weak=False)
         eb.subscribe(Events.Server.GET_CHAT_SERVER, self._on_get_chat_server, weak=False)
-        eb.subscribe(Events.Server.SET_GAME_CONNECTION, self._on_update_game_connection, weak=False)
         eb.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
         eb.subscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings, weak=False)
 
@@ -134,7 +134,6 @@ class ServerController:
             eb = self.event_bus
             eb.unsubscribe(Events.Server.STOP_SERVER, self._on_stop_server)
             eb.unsubscribe(Events.Server.GET_CHAT_SERVER, self._on_get_chat_server)
-            eb.unsubscribe(Events.Server.SET_GAME_CONNECTION, self._on_update_game_connection)
             eb.unsubscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed)
             eb.unsubscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings)
 
@@ -148,7 +147,25 @@ class ServerController:
 
     def _init_server(self):
         from game_connections.server import ChatServerNew
-        self.server = ChatServerNew()
+
+        host = str(
+            os.environ.get("NEUROMITA_SERVER_HOST")
+            or self._get_setting("SERVER_HOST", "127.0.0.1")
+            or "127.0.0.1"
+        ).strip()
+        raw_port = os.environ.get("NEUROMITA_SERVER_PORT")
+        if raw_port in (None, ""):
+            raw_port = self._get_setting("SERVER_PORT", 12345)
+        try:
+            port = int(raw_port)
+        except (TypeError, ValueError):
+            logger.warning(f"Invalid SERVER_PORT={raw_port!r}; using 12345")
+            port = 12345
+        if not 1 <= port <= 65535:
+            logger.warning(f"SERVER_PORT out of range: {port}; using 12345")
+            port = 12345
+
+        self.server = ChatServerNew(host=host, port=port)
         try:
             transfer_dirs = ensure_shared_transfer_dirs()
             logger.info(f"Shared image transfer root: {transfer_dirs['root']}")
@@ -156,16 +173,11 @@ class ServerController:
             logger.warning(f"Failed to prepare shared image transfer directories: {e}")
         logger.info("Using new API server")
 
-        def _conn_cb(is_connected: bool, _client_id: str | None):
-            try:
-                self.event_bus.emit(Events.Server.SET_GAME_CONNECTION, {"is_connected": bool(is_connected)})
-            except Exception:
-                pass
+        def _conn_cb(client_connected: bool, client_id: str | None):
+            self.update_game_connection(client_connected, client_id)
 
-        try:
-            self.server.set_connection_callback(_conn_cb)
-        except Exception:
-            pass
+        self.server.set_connection_callback(_conn_cb)
+        self.server.set_settings_provider(self._prepare_loaded_settings_body)
 
         self._apply_initial_settings()
         self.start_server()
@@ -246,28 +258,25 @@ class ServerController:
         self.server = None
         self.event_bus = None
 
-    def update_game_connection(self, is_connected):
+    def update_game_connection(self, client_connected, client_id: str | None = None):
         if self._destroyed or not self.event_bus:
             return
 
-        prev = bool(self.ConnectedToGame)
-        self.ConnectedToGame = bool(is_connected)
+        connections = getattr(self.server, "active_connections", None) if self.server else None
+        if isinstance(connections, dict):
+            self.ConnectedToGame = bool(connections)
+        else:
+            self.ConnectedToGame = bool(client_connected)
         self.game_link.set_connected(self.ConnectedToGame)
 
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
-        if self.ConnectedToGame and not prev and self.server:
+        if bool(client_connected) and client_id and self.server:
             try:
                 body = self._prepare_loaded_settings_body()
-                self.server.schedule_broadcast_loaded_settings(body)
-            except Exception:
-                pass
-
-    def _on_update_game_connection(self, event: Event):
-        if self._destroyed:
-            return
-        is_connected = (event.data or {}).get('is_connected', False)
-        self.update_game_connection(is_connected)
+                self.server.schedule_send_loaded_settings(client_id, body)
+            except Exception as exc:
+                logger.warning(f"Failed to send initial settings to {client_id}: {exc}")
 
     def _probe_connection(self) -> Optional[bool]:
         """Живое состояние соединений сервера; None — если сказать нечего."""

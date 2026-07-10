@@ -12,7 +12,7 @@ from utils import getTranslationVariant as _
 from localization.live import tr_set
 from main_logger import logger
 import ui.gui_templates as gui_templates
-from managers.settings_manager import CollapsibleSection
+from ui.widgets.settings_sections import CollapsibleSection
 from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
 import types
 import json

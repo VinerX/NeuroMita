@@ -1,5 +1,6 @@
 from main_logger import logger
 from PyQt6.QtCore import QThread, pyqtSignal
+from core.cancellation import TaskCancelledError
 
 
 class TaskWorker(QThread):
@@ -20,8 +21,7 @@ class TaskWorker(QThread):
         self._kwargs = dict(kwargs or {})
         self._use_progress = bool(use_progress)
 
-    class CancelledError(Exception):
-        pass
+    CancelledError = TaskCancelledError
 
     def _emit_progress(self, curr: int, total: int):
         # Cooperative cancellation: tasks that call progress_callback can be interrupted safely.

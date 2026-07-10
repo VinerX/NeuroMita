@@ -62,6 +62,7 @@ class _Worker:
             service: threading.Event() for service in self.service_names
         }
         self.stopping = threading.Event()
+        self.expected_exit = threading.Event()
 
         self.pending: Dict[str, Future] = {}
         self.pending_lock = threading.RLock()
@@ -77,6 +78,7 @@ class _Worker:
         from handlers.ai_engine.worker_process import run_worker_process
 
         self.stopping.clear()
+        self.expected_exit.clear()
         self.ready.clear()
         for ev in self.ready_by_service.values():
             ev.clear()
@@ -225,7 +227,7 @@ class _Worker:
             proc.join()
         except Exception:
             return
-        if self.stopping.is_set():
+        if self.stopping.is_set() or self.expected_exit.is_set():
             return
 
         exit_code = getattr(proc, "exitcode", None)
@@ -258,6 +260,11 @@ class _Worker:
         if self.stopping.is_set():
             return
         self.stopping.set()
+        expected_exit = getattr(self, "expected_exit", None)
+        if expected_exit is None:
+            expected_exit = threading.Event()
+            self.expected_exit = expected_exit
+        expected_exit.set()
 
         try:
             self.cmd_q.put(
@@ -280,6 +287,11 @@ class _Worker:
         try:
             if self.proc is not None:
                 self.proc.join(timeout=1.0)
+                if self.proc.is_alive():
+                    kill = getattr(self.proc, "kill", None)
+                    if callable(kill):
+                        kill()
+                        self.proc.join(timeout=1.0)
         except Exception:
             pass
 
@@ -575,6 +587,12 @@ class AIEngineController(AIEngineService):
 
             ready_timeout = max(1.0, float(timeout or 0.0))
             return all(nw.wait_ready(service_name, timeout=ready_timeout) for service_name in service_names)
+
+    def prepare_shutdown(self) -> None:
+        with self._lock:
+            workers = list(self._workers.values())
+        for worker in workers:
+            worker.expected_exit.set()
 
     def shutdown(self, timeout: float = 5.0) -> None:
         with self._lock:

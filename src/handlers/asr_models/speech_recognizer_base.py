@@ -5,6 +5,7 @@ from typing import Any, List, Optional
 
 import numpy as np
 
+from core.app_paths import settings_path
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
 from core.install_types import InstallAction, InstallPlan
@@ -22,7 +23,7 @@ from utils import _
 
 
 def _asr_settings_path() -> str:
-    return os.path.join("Settings", "asr_settings.json")
+    return str(settings_path("asr_settings.json", create_parent=True))
 
 
 def load_asr_model_settings(engine_id: str) -> dict:

@@ -538,7 +538,7 @@ def _build_character_accordion(self, character_list, current_char_id, *, expand_
     это делается только в песочнице. На активном персонаже — визуальный
     индикатор (#4, по решению Винера).
     """
-    from managers.settings_manager import InnerCollapsibleSection
+    from ui.widgets.settings_sections import InnerCollapsibleSection
 
     layout = getattr(self, "_char_accordion_layout", None)
     if layout is None:

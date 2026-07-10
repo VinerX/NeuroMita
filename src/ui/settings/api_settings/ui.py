@@ -20,7 +20,7 @@ from .widgets import (
 )
 from ui.gui_templates import create_section_header, SettingsBodyWidget
 from ui.widgets.tr_combobox import TRQComboBox
-from managers.settings_manager import CollapsibleSection
+from ui.widgets.settings_sections import CollapsibleSection
 
 
 def build_api_settings_ui(self, parent_layout):

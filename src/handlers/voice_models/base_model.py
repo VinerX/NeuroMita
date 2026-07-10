@@ -3,6 +3,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
+from core.app_paths import settings_path
 from core.backends import BackendKind
 from core.install_types import InstallPlan
 from core.installables import (
@@ -18,7 +19,7 @@ from core.installables.helpers import build_runtime_ctx, status_from_installed
 
 
 def _voice_settings_path() -> str:
-    return os.path.join("Settings", "voice_model_settings.json")
+    return str(settings_path("voice_model_settings.json", create_parent=True))
 
 
 def load_voice_model_settings(model_id: str) -> Dict[str, Any]:

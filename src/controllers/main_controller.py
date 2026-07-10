@@ -1,17 +1,7 @@
-import os
 import threading
-import time
-from pathlib import Path
-from PyQt6.QtCore import QTimer
-
-from controllers.gui_fallback_controller import GuiFallbackController
-from controllers.gui_controller import GuiController
-from controllers.audio_controller import AudioController
-from controllers.telegram_controller import TelegramController
 from controllers.capture_controller import CaptureController
 from controllers.model_controller import ModelController
 from controllers.character_controller import CharacterController
-from controllers.speech_controller import SpeechController
 from controllers.settings_controller import SettingsController
 from controllers.chat_controller import ChatController
 from controllers.loop_controller import LoopController
@@ -30,9 +20,9 @@ from controllers.embedding_controller import EmbeddingController
 from controllers.ai_engine_controller import AIEngineController
 
 from main_logger import logger
-from utils.ffmpeg_installer import install_ffmpeg
 from utils.pip_installer import PipInstaller
 from core.events import get_event_bus, Events, Event, shutdown_event_bus
+from core.app_paths import settings_dir, settings_path
 from core.executors import executors
 from core.services import services
 from services.character_registry import SettingsOnlyCharacterRegistry
@@ -52,6 +42,7 @@ from services.contracts import (
 )
 from services.game_link_service import DisconnectedGameLinkService, ServerGameLinkService
 from services.loop_service import NoLoopService
+from services.telegram_service import UnavailableTelegramService
 from services.settings_service import DefaultAppVarsService
 
 from controllers.server_controller import ServerController
@@ -62,7 +53,8 @@ class MainController:
         self.view = view
         self.event_bus = get_event_bus()
         self.startup_mode = self._normalize_startup_mode(startup_mode)
-        self.backend_enabled = self.startup_mode == "full"
+        self.backend_enabled = self.startup_mode in {"full", "headless"}
+        self.headless = self.startup_mode == "headless"
 
         self.dialog_active = False
         self._close_lock = threading.Lock()
@@ -70,16 +62,11 @@ class MainController:
         self.gui_fallback_controller = None
 
         self.loop_controller = None
-        logger.notify("LoopController успешно инициализирован.")
-
         self.gui_controller = None
-
         self.telegram_controller = None
-        logger.notify("TelegramController успешно инициализирован.")
 
-        target_folder = "Settings"
-        os.makedirs(target_folder, exist_ok=True)
-        self.config_path = os.path.join(target_folder, "settings.json")
+        target_folder = str(settings_dir(create=True))
+        self.config_path = str(settings_path("settings.json", create_parent=True))
 
         # Композиционный корень: инфраструктурные сервисы регистрируются
         # в порядке зависимостей до создания остальных контроллеров.
@@ -101,6 +88,8 @@ class MainController:
             services().register(
                 CharacterRegistry, SettingsOnlyCharacterRegistry(settings_service), replace=True
             )
+            from controllers.gui_fallback_controller import GuiFallbackController
+
             self.gui_fallback_controller = GuiFallbackController(self.settings)
             logger.notify("GuiFallbackController initialized.")
             self._subscribe_to_events()
@@ -109,9 +98,20 @@ class MainController:
 
         self.loop_controller = LoopController()
         logger.notify("LoopController initialized.")
-        self.telegram_controller = TelegramController()
-        services().register(TelegramService, self.telegram_controller, replace=True)
-        logger.notify("TelegramController initialized.")
+        self.telegram_controller = None
+        try:
+            from controllers.telegram_controller import TelegramController
+
+            self.telegram_controller = TelegramController()
+            services().register(TelegramService, self.telegram_controller, replace=True)
+            logger.notify("TelegramController initialized.")
+        except Exception as exc:
+            services().register(
+                TelegramService,
+                UnavailableTelegramService(str(exc)),
+                replace=True,
+            )
+            logger.warning(f"Telegram disabled: {exc}")
 
         try:
             self.pip_installer = PipInstaller(
@@ -164,10 +164,16 @@ class MainController:
         services().register(EmbeddingPresetService, self.embedding_presets_controller, replace=True)
         logger.notify("EmbeddingPresetsController успешно инициализирован.")
 
-        self.audio_controller = AudioController(self)
-        logger.notify("AudioController успешно инициализирован.")
+        self.audio_controller = None
+        try:
+            from controllers.audio_controller import AudioController
 
-        self.voice_model_controller = VoiceModelController(config_dir="Settings")
+            self.audio_controller = AudioController(self)
+            logger.notify("AudioController успешно инициализирован.")
+        except Exception as exc:
+            logger.warning(f"Audio playback disabled: {exc}")
+
+        self.voice_model_controller = VoiceModelController(config_dir=target_folder)
         logger.notify("VoiceModelController (backend) успешно инициализирован.")
 
         self.character_controller = CharacterController(self.settings)
@@ -187,8 +193,14 @@ class MainController:
         self.reminder_controller = ReminderController(self.settings)
         logger.notify("ReminderController успешно инициализирован.")
 
-        self.speech_controller = SpeechController()
-        logger.notify("SpeechController успешно инициализирован.")
+        self.speech_controller = None
+        try:
+            from controllers.speech_controller import SpeechController
+
+            self.speech_controller = SpeechController()
+            logger.notify("SpeechController успешно инициализирован.")
+        except Exception as exc:
+            logger.warning(f"Speech recognition disabled: {exc}")
 
         self._init_server_controller()
 
@@ -200,6 +212,8 @@ class MainController:
             audio_controller.delete_all_sound_files()
 
         self._subscribe_to_events()
+        if self.headless:
+            self.settings_controller.load_api_settings(False)
         logger.notify("MainController подписался на события")
 
     @staticmethod
@@ -207,6 +221,8 @@ class MainController:
         mode = str(startup_mode or "full").strip().lower()
         if mode in {"gui-only", "gui_only", "ui-only", "ui_only"}:
             return "gui_only"
+        if mode in {"headless", "server", "server-only", "server_only", "no-gui", "no_gui"}:
+            return "headless"
         return "full"
 
     def _init_server_controller(self):
@@ -220,7 +236,11 @@ class MainController:
         logger.notify("ServerController (новый API) успешно инициализирован.")
 
     def update_view(self, view):
+        if self.headless:
+            raise RuntimeError("Headless runtime does not support GUI attachment")
         if not self.gui_controller:
+            from controllers.gui_controller import GuiController
+
             self.view = view
             try:
                 setattr(view, "main_controller", self)
@@ -292,6 +312,11 @@ class MainController:
         if character_manager is not None:
             shutdown_step("character resources", character_manager.shutdown)
 
+        settings = getattr(self, "settings", None)
+        close_settings = getattr(settings, "close", None)
+        if callable(close_settings):
+            shutdown_step("settings writer", close_settings)
+
         shutdown_step("EventBus", shutdown_event_bus)
         shutdown_step("executor pools", lambda: executors().shutdown_all(wait=False))
         logger.info("Закрываемся")
@@ -353,21 +378,35 @@ class MainController:
             return False
 
     def _on_request_tg_code(self, event: Event):
-        code_future = event.data.get('future')
-        if code_future:
-            self.event_bus.emit("show_tg_code_dialog", {'future': code_future})
+        code_future = event.data.get("future")
+        if not code_future:
+            return
+        if self.headless:
+            if not code_future.done():
+                code_future.set_exception(RuntimeError("Telegram code input is unavailable in headless mode"))
+            return
+        self.event_bus.emit("show_tg_code_dialog", {"future": code_future})
 
     def _on_request_tg_password(self, event: Event):
-        password_future = event.data.get('future')
-        if password_future:
-            self.event_bus.emit("show_tg_password_dialog", {'future': password_future})
+        password_future = event.data.get("future")
+        if not password_future:
+            return
+        if self.headless:
+            if not password_future.done():
+                password_future.set_exception(RuntimeError("Telegram password input is unavailable in headless mode"))
+            return
+        self.event_bus.emit("show_tg_password_dialog", {"future": password_future})
 
     def _on_show_loading_popup(self, event: Event):
-        message = event.data.get('message', 'Loading...')
+        message = event.data.get("message", "Loading...")
+        if self.headless:
+            logger.info(f"Loading: {message}")
+            return
         self.event_bus.emit("display_loading_popup", {"message": message})
 
     def _on_close_loading_popup(self, event: Event):
-        self.event_bus.emit("hide_loading_popup")
+        if not self.headless:
+            self.event_bus.emit("hide_loading_popup")
 
     def _on_set_dialog_active(self, event: Event):
         self.dialog_active = event.data.get('active', False)

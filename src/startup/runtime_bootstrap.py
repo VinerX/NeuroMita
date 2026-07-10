@@ -335,7 +335,11 @@ def _import_gui_runtime():
     return QApplication
 
 
-def initialize_runtime(entry_file: str | None = None) -> RuntimeContext:
+def initialize_runtime(
+    entry_file: str | None = None,
+    *,
+    load_gui: bool = True,
+) -> RuntimeContext:
     os.environ.setdefault("QT_API", "pyqt6")
     os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     os.environ.setdefault("UV_LINK_MODE", "copy")
@@ -366,7 +370,7 @@ def initialize_runtime(entry_file: str | None = None) -> RuntimeContext:
     _run_torch_bootstrap(libs_dir, logger)
     _apply_compatibility_patches(libs_dir, logger)
     _ensure_project_root(base_dir, logger)
-    QApplication = _import_gui_runtime()
+    QApplication = _import_gui_runtime() if load_gui else None
 
     return RuntimeContext(
         base_dir=base_dir,

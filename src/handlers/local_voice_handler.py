@@ -5,6 +5,7 @@ import traceback
 from typing import Dict, Optional, Any, List
 
 import ffmpeg
+from core.app_paths import settings_path
 from main_logger import logger
 from utils import getTranslationVariant as _, get_character_voice_paths
 from utils.gpu_utils import check_gpu_provider
@@ -203,7 +204,7 @@ class LocalVoice:
 
     def load_model_settings(self, model_id: str) -> Dict[str, Any]:
         try:
-            settings_file = os.path.join("Settings", "voice_model_settings.json")
+            settings_file = str(settings_path("voice_model_settings.json", create_parent=True))
             if os.path.exists(settings_file):
                 import json
                 with open(settings_file, "r", encoding="utf-8") as f:

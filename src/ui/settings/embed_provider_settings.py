@@ -12,7 +12,8 @@ from PyQt6.QtWidgets import (
 )
 
 from core.events import get_event_bus, Events
-from managers.settings_manager import InnerCollapsibleSection, SettingsManager
+from managers.settings_manager import SettingsManager
+from ui.widgets.settings_sections import InnerCollapsibleSection
 from ui.async_bus import dispatch_to_gui, run_async
 from ui.gui_templates import SettingsBodyWidget
 from ui.settings.data_prefetch import (

@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdi
 from PyQt6.QtCore import Qt
 
 from main_logger import logger
-from managers.settings_manager import CollapsibleSection, InnerCollapsibleSection
+from ui.widgets.settings_sections import CollapsibleSection, InnerCollapsibleSection
 from ui.widgets.tr_combobox import TRQComboBox
 from utils import getTranslationVariant as _
 from localization.live import register_if_tr

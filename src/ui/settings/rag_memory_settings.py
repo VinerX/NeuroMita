@@ -1743,7 +1743,7 @@ def _sync_memory_profile(gui) -> None:
 def _attach_embed_downloader(gui, section) -> None:
     """Вставить download-виджеты эмбеддинга в нужную InnerCollapsibleSection секции RAG."""
     try:
-        from managers.settings_manager import InnerCollapsibleSection
+        from ui.widgets.settings_sections import InnerCollapsibleSection
         _dl_label = QLabel(_("Модель:", "Model:") + " " + _get_model_download_status())
         _dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
         _idx_label = QLabel(_("Индекс:", "Index:") + " " + _get_embed_status_text())
@@ -1778,7 +1778,7 @@ def _attach_embed_downloader(gui, section) -> None:
 def _attach_ce_downloader(gui, section) -> None:
     """Вставить download-виджеты cross-encoder в нужную InnerCollapsibleSection секции RAG."""
     try:
-        from managers.settings_manager import InnerCollapsibleSection
+        from ui.widgets.settings_sections import InnerCollapsibleSection
         _ce_dl_label = QLabel(_("Модель:", "Model:") + " " + _get_ce_download_status())
         _ce_dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
         _ce_ld_label = QLabel(_("Статус:", "Status:") + " " + _get_ce_loaded_status())
@@ -2045,7 +2045,7 @@ def _download_ce_model(gui) -> None:
 def _attach_embed_downloader(gui, section) -> None:
     try:
         _ensure_rag_install_event_handlers(gui)
-        from managers.settings_manager import InnerCollapsibleSection
+        from ui.widgets.settings_sections import InnerCollapsibleSection
         _content = getattr(section, "content", None)
         _parent = _content or section
 
@@ -2088,7 +2088,7 @@ def _attach_embed_downloader(gui, section) -> None:
 def _attach_ce_downloader(gui, section) -> None:
     try:
         _ensure_rag_install_event_handlers(gui)
-        from managers.settings_manager import InnerCollapsibleSection
+        from ui.widgets.settings_sections import InnerCollapsibleSection
         _content = getattr(section, "content", None)
         _parent = _content or section
 

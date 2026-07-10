@@ -1,10 +1,11 @@
 # src/managers/tools/tool_manager.py
 from __future__ import annotations
 
+from importlib import import_module
 from typing import Dict, List, Any, Optional
 
+from main_logger import logger
 from managers.tools.base import Tool
-from managers.tools.builtin import CalculatorTool, WebSearchTool, WebPageReaderTool, GoogleSearchTool
 from managers.tools.dialects.registry import ToolDialectRegistry
 
 
@@ -16,10 +17,18 @@ class ToolManager:
         self.dialects.add_alias("deepseek", "openai")
         self.dialects.add_alias("anthropic", "openai")
 
-        self.register(CalculatorTool())
-        self.register(WebSearchTool())
-        self.register(GoogleSearchTool())
-        self.register(WebPageReaderTool())
+        tool_types = (
+            ("managers.tools.builtin.calc", "CalculatorTool"),
+            ("managers.tools.builtin.web_search", "WebSearchTool"),
+            ("managers.tools.builtin.google_search", "GoogleSearchTool"),
+            ("managers.tools.builtin.web_read", "WebPageReaderTool"),
+        )
+        for module_name, class_name in tool_types:
+            try:
+                tool_type = getattr(import_module(module_name), class_name)
+                self.register(tool_type())
+            except Exception as exc:
+                logger.warning(f"Tool {class_name} unavailable: {exc}")
 
     def register(self, tool: Tool):
         self._tools[tool.name] = tool

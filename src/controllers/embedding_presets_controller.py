@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.app_paths import settings_path
 from core.events import Event, Events, get_event_bus
 from services.contracts import EmbeddingPresetService
 from main_logger import logger
@@ -52,7 +53,7 @@ class EmbeddingPresetsController(EmbeddingPresetService):
 
     def __init__(self) -> None:
         self.event_bus = get_event_bus()
-        self.presets_path = Path("Settings/embedding_presets.json")
+        self.presets_path = settings_path("embedding_presets.json", create_parent=True)
         self._io_lock = threading.RLock()
 
         self.custom_presets: Dict[int, UserEmbedPreset] = {}
