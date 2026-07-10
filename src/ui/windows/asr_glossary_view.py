@@ -16,6 +16,7 @@ except Exception:
 from core.events import get_event_bus, Events
 from utils import getTranslationVariant as _
 from styles.asr_model_styles import get_asr_stylesheet
+from ui.async_bus import run_async
 
 
 class AsrModelListItemWidget(QWidget):
