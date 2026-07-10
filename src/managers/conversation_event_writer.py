@@ -41,26 +41,13 @@ class ConversationEventWriter:
             return f"{prefix}:{base_s}"
         return f"{prefix}:{uuid.uuid4().hex}"
 
-    def _has_message_id_recent(self, messages: list[dict], message_id: str, tail: int = 300) -> bool:
-        if not message_id or not isinstance(messages, list):
-            return False
-        for m in messages[-tail:]:
-            if isinstance(m, dict) and str(m.get("message_id") or "") == message_id:
-                return True
-        return False
-
     def _append_history_message(self, ch_ref, msg: dict) -> bool:
         if ch_ref is None or not isinstance(msg, dict):
             return False
 
         try:
-            history_data = ch_ref.history_manager.load_history()
-            messages = history_data.get("messages", []) or []
-            if not isinstance(messages, list):
-                messages = []
-
             mid = str(msg.get("message_id") or "")
-            if mid and self._has_message_id_recent(messages, mid):
+            if mid and ch_ref.history_manager.contains_message_id(mid):
                 return False
 
             #messages.append(msg)

@@ -82,7 +82,7 @@ class AppWindowBase(QMainWindow):
 
     prepare_stream_signal = pyqtSignal(object)
     append_stream_chunk_signal = pyqtSignal(object)
-    finish_stream_signal = pyqtSignal()
+    finish_stream_signal = pyqtSignal(object)
 
     show_thinking_signal = pyqtSignal(object)
     show_error_signal = pyqtSignal(str)
@@ -1160,10 +1160,10 @@ class AppWindowBase(QMainWindow):
         if hasattr(self, 'mita_status') and self.mita_status:
             self.mita_status.hide_compression()
 
-    def _on_stream_start(self):
+    def _on_stream_start(self, _data=None):
         pass
 
-    def _on_stream_finish(self):
+    def _on_stream_finish(self, _data=None):
         print("[DEBUG] Стрим завершен, скрываем статус")
         self.event_bus.emit(Events.GUI.HIDE_MITA_STATUS)
 
@@ -1598,30 +1598,32 @@ class AppWindowBase(QMainWindow):
 
     def _on_prepare_stream_signal(self, data=None):
         from ui.chat import message_renderer
-        role = data.get("role", "assistant") if isinstance(data, dict) else "assistant"
-        
-        # Сохраняем имя спикера, если оно пришло
-        if isinstance(data, dict) and "speaker_name" in data:
-            self._stream_speaker_name = data["speaker_name"]
-            
-        return message_renderer.prepare_stream_slot(self, role=role)
+        payload = data if isinstance(data, dict) else {}
+        return message_renderer.prepare_stream_slot(
+            self,
+            role=payload.get("role", "assistant"),
+            stream_id=str(payload.get("stream_id") or "default"),
+            speaker_name=str(payload.get("speaker_name") or payload.get("character_name") or ""),
+        )
 
     def _append_stream_chunk_slot(self, data):
         from ui.chat import message_renderer
-        chunk = data.get("chunk") if isinstance(data, dict) else data
-        role = data.get("role", "assistant") if isinstance(data, dict) else "assistant"
-        return message_renderer.append_stream_chunk_slot(self, chunk, role=role)
+        payload = data if isinstance(data, dict) else {"chunk": data}
+        return message_renderer.append_stream_chunk_slot(
+            self,
+            payload.get("chunk"),
+            role=payload.get("role", "assistant"),
+            stream_id=str(payload.get("stream_id") or "default"),
+        )
 
-    def _finish_stream_slot(self):
+    def _finish_stream_slot(self, data=None):
         from ui.chat import message_renderer
-        # Сбрасываем имя спикера после завершения стрима
-        self._stream_speaker_name = ""
-        # Attach structured panel BEFORE finish (finish clears _current_stream_message)
-        pending = getattr(self, '_pending_structured_data', None)
-        if pending:
-            self._pending_structured_data = None
-            message_renderer.attach_structured_to_stream(self, pending)
-        message_renderer.finish_stream_slot(self)
+        payload = data if isinstance(data, dict) else {}
+        stream_id = str(payload.get("stream_id") or "default")
+        structured = payload.get("structured_data")
+        if structured:
+            message_renderer.attach_structured_to_stream(self, structured, stream_id=stream_id)
+        message_renderer.finish_stream_slot(self, stream_id=stream_id)
 
     def process_image_for_chat(self, has_image_content, item, processed_content_parts):
         from ui.chat import message_renderer

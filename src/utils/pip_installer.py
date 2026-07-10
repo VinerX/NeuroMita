@@ -10,24 +10,6 @@ from packaging.utils import canonicalize_name, NormalizedName
 from packaging.version import parse as parse_version
 from main_logger import logger
 from typing import Set, List, Tuple, Optional, Deque
-try:
-    from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtCore import QThread, QCoreApplication
-except Exception:
-    class QApplication:
-        @staticmethod
-        def processEvents():
-            return None
-
-    class QThread:
-        @staticmethod
-        def currentThread():
-            return None
-
-    class QCoreApplication:
-        @staticmethod
-        def instance():
-            return None
 from collections import deque
 
 
@@ -1888,9 +1870,15 @@ class PipInstaller:
         state.last_status_emit = now
 
     def _pump_events(self):
-        app = QCoreApplication.instance()
-        if app and QThread.currentThread() == app.thread():
-            QApplication.processEvents()
+        try:
+            from PyQt6.QtCore import QCoreApplication, QThread
+            from PyQt6.QtWidgets import QApplication
+
+            app = QCoreApplication.instance()
+            if app and QThread.currentThread() == app.thread():
+                QApplication.processEvents()
+        except Exception:
+            return
 
     def _terminate_process(self, proc, reason: str = ""):
         try:

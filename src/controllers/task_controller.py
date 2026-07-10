@@ -21,7 +21,7 @@ class TaskController(TaskService):
     def create_task(self, task_type: str, data: Dict[str, Any]) -> Task:
         task = self.task_manager.create_task(task_type, data)
         # Уведомляем сервер о создании задачи
-        self.event_bus.emit(Events.Task.TASK_CREATED, {'task': task})
+        self.event_bus.emit(Events.Task.TASK_CREATED, {'task': task.snapshot()})
         return task
 
     def get_task(self, uid: str) -> Optional[Task]:
@@ -34,7 +34,7 @@ class TaskController(TaskService):
         task = self.task_manager.update_task_status(uid, status, result, error)
         if task:
             # Уведомляем о изменении статуса
-            self.event_bus.emit(Events.Task.TASK_STATUS_CHANGED, {'task': task})
+            self.event_bus.emit(Events.Task.TASK_STATUS_CHANGED, {'task': task.snapshot()})
         return task
 
     # ── Bus-подписчики (тонкие делегаты) ────────────────────────────────────

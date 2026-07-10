@@ -7,6 +7,7 @@ import json
 import datetime
 import re
 import copy
+import threading
 from typing import Optional, Any
 import base64
 
@@ -125,7 +126,8 @@ class ModelController(GenerationService):
         self._last_token_stats: dict[str, Any] = {}
 
         self.game_state = GameState()
-        self._temporary_system_infos: list[dict] = []
+        self._temporary_system_infos: dict[str, list[dict]] = {}
+        self._temporary_system_infos_lock = threading.Lock()
 
         self.event_writer = ConversationEventWriter(character_ref_resolver=self._get_character_ref)
         self.ui_projector = HistoryUiProjector(resolve_name=lambda cid: str(getattr(self._get_character_ref(cid), "name", "") or cid))
@@ -222,14 +224,24 @@ class ModelController(GenerationService):
         self.game_state.update_from_event_data(event.data or {})
 
     def _on_add_temporary_system_info(self, event: Event):
-        content = (event.data or {}).get("content", "")
+        data = event.data or {}
+        content = data.get("content", "")
         if not content:
             return False
-        self._temporary_system_infos.append({"role": "system", "content": str(content)})
+        character_id = str(data.get("character_id") or self._get_current_character_id() or "")
+        if not character_id:
+            return False
+        with self._temporary_system_infos_lock:
+            self._temporary_system_infos.setdefault(character_id, []).append(
+                {"role": "system", "content": str(content)}
+            )
         return True
 
     def _on_peek_temporary_system_infos(self, event: Event):
-        return list(self._temporary_system_infos)
+        data = event.data or {}
+        character_id = str(data.get("character_id") or self._get_current_character_id() or "")
+        with self._temporary_system_infos_lock:
+            return list(self._temporary_system_infos.get(character_id, ()))
 
     def _on_get_game_state(self, event: Event):
         return self.game_state.to_prompt_dict()
@@ -805,7 +817,9 @@ class ModelController(GenerationService):
         # Events.Speech.GET_USER_INPUT удалён: единственный подписчик всегда
         # возвращал "", то есть это был поход на шину за пустой строкой.
         messages = list(base)
-        messages.extend([x for x in self._temporary_system_infos if isinstance(x, dict)])
+        with self._temporary_system_infos_lock:
+            temporary = list(self._temporary_system_infos.get(cid, ()))
+        messages.extend([x for x in temporary if isinstance(x, dict)])
 
         return cid, messages, self.context_counter.count_tokens(messages)
 
@@ -1141,8 +1155,8 @@ class ModelController(GenerationService):
 
         game_state = self.game_state.to_prompt_dict()
 
-        extra_system_infos = list(self._temporary_system_infos or [])
-        self._temporary_system_infos.clear()
+        with self._temporary_system_infos_lock:
+            extra_system_infos = list(self._temporary_system_infos.pop(char_id, ()))
 
         cfg = getattr(self.model, "cfg", None)
 

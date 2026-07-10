@@ -4,10 +4,10 @@ from typing import Dict, List, Callable, Any, Optional
 from concurrent.futures import wait
 import weakref
 from dataclasses import dataclass
-from queue import Queue, Empty
+from queue import Queue, Empty, Full
 import time
 
-from core.executors import Pools, executors
+from core.executors import PoolSaturated, Pools, executors
 from main_logger import logger
 
 
@@ -24,6 +24,14 @@ class EmitAndWaitContextError(RuntimeError):
 # Префиксы имён потоков пулов, в которых emit_and_wait запрещён.
 # ThreadPoolExecutor именует потоки как "{prefix}_{n}" (см. core/executors.py).
 _FORBIDDEN_THREAD_PREFIXES = (Pools.GENERATION, Pools.BACKGROUND_LLM)
+
+_ORDERED_EVENT_NAMES = frozenset({
+    "create_task",
+    "update_task_status",
+    "task_created",
+    "task_status_changed",
+    "notify_task_update",
+})
 
 
 def _guard_emit_and_wait_context(event_name: str) -> None:
@@ -87,7 +95,7 @@ class EventBus:
         self._subscribers: Dict[str, List[weakref.ref]] = {}
         self._lock = threading.RLock()
 
-        self._event_queue = Queue()
+        self._event_queue = Queue(maxsize=2048)
         self._running = True
         self._processor_thread = threading.Thread(target=self._process_events, daemon=True)
         self._processor_thread.start()
@@ -156,7 +164,13 @@ class EventBus:
         if sync:
             self._emit_sync(event)
         else:
-            self._event_queue.put(event)
+            try:
+                self._event_queue.put(event, timeout=0.5)
+            except Full:
+                logger.error(
+                    "Event queue saturated; dropping event '%s' to protect process memory",
+                    event_name,
+                )
     
     def emit_and_wait(self, event_name: str, data: Any = None, timeout: float = 5.0) -> List[Any]:
         """
@@ -187,8 +201,19 @@ class EventBus:
 
         for index, subscriber in enumerate(subscribers):
             callback_name = getattr(subscriber, "__qualname__", getattr(subscriber, "__name__", "unknown"))
-            future = pool.submit(self._call_sync_subscriber, subscriber, event, index, callback_name)
-            futures[future] = (index, callback_name)
+            try:
+                future = pool.try_submit(
+                    self._call_sync_subscriber,
+                    subscriber,
+                    event,
+                    index,
+                    callback_name,
+                )
+                futures[future] = (index, callback_name)
+            except PoolSaturated:
+                ordered[index] = self._call_sync_subscriber(
+                    subscriber, event, index, callback_name
+                )
 
         done, not_done = wait(futures.keys(), timeout=max(0.0, float(timeout)))
 
@@ -259,19 +284,31 @@ class EventBus:
 
     def shutdown(self) -> None:
         """Остановить систему событий"""
+        if not self._running:
+            return
         self._running = False
-        self._event_queue.put(None)  # Сигнал для остановки
+        try:
+            self._event_queue.put(None, timeout=1.0)
+        except Full:
+            try:
+                self._event_queue.get_nowait()
+            except Empty:
+                pass
+            self._event_queue.put_nowait(None)
         self._processor_thread.join(timeout=5)
     
     def _process_events(self) -> None:
         """Обработчик очереди событий (работает в отдельном потоке)"""
-        while self._running:
+        while True:
             try:
                 event = self._event_queue.get(timeout=0.1)
                 if event is None:  # Сигнал остановки
                     break
                 
-                self._emit_async(event)
+                if event.name in _ORDERED_EVENT_NAMES:
+                    self._emit_sync(event)
+                else:
+                    self._emit_async(event)
             except Empty:
                 continue
             except Exception as e:
@@ -295,7 +332,10 @@ class EventBus:
 
         pool = executors().pool(Pools.EVENT_BUS)
         for subscriber in subscribers:
-            pool.submit(self._safe_call, subscriber, event)
+            try:
+                pool.try_submit(self._safe_call, subscriber, event)
+            except PoolSaturated:
+                self._safe_call(subscriber, event)
     
     def _safe_call(self, callback: Callable, event: Event) -> None:
         """Безопасный вызов обработчика"""

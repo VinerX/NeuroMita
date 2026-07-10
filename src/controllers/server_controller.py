@@ -190,22 +190,31 @@ class ServerController:
             self.server.set_game_master_voice(False)
 
     def start_server(self):
-        if not self.running:
-            self.running = True
-            self.server.start()
+        if self.running:
+            return True
+        if not self.server:
+            return False
+
+        started = bool(self.server.start(timeout=5.0))
+        self.running = started
+        if started:
             logger.info("Server started")
+            return True
+
+        error = getattr(self.server, "startup_error", None)
+        logger.error(f"Server failed to start: {error or 'startup timeout'}")
+        return False
 
     def stop_server(self):
-        if not self.running:
-            logger.debug("Server already stopped")
+        if not self.server:
+            self.running = False
             return
 
         logger.info("Stopping server...")
         self.running = False
 
         try:
-            if self.server:
-                self.server.stop()
+            self.server.stop()
         except Exception as e:
             logger.error(f"Error while stopping server: {e}", exc_info=True)
 
@@ -223,10 +232,9 @@ class ServerController:
             return
 
         logger.info("Destroying ServerController...")
-        self._destroyed = True
-
         self._unsubscribe_from_events()
         self.stop_server()
+        self._destroyed = True
 
         try:
             from managers.task_manager import get_task_manager

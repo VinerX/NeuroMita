@@ -252,54 +252,48 @@ class MainController:
             if self._closing_started:
                 return
             self._closing_started = True
+
         logger.info("Начинаем закрытие приложения...")
 
-        self.event_bus.emit(Events.Speech.STOP_SPEECH_RECOGNITION)
-        start = time.time()
-        try:
-            while True:
-                mic_status = self.event_bus.emit_and_wait(Events.Speech.GET_MIC_STATUS, timeout=0.5)
-                active = bool(mic_status and mic_status[0])
-                if not active:
-                    break
-                if time.time() - start > 1.5:
-                    break
-                time.sleep(0.1)
-        except Exception:
-            pass
+        def shutdown_step(name: str, callback) -> None:
+            try:
+                callback()
+            except Exception as exc:
+                logger.error(f"Ошибка при остановке {name}: {exc}", exc_info=True)
 
-        try:
-            self.event_bus.emit(Events.Server.STOP_SERVER)
-        except Exception as e:
-            logger.error(f"Ошибка при остановке сервера: {e}", exc_info=True)
+        if self.event_bus is not None:
+            shutdown_step(
+                "speech recognition",
+                lambda: self.event_bus.emit(Events.Speech.STOP_SPEECH_RECOGNITION, sync=True),
+            )
 
-        try:
-            if getattr(self, "capture_controller", None):
-                self.capture_controller.shutdown()
-        except Exception as e:
-            logger.error(f"РћС€РёР±РєР° РїСЂРё РѕСЃС‚Р°РЅРѕРІРєРµ capture controller: {e}", exc_info=True)
+        server_controller = getattr(self, "server_controller", None)
+        if server_controller is not None:
+            shutdown_step("server", server_controller.destroy)
 
-        self.audio_controller.delete_all_sound_files()
+        capture_controller = getattr(self, "capture_controller", None)
+        if capture_controller is not None:
+            shutdown_step("capture controller", capture_controller.shutdown)
 
-        try:
-            if getattr(self, "ai_engine_controller", None):
-                self.ai_engine_controller.shutdown(timeout=5.0)
-        except Exception as e:
-            logger.error(f"Ошибка при остановке AI engine: {e}", exc_info=True)
+        ai_engine = getattr(self, "ai_engine_controller", None)
+        if ai_engine is not None:
+            shutdown_step("AI engine", lambda: ai_engine.shutdown(timeout=5.0))
 
-        if self.loop_controller is not None:
-            self.loop_controller.stop_loop()
+        audio_controller = getattr(self, "audio_controller", None)
+        if audio_controller is not None:
+            shutdown_step("audio cleanup", audio_controller.delete_all_sound_files)
 
-        try:
-            shutdown_event_bus()
-        except Exception as e:
-            logger.error(f"Ошибка при остановке EventBus: {e}", exc_info=True)
+        loop_controller = getattr(self, "loop_controller", None)
+        if loop_controller is not None:
+            shutdown_step("async loop", loop_controller.stop_loop)
 
-        try:
-            executors().shutdown_all(wait=False)
-        except Exception as e:
-            logger.error(f"Ошибка при остановке пулов: {e}", exc_info=True)
+        character_controller = getattr(self, "character_controller", None)
+        character_manager = getattr(character_controller, "character_manager", None)
+        if character_manager is not None:
+            shutdown_step("character resources", character_manager.shutdown)
 
+        shutdown_step("EventBus", shutdown_event_bus)
+        shutdown_step("executor pools", lambda: executors().shutdown_all(wait=False))
         logger.info("Закрываемся")
 
     def _check_and_perform_pending_update(self):

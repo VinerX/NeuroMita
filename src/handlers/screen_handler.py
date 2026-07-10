@@ -1,10 +1,6 @@
-import mss
-import mss.tools
-import numpy as np
 import time
 import threading
 from main_logger import logger
-from win32 import win32gui
 # import win32con
 
 # Добавляем необходимые импорты для PipInstaller
@@ -21,6 +17,17 @@ def getTranslationVariant(ru_str, en_str=""):
     return ru_str
 
 _ = getTranslationVariant
+
+
+def _get_win32gui():
+    """Load pywin32 only when window exclusion is actually requested."""
+    try:
+        from win32 import win32gui
+        return win32gui
+    except ImportError as exc:
+        raise RuntimeError(
+            "Window exclusion requires pywin32, but the package is not installed"
+        ) from exc
 
 class ScreenCapture:
     def __init__(self):
@@ -117,13 +124,22 @@ class ScreenCapture:
             return
 
         self._running = False
-        if self._thread:
-            self._thread.join()  # Ждем завершения потока
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(timeout=3.0)
+            if self._thread.is_alive():
+                logger.warning("Поток захвата экрана не остановился за 3 секунды.")
         logger.info("Захват экрана остановлен.")
 
     def _capture_loop(self):
-        from PIL import Image  # Импортируем Image здесь
-        from io import BytesIO  # Импортируем BytesIO здесь
+        try:
+            import mss
+            from PIL import Image
+            from io import BytesIO
+        except Exception as exc:
+            with self._lock:
+                self._running = False
+            logger.error(f"Модуль захвата экрана недоступен: {exc}", exc_info=True)
+            return
 
         # Инициализируем mss.mss() внутри потока
         with mss.mss() as sct:
@@ -167,7 +183,7 @@ class ScreenCapture:
                             #win32gui.IsWindowVisible(self.hwnd_to_exclude) and win32gui.GetForegroundWindow() == self.hwnd_to_exclude:
 
                             # Получаем координаты окна по его HWND
-                            left, top, right, bottom = win32gui.GetWindowRect(self.hwnd_to_exclude)
+                            left, top, right, bottom = _get_win32gui().GetWindowRect(self.hwnd_to_exclude)
                             # Определяем размеры окна
                             width = right - left
                             height = bottom - top
@@ -242,6 +258,7 @@ class ScreenCapture:
 
     def capture_one_shot(self, quality: int = 25, width: int = 1024, height: int = 768) -> bytes | None:
         try:
+            import mss
             from PIL import Image
             from io import BytesIO
 
@@ -256,7 +273,7 @@ class ScreenCapture:
 
                 if self.exclude_gui_window and self.hwnd_to_exclude:
                     try:
-                        left, top, right, bottom = win32gui.GetWindowRect(self.hwnd_to_exclude)
+                        left, top, right, bottom = _get_win32gui().GetWindowRect(self.hwnd_to_exclude)
                         black_patch = Image.new('RGB', (right - left, bottom - top), (0, 0, 0))
                         paste_x = left - monitor_to_capture['left']
                         paste_y = top - monitor_to_capture['top']

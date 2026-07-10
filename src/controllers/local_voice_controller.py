@@ -165,7 +165,7 @@ class LocalVoiceController:
 
         eng = self._get_engine()
         if not eng:
-            return True if strict else (bool(cached) if cached is not None else False)
+            return False if strict else (bool(cached) if cached is not None else False)
 
         if strict:
             try:
@@ -174,7 +174,8 @@ class LocalVoiceController:
                 self._initialized_cache[model_id] = ok
                 return ok
             except Exception:
-                return True
+                self._initialized_cache[model_id] = False
+                return False
 
         try:
             cfut = eng.call("tts", "check_initialized", {"model_id": model_id})

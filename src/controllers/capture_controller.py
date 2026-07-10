@@ -1,6 +1,5 @@
 import time
 import threading
-from win32 import win32gui
 from handlers.screen_handler import ScreenCapture
 from main_logger import logger
 from core.events import get_event_bus, Events, Event

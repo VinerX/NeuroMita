@@ -61,6 +61,14 @@ class RAGManager:
             return instance
 
     @classmethod
+    def shutdown_executor(cls) -> None:
+        with cls._ACCESS_EXECUTOR_LOCK:
+            executor = cls._ACCESS_EXECUTOR
+            cls._ACCESS_EXECUTOR = None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    @classmethod
     def _get_access_executor(cls) -> ThreadPoolExecutor:
         if cls._ACCESS_EXECUTOR is None:
             with cls._ACCESS_EXECUTOR_LOCK:

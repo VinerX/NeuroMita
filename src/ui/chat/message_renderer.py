@@ -494,82 +494,154 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         gui.chat_window.add_message_widget(wrapped_img, at_start=insert_at_start)
 
 
-def prepare_stream_slot(gui, role="assistant"):
-    prev_role = getattr(gui, "_stream_current_render_role", None)
+def _stream_states(gui) -> dict:
+    states = getattr(gui, "_stream_render_states", None)
+    if not isinstance(states, dict):
+        states = {}
+        gui._stream_render_states = states
+    return states
+
+
+def _stream_state(gui, stream_id: str, *, create: bool = False) -> dict | None:
+    key = str(stream_id or "default")
+    states = _stream_states(gui)
+    state = states.get(key)
+    if state is None and create:
+        state = {
+            "role": None,
+            "first_chunk": True,
+            "speaker_name": "",
+            "message": None,
+            "think_block": None,
+        }
+        states[key] = state
+    return state
+
+
+def prepare_stream_slot(gui, role="assistant", stream_id="default", speaker_name=""):
+    state = _stream_state(gui, stream_id, create=True)
+    prev_role = state.get("role")
     font_size = _get_font_size(gui)
     max_bw = int(gui._get_setting("CHAT_MAX_BUBBLE_WIDTH", 600))
     chat_parent = gui.chat_window.get_layout_parent()
 
-    if prev_role is not None and prev_role != role:
-        if prev_role == "think":
-            _finalize_streaming_think_block(gui)
+    if prev_role == role:
+        return
+    if prev_role == "think":
+        _finalize_streaming_think_block(gui, stream_id, state=state)
 
-    gui._stream_current_render_role = role
-    gui._stream_is_first_chunk = True
+    state["role"] = role
+    state["first_chunk"] = True
+    if speaker_name:
+        state["speaker_name"] = str(speaker_name)
 
     if role == "think":
-        name = str(getattr(gui, "_stream_speaker_name", "") or "")
-        if not name and hasattr(gui, "_get_character_name"): name = gui._get_character_name()
+        name = str(state.get("speaker_name") or "")
+        if not name and hasattr(gui, "_get_character_name"):
+            name = gui._get_character_name()
 
-        block = ThinkBlockWidget(name, "", is_streaming=True, font_size=font_size, max_bubble_width=max_bw, parent=chat_parent)
+        block = ThinkBlockWidget(
+            name,
+            "",
+            is_streaming=True,
+            font_size=font_size,
+            max_bubble_width=max_bw,
+            parent=chat_parent,
+        )
         _get_think_blocks(gui)
         gui._think_block_counter += 1
         _get_think_blocks(gui)[gui._think_block_counter - 1] = block
-        gui._current_streaming_think_block = block
+        state["think_block"] = block
 
         wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent)
         gui.chat_window.add_message_widget(wrapped)
-    else:
-        speaker_name = str(getattr(gui, "_stream_speaker_name", "") or "")
-        if not speaker_name and role == "assistant" and hasattr(gui, "_get_character_name"): speaker_name = gui._get_character_name()
-        elif not speaker_name and role == "user": speaker_name = _("Вы", "You")
+        return
 
-        show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
-        _ft_stream_sample_id = _pop_sample_id_if_collecting() if role == "assistant" else None
-        msg = MessageWidget(
-            role=role, speaker_name=speaker_name, content_text="",
-            show_avatar=(role not in ("system", "event", "think", "structured")),
-            font_size=font_size, show_timestamp=show_ts, max_bubble_width=max_bw,
-            sample_id=_ft_stream_sample_id,
-            show_rating_controls=(role == "assistant" and _should_show_rating_controls(gui)),
-            parent=chat_parent
-        )
-        gui._current_stream_message = msg
-        gui.chat_window.add_message_widget(msg)
+    name = str(state.get("speaker_name") or "")
+    if not name and role == "assistant" and hasattr(gui, "_get_character_name"):
+        name = gui._get_character_name()
+    elif not name and role == "user":
+        name = _("Вы", "You")
 
-def append_stream_chunk_slot(gui, chunk, role="assistant"):
-    if getattr(gui, '_stream_is_first_chunk', False):
-        gui._stream_is_first_chunk = False
-        chunk = chunk.lstrip('\n')
-        if not chunk: return
+    show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
+    sample_id = _pop_sample_id_if_collecting() if role == "assistant" else None
+    message = MessageWidget(
+        role=role,
+        speaker_name=name,
+        content_text="",
+        show_avatar=(role not in ("system", "event", "think", "structured")),
+        font_size=font_size,
+        show_timestamp=show_ts,
+        max_bubble_width=max_bw,
+        sample_id=sample_id,
+        show_rating_controls=(
+            role == "assistant" and _should_show_rating_controls(gui)
+        ),
+        parent=chat_parent,
+    )
+    state["message"] = message
+    gui.chat_window.add_message_widget(message)
+
+
+def append_stream_chunk_slot(gui, chunk, role="assistant", stream_id="default"):
+    if not chunk:
+        return
+    state = _stream_state(gui, stream_id, create=False)
+    if state is None or state.get("role") != role:
+        prepare_stream_slot(gui, role=role, stream_id=stream_id)
+        state = _stream_state(gui, stream_id, create=False)
+    if state is None:
+        return
+
+    if state.get("first_chunk", False):
+        state["first_chunk"] = False
+        chunk = str(chunk).lstrip("\n")
+        if not chunk:
+            return
 
     if role == "think":
-        block = getattr(gui, '_current_streaming_think_block', None)
-        if block: block.append_content(chunk)
+        block = state.get("think_block")
+        if block:
+            block.append_content(chunk)
     else:
-        msg = getattr(gui, '_current_stream_message', None)
-        if msg: msg.append_text(chunk)
+        message = state.get("message")
+        if message:
+            message.append_text(chunk)
     gui.chat_window.scroll_to_bottom()
 
-def _finalize_streaming_think_block(gui):
-    block = getattr(gui, '_current_streaming_think_block', None)
-    if block: block.finalize()
-    gui._current_streaming_think_block = None
 
-def attach_structured_to_stream(gui, structured_data: dict):
+def _finalize_streaming_think_block(gui, stream_id="default", *, state=None):
+    state = state or _stream_state(gui, stream_id, create=False)
+    if state is None:
+        return
+    block = state.get("think_block")
+    if block:
+        block.finalize()
+    state["think_block"] = None
+
+
+def attach_structured_to_stream(gui, structured_data: dict, stream_id="default"):
     mode = _struct_mode(gui)
-    if _is_struct_off(mode): return
-    msg = getattr(gui, '_current_stream_message', None)
-    if not msg: return
+    if _is_struct_off(mode):
+        return
+    state = _stream_state(gui, stream_id, create=False)
+    message = state.get("message") if state else None
+    if not message:
+        return
 
     font_size = _get_font_size(gui)
     max_bw = int(gui._get_setting("CHAT_MAX_BUBBLE_WIDTH", 600))
     chat_parent = gui.chat_window.get_layout_parent()
     display_mode = "json" if mode in (STRUCTURED_MODE_JSON, "JSON") else "brief"
     start_expanded = bool(gui._get_setting("STRUCTURED_EXPANDED_DEFAULT", False))
-    
+
     panel = StructuredOutputPanel(
-        structured_data, font_size, max_bw, start_expanded=start_expanded, mode=display_mode, parent=chat_parent
+        structured_data,
+        font_size,
+        max_bw,
+        start_expanded=start_expanded,
+        mode=display_mode,
+        parent=chat_parent,
     )
     _get_think_blocks(gui)
     gui._think_block_counter += 1
@@ -577,50 +649,77 @@ def attach_structured_to_stream(gui, structured_data: dict):
 
     segments = (structured_data.get("segments") or []) if isinstance(structured_data, dict) else []
     target_groups = _group_segments_by_target(segments) if segments else []
-    speaker_name = getattr(msg, '_speaker_name', '') or ''
-    _stream_sample_id = getattr(msg, '_sample_id', None)
+    speaker_name = getattr(message, "_speaker_name", "") or ""
+    stream_sample_id = getattr(message, "_sample_id", None)
     hide_tags = gui._get_setting("HIDE_CHAT_TAGS", False)
     show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
 
     if len(target_groups) > 1:
-        gui.chat_window.remove_widget(msg)
-        for i, (target, texts) in enumerate(target_groups):
-            group_text = " ".join(t.strip() for t in texts).strip()
+        gui.chat_window.remove_widget(message)
+        for index, (target, texts) in enumerate(target_groups):
+            group_text = " ".join(text.strip() for text in texts).strip()
             if hide_tags:
                 import re
-                group_text = re.sub(r'(<([^>]+)>)(.*?)(</\2>)|(<([^>]+)>)', "", group_text, flags=re.DOTALL)
-                group_text = re.sub(r' +', ' ', group_text).strip()
-            
-            is_last = (i == len(target_groups) - 1)
+
+                group_text = re.sub(
+                    r"(<([^>]+)>)(.*?)(</\2>)|(<([^>]+)>)",
+                    "",
+                    group_text,
+                    flags=re.DOTALL,
+                )
+                group_text = re.sub(r" +", " ", group_text).strip()
+
+            is_last = index == len(target_groups) - 1
             is_self = target and speaker_name.lower().startswith(target.lower())
-            display_name = f"{speaker_name} → {target}" if target and target.lower() != "player" and not is_self else speaker_name
-            
-            w = MessageWidget(
-                role="assistant", speaker_name=display_name, content_text=group_text,
-                show_avatar=is_last, font_size=font_size, show_timestamp=show_ts and is_last,
-                max_bubble_width=max_bw, sample_id=_stream_sample_id if is_last else None,
-                show_rating_controls=(_should_show_rating_controls(gui) and is_last), parent=chat_parent
+            display_name = (
+                f"{speaker_name} → {target}"
+                if target and target.lower() != "player" and not is_self
+                else speaker_name
             )
-            if is_last: w.set_structured_ref(panel)
-            gui.chat_window.add_message_widget(w)
+            widget = MessageWidget(
+                role="assistant",
+                speaker_name=display_name,
+                content_text=group_text,
+                show_avatar=is_last,
+                font_size=font_size,
+                show_timestamp=show_ts and is_last,
+                max_bubble_width=max_bw,
+                sample_id=stream_sample_id if is_last else None,
+                show_rating_controls=(
+                    _should_show_rating_controls(gui) and is_last
+                ),
+                parent=chat_parent,
+            )
+            if is_last:
+                widget.set_structured_ref(panel)
+            gui.chat_window.add_message_widget(widget)
     elif len(target_groups) == 1:
         target, _ = target_groups[0]
-        if target and target.lower() != "player" and not speaker_name.lower().startswith(target.lower()):
-            msg.set_speaker_name(f"{speaker_name} → {target}")
-        msg.set_structured_ref(panel)
+        if (
+            target
+            and target.lower() != "player"
+            and not speaker_name.lower().startswith(target.lower())
+        ):
+            message.set_speaker_name(f"{speaker_name} → {target}")
+        message.set_structured_ref(panel)
     else:
-        msg.set_structured_ref(panel)
+        message.set_structured_ref(panel)
 
     wrapped = _wrap_panel_aligned(panel, "assistant", parent=chat_parent)
     gui.chat_window.add_message_widget(wrapped)
     gui.chat_window.scroll_to_bottom()
 
-def finish_stream_slot(gui):
-    current_role = getattr(gui, "_stream_current_render_role", "assistant")
-    if current_role == "think":
-        _finalize_streaming_think_block(gui)
-    gui._stream_current_render_role = None
-    gui._current_stream_message = None
+
+def finish_stream_slot(gui, stream_id="default"):
+    key = str(stream_id or "default")
+    states = _stream_states(gui)
+    state = states.get(key)
+    if state is None:
+        return
+    if state.get("role") == "think" or state.get("think_block") is not None:
+        _finalize_streaming_think_block(gui, key, state=state)
+    states.pop(key, None)
+
 
 def insert_message_end(gui, cursor=None, role="assistant"): pass
 def insert_speaker_name(gui, cursor=None, role="assistant"): pass

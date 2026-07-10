@@ -1,8 +1,9 @@
 import uuid
 import time
+import copy
 from enum import Enum
 from typing import Dict, Optional, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from threading import Lock
 from main_logger import logger
 
@@ -28,6 +29,7 @@ class Task:
     updated_at: float
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    revision: int = 0
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -38,8 +40,23 @@ class Task:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "result": self.result,
-            "error": self.error
+            "error": self.error,
+            "revision": self.revision,
         }
+
+    def snapshot(self) -> "Task":
+        """Detached immutable-by-convention copy for asynchronous delivery."""
+        return Task(
+            uid=self.uid,
+            status=self.status,
+            type=self.type,
+            data=copy.deepcopy(self.data),
+            created_at=self.created_at,
+            updated_at=self.updated_at,
+            result=copy.deepcopy(self.result),
+            error=self.error,
+            revision=self.revision,
+        )
 
 
 class TaskManager:
@@ -85,6 +102,7 @@ class TaskManager:
             task = self._tasks[uid]
             task.status = status
             task.updated_at = time.time()
+            task.revision += 1
 
             if result is not None:
                 if isinstance(result, dict):

@@ -54,8 +54,8 @@ _SPECS: Dict[str, _PoolSpec] = {
     Pools.LLM_HTTP: _PoolSpec(max_workers=8),
     Pools.DEBUG_DUMP: _PoolSpec(max_workers=1),
     Pools.DB_WRITER: _PoolSpec(max_workers=1),
-    Pools.EVENT_BUS: _PoolSpec(max_workers=8),
-    Pools.EVENT_BUS_SYNC: _PoolSpec(max_workers=16),
+    Pools.EVENT_BUS: _PoolSpec(max_workers=8, capacity=512),
+    Pools.EVENT_BUS_SYNC: _PoolSpec(max_workers=16, capacity=128),
 }
 
 
@@ -85,21 +85,20 @@ class _BoundedPool:
 
     def submit(self, fn: Callable, *args, **kwargs) -> Future:
         """Ставит задачу, игнорируя capacity. Для задач, которые нельзя терять."""
-        return self._track(fn, args, kwargs)
-
-    def try_submit(self, fn: Callable, *args, **kwargs) -> Future:
-        """Ставит задачу или бросает PoolSaturated, если пул переполнен."""
-        capacity = self.spec.capacity
-        if capacity is not None:
-            with self._lock:
-                if self._inflight >= capacity:
-                    raise PoolSaturated(self.name, capacity)
-        return self._track(fn, args, kwargs)
-
-    def _track(self, fn: Callable, args: tuple, kwargs: dict) -> Future:
         with self._lock:
             self._inflight += 1
+        return self._submit_reserved(fn, args, kwargs)
 
+    def try_submit(self, fn: Callable, *args, **kwargs) -> Future:
+        """Атомарно резервирует слот или бросает PoolSaturated."""
+        capacity = self.spec.capacity
+        with self._lock:
+            if capacity is not None and self._inflight >= capacity:
+                raise PoolSaturated(self.name, capacity)
+            self._inflight += 1
+        return self._submit_reserved(fn, args, kwargs)
+
+    def _submit_reserved(self, fn: Callable, args: tuple, kwargs: dict) -> Future:
         def _release(_f: Future) -> None:
             with self._lock:
                 self._inflight -= 1

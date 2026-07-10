@@ -11,6 +11,13 @@ _SHARED_WORKER = "shared"
 _SHARED_SERVICES = ("tts", "asr", "rag", "beats")
 
 
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return max(minimum, int(default))
+
+
 def _ensure_lib_on_path() -> None:
     lib_path = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
     lib_path_norm = os.path.normcase(os.path.abspath(lib_path))
@@ -23,7 +30,7 @@ def _ensure_lib_on_path() -> None:
 
 def _log(log_queue, level: str, message: str) -> None:
     try:
-        log_queue.put({"level": str(level), "message": str(message)})
+        log_queue.put_nowait({"level": str(level), "message": str(message)})
     except Exception:
         pass
 
@@ -92,6 +99,20 @@ async def _dispatch(service, service_name: str, method: str, payload: dict, req_
         _respond(res_queue, service_name, req_id, ok=False, error=e)
 
 
+async def _dispatch_limited(
+    semaphore: asyncio.Semaphore,
+    service,
+    service_name: str,
+    method: str,
+    payload: dict,
+    req_id,
+    res_queue,
+    log_queue,
+) -> None:
+    async with semaphore:
+        await _dispatch(service, service_name, method, payload, req_id, res_queue, log_queue)
+
+
 async def _worker_loop(worker_name: str, cmd_queue, res_queue, log_queue) -> None:
     services = {
         service_name: _load_service(
@@ -105,17 +126,35 @@ async def _worker_loop(worker_name: str, cmd_queue, res_queue, log_queue) -> Non
     for service_name in services.keys():
         _emit_ready(res_queue, service_name)
 
-    # Команды обрабатываются конкурентно: раньше `await service.handle(...)`
-    # стоял прямо в цикле, поэтому синтез TTS предыдущего ответа блокировал
-    # эмбеддинг запроса следующего. Доступ к устройству сериализует
-    # gpu_scheduler с приоритетами, а не порядок чтения очереди.
+    default_limit = _env_int("NEUROMITA_AI_WORKER_CONCURRENCY", 8)
+    service_limits = {
+        "tts": _env_int("NEUROMITA_TTS_CONCURRENCY", 2),
+        "asr": _env_int("NEUROMITA_ASR_CONCURRENCY", 2),
+        "rag": _env_int("NEUROMITA_RAG_CONCURRENCY", 4),
+        "beats": _env_int("NEUROMITA_BEATS_CONCURRENCY", 2),
+    }
+    semaphores = {
+        service_name: asyncio.Semaphore(service_limits.get(service_name, default_limit))
+        for service_name in services
+    }
+    max_inflight = max(default_limit, sum(service_limits.get(name, 1) for name in services))
     inflight: set[asyncio.Task] = set()
 
-    async def _drain() -> None:
-        if inflight:
-            await asyncio.gather(*list(inflight), return_exceptions=True)
+    async def _drain(timeout: float = 30.0) -> None:
+        if not inflight:
+            return
+        tasks = list(inflight)
+        done, pending = await asyncio.wait(tasks, timeout=max(0.1, timeout))
+        if pending:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        if done:
+            await asyncio.gather(*done, return_exceptions=True)
 
     while True:
+        while len(inflight) >= max_inflight:
+            await asyncio.wait(list(inflight), return_when=asyncio.FIRST_COMPLETED)
         cmd = await asyncio.to_thread(cmd_queue.get)
         if not isinstance(cmd, dict):
             continue
@@ -159,7 +198,16 @@ async def _worker_loop(worker_name: str, cmd_queue, res_queue, log_queue) -> Non
             continue
 
         task = asyncio.create_task(
-            _dispatch(service, service_name, method, payload, req_id, res_queue, log_queue)
+            _dispatch_limited(
+                semaphores[service_name],
+                service,
+                service_name,
+                method,
+                payload,
+                req_id,
+                res_queue,
+                log_queue,
+            )
         )
         inflight.add(task)
         task.add_done_callback(inflight.discard)

@@ -36,7 +36,7 @@ class MemoryManager:
 
         # RAG опционален
         try:
-            self.rag = RAGManager(self.character_name)
+            self.rag = RAGManager.for_character(self.character_name)
         except Exception as e:
             logging.warning(f"RAGManager init failed (RAG disabled for this session): {e}", exc_info=True)
             self.rag = None
@@ -44,6 +44,14 @@ class MemoryManager:
     # ------------------------------------------------------------------
     # Embedding async helpers
     # ------------------------------------------------------------------
+    @classmethod
+    def shutdown_executor(cls) -> None:
+        with cls._EMBED_EXECUTOR_LOCK:
+            executor = cls._EMBED_EXECUTOR
+            cls._EMBED_EXECUTOR = None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+
     @classmethod
     def _get_embed_executor(cls) -> ThreadPoolExecutor:
         ex = cls._EMBED_EXECUTOR

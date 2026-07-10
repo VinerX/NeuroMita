@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import uuid
+from queue import Full
 from concurrent.futures import Future
 from typing import Dict, Optional, Sequence
 
@@ -16,6 +17,13 @@ from main_logger import logger
 _VALID_MODES = frozenset(("auto", "shared", "split"))
 _SHARED_WORKER = "shared"
 _DEFAULT_SERVICES = ("tts", "asr", "rag", "beats")
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return max(minimum, int(default))
 
 
 def _detect_gpu_vendor() -> str:
@@ -43,9 +51,10 @@ class _Worker:
         self.primary_service = self.service_names[0] if self.service_names else self.worker_name
         self.ctx = ctx
 
-        self.cmd_q = ctx.Queue()
-        self.res_q = ctx.Queue()
-        self.log_q = ctx.Queue()
+        queue_capacity = _env_int("NEUROMITA_AI_COMMAND_QUEUE", 64, minimum=8)
+        self.cmd_q = ctx.Queue(maxsize=queue_capacity)
+        self.res_q = ctx.Queue(maxsize=queue_capacity * 2)
+        self.log_q = ctx.Queue(maxsize=queue_capacity * 2)
 
         self.proc: Optional[mp.Process] = None
         self.ready = threading.Event()
@@ -59,6 +68,7 @@ class _Worker:
 
         self.res_thread: Optional[threading.Thread] = None
         self.log_thread: Optional[threading.Thread] = None
+        self.watch_thread: Optional[threading.Thread] = None
 
     def supports(self, service: str) -> bool:
         return str(service or "").strip().lower() in self.ready_by_service
@@ -78,10 +88,18 @@ class _Worker:
         )
         self.proc.start()
 
-        self.res_thread = threading.Thread(target=self._result_loop, daemon=True)
-        self.log_thread = threading.Thread(target=self._log_loop, daemon=True)
+        self.res_thread = threading.Thread(
+            target=self._result_loop, name=f"ai-result-{self.worker_name}", daemon=True
+        )
+        self.log_thread = threading.Thread(
+            target=self._log_loop, name=f"ai-log-{self.worker_name}", daemon=True
+        )
+        self.watch_thread = threading.Thread(
+            target=self._watch_process, name=f"ai-watch-{self.worker_name}", daemon=True
+        )
         self.res_thread.start()
         self.log_thread.start()
+        self.watch_thread.start()
 
     def call(self, method: str, payload: Optional[dict] = None, *, service: Optional[str] = None) -> Future:
         target_service = str(service or self.primary_service).strip().lower()
@@ -93,6 +111,15 @@ class _Worker:
         if self.stopping.is_set():
             f = Future()
             f.set_exception(RuntimeError(f"Worker '{self.worker_name}' is stopping"))
+            return f
+
+        proc = self.proc
+        if proc is None or not proc.is_alive():
+            f = Future()
+            exit_code = getattr(proc, "exitcode", None) if proc is not None else None
+            f.set_exception(
+                RuntimeError(f"Worker '{self.worker_name}' is not alive (exitcode={exit_code})")
+            )
             return f
 
         req_id = str(uuid.uuid4())
@@ -108,8 +135,14 @@ class _Worker:
                     "service": target_service,
                     "method": str(method),
                     "payload": payload or {},
-                }
+                },
+                timeout=1.0,
             )
+        except Full:
+            e = RuntimeError(f"Worker '{self.worker_name}' command queue is full")
+            with self.pending_lock:
+                self.pending.pop(req_id, None)
+            fut.set_exception(e)
         except Exception as e:
             with self.pending_lock:
                 self.pending.pop(req_id, None)
@@ -139,8 +172,14 @@ class _Worker:
                     "control": "restart_service",
                     "service": target_service,
                     "payload": {},
-                }
+                },
+                timeout=1.0,
             )
+        except Full:
+            with self.pending_lock:
+                self.pending.pop(req_id, None)
+            fut.set_exception(RuntimeError(f"Worker '{self.worker_name}' command queue is full"))
+            return False
         except Exception as e:
             with self.pending_lock:
                 self.pending.pop(req_id, None)
@@ -150,6 +189,9 @@ class _Worker:
         try:
             ok = bool(fut.result(timeout=max(1.0, float(timeout or 0.0)) + 1.0))
         except Exception:
+            with self.pending_lock:
+                self.pending.pop(req_id, None)
+            fut.cancel()
             return False
 
         if not ok:
@@ -164,13 +206,64 @@ class _Worker:
             return False
         return bool(ev.wait(timeout=float(timeout or 0.0)))
 
+    def _fail_pending(self, error: BaseException) -> None:
+        with self.pending_lock:
+            pending = list(self.pending.values())
+            self.pending.clear()
+        for future in pending:
+            try:
+                if not future.done():
+                    future.set_exception(error)
+            except Exception:
+                pass
+
+    def _watch_process(self) -> None:
+        proc = self.proc
+        if proc is None:
+            return
+        try:
+            proc.join()
+        except Exception:
+            return
+        if self.stopping.is_set():
+            return
+
+        exit_code = getattr(proc, "exitcode", None)
+        error = RuntimeError(
+            f"AI worker '{self.worker_name}' terminated unexpectedly (exitcode={exit_code})"
+        )
+        self.ready.clear()
+        for event in self.ready_by_service.values():
+            event.clear()
+        self._fail_pending(error)
+        logger.error(str(error))
+        try:
+            get_event_bus().emit(
+                Events.AI.ENGINE_EVENT,
+                {
+                    "service": self.primary_service,
+                    "event": "worker_crashed",
+                    "data": {"worker": self.worker_name, "exitcode": exit_code},
+                },
+            )
+        except Exception:
+            pass
+        for queue_obj in (self.res_q, self.log_q):
+            try:
+                queue_obj.put(None, timeout=1.0)
+            except Exception:
+                pass
+
     def stop(self, timeout: float = 5.0):
         if self.stopping.is_set():
             return
         self.stopping.set()
 
         try:
-            self.cmd_q.put({"req_id": "shutdown", "control": "shutdown", "payload": {}})
+            self.cmd_q.put(
+                {"req_id": "shutdown", "control": "shutdown", "payload": {}},
+                timeout=0.2,
+            )
         except Exception:
             pass
 
@@ -196,9 +289,17 @@ class _Worker:
             except Exception:
                 pass
 
-        for thread in (self.res_thread, self.log_thread):
+        for thread in (
+            getattr(self, "res_thread", None),
+            getattr(self, "log_thread", None),
+            getattr(self, "watch_thread", None),
+        ):
             try:
-                if thread is not None and thread.is_alive():
+                if (
+                    thread is not None
+                    and thread is not threading.current_thread()
+                    and thread.is_alive()
+                ):
                     thread.join(timeout=1.0)
             except Exception:
                 pass
@@ -213,16 +314,7 @@ class _Worker:
             except Exception:
                 pass
 
-        with self.pending_lock:
-            pending = list(self.pending.items())
-            self.pending.clear()
-
-        for _rid, fut in pending:
-            try:
-                if not fut.done():
-                    fut.set_exception(RuntimeError(f"Worker '{self.worker_name}' shutdown"))
-            except Exception:
-                pass
+        self._fail_pending(RuntimeError(f"Worker '{self.worker_name}' shutdown"))
 
     def _result_loop(self):
         eb = get_event_bus()

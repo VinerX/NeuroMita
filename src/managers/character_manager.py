@@ -5,26 +5,27 @@ from typing import Dict, List, Optional, Type
 from main_logger import logger
 from characters.character import Character
 from characters import (
-    CrazyMita, KindMita, ShortHairMita, Cappie, MilaMita, CreepyMita, SleepyMita,
-    GameMaster, GhostMita, 
-    # SpaceCartridge, DivanCartridge, Mitaphone
+    CrazyMita,
+    KindMita,
+    ShortHairMita,
+    Cappie,
+    MilaMita,
+    CreepyMita,
+    SleepyMita,
+    GameMaster,
+    GhostMita,
 )
-
-from managers.history_manager import HistoryManager
+from managers.character_resource_manager import CharacterResourceManager
 
 
 class CharacterManager:
-    """
-    Отвечает за:
-    - создание персонажей
-    - хранение словаря characters
-    - current_character и переключение персонажа
-    """
+    """Владеет персонажами и единым реестром их runtime-ресурсов."""
 
     def __init__(self, initial_character_id: Optional[str] = None):
         self.characters: Dict[str, Character] = {}
         self.current_character: Optional[Character] = None
         self.current_character_to_change: str = initial_character_id or ""
+        self.resources = CharacterResourceManager()
 
         self._init_characters()
 
@@ -39,21 +40,10 @@ class CharacterManager:
         self.current_character_to_change = ""
 
         if self.current_character:
+            self.current_character.ensure_runtime_loaded()
             logger.info(f"[CharacterManager] Current character: {self.current_character.char_id}")
         else:
             logger.error("[CharacterManager] No characters initialized!")
-
-    def _ensure_unique_history_manager(self, ch: Character) -> None:
-        char_id = str(getattr(ch, "char_id", "") or "").strip()
-        name = str(getattr(ch, "name", "") or "").strip()
-
-        if not char_id:
-            return
-
-        try:
-            ch.history_manager = HistoryManager(character_name=name or char_id, character_id=char_id)
-        except Exception as e:
-            logger.error(f"[CharacterManager] Failed to attach unique HistoryManager for {char_id}: {e}", exc_info=True)
 
     def _init_characters(self) -> None:
         character_classes: List[Type[Character]] = [
@@ -65,19 +55,19 @@ class CharacterManager:
             SleepyMita,
             CreepyMita,
             GhostMita,
-            # SpaceCartridge,
-            # DivanCartridge,
             GameMaster,
-            # Mitaphone,
         ]
 
         self.characters = {}
         for cls in character_classes:
-            ch = cls()
-            self._ensure_unique_history_manager(ch)
-            self.characters[ch.char_id] = ch
+            character = cls()
+            character.bind_resource_manager(self.resources)
+            self.characters[character.char_id] = character
 
-        logger.info(f"[CharacterManager] Initialized {len(self.characters)} characters: {list(self.characters.keys())}")
+        logger.info(
+            f"[CharacterManager] Initialized {len(self.characters)} characters: "
+            f"{list(self.characters.keys())}"
+        )
 
     def get_all_characters(self) -> List[str]:
         return list(self.characters.keys())
@@ -85,7 +75,10 @@ class CharacterManager:
     def get_character(self, char_id: str) -> Optional[Character]:
         if not char_id:
             return None
-        return self.characters.get(char_id)
+        character = self.characters.get(char_id)
+        if character is not None:
+            character.ensure_runtime_loaded()
+        return character
 
     def set_character_to_change(self, char_id: str) -> None:
         self.current_character_to_change = str(char_id or "")
@@ -103,9 +96,13 @@ class CharacterManager:
 
         self.current_character = self.characters[target]
         logger.info(f"[CharacterManager] Changing character to {target}")
-
         try:
-            if hasattr(self.current_character, "reload_character_data"):
-                self.current_character.reload_character_data()
-        except Exception as e:
-            logger.error(f"[CharacterManager] Failed to reload character data for {target}: {e}", exc_info=True)
+            self.current_character.reload_character_data()
+        except Exception as exc:
+            logger.error(
+                f"[CharacterManager] Failed to reload character data for {target}: {exc}",
+                exc_info=True,
+            )
+
+    def shutdown(self) -> None:
+        self.resources.shutdown()

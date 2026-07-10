@@ -3,6 +3,7 @@ import json
 import asyncio
 import threading
 import time
+import os
 from typing import Optional, Dict, Any, Set, Callable
 from main_logger import logger
 from core.events import get_event_bus, Events
@@ -11,6 +12,13 @@ import uuid
 
 from game_connections.handlers import build_action_registry
 from game_connections.handlers.registry import RequestContext
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return max(minimum, int(default))
 
 
 class ChatServerNew:
@@ -31,8 +39,17 @@ class ChatServerNew:
         self.event_bus = get_event_bus()
 
         self.running = False
+        self.server: asyncio.AbstractServer | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server_thread: threading.Thread | None = None
+        self._ready_event = threading.Event()
+        self._startup_error: BaseException | None = None
+        self._max_message_bytes = _env_int(
+            "NEUROMITA_MAX_SOCKET_MESSAGE_BYTES",
+            8 * 1024 * 1024,
+            minimum=1024,
+        )
+        self._stop_requested = threading.Event()
 
         self.client_tasks: Dict[str, Set[str]] = {}
         self.last_idle_tasks: Dict[str, str] = {}
@@ -64,10 +81,18 @@ class ChatServerNew:
             pass
 
     async def start_async(self):
-        self.running = True
         self.server = await asyncio.start_server(self.handle_client, self.host, self.port)
-        addrs = ', '.join(str(sock.getsockname()) for sock in self.server.sockets)
-        logger.info(f'Новый сервер запущен на {addrs}')
+        if self._stop_requested.is_set():
+            self.server.close()
+            await self.server.wait_closed()
+            self.server = None
+            self.running = False
+            self._ready_event.set()
+            return
+        self.running = True
+        self._ready_event.set()
+        addrs = ", ".join(str(sock.getsockname()) for sock in self.server.sockets or ())
+        logger.info(f"Новый сервер запущен на {addrs}")
         try:
             async with self.server:
                 await self.server.serve_forever()
@@ -76,14 +101,56 @@ class ChatServerNew:
         finally:
             self.running = False
 
-    def start(self):
+    @property
+    def startup_error(self) -> BaseException | None:
+        return self._startup_error
+
+    def start(self, timeout: float = 5.0) -> bool:
+        if self._server_thread is not None and self._server_thread.is_alive():
+            return bool(self.running)
+
+        self._ready_event.clear()
+        self._stop_requested.clear()
+        self._startup_error = None
         self._loop = asyncio.new_event_loop()
-        self._server_thread = threading.Thread(target=self._run_server_loop, daemon=True)
+        self._server_thread = threading.Thread(
+            target=self._run_server_loop,
+            name="neuromita-chat-server",
+            daemon=True,
+        )
         self._server_thread.start()
+        if not self._ready_event.wait(timeout=max(0.1, float(timeout or 0.0))):
+            self.stop()
+            return False
+        return self.running and self._startup_error is None
 
     def _run_server_loop(self):
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self.start_async())
+        loop = self._loop
+        if loop is None:
+            self._startup_error = RuntimeError("Server event loop was not created")
+            self._ready_event.set()
+            return
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self.start_async())
+        except BaseException as exc:
+            self._startup_error = exc
+            self.running = False
+            self._ready_event.set()
+            logger.error(f"Не удалось запустить сервер {self.host}:{self.port}: {exc}", exc_info=True)
+        finally:
+            try:
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            try:
+                loop.close()
+            except Exception:
+                pass
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         addr = writer.get_extra_info('peername')
@@ -108,6 +175,13 @@ class ChatServerNew:
                     break
 
                 buffer.extend(chunk)
+                if len(buffer) > self._max_message_bytes:
+                    await self.send_error(writer, "Message is too large")
+                    logger.warning(
+                        f"Клиент {client_id} превысил лимит сообщения "
+                        f"({len(buffer)} > {self._max_message_bytes} bytes)"
+                    )
+                    break
 
                 while buffer:
                     try:
@@ -150,6 +224,11 @@ class ChatServerNew:
                 self._notify_connection_changed(False, client_id)
 
     async def process_request(self, request: Dict[str, Any], client_id: str):
+        if not isinstance(request, dict):
+            writer = self.active_connections.get(client_id)
+            if writer:
+                await self.send_error(writer, "Request must be a JSON object")
+            return
         action = request.get('action')
         writer = self.active_connections.get(client_id)
         if not writer:
@@ -223,27 +302,30 @@ class ChatServerNew:
         await self.send_json(writer, {"type": "error", "error": error})
 
     def stop(self):
+        self._stop_requested.set()
         self.running = False
+        loop = self._loop
 
-        if self._loop and self._loop.is_running():
-            future = asyncio.run_coroutine_threadsafe(self._async_stop(), self._loop)
+        if loop and loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(self._async_stop(), loop)
             try:
                 future.result(timeout=5)
-            except Exception as e:
-                logger.warning(f"Ошибка при остановке сервера: {e}")
+            except Exception as exc:
+                logger.warning(f"Ошибка при остановке сервера: {exc}")
 
-        if self._server_thread:
-            self._server_thread.join(timeout=5)
-            if self._server_thread.is_alive():
+        thread = self._server_thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=5)
+            if thread.is_alive():
                 logger.warning("Server thread did not stop in time")
 
-        # ensure controller sees "disconnected"
         self._notify_connection_changed(False, None)
 
     async def _async_stop(self):
-        if hasattr(self, 'server'):
+        if self.server is not None:
             self.server.close()
             await self.server.wait_closed()
+            self.server = None
 
         for writer in list(self.active_connections.values()):
             try:

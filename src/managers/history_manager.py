@@ -89,7 +89,7 @@ class HistoryManager:
         # Lazy import to avoid pulling heavy ML dependencies when RAG is disabled
         try:
             from managers.rag.rag_manager import RAGManager
-            self.rag = RAGManager(self.storage_key)
+            self.rag = RAGManager.for_character(self.storage_key)
         except Exception as e:
             logger.warning(f"RAGManager init failed (RAG disabled for this session): {e}", exc_info=True)
             self.rag = None
@@ -97,6 +97,14 @@ class HistoryManager:
     # ---------------------------------------------------------------------
     # Embedding async helpers
     # ---------------------------------------------------------------------
+    @classmethod
+    def shutdown_executor(cls) -> None:
+        with cls._EMBED_EXECUTOR_LOCK:
+            executor = cls._EMBED_EXECUTOR
+            cls._EMBED_EXECUTOR = None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+
     @classmethod
     def _get_embed_executor(cls) -> ThreadPoolExecutor:
         ex = cls._EMBED_EXECUTOR
@@ -431,6 +439,7 @@ class HistoryManager:
 
         reserved = {
             "role", "content", "time", "timestamp",
+            "_history_row_id",
             *self._HISTORY_DESIRED_COLUMNS.keys(),
         }
 
@@ -652,7 +661,7 @@ class HistoryManager:
         """
         Колонки, которые мы будем SELECT'ить, исходя из фактической схемы.
         """
-        base = ["role", "content", "meta_data", "timestamp"]
+        base = ["id", "role", "content", "meta_data", "timestamp"]
         for col in self._HISTORY_DESIRED_COLUMNS.keys():
             if col in self._history_cols:
                 base.append(col)
@@ -919,6 +928,7 @@ class HistoryManager:
                 rd.get("content"),
                 rd.get("meta_data"),
             )
+            msg["_history_row_id"] = rd.get("id")
             msg["time"] = rd.get("timestamp") or ""
 
             # если колонки есть — дополним из колонок, иначе они уже могут быть в meta_data
@@ -1264,6 +1274,7 @@ class HistoryManager:
                 rd.get("content"),
                 rd.get("meta_data"),
             )
+            msg["_history_row_id"] = rd.get("id")
             msg["time"] = rd.get("timestamp") or ""
 
             for k in self._HISTORY_DESIRED_COLUMNS.keys():
@@ -1292,7 +1303,7 @@ class HistoryManager:
             cursor = conn.cursor()
 
             cursor.execute(
-                """
+                f"""
                 SELECT id FROM history
                 WHERE character_id = ? AND is_active = 1
                 {self._history_not_deleted_clause()}
@@ -1322,17 +1333,72 @@ class HistoryManager:
     def add_summarized_history_to_messages(self, summary_message: dict):
         self.add_message(summary_message)
 
+    def _soft_delete_set_clause(self) -> str:
+        if "is_deleted" in self._history_cols:
+            return "is_deleted = 1, is_active = 0"
+        return "is_active = 0"
+
     def delete_message(self, message_id: str) -> bool:
-        """Удаляет сообщение по message_id. Возвращает True если удалено."""
+        """Удаляет одно активное сообщение по message_id."""
+        row_id = self._resolve_message_row_id(message_id)
+        if row_id is None:
+            return False
         conn = self.db.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute(
-                "UPDATE history SET is_deleted = 1 WHERE message_id = ? AND character_id = ?",
-                (message_id, self.storage_key),
+                f"UPDATE history SET {self._soft_delete_set_clause()} "
+                "WHERE id = ? AND character_id = ?",
+                (row_id, self.storage_key),
             )
             conn.commit()
             return cursor.rowcount > 0
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _set_deleted_by_row_id(self, row_id: int, *, include_target: bool) -> bool:
+        not_deleted = " AND is_deleted = 0" if "is_deleted" in self._history_cols else ""
+        conn = self.db.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                UPDATE history
+                SET {self._soft_delete_set_clause()}
+                WHERE character_id = ? AND id {'>=' if include_target else '>'} ?
+                  AND is_active = 1{not_deleted}
+                """,
+                (self.storage_key, int(row_id)),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _resolve_message_row_id(self, message_id: str) -> int | None:
+        if not message_id or "message_id" not in self._history_cols:
+            return None
+        not_deleted = " AND is_deleted = 0" if "is_deleted" in self._history_cols else ""
+        conn = self.db.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT id FROM history
+                WHERE message_id = ? AND character_id = ?
+                  AND is_active = 1{not_deleted}
+                ORDER BY id DESC LIMIT 1
+                """,
+                (message_id, self.storage_key),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row else None
         finally:
             try:
                 conn.close()
@@ -1340,33 +1406,48 @@ class HistoryManager:
                 pass
 
     def delete_messages_from(self, message_id: str) -> bool:
-        """Удаляет сообщение с message_id и все последующие."""
+        """Soft-delete the selected message and all later rows in insertion order."""
+        row_id = self._resolve_message_row_id(message_id)
+        return False if row_id is None else self._set_deleted_by_row_id(row_id, include_target=True)
+
+    def delete_messages_after(self, message_id: str) -> bool:
+        """Soft-delete rows after the selected message while keeping the target row."""
+        row_id = self._resolve_message_row_id(message_id)
+        return False if row_id is None else self._set_deleted_by_row_id(row_id, include_target=False)
+
+    def delete_messages_from_row(self, row_id: int | None, *, include_target: bool = True) -> bool:
+        """Fallback for legacy messages without message_id."""
+        if row_id is None:
+            return False
+        return self._set_deleted_by_row_id(int(row_id), include_target=include_target)
+
+    def append_message(self, message: dict):
+        """Добавляет сообщение в конец истории."""
+        self.add_message(message)
+
+    def contains_message_id(self, message_id: str) -> bool:
+        """Cheap deduplication lookup without loading the full conversation."""
+        if not message_id or "message_id" not in self._history_cols:
+            return False
+        not_deleted = " AND is_deleted = 0" if "is_deleted" in self._history_cols else ""
         conn = self.db.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT timestamp FROM history WHERE message_id = ? AND character_id = ?",
-                (message_id, self.storage_key),
+                f"""
+                SELECT 1 FROM history
+                WHERE character_id = ? AND message_id = ?
+                  AND is_active = 1{not_deleted}
+                LIMIT 1
+                """,
+                (self.storage_key, str(message_id)),
             )
-            row = cursor.fetchone()
-            if row is None:
-                return False
-            ts = row[0]
-            cursor.execute(
-                "UPDATE history SET is_deleted = 1 WHERE character_id = ? AND timestamp >= ?",
-                (self.storage_key, ts),
-            )
-            conn.commit()
-            return cursor.rowcount > 0
+            return cursor.fetchone() is not None
         finally:
             try:
                 conn.close()
             except Exception:
                 pass
-
-    def append_message(self, message: dict):
-        """Добавляет сообщение в конец истории."""
-        self.add_message(message)
 
     # ---------------------------------------------------------------------
     # RAG helpers
