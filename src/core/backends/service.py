@@ -11,13 +11,15 @@ from typing import Any, Iterable, Optional
 
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
 
 
 TORCH_VERSION = "2.7.1"
 TORCH_PACKAGES = (f"torch=={TORCH_VERSION}", f"torchaudio=={TORCH_VERSION}")
 TORCH_CUDA_PACKAGES = (f"torch=={TORCH_VERSION}+cu128", f"torchaudio=={TORCH_VERSION}+cu128")
 CUDA_INDEX_URL = "https://download.pytorch.org/whl/cu128"
-BACKEND_NUMPY_SPEC = "numpy==1.26.0"
+BACKEND_NUMPY_VERSION = "1.26.0"
+BACKEND_NUMPY_SPEC = f"numpy=={BACKEND_NUMPY_VERSION}"
 ONNX_PACKAGE = "onnxruntime"
 ONNX_DIRECTML_PACKAGE = "onnxruntime-directml"
 
@@ -257,12 +259,22 @@ class BackendService:
             for name in self._requested_dist_names(requested_specs or ())
         }
         overrides: list[str] = []
+        authoritative_versions = {
+            canonicalize_name("torch"): TORCH_VERSION,
+            canonicalize_name("torchaudio"): TORCH_VERSION,
+            canonicalize_name("numpy"): BACKEND_NUMPY_VERSION,
+        }
         target_dir = os.environ.get("NEUROMITA_LIB_DIR")
         for dist_name in self._managed_dist_names_for_requirement(backend_req):
             canon = canonicalize_name(dist_name)
             if canon in requested_names:
                 continue
-            
+
+            expected_version = authoritative_versions.get(canon)
+            if expected_version:
+                overrides.append(f"{dist_name}=={expected_version}")
+                continue
+
             # Проверяем версию уже установленного пакета в целевой папке Lib
             version = self._dist_version(dist_name, target_dir=target_dir)
             if version:
@@ -771,6 +783,7 @@ class BackendService:
             return None
 
         wanted = canonicalize_name(dist_name)
+        versions: list[str] = []
         for item in os.listdir(target_dir):
             if not item.endswith(".dist-info"):
                 continue
@@ -799,13 +812,23 @@ class BackendService:
             if canonicalize_name(name) != wanted:
                 continue
             if version:
-                return version
+                versions.append(version)
+                continue
 
             parts = item.rsplit(".dist-info", 1)[0].split("-")
             if len(parts) >= 2:
-                return parts[-1]
-            return ""
-        return None
+                versions.append(parts[-1])
+
+        if not versions:
+            return None
+
+        def _sort_key(value: str) -> tuple[int, object]:
+            try:
+                return 1, Version(value)
+            except InvalidVersion:
+                return 0, value
+
+        return max(versions, key=_sort_key)
 
 
 _BACKEND_SERVICE: BackendService | None = None

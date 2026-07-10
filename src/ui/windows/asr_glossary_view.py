@@ -14,6 +14,8 @@ except Exception:
     qta = None
 
 from core.events import get_event_bus, Events
+from core.services import services
+from services.contracts import SpeechService
 from utils import getTranslationVariant as _
 from styles.asr_model_styles import get_asr_stylesheet
 from ui.async_bus import run_async
@@ -498,15 +500,9 @@ class AsrGlossaryView(QWidget):
         self.settings_layout.addStretch()
 
         def worker():
-            schema_res = self.event_bus.emit_and_wait(
-                Events.Speech.GET_RECOGNIZER_SETTINGS_SCHEMA, {"engine": engine_id}, timeout=1.0
-            )
-            schema = schema_res[0] if schema_res else []
-
-            vals_res = self.event_bus.emit_and_wait(
-                Events.Speech.GET_RECOGNIZER_SETTINGS, {"engine": engine_id}, timeout=1.0
-            )
-            values = vals_res[0] if vals_res else {}
+            speech = services().get_optional(SpeechService)
+            schema = speech.recognizer_settings_schema(engine_id) if speech is not None else []
+            values = speech.recognizer_settings(engine_id) if speech is not None else {}
             return {"engine_id": engine_id, "schema": schema or [], "values": values or {}}
 
         def apply(payload: dict):

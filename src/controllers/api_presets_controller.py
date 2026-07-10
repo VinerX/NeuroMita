@@ -2,13 +2,14 @@
 import json
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Iterable
 from dataclasses import dataclass, asdict, field
 from urllib.parse import urlparse
 
 from core.app_paths import settings_path
 from core.events import get_event_bus, Events, Event
-from services.contracts import ApiPresetService
+from core.services import use
+from services.contracts import ApiPresetService, ProtocolBuilderService
 from main_logger import logger
 
 from utils import _
@@ -942,6 +943,11 @@ class ApiPresetsController(ApiPresetService):
         self.event_bus.emit(Events.ApiPresets.PRESET_SAVED, {"id": preset_id})
         return preset_id
 
+    def save_custom(self, data: Dict[str, Any]) -> Optional[int]:
+        return self._on_save_custom_preset(
+            Event(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": dict(data or {})})
+        )
+
     def _on_delete_custom_preset(self, event: Event):
         preset_id = (event.data or {}).get("id")
         try:
@@ -960,6 +966,13 @@ class ApiPresetsController(ApiPresetService):
             return True
         return False
 
+    def delete_custom(self, preset_id: int) -> bool:
+        return bool(
+            self._on_delete_custom_preset(
+                Event(Events.ApiPresets.DELETE_CUSTOM_PRESET, {"id": preset_id})
+            )
+        )
+
     def _on_save_presets_order(self, event: Event):
         order = (event.data or {}).get("order", None)
         if order is None:
@@ -967,6 +980,13 @@ class ApiPresetsController(ApiPresetService):
         self.presets_order = self._normalize_presets_order(order)
         self._save_presets()
         return True
+
+    def save_order(self, order: Iterable[int]) -> bool:
+        return bool(
+            self._on_save_presets_order(
+                Event(Events.ApiPresets.SAVE_PRESETS_ORDER, {"order": list(order or [])})
+            )
+        )
 
     def _on_export_preset(self, event: Event):
         preset_id = (event.data or {}).get("id")
@@ -987,6 +1007,13 @@ class ApiPresetsController(ApiPresetService):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(preset_dict, f, indent=2, ensure_ascii=False)
         return True
+
+    def export_preset(self, preset_id: int, path: str) -> bool:
+        return bool(
+            self._on_export_preset(
+                Event(Events.ApiPresets.EXPORT_PRESET, {"id": preset_id, "path": path})
+            )
+        )
 
     def _on_import_preset(self, event: Event):
         path = (event.data or {}).get("path")
@@ -1030,6 +1057,11 @@ class ApiPresetsController(ApiPresetService):
         except Exception as e:
             logger.error(f"Failed to import preset: {e}", exc_info=True)
             return None
+
+    def import_preset(self, path: str) -> Optional[int]:
+        return self._on_import_preset(
+            Event(Events.ApiPresets.IMPORT_PRESET, {"path": path})
+        )
 
     def _on_test_connection(self, event: Event):
         preset_id = (event.data or {}).get("id")
@@ -1276,19 +1308,12 @@ class ApiPresetsController(ApiPresetService):
         protocol_id = str(getattr(tpl, "protocol_id", "") or "").strip()
         url = str(tpl.test_url or "")
 
-        # через протокол-фабрику собираем url+headers
-        res = self.event_bus.emit_and_wait(
-            Events.Protocols.BUILD_HTTP_REQUEST,
-            {
-                "protocol_id": protocol_id,
-                "url": url,
-                "api_key": str(key or ""),
-                "headers": {},
-            },
-            timeout=1.0
+        built = use(ProtocolBuilderService).build_http_request(
+            protocol_id=protocol_id,
+            url=url,
+            api_key=str(key or ""),
+            headers={},
         )
-
-        built = res[0] if res else None
         if not isinstance(built, dict):
             self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
                 "id": preset_id,
@@ -1421,6 +1446,16 @@ class ApiPresetsController(ApiPresetService):
         self.preset_states[preset_id] = state
         return True
 
+    def save_state(self, preset_id: int, state: Dict[str, Any]) -> bool:
+        return bool(
+            self._on_save_preset_state(
+                Event(
+                    Events.ApiPresets.SAVE_PRESET_STATE,
+                    {"id": preset_id, "state": dict(state or {})},
+                )
+            )
+        )
+
     def _on_load_preset_state(self, event: Event):
         preset_id = (event.data or {}).get("id")
         try:
@@ -1444,6 +1479,14 @@ class ApiPresetsController(ApiPresetService):
 
         return state
 
+    def load_state(self, preset_id: int) -> Dict[str, Any]:
+        return dict(
+            self._on_load_preset_state(
+                Event(Events.ApiPresets.LOAD_PRESET_STATE, {"id": preset_id})
+            )
+            or {}
+        )
+
     def _on_get_current_preset_id(self, event: Event):
         return self.current_preset_id
 
@@ -1463,3 +1506,10 @@ class ApiPresetsController(ApiPresetService):
 
             use(SettingsService).update("LAST_API_PRESET_ID", int(preset_id))
         return True
+
+    def set_current(self, preset_id: int | None) -> bool:
+        return bool(
+            self._on_set_current_preset_id(
+                Event(Events.ApiPresets.SET_CURRENT_PRESET_ID, {"id": preset_id})
+            )
+        )

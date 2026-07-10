@@ -5,7 +5,6 @@ from typing import Any, Callable, Optional
 
 from PyQt6.QtCore import QTimer
 
-from core.events import get_event_bus
 from main_logger import logger
 
 
@@ -64,35 +63,6 @@ def run_async(
     thread.start()
     return thread
 
-
-def emit_and_wait_async(
-    target: Any,
-    event_name: str,
-    data: Any = None,
-    *,
-    timeout: float = 1.0,
-    on_ok: Optional[Callback] = None,
-    on_error: Optional[Callback] = None,
-    name: Optional[str] = None,
-) -> threading.Thread:
-    bus = _event_bus_from(target)
-    call_name = name or f"emit:{event_name}"
-
-    def _worker():
-        return bus.emit_and_wait(event_name, data, timeout=timeout)
-
-    return run_async(target, _worker, on_ok, on_error, name=call_name)
-
-
-def _event_bus_from(target: Any):
-    bus = getattr(target, "event_bus", None)
-    if bus is not None:
-        return bus
-    view = getattr(target, "view", None)
-    bus = getattr(view, "event_bus", None)
-    if bus is not None:
-        return bus
-    return get_event_bus()
 
 
 def _dispatch_candidates(target: Any):

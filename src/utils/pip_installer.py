@@ -11,6 +11,7 @@ from packaging.version import parse as parse_version
 from main_logger import logger
 from typing import Set, List, Tuple, Optional, Deque
 from collections import deque
+from core.app_paths import base_dir
 
 
 class DependencyResolver:
@@ -170,6 +171,8 @@ class PipInstaller:
         "pillow": ("PIL",),
         "pyyaml": ("yaml",),
         "opencv-python": ("cv2",),
+        "tts-with-rvc": ("tts_with_rvc",),
+        "tts-with-rvc-onnx": ("tts_with_rvc_onnx", "tts_with_rvc"),
     }
     _UV_PIP_FALLBACK_NAMES = {
         canonicalize_name(name)
@@ -204,6 +207,8 @@ class PipInstaller:
         # Защищенные пакеты по умолчанию
         self.protected_packages = protected_packages or ["g4f", "gigaam", "pillow", "silero-vad"]
         self._preferred_installer_cmd: Optional[List[str]] = None
+        self._uv_probe_complete: bool = False
+        self._uv_available: bool = False
         self._last_run_uv_cache_access_denied: bool = False
         self._last_run_returncode: int = 0
         self._last_run_recent_lines: List[str] = []
@@ -252,11 +257,16 @@ class PipInstaller:
     ) -> bool:
         self._maybe_warn_fragile_location()
         self.repair_broken_target_metadata()
+        # Always try uv first. The compatibility list below controls only a
+        # safe pip retry after a real uv resolver/process failure. Earlier code
+        # skipped uv pre-emptively for large TTS stacks, which defeated the
+        # target-aware resolver and made repeated installs unnecessarily slow.
         return self._install_package_attempt(
             package_spec,
             description=description,
             extra_args=extra_args,
             uv_overrides=uv_overrides,
+            force_pip=False,
         )
 
     def _install_package_attempt(
@@ -270,7 +280,7 @@ class PipInstaller:
     ) -> bool:
         cmd = self._build_install_command(force_pip=force_pip)
         is_uv = self._is_uv_command(cmd)
-        override_path: str | None = None
+        requirement_file_path: str | None = None
         try:
             if extra_args:
                 cmd.extend(self._adapt_extra_args(extra_args, is_uv))
@@ -278,10 +288,16 @@ class PipInstaller:
             if uv_overrides is None:
                 effective_overrides = self._build_dependency_overrides(package_spec) if is_uv else []
             else:
-                effective_overrides = self._dedupe_overrides(list(uv_overrides or [])) if is_uv else []
-            if effective_overrides and len(effective_overrides) > 0:
-                override_path = self._write_uv_overrides(effective_overrides)
-                cmd.extend(["--overrides", override_path])
+                effective_overrides = self._dedupe_overrides(list(uv_overrides or []))
+            if effective_overrides:
+                requirement_file_path = self._write_requirement_file(
+                    effective_overrides,
+                    prefix="neuromita_uv_overrides_" if is_uv else "neuromita_pip_constraints_",
+                )
+                cmd.extend([
+                    "--overrides" if is_uv else "--constraint",
+                    requirement_file_path,
+                ])
 
             if isinstance(package_spec, list):
                 cmd.extend(package_spec)
@@ -292,8 +308,8 @@ class PipInstaller:
                 return ok
             if self._should_retry_failed_uv_with_pip(package_spec):
                 self.update_log(
-                    "uv не смог установить F5/RVC-стек через target-режим. "
-                    "Повторяем ту же установку через встроенный pip."
+                    "uv не смог разрешить compatibility-sensitive dependency-стек. "
+                    "Повторяем установку через встроенный pip с теми же ограничениями ядра."
                 )
                 return self._install_package_attempt(
                     package_spec,
@@ -317,9 +333,9 @@ class PipInstaller:
                 force_pip=True,
             )
         finally:
-            if override_path:
+            if requirement_file_path:
                 try:
-                    os.unlink(override_path)
+                    os.unlink(requirement_file_path)
                 except OSError:
                     pass
 
@@ -338,23 +354,38 @@ class PipInstaller:
         return names
 
     def _dedupe_overrides(self, overrides: List[str]) -> List[str]:
-        seen: set[str] = set()
+        seen_names: set[str] = set()
+        seen_raw: set[str] = set()
         result: List[str] = []
         for item in overrides:
-            key = item.lower()
-            if key in seen:
+            value = str(item or "").strip()
+            if not value:
                 continue
-            seen.add(key)
-            result.append(item)
+            try:
+                key = canonicalize_name(Requirement(value).name)
+            except Exception:
+                raw_key = value.lower()
+                if raw_key in seen_raw:
+                    continue
+                seen_raw.add(raw_key)
+                result.append(value)
+                continue
+            if key in seen_names:
+                continue
+            seen_names.add(key)
+            result.append(value)
         return result
+
+    def _should_prefer_pip(self, package_spec) -> bool:
+        requested = self._requested_dist_names(package_spec)
+        return bool(requested & self._UV_PIP_FALLBACK_NAMES)
 
     def _should_retry_failed_uv_with_pip(self, package_spec) -> bool:
         if self._last_run_returncode == 0:
             return False
-        requested = self._requested_dist_names(package_spec)
-        if not (requested & self._UV_PIP_FALLBACK_NAMES):
+        if not self._should_prefer_pip(package_spec):
             return False
-        if self._last_run_returncode == 2:
+        if self._last_run_returncode in (1, 2):
             return True
 
         recent = " ".join(self._last_run_recent_lines).lower()
@@ -380,12 +411,16 @@ class PipInstaller:
         exe = os.path.basename(parts[0])
         return exe in ("uv", "uv.exe")
 
-    def _write_uv_overrides(self, overrides: List[str]) -> str:
-        fd, path = tempfile.mkstemp(prefix="neuromita_uv_overrides_", suffix=".txt", text=True)
-        lines = [str(item).strip() for item in overrides or [] if str(item).strip()]
+    def _write_requirement_file(self, requirements: List[str], *, prefix: str) -> str:
+        fd, path = tempfile.mkstemp(prefix=prefix, suffix=".txt", text=True)
+        lines = [str(item).strip() for item in requirements or [] if str(item).strip()]
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             fh.write("\n".join(lines))
             fh.write("\n")
+        return path
+
+    def _write_uv_overrides(self, overrides: List[str]) -> str:
+        path = self._write_requirement_file(overrides, prefix="neuromita_uv_overrides_")
         self.update_log(f"Using uv dependency overrides: {path}")
         return path
 
@@ -437,7 +472,35 @@ class PipInstaller:
             except OSError:
                 return False
 
-        candidates = list(self.DIST_MODULE_ALIASES.get(base, (base.replace("-", "_"),)))
+        candidates: list[str] = []
+        dist_info = self._target_dist_info_path(dist_name)
+        if dist_info is not None:
+            top_level = dist_info / "top_level.txt"
+            if top_level.is_file():
+                try:
+                    candidates.extend(
+                        line.strip()
+                        for line in top_level.read_text(encoding="utf-8", errors="ignore").splitlines()
+                        if line.strip() and not line.lstrip().startswith("#")
+                    )
+                except OSError:
+                    pass
+            if not candidates:
+                record = dist_info / "RECORD"
+                if record.is_file():
+                    try:
+                        for line in record.read_text(encoding="utf-8", errors="ignore").splitlines():
+                            rel = line.split(",", 1)[0].replace("\\", "/").lstrip("./")
+                            if not rel or ".dist-info/" in rel or ".data/" in rel:
+                                continue
+                            first = rel.split("/", 1)[0]
+                            if first.endswith(".py"):
+                                first = first[:-3]
+                            if first and first not in candidates:
+                                candidates.append(first)
+                    except OSError:
+                        pass
+        candidates.extend(self.DIST_MODULE_ALIASES.get(base, (base.replace("-", "_"),)))
         if not os.path.isdir(self.libs_path_abs):
             return False
         for module_name in candidates:
@@ -451,6 +514,30 @@ class PipInstaller:
             if os.path.isfile(os.path.join(self.libs_path_abs, first + ".py")):
                 return True
         return False
+
+    def _target_dist_info_path(self, dist_name: str) -> Optional[Path]:
+        if not dist_name or not os.path.isdir(self.libs_path_abs):
+            return None
+        wanted = canonicalize_name(dist_name)
+        for item in os.listdir(self.libs_path_abs):
+            if not item.endswith(".dist-info"):
+                continue
+            path = Path(self.libs_path_abs) / item
+            metadata_path = path / "METADATA"
+            name: Optional[str] = None
+            if metadata_path.is_file():
+                try:
+                    for line in metadata_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                        if line.lower().startswith("name:"):
+                            name = line.split(":", 1)[1].strip()
+                            break
+                except OSError:
+                    pass
+            if name is None:
+                name = item.rsplit(".dist-info", 1)[0].split("-", 1)[0]
+            if canonicalize_name(name) == wanted:
+                return path
+        return None
 
     def _target_dist_version(self, dist_name: str) -> Optional[str]:
         if not dist_name or not os.path.isdir(self.libs_path_abs):
@@ -495,6 +582,14 @@ class PipInstaller:
     def _build_install_command(self, force_pip: bool = False) -> List[str]:
         base = list(self._pip_base_cmd() if force_pip else self._resolve_installer_base_cmd())
         base.extend(["install", "--target", str(self.libs_path_abs)])
+        if self._is_uv_command(base):
+            base.extend(["--python", str(self.script_path)])
+        else:
+            # pip --target otherwise leaves existing package directories in
+            # place and merely prints hundreds of "already exists" warnings.
+            # That can report success while old code remains active beside new
+            # dist-info metadata. --upgrade makes the target update coherent.
+            base.append("--upgrade")
         # Кэш включён по умолчанию: после обрыва (диск/VPN) повторная попытка
         # переиспользует уже скачанное и докачивает, а не качает всё заново.
         # Отключается настройкой INSTALL_USE_CACHE (кэш чистится кнопкой в AI Hub).
@@ -516,13 +611,22 @@ class PipInstaller:
         # «Ожидание данных о размере пакетов…». Без verbose uv под PTY рисует
         # живой прогресс, а строки-вехи (Resolved/Prepared/Installed) и ошибки
         # разрешения печатаются в обоих режимах — диагностика при падении не теряется.
-        return [self.script_path, "-m", "uv", "pip"]
+        return [str(self._uv_executable_path()), "pip"]
 
     def _pip_base_cmd(self) -> List[str]:
-        return [self.script_path, "-m", "pip"]
+        return [self.script_path, "-m", "pip", "--isolated"]
 
     def _uv_executable_path(self) -> Path:
-        return self.python_root / "Scripts" / ("uv.exe" if os.name == "nt" else "uv")
+        return (
+            base_dir()
+            / ".bootstrap"
+            / "uv"
+            / "bin"
+            / ("uv.exe" if os.name == "nt" else "uv")
+        )
+
+    def _uv_target_path(self) -> Path:
+        return base_dir() / ".bootstrap" / "uv"
 
     def _ensure_pip_available(self) -> bool:
         pip_cmd = self._pip_base_cmd()
@@ -537,32 +641,50 @@ class PipInstaller:
         return self._check_installer_command(pip_cmd + ["--version"])
 
     def _ensure_uv_available(self) -> bool:
-        if self._check_installer_command([self.script_path, "-m", "uv", "--version"]):
+        if self._uv_probe_complete:
+            return self._uv_available
+
+        self._uv_probe_complete = True
+        uv_exe = self._uv_executable_path()
+        if uv_exe.is_file() and self._check_installer_command([str(uv_exe), "--version"]):
+            self._uv_available = True
             return True
 
         if not self._ensure_pip_available():
             self.update_log("uv недоступен: встроенный pip тоже не удалось подготовить.")
             return False
 
-        uv_exe = self._uv_executable_path()
-        if uv_exe.exists():
-            self.update_log(
-                f"Найден {uv_exe.name}, но модуль uv недоступен. "
-                "На Windows обновление поверх занятого uv.exe часто падает с Access Denied, "
-                "поэтому используем встроенный pip без авто-переустановки uv."
-            )
-            return False
+        target = self._uv_target_path()
+        if target.exists():
+            try:
+                shutil.rmtree(target)
+            except OSError as exc:
+                self.update_log(
+                    f"Повреждённый приватный uv не удалось очистить ({exc}); "
+                    "используем встроенный pip в этой сессии."
+                )
+                return False
 
-        self.update_log("uv не найден во встроенном Python, устанавливаем его через python -m pip...")
-        install_cmd = self._pip_base_cmd() + ["install", "uv"]
+        target.mkdir(parents=True, exist_ok=True)
+        self.update_log(f"Устанавливаем приватный uv в {target}...")
+        install_cmd = self._pip_base_cmd() + [
+            "install",
+            "--target",
+            str(target),
+            "--upgrade",
+            "--force-reinstall",
+            "--no-warn-script-location",
+            "uv",
+        ]
         if not self._run_pip_process(install_cmd, "Установка uv..."):
             self.update_log("Не удалось установить uv во встроенный Python, используем обычный pip.")
             return False
-        if not self._check_installer_command([self.script_path, "-m", "uv", "--version"]):
-            self.update_log("uv установился некорректно: модуль по-прежнему недоступен.")
+        if not uv_exe.is_file() or not self._check_installer_command([str(uv_exe), "--version"]):
+            self.update_log("Приватный uv установился некорректно: исполняемый файл недоступен.")
             return False
 
-        self.update_log("uv установлен во встроенный Python и готов к работе.")
+        self._uv_available = True
+        self.update_log("Приватный uv установлен и готов к работе.")
         return True
 
     def purge_cache(self, description: str = "Очистка кэша установщика...") -> bool:
@@ -611,7 +733,7 @@ class PipInstaller:
                 encoding="utf-8",
                 errors="ignore",
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                timeout=15,
+                timeout=3,
             )
             if proc.returncode == 0:
                 return True
@@ -1051,6 +1173,7 @@ class PipInstaller:
             self.error_seen: bool = False
             self.error_count: int = 0
             self.warning_count: int = 0
+            self.resolver_error_active: bool = False
             self.recent_lines: Deque[str] = deque(maxlen=40)
             # Скорость загрузки: считаем по приросту скачанных байт во времени
             # (EMA для сглаживания рывков). Нужна для строки статуса «X МБ/с» (#28).
@@ -1279,6 +1402,14 @@ class PipInstaller:
                 self.phase_cur = self.phase_tot = None
                 return
 
+            pct_match = self.RE_PCT.search(s)
+            pair_match = self.RE_PAIR.search(s)
+            speed_match = self.RE_SPEED.search(s)
+            has_artifact = bool(self.RE_WHL.search(s) or self.RE_TAR.search(s) or self.RE_PATH.search(s))
+            has_spinner = any(ch in s for ch in self.SPIN_CHARS)
+            if not (pct_match or pair_match or speed_match or has_artifact or has_spinner):
+                return
+
             ident_disp = self.ident_and_display(s)
             if not ident_disp:
                 return
@@ -1298,14 +1429,12 @@ class PipInstaller:
                 }
                 self.tasks[cid] = task
 
-            pct_match = self.RE_PCT.search(s)
             if pct_match:
                 try:
                     task["pct"] = max(0, min(100, int(pct_match.group(1))))
                 except Exception:
                     pass
 
-            pair_match = self.RE_PAIR.search(s)
             if pair_match:
                 try:
                     done = float(pair_match.group("done")) * self.unit_mul(pair_match.group("dunit"))
@@ -1316,7 +1445,6 @@ class PipInstaller:
                 except Exception:
                     pass
 
-            speed_match = self.RE_SPEED.search(s)
             if speed_match:
                 try:
                     task["speed_bps"] = float(speed_match.group("speed")) * self.unit_mul(speed_match.group("sunit"))
@@ -1590,8 +1718,45 @@ class PipInstaller:
             return ""
         return cls._ANSI_RE.sub('', s).replace("\x1b", "")
 
+    @classmethod
+    def _looks_like_progress_redraw(cls, line: str) -> bool:
+        """Return True only for terminal lines that are safe to discard on ``\r``.
+
+        uv renders both progress bars and resolver diagnostics through the PTY.
+        Treating every carriage-return line as ephemeral used to hide the actual
+        ``No solution found`` block and fed words such as ``Because`` and
+        ``torchaudio`` into the progress-task parser.
+        """
+        text = str(line or "").strip()
+        if not text:
+            return True
+        low = text.lower()
+        if any(marker in low for marker in (
+            "no solution found",
+            "failed to resolve",
+            "requirements are unsatisfiable",
+            "cannot be used",
+            "we can conclude",
+            "because ",
+            "help:",
+        )):
+            return False
+        return bool(
+            cls._RE_PCT.search(text)
+            or cls._RE_PAIR.search(text)
+            or any(ch in text for ch in cls._UvProgressAggregator.SPIN_CHARS)
+            or cls._UvProgressAggregator.RE_PREP.search(text)
+            or cls._UvProgressAggregator.RE_RESOLVED.search(text)
+            or cls._UvProgressAggregator.RE_PREPARED.search(text)
+            or cls._UvProgressAggregator.RE_INSTALLED.search(text)
+            or cls._UvProgressAggregator.RE_AUDITED.search(text)
+        )
+
     def _prepare_env(self, tty: bool = False) -> dict:
         env = os.environ.copy()
+        env["PYTHONNOUSERSITE"] = "1"
+        env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+        env["PIP_CONFIG_FILE"] = os.devnull
         env.setdefault("PIP_PROGRESS_BAR", "on")
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
@@ -1683,11 +1848,26 @@ class PipInstaller:
         clean = self._clean_line(line.rstrip())
         if not clean:
             return
+        transient = bool(transient and self._looks_like_progress_redraw(clean))
         if not transient:
             state.recent_lines.append(clean)
 
         low = clean.lower()
-        if (not transient) and (any(k in low for k in ("error:", "ошибка:", "failed:", "traceback", "exception", "critical")) or (("error" in low or "failed" in low) and "build\\" not in low and "bdist." not in low)):
+        resolver_start = any(marker in low for marker in (
+            "no solution found",
+            "failed to resolve",
+            "requirements are unsatisfiable",
+            "resolution impossible",
+        ))
+        if resolver_start:
+            state.resolver_error_active = True
+
+        is_error_line = (
+            state.resolver_error_active
+            or any(k in low for k in ("error:", "ошибка:", "failed:", "traceback", "exception", "critical"))
+            or (("error" in low or "failed" in low) and "build\\" not in low and "bdist." not in low)
+        )
+        if (not transient) and is_error_line:
             logger.error(clean)
             self.update_log(clean)
             state.error_seen = True

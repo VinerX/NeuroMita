@@ -1,0 +1,243 @@
+from __future__ import annotations
+
+import copy
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Iterable
+
+from installables.catalog_manifest import CATALOG_BY_ID, CATALOG_ENTRIES
+from main_logger import logger
+from services.contracts import InstallableCatalogService, SettingsService
+
+
+class DefaultInstallableCatalogService(InstallableCatalogService):
+    """Two-phase installable catalog.
+
+    Metadata is served from a declarative manifest and is available during the
+    GUI shell phase. Component implementations are imported only for status,
+    settings or install/uninstall work.
+    """
+
+    def __init__(self, settings: SettingsService | None = None) -> None:
+        self._settings = settings
+        self._lock = threading.RLock()
+        self._status_cache: dict[str, dict[str, Any]] = {}
+
+    def _language(self) -> str:
+        if self._settings is None:
+            return "RU"
+        try:
+            return str(self._settings.get("LANGUAGE", "RU") or "RU").upper()
+        except Exception:
+            return "RU"
+
+    def _metadata(self, entry) -> dict[str, Any]:
+        language = self._language()
+        source = entry.metadata_en if language == "EN" else entry.metadata_ru
+        result = copy.deepcopy(source)
+        if language not in {"RU", "EN"}:
+            try:
+                from localization import translate_for_language
+
+                result["title"] = translate_for_language(
+                    language,
+                    str(entry.metadata_ru.get("title") or ""),
+                    str(entry.metadata_en.get("title") or ""),
+                )
+                result["description"] = translate_for_language(
+                    language,
+                    str(entry.metadata_ru.get("description") or ""),
+                    str(entry.metadata_en.get("description") or ""),
+                )
+            except Exception:
+                pass
+        return result
+
+    @staticmethod
+    def _matches_category(entry, category: str | None) -> bool:
+        if not category:
+            return True
+        target = str(category).strip().lower()
+        actual = str(entry.metadata_ru.get("category") or "").strip().lower()
+        return actual == target
+
+    def list_rows(
+        self,
+        *,
+        include_status: bool = False,
+        refresh: bool = False,
+        category: str | None = None,
+        status_category: str | None = None,
+        ctx: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        entries = tuple(
+            entry for entry in CATALOG_ENTRIES if self._matches_category(entry, category)
+        )
+
+        if include_status:
+            status_entries = tuple(
+                entry
+                for entry in CATALOG_ENTRIES
+                if self._matches_category(entry, status_category or category)
+            )
+            self._refresh_statuses(status_entries, refresh=refresh, ctx=ctx)
+
+        with self._lock:
+            statuses = copy.deepcopy(self._status_cache)
+
+        rows: list[dict[str, Any]] = []
+        for entry in entries:
+            row = {"metadata": self._metadata(entry)}
+            status = statuses.get(entry.id)
+            if status is not None:
+                row["status"] = status
+            rows.append(row)
+        return rows
+
+    def require_component(self, component_id: str, *, refresh: bool = False) -> Any:
+        normalized = str(component_id or "").strip()
+        if normalized not in CATALOG_BY_ID:
+            raise KeyError(f"Unknown installable component: {normalized}")
+        from installables.registry_builder import (
+            get_installable_registry,
+            refresh_installable_registry,
+        )
+
+        registry = refresh_installable_registry() if refresh else get_installable_registry()
+        return registry.require(normalized)
+
+    def invalidate(self, component_id: str | None = None) -> None:
+        with self._lock:
+            if component_id:
+                self._status_cache.pop(str(component_id), None)
+            else:
+                self._status_cache.clear()
+        try:
+            from installables.registry_builder import get_installable_registry
+
+            get_installable_registry().invalidate(component_id=component_id)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _as_configurable(component: Any) -> Any | None:
+        for attr in ("settings_schema", "load_settings", "save_settings"):
+            if not callable(getattr(component, attr, None)):
+                return None
+        return component
+
+    def settings_schema(self, component_id: str) -> list[dict[str, Any]]:
+        try:
+            component = self._as_configurable(self.require_component(component_id))
+            if component is None:
+                return []
+            return list(component.settings_schema() or [])
+        except Exception as exc:
+            logger.error(
+                f"Installable settings schema failed for '{component_id}': {exc}",
+                exc_info=True,
+            )
+            return []
+
+    def load_settings(self, component_id: str) -> dict[str, Any]:
+        try:
+            component = self._as_configurable(self.require_component(component_id))
+            if component is None:
+                return {}
+            return dict(component.load_settings() or {})
+        except Exception as exc:
+            logger.error(
+                f"Installable settings load failed for '{component_id}': {exc}",
+                exc_info=True,
+            )
+            return {}
+
+    def save_component_settings(
+        self, component_id: str, values: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not isinstance(values, dict):
+            return {"ok": False, "errors": {"_": "values must be a dict"}}
+        try:
+            component = self._as_configurable(self.require_component(component_id))
+            if component is None:
+                return {"ok": False, "errors": {"_": "Component is not configurable"}}
+            validate = getattr(component, "validate_settings", None)
+            if callable(validate):
+                result = validate(values)
+                if not bool(getattr(result, "ok", True)):
+                    return {
+                        "ok": False,
+                        "errors": dict(getattr(result, "errors", {}) or {}),
+                    }
+            component.save_settings(values)
+            return {"ok": True, "errors": {}}
+        except Exception as exc:
+            logger.error(
+                f"Installable settings save failed for '{component_id}': {exc}",
+                exc_info=True,
+            )
+            return {"ok": False, "errors": {"_": str(exc)}}
+
+    def _refresh_statuses(
+        self,
+        entries: Iterable[Any],
+        *,
+        refresh: bool,
+        ctx: dict[str, Any] | None,
+    ) -> None:
+        unique = tuple(dict.fromkeys(entry.id for entry in entries))
+        if not unique:
+            return
+
+        with self._lock:
+            missing = [
+                component_id
+                for component_id in unique
+                if refresh or component_id not in self._status_cache
+            ]
+        if not missing:
+            return
+
+        if refresh:
+            for component_id in missing:
+                self.invalidate(component_id)
+
+        runtime_ctx = dict(ctx or {})
+        if refresh:
+            runtime_ctx["refresh"] = True
+
+        def inspect(component_id: str) -> tuple[str, dict[str, Any]]:
+            entry = CATALOG_BY_ID[component_id]
+            try:
+                component = self.require_component(component_id)
+                value = component.status(runtime_ctx)
+                return component_id, value.as_dict()
+            except Exception as exc:
+                logger.error(
+                    f"Installable status failed for '{component_id}': {exc}",
+                    exc_info=True,
+                )
+                return component_id, {
+                    "id": component_id,
+                    "code": "failed",
+                    "installed": False,
+                    "ready": False,
+                    "message": f"Failed to inspect component: {exc}",
+                    "backend": str(entry.metadata_ru.get("backend") or "none"),
+                    "backend_ok": False,
+                    "details": {"error": str(exc)},
+                }
+
+        workers = min(4, len(missing))
+        if workers <= 1:
+            inspected = [inspect(component_id) for component_id in missing]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix="installable-catalog",
+            ) as executor:
+                inspected = list(executor.map(inspect, missing))
+
+        with self._lock:
+            for component_id, status in inspected:
+                self._status_cache[component_id] = status

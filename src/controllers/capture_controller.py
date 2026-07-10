@@ -3,11 +3,11 @@ import threading
 from handlers.screen_handler import ScreenCapture
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
-from core.services import use
-from services.contracts import SettingsService
+from core.services import services, use
+from services.contracts import CaptureService, GuiInteractionService, SettingsService
 
 
-class CaptureController:
+class CaptureController(CaptureService):
     _SETTING_KEYS = frozenset({
         "ENABLE_IMAGE_ANALYSIS", "ENABLE_SCREEN_ANALYSIS", "ENABLE_CAMERA_CAPTURE",
         "AUTO_ATTACH_IMAGES", "SCREEN_CAPTURE_INTERVAL", "SCREEN_CAPTURE_QUALITY",
@@ -28,8 +28,8 @@ class CaptureController:
         self.screen_capture_instance = ScreenCapture()
         self.screen_capture_thread = None
         self.screen_capture_running = False
-        self.screen_capture_active = False
-        self.camera_capture_active = False
+        self._screen_capture_active = False
+        self._camera_capture_active = False
         self.last_captured_frame = None
         self.camera_capture = None
         
@@ -118,11 +118,23 @@ class CaptureController:
         self.last_image_request_time = time.time()
         logger.debug(f"Обновлено время последнего запроса изображения: {self.last_image_request_time}")
 
+    def screen_capture_active(self) -> bool:
+        return bool(self._screen_capture_active)
+
+    def camera_capture_active(self) -> bool:
+        return bool(self._camera_capture_active)
+
+    def capture_screen(self, limit: int = 1):
+        return self._on_capture_screen(Event(Events.Capture.CAPTURE_SCREEN, {"limit": int(limit)}))
+
+    def camera_frames(self, limit: int = 1):
+        return self._on_get_camera_frames(Event(Events.Capture.GET_CAMERA_FRAMES, {"limit": int(limit)}))
+
     def _on_get_screen_capture_status(self, event: Event):
-        return self.screen_capture_active
+        return self._screen_capture_active
     
     def _on_get_camera_capture_status(self, event: Event):
-        return self.camera_capture_active
+        return self._camera_capture_active
     
     def _on_capture_screen(self, event: Event):
         history_limit = event.data.get('limit', 1) if event.data else 1
@@ -189,8 +201,8 @@ class CaptureController:
 
             hwnd_to_pass = None
             if exclude_gui:
-                hwnd_to_pass = self.event_bus.emit_and_wait(Events.GUI.GET_GUI_WINDOW_ID, timeout=0.5)
-                hwnd_to_pass = hwnd_to_pass[0] if hwnd_to_pass else None
+                gui = services().get_optional(GuiInteractionService)
+                hwnd_to_pass = gui.native_window_id() if gui is not None else None
                 logger.info(f"Получен HWND окна GUI для исключения: {hwnd_to_pass}")
             elif exclude_title:
                 try:
@@ -247,7 +259,7 @@ class CaptureController:
             self.screen_capture_running = True
             logger.info(f"Поток захвата экрана запущен")
             
-            self.screen_capture_active = True
+            self._screen_capture_active = True
             if self.settings.get("SEND_IMAGE_REQUESTS", 1):
                 self.start_image_request_timer()
             self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
@@ -257,7 +269,7 @@ class CaptureController:
             self.screen_capture_instance.stop_capture()
             self.screen_capture_running = False
             logger.info("Поток захвата экрана остановлен.")
-        self.screen_capture_active = False
+        self._screen_capture_active = False
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
         
     def start_camera_capture_thread(self):
@@ -286,14 +298,14 @@ class CaptureController:
                                               max_frames_per_request, capture_width,
                                               capture_height)
             logger.info(f"Поток захвата с камеры запущен с индексом {camera_index}")
-            self.camera_capture_active = True
+            self._camera_capture_active = True
             self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
             
     def stop_camera_capture_thread(self):
         if hasattr(self, 'camera_capture') and self.camera_capture is not None and self.camera_capture.is_running():
             self.camera_capture.stop_capture()
             logger.info("Поток захвата с камеры остановлен.")
-        self.camera_capture_active = False
+        self._camera_capture_active = False
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
         
     def start_image_request_timer(self):
@@ -308,17 +320,20 @@ class CaptureController:
             logger.info("Таймер периодической отправки изображений остановлен.")
             
     def shutdown(self):
-        subscription = self._settings_subscription
+        subscription = getattr(self, "_settings_subscription", None)
         self._settings_subscription = None
         if subscription is not None:
             subscription.close()
-        self._shutdown_event.set()
+        shutdown_event = getattr(self, "_shutdown_event", None)
+        if shutdown_event is not None:
+            shutdown_event.set()
         self.stop_image_request_timer()
         self.stop_screen_capture_thread()
         self.stop_camera_capture_thread()
 
-        if self.image_request_thread and self.image_request_thread.is_alive():
-            self.image_request_thread.join(timeout=2.0)
+        image_request_thread = getattr(self, "image_request_thread", None)
+        if image_request_thread and image_request_thread.is_alive():
+            image_request_thread.join(timeout=2.0)
 
     def _start_periodic_check(self):
         def check_loop():

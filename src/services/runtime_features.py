@@ -9,6 +9,8 @@ from typing import Any, Callable, Iterable
 
 from main_logger import logger
 from startup.startup_profiler import startup_trace
+from core.services import services
+from services.contracts import RuntimeFeatureService
 
 
 class FeatureState(str, Enum):
@@ -33,6 +35,7 @@ class FeatureSpec:
     priority: int = 100
     required_modules: tuple[str, ...] = ()
     stop_when_disabled: bool = True
+    provided_services: tuple[type, ...] = ()
 
 
 @dataclass(slots=True)
@@ -45,7 +48,7 @@ class _FeatureEntry:
     stop_requested: bool = False
 
 
-class RuntimeFeatureManager:
+class RuntimeFeatureManager(RuntimeFeatureService):
     """Owns optional runtime controllers and initializes them once.
 
     A feature job contains both module import and controller construction. This
@@ -194,6 +197,7 @@ class RuntimeFeatureManager:
                     exc_info=True,
                 )
             finally:
+                self._unregister_services(entry.spec)
                 entry.state = FeatureState.STOPPED
 
         self._executor.shutdown(wait=False, cancel_futures=True)
@@ -242,6 +246,8 @@ class RuntimeFeatureManager:
             entry.instance = instance
             entry.state = FeatureState.READY
             entry.error = None
+        for contract in spec.provided_services:
+            services().register(contract, instance, replace=True)
         startup_trace.mark(f"feature.{name}.ready")
         logger.info(f"Optional feature ready: {name}")
         return instance
@@ -297,6 +303,7 @@ class RuntimeFeatureManager:
                 exc_info=True,
             )
         finally:
+            self._unregister_services(spec)
             with self._lock:
                 entry.instance = None
                 entry.future = None
@@ -332,6 +339,11 @@ class RuntimeFeatureManager:
             if callable(method):
                 method()
                 return
+
+    @staticmethod
+    def _unregister_services(spec: FeatureSpec) -> None:
+        for contract in spec.provided_services:
+            services().unregister(contract)
 
     @staticmethod
     def _failed_future(error: BaseException) -> Future:

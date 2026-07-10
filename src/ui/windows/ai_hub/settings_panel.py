@@ -22,7 +22,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.events import Events, get_event_bus
+from core.services import use
+from services.contracts import InstallableCatalogService
 from main_logger import logger
 from utils import getTranslationVariant as _
 
@@ -37,7 +38,7 @@ class SettingsPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.event_bus = get_event_bus()
+        self.catalog = use(InstallableCatalogService)
         self._rows: list[dict[str, Any]] = []
         self._category: str | None = None
         self._current_id: str | None = None
@@ -262,44 +263,15 @@ class SettingsPanel(QWidget):
         self._set_actions_enabled(True)
         self._update_dirty()
 
-    # ---------------------------------------------------------- bus calls
+    # ---------------------------------------------------------- catalog calls
     def _fetch_schema(self, component_id: str) -> list[dict[str, Any]]:
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Installable.GET_SETTINGS_SCHEMA,
-                {"component_id": component_id},
-                timeout=4.0,
-            )
-            schema = res[0] if res else []
-            return list(schema or [])
-        except Exception as exc:
-            logger.error(f"AI Hub: settings_schema fetch failed: {exc}")
-            return []
+        return self.catalog.settings_schema(component_id)
 
     def _fetch_values(self, component_id: str) -> dict[str, Any]:
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Installable.LOAD_SETTINGS,
-                {"component_id": component_id},
-                timeout=4.0,
-            )
-            values = res[0] if res else {}
-            return dict(values or {})
-        except Exception as exc:
-            logger.error(f"AI Hub: settings load failed: {exc}")
-            return {}
+        return self.catalog.load_settings(component_id)
 
     def _save_values(self, component_id: str, values: dict[str, Any]) -> dict[str, Any]:
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Installable.SAVE_SETTINGS,
-                {"component_id": component_id, "values": values},
-                timeout=6.0,
-            )
-            return res[0] if res else {"ok": False, "errors": {"_": "no response"}}
-        except Exception as exc:
-            logger.error(f"AI Hub: settings save failed: {exc}")
-            return {"ok": False, "errors": {"_": str(exc)}}
+        return self.catalog.save_component_settings(component_id, values)
 
     # ---------------------------------------------------------- actions
     def _on_save(self) -> None:

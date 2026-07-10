@@ -8,12 +8,12 @@ from main_logger import logger
 from presets.local_voice_models import LOCAL_VOICE_MODELS
 from core.events import get_event_bus, Events, Event
 from core.services import use
-from services.contracts import GameLinkService, LoopService
+from services.contracts import AudioStateService, GameLinkService, LoopService
 from managers.task_manager import TaskStatus
 from utils import process_text_to_voice
 
 
-class AudioController:
+class AudioController(AudioStateService):
     """
     Агрегатор озвучки.
     Получает на вход уже определённый speaker и voice_profile (если есть),
@@ -75,6 +75,9 @@ class AudioController:
         except Exception:
             pass
         return 0.0
+
+    def is_waiting_answer(self) -> bool:
+        return bool(getattr(self, "waiting_answer", False))
 
     def _on_get_waiting_answer(self, event: Event):
         return self.waiting_answer

@@ -13,6 +13,8 @@ from utils import getTranslationVariant as _
 
 from core.backends import get_backend_service
 from core.events import get_event_bus, Events, Event
+from core.services import services
+from services.contracts import LocalVoiceService, VoiceModelService
 
 try:
     from utils.gpu_utils import (
@@ -33,7 +35,7 @@ except Exception:
         return None
     def get_primary_gpu_name():
         return None
-class VoiceModelController:
+class VoiceModelController(VoiceModelService):
     """
     Backend-контроллер локальных голосовых моделей.
     - source of truth for model catalog/settings (GET_MODEL_DATA)
@@ -277,13 +279,16 @@ class VoiceModelController:
     def _handle_get_installed_models(self, _event: Event):
         return self.installed_models_snapshot()
 
+    def dependencies_status(self) -> dict[str, Any]:
+        return dict(self._handle_get_dependencies_status(Event(Events.VoiceModel.GET_DEPENDENCIES_STATUS)) or {})
+
     def _handle_get_dependencies_status(self, event: Event):
         with self._lock:
             if self._dependencies_status_cache and (time.time() - self._dependencies_status_ts) < 3.0:
                 return self._dependencies_status_cache
 
-        res = self.event_bus.emit_and_wait(Events.Audio.GET_TRITON_STATUS, timeout=2.0)
-        status = res[0] if res else {}
+        local_voice = services().get_optional(LocalVoiceService)
+        status = local_voice.triton_status() if local_voice is not None else {}
         status = status.copy() if isinstance(status, dict) else {}
         status["show_triton_checks"] = (platform.system() == "Windows")
         status["detected_gpu_vendor"] = self.detected_gpu_vendor
@@ -347,13 +352,8 @@ class VoiceModelController:
                     self.setting_descriptions[key] = help_text.strip()
 
     def get_default_model_structure(self):
-        try:
-            res = self.event_bus.emit_and_wait(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS, timeout=2.0)
-            if res and isinstance(res[0], list):
-                return res[0]
-        except Exception:
-            pass
-        return []
+        local_voice = services().get_optional(LocalVoiceService)
+        return local_voice.model_configs() if local_voice is not None else []
 
     def load_settings(self):
         default_model_structure = self.get_default_model_structure()

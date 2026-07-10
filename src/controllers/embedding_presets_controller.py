@@ -403,6 +403,11 @@ class EmbeddingPresetsController(EmbeddingPresetService):
         logger.info(f"[EmbedPresets] Saved custom preset id={pid} name='{up.name}'")
         return pid
 
+    def save(self, data: Dict[str, Any]) -> Any:
+        return self._on_save(
+            Event(Events.EmbeddingPresets.SAVE_CUSTOM_PRESET, {"data": dict(data or {})})
+        )
+
     def _on_delete(self, event: Event):
         pid = (event.data or {}).get("id")
         if isinstance(pid, str):
@@ -425,6 +430,13 @@ class EmbeddingPresetsController(EmbeddingPresetService):
             return True
         return False
 
+    def delete(self, preset_id: Any) -> bool:
+        return bool(
+            self._on_delete(
+                Event(Events.EmbeddingPresets.DELETE_CUSTOM_PRESET, {"id": preset_id})
+            )
+        )
+
     def _on_rename(self, event: Event):
         pid = (event.data or {}).get("id")
         new_name = str((event.data or {}).get("name") or "")
@@ -439,11 +451,28 @@ class EmbeddingPresetsController(EmbeddingPresetService):
         self._save()
         return True
 
+    def rename(self, preset_id: Any, name: str) -> bool:
+        return bool(
+            self._on_rename(
+                Event(
+                    Events.EmbeddingPresets.RENAME_CUSTOM_PRESET,
+                    {"id": preset_id, "name": name},
+                )
+            )
+        )
+
     def _on_reorder(self, event: Event):
         order = (event.data or {}).get("order") or []
         self.custom_order = self._normalize_order(order)
         self._save()
         return True
+
+    def reorder(self, order) -> bool:
+        return bool(
+            self._on_reorder(
+                Event(Events.EmbeddingPresets.REORDER_PRESETS, {"order": list(order or [])})
+            )
+        )
 
     def _on_test(self, event: Event):
         preset_id = (event.data or {}).get("id")

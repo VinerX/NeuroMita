@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import importlib
 import os
 import ntpath
 import re
@@ -218,6 +219,7 @@ def _ensure_lib_path() -> None:
 class EdgeTTSRVCBaseModel(IVoiceModel):
     BACKEND_KIND = BackendKind.NONE
     RVC_PACKAGE = ""
+    RVC_IMPORT_CANDIDATES: tuple[str, ...] = ()
     RVC_UNINSTALL_PACKAGES: tuple[str, ...] = ()
     MODEL_EXTENSION = "pth"
     VOICE_PATH_PROVIDER = "NVIDIA"
@@ -258,6 +260,15 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             InstallRequirement(id="omegaconf", kind="python_dist", spec="omegaconf", required=True),
             InstallRequirement(id="tts_rvc_pkg", kind="python_dist", spec=cls.RVC_PACKAGE, required=True),
         ]
+        if cls.RVC_IMPORT_CANDIDATES:
+            req.append(
+                InstallRequirement(
+                    id="tts_rvc_module",
+                    kind="python_module_any",
+                    modules=cls.RVC_IMPORT_CANDIDATES,
+                    required=True,
+                )
+            )
         if cls._is_silero_model(model_id):
             req.append(InstallRequirement(id="silero", kind="python_dist", spec="silero", required=True))
         return req
@@ -340,12 +351,43 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                     fn=cls._patch_fairseq_configs_call(),
                 )
             )
+        def _verify_install(*, callbacks=None, ctx=None, **_kwargs) -> bool:
+            # Контекст действия формируется InstallController уже после создания
+            # плана и содержит точный --target текущего PipInstaller. Он должен
+            # иметь приоритет над ранним snapshot плана, иначе финальная проверка
+            # снова может посмотреть в устаревший каталог.
+            verify_ctx = dict(ctx_outer)
+            verify_ctx.update(dict(ctx or {}))
+            status = check_requirements(cls.requirements(mid, verify_ctx), ctx=verify_ctx)
+            if status.get("ok"):
+                return True
+            if callbacks is not None:
+                callbacks.log("Проверка установки не пройдена. Отсутствуют обязательные компоненты:")
+                for detail in status.get("details", []):
+                    if detail.get("ok") or not detail.get("required", True):
+                        continue
+                    extra = detail.get("extra") or {}
+                    descriptor = (
+                        extra.get("spec")
+                        or extra.get("module")
+                        or ", ".join(extra.get("modules") or [])
+                        or extra.get("path")
+                        or extra.get("backend_kind")
+                        or detail.get("id")
+                    )
+                    reason = extra.get("reason") or extra.get("error") or "не найден после установки"
+                    callbacks.log(f"  - {detail.get('id')}: {descriptor} ({reason})")
+                target = verify_ctx.get("libs_dir") or verify_ctx.get("lib_dir") or os.environ.get("NEUROMITA_LIB_DIR")
+                callbacks.log(f"Каталог проверки Python-пакетов: {target or '<sys.path>'}")
+            return False
+
+        ctx_outer = dict(ctx or {})
         actions.append(
             InstallAction(
                 type="call",
                 description=_("Проверка установки...", "Final check..."),
                 progress=99,
-                fn=lambda **_k: cls.is_model_installed(mid, ctx),
+                fn=_verify_install,
             )
         )
         if compat_warning:
@@ -367,6 +409,27 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
 
     def _load_rvc_class(self):
         raise NotImplementedError
+
+    @classmethod
+    def _import_rvc_class(cls):
+        errors: list[str] = []
+        for module_name in cls.RVC_IMPORT_CANDIDATES:
+            try:
+                module = importlib.import_module(module_name)
+                rvc_class = getattr(module, "TTS_RVC")
+                if module_name != cls.RVC_IMPORT_CANDIDATES[0]:
+                    logger.warning(
+                        f"{cls.__name__}: distribution '{cls.RVC_PACKAGE}' exposes "
+                        f"runtime module '{module_name}' instead of "
+                        f"'{cls.RVC_IMPORT_CANDIDATES[0]}'. Using compatible fallback."
+                    )
+                return rvc_class
+            except Exception as exc:
+                errors.append(f"{module_name}: {exc}")
+        raise ImportError(
+            f"Unable to import TTS_RVC for '{cls.RVC_PACKAGE}'. Tried: "
+            + "; ".join(errors)
+        )
 
     def _set_rvc_model_path(self, model_path: str) -> None:
         self.current_tts_rvc.current_model = model_path
@@ -876,6 +939,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
 class EdgeTTSRVCCudaModel(EdgeTTSRVCBaseModel):
     BACKEND_KIND = BackendKind.CUDA
     RVC_PACKAGE = "tts-with-rvc"
+    RVC_IMPORT_CANDIDATES = ("tts_with_rvc",)
     RVC_UNINSTALL_PACKAGES = ("tts-with-rvc",)
     MODEL_EXTENSION = "pth"
     VOICE_PATH_PROVIDER = "NVIDIA"
@@ -921,14 +985,16 @@ class EdgeTTSRVCCudaModel(EdgeTTSRVCBaseModel):
 
     def _load_rvc_class(self):
         _ensure_lib_path()
-        from tts_with_rvc import TTS_RVC
-
-        return TTS_RVC
+        return self._import_rvc_class()
 
 
 class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
     BACKEND_KIND = BackendKind.ONNX
     RVC_PACKAGE = "tts-with-rvc-onnx[dml]"
+    # PyPI documentation uses ``tts_with_rvc_onnx``, while the published wheel
+    # has historically also shipped the repository package as ``tts_with_rvc``.
+    # Treat the distribution identity and import package identity separately.
+    RVC_IMPORT_CANDIDATES = ("tts_with_rvc_onnx", "tts_with_rvc")
     RVC_UNINSTALL_PACKAGES = ("tts-with-rvc-onnx",)
     MODEL_EXTENSION = "onnx"
     VOICE_PATH_PROVIDER = "AMD"
@@ -974,9 +1040,7 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
 
     def _load_rvc_class(self):
         _ensure_lib_path()
-        from tts_with_rvc_onnx import TTS_RVC
-
-        return TTS_RVC
+        return self._import_rvc_class()
 
     def _set_rvc_model_path(self, model_path: str) -> None:
         self.current_tts_rvc.set_model(model_path)

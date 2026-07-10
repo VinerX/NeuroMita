@@ -4,6 +4,7 @@ from typing import Optional
 
 from main_logger import logger
 from core.events import Events, Event
+from core.install_log import classify_install_log
 from .base_controller import BaseController
 
 from core.install_types import InstallCallbacks
@@ -290,12 +291,10 @@ class InstallGuiController(BaseController):
             msg = data.get("text")
         msg = "" if msg is None else str(msg)
 
-        level = str(data.get("level") or "").strip().lower()
-        low = msg.lower()
-
-        if level in ("error", "exception", "critical") or any(k in low for k in ("error", "ошибка", "failed", "traceback")):
+        level = classify_install_log(msg, data.get("level"))
+        if level == "error":
             logger.error(f"[INSTALL] {msg}")
-        elif level in ("warn", "warning") or any(k in low for k in ("warning", "предупреж")):
+        elif level == "warning":
             logger.warning(f"[INSTALL] {msg}")
 
     # ------------------------------------------------------------------

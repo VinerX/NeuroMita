@@ -4,7 +4,7 @@ from PyQt6.QtCore import QTimer
 from core.events import get_event_bus
 from core.services import use
 from services.contracts import SettingsService
-from ui.async_bus import emit_and_wait_async, run_async
+from ui.async_bus import run_async
 
 
 class BaseController:
@@ -68,22 +68,3 @@ class BaseController:
     def _run_async(self, worker, on_ok=None, on_error=None, *, name: str = "gui-controller-async"):
         return run_async(self.view or self, worker, on_ok, on_error, name=name)
 
-    def _emit_and_wait_async(
-        self,
-        event_name: str,
-        data=None,
-        *,
-        timeout: float = 1.0,
-        on_ok=None,
-        on_error=None,
-        name: str | None = None,
-    ):
-        return emit_and_wait_async(
-            self.view or self,
-            event_name,
-            data,
-            timeout=timeout,
-            on_ok=on_ok,
-            on_error=on_error,
-            name=name,
-        )

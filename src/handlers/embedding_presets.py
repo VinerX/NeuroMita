@@ -151,7 +151,7 @@ def invalidate_embedding_config_cache() -> None:
 
 def resolve_full_config() -> Dict[str, Any]:
     """Кэширующая обёртка. Один RAG-поиск дёргал это 7 раз, а каждый вызов уходил
-    в EventBus (emit_and_wait, timeout=2s) — то есть 7 потоков на запрос.
+    в EventBus (sync EventBus RPC, timeout=2s) — то есть 7 потоков на запрос.
 
     Кэш самоинвалидируется по сигнатуре настроек; при правке содержимого пресета
     владельцы зовут invalidate_embedding_config_cache().

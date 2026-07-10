@@ -5,6 +5,8 @@ from typing import Any
 from PyQt6.QtCore import QTimer
 
 from core.events import Events
+from core.services import use
+from services.contracts import ApiPresetService
 from main_logger import logger
 from utils import _
 
@@ -22,9 +24,9 @@ class PresetsMixin:
     def reload_presets_async(self) -> None:
         logger.info("[API UI] reload_presets_async called")
         def _call():
-            res = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-            logger.info(f"[API UI] GET_PRESET_LIST raw={type(res)} len={len(res) if res else 0}")
-            return res[0] if res else None
+            meta = use(ApiPresetService).list_meta()
+            logger.info(f"[API UI] preset metadata loaded: {type(meta)}")
+            return meta
 
         def _apply(meta):
             logger.info(f"[API UI] GET_PRESET_LIST meta={type(meta)} keys={list(meta.keys()) if isinstance(meta, dict) else None}")
@@ -162,13 +164,8 @@ class PresetsMixin:
 
     def load_preset_async(self, preset_id: int) -> None:
         def _call():
-            preset_res = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_FULL, {"id": int(preset_id)}, timeout=1.0)
-            preset = preset_res[0] if preset_res and preset_res[0] else None
-
-            state_res = self.event_bus.emit_and_wait(Events.ApiPresets.LOAD_PRESET_STATE, {"id": int(preset_id)}, timeout=1.0)
-            state = state_res[0] if state_res and state_res[0] else {}
-
-            return preset, state
+            service = use(ApiPresetService)
+            return service.get_full(int(preset_id)), service.load_state(int(preset_id))
 
         def _apply(payload):
             preset, state = payload

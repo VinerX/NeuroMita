@@ -11,7 +11,8 @@ from typing import Optional, Any, List, Dict
 from .base_model import IVoiceModel
 from main_logger import logger
 
-from core.events import Events
+from core.services import services
+from services.contracts import GuiInteractionService
 from utils import getTranslationVariant as _, get_character_voice_paths
 
 from core.backends import BackendKind, get_backend_service
@@ -217,7 +218,6 @@ class FishSpeechInstallSpec:
         def _fn(*, pip_installer=None, callbacks=None, ctx=None, **_kwargs) -> bool:
             cb = callbacks
             ctx = ctx or {}
-            eb = ctx.get("event_bus")
 
             def log(m: str):
                 try:
@@ -259,10 +259,9 @@ class FishSpeechInstallSpec:
                     log(f"Triton import error: {msg}")
                     if "DLL load failed while importing libtriton" in msg:
                         status(_("Ошибка загрузки Triton! Проверьте VC++ Redistributable.", "Triton load error! Check VC++ Redistributable."))
-                        if callable(getattr(eb, "emit_and_wait", None)):
-                            res = eb.emit_and_wait(Events.Audio.SHOW_VC_REDIST_DIALOG, timeout=6000.0)
-                            choice = res[0] if res else "close"
-                            if choice == "retry" and attempt == 0:
+                        gui = services().get_optional(GuiInteractionService)
+                        if gui is not None and gui.confirm("vc_redist", {}):
+                            if attempt == 0:
                                 continue
                         return False
                     return False
@@ -271,7 +270,7 @@ class FishSpeechInstallSpec:
                     return False
 
             # Dependencies dialog + optional init.py
-            if os.name == "nt" and callable(getattr(eb, "emit_and_wait", None)):
+            if os.name == "nt":
                 status(_("Проверка зависимостей Triton...", "Checking Triton dependencies..."))
                 deps = cls._probe_triton_deps(libs_path_abs)
                 # CUDA Toolkit больше не является обязательным требованием для
@@ -280,9 +279,9 @@ class FishSpeechInstallSpec:
                 # Диалог зависимостей показываем ТОЛЬКО когда чего-то не хватает,
                 # иначе не дёргаем пользователя лишним окном, если всё готово.
                 if not bool(deps.get("msvc_found")):
-                    res = eb.emit_and_wait(Events.Audio.SHOW_TRITON_DIALOG, deps, timeout=6000.0)
-                    choice = res[0] if res else "continue"
-                    if choice == "skip":
+                    gui = services().get_optional(GuiInteractionService)
+                    proceed = gui.confirm("triton", deps) if gui is not None else True
+                    if not proceed:
                         status(_("Инициализация ядра пропущена", "Kernel initialization skipped"))
                         return True
 

@@ -1,6 +1,6 @@
 """Единый реестр именованных пулов потоков.
 
-Раньше пулы плодились по месту: executor-на-каждый-emit_and_wait,
+Раньше пулы плодились по месту,
 ThreadPoolExecutor(1) на каждый HTTP-вызов LLM, ad-hoc threading.Thread
 в контроллерах. Считать нагрузку и вводить backpressure было негде.
 
@@ -34,9 +34,6 @@ class Pools:
     DEBUG_DUMP = "debug-dump"
     # Асинхронная доставка подписчикам (emit).
     EVENT_BUS = "event-bus"
-    # Диспетчеризация emit_and_wait. Отдельный пул: медленный async-подписчик
-    # не должен съедать потоки, которых ждёт синхронный вызов.
-    EVENT_BUS_SYNC = "event-bus-sync"
 
 
 @dataclass(frozen=True)
@@ -55,7 +52,6 @@ _SPECS: Dict[str, _PoolSpec] = {
     Pools.DEBUG_DUMP: _PoolSpec(max_workers=1),
     Pools.DB_WRITER: _PoolSpec(max_workers=1),
     Pools.EVENT_BUS: _PoolSpec(max_workers=8, capacity=512),
-    Pools.EVENT_BUS_SYNC: _PoolSpec(max_workers=16, capacity=128),
 }
 
 

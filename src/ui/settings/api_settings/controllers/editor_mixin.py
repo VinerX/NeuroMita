@@ -11,6 +11,8 @@ import qtawesome as qta
 
 from utils import _
 from core.events import Events
+from core.services import use
+from services.contracts import ApiPresetService
 from main_logger import logger
 from .state import PresetSnapshot
 
@@ -240,12 +242,7 @@ class EditorMixin:
         self._set_protocol_config_visible(False)
 
         def _call():
-            res = self.event_bus.emit_and_wait(
-                Events.ApiPresets.GET_PRESET_FULL,
-                {"id": int(template_id)},
-                timeout=1.0
-            )
-            return res[0] if res and res[0] else None
+            return use(ApiPresetService).get_full(int(template_id))
 
         def _apply(tpl: dict | None):
             if not tpl:
@@ -435,8 +432,7 @@ class EditorMixin:
         data = self._build_current_preset_payload(preset_id=pid)
 
         def _call():
-            res = self.event_bus.emit_and_wait(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": data}, timeout=2.0)
-            return res[0] if res else None
+            return use(ApiPresetService).save_custom(data)
 
         def _apply(new_id):
             if not isinstance(new_id, int):
@@ -475,10 +471,10 @@ class EditorMixin:
         state = self._build_preset_state()
 
         def _call():
-            res = self.event_bus.emit_and_wait(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": payload}, timeout=2.0)
-            new_id = res[0] if res else None
+            service = use(ApiPresetService)
+            new_id = service.save_custom(payload)
             if isinstance(new_id, int):
-                self.event_bus.emit(Events.ApiPresets.SAVE_PRESET_STATE, {"id": int(new_id), "state": state})
+                service.save_state(int(new_id), state)
             return new_id
 
         def _apply(new_id):
@@ -537,10 +533,10 @@ class EditorMixin:
         logger.info(f"[API UI] Creating preset name='{payload['name']}', base={payload['base']}")
 
         def _call():
-            logger.info("[API UI] calling SAVE_CUSTOM_PRESET via emit_and_wait...")
-            res = self.event_bus.emit_and_wait(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": payload}, timeout=2.0)
-            logger.info(f"[API UI] SAVE_CUSTOM_PRESET result={res}")
-            return res[0] if res else None
+            logger.info("[API UI] saving custom preset through ApiPresetService...")
+            result = use(ApiPresetService).save_custom(payload)
+            logger.info(f"[API UI] save_custom result={result}")
+            return result
 
         def _apply(new_id):
             logger.info(f"[API UI] Created preset new_id={new_id} type={type(new_id)}")
@@ -600,10 +596,10 @@ class EditorMixin:
         logger.info(f"[API UI] Creating preset name='{payload['name']}', base={payload['base']}")
 
         def _call():
-            logger.info("[API UI] calling SAVE_CUSTOM_PRESET via emit_and_wait...")
-            res = self.event_bus.emit_and_wait(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": payload}, timeout=2.0)
-            logger.info(f"[API UI] SAVE_CUSTOM_PRESET result={res}")
-            return res[0] if res else None
+            logger.info("[API UI] saving custom preset through ApiPresetService...")
+            result = use(ApiPresetService).save_custom(payload)
+            logger.info(f"[API UI] save_custom result={result}")
+            return result
 
         def _apply(new_id):
             logger.info(f"[API UI] Created preset new_id={new_id} type={type(new_id)}")
@@ -646,8 +642,7 @@ class EditorMixin:
         data["name"] = new_name
 
         def _call():
-            res = self.event_bus.emit_and_wait(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": data}, timeout=2.0)
-            return res[0] if res else None
+            return use(ApiPresetService).save_custom(data)
 
         def _apply(saved_id):
             if not isinstance(saved_id, int):

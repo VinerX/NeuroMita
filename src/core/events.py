@@ -1,7 +1,5 @@
-import asyncio
 import threading
 from typing import Dict, List, Callable, Any, Optional
-from concurrent.futures import wait
 import weakref
 from dataclasses import dataclass
 from queue import Queue, Empty, Full
@@ -11,20 +9,6 @@ from core.executors import PoolSaturated, Pools, executors
 from main_logger import logger
 
 
-class EmitAndWaitContextError(RuntimeError):
-    """emit_and_wait вызван из контекста, где он ломает архитектуру/дедлочит.
-
-    Синхронный сбор ответов на пути генерации или внутри asyncio-loop — это
-    ровно тот анти-паттерн (sync-RPC-через-шину со вложенностью), который
-    рефактор убирал. Такой вызов — не «медленно», а «неправильно»: он должен
-    падать громко, а запрос/ответ жить в типизированном сервисе (core.services).
-    """
-
-
-# Префиксы имён потоков пулов, в которых emit_and_wait запрещён.
-# ThreadPoolExecutor именует потоки как "{prefix}_{n}" (см. core/executors.py).
-_FORBIDDEN_THREAD_PREFIXES = (Pools.GENERATION, Pools.BACKGROUND_LLM)
-
 _ORDERED_EVENT_NAMES = frozenset({
     "create_task",
     "update_task_status",
@@ -33,30 +17,6 @@ _ORDERED_EVENT_NAMES = frozenset({
     "notify_task_update",
 })
 
-
-def _guard_emit_and_wait_context(event_name: str) -> None:
-    """Отклоняет emit_and_wait из hot-path пулов и asyncio-loop; на GUI-потоке
-    только предупреждает (там ещё остались легаси-вызовы UI)."""
-    thread = threading.current_thread()
-    thread_name = thread.name or ""
-    for prefix in _FORBIDDEN_THREAD_PREFIXES:
-        if thread_name.startswith(prefix):
-            raise EmitAndWaitContextError(
-                f"emit_and_wait('{event_name}') вызван из пула '{prefix}' "
-                f"(поток '{thread_name}'). На пути генерации синхронный сбор "
-                f"ответов через шину запрещён — заведите сервис в core.services."
-            )
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        pass
-    else:
-        raise EmitAndWaitContextError(
-            f"emit_and_wait('{event_name}') вызван внутри работающего asyncio-loop "
-            f"(поток '{thread_name}'). Это блокирует весь loop — используйте сервис "
-            f"или уведомление emit()."
-        )
 
 
 @dataclass
@@ -71,24 +31,11 @@ class Event:
             self.timestamp = time.time()
 
 
-@dataclass
-class _SyncDispatchResult:
-    index: int
-    callback_name: str
-    ok: bool
-    value: Any = None
-    error: BaseException | None = None
-    duration: float = 0.0
-
-
 class EventBus:
-    """
-    Шина уведомлений: emit() — fire-and-forget, emit_and_wait() — сбор ответов.
+    """Шина однонаправленных уведомлений.
 
-    ВАЖНО: emit_and_wait — не механизм вызова сервисов. Запрос/ответ живёт в
-    core.services (типизированный ServiceRegistry). Здесь он остался только для
-    «многие подписчики отвечают» и для команд UI. Новые GET_*-события заводить
-    нельзя: заведите сервис.
+    Запрос/ответ и чтение состояния выполняются через типизированные сервисы.
+    EventBus не возвращает значения обработчиков.
     """
 
     def __init__(self):
@@ -158,8 +105,7 @@ class EventBus:
         # ВАЖНО: никакого логирования/резолва подписчиков под self._lock здесь.
         # Раньше emit() держал глобальный лок шины во время logger-вызова (диск!)
         # и лишний раз резолвил подписчиков — на старте это сериализовало ВЕСЬ
-        # поток событий за скоростью диска и упиралось в тот же лок, что нужен
-        # emit_and_wait из GUI. Диспетчер (_emit_sync/_emit_async) сам резолвит
+        # поток событий за скоростью диска и упиралось в тот же глобальный лок. Диспетчер (_emit_sync/_emit_async) сам резолвит
         # подписчиков один раз и вне лока.
         if sync:
             self._emit_sync(event)
@@ -172,110 +118,6 @@ class EventBus:
                     event_name,
                 )
     
-    def emit_and_wait(self, event_name: str, data: Any = None, timeout: float = 5.0) -> List[Any]:
-        """
-        Отправить событие и дождаться результатов от всех подписчиков
-        """
-        # То же, что и в emit: после shutdown не создаём executor-потоки (#19).
-        if not self._running:
-            return []
-
-        # Guardrail: из hot-path пулов и asyncio-loop synchronous-сбор запрещён.
-        _guard_emit_and_wait_context(event_name)
-
-        start_time = time.perf_counter()
-        is_main_thread = (threading.current_thread() is threading.main_thread())
-
-        with self._lock:
-            subscribers = self._get_active_subscribers(event_name)
-
-        if not subscribers:
-            return []
-
-        event = Event(name=event_name, data=data)
-        # Общий пул: раньше на КАЖДЫЙ вызов создавался свой ThreadPoolExecutor,
-        # то есть десятки короткоживущих потоков на один пользовательский запрос.
-        pool = executors().pool(Pools.EVENT_BUS_SYNC)
-        futures = {}
-        ordered: list[_SyncDispatchResult | None] = [None] * len(subscribers)
-
-        for index, subscriber in enumerate(subscribers):
-            callback_name = getattr(subscriber, "__qualname__", getattr(subscriber, "__name__", "unknown"))
-            try:
-                future = pool.try_submit(
-                    self._call_sync_subscriber,
-                    subscriber,
-                    event,
-                    index,
-                    callback_name,
-                )
-                futures[future] = (index, callback_name)
-            except PoolSaturated:
-                ordered[index] = self._call_sync_subscriber(
-                    subscriber, event, index, callback_name
-                )
-
-        done, not_done = wait(futures.keys(), timeout=max(0.0, float(timeout)))
-
-        for future in done:
-            result = future.result()
-            ordered[result.index] = result
-
-        for future in not_done:
-            index, callback_name = futures[future]
-            ordered[index] = _SyncDispatchResult(
-                index=index,
-                callback_name=callback_name,
-                ok=False,
-                error=TimeoutError(f"Timed out after {float(timeout):.3f}s"),
-                duration=float(timeout),
-            )
-            future.cancel()
-            logger.warning(
-                f"emit_and_wait timeout for event '{event_name}' in subscriber '{callback_name}' "
-                f"after {float(timeout):.3f}s"
-            )
-
-        duration = time.perf_counter() - start_time
-        if duration > 0.03:
-            msg = f"⏱️ SLOW EVENT: '{event_name}' took {duration:.4f}s"
-            if is_main_thread:
-                logger.warning(f"[GUI FREEZE] {msg} (Called from MainThread!)")
-            else:
-                logger.info(f"[BG SLOW] {msg}")
-
-        return [item.value for item in ordered if item is not None and item.ok]
-
-    def _call_sync_subscriber(
-        self,
-        callback: Callable,
-        event: Event,
-        index: int,
-        callback_name: str,
-    ) -> _SyncDispatchResult:
-        started_at = time.perf_counter()
-        try:
-            value = callback(event)
-            return _SyncDispatchResult(
-                index=index,
-                callback_name=callback_name,
-                ok=True,
-                value=value,
-                duration=time.perf_counter() - started_at,
-            )
-        except Exception as exc:
-            logger.error(
-                f"Ошибка в обработчике '{callback_name}' для события '{event.name}': {exc}",
-                exc_info=True,
-            )
-            return _SyncDispatchResult(
-                index=index,
-                callback_name=callback_name,
-                ok=False,
-                error=exc,
-                duration=time.perf_counter() - started_at,
-            )
-
     @property
     def is_running(self) -> bool:
         """Жива ли шина. Фоновые демон-циклы проверяют это, чтобы не дёргать
@@ -436,15 +278,6 @@ def emit(event_name: str, data: Any = None, sync: bool = False) -> None:
     """Отправить событие через глобальный EventBus"""
     get_event_bus().emit(event_name, data, sync)
 
-
-def emit_and_wait(event_name: str, data: Any = None, timeout: float = 5.0) -> List[Any]:
-    """Отправить событие и дождаться результатов через глобальный EventBus"""
-    return get_event_bus().emit_and_wait(event_name, data, timeout)
-
-
-# Определение имен событий для типобезопасности
-
-# src/core/events.py
 
 class Events:
     """
@@ -770,7 +603,6 @@ class Events:
         INITIALIZE = "installable_initialize"
         # ConfigurableComponent: settings schema + load/save (used by AI Hub
         # "Settings" tab). Each handler returns its payload synchronously via
-        # emit_and_wait.
         GET_SETTINGS_SCHEMA = "installable_get_settings_schema"
         LOAD_SETTINGS = "installable_load_settings"
         SAVE_SETTINGS = "installable_save_settings"

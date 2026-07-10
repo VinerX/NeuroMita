@@ -1,133 +1,151 @@
 from __future__ import annotations
 
-import asyncio
-import sys
+import gc
+import threading
 import time
 import unittest
-from pathlib import Path
+
+from core.events import EventBus
 
 
-PROJECT_SRC = Path(__file__).resolve().parents[2]
-if str(PROJECT_SRC) not in sys.path:
-    sys.path.insert(0, str(PROJECT_SRC))
-
-from core.events import EventBus, EmitAndWaitContextError
-from core.executors import Pools, executors
-
-
-class EventBusSyncTests(unittest.TestCase):
-    def test_single_subscriber_none_result_is_preserved(self) -> None:
+class EventBusNotificationTests(unittest.TestCase):
+    def test_sync_response_api_is_not_exposed(self) -> None:
         bus = EventBus()
         try:
-            bus.subscribe("ping", lambda _event: None, weak=False)
-            self.assertEqual(bus.emit_and_wait("ping", timeout=0.2), [None])
+            legacy_method_name = "emit" + "_and_wait"
+            self.assertFalse(hasattr(bus, legacy_method_name))
         finally:
             bus.shutdown()
 
-    def test_multiple_subscribers_return_in_subscription_order(self) -> None:
+    def test_sync_emit_preserves_subscription_order(self) -> None:
         bus = EventBus()
+        calls: list[str] = []
         try:
-            def slow(_event):
-                time.sleep(0.05)
-                return "second"
+            bus.subscribe("ordered", lambda _event: calls.append("first"), weak=False)
+            bus.subscribe("ordered", lambda _event: calls.append("second"), weak=False)
 
-            def fast(_event):
-                return "first"
+            result = bus.emit("ordered", {"value": 1}, sync=True)
 
-            bus.subscribe("ordered", fast, weak=False)
-            bus.subscribe("ordered", slow, weak=False)
-
-            self.assertEqual(bus.emit_and_wait("ordered", timeout=0.3), ["first", "second"])
+            self.assertIsNone(result)
+            self.assertEqual(calls, ["first", "second"])
         finally:
             bus.shutdown()
 
-    def test_timed_out_subscribers_do_not_block_follow_up_calls(self) -> None:
+    def test_handler_failure_does_not_skip_remaining_subscribers(self) -> None:
         bus = EventBus()
+        calls: list[str] = []
+
+        def broken(_event) -> None:
+            calls.append("broken")
+            raise RuntimeError("boom")
+
         try:
-            def slow(_event):
-                time.sleep(0.2)
-                return "slow"
+            bus.subscribe("event", broken, weak=False)
+            bus.subscribe("event", lambda _event: calls.append("healthy"), weak=False)
 
-            bus.subscribe("slow", slow, weak=False)
-            for _ in range(30):
-                self.assertEqual(bus.emit_and_wait("slow", timeout=0.01), [])
+            bus.emit("event", sync=True)
 
-            bus.subscribe("fast", lambda _event: "ok", weak=False)
-            self.assertEqual(bus.emit_and_wait("fast", timeout=0.2), ["ok"])
+            self.assertEqual(calls, ["broken", "healthy"])
         finally:
             bus.shutdown()
 
-    def test_nested_emit_and_wait_does_not_starve_sync_workers(self) -> None:
+    def test_async_emit_delivers_without_blocking_caller(self) -> None:
         bus = EventBus()
+        started = threading.Event()
+        release = threading.Event()
+        completed = threading.Event()
+
+        def subscriber(_event) -> None:
+            started.set()
+            release.wait(1.0)
+            completed.set()
+
         try:
-            bus.subscribe("inner", lambda _event: "inner", weak=False)
+            bus.subscribe("async", subscriber, weak=False)
+            before = time.perf_counter()
+            bus.emit("async")
+            elapsed = time.perf_counter() - before
 
-            def outer(_event):
-                nested = bus.emit_and_wait("inner", timeout=0.3)
-                return nested[0] if nested else "missing"
+            self.assertLess(elapsed, 0.1)
+            self.assertTrue(started.wait(1.0))
+            self.assertFalse(completed.is_set())
+            release.set()
+            self.assertTrue(completed.wait(1.0))
+        finally:
+            release.set()
+            bus.shutdown()
 
-            for _ in range(30):
-                bus.subscribe("outer", outer, weak=False)
+    def test_ordered_queued_event_runs_subscribers_sequentially(self) -> None:
+        bus = EventBus()
+        calls: list[str] = []
+        finished = threading.Event()
 
-            result = bus.emit_and_wait("outer", timeout=1.0)
-            self.assertEqual(result, ["inner"] * 30)
+        def first(_event) -> None:
+            calls.append("first:start")
+            time.sleep(0.02)
+            calls.append("first:end")
+
+        def second(_event) -> None:
+            calls.append("second")
+            finished.set()
+
+        try:
+            bus.subscribe("create_task", first, weak=False)
+            bus.subscribe("create_task", second, weak=False)
+            bus.emit("create_task")
+
+            self.assertTrue(finished.wait(1.0))
+            self.assertEqual(calls, ["first:start", "first:end", "second"])
         finally:
             bus.shutdown()
 
-
-class EmitAndWaitGuardrailTests(unittest.TestCase):
-    """Item 6: emit_and_wait из hot-path пулов и asyncio-loop должен падать."""
-
-    def test_rejected_from_generation_pool(self) -> None:
+    def test_unsubscribe_accepts_a_fresh_bound_method_object(self) -> None:
         bus = EventBus()
+
+        class Receiver:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def on_event(self, _event) -> None:
+                self.calls += 1
+
+        receiver = Receiver()
         try:
-            bus.subscribe("x", lambda _e: "ok", weak=False)
-
-            def in_pool():
-                return bus.emit_and_wait("x", timeout=0.2)
-
-            fut = executors().submit(Pools.GENERATION, in_pool)
-            with self.assertRaises(EmitAndWaitContextError):
-                fut.result(timeout=2.0)
+            bus.subscribe("event", receiver.on_event, weak=False)
+            bus.unsubscribe("event", receiver.on_event)
+            bus.emit("event", sync=True)
+            self.assertEqual(receiver.calls, 0)
         finally:
             bus.shutdown()
 
-    def test_rejected_from_background_llm_pool(self) -> None:
+    def test_dead_weak_subscriber_is_removed(self) -> None:
         bus = EventBus()
+        calls: list[str] = []
+
+        class Receiver:
+            def on_event(self, _event) -> None:
+                calls.append("called")
+
+        receiver = Receiver()
+        bus.subscribe("event", receiver.on_event)
+        del receiver
+        gc.collect()
+
         try:
-            bus.subscribe("x", lambda _e: "ok", weak=False)
-            fut = executors().submit(
-                Pools.BACKGROUND_LLM, lambda: bus.emit_and_wait("x", timeout=0.2)
-            )
-            with self.assertRaises(EmitAndWaitContextError):
-                fut.result(timeout=2.0)
+            bus.emit("event", sync=True)
+            self.assertEqual(calls, [])
         finally:
             bus.shutdown()
 
-    def test_rejected_inside_asyncio_loop(self) -> None:
+    def test_emit_after_shutdown_is_a_noop(self) -> None:
         bus = EventBus()
-        try:
-            bus.subscribe("x", lambda _e: "ok", weak=False)
+        calls: list[str] = []
+        bus.subscribe("late", lambda _event: calls.append("called"), weak=False)
+        bus.shutdown()
 
-            async def run():
-                return bus.emit_and_wait("x", timeout=0.2)
+        bus.emit("late", sync=True)
 
-            with self.assertRaises(EmitAndWaitContextError):
-                asyncio.run(run())
-        finally:
-            bus.shutdown()
-
-    def test_allowed_from_plain_worker_thread(self) -> None:
-        bus = EventBus()
-        try:
-            bus.subscribe("x", lambda _e: "ok", weak=False)
-            # Пул IO — не hot-path, обычный воркер: вызов разрешён.
-            fut = executors().submit(
-                Pools.IO, lambda: bus.emit_and_wait("x", timeout=0.3)
-            )
-            self.assertEqual(fut.result(timeout=2.0), ["ok"])
-        finally:
-            bus.shutdown()
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

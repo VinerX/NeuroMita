@@ -63,6 +63,7 @@ class GuiStartupOrderTests(unittest.TestCase):
             registry = SimpleNamespace(
                 get=lambda _contract: object(),
                 register=lambda *_args, **_kwargs: None,
+                is_registered=lambda _contract: False,
             )
 
             scheduled_callbacks = []
@@ -181,6 +182,7 @@ class GuiStartupOrderTests(unittest.TestCase):
                     "GameLinkService",
                     "LoopService",
                     "SettingsService",
+                    "InstallableCatalogService",
                 )
             }
             pyqt = fake_module("PyQt6")
@@ -220,6 +222,10 @@ class GuiStartupOrderTests(unittest.TestCase):
                 "services.settings_service": fake_module(
                     "services.settings_service",
                     DefaultAppVarsService=lambda *_args: object(),
+                ),
+                "services.installable_catalog_service": fake_module(
+                    "services.installable_catalog_service",
+                    DefaultInstallableCatalogService=lambda *_args: object(),
                 ),
                 "ui.windows.main_window": fake_module(
                     "ui.windows.main_window",

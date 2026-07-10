@@ -55,6 +55,57 @@ class SettingsService(ABC):
         raise NotImplementedError
 
 
+class InstallableCatalogService(ABC):
+    """Lightweight catalog data available before the work backend is ready."""
+
+    @abstractmethod
+    def list_rows(
+        self,
+        *,
+        include_status: bool = False,
+        refresh: bool = False,
+        category: str | None = None,
+        status_category: str | None = None,
+        ctx: Dict[str, Any] | None = None,
+    ) -> List[Dict[str, Any]]: ...
+
+    @abstractmethod
+    def require_component(self, component_id: str, *, refresh: bool = False) -> Any: ...
+
+    @abstractmethod
+    def invalidate(self, component_id: str | None = None) -> None: ...
+
+    @abstractmethod
+    def settings_schema(self, component_id: str) -> List[Dict[str, Any]]: ...
+
+    @abstractmethod
+    def load_settings(self, component_id: str) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def save_component_settings(
+        self, component_id: str, values: Dict[str, Any]
+    ) -> Dict[str, Any]: ...
+
+
+class RuntimeFeatureService(ABC):
+    """Lifecycle optional-компонентов. Не содержит предметной логики feature."""
+
+    @abstractmethod
+    def ensure_async(self, name: str) -> Future: ...
+
+    @abstractmethod
+    def ensure(self, name: str, *, timeout: float | None = None) -> Any: ...
+
+    @abstractmethod
+    def get(self, name: str, default: Any = None) -> Any: ...
+
+    @abstractmethod
+    def is_ready(self, name: str) -> bool: ...
+
+    @abstractmethod
+    def snapshot(self) -> Dict[str, Dict[str, Any]]: ...
+
+
 class AppVarsService(ABC):
     """Флаги приложения, которые видит DSL промптов."""
 
@@ -259,7 +310,7 @@ class GenerationService(ABC):
 
 class ApiPresetService(ABC):
     """Чтение эффективных API-пресетов. На пути генерации резолвер берёт пресет
-    отсюда напрямую, а не через emit_and_wait — синхронный сбор ответов шины на
+    отсюда напрямую, а не через синхронный EventBus-запрос — синхронный сбор ответов шины на
     hot-path запрещён guardrail'ом."""
 
     @abstractmethod
@@ -274,19 +325,133 @@ class ApiPresetService(ABC):
     def current_id(self) -> Optional[int]:
         """Id текущего выбранного пресета или None."""
 
+    @abstractmethod
+    def save_custom(self, data: Dict[str, Any]) -> Optional[int]: ...
+
+    @abstractmethod
+    def delete_custom(self, preset_id: int) -> bool: ...
+
+    @abstractmethod
+    def save_order(self, order: Iterable[int]) -> bool: ...
+
+    @abstractmethod
+    def export_preset(self, preset_id: int, path: str) -> bool: ...
+
+    @abstractmethod
+    def import_preset(self, path: str) -> Optional[int]: ...
+
+    @abstractmethod
+    def save_state(self, preset_id: int, state: Dict[str, Any]) -> bool: ...
+
+    @abstractmethod
+    def load_state(self, preset_id: int) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def set_current(self, preset_id: int | None) -> bool: ...
+
 
 class TelegramService(ABC):
     """Состояние Telegram/Silero-релея. Игровой сервер (asyncio-loop) читает
-    статус напрямую, без emit_and_wait."""
+    статус напрямую, без синхронного EventBus-запроса."""
 
     @abstractmethod
     def is_silero_connected(self) -> bool:
         """Подключён ли Silero-релей озвучки."""
 
 
+class ModelStateService(ABC):
+    @abstractmethod
+    def debug_info(self, character_id: str | None = None) -> str: ...
+
+    @abstractmethod
+    def token_stats(self) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def schedule_g4f_update(self, version: str = "latest") -> bool: ...
+
+
+class CaptureService(ABC):
+    @abstractmethod
+    def capture_screen(self, limit: int = 1) -> List[Any]: ...
+
+    @abstractmethod
+    def camera_frames(self, limit: int = 1) -> List[Any]: ...
+
+    @abstractmethod
+    def screen_capture_active(self) -> bool: ...
+
+    @abstractmethod
+    def camera_capture_active(self) -> bool: ...
+
+
+class AudioStateService(ABC):
+    @abstractmethod
+    def is_waiting_answer(self) -> bool: ...
+
+
+class LocalVoiceService(ABC):
+    @abstractmethod
+    def model_configs(self) -> List[Dict[str, Any]]: ...
+
+    @abstractmethod
+    def is_installed(self, model_id: str) -> bool: ...
+
+    @abstractmethod
+    def check_initialized(self, model_id: str, *, strict: bool = False) -> bool: ...
+
+    @abstractmethod
+    def select_model(self, model_id: str) -> bool: ...
+
+    @abstractmethod
+    def triton_status(self, *, refresh: bool = False) -> Dict[str, Any]: ...
+
+
+class VoiceModelService(ABC):
+    @abstractmethod
+    def model_catalog_snapshot(self) -> List[Dict[str, Any]]: ...
+
+    @abstractmethod
+    def installed_models_snapshot(self) -> set[str]: ...
+
+    @abstractmethod
+    def dependencies_status(self) -> Dict[str, Any]: ...
+
+
+class SpeechService(ABC):
+    @abstractmethod
+    def recognizer_settings_schema(self, engine: str) -> List[Dict[str, Any]]: ...
+
+    @abstractmethod
+    def recognizer_settings(self, engine: str) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def mic_active(self) -> bool: ...
+
+    @abstractmethod
+    def asr_models_glossary_async(
+        self,
+        callback: Callable[[List[Dict[str, Any]], BaseException | None], None],
+        *,
+        refresh: bool = False,
+    ) -> None: ...
+
+
+class InstallService(ABC):
+    @abstractmethod
+    def run_blocking(self, payload: Dict[str, Any]) -> bool: ...
+
+
+class GuiInteractionService(ABC):
+    @abstractmethod
+    def native_window_id(self) -> int | None: ...
+
+    @abstractmethod
+    def confirm(self, kind: str, payload: Dict[str, Any]) -> bool: ...
+
+
 class TaskService(ABC):
     """Задачи диалога/idle игрового сервера. Обработчики TCP-действий живут в
-    asyncio-loop сервера, где emit_and_wait запрещён (блокирует весь loop) —
+    asyncio-loop сервера, где синхронный EventBus-запрос запрещён (блокирует весь loop) —
     они зовут это напрямую. Операции быстрые, в памяти."""
 
     @abstractmethod
@@ -311,7 +476,7 @@ class TaskService(ABC):
 class AIEngineService(ABC):
     """Доступ к оркестратору AI-engine (подпроцессы tts/asr/rag/beats).
     rag_client берёт движок отсюда, чтобы hot-path эмбеддинг не звал
-    emit_and_wait('ai_get_engine') из пула генерации."""
+    синхронный EventBus-запрос 'ai_get_engine' из пула генерации."""
 
     @abstractmethod
     def get_engine(self) -> Optional[Any]:
@@ -329,10 +494,22 @@ class EmbeddingPresetService(ABC):
     def list_meta(self) -> Dict[str, Any]:
         """Lightweight metadata for built-in and custom presets."""
 
+    @abstractmethod
+    def save(self, data: Dict[str, Any]) -> Any: ...
+
+    @abstractmethod
+    def delete(self, preset_id: Any) -> bool: ...
+
+    @abstractmethod
+    def rename(self, preset_id: Any, name: str) -> bool: ...
+
+    @abstractmethod
+    def reorder(self, order: Iterable[Any]) -> bool: ...
+
 
 class EmbeddingService(ABC):
     """Локальные эмбеддинги RAG. Реальный бэкенд живёт в AI-engine (service='rag');
-    контроллер — мост к нему. RAG зовёт это напрямую вместо emit_and_wait, чтобы
+    контроллер — мост к нему. RAG зовёт это напрямую вместо синхронного EventBus-запроса, чтобы
     hot-path эмбеддинг запроса не падал guardrail'ом в пуле генерации."""
 
     @abstractmethod
@@ -364,3 +541,12 @@ class ProtocolBuilderService(ABC):
         headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Возвращает {"url": str, "headers": dict, "safe_url": str}."""
+
+    @abstractmethod
+    def list_protocols(self) -> List[Dict[str, Any]]: ...
+
+    @abstractmethod
+    def get_protocol(self, protocol_id: str) -> Optional[Dict[str, Any]]: ...
+
+    @abstractmethod
+    def list_transforms(self) -> List[Dict[str, Any]]: ...

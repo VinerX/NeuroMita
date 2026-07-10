@@ -251,7 +251,7 @@ class TelegramBotHandler:
                     logger.info(f"Ошибка при удалении файла {sound_absolute_path}: {remove_error}")
 
                 self.event_bus.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, absolute_wav_path)
-                # emit, а не emit_and_wait: подписчиков у SET_ID_SOUND нет, ответ
+                # emit, а не sync EventBus RPC: подписчиков у SET_ID_SOUND нет, ответ
                 # всё равно отбрасывался, а синхронный сбор внутри telegram
                 # asyncio-loop блокирует loop и падает guardrail'ом.
                 self.event_bus.emit(Events.Server.SET_ID_SOUND, {'id': message_id})

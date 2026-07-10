@@ -23,8 +23,8 @@ from PyQt6.QtWidgets import (
 )
 
 from core.events import Events
-from core.services import use
-from services.contracts import CharacterRegistry, HistoryService
+from core.services import services, use
+from services.contracts import ApiPresetService, CharacterRegistry, HistoryService, ModelStateService
 from main_logger import logger
 from ui.async_bus import run_async
 from ui.chat.message_widget import AVATAR_MAP, _get_avatar_dir
@@ -581,17 +581,8 @@ class SandboxPage(QWidget):
             combo.blockSignals(False)
 
         def worker():
-            try:
-                result = self.gui.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-                meta = result[0] if result else {}
-            except Exception:
-                meta = {}
-            try:
-                current_res = self.gui.event_bus.emit_and_wait(Events.ApiPresets.GET_CURRENT_PRESET_ID, timeout=0.5)
-                current_id = current_res[0] if current_res else None
-            except Exception:
-                current_id = None
-            return meta, current_id
+            service = services().get_optional(ApiPresetService)
+            return (service.list_meta(), service.current_id()) if service is not None else ({}, None)
 
         def apply(payload):
             if ticket != self._activation_ticket:
@@ -636,11 +627,8 @@ class SandboxPage(QWidget):
         if combo is None:
             return
 
-        try:
-            result = self.gui.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-            meta = result[0] if result else {}
-        except Exception:
-            meta = {}
+        service = services().get_optional(ApiPresetService)
+        meta = service.list_meta() if service is not None else {}
 
         customs = list((meta or {}).get("custom", []))
 
@@ -664,11 +652,7 @@ class SandboxPage(QWidget):
 
             combo.add_tr_item("Настроить…", "Configure…", value=_MODEL_CONFIGURE_SENTINEL)
 
-            try:
-                current_res = self.gui.event_bus.emit_and_wait(Events.ApiPresets.GET_CURRENT_PRESET_ID, timeout=0.5)
-                current_id = current_res[0] if current_res else None
-            except Exception:
-                current_id = None
+            current_id = service.current_id() if service is not None else None
 
             if current_id is not None:
                 for index in range(combo.count()):
@@ -690,7 +674,7 @@ class SandboxPage(QWidget):
         if data is None:
             return
         try:
-            self.gui.event_bus.emit(Events.ApiPresets.SET_CURRENT_PRESET_ID, {"id": int(data)})
+            use(ApiPresetService).set_current(int(data))
         except Exception as exc:
             logger.error(f"Failed to switch preset: {exc}")
         self._clear_stale_error_status()
@@ -708,10 +692,9 @@ class SandboxPage(QWidget):
 
     def _current_preset_name(self) -> str:
         try:
-            cur = self.gui.event_bus.emit_and_wait(Events.ApiPresets.GET_CURRENT_PRESET_ID, timeout=0.5)
-            cur_id = cur[0] if cur else None
-            lst = self.gui.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=0.5)
-            meta = lst[0] if lst else {}
+            service = use(ApiPresetService)
+            cur_id = service.current_id()
+            meta = service.list_meta()
             for preset in (meta or {}).get("custom", []) or []:
                 pid = getattr(preset, "id", None)
                 if pid is not None and cur_id is not None and int(pid) == int(cur_id):
@@ -1821,11 +1804,8 @@ class SandboxPage(QWidget):
             # CALCULATE_COST: раньше это были ДВА полных прохода tiktoken (~38мс
             # каждый) прямо в GUI-потоке — заметный хитч песочницы после каждого
             # сообщения. Теперь один проход и вне GUI-потока.
-            try:
-                res = self.gui.event_bus.emit_and_wait(Events.Model.GET_TOKEN_STATS, timeout=1.0)
-                stats = res[0] if res and isinstance(res[0], dict) else {}
-            except Exception:
-                stats = {}
+            model = services().get_optional(ModelStateService)
+            stats = model.token_stats() if model is not None else {}
             try:
                 max_tokens = int(self.gui._get_setting("MAX_MODEL_TOKENS", 32000) or 32000)
             except Exception:

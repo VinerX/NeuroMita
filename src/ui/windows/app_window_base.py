@@ -29,10 +29,19 @@ from PyQt6.QtWidgets import (
 
 import ui.gui_templates as gui_templates
 from core.events import Events, get_event_bus
-from core.services import use
+from core.services import services, use
 from localization.live import tr_set
 from main_logger import logger
-from services.contracts import CharacterRegistry, GameLinkService, SettingsService
+from services.contracts import (
+    CaptureService,
+    CharacterRegistry,
+    GameLinkService,
+    LocalVoiceService,
+    ModelStateService,
+    SettingsService,
+    SpeechService,
+    TelegramService,
+)
 from ui.async_bus import run_async
 from ui.chat import message_renderer
 from ui.chat.chat_delegate import ChatMessageDelegate
@@ -750,8 +759,8 @@ class AppWindowBase(QMainWindow):
         ticket = self._debug_refresh_ticket
 
         def worker():
-            debug_info_result = self.event_bus.emit_and_wait(Events.Model.GET_DEBUG_INFO, timeout=0.5)
-            return debug_info_result[0] if debug_info_result else "Debug info not available"
+            model = services().get_optional(ModelStateService)
+            return model.debug_info() if model is not None else "Debug info not available"
 
         def apply(debug_info):
             if ticket != self._debug_refresh_ticket:
@@ -787,8 +796,8 @@ class AppWindowBase(QMainWindow):
             ticket = self._token_refresh_ticket
 
             def worker():
-                stats_res = self.event_bus.emit_and_wait(Events.Model.GET_TOKEN_STATS, timeout=0.5)
-                stats = stats_res[0] if stats_res and isinstance(stats_res[0], dict) else {}
+                model = services().get_optional(ModelStateService)
+                stats = model.token_stats() if model is not None else {}
                 return {
                     "stats": stats,
                     "max_model_tokens": int(self._get_setting("MAX_MODEL_TOKENS", 32000) or 32000),
@@ -960,18 +969,20 @@ class AppWindowBase(QMainWindow):
         if auto_screen:
             history_limit = int(self._get_setting("SCREEN_CAPTURE_HISTORY_LIMIT", 1))
             # Запас времени на one-shot захват экрана (grab+resize+JPEG).
-            frames = self.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {'limit': history_limit}, timeout=5.0)
-            if frames and frames[0]:
-                screen_frames.extend(frames[0])
+            capture = services().get_optional(CaptureService)
+            frames = capture.capture_screen(history_limit) if capture is not None else []
+            if frames:
+                screen_frames.extend(frames)
             else:
                 logger.info("Авто-прикрепление кадров включено, но кадры не готовы или история пуста.")
 
         if auto_camera:
             history_limit = int(self._get_setting("CAMERA_CAPTURE_HISTORY_LIMIT", 1))
-            frames = self.event_bus.emit_and_wait(Events.Capture.GET_CAMERA_FRAMES, {'limit': history_limit}, timeout=2.0)
-            if frames and frames[0]:
-                camera_frames.extend(frames[0])
-                logger.info(f"Добавлено {len(frames[0])} кадров с камеры для отправки.")
+            capture = services().get_optional(CaptureService)
+            frames = capture.camera_frames(history_limit) if capture is not None else []
+            if frames:
+                camera_frames.extend(frames)
+                logger.info(f"Добавлено {len(frames)} кадров с камеры для отправки.")
             else:
                 logger.info("Захват с камеры включен, но кадры не готовы или история пуста.")
 
@@ -1558,27 +1569,27 @@ class AppWindowBase(QMainWindow):
         def worker():
             from managers.settings_manager import SettingsManager
 
-            def first(event_name, data=None, timeout=0.5):
-                try:
-                    result = self.event_bus.emit_and_wait(event_name, data, timeout=timeout)
-                    return result[0] if result else None
-                except Exception:
-                    return None
-
             use_voice = bool(SettingsManager.get("USE_VOICEOVER", False))
             method = str(SettingsManager.get("VOICEOVER_METHOD", "Local") or "Local")
             model_id = str(SettingsManager.get("NM_CURRENT_VOICEOVER", "") or "")
-            voice_initialized = (
-                bool(first(Events.Audio.CHECK_MODEL_INITIALIZED, {'model_id': model_id}, timeout=0.5))
-                if use_voice and method == "Local" and model_id else False
+            local_voice = services().get_optional(LocalVoiceService)
+            telegram = services().get_optional(TelegramService)
+            speech = services().get_optional(SpeechService)
+            capture = services().get_optional(CaptureService)
+            voice_initialized = bool(
+                local_voice is not None
+                and use_voice
+                and method == "Local"
+                and model_id
+                and local_voice.check_initialized(model_id)
             )
 
             return {
                 "game_connected": bool(use(GameLinkService).is_connected()),
-                "silero_connected": bool(first(Events.Telegram.GET_SILERO_STATUS)),
-                "mic_active": bool(first(Events.Speech.GET_MIC_STATUS)),
-                "screen_capture_active": bool(first(Events.Capture.GET_SCREEN_CAPTURE_STATUS)),
-                "camera_capture_active": bool(first(Events.Capture.GET_CAMERA_CAPTURE_STATUS)),
+                "silero_connected": bool(telegram and telegram.is_silero_connected()),
+                "mic_active": bool(speech and speech.mic_active()),
+                "screen_capture_active": bool(capture and capture.screen_capture_active()),
+                "camera_capture_active": bool(capture and capture.camera_capture_active()),
                 "rag_enabled": bool(SettingsManager.get("RAG_ENABLED", False)),
                 "use_voice": use_voice,
                 "method": method,
@@ -1639,8 +1650,9 @@ class AppWindowBase(QMainWindow):
                 _("Не найден элемент интерфейса для ввода версии.", "UI element for version input not found."))
             return
 
-        success = self.event_bus.emit_and_wait(Events.Model.SCHEDULE_G4F_UPDATE, {'version': target_version}, timeout=1.0)
-        if success and success[0]:
+        model = services().get_optional(ModelStateService)
+        success = bool(model and model.schedule_g4f_update(target_version))
+        if success:
             QMessageBox.information(self, _("Запланировано", "Scheduled"),
                 _("Версия g4f '{version}' будет установлена/обновлена при следующем запуске программы.",
                   "g4f version '{version}' will be installed/updated the next time the program starts.").format(
@@ -1838,12 +1850,9 @@ class AppWindowBase(QMainWindow):
             )
             return
 
-        is_installed = self.event_bus.emit_and_wait(
-            Events.Audio.CHECK_MODEL_INSTALLED,
-            {'model_id': model_id},
-            timeout=0.5
-        )
-        if not (is_installed and is_installed[0]):
+        local_voice = services().get_optional(LocalVoiceService)
+        is_installed = bool(local_voice and local_voice.is_installed(model_id))
+        if not is_installed:
             self.set_settings_icon_indicator(
                 "voice",
                 "red",
@@ -1851,12 +1860,8 @@ class AppWindowBase(QMainWindow):
             )
             return
 
-        is_initialized = self.event_bus.emit_and_wait(
-            Events.Audio.CHECK_MODEL_INITIALIZED,
-            {'model_id': model_id},
-            timeout=0.5
-        )
-        if not (is_initialized and is_initialized[0]):
+        is_initialized = bool(local_voice and local_voice.check_initialized(model_id))
+        if not is_initialized:
             self.set_settings_icon_indicator(
                 "voice",
                 "red",

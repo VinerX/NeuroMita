@@ -416,7 +416,7 @@ class SpeechRecognition:
 
     @staticmethod
     def _get_ai_engine():
-        # Через AIEngineService, а не emit_and_wait: ASR-цикл может крутиться в
+        # Через AIEngineService, а не sync EventBus RPC: ASR-цикл может крутиться в
         # asyncio-loop, где синхронный сбор ответов шины запрещён guardrail'ом.
         try:
             from core.services import use

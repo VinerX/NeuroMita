@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QProgressBar,
-    QApplication, QWidget, QPushButton, QFileDialog
+    QApplication, QWidget, QPushButton, QFileDialog, QTabWidget
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QTime
 from PyQt6.QtGui import QFont, QTextCursor, QGuiApplication
@@ -12,6 +12,8 @@ import json
 import shutil
 from html import escape as html_escape
 from main_logger import logger
+from core.services import services
+from services.contracts import LocalVoiceService
 from collections import deque
 
 # Широкий регэксп: чистит и CSI-последовательности (\x1b[...),
@@ -128,6 +130,8 @@ class VoiceInstallationWindow(QDialog):
         self._display_lines: deque[str] = deque()
         self._max_display_blocks: int = 200
         self._snapshot_lines: list[str] = []
+        self._overview_lines: deque[str] = deque(maxlen=16)
+        self._last_overview_line = ""
 
         self._start_time = QTime.currentTime()
         self._elapsed_timer = QTimer(self)
@@ -205,10 +209,37 @@ class VoiceInstallationWindow(QDialog):
         self._disk_timer.start()
         self._update_disk_free()
 
+        self.install_tabs = QTabWidget()
+        self.install_tabs.setDocumentMode(True)
+
+        overview_page = QWidget()
+        overview_layout = QVBoxLayout(overview_page)
+        overview_layout.setContentsMargins(0, 0, 0, 0)
+        self.overview_text = QTextEdit()
+        self.overview_text.setReadOnly(True)
+        self.overview_text.setFont(QFont("Segoe UI", 9))
+        overview_layout.addWidget(self.overview_text, 1)
+        self.install_tabs.addTab(overview_page, _("Ход установки", "Installation"))
+
+        raw_page = QWidget()
+        raw_layout = QVBoxLayout(raw_page)
+        raw_layout.setContentsMargins(0, 0, 0, 0)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setFont(QFont("Consolas", 9))
-        layout.addWidget(self.log_text, 1)
+        raw_layout.addWidget(self.log_text, 1)
+        self.install_tabs.addTab(raw_page, _("Raw log", "Raw log"))
+        self.install_tabs.currentChanged.connect(self._on_install_tab_changed)
+        layout.addWidget(self.install_tabs, 1)
+
+        # pip/uv may emit hundreds of lines in a short burst. Rebuilding the
+        # QTextEdit HTML for every line made the installer UI itself expensive.
+        # Keep the complete raw stream in memory and repaint it in short batches.
+        self._raw_flush_timer = QTimer(self)
+        self._raw_flush_timer.setSingleShot(True)
+        self._raw_flush_timer.setInterval(80)
+        self._raw_flush_timer.timeout.connect(self._flush_raw_log)
+        self._append_overview_line(initial_status or _("Подготовка...", "Preparing..."))
 
         hint_text = reopen_hint_text or _(
             "Это окно можно закрыть — установка продолжится в фоне. "
@@ -364,6 +395,8 @@ class VoiceInstallationWindow(QDialog):
             issues.append(f"⚠ {warnings}")
         self.issues_label.setStyleSheet("color: #ff5555;" if errors else "color: #ffb86c;")
         self.issues_label.setText("   " + "  ".join(issues) if issues else "")
+        if errors:
+            self._show_raw_log()
 
         stage = str(stats.get("stage") or "")
         badge = {
@@ -411,6 +444,9 @@ class VoiceInstallationWindow(QDialog):
     def _on_status_update(self, message: str):
         message = strip_ansi(message)
         self.status_label.setText(message)
+        self._append_overview_line(message)
+        if self._is_error_line(message):
+            self._show_raw_log()
         # Вынимаем ETA из сообщения, если есть
         m = re.search(r'\(\s*ETA\s+([^)]+)\)', message, flags=re.IGNORECASE)
         if m:
@@ -456,14 +492,74 @@ class VoiceInstallationWindow(QDialog):
         else:
             scrollbar.setValue(min(old_value, scrollbar.maximum()))
 
+    def _render_overview(self):
+        activity_html = "".join(
+            f"<div style='margin:0 0 6px 0;'>{self._colorize_line(line)}</div>"
+            for line in self._overview_lines
+        )
+        snapshot_html = ""
+        if self._snapshot_lines:
+            snapshot_html = (
+                f"<div style='margin:10px 0 0 0; padding:8px; background:{self._snapshot_bg}; "
+                f"border:1px solid {self._snapshot_border}; border-radius:7px;'>"
+                "<div style='font-weight:600; margin-bottom:5px;'>"
+                + html_escape(_("Текущие операции", "Current operations"))
+                + "</div><pre style='font-family:Consolas,monospace; font-size:9pt; margin:0; "
+                f"color:{self._snapshot_fg};'>"
+                + html_escape("\n".join(self._snapshot_lines))
+                + "</pre></div>"
+            )
+        self.overview_text.setHtml(activity_html + snapshot_html)
+        self.overview_text.moveCursor(QTextCursor.MoveOperation.End)
+
+    def _append_overview_line(self, text: str):
+        clean = strip_ansi(str(text or "")).strip()
+        if not clean or clean == self._last_overview_line:
+            return
+        self._last_overview_line = clean
+        self._overview_lines.append(clean)
+        self._render_overview()
+
+    @staticmethod
+    def _is_error_line(text: str) -> bool:
+        low = str(text or "").lower()
+        return any(token in low for token in (
+            "error", "ошибка", "failed", "traceback", "exception", "critical",
+            "no solution found", "не пройдена",
+        ))
+
+    def _show_raw_log(self):
+        self.install_tabs.setCurrentIndex(1)
+        self._flush_raw_log()
+
+    def _on_install_tab_changed(self, index: int):
+        if index == 1:
+            self._flush_raw_log()
+
+    def _schedule_raw_flush(self, *, immediate: bool = False):
+        if immediate:
+            self._raw_flush_timer.stop()
+            self._flush_raw_log()
+            return
+        if not self._raw_flush_timer.isActive():
+            self._raw_flush_timer.start()
+
+    def _flush_raw_log(self):
+        # Avoid expensive hidden QTextEdit rebuilds while the visual tab is
+        # active. The full log remains complete and is rendered on demand.
+        if self.install_tabs.currentIndex() != 1:
+            return
+        self._render_display_lines()
+
     def _render_snapshot(self, lines: list[str]):
         self._snapshot_lines = list(lines)
-        self._render_display_lines()
+        self._render_overview()
 
     def _append_log_chunk(self, text: str):
         if not text:
             return
         # Разбиваем на строки, добавляем в full, поддерживаем окно последних строк
+        contains_error = False
         for ln in text.splitlines():
             plain = strip_ansi(ln)
             if not plain.strip():
@@ -473,7 +569,17 @@ class VoiceInstallationWindow(QDialog):
             self._display_lines.append(colored)
             while len(self._display_lines) > self._max_display_blocks:
                 self._display_lines.popleft()
-        self._render_display_lines()
+            if self._is_error_line(plain):
+                contains_error = True
+            elif any(marker in plain.lower() for marker in (
+                "installing:", "resolved ", "prepared ", "installed ",
+                "successfully installed", "download", "using cached",
+            )):
+                self._append_overview_line(plain)
+        if contains_error:
+            self._show_raw_log()
+        else:
+            self._schedule_raw_flush()
 
     def _rebuild_display_from_full(self):
         # Берём последние N строк из полного лога и пересобираем окно
@@ -526,7 +632,7 @@ class VoiceInstallationWindow(QDialog):
     def _clear_log_screen_only(self):
         # Очистка только видимой области; полный лог остаётся для копирования/сохранения
         self._display_lines.clear()
-        self._render_display_lines()
+        self.log_text.clear()
 
     def finalize(self):
         """Mark the task as finished so the window may actually close."""
@@ -1019,12 +1125,9 @@ class TritonDependenciesDialog(QDialog):
             self.warning_label.setVisible(not msvc_found)
     
     def _on_refresh_status(self):
-        from core.events import get_event_bus, Events
-        event_bus = get_event_bus()
-        
-        results = event_bus.emit_and_wait(Events.Audio.REFRESH_TRITON_STATUS, timeout=5.0)
-        if results and results[0]:
-            self.dependencies_status = results[0]
+        local_voice = services().get_optional(LocalVoiceService)
+        if local_voice is not None:
+            self.dependencies_status = local_voice.triton_status(refresh=True)
             self._update_status_display()
     
     def _on_docs_clicked(self):

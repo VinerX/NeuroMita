@@ -6,7 +6,8 @@ import threading
 from typing import Optional
 
 from main_logger import logger
-from core.events import get_event_bus, Events
+from core.services import use
+from services.contracts import InstallService, RuntimeFeatureService
 from core.install_requirements import is_pip_spec_satisfied
 from core.install_types import InstallPlan, InstallAction
 
@@ -69,8 +70,6 @@ class G4FProvider(OpenAICompatibleProvider):
         except Exception:
             pass
 
-        eb = get_event_bus()
-
         runner = self._build_install_runner(spec)
 
         payload = {
@@ -82,8 +81,8 @@ class G4FProvider(OpenAICompatibleProvider):
             "runner": runner,
         }
 
-        res = eb.emit_and_wait(Events.Install.RUN_BLOCKING, payload, timeout=float(payload["timeout_sec"]) + 5.0)
-        ok = bool(res and res[0] is True)
+        use(RuntimeFeatureService).ensure("install", timeout=30.0)
+        ok = bool(use(InstallService).run_blocking(payload))
         if not ok:
             logger.error(f"g4f install failed for spec={spec}")
             return False

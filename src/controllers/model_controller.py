@@ -21,6 +21,7 @@ from services.contracts import (
     ChatGenerationRequest,
     ChatGenerationResult,
     GenerationService,
+    ModelStateService,
     PromptBuildRequest,
     PromptBuilderService,
     UtilityGenerationRequest,
@@ -88,7 +89,7 @@ def _strip_graph_tag(text: str) -> tuple[str, Optional[str]]:
     return clean, json_str
 
 
-class ModelController(GenerationService):
+class ModelController(GenerationService, ModelStateService):
     """
     ModelController:
     - реализует GenerationService (generate_chat / generate_utility)
@@ -733,6 +734,25 @@ class ModelController(GenerationService):
                     })
         finally:
             self.loading_more_history = False
+
+    def debug_info(self, character_id: str | None = None) -> str:
+        ch = self._get_character_ref(character_id) if character_id else self._get_current_character_ref()
+        if ch and hasattr(ch, "current_variables_string"):
+            return ch.current_variables_string()
+        return "Debug info not available"
+
+    def token_stats(self) -> dict[str, Any]:
+        return self._build_token_stats()
+
+    def schedule_g4f_update(self, version: str = "latest") -> bool:
+        try:
+            self._settings_service.update("G4F_TARGET_VERSION", str(version or "latest"))
+            self._settings_service.update("G4F_UPDATE_PENDING", True)
+            self._settings_service.update("G4F_VERSION", str(version or "latest"))
+            return True
+        except Exception:
+            logger.error("Не удалось запланировать обновление g4f", exc_info=True)
+            return False
 
     def _on_get_debug_info(self, event: Event):
         data = event.data or {}

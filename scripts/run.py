@@ -16,6 +16,7 @@ TTS) не ставит — тяжёлые бэкенды игра доустан
 """
 import hashlib
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -33,6 +34,10 @@ PYTHON = Path(sys.executable)  # встроенный питон игры (libs\
 REQ_FILE = ROOT / "requirements.txt"
 HASH_FILE = ROOT / ".req_hash"
 PYZ = ROOT / "NeuroMita.pyz"
+PYTHON_SITE_PACKAGES = PYTHON.parent / "Lib" / "site-packages"
+BOOTSTRAP_DIR = ROOT / ".bootstrap"
+UV_TARGET = BOOTSTRAP_DIR / "uv"
+UV_EXE = UV_TARGET / "bin" / ("uv.exe" if os.name == "nt" else "uv")
 
 # uv по дефолту жёстко линкует файлы; на разных дисках это падает — копируем.
 os.environ.setdefault("UV_LINK_MODE", "copy")
@@ -42,42 +47,80 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def run(cmd: list) -> int:
+def _base_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONNOUSERSITE"] = "1"
+    env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    env["PIP_CONFIG_FILE"] = os.devnull
+    return env
+
+
+def run(cmd: list, *, env: dict[str, str] | None = None) -> int:
     log("\n>>> " + " ".join(str(c) for c in cmd))
-    return subprocess.run(cmd, cwd=str(ROOT)).returncode
+    return subprocess.run(cmd, cwd=str(ROOT), env=env or _base_env()).returncode
 
 
-def run_quiet(cmd: list) -> bool:
-    return subprocess.run(
-        cmd, cwd=str(ROOT),
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    ).returncode == 0
+def run_quiet(
+    cmd: list,
+    *,
+    env: dict[str, str] | None = None,
+    timeout: float = 8.0,
+) -> bool:
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env or _base_env(),
+            timeout=max(0.1, float(timeout)),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
 def ensure_pip() -> None:
-    if run_quiet([str(PYTHON), "-m", "pip", "--version"]):
+    if run_quiet([str(PYTHON), "-m", "pip", "--version"], timeout=5.0):
         return
     log("pip не найден во встроенном питоне, включаю ensurepip...")
     run([str(PYTHON), "-m", "ensurepip", "--upgrade"])
 
 
 def ensure_uv() -> bool:
-    if run_quiet([str(PYTHON), "-m", "uv", "--version"]):
+    if UV_EXE.is_file() and run_quiet([str(UV_EXE), "--version"], timeout=3.0):
         return True
 
     ensure_pip()
-    uv_exe = PYTHON.parent / "Scripts" / ("uv.exe" if os.name == "nt" else "uv")
-    if uv_exe.exists():
-        log(
-            f"Найден {uv_exe.name}, но модуль uv недоступен. "
-            "Чтобы не упереться в блокировку uv.exe на Windows, пропускаю автоустановку uv и использую pip."
-        )
+    if UV_TARGET.exists():
+        try:
+            shutil.rmtree(UV_TARGET)
+        except OSError as exc:
+            log(f"Не удалось очистить повреждённый приватный uv: {exc}. Использую pip.")
+            return False
+
+    UV_TARGET.mkdir(parents=True, exist_ok=True)
+    log(f"uv не найден, устанавливаю изолированно в: {UV_TARGET}")
+    install_cmd = [
+        str(PYTHON),
+        "-m",
+        "pip",
+        "--isolated",
+        "install",
+        "--target",
+        str(UV_TARGET),
+        "--upgrade",
+        "--force-reinstall",
+        "--no-warn-script-location",
+        "uv",
+    ]
+    if run(install_cmd) != 0:
+        log("Не удалось установить приватный uv. Использую встроенный pip.")
         return False
-    log("uv не найден во встроенном Python, устанавливаю его через python -m pip...")
-    if run([str(PYTHON), "-m", "pip", "install", "uv"]) != 0:
-        log("Не удалось установить uv во встроенный Python.")
+    if not UV_EXE.is_file() or not run_quiet([str(UV_EXE), "--version"], timeout=3.0):
+        log("Приватный uv установился некорректно. Использую встроенный pip.")
         return False
-    return run_quiet([str(PYTHON), "-m", "uv", "--version"])
+    return True
 
 
 def file_hash(path: Path) -> str:
@@ -98,13 +141,18 @@ def save_hash() -> None:
 
 
 def install_requirements() -> bool:
-    """Ставит зависимости во встроенный питон. Сначала uv, при неудаче — pip."""
-    # 1. Предпочитаем встроенный uv.exe с явным таргетом на наш питон —
-    #    без --python uv ищет venv/системный питон и падает с ошибкой про venv.
+    """Ставит зависимости в site-packages именно встроенного Python."""
+    PYTHON_SITE_PACKAGES.mkdir(parents=True, exist_ok=True)
+    log(f"Python: {PYTHON}")
+    log(f"Зависимости: {PYTHON_SITE_PACKAGES}")
+    log(f"Приватный uv: {UV_TARGET}")
+
     if ensure_uv():
         code = run([
-            str(PYTHON), "-m", "uv", "pip", "install",
+            str(UV_EXE), "pip", "install",
             "-r", str(REQ_FILE),
+            "--python", str(PYTHON),
+            "--target", str(PYTHON_SITE_PACKAGES),
             "--no-cache-dir",
         ])
         if code == 0:
@@ -114,8 +162,10 @@ def install_requirements() -> bool:
     # 2. Запасной путь — pip встроенного питона (он точно есть в нашей сборке).
     ensure_pip()
     code = run([
-        str(PYTHON), "-m", "pip", "install",
+        str(PYTHON), "-m", "pip", "--isolated", "install",
         "-r", str(REQ_FILE),
+        "--target", str(PYTHON_SITE_PACKAGES),
+        "--upgrade",
         "--no-cache-dir",
     ])
     return code == 0
@@ -124,9 +174,14 @@ def install_requirements() -> bool:
 def pywin32_postinstall() -> None:
     """pywin32 нужно «прописать» после установки — иначе часть DLL не находится.
     Делаем по возможности, ошибки не критичны."""
-    script = ROOT / "libs" / "python" / "Scripts" / "pywin32_postinstall.py"
-    if script.exists():
-        run_quiet([str(PYTHON), str(script), "-install"])
+    candidates = (
+        ROOT / "libs" / "python" / "Scripts" / "pywin32_postinstall.py",
+        PYTHON_SITE_PACKAGES / "pywin32_postinstall.py",
+    )
+    for script in candidates:
+        if script.exists():
+            run_quiet([str(PYTHON), str(script), "-install"], timeout=20.0)
+            break
 
 
 def main() -> None:

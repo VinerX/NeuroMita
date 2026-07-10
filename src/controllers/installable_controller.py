@@ -6,6 +6,9 @@ from core.backends import BackendKind
 from main_logger import logger
 
 from core.events import Event, Events, get_event_bus
+from core.services import services
+from services.contracts import InstallableCatalogService, SettingsService
+from services.installable_catalog_service import DefaultInstallableCatalogService
 from core.install_types import InstallPlan
 from core.installables import (
     ComponentCategory,
@@ -14,14 +17,20 @@ from core.installables import (
     ComponentStatusCode,
     make_component_id,
 )
-from installables import get_installable_registry, refresh_installable_registry
 
 
 class InstallableController:
-    def __init__(self) -> None:
+    def __init__(self, catalog: InstallableCatalogService | None = None) -> None:
         self.event_bus = get_event_bus()
-        self._list_cache_plain: list[dict[str, Any]] | None = None
-        self._list_cache_with_status: list[dict[str, Any]] | None = None
+        if catalog is None:
+            registry = services()
+            if registry.is_registered(InstallableCatalogService):
+                catalog = registry.get(InstallableCatalogService)
+            else:
+                settings = registry.get(SettingsService) if registry.is_registered(SettingsService) else None
+                catalog = DefaultInstallableCatalogService(settings)
+                registry.register(InstallableCatalogService, catalog)
+        self.catalog = catalog
         self._subscribe_to_events()
 
     def _subscribe_to_events(self) -> None:
@@ -39,9 +48,8 @@ class InstallableController:
         eb.subscribe(Events.Install.TASK_FINISHED, self._on_install_task_mutated, weak=False)
         eb.subscribe(Events.Install.TASK_FAILED, self._on_install_task_mutated, weak=False)
 
-    def _invalidate_list_cache(self) -> None:
-        self._list_cache_plain = None
-        self._list_cache_with_status = None
+    def _invalidate_list_cache(self, component_id: str | None = None) -> None:
+        self.catalog.invalidate(component_id)
 
     def _is_installable_task(self, data: dict[str, Any]) -> bool:
         if not isinstance(data, dict):
@@ -53,7 +61,9 @@ class InstallableController:
     def _on_install_task_mutated(self, event: Event) -> None:
         data = event.data if isinstance(event.data, dict) else {}
         if self._is_installable_task(data):
-            self._invalidate_list_cache()
+            meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+            component_id = str(data.get("component_id") or meta.get("component_id") or "").strip()
+            self._invalidate_list_cache(component_id or None)
 
     def _component_id(self, data: dict[str, Any]) -> str:
         raw = str(data.get("component_id") or data.get("id") or "").strip()
@@ -66,130 +76,32 @@ class InstallableController:
         raise ValueError("Installable payload requires component_id or category+item_id")
 
     def _get_component(self, data: dict[str, Any]):
-        registry = refresh_installable_registry() if data.get("refresh") else get_installable_registry()
-        return registry.require(self._component_id(data))
-
-    def _fallback_category(self, component) -> ComponentCategory:
-        raw = getattr(component, "category", ComponentCategory.DEPENDENCY)
-        if isinstance(raw, ComponentCategory):
-            return raw
-        try:
-            return ComponentCategory(str(raw or "").strip().lower())
-        except Exception:
-            return ComponentCategory.DEPENDENCY
-
-    def _fallback_metadata(self, component, exc: Exception) -> ComponentMetadata:
-        category = self._fallback_category(component)
-        item_id = str(getattr(component, "item_id", "") or getattr(component, "id", "") or "unknown").strip() or "unknown"
-        component_id = str(getattr(component, "id", "") or make_component_id(category, item_id)).strip()
-        legacy_kind = str(getattr(component, "legacy_kind", "") or category.value).strip()
-        logger.error(f"Installable LIST metadata failed for '{component_id}': {exc}", exc_info=True)
-        return ComponentMetadata(
-            id=component_id,
-            item_id=item_id,
-            category=category,
-            title=item_id,
-            description="Component metadata is unavailable.",
-            backend=BackendKind.NONE,
-            legacy_kind=legacy_kind,
+        return self.catalog.require_component(
+            self._component_id(data),
+            refresh=bool(data.get("refresh")),
         )
-
-    def _safe_metadata(self, component) -> ComponentMetadata:
-        try:
-            return component.metadata()
-        except Exception as exc:
-            return self._fallback_metadata(component, exc)
-
-    def _safe_status(self, component, ctx: dict[str, Any], metadata: ComponentMetadata) -> ComponentStatus:
-        try:
-            return component.status(ctx)
-        except Exception as exc:
-            logger.error(f"Installable LIST status failed for '{metadata.id}': {exc}", exc_info=True)
-            return ComponentStatus(
-                id=metadata.id,
-                code=ComponentStatusCode.FAILED,
-                installed=False,
-                ready=False,
-                message=f"Failed to inspect component: {exc}",
-                backend=metadata.backend,
-                backend_ok=False,
-                details={"error": str(exc)},
-            )
 
     def _on_list(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
-        include_status = bool(data.get("include_status", False))
         ctx = data.get("ctx") if isinstance(data.get("ctx"), dict) else {}
-        category = data.get("category")
-
-        if data.get("refresh"):
-            self._invalidate_list_cache()
-            # Явный «Проверить обновления» → форсим свежий манифест версий голосов
-            # (компоненты читают ctx["refresh"], чтобы минуть свой TTL-кэш).
-            ctx = {**ctx, "refresh": True}
-
-        cached_rows = None
-        if not ctx and not data.get("refresh"):
-            cached_rows = self._list_cache_with_status if include_status else self._list_cache_plain
-        if cached_rows is not None:
-            if category:
-                value = str(category or "").strip().lower()
-                return [
-                    row for row in cached_rows
-                    if str(((row.get("metadata") or {}).get("category") or "")).strip().lower() == value
-                ]
-            return list(cached_rows)
-
-        registry = refresh_installable_registry() if data.get("refresh") else get_installable_registry()
-        category = data.get("category")
-        if category:
-            try:
-                items = registry.by_category(str(category))
-            except Exception:
-                items = []
-        else:
-            items = registry.all()
-
-        metadatas = [self._safe_metadata(item) for item in items]
-
-        if include_status and len(items) > 1:
-            # #6: проверка статуса каждого компонента (файлы на диске, pip-мета,
-            # манифест голосов) — не мгновенная. Раньше шли строго по очереди, и
-            # после установки список «оживал» только через ~15 сек. Опрашиваем в
-            # пуле потоков (проверки I/O-bound), сохраняя исходный порядок.
-            from concurrent.futures import ThreadPoolExecutor
-
-            def _status_dict(pair):
-                item, metadata = pair
-                return self._safe_status(item, ctx, metadata).as_dict()
-
-            with ThreadPoolExecutor(max_workers=min(8, len(items)),
-                                    thread_name_prefix="installable-status") as ex:
-                statuses = list(ex.map(_status_dict, zip(items, metadatas)))
-            result = [
-                {"metadata": metadata.as_dict(), "status": status}
-                for metadata, status in zip(metadatas, statuses)
-            ]
-        else:
-            result = []
-            for item, metadata in zip(items, metadatas):
-                row = {"metadata": metadata.as_dict()}
-                if include_status:
-                    row["status"] = self._safe_status(item, ctx, metadata).as_dict()
-                result.append(row)
-
-        if not ctx and not category:
-            if include_status:
-                self._list_cache_with_status = list(result)
-            else:
-                self._list_cache_plain = list(result)
-        return result
+        return self.catalog.list_rows(
+            include_status=bool(data.get("include_status", False)),
+            refresh=bool(data.get("refresh", False)),
+            category=data.get("category"),
+            status_category=data.get("status_category"),
+            ctx=ctx,
+        )
 
     def _on_get(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
         try:
-            item = self._get_component(data)
-            return item.metadata().as_dict()
+            component_id = self._component_id(data)
+            rows = self.catalog.list_rows(category=str(component_id).split(":", 1)[0])
+            for row in rows:
+                metadata = row.get("metadata") if isinstance(row, dict) else None
+                if isinstance(metadata, dict) and metadata.get("id") == component_id:
+                    return metadata
+            return self._get_component(data).metadata().as_dict()
         except Exception as exc:
             logger.error(f"Installable GET failed: {exc}", exc_info=True)
             return None
@@ -197,39 +109,31 @@ class InstallableController:
     def _on_get_status(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
         try:
-            item = self._get_component(data)
-            ctx = data.get("ctx") if isinstance(data.get("ctx"), dict) else {}
-            return item.status(ctx).as_dict()
+            component_id = self._component_id(data)
+            rows = self.catalog.list_rows(
+                include_status=True,
+                refresh=bool(data.get("refresh", False)),
+                category=str(component_id).split(":", 1)[0],
+                status_category=str(component_id).split(":", 1)[0],
+                ctx=data.get("ctx") if isinstance(data.get("ctx"), dict) else {},
+            )
+            for row in rows:
+                metadata = row.get("metadata") if isinstance(row, dict) else None
+                if isinstance(metadata, dict) and metadata.get("id") == component_id:
+                    return row.get("status")
+            return None
         except Exception as exc:
             logger.error(f"Installable GET_STATUS failed: {exc}", exc_info=True)
             return None
 
     # ------------------------------------------------------------------
-    # ConfigurableComponent bridge (used by AI Hub Settings tab)
+    # ConfigurableComponent bridge (legacy EventBus compatibility)
     # ------------------------------------------------------------------
-
-    def _as_configurable(self, component) -> Any:
-        """Return the component if it implements ConfigurableComponent,
-        else None. Uses duck-typing rather than the Protocol runtime check
-        to keep the import set lean."""
-        for attr in ("settings_schema", "load_settings", "save_settings"):
-            if not callable(getattr(component, attr, None)):
-                return None
-        return component
 
     def _on_get_settings_schema(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
         try:
-            component = self._get_component(data)
-        except Exception as exc:
-            logger.error(f"Installable GET_SETTINGS_SCHEMA: not found: {exc}")
-            return None
-        configurable = self._as_configurable(component)
-        if configurable is None:
-            return []
-        try:
-            schema = configurable.settings_schema()
-            return list(schema or [])
+            return self.catalog.settings_schema(self._component_id(data))
         except Exception as exc:
             logger.error(f"Installable GET_SETTINGS_SCHEMA failed: {exc}", exc_info=True)
             return []
@@ -237,16 +141,7 @@ class InstallableController:
     def _on_load_settings(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
         try:
-            component = self._get_component(data)
-        except Exception as exc:
-            logger.error(f"Installable LOAD_SETTINGS: not found: {exc}")
-            return {}
-        configurable = self._as_configurable(component)
-        if configurable is None:
-            return {}
-        try:
-            values = configurable.load_settings()
-            return dict(values or {})
+            return self.catalog.load_settings(self._component_id(data))
         except Exception as exc:
             logger.error(f"Installable LOAD_SETTINGS failed: {exc}", exc_info=True)
             return {}
@@ -254,33 +149,11 @@ class InstallableController:
     def _on_save_settings(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
         values = data.get("values")
-        if not isinstance(values, dict):
-            return {"ok": False, "errors": {"_": "values must be a dict"}}
         try:
-            component = self._get_component(data)
-        except Exception as exc:
-            return {"ok": False, "errors": {"_": str(exc)}}
-        configurable = self._as_configurable(component)
-        if configurable is None:
-            return {"ok": False, "errors": {"_": "Component is not configurable"}}
-
-        # If the component exposes validate_settings, run it first so the UI
-        # can surface per-field errors before we touch persistence.
-        validate = getattr(configurable, "validate_settings", None)
-        if callable(validate):
-            try:
-                result = validate(values)
-                ok = bool(getattr(result, "ok", True))
-                errors = dict(getattr(result, "errors", {}) or {})
-                if not ok:
-                    return {"ok": False, "errors": errors}
-            except Exception as exc:
-                logger.error(f"Installable SAVE_SETTINGS validate failed: {exc}", exc_info=True)
-                return {"ok": False, "errors": {"_": str(exc)}}
-
-        try:
-            configurable.save_settings(values)
-            return {"ok": True, "errors": {}}
+            return self.catalog.save_component_settings(
+                self._component_id(data),
+                values if isinstance(values, dict) else values,
+            )
         except Exception as exc:
             logger.error(f"Installable SAVE_SETTINGS failed: {exc}", exc_info=True)
             return {"ok": False, "errors": {"_": str(exc)}}

@@ -14,10 +14,12 @@ from core.events import get_event_bus, Events, Event
 from utils.pip_installer import PipInstaller
 from core.install_types import InstallCallbacks, InstallAction, InstallPlan
 from utils import getTranslationVariant as _
+from services.contracts import InstallService
 
 
 from packaging.utils import canonicalize_name
 from packaging.requirements import Requirement
+from packaging.version import InvalidVersion, Version
 
 # Пакеты, версии которых мы защищаем от изменения при установке новых компонентов.
 # Раньше через uv --overrides пинились ВООБЩЕ ВСЕ установленные пакеты (==version),
@@ -61,7 +63,7 @@ def _get_installed_constraints(target_dir: str, exclude_specs: list[str]) -> lis
             name = spec.split(";", 1)[0].split("==")[0].split(">=")[0].split("<=")[0].strip()
             excluded_names.add(canonicalize_name(name))
 
-    constraints = []
+    candidates: dict[str, tuple[str, str]] = {}
     
     # Шаг 2. Быстро сканируем папки .dist-info
     try:
@@ -107,14 +109,66 @@ def _get_installed_constraints(target_dir: str, exclude_specs: list[str]) -> lis
                     continue
                 if canon_name not in _PROTECTED_CONSTRAINT_NAMES:
                     continue
-                constraints.append(f"{name}=={version}")
+                current = candidates.get(canon_name)
+                if current is None or _prefer_distribution_version(version, current[1]):
+                    candidates[canon_name] = (name, version)
                     
     except Exception as e:
         logger.warning(f"[InstallController] Ошибка сканирования установленных пакетов: {e}")
 
-    return constraints
+    return [
+        f"{candidates[key][0]}=={candidates[key][1]}"
+        for key in sorted(candidates)
+    ]
 
-class InstallController:
+
+def _prefer_distribution_version(candidate: str, current: str) -> bool:
+    """Choose one deterministic version when stale *.dist-info directories coexist.
+
+    ``pip --target`` and interrupted upgrades can leave metadata for several
+    versions of the same distribution. Emitting every one of them as an uv
+    override produces an inherently unsatisfiable resolver input. Prefer the
+    highest valid PEP 440 version and fall back to a stable lexical comparison
+    for malformed third-party metadata.
+    """
+    try:
+        return Version(candidate) > Version(current)
+    except InvalidVersion:
+        return str(candidate) > str(current)
+
+
+def _merge_requirement_specs(*groups: Iterable[str]) -> list[str]:
+    """Merge constraints by canonical distribution name, preserving priority.
+
+    Earlier groups are authoritative. In particular, the backend install plan
+    must win over metadata discovered in ``Lib``; otherwise stale dist-info can
+    replace the selected torch/torchaudio pair with an older version.
+    """
+    merged: dict[str, str] = {}
+    unparsed: set[str] = set()
+    result: list[str] = []
+
+    for group in groups:
+        for raw in group or ():
+            spec = str(raw or "").strip()
+            if not spec:
+                continue
+            try:
+                name = canonicalize_name(Requirement(spec).name)
+            except Exception:
+                key = spec.lower()
+                if key in unparsed:
+                    continue
+                unparsed.add(key)
+                result.append(spec)
+                continue
+            if name in merged:
+                continue
+            merged[name] = spec
+            result.append(spec)
+    return result
+
+class InstallController(InstallService):
     """
     Generic install orchestrator.
 
@@ -135,6 +189,9 @@ class InstallController:
 
     def _subscribe_to_events(self) -> None:
         self.event_bus.subscribe(Events.Install.RUN_BLOCKING, self._on_run_blocking, weak=False)
+
+    def run_blocking(self, payload: dict) -> bool:
+        return bool(self._on_run_blocking(Event(Events.Install.RUN_BLOCKING, payload)))
 
     def _on_run_blocking(self, event: Event) -> bool:
         data = event.data if isinstance(event.data, dict) else {}
@@ -587,7 +644,10 @@ class InstallController:
                 
                 # Объединяем специфичные оверрайды бэкенда с обнаруженными в системе
                 local_overrides = list(act.uv_overrides or [])
-                combined_overrides = list(set(local_overrides + detected_constraints))
+                combined_overrides = _merge_requirement_specs(
+                    local_overrides,
+                    detected_constraints,
+                )
                 # ----------------------------------------------
 
                 install_with_overrides = getattr(pip_installer, "install_package_with_overrides", None)
@@ -748,6 +808,15 @@ class InstallController:
             "meta": meta,
             "timeout_sec": float(timeout_sec),
             "event_bus": self.event_bus,
+            # Все проверки после установки обязаны смотреть в тот же --target,
+            # куда PipInstaller только что записал пакеты. Без этого финальная
+            # проверка видела лишь окружение embedded Python, возвращала False
+            # при успешном pip exit code 0 и начинала видеть пакет только после
+            # следующего запуска, когда Lib снова добавлялся в sys.path.
+            "libs_dir": pip_installer.libs_path_abs,
+            "lib_dir": pip_installer.libs_path_abs,
+            "target_dir": pip_installer.libs_path_abs,
+            "python_executable": pip_installer.script_path,
         }
 
         try:

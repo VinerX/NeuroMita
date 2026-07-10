@@ -17,6 +17,16 @@ from services.contracts import (
     EmbeddingPresetService,
     EmbeddingService,
     GameLinkService,
+    AudioStateService,
+    CaptureService,
+    GuiInteractionService,
+    InstallService,
+    LocalVoiceService,
+    ModelStateService,
+    RuntimeFeatureService,
+    SpeechService,
+    VoiceModelService,
+    InstallableCatalogService,
     LoopService,
     ProtocolBuilderService,
     SettingsService,
@@ -79,6 +89,13 @@ class MainController:
         self.settings = self.settings_controller.settings
         startup_trace.mark("controller.settings.ready")
         settings_service = services().get(SettingsService)
+        if not services().is_registered(InstallableCatalogService):
+            from services.installable_catalog_service import DefaultInstallableCatalogService
+
+            services().register(
+                InstallableCatalogService,
+                DefaultInstallableCatalogService(settings_service),
+            )
 
         if self.backend_enabled:
             self.game_link = ServerGameLinkService()
@@ -88,6 +105,14 @@ class MainController:
         services().register(
             AppVarsService, DefaultAppVarsService(settings_service, self.game_link), replace=True
         )
+        # The early server may receive a client before the full character runtime
+        # is materialized. Keep a settings-backed registry available until
+        # CharacterController atomically replaces it with the managed registry.
+        services().register(
+            CharacterRegistry,
+            SettingsOnlyCharacterRegistry(settings_service),
+            replace=True,
+        )
         services().register(
             TelegramService,
             UnavailableTelegramService("Telegram feature is disabled"),
@@ -96,9 +121,6 @@ class MainController:
 
         if not self.backend_enabled:
             services().register(LoopService, NoLoopService(), replace=True)
-            services().register(
-                CharacterRegistry, SettingsOnlyCharacterRegistry(settings_service), replace=True
-            )
             from controllers.gui_fallback_controller import GuiFallbackController
 
             self.gui_fallback_controller = GuiFallbackController(self.settings)
@@ -122,6 +144,11 @@ class MainController:
 
         self.loop_controller = self._build_component("loop", LoopController)
         logger.notify("LoopController initialized.")
+
+        # The game API is a core transport, not an AI feature. Bring it up as
+        # soon as the event loop and settings exist so Unity can connect while
+        # neural services continue initializing in the background.
+        self._build_component("server", self._init_server_controller)
 
         with startup_trace.phase("controller.pending_update"):
             self._check_and_perform_pending_update()
@@ -168,9 +195,8 @@ class MainController:
         self.model_controller = self._build_component(
             "model", lambda: ModelController(self.settings)
         )
+        services().register(ModelStateService, self.model_controller, replace=True)
         logger.notify("ModelController успешно инициализирован.")
-
-        self._build_component("server", self._init_server_controller)
 
         self.chat_controller = self._build_component(
             "chat", lambda: ChatController(self.settings)
@@ -195,6 +221,7 @@ class MainController:
     def _configure_optional_features(self, target_folder: str, settings_service) -> None:
         feature_manager = RuntimeFeatureManager(settings_service, max_workers=2)
         self.feature_manager = feature_manager
+        services().register(RuntimeFeatureService, feature_manager, replace=True)
 
         def enabled(*keys: str):
             return lambda settings: any(bool(settings.get(key, False)) for key in keys)
@@ -235,6 +262,7 @@ class MainController:
                 setting_keys=("USE_VOICEOVER", "VOICEOVER_METHOD"),
                 enabled=voice_enabled,
                 factory=self._create_audio_controller,
+                provided_services=(AudioStateService,),
                 shutdown=lambda controller: controller.delete_all_sound_files(),
                 priority=30,
                 required_modules=("pygame",),
@@ -246,6 +274,7 @@ class MainController:
                 setting_keys=("USE_VOICEOVER", "VOICEOVER_METHOD"),
                 enabled=local_voice_enabled,
                 factory=self._create_local_voice_controller,
+                provided_services=(LocalVoiceService,),
                 priority=35,
             )
         )
@@ -259,6 +288,7 @@ class MainController:
                 ),
                 enabled=local_voice_enabled,
                 factory=lambda: self._create_voice_model_controller(target_folder),
+                provided_services=(VoiceModelService,),
                 priority=40,
             )
         )
@@ -268,6 +298,7 @@ class MainController:
                 setting_keys=("MIC_ACTIVE",),
                 enabled=enabled("MIC_ACTIVE"),
                 factory=self._create_speech_controller,
+                provided_services=(SpeechService,),
                 shutdown=self._shutdown_speech_controller,
                 priority=50,
                 required_modules=("sounddevice",),
@@ -292,6 +323,7 @@ class MainController:
                     )
                 ),
                 factory=self._create_capture_controller,
+                provided_services=(CaptureService,),
                 shutdown=lambda controller: controller.shutdown(),
                 priority=60,
             )
@@ -328,6 +360,7 @@ class MainController:
                 name="install",
                 enabled=lambda _settings: False,
                 factory=self._create_install_controller,
+                provided_services=(InstallService,),
                 startup=False,
                 priority=90,
             )
@@ -444,7 +477,9 @@ class MainController:
     def _create_installable_controller(self):
         from controllers.installable_controller import InstallableController
 
-        controller = InstallableController()
+        controller = InstallableController(
+            services().get(InstallableCatalogService)
+        )
         self.installable_controller = controller
         return controller
 
@@ -490,6 +525,7 @@ class MainController:
             except Exception:
                 pass
             self.gui_controller = GuiController(self, view)
+            services().register(GuiInteractionService, self.gui_controller, replace=True)
             setattr(view, "backend_ready", True)
             setattr(view, "backend_startup_error", "")
             try:

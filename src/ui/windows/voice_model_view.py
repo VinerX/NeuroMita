@@ -13,6 +13,8 @@ from PyQt6.QtGui import QCursor
 from styles.voice_model_styles import get_stylesheet
 from utils import getTranslationVariant as _
 from core.events import get_event_bus, Events
+from core.services import services
+from services.contracts import VoiceModelService
 from ui.async_bus import run_async
 from ui.windows.voice_action_windows import VCRedistWarningDialog, TritonDependenciesDialog  # NEW
 
@@ -922,16 +924,16 @@ class VoiceModelSettingsView(QWidget):
 
     # ---------- EventBus helpers ----------
     def _get_models_data(self):
-        results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_MODEL_DATA)
-        return results[0] if results else []
+        service = services().get_optional(VoiceModelService)
+        return service.model_catalog_snapshot() if service is not None else []
 
     def _get_installed_models(self):
-        results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS)
-        return results[0] if results else set()
+        service = services().get_optional(VoiceModelService)
+        return service.installed_models_snapshot() if service is not None else set()
 
     def _get_dependencies_status(self):
-        results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_DEPENDENCIES_STATUS)
-        return results[0] if results else {}
+        service = services().get_optional(VoiceModelService)
+        return service.dependencies_status() if service is not None else {}
 
     def _apply_gpu_status(self):
         st = self._cached_dependencies_status or {}

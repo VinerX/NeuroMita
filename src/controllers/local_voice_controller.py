@@ -6,11 +6,11 @@ from typing import Any, Dict, Optional
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
 from core.services import use
-from services.contracts import CharacterRegistry, LoopService, SettingsService
+from services.contracts import CharacterRegistry, LocalVoiceService, LoopService, SettingsService
 from utils import getTranslationVariant as _
 
 
-class LocalVoiceController:
+class LocalVoiceController(LocalVoiceService):
     """
     GUI-side proxy для локальной озвучки.
     Вся тяжёлая часть живёт в ai worker service='tts'.
@@ -40,7 +40,7 @@ class LocalVoiceController:
     def _get_engine(self):
         if self._engine is not None:
             return self._engine
-        # Через AIEngineService, а не emit_and_wait (см. rag_client/beat_worker).
+        # Через AIEngineService, а не через синхронный EventBus-запрос (см. rag_client/beat_worker).
         try:
             from services.contracts import AIEngineService
             self._engine = use(AIEngineService).get_engine()
@@ -90,6 +90,24 @@ class LocalVoiceController:
 
         fut = eng.call("tts", method, payload or {})
         return await asyncio.wait_for(asyncio.wrap_future(fut), timeout=timeout)
+
+    def model_configs(self) -> list[dict[str, Any]]:
+        return list(self._on_get_all_local_model_configs(Event(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS)) or [])
+
+    def is_installed(self, model_id: str) -> bool:
+        return bool(self._on_check_model_installed(Event(Events.Audio.CHECK_MODEL_INSTALLED, {"model_id": model_id})))
+
+    def check_initialized(self, model_id: str, *, strict: bool = False) -> bool:
+        return bool(self._on_check_model_initialized(Event(Events.Audio.CHECK_MODEL_INITIALIZED, {"model_id": model_id, "strict": strict})))
+
+    def select_model(self, model_id: str) -> bool:
+        return bool(self._on_select_voice_model(Event(Events.Audio.SELECT_VOICE_MODEL, {"model_id": model_id})))
+
+    def triton_status(self, *, refresh: bool = False) -> dict[str, Any]:
+        event = Event(Events.Audio.REFRESH_TRITON_STATUS if refresh else Events.Audio.GET_TRITON_STATUS)
+        handler = self._on_refresh_triton_status if refresh else self._on_get_triton_status
+        result = handler(event)
+        return dict(result or {})
 
     # -------------------- model configs --------------------
 

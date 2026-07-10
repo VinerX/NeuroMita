@@ -1,45 +1,59 @@
 """Регрессия на фриз GUI при отправке сообщения.
 
-`send_message` собирал кадры экрана/камеры прямо в GUI-потоке через
-`emit_and_wait` с таймаутами 5с и 2с — до семи секунд замороженного интерфейса
-на каждую отправку. Теперь захват уходит в фоновый поток, а когда захватывать
-нечего — работаем синхронно, без лишнего хопа.
+Захват экрана и камеры выполняется через типизированный CaptureService в
+фоновом потоке. GUI не ждёт synchronous request/response через шину, а при
+выключенном захвате отправляет сообщение без лишнего thread hop.
 """
 from __future__ import annotations
 
-import sys
 import threading
 import time
 import unittest
 from pathlib import Path
+import sys
 
 PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
+from core.services import services
+from services.contracts import CaptureService
 from ui.windows.app_window_base import AppWindowBase
 
 
 class _FakeBus:
+    def __init__(self):
+        self.emitted: list[tuple] = []
+
+    def emit(self, event_name, data=None, sync=False):
+        self.emitted.append((event_name, data))
+
+
+class _FakeCapture(CaptureService):
     def __init__(self, screen=None, camera=None, delay: float = 0.0):
         self._screen = screen or []
         self._camera = camera or []
         self._delay = delay
-        self.emitted: list[tuple] = []
         self.capture_threads: list[str] = []
 
-    def emit_and_wait(self, event_name, data=None, timeout=None):
+    def _wait(self) -> None:
         self.capture_threads.append(threading.current_thread().name)
         if self._delay:
             time.sleep(self._delay)
-        if event_name == "capture_screen":
-            return [self._screen]
-        if event_name == "get_camera_frames":
-            return [self._camera]
-        return []
 
-    def emit(self, event_name, data=None, sync=False):
-        self.emitted.append((event_name, data))
+    def capture_screen(self, limit: int = 1):
+        self._wait()
+        return list(self._screen)[: max(0, int(limit))]
+
+    def camera_frames(self, limit: int = 1):
+        self._wait()
+        return list(self._camera)[: max(0, int(limit))]
+
+    def screen_capture_active(self) -> bool:
+        return bool(self._screen)
+
+    def camera_capture_active(self) -> bool:
+        return bool(self._camera)
 
 
 class _NoopSignal:
@@ -48,7 +62,7 @@ class _NoopSignal:
 
 
 class _DirectGuiSignal:
-    """Заменяет Qt-очередь: run_async ищет run_ui_task_signal, чтобы вернуться в GUI-поток."""
+    """Заменяет Qt-очередь в тестовом harness."""
 
     def __init__(self):
         self.threads: list[str] = []
@@ -59,13 +73,11 @@ class _DirectGuiSignal:
 
 
 class _Harness:
-    """Минимальный объект с поведением AppWindowBase без Qt."""
+    """Минимальный объект с поведением AppWindowBase без создания окна."""
 
     send_message = AppWindowBase.send_message
     _capture_frames_for_send = AppWindowBase._capture_frames_for_send
     _finish_send_message = AppWindowBase._finish_send_message
-    # В AppWindowBase это staticmethod — переносим как staticmethod, иначе
-    # первым позиционным аргументом уедет self.
     _dedupe_images = staticmethod(AppWindowBase._dedupe_images)
     _merge_explicit_and_entry_text = staticmethod(AppWindowBase._merge_explicit_and_entry_text)
 
@@ -93,6 +105,7 @@ class SendMessageCaptureTests(unittest.TestCase):
         self.awb = awb
         self._orig_renderer = awb.message_renderer
         self._orig_registry_use = awb.use
+        self._previous_capture = services().get_optional(CaptureService)
 
         class _Renderer:
             @staticmethod
@@ -105,6 +118,14 @@ class SendMessageCaptureTests(unittest.TestCase):
     def tearDown(self):
         self.awb.message_renderer = self._orig_renderer
         self.awb.use = self._orig_registry_use
+        if self._previous_capture is None:
+            services().unregister(CaptureService)
+        else:
+            services().register(CaptureService, self._previous_capture, replace=True)
+
+    def _register_capture(self, capture: _FakeCapture) -> _FakeCapture:
+        services().register(CaptureService, capture, replace=True)
+        return capture
 
     def test_backend_startup_blocks_early_send(self):
         bus = _FakeBus()
@@ -118,12 +139,12 @@ class SendMessageCaptureTests(unittest.TestCase):
 
     def test_no_capture_enabled_sends_synchronously(self):
         bus = _FakeBus()
+        capture = self._register_capture(_FakeCapture())
         h = _Harness({"AUTO_ATTACH_IMAGES": False, "ENABLE_CAMERA_CAPTURE": False}, bus)
 
         h.send_message(user_input="привет")
 
-        # Отправка произошла сразу, без фонового потока и без захвата.
-        self.assertEqual(bus.capture_threads, [])
+        self.assertEqual(capture.capture_threads, [])
         self.assertEqual(len(bus.emitted), 1)
         event_name, payload = bus.emitted[0]
         self.assertEqual(event_name, "send_message")
@@ -131,7 +152,10 @@ class SendMessageCaptureTests(unittest.TestCase):
         self.assertEqual(payload["image_data"], [])
 
     def test_capture_runs_off_gui_thread_and_does_not_block(self):
-        bus = _FakeBus(screen=[b"screen"], camera=[b"cam"], delay=0.3)
+        bus = _FakeBus()
+        capture = self._register_capture(
+            _FakeCapture(screen=[b"screen"], camera=[b"cam"], delay=0.3)
+        )
         h = _Harness(
             {"AUTO_ATTACH_IMAGES": True, "ENABLE_CAMERA_CAPTURE": True, "ENABLE_IMAGE_ANALYSIS": True},
             bus,
@@ -142,7 +166,6 @@ class SendMessageCaptureTests(unittest.TestCase):
         h.send_message(user_input="что на экране?")
         elapsed = time.perf_counter() - started
 
-        # Вызывающий (GUI) поток вернулся мгновенно, не дожидаясь захвата.
         self.assertLess(elapsed, 0.15, "send_message заблокировал GUI-поток на время захвата")
 
         deadline = time.time() + 5
@@ -150,8 +173,8 @@ class SendMessageCaptureTests(unittest.TestCase):
             time.sleep(0.01)
 
         self.assertEqual(len(bus.emitted), 1, "сообщение не отправилось после захвата")
-        self.assertTrue(bus.capture_threads, "захват не выполнялся")
-        for thread_name in bus.capture_threads:
+        self.assertTrue(capture.capture_threads, "захват не выполнялся")
+        for thread_name in capture.capture_threads:
             self.assertNotEqual(thread_name, gui_thread, "захват остался в GUI-потоке")
 
         payload = bus.emitted[0][1]
@@ -159,14 +182,13 @@ class SendMessageCaptureTests(unittest.TestCase):
         self.assertTrue(payload["images_shown"])
 
     def test_image_order_and_dedupe_preserved(self):
-        bus = _FakeBus(screen=[b"dup"], camera=[b"cam"])
+        bus = _FakeBus()
         h = _Harness(
             {"AUTO_ATTACH_IMAGES": True, "ENABLE_CAMERA_CAPTURE": True, "ENABLE_IMAGE_ANALYSIS": True},
             bus,
         )
         h.staged_image_data = [b"staged"]
 
-        # explicit + screen + staged + camera, с дублем explicit/screen
         h._finish_send_message(
             user_input="",
             system_input="",

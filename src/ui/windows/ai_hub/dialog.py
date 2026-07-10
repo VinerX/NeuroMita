@@ -23,6 +23,9 @@ from PyQt6.QtWidgets import (
 )
 
 from core.events import Events, get_event_bus
+from core.services import services
+from services.contracts import InstallableCatalogService, SettingsService
+from services.installable_catalog_service import DefaultInstallableCatalogService
 from main_logger import logger
 from styles.ai_hub_styles import get_stylesheet as get_ai_hub_stylesheet
 from ui.windows.voice_action_windows import VoiceInstallationWindow
@@ -42,6 +45,13 @@ class AIHubDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.event_bus = get_event_bus()
+        registry = services()
+        if registry.is_registered(InstallableCatalogService):
+            self.catalog = registry.get(InstallableCatalogService)
+        else:
+            settings = registry.get(SettingsService) if registry.is_registered(SettingsService) else None
+            self.catalog = DefaultInstallableCatalogService(settings)
+            registry.register(InstallableCatalogService, self.catalog)
         self._rows: list[dict[str, Any]] = []
         self._selected_category = "tts"
         self._pending_category: str | None = None
@@ -56,6 +66,7 @@ class AIHubDialog(QDialog):
         self._refresh_inflight = False
         self._rendered_language = ""
         self._main_controller = None
+        self._pending_backend_actions: set[tuple[str, str]] = set()
 
         self._ui_call_requested.connect(self._execute_ui_call)
 
@@ -665,8 +676,14 @@ class AIHubDialog(QDialog):
             # кнопку «Установить», чтобы её нельзя было нажать повторно.
             self._set_cards_checking()
 
+        status_category = self._selected_category if include_status else None
+
         def _worker() -> None:
-            rows = self._fetch_rows(force=force, include_status=bool(include_status))
+            rows = self._fetch_rows(
+                force=force,
+                include_status=bool(include_status),
+                status_category=status_category,
+            )
             checked_at = _dt.datetime.now()
             self._on_gui_thread(
                 lambda: self._apply_refresh_result(
@@ -767,25 +784,14 @@ class AIHubDialog(QDialog):
         *,
         force: bool = False,
         include_status: bool = True,
+        status_category: str | None = None,
     ) -> list[dict[str, Any]]:
         try:
-            main_controller = self._main_controller
-            if main_controller is None:
-                raise RuntimeError("Application backend is not ready")
-            main_controller.ensure_feature("installables", timeout=20.0)
-
-            # force=True переопрашивает статус КАЖДОГО компонента (pip-метаданные,
-            # файлы) — это медленно, особенно сразу после установки. Со старым
-            # таймаутом 5с переопрос не успевал → пустой ответ → список «компоненты
-            # исчезали» (фидбэк Артёма). Даём принудительному обновлению больше времени.
-            timeout = 30.0 if force else 8.0
-            result = self.event_bus.emit_and_wait(
-                Events.Installable.LIST,
-                {"include_status": bool(include_status), "refresh": bool(force)},
-                timeout=timeout,
+            return self.catalog.list_rows(
+                include_status=bool(include_status),
+                refresh=bool(force),
+                status_category=status_category,
             )
-            rows = result[0] if result and isinstance(result[0], list) else []
-            return [row for row in rows if isinstance(row, dict)]
         except Exception as exc:
             logger.error(f"AI Hub refresh failed: {exc}", exc_info=True)
             return []
@@ -819,6 +825,12 @@ class AIHubDialog(QDialog):
         if hasattr(self, "_settings_panel"):
             self._settings_panel.apply_data(self._rows, key)
         self._update_summary()
+        if self._loaded_once and not self._refresh_inflight and not self._category_status_loaded(key):
+            QTimer.singleShot(0, lambda: self.refresh(force=False, include_status=True))
+
+    def _category_status_loaded(self, category: str) -> bool:
+        rows = [row for row in self._rows if row_category(row) == category]
+        return bool(rows) and all(isinstance(row.get("status"), dict) for row in rows)
 
     # ----------------------------------------------------------- filtering
     def _filtered_rows(self) -> list[dict[str, Any]]:
@@ -1183,7 +1195,78 @@ class AIHubDialog(QDialog):
     def _emit_component_action_by_id(self, component_id: str, event_name: str, extra: dict | None = None) -> None:
         if not component_id:
             return
+        self._resolve_action_backend(component_id, event_name, extra=extra, attempt=0)
 
+    def _resolve_action_backend(
+        self,
+        component_id: str,
+        event_name: str,
+        *,
+        extra: dict | None,
+        attempt: int,
+    ) -> None:
+        key = (str(component_id), str(event_name))
+        if attempt == 0 and key in self._pending_backend_actions:
+            self._set_task_status(_("Backend уже подготавливается…", "Backend is already preparing…"))
+            return
+        main_controller = self._main_controller or self._find_main_controller()
+        if main_controller is None:
+            self._pending_backend_actions.add(key)
+            if attempt >= 100:
+                self._pending_backend_actions.discard(key)
+                self._set_task_status(_("Backend не запустился", "Backend failed to start"))
+                return
+            self._set_task_status(_("Backend запускается…", "Backend is starting…"))
+            QTimer.singleShot(150, lambda: self._resolve_action_backend(
+                component_id, event_name, extra=extra, attempt=attempt + 1
+            ))
+            return
+
+        self._main_controller = main_controller
+        self._pending_backend_actions.discard(key)
+        try:
+            future = main_controller.ensure_feature_async("installables")
+        except Exception as exc:
+            self._pending_backend_actions.discard(key)
+            logger.error(f"AI Hub installable backend failed to start: {exc}", exc_info=True)
+            self._set_task_status(_("Backend установки недоступен", "Install backend is unavailable"))
+            return
+
+        if not future.done():
+            if key in self._pending_backend_actions:
+                return
+            self._pending_backend_actions.add(key)
+            self._set_task_status(_("Подготовка backend установки…", "Preparing install backend…"))
+            future.add_done_callback(
+                lambda done: self._on_gui_thread(
+                    lambda: self._continue_component_action(
+                        done, component_id, event_name, extra, key
+                    )
+                )
+            )
+            return
+
+        self._continue_component_action(future, component_id, event_name, extra, key)
+
+    def _continue_component_action(
+        self,
+        future,
+        component_id: str,
+        event_name: str,
+        extra: dict | None,
+        key: tuple[str, str],
+    ) -> None:
+        self._pending_backend_actions.discard(key)
+        try:
+            future.result()
+            self._ensure_install_gui_adapter()
+        except Exception as exc:
+            logger.error(f"AI Hub installable backend is unavailable: {exc}", exc_info=True)
+            self._set_task_status(_("Backend установки недоступен", "Install backend is unavailable"))
+            return
+        self._dispatch_component_action(component_id, event_name, extra=extra)
+
+    def _dispatch_component_action(self, component_id: str, event_name: str, extra: dict | None = None) -> None:
         # Дедуп: эту же задачу уже ставят/она в очереди — не плодим дубликат,
         # просто показываем окно и подсказываем, что задача уже в очереди.
         task_id = self._task_id_for(component_id, event_name)

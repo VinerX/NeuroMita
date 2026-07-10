@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -58,6 +59,21 @@ class EdgeTTSRVCInstallablesTests(unittest.TestCase):
         config = EdgeTTSRVCOnnxModel._find_model_config(EDGE_TTS_RVC_ONNX_ID)
 
         self.assertIn("INTEL", config["gpu_vendor"])
+
+    def test_onnx_runtime_import_accepts_published_wheel_package_layout(self):
+        fallback_module = SimpleNamespace(TTS_RVC=object())
+
+        def fake_import(name):
+            if name == "tts_with_rvc_onnx":
+                raise ModuleNotFoundError(name)
+            if name == "tts_with_rvc":
+                return fallback_module
+            raise AssertionError(name)
+
+        with patch("handlers.voice_models.edge_tts_rvc_model.importlib.import_module", side_effect=fake_import):
+            resolved = EdgeTTSRVCOnnxModel._import_rvc_class()
+
+        self.assertIs(resolved, fallback_module.TTS_RVC)
 
     def test_fish_speech_plus_uninstall_removes_runtime_packages(self):
         plan = FishSpeechInstallSpec.build_uninstall_plan("medium+", {})

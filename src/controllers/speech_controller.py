@@ -10,12 +10,12 @@ from handlers.asr_handler import SpeechRecognition
 from main_logger import logger
 from core.app_paths import settings_path
 from core.events import get_event_bus, Events, Event
-from core.services import use
-from services.contracts import GameLinkService, LoopService, SettingsService
+from core.services import services, use
+from services.contracts import AudioStateService, GameLinkService, LoopService, SettingsService, SpeechService
 from utils import getTranslationVariant as _
 
 
-class SpeechController:
+class SpeechController(SpeechService):
     _SETTING_KEYS = frozenset({
         "MIC_ACTIVE", "RECOGNIZER_TYPE", "SILENCE_THRESHOLD",
         "VAD_THRESHOLD", "SILENCE_DURATION", "VAD_SILENCE_TIMEOUT_SEC",
@@ -371,6 +371,18 @@ class SpeechController:
         with self._glossary_lock:
             self._glossary_callbacks.clear()
 
+    def recognizer_settings_schema(self, engine: str) -> list[dict]:
+        return list(self._on_get_recognizer_settings_schema(Event(Events.Speech.GET_RECOGNIZER_SETTINGS_SCHEMA, {"engine": engine})) or [])
+
+    def recognizer_settings(self, engine: str) -> dict:
+        return dict(self._on_get_recognizer_settings(Event(Events.Speech.GET_RECOGNIZER_SETTINGS, {"engine": engine})) or {})
+
+    def mic_active(self) -> bool:
+        return bool(self.mic_recognition_active)
+
+    def asr_models_glossary_async(self, callback, *, refresh: bool = False) -> None:
+        self._on_get_asr_models_glossary(Event(Events.Speech.GET_ASR_MODELS_GLOSSARY, {"callback": callback, "refresh": refresh}))
+
     # —— universal ASR settings IO
     def _on_get_recognizer_settings_schema(self, event: Event):
         if not self._asr_settings or not self._asr_settings.get("models"):
@@ -527,8 +539,8 @@ class SpeechController:
             })
 
         if bool(self.settings.get("MIC_INSTANT_SENT")):
-            waiting = self.events_bus.emit_and_wait(Events.Audio.GET_WAITING_ANSWER, timeout=0.5)
-            waiting_answer = waiting[0] if waiting else False
+            audio = services().get_optional(AudioStateService)
+            waiting_answer = bool(audio and audio.is_waiting_answer())
             if not waiting_answer:
                 self._send_instant(text)
         else:

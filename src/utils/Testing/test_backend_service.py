@@ -199,6 +199,31 @@ class BackendServiceTests(unittest.TestCase):
             ),
         )
 
+    def test_uv_overrides_use_authoritative_core_versions_despite_stale_metadata(self):
+        _install_fake_dist(self.libs_dir, dist_name="torch", version="2.6.0", module_name="torch")
+        _install_fake_dist(self.libs_dir, dist_name="torchaudio", version="2.6.0", module_name="torchaudio")
+        _install_fake_dist(self.libs_dir, dist_name="numpy", version="2.0.0", module_name="numpy")
+
+        overrides = self.service.build_uv_overrides(
+            BackendKind.ONNX,
+            requested_specs=["tts-with-rvc-onnx[dml]"],
+        )
+
+        self.assertIn(f"torch=={TORCH_VERSION}", overrides)
+        self.assertIn(f"torchaudio=={TORCH_VERSION}", overrides)
+        self.assertIn("numpy==1.26.0", overrides)
+        self.assertNotIn("torch==2.6.0", overrides)
+        self.assertNotIn("numpy==2.0.0", overrides)
+
+    def test_target_distribution_version_chooses_highest_duplicate_metadata(self):
+        _write_dist_info(self.libs_dir, "torchaudio", "2.6.0")
+        _write_dist_info(self.libs_dir, "torchaudio", "2.7.1")
+
+        self.assertEqual(
+            self.service._dist_version_in_target("torchaudio", str(self.libs_dir)),
+            "2.7.1",
+        )
+
     def test_backend_requirement_fails_when_runtime_missing(self):
         result = check_requirements(
             [

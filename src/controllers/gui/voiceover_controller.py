@@ -7,6 +7,8 @@ from PyQt6.QtWidgets import QMessageBox
 
 from main_logger import logger
 from core.events import Events, Event
+from core.services import services
+from services.contracts import LocalVoiceService, TelegramService, VoiceModelService
 from .base_controller import BaseController
 
 from ui.dialogs.model_loading_dialog import create_model_loading_dialog
@@ -74,14 +76,8 @@ class VoiceoverGuiController(BaseController):
         if self._installed_models_cache is not None and (now - self._installed_models_cache_ts) < 1.0:
             return set(self._installed_models_cache)
 
-        installed = set()
-        try:
-            res = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.6)
-            got = res[0] if res else None
-            if isinstance(got, (set, list, tuple)):
-                installed = set(str(x) for x in got)
-        except Exception:
-            installed = set()
+        voice_models = services().get_optional(VoiceModelService)
+        installed = set(voice_models.installed_models_snapshot()) if voice_models is not None else set()
 
         self._installed_models_cache = installed
         self._installed_models_cache_ts = now
@@ -245,12 +241,8 @@ class VoiceoverGuiController(BaseController):
                 if not self._tg_poll_active:
                     break
 
-                connected = None
-                try:
-                    res = self.event_bus.emit_and_wait(Events.Telegram.GET_SILERO_STATUS, timeout=0.7)
-                    connected = bool(res and res[0])
-                except Exception:
-                    connected = None
+                telegram = services().get_optional(TelegramService)
+                connected = telegram.is_silero_connected() if telegram is not None else None
 
                 if connected is not None:
                     self._tg_connected = connected
@@ -398,40 +390,13 @@ class VoiceoverGuiController(BaseController):
             self._apply_model_status(chip, btn, "loading", _("Checking...", "Checking..."), None, "")
 
         def worker():
-            installed_ids: set[str] = set()
-            try:
-                res = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.7)
-                got = res[0] if res else None
-                if isinstance(got, (set, list, tuple)):
-                    installed_ids = {str(x) for x in got}
-            except Exception:
-                installed_ids = set()
+            voice_models = services().get_optional(VoiceModelService)
+            local_voice = services().get_optional(LocalVoiceService)
+            installed_ids = set(voice_models.installed_models_snapshot()) if voice_models is not None else set()
 
             installed = model_id in installed_ids
-            initialized = False
-            selected = None
-
-            if installed:
-                try:
-                    res = self.event_bus.emit_and_wait(
-                        Events.Audio.CHECK_MODEL_INITIALIZED,
-                        {"model_id": model_id},
-                        timeout=0.7,
-                    )
-                    initialized = bool(res and res[0])
-                except Exception:
-                    initialized = False
-
-                if initialized:
-                    try:
-                        res = self.event_bus.emit_and_wait(
-                            Events.Audio.SELECT_VOICE_MODEL,
-                            {"model_id": model_id},
-                            timeout=1.0,
-                        )
-                        selected = bool(res and res[0])
-                    except Exception:
-                        selected = False
+            initialized = bool(installed and local_voice and local_voice.check_initialized(model_id))
+            selected = bool(local_voice.select_model(model_id)) if initialized and local_voice else None
 
             return {
                 "model_id": model_id,
@@ -577,30 +542,12 @@ class VoiceoverGuiController(BaseController):
             initialized = False
             current_model_id = self._current_model_id_from_settings()
 
-            try:
-                res = self.event_bus.emit_and_wait(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS, timeout=1.5)
-                cfgs = res[0] if res and isinstance(res[0], list) else []
-            except Exception:
-                cfgs = []
-
-            try:
-                res = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.7)
-                got = res[0] if res else None
-                if isinstance(got, (set, list, tuple)):
-                    installed_ids = {str(x) for x in got}
-            except Exception:
-                installed_ids = set()
-
-            if current_model_id:
-                try:
-                    res = self.event_bus.emit_and_wait(
-                        Events.Audio.CHECK_MODEL_INITIALIZED,
-                        {"model_id": current_model_id},
-                        timeout=0.7,
-                    )
-                    initialized = bool(res and res[0])
-                except Exception:
-                    initialized = False
+            local_voice = services().get_optional(LocalVoiceService)
+            voice_models = services().get_optional(VoiceModelService)
+            cfgs = local_voice.model_configs() if local_voice is not None else []
+            installed_ids = set(voice_models.installed_models_snapshot()) if voice_models is not None else set()
+            if current_model_id and local_voice is not None:
+                initialized = bool(local_voice.check_initialized(current_model_id))
 
             return {
                 "cfgs": cfgs,
@@ -847,11 +794,8 @@ class VoiceoverGuiController(BaseController):
 
     def _select_model_async(self, model_id: str, on_done=None, *, show_error: bool = True):
         def worker():
-            try:
-                res = self.event_bus.emit_and_wait(Events.Audio.SELECT_VOICE_MODEL, {"model_id": model_id}, timeout=1.0)
-                return bool(res and res[0])
-            except Exception:
-                return False
+            local_voice = services().get_optional(LocalVoiceService)
+            return bool(local_voice and local_voice.select_model(model_id))
 
         def apply(ok: bool):
             if not ok and show_error:
@@ -1076,11 +1020,8 @@ class VoiceoverGuiController(BaseController):
         if self._model_id_to_name and (now - ts) < 30.0:
             return
 
-        try:
-            res = self.event_bus.emit_and_wait(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS, timeout=1.5)
-            cfgs = res[0] if res and isinstance(res[0], list) else []
-        except Exception:
-            cfgs = []
+        local_voice = services().get_optional(LocalVoiceService)
+        cfgs = local_voice.model_configs() if local_voice is not None else []
 
         mp: dict[str, str] = {}
         for c in cfgs or []:
@@ -1110,14 +1051,8 @@ class VoiceoverGuiController(BaseController):
         if cb is None:
             return
 
-        installed_ids = set()
-        try:
-            res = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.7)
-            got = res[0] if res else None
-            if isinstance(got, (set, list, tuple)):
-                installed_ids = set(str(x) for x in got)
-        except Exception:
-            installed_ids = set()
+        voice_models = services().get_optional(VoiceModelService)
+        installed_ids = set(voice_models.installed_models_snapshot()) if voice_models is not None else set()
 
         ordered_ids = list(self._model_id_to_name.keys())
         ids = [mid for mid in ordered_ids if mid in installed_ids]
@@ -1333,19 +1268,12 @@ class VoiceoverGuiController(BaseController):
         return model_id in self._get_installed_models_set()
 
     def _check_initialized(self, model_id: str) -> bool:
-        try:
-            res = self.event_bus.emit_and_wait(Events.Audio.CHECK_MODEL_INITIALIZED, {"model_id": model_id}, timeout=0.7)
-            return bool(res and res[0])
-        except Exception:
-            return False
+        local_voice = services().get_optional(LocalVoiceService)
+        return bool(local_voice and local_voice.check_initialized(model_id))
 
     def _select_model(self, model_id: str) -> bool:
-        try:
-            res = self.event_bus.emit_and_wait(Events.Audio.SELECT_VOICE_MODEL, {"model_id": model_id}, timeout=1.0)
-            return bool(res and res[0])
-        except Exception as e:
-            logger.error(f"SELECT_VOICE_MODEL failed: {e}", exc_info=True)
-            return False
+        local_voice = services().get_optional(LocalVoiceService)
+        return bool(local_voice and local_voice.select_model(model_id))
 
     # ---------- settings ----------
     def _save_setting(self, key: str, value: Any):

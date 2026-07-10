@@ -16,8 +16,8 @@ from PyQt6.QtWidgets import (
 )
 
 from core.events import Events
-from core.services import use
-from services.contracts import CharacterRegistry
+from core.services import services, use
+from services.contracts import ApiPresetService, CaptureService, CharacterRegistry
 from main_logger import logger
 from ui.async_bus import run_async
 from ui.chat.chat_widget import ChatWidget
@@ -298,8 +298,8 @@ def _send_block_reason(gui):
     (текст_предупреждения, категория_настроек_для_перехода)."""
     # 1) API-пресет: не выбран никто и в списке пусто (не создавался).
     try:
-        meta = gui.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-        m = meta[0] if meta else None
+        preset_service = services().get_optional(ApiPresetService)
+        m = preset_service.list_meta() if preset_service is not None else {}
         custom = (m or {}).get("custom") or []
         has_selected = bool(gui._get_setting("LAST_API_PRESET_ID", 0))
         if not custom and not has_selected:
@@ -542,8 +542,9 @@ def clear_staged_images(gui):
 def send_screen_capture(gui):
     logger.info("Запрошена отправка скриншота.")
     # Запас времени на one-shot захват экрана.
-    frames = gui.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {"limit": 1}, timeout=5.0)
-    if not frames or not frames[0]:
+    capture = services().get_optional(CaptureService)
+    frames = capture.capture_screen(1) if capture is not None else []
+    if not frames:
         from PyQt6.QtWidgets import QMessageBox
 
         QMessageBox.warning(

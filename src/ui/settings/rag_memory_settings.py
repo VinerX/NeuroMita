@@ -20,7 +20,7 @@ from utils import getTranslationVariant as _
 from localization.live import tr_set
 from core.events import get_event_bus, Events
 from core.services import use
-from services.contracts import GenerationService, SettingsService, UtilityGenerationRequest
+from services.contracts import ApiPresetService, GenerationService, SettingsService, UtilityGenerationRequest
 from managers.rag.install_spec import (
     TARGET_EMBEDDINGS,
     TARGET_RERANKER,
@@ -279,8 +279,7 @@ def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> 
             except ValueError:
                 pass
             try:
-                meta_res = eb2.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-                meta = meta_res[0] if meta_res else None
+                meta = use(ApiPresetService).list_meta()
                 if meta:
                     for bucket in ("custom", "builtin"):
                         for pm in (meta.get(bucket) or []):

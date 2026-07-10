@@ -6,6 +6,8 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot, Qt
 from PyQt6.QtWidgets import QMessageBox
 
 from core.events import get_event_bus, Events
+from core.services import use
+from services.contracts import ProtocolBuilderService
 from main_logger import logger
 from ui.settings.api_settings.widgets import CustomPresetListItem
 from .bus_async import bus_call_async
@@ -193,8 +195,7 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
 
     def _load_transform_catalog_async(self) -> None:
         def _call():
-            res = self.event_bus.emit_and_wait(Events.Protocols.GET_TRANSFORM_LIST, timeout=1.0)
-            return res[0] if res else []
+            return use(ProtocolBuilderService).list_transforms()
 
         def _apply(lst):
             if isinstance(lst, list):

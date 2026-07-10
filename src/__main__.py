@@ -115,6 +115,7 @@ def _run_gui(runtime, startup_mode: str) -> int:
             GameLinkService,
             LoopService,
             SettingsService,
+            InstallableCatalogService,
         )
         from services.game_link_service import DisconnectedGameLinkService
         from services.loop_service import NoLoopService
@@ -124,6 +125,13 @@ def _run_gui(runtime, startup_mode: str) -> int:
             str(settings_path("settings.json", create_parent=True))
         )
         shell_settings_service = services().get(SettingsService)
+        if not services().is_registered(InstallableCatalogService):
+            from services.installable_catalog_service import DefaultInstallableCatalogService
+
+            services().register(
+                InstallableCatalogService,
+                DefaultInstallableCatalogService(shell_settings_service),
+            )
         shell_game_link = DisconnectedGameLinkService()
         services().register(GameLinkService, shell_game_link, replace=True)
         services().register(LoopService, NoLoopService(), replace=True)

@@ -2,6 +2,8 @@ from PyQt6.QtCore import QTimer, QEventLoop
 
 from main_logger import logger
 from core.events import Events, Event
+from core.services import services
+from services.contracts import LocalVoiceService, VoiceModelService
 from .base_controller import BaseController
 from utils import getTranslationVariant as _
 
@@ -95,12 +97,9 @@ class VoiceModelGuiController(BaseController):
             logger.error("VoiceModelGuiController: backend VoiceModelController не инициализирован.")
             return
 
-        try:
-            models = self.event_bus.emit_and_wait(Events.VoiceModel.GET_MODEL_DATA, timeout=1.0)
-            models = models[0] if models else []
-            model_data = next((m for m in models if m.get("id") == model_id), None)
-        except Exception:
-            model_data = None
+        voice_models = services().get_optional(VoiceModelService)
+        models = voice_models.model_catalog_snapshot() if voice_models is not None else []
+        model_data = next((m for m in models if m.get("id") == model_id), None)
 
         if model_data and model_data.get("rtx30plus", False) and not backend.is_gpu_rtx30_or_40():
             gpu_info = backend.gpu_name if getattr(backend, "gpu_name", None) else "не определена"
@@ -171,23 +170,15 @@ class VoiceModelGuiController(BaseController):
             logger.error("VoiceModelGuiController: backend VoiceModelController не инициализирован.")
             return
 
-        try:
-            models = self.event_bus.emit_and_wait(Events.VoiceModel.GET_MODEL_DATA, timeout=1.0)
-            models = models[0] if models else []
-            model_data = next((m for m in models if m.get("id") == model_id), None)
-            model_name = (model_data or {}).get("name", model_id)
-        except Exception:
-            model_name = model_id
+        voice_models = services().get_optional(VoiceModelService)
+        models = voice_models.model_catalog_snapshot() if voice_models is not None else []
+        model_data = next((m for m in models if m.get("id") == model_id), None)
+        model_name = (model_data or {}).get("name", model_id)
 
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Audio.CHECK_MODEL_INITIALIZED,
-                {"model_id": model_id, "strict": True},
-                timeout=1.2
-            )
-            is_initialized = bool(res and res[0])
-        except Exception:
-            is_initialized = False
+        local_voice = services().get_optional(LocalVoiceService)
+        is_initialized = bool(
+            local_voice and local_voice.check_initialized(str(model_id), strict=True)
+        )
 
         if is_initialized:
             self.event_bus.emit(

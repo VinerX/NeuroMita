@@ -1,0 +1,412 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+import pytest
+
+from controllers.install_controller import (
+    InstallController,
+    _get_installed_constraints,
+    _merge_requirement_specs,
+)
+from core.install_log import classify_install_log
+from core.install_requirements import InstallRequirement, check_requirements
+from handlers.voice_models.edge_tts_rvc_model import (
+    EDGE_TTS_RVC_ONNX_ID,
+    EdgeTTSRVCOnnxModel,
+)
+from utils.pip_installer import PipInstaller
+
+
+def _write_dist(root: Path, name: str, version: str) -> None:
+    info = root / f"{name.replace('-', '_')}-{version}.dist-info"
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        encoding="utf-8",
+    )
+
+
+def test_requirement_checker_reads_python_module_from_explicit_target(tmp_path: Path) -> None:
+    package = tmp_path / "target_only_package"
+    package.mkdir()
+    (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    result = check_requirements(
+        [InstallRequirement(id="module", kind="python_module", module="target_only_package")],
+        ctx={"libs_dir": str(tmp_path)},
+    )
+
+    assert result["ok"] is True
+
+
+def test_requirement_checker_reads_distribution_from_explicit_target(tmp_path: Path) -> None:
+    _write_dist(tmp_path, "target-only-dist", "1.2.3")
+
+    result = check_requirements(
+        [InstallRequirement(id="dist", kind="python_dist", spec="target-only-dist>=1")],
+        ctx={"target_dir": str(tmp_path)},
+    )
+
+    assert result["ok"] is True
+    assert result["details"][0]["extra"]["version"] == "1.2.3"
+
+
+def test_requirement_checker_rejects_unsatisfied_target_version(tmp_path: Path) -> None:
+    _write_dist(tmp_path, "target-only-dist", "1.2.3")
+
+    result = check_requirements(
+        [InstallRequirement(id="dist", kind="python_dist", spec="target-only-dist>=2")],
+        ctx={"target_dir": str(tmp_path)},
+    )
+
+    assert result["ok"] is False
+    assert result["missing_required"] == ["dist"]
+
+
+def test_distribution_metadata_is_authoritative_when_import_name_differs(tmp_path: Path) -> None:
+    # The published tts-with-rvc-onnx wheel has used a top-level import package
+    # name different from its distribution name. A valid dist-info entry must
+    # not be rejected by a stale/wrong module-name checker.
+    _write_dist(tmp_path, "tts-with-rvc-onnx", "0.1.9.4")
+    (tmp_path / "tts_with_rvc").mkdir()
+
+    result = check_requirements(
+        [InstallRequirement(id="dist", kind="python_dist", spec="tts-with-rvc-onnx[dml]")],
+        ctx={"target_dir": str(tmp_path)},
+    )
+
+    assert result["ok"] is True
+
+
+def test_install_controller_propagates_exact_pip_target_to_plan_context(tmp_path: Path) -> None:
+    class _FakePipInstaller:
+        libs_path_abs = str(tmp_path)
+        script_path = os.fspath(tmp_path / "python.exe")
+
+    class _FakeEventBus:
+        def emit(self, *_args, **_kwargs):
+            return None
+
+    class _Controller(InstallController):
+        def __init__(self):
+            self.event_bus = _FakeEventBus()
+
+        def _make_pip_installer(self, _callbacks):
+            return _FakePipInstaller()
+
+    seen: dict = {}
+
+    def runner(*, ctx, **_kwargs):
+        seen.update(ctx)
+        return True
+
+    assert _Controller().run_task(task_id="probe", runner=runner) is True
+    assert seen["libs_dir"] == str(tmp_path)
+    assert seen["lib_dir"] == str(tmp_path)
+    assert seen["target_dir"] == str(tmp_path)
+    assert seen["python_executable"].endswith("python.exe")
+
+
+def test_edge_onnx_final_check_logs_every_missing_requirement(tmp_path: Path) -> None:
+    plan = EdgeTTSRVCOnnxModel.build_install_plan_for_model(
+        EDGE_TTS_RVC_ONNX_ID,
+        {"libs_dir": str(tmp_path), "gpu_vendor": "INTEL"},
+    )
+    verify = plan.actions[-1].fn
+    logs: list[str] = []
+    callbacks = SimpleNamespace(log=logs.append)
+    backend_status = SimpleNamespace(
+        ok=False,
+        as_dict=lambda: {
+            "reason": "ONNX backend is missing",
+            "provider": "missing",
+            "target_dir": str(tmp_path),
+        },
+    )
+
+    with patch("core.install_requirements.get_backend_service") as backend:
+        backend.return_value.get_status.return_value = backend_status
+        assert verify(callbacks=callbacks, ctx={"libs_dir": str(tmp_path)}) is False
+
+    rendered = "\n".join(logs)
+    assert "backend_onnx" in rendered
+    assert "tts_rvc_pkg" in rendered
+    assert str(tmp_path) in rendered
+
+
+def test_edge_onnx_final_check_succeeds_from_target_without_restart(tmp_path: Path) -> None:
+    (tmp_path / "omegaconf").mkdir()
+    (tmp_path / "tts_with_rvc").mkdir()
+    _write_dist(tmp_path, "omegaconf", "2.3.0")
+    _write_dist(tmp_path, "tts-with-rvc-onnx", "0.1.0")
+
+    plan = EdgeTTSRVCOnnxModel.build_install_plan_for_model(
+        EDGE_TTS_RVC_ONNX_ID,
+        {"libs_dir": str(tmp_path), "gpu_vendor": "INTEL"},
+    )
+    verify = plan.actions[-1].fn
+    backend_status = SimpleNamespace(ok=True, as_dict=lambda: {"reason": "ready"})
+
+    with patch("core.install_requirements.get_backend_service") as backend:
+        backend.return_value.get_status.return_value = backend_status
+        assert verify(callbacks=SimpleNamespace(log=lambda _line: None), ctx={"libs_dir": str(tmp_path)}) is True
+
+
+def test_edge_final_check_prefers_runtime_install_target_over_plan_snapshot(tmp_path: Path) -> None:
+    stale_target = tmp_path / "stale"
+    runtime_target = tmp_path / "runtime"
+    stale_target.mkdir()
+    runtime_target.mkdir()
+    (runtime_target / "omegaconf").mkdir()
+    (runtime_target / "tts_with_rvc").mkdir()
+    _write_dist(runtime_target, "omegaconf", "2.3.0")
+    _write_dist(runtime_target, "tts-with-rvc-onnx", "0.1.0")
+
+    plan = EdgeTTSRVCOnnxModel.build_install_plan_for_model(
+        EDGE_TTS_RVC_ONNX_ID,
+        {"libs_dir": str(stale_target), "gpu_vendor": "INTEL"},
+    )
+    verify = plan.actions[-1].fn
+    backend_status = SimpleNamespace(ok=True, as_dict=lambda: {"reason": "ready"})
+
+    with patch("core.install_requirements.get_backend_service") as backend:
+        backend.return_value.get_status.return_value = backend_status
+        assert verify(
+            callbacks=SimpleNamespace(log=lambda _line: None),
+            ctx={"libs_dir": str(runtime_target)},
+        ) is True
+
+
+def test_pip_installer_uses_private_uv_executable(tmp_path: Path) -> None:
+    with patch.dict(
+        os.environ,
+        {"NEUROMITA_LIB_DIR": str(tmp_path / "Lib"), "NEUROMITA_PYTHON": os.sys.executable},
+        clear=False,
+    ), patch("utils.pip_installer.base_dir", return_value=tmp_path):
+        installer = PipInstaller(protected_packages=[])
+        path = installer._uv_executable_path()
+
+    assert path.parent == tmp_path / ".bootstrap" / "uv" / "bin"
+    assert path.name in {"uv", "uv.exe"}
+
+
+def test_pip_installer_selects_uv_executable_not_python_module(tmp_path: Path) -> None:
+    with patch.dict(
+        os.environ,
+        {"NEUROMITA_LIB_DIR": str(tmp_path / "Lib"), "NEUROMITA_PYTHON": os.sys.executable},
+        clear=False,
+    ), patch("utils.pip_installer.base_dir", return_value=tmp_path):
+        installer = PipInstaller(protected_packages=[])
+        with patch.object(installer, "_ensure_uv_available", return_value=True):
+            command = installer._resolve_installer_base_cmd()
+
+    assert command[0] == str(tmp_path / ".bootstrap" / "uv" / "bin" / installer._uv_executable_path().name)
+    assert command[1:] == ["pip"]
+    assert "-m" not in command
+
+
+def test_installed_constraints_collapse_stale_dist_info_versions(tmp_path: Path) -> None:
+    _write_dist(tmp_path, "torchaudio", "2.6.0")
+    _write_dist(tmp_path, "torchaudio", "2.7.1")
+
+    constraints = _get_installed_constraints(str(tmp_path), [])
+
+    assert constraints.count("torchaudio==2.7.1") == 1
+    assert not any(item == "torchaudio==2.6.0" for item in constraints)
+
+
+def test_backend_overrides_win_over_stale_discovered_constraints() -> None:
+    merged = _merge_requirement_specs(
+        ["torch==2.7.1", "torchaudio==2.7.1"],
+        ["torch==2.6.0", "torchaudio==2.6.0", "numpy==1.26.0"],
+    )
+
+    assert merged == ["torch==2.7.1", "torchaudio==2.7.1", "numpy==1.26.0"]
+
+
+def test_pip_installer_deduplicates_overrides_by_distribution_name(tmp_path: Path) -> None:
+    with patch.dict(
+        os.environ,
+        {"NEUROMITA_LIB_DIR": str(tmp_path / "Lib"), "NEUROMITA_PYTHON": os.sys.executable},
+        clear=False,
+    ):
+        installer = PipInstaller(protected_packages=[])
+
+    assert installer._dedupe_overrides(
+        ["torch==2.7.1", "Torch==2.6.0", "numpy==1.26.0"]
+    ) == ["torch==2.7.1", "numpy==1.26.0"]
+
+
+def test_compatibility_sensitive_stack_tries_uv_first_with_overrides(tmp_path: Path) -> None:
+    commands: list[list[str]] = []
+
+    with patch.dict(
+        os.environ,
+        {"NEUROMITA_LIB_DIR": str(tmp_path / "Lib"), "NEUROMITA_PYTHON": os.sys.executable},
+        clear=False,
+    ):
+        installer = PipInstaller(protected_packages=[])
+        installer._preferred_installer_cmd = [str(tmp_path / "uv.exe"), "pip"]
+
+        def fake_run(cmd, _description):
+            commands.append(list(cmd))
+            installer._last_run_returncode = 0
+            return True
+
+        with patch.object(installer, "_run_pip_process", side_effect=fake_run):
+            ok = installer.install_package_with_overrides(
+                ["tts-with-rvc-onnx[dml]"],
+                uv_overrides=["torch==2.7.1", "torchaudio==2.7.1"],
+            )
+
+    assert ok is True
+    assert len(commands) == 1
+    assert commands[0][0].endswith("uv.exe")
+    assert commands[0][1] == "pip"
+    assert "--overrides" in commands[0]
+    assert "--constraint" not in commands[0]
+
+
+def test_pip_target_install_uses_upgrade_to_replace_existing_code(tmp_path: Path) -> None:
+    with patch.dict(
+        os.environ,
+        {"NEUROMITA_LIB_DIR": str(tmp_path / "Lib"), "NEUROMITA_PYTHON": os.sys.executable},
+        clear=False,
+    ):
+        installer = PipInstaller(protected_packages=[])
+
+    command = installer._build_install_command(force_pip=True)
+
+    assert command[:4] == [os.sys.executable, "-m", "pip", "--isolated"]
+    assert "--upgrade" in command
+
+
+def test_target_module_detection_uses_wheel_top_level_metadata(tmp_path: Path) -> None:
+    lib = tmp_path / "Lib"
+    lib.mkdir()
+    _write_dist(lib, "tts-with-rvc-onnx", "0.1.9.4")
+    dist_info = next(lib.glob("tts_with_rvc_onnx-*.dist-info"))
+    (dist_info / "top_level.txt").write_text("tts_with_rvc\n", encoding="utf-8")
+    (lib / "tts_with_rvc").mkdir()
+
+    with patch.dict(
+        os.environ,
+        {"NEUROMITA_LIB_DIR": str(lib), "NEUROMITA_PYTHON": os.sys.executable},
+        clear=False,
+    ):
+        installer = PipInstaller(protected_packages=[])
+
+    assert installer.is_spec_satisfied_in_target("tts-with-rvc-onnx[dml]") is True
+
+
+def test_uv_resolver_failure_can_fall_back_to_pip_with_constraints(tmp_path: Path) -> None:
+    commands: list[list[str]] = []
+
+    with patch.dict(
+        os.environ,
+        {"NEUROMITA_LIB_DIR": str(tmp_path / "Lib"), "NEUROMITA_PYTHON": os.sys.executable},
+        clear=False,
+    ):
+        installer = PipInstaller(protected_packages=[])
+        installer._preferred_installer_cmd = [str(tmp_path / "uv.exe"), "pip"]
+
+        def fake_run(cmd, _description):
+            commands.append(list(cmd))
+            installer._last_run_returncode = 1 if len(commands) == 1 else 0
+            installer._last_run_recent_lines = ["No solution found when resolving dependencies"]
+            return len(commands) > 1
+
+        with (
+            patch.object(installer, "_should_prefer_pip", return_value=False),
+            patch.object(installer, "_should_retry_failed_uv_with_pip", return_value=True),
+            patch.object(installer, "_run_pip_process", side_effect=fake_run),
+        ):
+            ok = installer.install_package_with_overrides(
+                ["tts-with-rvc-onnx[dml]"],
+                uv_overrides=["torch==2.7.1", "torchaudio==2.7.1"],
+            )
+
+    assert ok is True
+    assert commands[0][0].endswith("uv.exe")
+    assert "--overrides" in commands[0]
+    assert commands[1][:4] == [os.sys.executable, "-m", "pip", "--isolated"]
+    assert "--constraint" in commands[1]
+
+
+def test_uv_progress_parser_ignores_dependency_solver_prose(tmp_path: Path) -> None:
+    with patch.dict(
+        os.environ,
+        {"NEUROMITA_LIB_DIR": str(tmp_path / "Lib"), "NEUROMITA_PYTHON": os.sys.executable},
+        clear=False,
+    ):
+        installer = PipInstaller(protected_packages=[])
+    aggregate = installer._UvProgressAggregator()
+
+    for line in (
+        "Because tts-with-rvc-onnx depends on torchaudio",
+        "torchaudio cannot be used",
+        "we can conclude that your requirements are unsatisfiable",
+    ):
+        aggregate.update(line)
+
+    assert aggregate.tasks == {}
+
+
+def test_carriage_return_resolver_diagnostics_are_preserved(tmp_path: Path) -> None:
+    logs: list[str] = []
+    with patch.dict(
+        os.environ,
+        {"NEUROMITA_LIB_DIR": str(tmp_path / "Lib"), "NEUROMITA_PYTHON": os.sys.executable},
+        clear=False,
+    ):
+        installer = PipInstaller(update_log=logs.append, protected_packages=[])
+    state = installer._RunState("resolve", ["uv", "pip", "install"])
+    state.uv_progress = installer._UvProgressAggregator()
+
+    installer._process_line(
+        state,
+        "No solution found when resolving dependencies",
+        transient=True,
+    )
+    installer._process_line(
+        state,
+        "Because torchaudio cannot be used",
+        transient=True,
+    )
+
+    assert list(state.recent_lines) == [
+        "No solution found when resolving dependencies",
+        "Because torchaudio cannot be used",
+    ]
+    assert any("No solution found" in line for line in logs)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        '__STATS__{"errors": 0, "warnings": 0}',
+        "__SNAPSHOT_START__",
+        "__SNAPSHOT_END__",
+    ],
+)
+def test_structural_install_progress_is_not_classified_as_error(message: str) -> None:
+    assert classify_install_log(message) is None
+
+
+@pytest.mark.parametrize(
+    ("message", "explicit_level", "expected"),
+    [
+        ("Installation failed", "", "error"),
+        ("Traceback: boom", "", "error"),
+        ("ordinary text", "critical", "error"),
+        ("Предупреждение: cache disabled", "", "warning"),
+        ("ordinary text", "warning", "warning"),
+        ("Installing package", "", None),
+    ],
+)
+def test_human_installer_log_classification(message: str, explicit_level: str, expected: str | None) -> None:
+    assert classify_install_log(message, explicit_level) == expected

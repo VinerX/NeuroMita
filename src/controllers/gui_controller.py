@@ -2,7 +2,7 @@ from PyQt6.QtCore import QTimer
 from main_logger import logger
 from core.events import get_event_bus
 from core.services import use
-from services.contracts import SettingsService
+from services.contracts import GuiInteractionService, SettingsService
 
 from .gui.status_controller import StatusController
 from .gui.chat_controller import ChatController
@@ -17,7 +17,7 @@ from .gui.protocol_pipeline_gui_controller import ProtocolPipelineGuiController
 from .gui.settings_sidebar_controller import SettingsSidebarController
 
 
-class GuiController:
+class GuiController(GuiInteractionService):
     def __init__(self, main_controller, view):
         self.main_controller = main_controller
         self.view = view
@@ -81,6 +81,26 @@ class GuiController:
             if mic_enabled:
                 QTimer.singleShot(0, lambda: self.ensure_optional_gui("speech"))
 
+
+    def native_window_id(self) -> int | None:
+        if self.view is not None and hasattr(self.view, "winId"):
+            return int(self.view.winId())
+        return None
+
+    def confirm(self, kind: str, payload: dict) -> bool:
+        window_manager = getattr(self.view, "window_manager", None)
+        if window_manager is None:
+            return False
+        normalized = str(kind or "").strip().lower()
+        if normalized == "vc_redist":
+            result = window_manager.show_dialog_blocking("vc_redist_dialog", dict(payload or {}))
+            return str(result.get("choice", "close")).lower() in {"install", "yes", "ok", "continue"}
+        if normalized == "triton":
+            result = window_manager.show_dialog_blocking(
+                "triton_deps_dialog", {"dependencies_status": dict(payload or {})}
+            )
+            return str(result.get("choice", "skip")).lower() in {"install", "yes", "ok", "continue"}
+        return False
 
     def _dispatch_ui(self, callback) -> None:
         signal = getattr(self.view, "run_ui_task_signal", None)

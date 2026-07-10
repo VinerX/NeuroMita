@@ -480,10 +480,7 @@ class _EmbedProviderWidget(QWidget):
 
     def _fetch_cfg(self, preset_id: Any) -> Optional[Dict[str, Any]]:
         try:
-            results = self._bus.emit_and_wait(
-                Events.EmbeddingPresets.GET_PRESET_FULL, {"id": preset_id}, timeout=2.0
-            )
-            cfg = results[0] if results else None
+            cfg = use(EmbeddingPresetService).get_full(preset_id)
             if cfg and isinstance(cfg, dict):
                 return cfg
         except Exception:
@@ -647,10 +644,7 @@ class _EmbedProviderWidget(QWidget):
         self._status_label.setText(_("Сохранение...", "Saving..."))
 
         def _worker():
-            results = self._bus.emit_and_wait(
-                Events.EmbeddingPresets.SAVE_CUSTOM_PRESET, {"data": data}, timeout=2.0
-            )
-            return results[0] if results else None
+            return use(EmbeddingPresetService).save(data)
 
         def _apply(saved_id):
             self._save_btn.setEnabled(True)
@@ -683,10 +677,7 @@ class _EmbedProviderWidget(QWidget):
         self._status_label.setText(_("Создание пресета...", "Creating preset..."))
 
         def _worker():
-            results = self._bus.emit_and_wait(
-                Events.EmbeddingPresets.SAVE_CUSTOM_PRESET, {"data": data}, timeout=2.0
-            )
-            return results[0] if results else None
+            return use(EmbeddingPresetService).save(data)
 
         def _apply(new_id):
             self._add_btn.setEnabled(True)
@@ -708,10 +699,7 @@ class _EmbedProviderWidget(QWidget):
         self._del_btn.setEnabled(False)
 
         def _worker():
-            self._bus.emit_and_wait(
-                Events.EmbeddingPresets.DELETE_CUSTOM_PRESET, {"id": pid}, timeout=2.0
-            )
-            return True
+            return use(EmbeddingPresetService).delete(pid)
 
         def _apply(_ok):
             self._del_btn.setEnabled(True)
@@ -745,12 +733,7 @@ class _EmbedProviderWidget(QWidget):
         self._down_btn.setEnabled(False)
 
         def _worker():
-            self._bus.emit_and_wait(
-                Events.EmbeddingPresets.REORDER_PRESETS,
-                {"order": custom_ids},
-                timeout=2.0,
-            )
-            return True
+            return use(EmbeddingPresetService).reorder(custom_ids)
 
         def _apply(_ok):
             self._up_btn.setEnabled(True)
